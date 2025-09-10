@@ -23,5 +23,6 @@ func SafeReadConfig(configFile string) ([]byte, error) {
 		return nil, errors.New("access to file outside of the allowed directory is not permitted")
 	}
 
+	// Use direct file operation since we've already validated the path
 	return os.ReadFile(absConfigPath)
 }

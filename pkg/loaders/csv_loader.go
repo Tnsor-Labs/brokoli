@@ -11,7 +11,7 @@ import (
 type CSVLoader struct{}
 
 func (l *CSVLoader) Load(filePath string) (*common.DataSet, error) {
-	file, err := os.Open(filePath)
+	file, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open CSV file: %w", err)
 	}

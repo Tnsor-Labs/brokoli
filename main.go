@@ -5,7 +5,6 @@ import (
 	"brokolisql-go/internal/transformers"
 	"brokolisql-go/pkg/fetchers"
 	"flag"
-	"os"
 	"path/filepath"
 
 	"brokolisql-go/pkg/common"
@@ -117,7 +116,7 @@ func main() {
 
 		// Write output
 		logger.Info("Writing SQL to %s", *outputFile)
-		if err := os.WriteFile(*outputFile, []byte(sql), 0644); err != nil {
+		if err := common.SafeWriteFile(*outputFile, []byte(sql), 0600); err != nil {
 			logger.Fatal("Failed to write output file: %v", err)
 		}
 
@@ -236,7 +235,7 @@ func main() {
 
 			// Write output
 			logger.Info("Writing SQL to %s", *outputFile)
-			if err := os.WriteFile(*outputFile, []byte(sql), 0644); err != nil {
+			if err := common.SafeWriteFile(*outputFile, []byte(sql), 0600); err != nil {
 				logger.Fatal("Failed to write output file: %v", err)
 			}
 

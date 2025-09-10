@@ -131,7 +131,9 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 		<-doneChan
 
 		// Close the output file since we'll reopen it
-		g.file.Close()
+		if err := g.file.Close(); err != nil {
+			return fmt.Errorf("failed to close output file: %w", err)
+		}
 
 		// Load the entire file using the regular loader
 		jsonLoader := &loaders.JSONLoader{}
