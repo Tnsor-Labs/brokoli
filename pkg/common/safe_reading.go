@@ -24,5 +24,6 @@ func SafeReadConfig(configFile string) ([]byte, error) {
 	}
 
 	// Use direct file operation since we've already validated the path
+	// #nosec G304
 	return os.ReadFile(absConfigPath)
 }
