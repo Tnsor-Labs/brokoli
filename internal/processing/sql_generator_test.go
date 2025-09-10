@@ -1,9 +1,10 @@
 package processing
 
 import (
-	"brokolisql-go/pkg/common"
 	"strings"
 	"testing"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 func TestNewSQLGenerator(t *testing.T) {

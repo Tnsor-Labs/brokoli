@@ -1,11 +1,12 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"encoding/csv"
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 type CSVLoader struct{}

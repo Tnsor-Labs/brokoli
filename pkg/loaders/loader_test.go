@@ -1,8 +1,9 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"testing"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 func TestGetLoader(t *testing.T) {

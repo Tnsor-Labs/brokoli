@@ -1,12 +1,13 @@
 package common
 
 import (
-	"brokolisql-go/pkg/errors"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/pkg/errors"
 )
 
 type LogLevel int

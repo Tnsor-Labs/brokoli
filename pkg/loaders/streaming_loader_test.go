@@ -1,10 +1,11 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 func TestStreamingJSONLoader(t *testing.T) {

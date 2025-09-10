@@ -1,9 +1,10 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"errors"
 	"path/filepath"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 type Loader interface {

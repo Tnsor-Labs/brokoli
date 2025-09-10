@@ -1,9 +1,10 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"fmt"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 
 	"github.com/xuri/excelize/v2"
 )

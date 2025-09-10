@@ -1,7 +1,7 @@
 package transformers
 
 import (
-	"brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 	"os"
 	"path/filepath"
 	"reflect"

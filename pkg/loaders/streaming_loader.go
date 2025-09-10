@@ -1,13 +1,14 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
-	"brokolisql-go/pkg/errors"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/errors"
 )
 
 // RowChannel is a channel for streaming rows of data

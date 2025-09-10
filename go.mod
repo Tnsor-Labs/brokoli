@@ -1,4 +1,4 @@
-module brokolisql-go
+module github.com/hc12r/brokolisql-go
 
 go 1.24
 

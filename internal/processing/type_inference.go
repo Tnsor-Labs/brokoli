@@ -1,13 +1,14 @@
 package processing
 
 import (
-	"brokolisql-go/internal/dialects"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/internal/dialects"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 type TypeInferenceEngine struct {

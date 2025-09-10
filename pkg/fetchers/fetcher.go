@@ -1,8 +1,9 @@
 package fetchers
 
 import (
-	"brokolisql-go/pkg/common"
 	"errors"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 var (

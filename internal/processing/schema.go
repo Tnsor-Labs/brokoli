@@ -1,9 +1,10 @@
 package processing
 
 import (
-	"brokolisql-go/internal/dialects"
 	"fmt"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/internal/dialects"
 
 	"github.com/jinzhu/inflection"
 )
