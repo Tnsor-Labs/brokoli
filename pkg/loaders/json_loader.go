@@ -3,13 +3,12 @@ package loaders
 import (
 	"brokolisql-go/pkg/common"
 	"fmt"
-	"os"
 )
 
 type JSONLoader struct{}
 
 func (l *JSONLoader) Load(filePath string) (*common.DataSet, error) {
-	fileContent, err := os.ReadFile(filePath)
+	fileContent, err := common.SafeReadFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read JSON file: %w", err)
 	}

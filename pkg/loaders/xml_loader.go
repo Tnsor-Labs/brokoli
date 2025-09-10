@@ -4,7 +4,6 @@ import (
 	"brokolisql-go/pkg/common"
 	"encoding/xml"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -19,7 +18,7 @@ type XMLNode struct {
 
 func (l *XMLLoader) Load(filePath string) (*common.DataSet, error) {
 
-	file, err := os.Open(filePath)
+	file, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open XML file: %w", err)
 	}

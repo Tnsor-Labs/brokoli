@@ -5,7 +5,6 @@ import (
 	"brokolisql-go/pkg/fetchers"
 	"fmt"
 	"log"
-	"os"
 )
 
 // This example demonstrates how to use the REST API fetcher to retrieve data
@@ -59,40 +58,56 @@ func main() {
 func saveToFile(dataset *common.DataSet, filename string) error {
 	// Create a JSON representation of the data
 	// For simplicity, we'll just create a basic JSON array
-	file, err := os.Create(filename)
+	file, err := common.SafeCreateFile(filename)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
 	// Write opening bracket for JSON array
-	file.WriteString("[\n")
+	if _, err := file.WriteString("[\n"); err != nil {
+		return fmt.Errorf("failed to write to file: %w", err)
+	}
 
 	// Write each row as a JSON object
 	for i, row := range dataset.Rows {
-		file.WriteString("  {")
+		if _, err := file.WriteString("  {"); err != nil {
+			return fmt.Errorf("failed to write to file: %w", err)
+		}
 
 		// Write each field
 		j := 0
 		for key, value := range row {
-			file.WriteString(fmt.Sprintf("\n    %q: %q", key, fmt.Sprintf("%v", value)))
+			if _, err := file.WriteString(fmt.Sprintf("\n    %q: %q", key, fmt.Sprintf("%v", value))); err != nil {
+				return fmt.Errorf("failed to write to file: %w", err)
+			}
 			if j < len(row)-1 {
-				file.WriteString(",")
+				if _, err := file.WriteString(","); err != nil {
+					return fmt.Errorf("failed to write to file: %w", err)
+				}
 			}
 			j++
 		}
 
-		file.WriteString("\n  }")
+		if _, err := file.WriteString("\n  }"); err != nil {
+			return fmt.Errorf("failed to write to file: %w", err)
+		}
 
 		// Add comma if not the last row
 		if i < len(dataset.Rows)-1 {
-			file.WriteString(",")
+			if _, err := file.WriteString(","); err != nil {
+				return fmt.Errorf("failed to write to file: %w", err)
+			}
 		}
-		file.WriteString("\n")
+		if _, err := file.WriteString("\n"); err != nil {
+			return fmt.Errorf("failed to write to file: %w", err)
+		}
 	}
 
 	// Write closing bracket for JSON array
-	file.WriteString("]\n")
+	if _, err := file.WriteString("]\n"); err != nil {
+		return fmt.Errorf("failed to write to file: %w", err)
+	}
 
 	return nil
 }

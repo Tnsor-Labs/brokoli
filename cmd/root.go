@@ -176,7 +176,7 @@ func runConversion() error {
 		return fmt.Errorf("failed to generate SQL: %w", err)
 	}
 
-	if err := os.WriteFile(outputFile, []byte(sql), 0644); err != nil {
+	if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
 		return fmt.Errorf("failed to write output file: %w", err)
 	}
 

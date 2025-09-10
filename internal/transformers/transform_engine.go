@@ -3,7 +3,6 @@ package transformers
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 
@@ -34,7 +33,7 @@ type TransformEngine struct {
 
 func NewTransformEngine(configFile string) (*TransformEngine, error) {
 
-	data, err := os.ReadFile(configFile)
+	data, err := common.SafeReadFile(configFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read transform config file: %w", err)
 	}

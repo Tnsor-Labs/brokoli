@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 )
 
@@ -29,7 +28,7 @@ type StreamingJSONLoader struct{}
 
 // StreamLoad implements the StreamingLoader interface for JSON files
 func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel, chan struct{}, error) {
-	file, err := os.Open(filePath)
+	file, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open JSON file: %w", err)
 	}
@@ -108,7 +107,7 @@ func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel,
 	// Eish! We need to read the first few rows to determine the columns
 	// This is a limitation of the current design that we'll need to address in a future version
 	// For now, we'll read a small portion of the file to determine the columns
-	tempFile, err := os.Open(filePath)
+	tempFile, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open JSON file for column detection: %w", err)
 	}
@@ -172,7 +171,7 @@ type StreamingCSVLoader struct{}
 
 // StreamLoad implements the StreamingLoader interface for CSV files
 func (l *StreamingCSVLoader) StreamLoad(filePath string) ([]string, RowChannel, chan struct{}, error) {
-	file, err := os.Open(filePath)
+	file, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open CSV file: %w", err)
 	}
@@ -182,7 +181,11 @@ func (l *StreamingCSVLoader) StreamLoad(filePath string) ([]string, RowChannel, 
 	// Read headers
 	headers, err := reader.Read()
 	if err != nil {
-		file.Close()
+		closeErr := file.Close()
+		if closeErr != nil {
+			// Log the close error but return the original error as it's more important
+			fmt.Printf("warning: failed to close file: %v\n", closeErr)
+		}
 		return nil, nil, nil, fmt.Errorf("failed to read CSV headers: %w", err)
 	}
 
