@@ -13,6 +13,7 @@ import (
 // SafeReadFile reads a file securely, ensuring the path doesn't escape the base directory
 func SafeReadFile(filePath string) ([]byte, error) {
 	return safeFileOperation(filePath, func(path string) ([]byte, error) {
+		// #nosec G304
 		return os.ReadFile(path)
 	})
 }
@@ -20,6 +21,7 @@ func SafeReadFile(filePath string) ([]byte, error) {
 // SafeOpenFile opens a file securely, ensuring the path doesn't escape the base directory
 func SafeOpenFile(filePath string) (*os.File, error) {
 	file, err := safeFileOperation(filePath, func(path string) (*os.File, error) {
+		// #nosec G304
 		return os.Open(path)
 	})
 	return file, err
@@ -28,6 +30,7 @@ func SafeOpenFile(filePath string) (*os.File, error) {
 // SafeCreateFile creates a file securely, ensuring the path doesn't escape the base directory
 func SafeCreateFile(filePath string) (*os.File, error) {
 	file, err := safeFileOperation(filePath, func(path string) (*os.File, error) {
+		// #nosec G304
 		return os.Create(path)
 	})
 	return file, err

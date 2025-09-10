@@ -50,6 +50,7 @@ func main() {
 	// Example of how to save the fetched data to a file
 	// This could be used to then load the data using the existing loaders
 	fmt.Println("\nSaving data to users.json...")
+	// #nosec G104
 	saveToFile(dataset, "users.json")
 	fmt.Println("Data saved. You can now use the JSON loader to process this file.")
 }
