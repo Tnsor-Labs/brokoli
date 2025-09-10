@@ -25,6 +25,10 @@ func main() {
 	normalizeColumns := flag.Bool("normalize", true, "Normalize column names for SQL compatibility")
 	logLevel := flag.String("log-level", "info", "Log level (debug, info, warning, error, fatal)")
 
+	// Streaming mode flag
+	streamingMode := flag.Bool("streaming", false, "Enable streaming mode for processing large files with constant memory usage")
+	bufferSize := flag.Int("buffer-size", 1000, "Number of rows to buffer in memory when using streaming mode")
+
 	// Fetch mode flags
 	fetchMode := flag.Bool("fetch", false, "Enable fetch mode to retrieve data from remote sources")
 	fetchSource := flag.String("source", "", "Source URL or connection string for fetch mode")
@@ -38,10 +42,15 @@ func main() {
 	logger.Info("Starting BrokoliSQL")
 
 	var dataset *common.DataSet
-	var err error
 
-	// Check if we're in fetch mode or file mode
+	// Validate common required flags
+	if *outputFile == "" || *tableName == "" {
+		logger.Fatal("Output and table flags are required")
+	}
+
+	// Check if we're in fetch mode, streaming mode, or traditional mode
 	if *fetchMode {
+		// Fetch mode
 		// Validate fetch mode parameters
 		if *fetchSource == "" {
 			logger.Fatal("Source URL or connection string is required when using fetch mode")
@@ -72,11 +81,51 @@ func main() {
 		}
 
 		logger.Info("Successfully fetched %d rows of data", len(dataset.Rows))
+
+		// Apply transformations if specified
+		if *transformFile != "" {
+			logger.Info("Applying transformations from %s", *transformFile)
+			transformEngine, err := transformers.NewTransformEngine(*transformFile)
+			if err != nil {
+				logger.Fatal("Failed to initialize transform engine: %v", err)
+			}
+
+			if err := transformEngine.ApplyTransformations(dataset); err != nil {
+				logger.Fatal("Failed to apply transformations: %v", err)
+			}
+
+			logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+		}
+
+		// Generate SQL
+		logger.Info("Generating SQL with dialect: %s", *dialect)
+		sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
+			Dialect:          *dialect,
+			TableName:        *tableName,
+			CreateTable:      *createTable,
+			BatchSize:        *batchSize,
+			NormalizeColumns: *normalizeColumns,
+		})
+		if err != nil {
+			logger.Fatal("Failed to initialize SQL generator: %v", err)
+		}
+
+		sql, err := sqlGenerator.Generate(dataset)
+		if err != nil {
+			logger.Fatal("Failed to generate SQL: %v", err)
+		}
+
+		// Write output
+		logger.Info("Writing SQL to %s", *outputFile)
+		if err := os.WriteFile(*outputFile, []byte(sql), 0644); err != nil {
+			logger.Fatal("Failed to write output file: %v", err)
+		}
+
 	} else {
-		// Traditional file loading mode
+		// File mode (either streaming or traditional)
 		// Validate required flags
-		if *inputFile == "" || *outputFile == "" || *tableName == "" {
-			logger.Fatal("Input, output, and table flags are required when not using fetch mode")
+		if *inputFile == "" {
+			logger.Fatal("Input file path is required when not using fetch mode")
 		}
 
 		// Determine file format if not specified
@@ -99,60 +148,99 @@ func main() {
 
 		logger.Info("Processing file: %s (format: %s)", *inputFile, fileFormat)
 
-		// Get the appropriate loader
-		loader, err := loaders.GetLoader(*inputFile)
-		if err != nil {
-			logger.Fatal("Failed to get loader: %v", err)
+		if *streamingMode {
+			// Streaming mode
+			logger.Info("Streaming mode enabled, processing with constant memory usage")
+
+			// Check if the file format supports streaming
+			if fileFormat != "csv" && fileFormat != "json" {
+				logger.Fatal("Streaming mode is currently only supported for CSV and JSON files")
+			}
+
+			// Create streaming SQL generator
+			streamingOptions := processing.StreamingSQLGeneratorOptions{
+				SQLGeneratorOptions: processing.SQLGeneratorOptions{
+					Dialect:          *dialect,
+					TableName:        *tableName,
+					CreateTable:      *createTable,
+					BatchSize:        *batchSize,
+					NormalizeColumns: *normalizeColumns,
+				},
+				OutputFile: *outputFile,
+				BufferSize: *bufferSize,
+			}
+
+			streamingGenerator, err := processing.NewStreamingSQLGenerator(streamingOptions)
+			if err != nil {
+				logger.Fatal("Failed to initialize streaming SQL generator: %v", err)
+			}
+
+			// Process the stream
+			logger.Info("Processing file in streaming mode")
+			err = streamingGenerator.ProcessStream(*inputFile)
+			if err != nil {
+				logger.Fatal("Failed to process stream: %v", err)
+			}
+
+			logger.Info("Successfully processed file in streaming mode and saved SQL to %s", *outputFile)
+
+		} else {
+			// Traditional mode (load everything into memory)
+			// Get the appropriate loader
+			loader, err := loaders.GetLoader(*inputFile)
+			if err != nil {
+				logger.Fatal("Failed to get loader: %v", err)
+			}
+
+			// Load the data
+			logger.Info("Loading data from file")
+			dataset, err = loader.Load(*inputFile)
+			if err != nil {
+				logger.Fatal("Failed to load data: %v", err)
+			}
+
+			logger.Info("Loaded %d rows with %d columns", len(dataset.Rows), len(dataset.Columns))
+
+			// Apply transformations if specified
+			if *transformFile != "" {
+				logger.Info("Applying transformations from %s", *transformFile)
+				transformEngine, err := transformers.NewTransformEngine(*transformFile)
+				if err != nil {
+					logger.Fatal("Failed to initialize transform engine: %v", err)
+				}
+
+				if err := transformEngine.ApplyTransformations(dataset); err != nil {
+					logger.Fatal("Failed to apply transformations: %v", err)
+				}
+
+				logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+			}
+
+			// Generate SQL
+			logger.Info("Generating SQL with dialect: %s", *dialect)
+			sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
+				Dialect:          *dialect,
+				TableName:        *tableName,
+				CreateTable:      *createTable,
+				BatchSize:        *batchSize,
+				NormalizeColumns: *normalizeColumns,
+			})
+			if err != nil {
+				logger.Fatal("Failed to initialize SQL generator: %v", err)
+			}
+
+			sql, err := sqlGenerator.Generate(dataset)
+			if err != nil {
+				logger.Fatal("Failed to generate SQL: %v", err)
+			}
+
+			// Write output
+			logger.Info("Writing SQL to %s", *outputFile)
+			if err := os.WriteFile(*outputFile, []byte(sql), 0644); err != nil {
+				logger.Fatal("Failed to write output file: %v", err)
+			}
+
+			logger.Info("Successfully converted %s to SQL and saved to %s", *inputFile, *outputFile)
 		}
-
-		// Load the data
-		logger.Info("Loading data from file")
-		dataset, err = loader.Load(*inputFile)
-		if err != nil {
-			logger.Fatal("Failed to load data: %v", err)
-		}
 	}
-
-	logger.Info("Loaded %d rows with %d columns", len(dataset.Rows), len(dataset.Columns))
-
-	// Apply transformations if specified
-	if *transformFile != "" {
-		logger.Info("Applying transformations from %s", *transformFile)
-		transformEngine, err := transformers.NewTransformEngine(*transformFile)
-		if err != nil {
-			logger.Fatal("Failed to initialize transform engine: %v", err)
-		}
-
-		if err := transformEngine.ApplyTransformations(dataset); err != nil {
-			logger.Fatal("Failed to apply transformations: %v", err)
-		}
-
-		logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
-	}
-
-	// Generate SQL
-	logger.Info("Generating SQL with dialect: %s", *dialect)
-	sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
-		Dialect:          *dialect,
-		TableName:        *tableName,
-		CreateTable:      *createTable,
-		BatchSize:        *batchSize,
-		NormalizeColumns: *normalizeColumns,
-	})
-	if err != nil {
-		logger.Fatal("Failed to initialize SQL generator: %v", err)
-	}
-
-	sql, err := sqlGenerator.Generate(dataset)
-	if err != nil {
-		logger.Fatal("Failed to generate SQL: %v", err)
-	}
-
-	// Write output
-	logger.Info("Writing SQL to %s", *outputFile)
-	if err := os.WriteFile(*outputFile, []byte(sql), 0644); err != nil {
-		logger.Fatal("Failed to write output file: %v", err)
-	}
-
-	logger.Info("Successfully converted %s to SQL and saved to %s", *inputFile, *outputFile)
 }

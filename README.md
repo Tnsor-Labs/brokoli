@@ -15,6 +15,7 @@ BrokoliSQL-Go is a powerful command-line tool written in Go that converts struct
 - **Batch Processing**: Control the number of rows per INSERT statement for optimal performance
 - **Powerful Transformations**: Apply various transformations to your data before SQL generation
 - **Column Normalization**: Automatically normalize column names for SQL compatibility
+- **Streaming Processing** (Experimental): Process large files with constant memory usage
 
 ## Installation
 
@@ -65,6 +66,8 @@ Flags:
       --source-type string   Source type for fetch mode (rest, etc.) (default "rest")
   -r, --transform string     JSON file with transformation rules
   -t, --table string         Table name for SQL statements (required)
+      --streaming            Enable streaming mode for processing large files with constant memory usage
+      --buffer-size int      Number of rows to buffer in memory when using streaming mode (default 1000)
 ```
 
 ### Examples
@@ -105,6 +108,12 @@ Fetch data and apply transformations:
 brokolisql --fetch --source https://api.example.com/data --output output.sql --table users --transform transforms.json
 ```
 
+Process a large file with streaming mode:
+
+```bash
+brokolisql --input large_file.json --output output.sql --table users --streaming --buffer-size 1000 --create-table
+```
+
 ## Remote Data Fetching
 
 BrokoliSQL-Go can fetch data directly from remote sources, eliminating the need to download files locally before processing. Currently, it supports:
@@ -132,6 +141,38 @@ When fetching from REST APIs, the following default settings are applied:
 - Accept Header: application/json
 
 The fetched JSON data is automatically parsed and converted to the same internal format used by the file loaders, allowing you to apply transformations and generate SQL just like with local files.
+
+## Streaming Processing (Experimental)
+
+BrokoliSQL-Go includes an experimental streaming mode that processes large files with constant memory usage, allowing you to handle files of any size without loading the entire file into memory.
+
+### Using Streaming Mode
+
+To use streaming mode, use the `--streaming` flag along with the following options:
+
+- `--buffer-size`: Number of rows to buffer in memory (default: 1000)
+
+Example:
+
+```bash
+brokolisql --input large_file.json --output output.sql --table users --streaming --buffer-size 1000
+```
+
+### Supported Formats
+
+Currently, streaming mode supports:
+
+- **CSV files**: Process CSV files line by line
+- **JSON files**: Process JSON files incrementally
+- **Nested JSON**: Automatically detect and normalize nested JSON objects into proper relational tables
+
+### Limitations
+
+As this is an experimental feature:
+
+- Excel and XML files are not yet supported in streaming mode
+- Memory usage may still spike when processing nested JSON objects
+- Performance optimizations are ongoing
 
 ## Data Transformations
 
