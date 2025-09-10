@@ -58,13 +58,15 @@ func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel,
 		isArray := token == json.Delim('[')
 		if !isArray {
 			// Rewind the file and create a new decoder
-			file.Seek(0, 0)
+			_, err := file.Seek(0, 0)
+			if err != nil {
+				return
+			}
 			decoder = json.NewDecoder(file)
 		}
 
 		// Process JSON data
 		columnSet := make(map[string]bool)
-		var rows []common.DataRow
 
 		if isArray {
 			// Process array of objects
@@ -83,7 +85,6 @@ func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel,
 				// Process the row
 				row := processJSONRow(obj)
 				rowsChan <- row
-				rows = append(rows, row)
 			}
 		} else {
 			// Process single object
