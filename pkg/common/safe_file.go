@@ -63,8 +63,15 @@ func safeFileOperation[T any](filePath string, operation func(string) (T, error)
 		return zero, err
 	}
 
-	// Check if the file path is within the base directory
-	if !strings.HasPrefix(absFilePath, absBaseDir) {
+	// Get the system temp directory
+	tempDir := os.TempDir()
+	absTempDir, err := filepath.Abs(tempDir)
+	if err != nil {
+		return zero, err
+	}
+
+	// Check if the file path is within the base directory or temp directory
+	if !strings.HasPrefix(absFilePath, absBaseDir) && !strings.HasPrefix(absFilePath, absTempDir) {
 		return zero, errors.New("access to file outside of the allowed directory is not permitted")
 	}
 
