@@ -92,8 +92,8 @@ func init() {
 	flags.StringVar(&fetchType, "source-type", "rest", "Source type for fetch mode (rest, etc.)")
 
 	// Mark required flags
-	rootCmd.MarkFlagRequired("output")
-	rootCmd.MarkFlagRequired("table")
+	_ = rootCmd.MarkFlagRequired("output")
+	_ = rootCmd.MarkFlagRequired("table")
 }
 
 func runConversion() error {
