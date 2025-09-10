@@ -1,8 +1,6 @@
 name: Cross-Platform Tests
 
 on:
-  push:
-    branches: [ main ]
   pull_request:
     branches: [ main ]
 
