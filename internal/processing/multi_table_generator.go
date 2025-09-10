@@ -1,8 +1,9 @@
 package processing
 
 import (
-	"brokolisql-go/internal/dialects"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/internal/dialects"
 )
 
 // MultiTableGenerator generates SQL for multiple related tables

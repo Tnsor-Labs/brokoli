@@ -1,8 +1,9 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"fmt"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 type JSONLoader struct{}

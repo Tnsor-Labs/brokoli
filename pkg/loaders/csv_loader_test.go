@@ -1,11 +1,12 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 func TestCSVLoader_Load(t *testing.T) {

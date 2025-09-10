@@ -1,7 +1,7 @@
 package processing
 
 import (
-	"brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 // NestedJSONProcessorOptions contains options for the nested JSON processor

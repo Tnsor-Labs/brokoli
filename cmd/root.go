@@ -1,15 +1,16 @@
 package cmd
 
 import (
-	"brokolisql-go/internal/processing"
-	"brokolisql-go/internal/transformers"
-	"brokolisql-go/pkg/common"
-	"brokolisql-go/pkg/errors"
-	"brokolisql-go/pkg/fetchers"
-	"brokolisql-go/pkg/loaders"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/hc12r/brokolisql-go/internal/processing"
+	"github.com/hc12r/brokolisql-go/internal/transformers"
+	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/errors"
+	"github.com/hc12r/brokolisql-go/pkg/fetchers"
+	"github.com/hc12r/brokolisql-go/pkg/loaders"
 
 	"github.com/spf13/cobra"
 )

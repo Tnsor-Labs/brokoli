@@ -1,10 +1,11 @@
 package loaders
 
 import (
-	"brokolisql-go/pkg/common"
 	"encoding/xml"
 	"fmt"
 	"strings"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 type XMLLoader struct{}

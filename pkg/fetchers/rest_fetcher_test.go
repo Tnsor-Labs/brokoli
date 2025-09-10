@@ -1,12 +1,13 @@
 package fetchers
 
 import (
-	"brokolisql-go/pkg/errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/hc12r/brokolisql-go/pkg/errors"
 )
 
 func TestRESTFetcher_Fetch(t *testing.T) {

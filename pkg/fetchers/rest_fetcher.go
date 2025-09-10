@@ -1,7 +1,6 @@
 package fetchers
 
 import (
-	"brokolisql-go/pkg/common"
 	"bytes"
 	"errors"
 	"fmt"
@@ -9,6 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 var (

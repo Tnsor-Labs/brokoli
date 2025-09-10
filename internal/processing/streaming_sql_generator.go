@@ -1,12 +1,13 @@
 package processing
 
 import (
-	"brokolisql-go/internal/dialects"
-	"brokolisql-go/pkg/common"
-	"brokolisql-go/pkg/loaders"
 	"fmt"
 	"os"
 	"sync"
+
+	"github.com/hc12r/brokolisql-go/internal/dialects"
+	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/loaders"
 )
 
 // StreamingSQLGeneratorOptions contains options for the streaming SQL generator

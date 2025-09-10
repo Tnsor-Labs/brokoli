@@ -1,10 +1,11 @@
 package main
 
 import (
-	"brokolisql-go/pkg/common"
-	"brokolisql-go/pkg/fetchers"
 	"fmt"
 	"log"
+
+	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/hc12r/brokolisql-go/pkg/fetchers"
 )
 
 // This example demonstrates how to use the REST API fetcher to retrieve data

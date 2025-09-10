@@ -1,10 +1,11 @@
 package processing
 
 import (
-	"brokolisql-go/internal/dialects"
 	"encoding/json"
 	"fmt"
 	"reflect"
+
+	"github.com/hc12r/brokolisql-go/internal/dialects"
 )
 
 // JSONAnalyzer analyzes JSON data and builds a schema registry
