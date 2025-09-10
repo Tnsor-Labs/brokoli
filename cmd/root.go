@@ -8,7 +8,6 @@ import (
 	"github.com/hc12r/brokolisql-go/internal/processing"
 	"github.com/hc12r/brokolisql-go/internal/transformers"
 	"github.com/hc12r/brokolisql-go/pkg/common"
-	"github.com/hc12r/brokolisql-go/pkg/errors"
 	"github.com/hc12r/brokolisql-go/pkg/fetchers"
 	"github.com/hc12r/brokolisql-go/pkg/loaders"
 
@@ -28,6 +27,10 @@ var (
 	fetchMode        bool
 	fetchSource      string
 	fetchType        string
+	// Additional flags
+	logLevel      string
+	streamingMode bool
+	bufferSize    int
 )
 
 var rootCmd = &cobra.Command{
@@ -50,54 +53,81 @@ func Execute() {
 	}
 }
 
+// getColoredBanner returns a colorful banner
+// This is a wrapper that decides which banner style to use
+func getColoredBanner() string {
+	// Use the box banner for a more modern look
+	return GetColoredBoxBanner()
+}
+
 func init() {
-	flags := rootCmd.PersistentFlags()
-	flags.StringVar(&inputFile, "input", "", "Input file path (required unless using fetch mode)")
-	flags.StringVar(&outputFile, "output", "", "Output SQL file path (required)")
-	flags.StringVar(&tableName, "table", "", "Table name for SQL statements (required)")
-	flags.StringVar(&format, "format", "", "Input file format (csv, json, xml, xlsx) - if not specified, will be inferred from file extension")
-	flags.StringVar(&dialect, "dialect", "generic", "SQL dialect (generic, postgres, mysql, sqlite, sqlserver, oracle)")
-	flags.IntVar(&batchSize, "batch-size", 100, "Number of rows per INSERT statement")
-	flags.BoolVar(&createTable, "create-table", false, "Generate CREATE TABLE statement")
-	flags.StringVar(&transformFile, "transform", "", "JSON file with transformation rules")
-	flags.BoolVar(&normalizeColumns, "normalize", true, "Normalize column names for SQL compatibility")
+	// Set up the banner
+	coloredBanner := getColoredBanner()
+	if coloredBanner != "" {
+		rootCmd.SetUsageTemplate(fmt.Sprintf("%s\n\nUsage:{{if .Runnable}}{{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}{{.CommandPath}} [command]{{end}}\n\n{{if gt (len .Aliases) 0}}Aliases:\n  {{.NameAndAliases}}\n\n{{end}}{{if .HasExample}}Examples:\n{{.Example}}\n\n{{end}}{{if .HasAvailableSubCommands}}Available Commands:{{range .Commands}}{{if (or .IsAvailableCommand (eq .Name \"help\"))}}{{\"  \"}}{{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}\n\n{{end}}{{if .HasAvailableLocalFlags}}Flags:\n{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}\n\n{{end}}{{if .HasAvailableInheritedFlags}}Global Flags:\n{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}\n\n{{end}}{{if .HasHelpSubCommands}}Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}{{\"  \"}}{{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}\n\n{{end}}{{if .HasAvailableSubCommands}}Use \"{{.CommandPath}} [command] --help\" for more information about a command.{{end}}\n", coloredBanner))
+	}
+
+	// Use Flags() instead of PersistentFlags() for the root command
+	flags := rootCmd.Flags()
+
+	// Register all flags
+	flags.StringVarP(&inputFile, "input", "i", "", "Input file path (required unless using fetch mode)")
+	flags.StringVarP(&outputFile, "output", "o", "", "Output SQL file path (required)")
+	flags.StringVarP(&tableName, "table", "t", "", "Table name for SQL statements (required)")
+	flags.StringVarP(&format, "format", "f", "", "Input file format (csv, json, xml, xlsx) - if not specified, will be inferred from file extension")
+	flags.StringVarP(&dialect, "dialect", "d", "generic", "SQL dialect (generic, postgres, mysql, sqlite, sqlserver, oracle)")
+	flags.IntVarP(&batchSize, "batch-size", "b", 100, "Number of rows per INSERT statement")
+	flags.BoolVarP(&createTable, "create-table", "c", false, "Generate CREATE TABLE statement")
+	flags.StringVarP(&transformFile, "transform", "r", "", "JSON file with transformation rules")
+	flags.BoolVarP(&normalizeColumns, "normalize", "n", true, "Normalize column names for SQL compatibility")
+	flags.StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warning, error, fatal)")
+
+	// Streaming mode flags
+	flags.BoolVar(&streamingMode, "streaming", false, "Enable streaming mode for processing large files with constant memory usage")
+	flags.IntVar(&bufferSize, "buffer-size", 1000, "Number of rows to buffer in memory when using streaming mode")
 
 	// Fetch mode flags
 	flags.BoolVar(&fetchMode, "fetch", false, "Enable fetch mode to retrieve data from remote sources")
 	flags.StringVar(&fetchSource, "source", "", "Source URL or connection string for fetch mode")
 	flags.StringVar(&fetchType, "source-type", "rest", "Source type for fetch mode (rest, etc.)")
 
-	flags.StringVarP(&inputFile, "i", "i", "", "Input file path (shorthand)")
-	flags.StringVarP(&outputFile, "o", "o", "", "Output SQL file path (shorthand)")
-	flags.StringVarP(&tableName, "t", "t", "", "Table name for SQL statements (shorthand)")
-	flags.StringVarP(&format, "f", "f", "", "Input file format (shorthand)")
-	flags.StringVarP(&dialect, "d", "d", "generic", "SQL dialect (shorthand)")
-	flags.IntVarP(&batchSize, "b", "b", 100, "Number of rows per INSERT statement (shorthand)")
-	flags.BoolVarP(&createTable, "c", "c", false, "Generate CREATE TABLE statement (shorthand)")
-	flags.StringVarP(&transformFile, "r", "r", "", "JSON file with transformation rules (shorthand)")
-	flags.BoolVarP(&normalizeColumns, "n", "n", true, "Normalize column names for SQL compatibility (shorthand)")
-
-	// Only mark input as required if not in fetch mode
-	errors.CheckError(rootCmd.MarkFlagRequired("output"))
-	errors.CheckError(rootCmd.MarkFlagRequired("table"))
-
+	// Mark required flags
+	_ = rootCmd.MarkFlagRequired("output")
+	_ = rootCmd.MarkFlagRequired("table")
 }
 
 func runConversion() error {
-	var dataset *common.DataSet
-	var err error
+	// Display colored banner
+	coloredBanner := getColoredBanner()
+	if coloredBanner != "" {
+		fmt.Println(coloredBanner)
+	}
 
-	// Check if we're in fetch mode or file mode
+	// Set up logger
+	logger := common.NewLogger(common.LogLevelFromString(logLevel))
+	logger.Info("Starting BrokoliSQL")
+
+	var dataset *common.DataSet
+
+	// Validate common required flags
+	if outputFile == "" || tableName == "" {
+		logger.Fatal("Output and table flags are required")
+	}
+
+	// Check if we're in fetch mode, streaming mode, or traditional mode
 	if fetchMode {
+		// Fetch mode
 		// Validate fetch mode parameters
 		if fetchSource == "" {
-			return fmt.Errorf("source URL or connection string is required when using fetch mode")
+			logger.Fatal("Source URL or connection string is required when using fetch mode")
 		}
+
+		logger.Info("Fetch mode enabled, retrieving data from %s using %s fetcher", fetchSource, fetchType)
 
 		// Get the appropriate fetcher
 		fetcher, err := fetchers.GetFetcher(fetchType)
 		if err != nil {
-			return fmt.Errorf("failed to get fetcher: %w", err)
+			logger.Fatal("Failed to get fetcher: %v", err)
 		}
 
 		// Create options map for the fetcher
@@ -111,76 +141,174 @@ func runConversion() error {
 		}
 
 		// Fetch the data
-		fmt.Printf("Fetching data from %s using %s fetcher...\n", fetchSource, fetchType)
 		dataset, err = fetcher.Fetch(fetchSource, options)
 		if err != nil {
-			return fmt.Errorf("failed to fetch data: %w", err)
-		}
-		fmt.Printf("Successfully fetched %d rows of data\n", len(dataset.Rows))
-	} else {
-		// Traditional file loading mode
-		if inputFile == "" {
-			return fmt.Errorf("input file is required when not using fetch mode")
+			logger.Fatal("Failed to fetch data: %v", err)
 		}
 
-		if format == "" {
+		logger.Info("Successfully fetched %d rows of data", len(dataset.Rows))
+
+		// Apply transformations if specified
+		if transformFile != "" {
+			logger.Info("Applying transformations from %s", transformFile)
+			transformEngine, err := transformers.NewTransformEngine(transformFile)
+			if err != nil {
+				logger.Fatal("Failed to initialize transform engine: %v", err)
+			}
+
+			if err := transformEngine.ApplyTransformations(dataset); err != nil {
+				logger.Fatal("Failed to apply transformations: %v", err)
+			}
+
+			logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+		}
+
+		// Generate SQL
+		logger.Info("Generating SQL with dialect: %s", dialect)
+		sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
+			Dialect:          dialect,
+			TableName:        tableName,
+			CreateTable:      createTable,
+			BatchSize:        batchSize,
+			NormalizeColumns: normalizeColumns,
+		})
+		if err != nil {
+			logger.Fatal("Failed to initialize SQL generator: %v", err)
+		}
+
+		sql, err := sqlGenerator.Generate(dataset)
+		if err != nil {
+			logger.Fatal("Failed to generate SQL: %v", err)
+		}
+
+		// Write output
+		logger.Info("Writing SQL to %s", outputFile)
+		if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
+			logger.Fatal("Failed to write output file: %v", err)
+		}
+
+	} else {
+		// File mode (either streaming or traditional)
+		// Validate required flags
+		if inputFile == "" {
+			logger.Fatal("Input file path is required when not using fetch mode")
+		}
+
+		// Determine file format if not specified
+		fileFormat := format
+		if fileFormat == "" {
 			ext := filepath.Ext(inputFile)
 			switch ext {
 			case ".csv":
-				format = "csv"
+				fileFormat = "csv"
 			case ".json":
-				format = "json"
+				fileFormat = "json"
 			case ".xml":
-				format = "xml"
+				fileFormat = "xml"
 			case ".xlsx", ".xls":
-				format = "excel"
+				fileFormat = "excel"
 			default:
-				return fmt.Errorf("could not determine file format from extension: %s, please specify with --format", ext)
+				logger.Fatal("Could not determine file format from extension: %s, please specify with --format", ext)
 			}
 		}
 
-		loader, err := loaders.GetLoader(inputFile)
-		if err != nil {
-			return fmt.Errorf("failed to get loader: %w", err)
+		logger.Info("Processing file: %s (format: %s)", inputFile, fileFormat)
+
+		if streamingMode {
+			// Streaming mode
+			logger.Info("Streaming mode enabled, processing with constant memory usage")
+
+			// Check if the file format supports streaming
+			if fileFormat != "csv" && fileFormat != "json" {
+				logger.Fatal("Streaming mode is currently only supported for CSV and JSON files")
+			}
+
+			// Create streaming SQL generator
+			streamingOptions := processing.StreamingSQLGeneratorOptions{
+				SQLGeneratorOptions: processing.SQLGeneratorOptions{
+					Dialect:          dialect,
+					TableName:        tableName,
+					CreateTable:      createTable,
+					BatchSize:        batchSize,
+					NormalizeColumns: normalizeColumns,
+				},
+				OutputFile: outputFile,
+				BufferSize: bufferSize,
+			}
+
+			streamingGenerator, err := processing.NewStreamingSQLGenerator(streamingOptions)
+			if err != nil {
+				logger.Fatal("Failed to initialize streaming SQL generator: %v", err)
+			}
+
+			// Process the stream
+			logger.Info("Processing file in streaming mode")
+			err = streamingGenerator.ProcessStream(inputFile)
+			if err != nil {
+				logger.Fatal("Failed to process stream: %v", err)
+			}
+
+			logger.Info("Successfully processed file in streaming mode and saved SQL to %s", outputFile)
+
+		} else {
+			// Traditional mode (load everything into memory)
+			// Get the appropriate loader
+			loader, err := loaders.GetLoader(inputFile)
+			if err != nil {
+				logger.Fatal("Failed to get loader: %v", err)
+			}
+
+			// Load the data
+			logger.Info("Loading data from file")
+			dataset, err = loader.Load(inputFile)
+			if err != nil {
+				logger.Fatal("Failed to load data: %v", err)
+			}
+
+			logger.Info("Loaded %d rows with %d columns", len(dataset.Rows), len(dataset.Columns))
+
+			// Apply transformations if specified
+			if transformFile != "" {
+				logger.Info("Applying transformations from %s", transformFile)
+				transformEngine, err := transformers.NewTransformEngine(transformFile)
+				if err != nil {
+					logger.Fatal("Failed to initialize transform engine: %v", err)
+				}
+
+				if err := transformEngine.ApplyTransformations(dataset); err != nil {
+					logger.Fatal("Failed to apply transformations: %v", err)
+				}
+
+				logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+			}
+
+			// Generate SQL
+			logger.Info("Generating SQL with dialect: %s", dialect)
+			sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
+				Dialect:          dialect,
+				TableName:        tableName,
+				CreateTable:      createTable,
+				BatchSize:        batchSize,
+				NormalizeColumns: normalizeColumns,
+			})
+			if err != nil {
+				logger.Fatal("Failed to initialize SQL generator: %v", err)
+			}
+
+			sql, err := sqlGenerator.Generate(dataset)
+			if err != nil {
+				logger.Fatal("Failed to generate SQL: %v", err)
+			}
+
+			// Write output
+			logger.Info("Writing SQL to %s", outputFile)
+			if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
+				logger.Fatal("Failed to write output file: %v", err)
+			}
+
+			logger.Info("Successfully converted %s to SQL and saved to %s", inputFile, outputFile)
 		}
-
-		dataset, err = loader.Load(inputFile)
-		if err != nil {
-			return fmt.Errorf("failed to load data: %w", err)
-		}
 	}
 
-	if transformFile != "" {
-		transformEngine, err := transformers.NewTransformEngine(transformFile)
-		if err != nil {
-			return fmt.Errorf("failed to initialize transform engine: %w", err)
-		}
-
-		if err := transformEngine.ApplyTransformations(dataset); err != nil {
-			return fmt.Errorf("failed to apply transformations: %w", err)
-		}
-	}
-
-	sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
-		Dialect:          dialect,
-		TableName:        tableName,
-		CreateTable:      createTable,
-		BatchSize:        batchSize,
-		NormalizeColumns: normalizeColumns,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to initialize SQL generator: %w", err)
-	}
-
-	sql, err := sqlGenerator.Generate(dataset)
-	if err != nil {
-		return fmt.Errorf("failed to generate SQL: %w", err)
-	}
-
-	if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
-		return fmt.Errorf("failed to write output file: %w", err)
-	}
-
-	fmt.Printf("Successfully converted %s to SQL and saved to %s\n", inputFile, outputFile)
 	return nil
 }
