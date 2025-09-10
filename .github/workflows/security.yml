@@ -31,4 +31,4 @@ jobs:
     - name: Run Nancy for dependency vulnerabilities
       uses: sonatype-nexus-community/nancy-github-action@main
       with:
-        golist-args: "-deps ./..."
+        args: sleuth ./...
