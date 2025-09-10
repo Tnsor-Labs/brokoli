@@ -278,6 +278,9 @@ func TestStreamingSQLGenerator_ErrorHandling(t *testing.T) {
 		t.Fatalf("Failed to create streaming SQL generator: %v", err)
 	}
 
+	// Ensure we close the generator to release file handles, especially important on Windows
+	defer generator.Close()
+
 	// This should fail due to non-existent file
 	err = generator.ProcessStream("non_existent_file.json")
 	if err == nil {
