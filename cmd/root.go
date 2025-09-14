@@ -46,6 +46,7 @@ seeding by offering a flexible, extensible, and easy-to-use interface.`,
 	},
 }
 
+// Execute runs the root command and handles any errors that occur
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)

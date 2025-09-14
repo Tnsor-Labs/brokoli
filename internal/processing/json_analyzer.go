@@ -283,9 +283,9 @@ func (a *JSONAnalyzer) handleArrayOfObjects(key string, arr []interface{}, paren
 	})
 
 	// Add parent ID column to child table (for the many-to-one relationship)
-	parentIdColumn := parentTable.Name + "_id"
+	parentIDColumn := parentTable.Name + "_id"
 	childTable.Columns = append(childTable.Columns, ColumnSchema{
-		Name:     parentIdColumn,
+		Name:     parentIDColumn,
 		Type:     dialects.SQLTypeInteger,
 		Nullable: false,
 		IsNested: false,
@@ -293,8 +293,8 @@ func (a *JSONAnalyzer) handleArrayOfObjects(key string, arr []interface{}, paren
 	})
 
 	// Add the foreign key relationship
-	childTable.ForeignKeys[parentIdColumn] = ForeignKey{
-		Column:        parentIdColumn,
+	childTable.ForeignKeys[parentIDColumn] = ForeignKey{
+		Column:        parentIDColumn,
 		RefTable:      parentTable.Name,
 		RefColumn:     "id",
 		IsNestedChild: false,
