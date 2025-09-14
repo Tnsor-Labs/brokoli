@@ -405,7 +405,7 @@ func (a *JSONAnalyzer) ExtractNestedData(data []map[string]interface{}) map[stri
 	common.DefaultLogger.Debug("Table order: %v", a.registry.TableOrder)
 
 	// Extract data for the root table
-	rootData := a.extractTableData(data, rootTable, nil)
+	rootData := a.extractTableData(data, rootTable)
 	result[rootTableName] = rootData
 	common.DefaultLogger.Debug("Extracted %d rows for root table %s", len(rootData), rootTableName)
 
@@ -559,7 +559,7 @@ func (a *JSONAnalyzer) extractArrayTableData(parentData []map[string]interface{}
 }
 
 // extractTableData extracts data for a table from the original JSON data
-func (a *JSONAnalyzer) extractTableData(data []map[string]interface{}, table *TableSchema, parentRow map[string]interface{}) []map[string]interface{} {
+func (a *JSONAnalyzer) extractTableData(data []map[string]interface{}, table *TableSchema) []map[string]interface{} {
 	var result []map[string]interface{}
 
 	// For the root table, we need to create rows with IDs

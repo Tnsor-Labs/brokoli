@@ -72,7 +72,7 @@ func NewStreamingSQLGenerator(options StreamingSQLGeneratorOptions) (*StreamingS
 	if options.TransformFile != "" {
 		transformEngine, err := transformers.NewStreamingTransformEngine(options.TransformFile)
 		if err != nil {
-			file.Close()
+			_ = file.Close()
 			return nil, fmt.Errorf("failed to initialize transform engine: %w", err)
 		}
 		generator.transformEngine = transformEngine
@@ -203,7 +203,9 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create output file: %w", err)
 		}
-		defer file.Close()
+		defer func(file *os.File) {
+			_ = file.Close()
+		}(file)
 
 		if _, err := file.WriteString(sql); err != nil {
 			return fmt.Errorf("failed to write SQL to output file: %w", err)
