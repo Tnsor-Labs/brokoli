@@ -142,6 +142,33 @@ When fetching from REST APIs, the following default settings are applied:
 
 The fetched JSON data is automatically parsed and converted to the same internal format used by the file loaders, allowing you to apply transformations and generate SQL just like with local files.
 
+## Logging
+
+BrokoliSQL-Go provides comprehensive logging capabilities:
+
+- **Log Levels**: Control verbosity with different log levels (debug, info, warning, error, fatal)
+- **File Logging**: All logs are written to `brok.log` for troubleshooting and auditing
+- **Console Output**: Only important messages are displayed in the console
+- **In-place Updates**: Progress messages use carriage returns for cleaner console output
+- **Security**: Sensitive data is only logged at debug level and only to the log file
+
+### Using Logging Options
+
+To control logging behavior, use the `--log-level` flag:
+
+```bash
+# Minimal logging (only errors and fatal messages)
+brokolisql --input data.csv --output output.sql --table users --log-level error
+
+# Default logging level (informational messages)
+brokolisql --input data.csv --output output.sql --table users --log-level info
+
+# Verbose logging for troubleshooting (includes sensitive data in log file)
+brokolisql --input data.csv --output output.sql --table users --log-level debug
+```
+
+All logs are written to `brok.log` in the current directory, regardless of the console output level.
+
 ## Streaming Processing (Experimental)
 
 BrokoliSQL-Go includes an experimental streaming mode that processes large files with constant memory usage, allowing you to handle files of any size without loading the entire file into memory.
