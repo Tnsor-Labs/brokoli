@@ -46,6 +46,7 @@ seeding by offering a flexible, extensible, and easy-to-use interface.`,
 	},
 }
 
+// Execute runs the root command and handles any errors that occur
 func Execute() {
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Println(err)
@@ -106,6 +107,7 @@ func runConversion() error {
 	// Set up logger
 	logger := common.NewLogger(common.LogLevelFromString(logLevel))
 	logger.Info("Starting BrokoliSQL")
+	logger.Debug("Log level set to: %s", logLevel)
 
 	var dataset *common.DataSet
 
@@ -123,6 +125,7 @@ func runConversion() error {
 		}
 
 		logger.Info("Fetch mode enabled, retrieving data from %s using %s fetcher", fetchSource, fetchType)
+		logger.Debug("Fetch source: %s, fetch type: %s", fetchSource, fetchType)
 
 		// Get the appropriate fetcher
 		fetcher, err := fetchers.GetFetcher(fetchType)
@@ -138,33 +141,40 @@ func runConversion() error {
 			options["headers"] = map[string]string{
 				"Accept": "application/json",
 			}
+			logger.Debug("REST fetcher options: %v", options)
 		}
 
 		// Fetch the data
+		logger.Progress("Fetching data from %s...", fetchSource)
 		dataset, err = fetcher.Fetch(fetchSource, options)
 		if err != nil {
 			logger.Fatal("Failed to fetch data: %v", err)
 		}
 
 		logger.Info("Successfully fetched %d rows of data", len(dataset.Rows))
+		logger.Debug("Fetched column names: %v", dataset.Columns)
 
 		// Apply transformations if specified
 		if transformFile != "" {
 			logger.Info("Applying transformations from %s", transformFile)
+			logger.Debug("Transformation file content will be processed")
+
 			transformEngine, err := transformers.NewTransformEngine(transformFile)
 			if err != nil {
 				logger.Fatal("Failed to initialize transform engine: %v", err)
 			}
 
+			logger.Progress("Applying transformations...")
 			if err := transformEngine.ApplyTransformations(dataset); err != nil {
 				logger.Fatal("Failed to apply transformations: %v", err)
 			}
 
 			logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+			logger.Debug("Transformed column names: %v", dataset.Columns)
 		}
 
 		// Generate SQL
-		logger.Info("Generating SQL with dialect: %s", dialect)
+		logger.Progress("Generating SQL with dialect: %s...", dialect)
 		sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
 			Dialect:          dialect,
 			TableName:        tableName,
@@ -176,16 +186,20 @@ func runConversion() error {
 			logger.Fatal("Failed to initialize SQL generator: %v", err)
 		}
 
+		logger.Debug("Starting SQL generation for %d rows", len(dataset.Rows))
 		sql, err := sqlGenerator.Generate(dataset)
 		if err != nil {
 			logger.Fatal("Failed to generate SQL: %v", err)
 		}
+		logger.Debug("SQL generation complete, size: %d bytes", len(sql))
 
 		// Write output
-		logger.Info("Writing SQL to %s", outputFile)
+		logger.Progress("Writing SQL to %s...", outputFile)
 		if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
 			logger.Fatal("Failed to write output file: %v", err)
 		}
+
+		logger.Info("Successfully fetched data and saved SQL to %s", outputFile)
 
 	} else {
 		// File mode (either streaming or traditional)
@@ -232,8 +246,14 @@ func runConversion() error {
 					BatchSize:        batchSize,
 					NormalizeColumns: normalizeColumns,
 				},
-				OutputFile: outputFile,
-				BufferSize: bufferSize,
+				OutputFile:    outputFile,
+				BufferSize:    bufferSize,
+				TransformFile: transformFile,
+			}
+
+			// Log if transformations will be applied
+			if transformFile != "" {
+				logger.Info("Applying transformations from %s in streaming mode", transformFile)
 			}
 
 			streamingGenerator, err := processing.NewStreamingSQLGenerator(streamingOptions)
@@ -242,7 +262,7 @@ func runConversion() error {
 			}
 
 			// Process the stream
-			logger.Info("Processing file in streaming mode")
+			logger.Progress("Processing file in streaming mode...")
 			err = streamingGenerator.ProcessStream(inputFile)
 			if err != nil {
 				logger.Fatal("Failed to process stream: %v", err)
@@ -259,31 +279,36 @@ func runConversion() error {
 			}
 
 			// Load the data
-			logger.Info("Loading data from file")
+			logger.Progress("Loading data from file...")
 			dataset, err = loader.Load(inputFile)
 			if err != nil {
 				logger.Fatal("Failed to load data: %v", err)
 			}
 
 			logger.Info("Loaded %d rows with %d columns", len(dataset.Rows), len(dataset.Columns))
+			logger.Debug("Column names: %v", dataset.Columns)
 
 			// Apply transformations if specified
 			if transformFile != "" {
 				logger.Info("Applying transformations from %s", transformFile)
+				logger.Debug("Transformation file content will be processed")
+
 				transformEngine, err := transformers.NewTransformEngine(transformFile)
 				if err != nil {
 					logger.Fatal("Failed to initialize transform engine: %v", err)
 				}
 
+				logger.Progress("Applying transformations...")
 				if err := transformEngine.ApplyTransformations(dataset); err != nil {
 					logger.Fatal("Failed to apply transformations: %v", err)
 				}
 
 				logger.Info("Transformations applied successfully, resulting in %d rows", len(dataset.Rows))
+				logger.Debug("Transformed column names: %v", dataset.Columns)
 			}
 
 			// Generate SQL
-			logger.Info("Generating SQL with dialect: %s", dialect)
+			logger.Progress("Generating SQL with dialect: %s...", dialect)
 			sqlGenerator, err := processing.NewSQLGenerator(processing.SQLGeneratorOptions{
 				Dialect:          dialect,
 				TableName:        tableName,
@@ -295,13 +320,15 @@ func runConversion() error {
 				logger.Fatal("Failed to initialize SQL generator: %v", err)
 			}
 
+			logger.Debug("Starting SQL generation for %d rows", len(dataset.Rows))
 			sql, err := sqlGenerator.Generate(dataset)
 			if err != nil {
 				logger.Fatal("Failed to generate SQL: %v", err)
 			}
+			logger.Debug("SQL generation complete, size: %d bytes", len(sql))
 
 			// Write output
-			logger.Info("Writing SQL to %s", outputFile)
+			logger.Progress("Writing SQL to %s...", outputFile)
 			if err := common.SafeWriteFile(outputFile, []byte(sql), 0600); err != nil {
 				logger.Fatal("Failed to write output file: %v", err)
 			}

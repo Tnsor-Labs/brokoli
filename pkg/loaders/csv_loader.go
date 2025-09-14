@@ -19,7 +19,7 @@ func (l *CSVLoader) Load(filePath string) (*common.DataSet, error) {
 	defer func(file *os.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Printf("failed to close CSV file: %v\n", err)
+			common.DefaultLogger.Warning("Failed to close CSV file: %v", err)
 		}
 	}(file)
 

@@ -1,124 +1,144 @@
-# Nested JSON Support
-
-BrokoliSQL-Go now supports processing JSON data with nested objects and arrays, automatically creating normalized SQL tables with proper relationships.
+# Nested JSON Support in Streaming Mode
 
 ## Overview
 
-When processing JSON data with nested structures, BrokoliSQL-Go will:
+This document describes how BrokoliSQL-Go handles nested JSON objects in streaming mode. The streaming implementation has been enhanced to properly detect and process nested objects, creating normalized relational tables with foreign key relationships.
 
-1. Detect nested objects and arrays within the JSON
-2. Create separate tables for each nested structure
-3. Establish foreign key relationships between parent and child tables
-4. Maintain the correct order for table creation and data insertion
-5. Generate SQL that respects these relationships
+## Problem
 
-## Example
+The original streaming implementation had a limitation: it didn't properly handle nested JSON objects. When processing JSON files with nested objects (like objects or arrays), it would simply convert them to JSON strings rather than creating proper relational tables with foreign key relationships.
 
-Given this JSON structure:
+For example, given this JSON:
 
 ```json
-{
-  "id": 1,
-  "name": "Alice",
-  "address": {
-    "city": "Maputo",
-    "geo": {
-      "lat": "-25.9",
-      "lng": "32.6"
+[
+  {
+    "id": 1,
+    "name": "John Doe",
+    "address": {
+      "street": "123 Main St",
+      "city": "Anytown"
     }
   }
+]
+```
+
+The original streaming implementation would create a single table with the address as a JSON string, while the default (non-streaming) implementation would create two tables (users and addresses) with a foreign key relationship.
+
+## Solution
+
+The solution integrates the existing nested JSON processing capabilities with the streaming implementation:
+
+1. **Early Detection**: The streaming implementation now samples the first 100 rows to detect if the data contains nested objects.
+
+2. **Conditional Processing**: If nested objects are detected, the implementation switches to using the `NestedJSONProcessor` for the entire file.
+
+3. **Code Reuse**: The solution reuses the existing `NestedJSONProcessor` code, avoiding code duplication.
+
+4. **Graceful Fallback**: For files without nested objects, the streaming implementation continues to use the memory-efficient streaming approach.
+
+## Implementation Details
+
+### Detection of Nested Objects
+
+The streaming implementation uses the `hasNestedObjects` method to check if the data contains nested objects:
+
+```go
+func (g *StreamingSQLGenerator) hasNestedObjects(rows []common.DataRow) bool {
+    // Check each row for nested objects
+    for _, row := range rows {
+        for _, value := range row {
+            // Check if it's a map
+            if _, ok := value.(map[string]interface{}); ok {
+                return true
+            }
+
+            // Check if it's a JSON string that contains an object
+            if strValue, ok := value.(string); ok {
+                // If it starts with { and ends with }, it might be a JSON object
+                if len(strValue) > 1 && strValue[0] == '{' && strValue[len(strValue)-1] == '}' {
+                    return true
+                }
+            }
+        }
+    }
+
+    return false
 }
 ```
 
-BrokoliSQL-Go will generate SQL that:
+### Processing Flow
 
-1. Creates a `geo` table with `id`, `lat`, and `lng` columns
-2. Creates an `address` table with `id`, `city`, and `geo_id` columns (with a foreign key to `geo.id`)
-3. Creates a `users` table with `id`, `name`, and `address_id` columns (with a foreign key to `address.id`)
-4. Inserts data in the correct order: `geo` → `address` → `users`
+The processing flow in `StreamingSQLGenerator.ProcessStream` has been updated:
+
+1. Sample the first 100 rows
+2. Check if the sample contains nested objects
+3. If nested objects are detected:
+   - Close the streaming channels
+   - Load the entire file using the regular JSON loader
+   - Process the data using the `NestedJSONProcessor`
+   - Write the SQL to the output file
+4. If no nested objects are detected:
+   - Continue with the regular streaming implementation
 
 ## Usage
 
-### Command Line
-
-Use BrokoliSQL-Go as normal with JSON input:
+No changes are required to use this feature. The streaming implementation automatically detects and handles nested objects:
 
 ```bash
-brokolisql --input data.json --output output.sql --table users --create-table
+brokolisql --input data.json --output output.sql --table users --streaming --create-table
 ```
 
-The tool will automatically detect nested structures and handle them appropriately.
+## Examples
 
-### Programmatic Usage
+### Nested JSON Example
 
-To use the nested JSON processing in your Go code:
+For a JSON file with nested objects like:
 
-1. Create a processor with default options:
-
-```
-// Create options
-options := SQLGeneratorOptions{
-    Dialect:          "generic",
-    TableName:        "users",
-    CreateTable:      true,
-    BatchSize:        100,
-    NormalizeColumns: true,
-}
-
-// Create the processor
-processor, err := NewNestedJSONProcessor(options)
-if err != nil {
-    // Handle error
-}
-
-// Process the JSON data
-sql, err := processor.ProcessNestedJSON(jsonData)
-if err != nil {
-    // Handle error
-}
-
-// Use the generated SQL
-fmt.Println(sql)
+```json
+[
+  {
+    "id": 1,
+    "name": "John Doe",
+    "address": {
+      "street": "123 Main St",
+      "city": "Anytown"
+    }
+  }
+]
 ```
 
-## Customization
+The output SQL will contain multiple tables with foreign key relationships:
 
-You can customize how nested JSON is processed using custom options:
+```sql
+CREATE TABLE "addresses" (
+  "id" INTEGER PRIMARY KEY,
+  "street" TEXT,
+  "city" TEXT
+);
 
+CREATE TABLE "users" (
+  "id" INTEGER PRIMARY KEY,
+  "address_id" INTEGER,
+  "name" TEXT,
+  FOREIGN KEY ("address_id") REFERENCES "addresses" ("id") ON DELETE CASCADE
+);
+
+INSERT INTO "addresses" ("id", "street", "city") VALUES
+(11, '123 Main St', 'Anytown');
+
+INSERT INTO "users" ("id", "address_id", "name") VALUES
+(1, 11, 'John Doe');
 ```
-// Create custom options
-customOptions := NestedJSONProcessorOptions{
-    SQLGeneratorOptions: SQLGeneratorOptions{
-        Dialect:          "generic",
-        TableName:        "users",
-        CreateTable:      true,
-        BatchSize:        100,
-        NormalizeColumns: true,
-    },
-    NamingConvention: CamelCase,  // Use camelCase for table and column names
-    TablePrefix:      "app_",     // Prefix all table names with "app_"
-    PluralizeTable:   true,       // Use plural table names (e.g., "users" instead of "user")
-}
 
-// Create the processor with custom options
-processor, err := NewNestedJSONProcessorWithOptions(customOptions)
-```
+## Testing
 
-### Naming Conventions
+The implementation includes comprehensive tests:
 
-The following naming conventions are supported:
+1. **Unit Tests**: `TestStreamingSQLGenerator_NestedObjects` verifies that the streaming implementation correctly detects and processes nested objects.
 
-- `SnakeCase`: Uses snake_case for all names (default)
-- `CamelCase`: Uses camelCase for all names
-- `PascalCase`: Uses PascalCase for all names
+2. **Integration Tests**: `TestStreamingModeIntegration_NestedJSON` provides end-to-end testing of the nested JSON processing in streaming mode.
 
-### Array Handling
+## Conclusion
 
-- Arrays of primitive values (strings, numbers, booleans) are stored as JSON strings in the parent table
-- Arrays of objects are normalized into separate child tables with foreign keys back to the parent
-
-## Limitations
-
-- Currently, circular references in JSON are not supported
-- Very deep nesting levels (>100) may cause performance issues
-- The automatic schema inference is based on the structure of the provided data and may not capture all possible variations in a large dataset
+With this enhancement, the streaming implementation now properly handles nested JSON objects, creating normalized relational tables with foreign key relationships. This ensures that the streaming mode produces the same high-quality output as the default implementation, while still maintaining the memory efficiency benefits for flat data.

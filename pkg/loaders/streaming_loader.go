@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/hc12r/brokolisql-go/pkg/common"
@@ -40,7 +41,9 @@ func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel,
 
 	// Start a goroutine to read and process the file
 	go func() {
-		defer file.Close()
+		defer func(file *os.File) {
+			_ = file.Close()
+		}(file)
 		defer close(rowsChan)
 		defer close(doneChan)
 
@@ -112,7 +115,9 @@ func (l *StreamingJSONLoader) StreamLoad(filePath string) ([]string, RowChannel,
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to open JSON file for column detection: %w", err)
 	}
-	defer tempFile.Close()
+	defer func(tempFile *os.File) {
+		_ = tempFile.Close()
+	}(tempFile)
 
 	// Read up to 1MB to detect columns
 	data := make([]byte, 1024*1024)
@@ -185,7 +190,7 @@ func (l *StreamingCSVLoader) StreamLoad(filePath string) ([]string, RowChannel, 
 		closeErr := file.Close()
 		if closeErr != nil {
 			// Log the close error but return the original error as it's more important
-			fmt.Printf("warning: failed to close file: %v\n", closeErr)
+			common.DefaultLogger.Warning("Failed to close file: %v", closeErr)
 		}
 		return nil, nil, nil, fmt.Errorf("failed to read CSV headers: %w", err)
 	}
@@ -201,7 +206,9 @@ func (l *StreamingCSVLoader) StreamLoad(filePath string) ([]string, RowChannel, 
 
 	// Start a goroutine to read and process the file
 	go func() {
-		defer file.Close()
+		defer func(file *os.File) {
+			_ = file.Close()
+		}(file)
 		defer close(rowsChan)
 		defer close(doneChan)
 

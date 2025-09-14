@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/hc12r/brokolisql-go/internal/dialects"
+	"github.com/hc12r/brokolisql-go/internal/transformers"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 	"github.com/hc12r/brokolisql-go/pkg/loaders"
 )
@@ -13,21 +14,24 @@ import (
 // StreamingSQLGeneratorOptions contains options for the streaming SQL generator
 type StreamingSQLGeneratorOptions struct {
 	SQLGeneratorOptions
-	OutputFile string
-	BufferSize int
+	OutputFile    string
+	BufferSize    int
+	TransformFile string
 }
 
 // StreamingSQLGenerator generates SQL statements incrementally from streaming data
 type StreamingSQLGenerator struct {
-	options     StreamingSQLGeneratorOptions
-	normalizer  *Normalizer
-	typeInferer *TypeInferenceEngine
-	dialect     dialects.Dialect
-	file        *os.File
-	mu          sync.Mutex
-	columns     []string
-	buffer      [][]interface{}
-	rowCount    int
+	options         StreamingSQLGeneratorOptions
+	normalizer      *Normalizer
+	typeInferer     *TypeInferenceEngine
+	dialect         dialects.Dialect
+	file            *os.File
+	mu              sync.Mutex
+	columns         []string
+	transformedCols []string
+	buffer          [][]interface{}
+	rowCount        int
+	transformEngine *transformers.StreamingTransformEngine
 }
 
 // NewStreamingSQLGenerator creates a new streaming SQL generator
@@ -49,20 +53,31 @@ func NewStreamingSQLGenerator(options StreamingSQLGeneratorOptions) (*StreamingS
 		return nil, err
 	}
 
-	// Open output file
-	file, err := os.Create(options.OutputFile)
+	file, err := common.SafeCreateFile(options.OutputFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output file: %w", err)
 	}
 
-	return &StreamingSQLGenerator{
+	generator := &StreamingSQLGenerator{
 		options:     options,
 		normalizer:  NewNormalizer(),
 		typeInferer: NewTypeInferenceEngine(),
 		dialect:     dialect,
 		file:        file,
 		buffer:      make([][]interface{}, 0, options.BufferSize),
-	}, nil
+	}
+
+	// Initialize transform engine if a transform file is provided
+	if options.TransformFile != "" {
+		transformEngine, err := transformers.NewStreamingTransformEngine(options.TransformFile)
+		if err != nil {
+			_ = file.Close()
+			return nil, fmt.Errorf("failed to initialize transform engine: %w", err)
+		}
+		generator.transformEngine = transformEngine
+	}
+
+	return generator, nil
 }
 
 // ProcessStream processes a stream of data and generates SQL incrementally
@@ -84,6 +99,17 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 		g.columns = g.normalizer.NormalizeColumnNames(columns)
 	} else {
 		g.columns = columns
+	}
+
+	// Prepare transformations if a transform engine is available
+	if g.transformEngine != nil {
+		transformedCols, err := g.transformEngine.PrepareTransformations(g.columns)
+		if err != nil {
+			return fmt.Errorf("failed to prepare transformations: %w", err)
+		}
+		g.transformedCols = transformedCols
+	} else {
+		g.transformedCols = g.columns
 	}
 
 	// Collect a sample of rows for type inference and nested object detection
@@ -143,6 +169,22 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 			return fmt.Errorf("failed to load file for nested object processing: %w", err)
 		}
 
+		// Apply transformations if a transform engine is available
+		if g.transformEngine != nil {
+			// Create a new dataset with transformed rows
+			transformedRows := make([]common.DataRow, 0, len(dataset.Rows))
+			for _, row := range dataset.Rows {
+				transformedRow, include := g.transformEngine.TransformRow(row)
+				if include {
+					transformedRows = append(transformedRows, transformedRow)
+				}
+			}
+
+			// Update the dataset with transformed rows and columns
+			dataset.Rows = transformedRows
+			dataset.Columns = g.transformedCols
+		}
+
 		// Use the nested JSON processor
 		processor, err := NewNestedJSONProcessor(g.options.SQLGeneratorOptions)
 		if err != nil {
@@ -155,12 +197,14 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 			return fmt.Errorf("failed to process nested JSON: %w", err)
 		}
 
-		// Write the SQL to the output file
-		file, err := os.Create(g.options.OutputFile)
+		// Write the SQL to the output file using safe file operations
+		file, err := common.SafeCreateFile(g.options.OutputFile)
 		if err != nil {
 			return fmt.Errorf("failed to create output file: %w", err)
 		}
-		defer file.Close()
+		defer func(file *os.File) {
+			_ = file.Close()
+		}(file)
 
 		if _, err := file.WriteString(sql); err != nil {
 			return fmt.Errorf("failed to write SQL to output file: %w", err)
@@ -172,12 +216,24 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 	// Continue with regular streaming for flat data
 	// Write CREATE TABLE statement if needed
 	if g.options.CreateTable {
+		// Apply transformations to sample rows if needed
+		if g.transformEngine != nil {
+			transformedSampleRows := make([]common.DataRow, 0, len(sampleRows))
+			for _, row := range sampleRows {
+				transformedRow, include := g.transformEngine.TransformRow(row)
+				if include {
+					transformedSampleRows = append(transformedSampleRows, transformedRow)
+				}
+			}
+			sampleRows = transformedSampleRows
+		}
+
 		// Infer column types from sample
-		columnTypes := g.typeInferer.InferColumnTypes(g.columns, sampleRows)
+		columnTypes := g.typeInferer.InferColumnTypes(g.transformedCols, sampleRows)
 
 		// Create column definitions
-		columnDefs := make([]dialects.ColumnDef, len(g.columns))
-		for i, col := range g.columns {
+		columnDefs := make([]dialects.ColumnDef, len(g.transformedCols))
+		for i, col := range g.transformedCols {
 			columnDefs[i] = dialects.ColumnDef{
 				Name:     col,
 				Type:     columnTypes[col],
@@ -217,9 +273,19 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 			row = normalizedRow
 		}
 
+		// Apply transformations if a transform engine is available
+		if g.transformEngine != nil {
+			transformedRow, include := g.transformEngine.TransformRow(row)
+			if !include {
+				// Skip this row if it was filtered out
+				continue
+			}
+			row = transformedRow
+		}
+
 		// Extract values in column order
-		values := make([]interface{}, len(g.columns))
-		for i, col := range g.columns {
+		values := make([]interface{}, len(g.transformedCols))
+		for i, col := range g.transformedCols {
 			values[i] = row[col]
 		}
 
@@ -259,7 +325,7 @@ func (g *StreamingSQLGenerator) flushBuffer() error {
 	defer g.mu.Unlock()
 
 	// Generate SQL for the buffered rows
-	sql := g.dialect.InsertInto(g.options.TableName, g.columns, g.buffer, g.options.BatchSize)
+	sql := g.dialect.InsertInto(g.options.TableName, g.transformedCols, g.buffer, g.options.BatchSize)
 
 	// Write to file
 	if _, err := g.file.WriteString(sql); err != nil {
