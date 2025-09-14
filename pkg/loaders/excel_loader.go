@@ -20,7 +20,7 @@ func (l *ExcelLoader) Load(filePath string) (*common.DataSet, error) {
 	defer func(file *excelize.File) {
 		err := file.Close()
 		if err != nil {
-			fmt.Printf("failed to close Excel file: %v\n", err)
+			common.DefaultLogger.Warning("Failed to close Excel file: %v", err)
 		}
 	}(file)
 

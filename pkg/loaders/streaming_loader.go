@@ -185,7 +185,7 @@ func (l *StreamingCSVLoader) StreamLoad(filePath string) ([]string, RowChannel, 
 		closeErr := file.Close()
 		if closeErr != nil {
 			// Log the close error but return the original error as it's more important
-			fmt.Printf("warning: failed to close file: %v\n", closeErr)
+			common.DefaultLogger.Warning("Failed to close file: %v", closeErr)
 		}
 		return nil, nil, nil, fmt.Errorf("failed to read CSV headers: %w", err)
 	}

@@ -2,10 +2,10 @@ package processing
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 
 	"github.com/hc12r/brokolisql-go/internal/dialects"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 )
 
 // JSONAnalyzer analyzes JSON data and builds a schema registry
@@ -396,18 +396,18 @@ func (a *JSONAnalyzer) ExtractNestedData(data []map[string]interface{}) map[stri
 	}
 
 	if rootTableName == "" {
-		fmt.Printf("No root table found!\n")
+		common.DefaultLogger.Debug("No root table found!")
 		return result
 	}
 
 	rootTable := a.registry.GetTable(rootTableName)
-	fmt.Printf("Extracting data for root table: %s\n", rootTableName)
-	fmt.Printf("Table order: %v\n", a.registry.TableOrder)
+	common.DefaultLogger.Debug("Extracting data for root table: %s", rootTableName)
+	common.DefaultLogger.Debug("Table order: %v", a.registry.TableOrder)
 
 	// Extract data for the root table
 	rootData := a.extractTableData(data, rootTable, nil)
 	result[rootTableName] = rootData
-	fmt.Printf("Extracted %d rows for root table %s\n", len(rootData), rootTableName)
+	common.DefaultLogger.Debug("Extracted %d rows for root table %s", len(rootData), rootTableName)
 
 	// Process tables in dependency order
 	// First, build a map of child tables by parent
@@ -457,15 +457,15 @@ func (a *JSONAnalyzer) ExtractNestedData(data []map[string]interface{}) map[stri
 			}
 
 			if isArrayTable {
-				fmt.Printf("%s is an array table\n", childName)
+				common.DefaultLogger.Debug("%s is an array table", childName)
 				tableData = a.extractArrayTableData(parentData, parentTable, childTable)
 			} else {
-				fmt.Printf("%s is a nested object table\n", childName)
+				common.DefaultLogger.Debug("%s is a nested object table", childName)
 				tableData = a.extractChildTableData(parentData, parentTable, childTable)
 			}
 
 			result[childName] = tableData
-			fmt.Printf("Added %d rows for %s to result\n", len(tableData), childName)
+			common.DefaultLogger.Debug("Added %d rows for %s to result", len(tableData), childName)
 
 			// Mark as processed and add to queue
 			processedTables[childName] = true
@@ -474,9 +474,9 @@ func (a *JSONAnalyzer) ExtractNestedData(data []map[string]interface{}) map[stri
 	}
 
 	// Debug output of the final result
-	fmt.Printf("Final result contains data for %d tables:\n", len(result))
+	common.DefaultLogger.Debug("Final result contains data for %d tables:", len(result))
 	for tableName, tableData := range result {
-		fmt.Printf("  - %s: %d rows\n", tableName, len(tableData))
+		common.DefaultLogger.Debug("  - %s: %d rows", tableName, len(tableData))
 	}
 
 	return result
@@ -618,11 +618,11 @@ func (a *JSONAnalyzer) extractChildTableData(parentData []map[string]interface{}
 	}
 
 	if fkColumn == "" {
-		fmt.Printf("No foreign key found for child table %s in parent table %s\n", childTable.Name, parentTable.Name)
+		common.DefaultLogger.Debug("No foreign key found for child table %s in parent table %s", childTable.Name, parentTable.Name)
 		return result // No foreign key found
 	}
 
-	fmt.Printf("Extracting data for child table %s from parent table %s using field %s\n",
+	common.DefaultLogger.Debug("Extracting data for child table %s from parent table %s using field %s",
 		childTable.Name, parentTable.Name, childTable.ParentField)
 
 	// Process each parent row
@@ -630,7 +630,7 @@ func (a *JSONAnalyzer) extractChildTableData(parentData []map[string]interface{}
 		// Get the nested object from the parent
 		nestedObj, ok := parentRow[childTable.ParentField]
 		if !ok {
-			fmt.Printf("Parent field %s not found in parent row %d\n", childTable.ParentField, i)
+			common.DefaultLogger.Debug("Parent field %s not found in parent row %d", childTable.ParentField, i)
 			continue
 		}
 
@@ -638,11 +638,11 @@ func (a *JSONAnalyzer) extractChildTableData(parentData []map[string]interface{}
 		var objMap map[string]interface{}
 		if strObj, isStr := nestedObj.(string); isStr {
 			if err := json.Unmarshal([]byte(strObj), &objMap); err != nil {
-				fmt.Printf("Failed to unmarshal string to object: %v\n", err)
+				common.DefaultLogger.Debug("Failed to unmarshal string to object: %v", err)
 				continue
 			}
 		} else if objMap, ok = nestedObj.(map[string]interface{}); !ok {
-			fmt.Printf("Nested object is not a map: %T\n", nestedObj)
+			common.DefaultLogger.Debug("Nested object is not a map: %T", nestedObj)
 			continue
 		}
 
@@ -669,9 +669,9 @@ func (a *JSONAnalyzer) extractChildTableData(parentData []map[string]interface{}
 			// Get the value from the nested object
 			if val, ok := objMap[col.Name]; ok {
 				row[col.Name] = val
-				fmt.Printf("Added column %s with value %v to %s\n", col.Name, val, childTable.Name)
+				common.DefaultLogger.Debug("Added column %s with value %v to %s", col.Name, val, childTable.Name)
 			} else {
-				fmt.Printf("Column %s not found in nested object for %s\n", col.Name, childTable.Name)
+				common.DefaultLogger.Debug("Column %s not found in nested object for %s", col.Name, childTable.Name)
 			}
 		}
 
@@ -686,6 +686,6 @@ func (a *JSONAnalyzer) extractChildTableData(parentData []map[string]interface{}
 		result = append(result, row)
 	}
 
-	fmt.Printf("Extracted %d rows for %s\n", len(result), childTable.Name)
+	common.DefaultLogger.Debug("Extracted %d rows for %s", len(result), childTable.Name)
 	return result
 }
