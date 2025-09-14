@@ -12,7 +12,13 @@ import (
 type ExcelLoader struct{}
 
 func (l *ExcelLoader) Load(filePath string) (*common.DataSet, error) {
+	// Validate file path using safe file operations
+	_, err := common.SafeOpenFile(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to safely access Excel file: %w", err)
+	}
 
+	// Now use the excelize library to open the Excel file
 	file, err := excelize.OpenFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open Excel file: %w", err)

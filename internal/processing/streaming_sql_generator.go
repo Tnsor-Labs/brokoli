@@ -53,8 +53,7 @@ func NewStreamingSQLGenerator(options StreamingSQLGeneratorOptions) (*StreamingS
 		return nil, err
 	}
 
-	// Open output file
-	file, err := os.Create(options.OutputFile)
+	file, err := common.SafeCreateFile(options.OutputFile)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create output file: %w", err)
 	}
@@ -198,8 +197,8 @@ func (g *StreamingSQLGenerator) ProcessStream(filePath string) error {
 			return fmt.Errorf("failed to process nested JSON: %w", err)
 		}
 
-		// Write the SQL to the output file
-		file, err := os.Create(g.options.OutputFile)
+		// Write the SQL to the output file using safe file operations
+		file, err := common.SafeCreateFile(g.options.OutputFile)
 		if err != nil {
 			return fmt.Errorf("failed to create output file: %w", err)
 		}

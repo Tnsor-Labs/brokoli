@@ -38,7 +38,17 @@ type Logger struct {
 // NewLogger creates a new logger with the specified log level
 // Logs will be written to both console and brok.log file
 func NewLogger(level LogLevel) *Logger {
-	// Create file writer for brok.log
+	// Create file writer for brok.log using safe file operations
+	// Since SafeCreateFile doesn't support append mode, we'll use a combination of SafeOpenFile and os.OpenFile
+	// First check if the file exists and is within allowed directories
+	_, err := SafeOpenFile(LogFilePath)
+	if err != nil && !os.IsNotExist(err) {
+		// If there's an error other than "file doesn't exist", log and use stdout
+		fmt.Printf("WARNING: Failed to safely access log file: %v\n", err)
+		return NewLoggerWithWriter(os.Stdout, level)
+	}
+
+	// Now use os.OpenFile with the validated path
 	fileWriter, err := os.OpenFile(LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		// If we can't open the log file, just log to console
