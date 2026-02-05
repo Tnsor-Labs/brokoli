@@ -1,0 +1,197 @@
+package api
+
+import (
+	"database/sql"
+	"encoding/json"
+	"net/http"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/hc12r/broked/engine"
+	"github.com/hc12r/broked/models"
+	"github.com/hc12r/broked/store"
+
+	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
+
+type RunHandler struct {
+	store  store.Store
+	engine *engine.Engine
+}
+
+func NewRunHandler(s store.Store, e *engine.Engine) *RunHandler {
+	return &RunHandler{store: s, engine: e}
+}
+
+func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "id")
+
+	// Parse optional params from request body
+	var req struct {
+		Params map[string]string `json:"params"`
+	}
+	json.NewDecoder(r.Body).Decode(&req) // ignore error — body may be empty
+
+	run, err := h.engine.RunPipeline(pipelineID, req.Params)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "id")
+	runs, err := h.store.ListRunsByPipeline(pipelineID, 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if runs == nil {
+		runs = []models.Run{}
+	}
+	writeJSON(w, http.StatusOK, runs)
+}
+
+func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	run, err := h.store.GetRun(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, run)
+}
+
+func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	logs, err := h.store.GetLogs(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, logs)
+}
+
+func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	logs, err := h.store.GetLogs(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.Header().Set("Content-Disposition", "attachment; filename=run-"+id[:8]+"-logs.txt")
+	for _, l := range logs {
+		line := l.Timestamp.Format("2006-01-02T15:04:05Z") + " [" + string(l.Level) + "]"
+		if l.NodeID != "" {
+			line += " [" + l.NodeID + "]"
+		}
+		line += " " + l.Message + "\n"
+		w.Write([]byte(line))
+	}
+}
+
+func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "id")
+	var req struct {
+		StartDate string `json:"start_date"`
+		EndDate   string `json:"end_date"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.StartDate == "" || req.EndDate == "" {
+		writeError(w, http.StatusBadRequest, "start_date and end_date required (YYYY-MM-DD)")
+		return
+	}
+
+	runIDs, err := h.engine.Backfill(pipelineID, req.StartDate, req.EndDate)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"runs":  runIDs,
+			"error": err.Error(),
+		})
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"runs":  runIDs,
+		"count": len(runIDs),
+	})
+}
+
+func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "id")
+	pipe, err := h.store.GetPipeline(pipelineID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+
+	results, err := h.engine.DryRun(pipe, 10)
+	if err != nil {
+		// Still return partial results
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"error":   err.Error(),
+			"results": results,
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"results": results,
+	})
+}
+
+func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	run, err := h.engine.ResumeRun(runID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusAccepted, run)
+}
+
+func (h *RunHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		URI string `json:"uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URI == "" {
+		writeError(w, http.StatusBadRequest, "uri is required")
+		return
+	}
+
+	// Try to open and ping
+	driver, dsn, err := engine.DetectDriver(req.URI)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+	defer db.Close()
+
+	if err := db.Ping(); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "driver": driver})
+}
+
+func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	nodeID := chi.URLParam(r, "nodeId")
+
+	columns, rows, err := h.store.GetNodePreview(runID, nodeID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no preview available")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"columns": columns,
+		"rows":    rows,
+	})
+}
