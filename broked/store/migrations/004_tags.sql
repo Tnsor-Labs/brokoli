@@ -1,0 +1,3 @@
+-- Add tags column to pipelines (stored as JSON array)
+-- ALTER TABLE ADD COLUMN is safe in SQLite, doesn't require IF NOT EXISTS
+-- We handle the "already exists" error in Go code
