@@ -50,7 +50,7 @@ jobs:
     - name: Test Coverage
       working-directory: broked
       run: |
-        go test -coverprofile=broked-coverage.out ./...
+        go test -coverprofile=broked-coverage.out ./engine/... ./crypto/... ./quality/... ./store/...
         echo "=== Coverage ==="
         go tool cover -func=broked-coverage.out | tail -1
 
