@@ -39,10 +39,12 @@ jobs:
         ls -la broked/ui/dist/
         test -f broked/ui/dist/index.html
 
-    - name: Run tests
-      run: |
-        go test ./... -count=1
-        go test ./broked/... -count=1
+    - name: Run BrokoliSQL tests
+      run: go test ./... -count=1
+
+    - name: Run Broked tests
+      working-directory: broked
+      run: go test ./... -count=1
 
     - name: Run GoReleaser
       uses: goreleaser/goreleaser-action@v6

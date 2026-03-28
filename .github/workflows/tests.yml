@@ -36,16 +36,21 @@ jobs:
       with:
         go-version: '1.24'
     - name: Test Engine
-      run: go test -v -race ./broked/engine/...
+      working-directory: broked
+      run: go test -v -race ./engine/...
     - name: Test Crypto
-      run: go test -v -race ./broked/crypto/...
+      working-directory: broked
+      run: go test -v -race ./crypto/...
     - name: Test Quality
-      run: go test -v -race ./broked/quality/...
+      working-directory: broked
+      run: go test -v -race ./quality/...
     - name: Test Store
-      run: go test -v -race ./broked/store/...
+      working-directory: broked
+      run: go test -v -race ./store/...
     - name: Test Coverage
+      working-directory: broked
       run: |
-        go test -coverprofile=broked-coverage.out ./broked/...
+        go test -coverprofile=broked-coverage.out ./...
         echo "=== Coverage ==="
         go tool cover -func=broked-coverage.out | tail -1
 
@@ -71,7 +76,7 @@ jobs:
     - name: Build binary
       working-directory: broked
       run: |
-        go build -o broked .
+        CGO_ENABLED=0 go build -o broked .
         ls -lh broked
         echo "Binary size: $(du -h broked | cut -f1)"
     - name: Smoke test
