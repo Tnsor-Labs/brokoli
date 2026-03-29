@@ -1,4 +1,4 @@
-/* Broked Design System */
+/* Brokoli Design System */
 
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
@@ -29,11 +29,11 @@
   --text-ghost: #3f3f46;
 
   /* Accent */
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-glow: rgba(99, 102, 241, 0.15);
-  --accent-glow-strong: rgba(99, 102, 241, 0.3);
-  --accent-text: #a5b4fc;
+  --accent: #0d9488;
+  --accent-hover: #14b8a6;
+  --accent-glow: rgba(13, 148, 136, 0.15);
+  --accent-glow-strong: rgba(13, 148, 136, 0.3);
+  --accent-text: #d4d4d8;
 
   /* Status */
   --success: #22c55e;
@@ -270,41 +270,41 @@ code, pre {
 }
 
 /* Prism token colors (driven by variables) */
-:global(.token.comment),
-:global(.token.prolog),
-:global(.token.doctype) {
+.token.comment,
+.token.prolog,
+.token.doctype {
   color: var(--code-comment);
   font-style: italic;
 }
-:global(.token.keyword),
-:global(.token.builtin) {
+.token.keyword,
+.token.builtin {
   color: var(--code-keyword);
 }
-:global(.token.function) {
+.token.function {
   color: var(--code-function);
 }
-:global(.token.string),
-:global(.token.char),
-:global(.token.triple-quoted-string) {
+.token.string,
+.token.char,
+.token.triple-quoted-string {
   color: var(--code-string);
 }
-:global(.token.number),
-:global(.token.boolean) {
+.token.number,
+.token.boolean {
   color: var(--code-number);
 }
-:global(.token.operator) {
+.token.operator {
   color: var(--code-operator);
 }
-:global(.token.punctuation) {
+.token.punctuation {
   color: var(--code-punctuation);
 }
-:global(.token.class-name) {
+.token.class-name {
   color: var(--code-class);
 }
-:global(.token.decorator) {
+.token.decorator {
   color: var(--code-decorator);
 }
-:global(.token.variable),
-:global(.token.property) {
+.token.variable,
+.token.property {
   color: var(--text-primary);
 }
