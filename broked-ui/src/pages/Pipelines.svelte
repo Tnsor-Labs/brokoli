@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   import { api } from "../lib/api";
-  import { pipelines } from "../lib/stores";
+  import { pipelines, onWSEvent } from "../lib/stores";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
   import StatusBadge from "../components/StatusBadge.svelte";
@@ -55,8 +55,29 @@
     }
   }
 
+  let unsubWS: (() => void) | null = null;
+
   onMount(async () => {
     await loadPipelines();
+
+    // Listen for real-time run events to update counts
+    unsubWS = onWSEvent(async (event) => {
+      if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") {
+        // Find which pipeline this run belongs to and refresh its runs
+        const pipelineId = event.pipeline_id;
+        if (pipelineId) {
+          try {
+            const runs = await api.runs.listByPipeline(pipelineId);
+            pipelineRuns.set(pipelineId, runs);
+            pipelineRuns = new Map(pipelineRuns);
+          } catch {}
+        }
+      }
+    });
+  });
+
+  onDestroy(() => {
+    if (unsubWS) unsubWS();
   });
 
   async function loadPipelines() {
@@ -121,7 +142,11 @@
   async function triggerRun(pipelineId: string) {
     try {
       await api.runs.trigger(pipelineId);
-      await loadPipelines();
+      notify.success("Run triggered");
+      // Update just this pipeline's runs without reloading everything
+      const runs = await api.runs.listByPipeline(pipelineId);
+      pipelineRuns.set(pipelineId, runs);
+      pipelineRuns = new Map(pipelineRuns);
     } catch (e) {
       notify.error("Failed to trigger run");
     }
@@ -130,7 +155,8 @@
   async function deletePipeline(id: string) {
     try {
       await api.pipelines.delete(id);
-      await loadPipelines();
+      pipelines.update(list => list.filter(p => p.id !== id));
+      notify.success("Pipeline deleted");
     } catch (e) {
       notify.error("Failed to delete pipeline");
     }
@@ -293,8 +319,8 @@
       });
       if (!res.ok) throw new Error();
       const clone = await res.json();
+      pipelines.update(list => [clone, ...list]);
       notify.success(`Cloned as "${clone.name}"`);
-      await loadPipelines();
     } catch {
       notify.error("Failed to clone pipeline");
     }
@@ -302,7 +328,7 @@
 
   async function exportYaml(id: string, name: string) {
     try {
-      const res = await fetch(`/api/pipelines/${id}/export`);
+      const res = await fetch(`/api/pipelines/${id}/export`, { headers: authHeaders() });
       if (!res.ok) throw new Error("Export failed");
       const text = await res.text();
       const blob = new Blob([text], { type: "application/x-yaml" });
