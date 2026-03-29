@@ -24,16 +24,23 @@
 <aside class="sidebar">
   <div class="logo">
     <div class="logo-mark">
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-        <path d="M4 6h4m4 0h8M4 12h8m4 0h4M4 18h6m4 0h6" stroke="var(--accent)" stroke-width="2" stroke-linecap="round" />
-        <circle cx="10" cy="6" r="2" fill="var(--accent)" />
-        <circle cx="14" cy="12" r="2" fill="var(--accent)" />
-        <circle cx="12" cy="18" r="2" fill="var(--accent)" />
+      <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
+        <!-- Stem -->
+        <rect x="14.5" y="20" width="3" height="10" rx="1.5" fill="var(--accent)" opacity="0.6" />
+        <!-- Tree crown (fractal DAG shape) -->
+        <circle cx="16" cy="13" r="5" fill="var(--accent)" />
+        <circle cx="10" cy="10" r="4" fill="var(--accent)" />
+        <circle cx="22" cy="10" r="4" fill="var(--accent)" />
+        <circle cx="8" cy="5" r="3" fill="var(--accent)" opacity="0.85" />
+        <circle cx="16" cy="4" r="3.5" fill="var(--accent)" opacity="0.9" />
+        <circle cx="24" cy="5" r="3" fill="var(--accent)" opacity="0.85" />
+        <circle cx="13" cy="7" r="2.5" fill="var(--accent)" opacity="0.7" />
+        <circle cx="19" cy="7" r="2.5" fill="var(--accent)" opacity="0.7" />
       </svg>
     </div>
     <div class="logo-text">
-      <span class="logo-name">broked</span>
-      <span class="logo-sub">orchestration</span>
+      <span class="logo-name">Brokoli</span>
+      <span class="logo-sub">orchestrator</span>
     </div>
   </div>
 

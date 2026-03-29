@@ -223,7 +223,7 @@
             </button>
           </div>
           <p class="key-hint">
-            Start the server with: <code>broked serve --api-key {generatedKey}</code>
+            Start the server with: <code>brokoli serve --api-key {generatedKey}</code>
           </p>
         {/if}
       </div>
