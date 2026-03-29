@@ -39,3 +39,4 @@ jobs:
         with:
           nancyCommand: sleuth
           goListFile: go.list
+        continue-on-error: true  # requires OSS Index credentials
