@@ -1,5 +1,5 @@
 /**
- * Broked icon system — clean line icons, uniform 24x24 viewBox.
+ * Brokoli icon system — clean line icons, uniform 24x24 viewBox.
  * No fills, no backgrounds. Stroke-only, 1.5px weight.
  * Purpose-built for a data orchestration platform.
  */
