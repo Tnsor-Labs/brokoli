@@ -1,8 +1,12 @@
 package api
 
 import (
+	"bufio"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -57,8 +61,8 @@ func RateLimiter(requestsPerSecond int) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip rate limiting for static assets
-			if r.URL.Path == "/health" || r.URL.Path == "/" {
+			// Skip rate limiting for static assets and WebSocket
+			if r.URL.Path == "/health" || r.URL.Path == "/" || strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -100,4 +104,12 @@ type statusWriter struct {
 func (w *statusWriter) WriteHeader(code int) {
 	w.status = code
 	w.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack implements http.Hijacker for WebSocket support.
+func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hj, ok := w.ResponseWriter.(http.Hijacker); ok {
+		return hj.Hijack()
+	}
+	return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
 }

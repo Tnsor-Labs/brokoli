@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/hc12r/broked/models"
@@ -13,6 +14,12 @@ import (
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
+
+const (
+	pingInterval = 30 * time.Second
+	pongWait     = 60 * time.Second
+	writeWait    = 10 * time.Second
+)
 
 // Hub manages WebSocket connections and broadcasts events.
 type Hub struct {
@@ -35,9 +42,34 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set pong handler to extend deadline
+	conn.SetReadDeadline(time.Now().Add(pongWait))
+	conn.SetPongHandler(func(string) error {
+		conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
 	h.mu.Lock()
 	h.clients[conn] = struct{}{}
 	h.mu.Unlock()
+
+	// Ping ticker to keep connection alive
+	go func() {
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			h.mu.RLock()
+			_, exists := h.clients[conn]
+			h.mu.RUnlock()
+			if !exists {
+				return
+			}
+			conn.SetWriteDeadline(time.Now().Add(writeWait))
+			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}()
 
 	// Read pump — keep connection alive, handle close
 	go func() {
@@ -67,10 +99,9 @@ func (h *Hub) Broadcast(event models.Event) {
 	defer h.mu.RUnlock()
 
 	for conn := range h.clients {
+		conn.SetWriteDeadline(time.Now().Add(writeWait))
 		if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
-			log.Printf("WebSocket write error: %v", err)
 			conn.Close()
-			// Don't delete while iterating under RLock; the read pump will handle cleanup
 		}
 	}
 }
