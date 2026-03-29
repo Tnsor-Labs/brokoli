@@ -246,8 +246,8 @@
   }
   .usage-hint code {
     font-family: var(--font-mono); font-size: 11px;
-    background: var(--bg-code); padding: 1px 5px; border-radius: 3px;
-    color: var(--accent-text);
+    background: transparent; padding: 1px 2px;
+    color: var(--accent-text); font-weight: 600;
   }
 
   .empty-state {
