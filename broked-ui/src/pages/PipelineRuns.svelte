@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { icons } from "../lib/icons";
   import { api } from "../lib/api";
+  import { authHeaders } from "../lib/auth";
   import { notify } from "../lib/toast";
   import { onWSEvent, liveNodeStatuses } from "../lib/stores";
   import StatusBadge from "../components/StatusBadge.svelte";
@@ -113,7 +114,7 @@
 
   async function resumeRun(runId: string) {
     try {
-      await fetch(`/api/runs/${runId}/resume`, { method: "POST" });
+      await fetch(`/api/runs/${runId}/resume`, { method: "POST", headers: authHeaders() });
       if (params.id) {
         runs = await api.runs.listByPipeline(params.id);
       }
