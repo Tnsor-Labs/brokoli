@@ -1,6 +1,8 @@
 #!/bin/sh
-# Broked installer — downloads the latest release for your platform.
+# Broked installer for Linux and macOS.
 # Usage: curl -fsSL https://raw.githubusercontent.com/hc12r/brokolisql-go/main/install.sh | sh
+#
+# Windows: download the .zip from GitHub Releases and add broked.exe to your PATH.
 
 set -e
 

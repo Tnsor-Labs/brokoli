@@ -53,3 +53,14 @@ jobs:
         args: release --clean
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Generate checksums for VirusTotal
+      run: |
+        echo "## Security Verification" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "SHA-256 checksums for all release binaries:" >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cat dist/checksums.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "Verify Windows binary on [VirusTotal](https://www.virustotal.com/) by uploading the .zip or checking the SHA-256 hash above." >> $GITHUB_STEP_SUMMARY
