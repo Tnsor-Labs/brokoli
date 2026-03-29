@@ -1,6 +1,7 @@
 package processing
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
@@ -71,7 +72,7 @@ func (n *Normalizer) NormalizeColumnNames(names []string) []string {
 
 		if count, exists := usedNames[normalizedName]; exists {
 
-			normalizedName = normalizedName + "_" + string(rune('0'+count-1))
+			normalizedName = normalizedName + "_" + fmt.Sprintf("%d", count-1)
 			usedNames[normalizedName] = 1
 			usedNames[normalizedName[:len(normalizedName)-2]]++
 		} else {
