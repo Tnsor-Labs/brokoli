@@ -1,6 +1,4 @@
 <script lang="ts">
-  import { api } from "../lib/api";
-
   export let runId: string;
   export let nodeId: string;
   export let nodeName: string = "";
@@ -10,11 +8,20 @@
   let loading = true;
   let error = "";
 
-  async function load() {
+  // Re-load whenever runId or nodeId changes
+  $: if (runId && nodeId) {
+    load(runId, nodeId);
+  }
+
+  async function load(rid: string, nid: string) {
     loading = true;
     error = "";
     try {
-      const res = await fetch(`/api/runs/${runId}/nodes/${nodeId}/preview`);
+      const url = `/api/runs/${rid}/nodes/${nid}/preview`;
+      const token = localStorage.getItem("broked-token");
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
+      const res = await fetch(url, { headers });
       if (!res.ok) throw new Error("No preview available");
       const data = await res.json();
       columns = data.columns || [];
@@ -25,9 +32,6 @@
       loading = false;
     }
   }
-
-  // Load on mount
-  load();
 
   function formatCell(value: unknown): string {
     if (value === null || value === undefined) return "";
