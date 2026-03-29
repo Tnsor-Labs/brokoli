@@ -5,7 +5,9 @@ before:
     - go mod tidy
 
 builds:
-  - env:
+  # Original BrokoliSQL CLI
+  - id: brokolisql
+    env:
       - CGO_ENABLED=0
     goos:
       - linux
@@ -17,22 +19,50 @@ builds:
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     main: ./main.go
+    binary: brokolisql
+
+  # Broked orchestration platform (UI must be pre-built before goreleaser runs)
+  - id: broked
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+    dir: ./broked
+    main: .
+    binary: broked
 
 archives:
-  - id: default
+  - id: brokolisql
+    ids:
+      - brokolisql
     name_template: >-
-      {{ .ProjectName }}_
+      brokolisql_
       {{- title .Os }}_
       {{- if eq .Arch "amd64" }}x86_64
       {{- else if eq .Arch "386" }}i386
       {{- else }}{{ .Arch }}{{ end }}
       {{- if .Arm }}v{{ .Arm }}{{ end }}
     files:
-      - README*
+      - README.md
       - LICENSE*
       - CHANGELOG*
-    format_overrides:
-        - formats: ['zip']
+
+  - id: broked
+    ids:
+      - broked
+    name_template: >-
+      broked_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - broked/README.md
 
 checksum:
   name_template: 'checksums.txt'
@@ -51,5 +81,3 @@ changelog:
       - '^examples:'
       - Merge pull request
       - Merge branch
-
-# vim: set ts=2 sw=2 tw=0 fo=cnqoj

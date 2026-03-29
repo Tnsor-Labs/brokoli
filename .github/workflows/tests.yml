@@ -1,23 +1,81 @@
-name: Go Tests
+name: Tests
 
 on:
+  push:
+    branches: [ main, broked ]
   pull_request:
     branches: [ main ]
 
 jobs:
-  test:
+  test-brokolisql:
+    name: BrokoliSQL Tests
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
         go-version: '1.24'
     - name: Test
-      run: go test -v ./...
+      run: go test -v -race ./...
     - name: Test Coverage
       run: go test -coverprofile=coverage.out ./...
-    - name: Upload coverage reports
-      uses: codecov/codecov-action@v3
+    - name: Upload coverage
+      uses: codecov/codecov-action@v4
       with:
         file: ./coverage.out
+      continue-on-error: true
+
+  test-broked:
+    name: Broked Tests
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Test Engine
+      run: go test -v -race ./broked/engine/...
+    - name: Test Crypto
+      run: go test -v -race ./broked/crypto/...
+    - name: Test Quality
+      run: go test -v -race ./broked/quality/...
+    - name: Test Store
+      run: go test -v -race ./broked/store/...
+    - name: Test Coverage
+      run: |
+        go test -coverprofile=broked-coverage.out ./broked/...
+        echo "=== Coverage ==="
+        go tool cover -func=broked-coverage.out | tail -1
+
+  build-broked:
+    name: Build Broked Binary
+    runs-on: ubuntu-latest
+    needs: [test-broked]
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.24'
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+    - name: Build UI
+      working-directory: broked-ui
+      run: |
+        npm ci
+        npm run build
+    - name: Build binary
+      working-directory: broked
+      run: |
+        go build -o broked .
+        ls -lh broked
+        echo "Binary size: $(du -h broked | cut -f1)"
+    - name: Smoke test
+      working-directory: broked
+      run: |
+        ./broked --help
+        echo "Smoke test passed"
