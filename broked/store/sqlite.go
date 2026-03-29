@@ -595,7 +595,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 
 func (s *SQLiteStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 	rows, err := s.db.Query(
-		`SELECT date(started_at) as day,
+		`SELECT substr(started_at, 1, 10) as day,
 		        COUNT(*) as total,
 		        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,

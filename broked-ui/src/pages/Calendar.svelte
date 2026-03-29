@@ -40,7 +40,7 @@
     for (let i = rangeDays - 1; i >= 0; i--) {
       const d = new Date(today);
       d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
       grid.push({
         date: key,
         data: map.get(key) || null,
@@ -50,17 +50,29 @@
     return grid;
   }
 
-  function cellColor(d: CalendarDay | null): string {
-    if (!d || d.total === 0) return "var(--bg-tertiary)";
-    if (d.failed > 0) return "var(--failed)";
-    if (d.running > 0) return "var(--running)";
-    return "var(--success)";
+  function cellBg(d: CalendarDay | null): string {
+    if (!d || d.total === 0) return "";
+    if (d.failed > 0) return "#ef4444";
+    if (d.running > 0) return "#3b82f6";
+    if (d.success > 0) return "#22c55e";
+    return "#71717a";
   }
 
-  function cellOpacity(d: CalendarDay | null): number {
-    if (!d || d.total === 0) return 0.3;
-    // Scale opacity by number of runs (min 0.4, max 1.0)
-    return Math.min(1.0, 0.4 + d.total * 0.1);
+  function monthLabel(dateStr: string): string {
+    const d = new Date(dateStr + "T00:00:00");
+    return d.toLocaleDateString("en-US", { month: "short" });
+  }
+
+  function isFirstOfMonth(dateStr: string): boolean {
+    return dateStr.endsWith("-01");
+  }
+
+  function getMonthForWeek(week: ReturnType<typeof buildGrid>): string {
+    // Return the month of the first real date in the week
+    for (const cell of week) {
+      if (cell.date) return monthLabel(cell.date);
+    }
+    return "";
   }
 
   function formatDate(dateStr: string): string {
@@ -98,7 +110,7 @@
     return weeks;
   }
 
-  $: grid = buildGrid();
+  $: grid = (() => { days; return buildGrid(); })();
   $: weeks = buildWeeks(grid);
   $: totalRuns = days.reduce((s, d) => s + d.total, 0);
   $: totalFailed = days.reduce((s, d) => s + d.failed, 0);
@@ -151,31 +163,42 @@
   {:else}
     <div class="calendar-grid">
       <div class="weekday-header">
+        <span></span>
         {#each ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as day}
           <span class="weekday">{day}</span>
         {/each}
       </div>
 
-      {#each weeks as week}
+      {#each weeks as week, wi}
+        {@const weekMonth = getMonthForWeek(week)}
+        {@const prevMonth = wi > 0 ? getMonthForWeek(weeks[wi - 1]) : ""}
         <div class="week-row">
+          <span class="month-label">{weekMonth !== prevMonth ? weekMonth : ""}</span>
           {#each week as cell}
             {#if cell.date}
               <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="day-cell"
-                class:today={cell.isToday}
-                class:has-runs={cell.data && cell.data.total > 0}
-                class:has-failures={cell.data && cell.data.failed > 0}
-                on:click={() => selectedDay = cell.data && cell.data.total > 0 ? cell.data : null}
-                on:keydown={() => {}}
-                title={cell.date + (cell.data ? `: ${cell.data.total} runs (${cell.data.success} ok, ${cell.data.failed} failed)` : ": no runs")}
-              >
-                <span class="day-num">{cell.date.slice(8)}</span>
+              {#if cell.data && cell.data.total > 0}
                 <div
-                  class="day-indicator"
-                  style="background: {cellColor(cell.data)}; opacity: {cellOpacity(cell.data)}"
-                ></div>
-              </div>
+                  class="day-cell has-runs"
+                  class:today={cell.isToday}
+                  style:background-color={cellBg(cell.data)}
+                  on:click={() => selectedDay = cell.data}
+                  on:keydown={() => {}}
+                  title="{cell.date}: {cell.data.total} runs ({cell.data.success} ok, {cell.data.failed} failed)"
+                >
+                  <span class="day-num">{cell.date.slice(8)}</span>
+                  <span class="day-count">{cell.data.total}</span>
+                </div>
+              {:else}
+                <div
+                  class="day-cell"
+                  class:today={cell.isToday}
+                  on:click={() => {}}
+                  on:keydown={() => {}}
+                >
+                  <span class="day-num">{cell.date.slice(8)}</span>
+                </div>
+              {/if}
             {:else}
               <div class="day-cell empty"></div>
             {/if}
@@ -259,7 +282,7 @@
   }
 
   .weekday-header {
-    display: grid; grid-template-columns: repeat(7, 1fr);
+    display: grid; grid-template-columns: 40px repeat(7, 1fr);
     gap: 4px; margin-bottom: 4px;
   }
   .weekday {
@@ -269,35 +292,40 @@
   }
 
   .week-row {
-    display: grid; grid-template-columns: repeat(7, 1fr);
+    display: grid; grid-template-columns: 40px repeat(7, 1fr);
     gap: 4px; margin-bottom: 4px;
+  }
+  .month-label {
+    font-size: 10px; font-weight: 600; color: var(--text-muted);
+    display: flex; align-items: center; justify-content: flex-end;
+    padding-right: 6px;
+    text-transform: uppercase; letter-spacing: 0.04em;
   }
 
   .day-cell {
-    position: relative;
-    aspect-ratio: 1;
-    min-height: 28px;
+    min-height: 36px;
     display: flex; flex-direction: column;
     align-items: center; justify-content: center;
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
     transition: all 150ms ease;
     border: 1px solid transparent;
+    gap: 1px;
   }
-  .day-cell:not(.empty):hover { border-color: var(--border-hover); }
-  .day-cell.today { border-color: var(--accent); }
+  .day-cell:not(.empty):hover { border-color: var(--border-hover); transform: scale(1.05); }
+  .day-cell.today { border-color: var(--accent); border-width: 2px; }
   .day-cell.empty { cursor: default; }
+  .day-cell.has-runs { color: white; }
+  .day-cell.has-failures { color: white; }
 
   .day-num {
     font-size: 10px; font-weight: 500; color: var(--text-muted);
-    z-index: 1; position: relative;
   }
-  .day-cell.has-runs .day-num { color: var(--text-primary); font-weight: 600; }
+  .day-cell.has-runs .day-num { color: white; font-weight: 700; }
 
-  .day-indicator {
-    position: absolute; inset: 2px;
-    border-radius: 3px;
-    z-index: 0;
+  .day-count {
+    font-family: var(--font-mono); font-size: 8px; font-weight: 700;
+    color: rgba(255,255,255,0.85);
   }
 
   .legend {
