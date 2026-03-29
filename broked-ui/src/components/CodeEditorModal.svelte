@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher, onMount, afterUpdate } from "svelte";
+  import { createEventDispatcher, tick } from "svelte";
   import Prism from "prismjs";
   import "prismjs/components/prism-python";
 
@@ -8,33 +8,44 @@
 
   const dispatch = createEventDispatcher();
 
-  let localScript = script;
-  let lineCount = 1;
+  let localScript = "";
   let textareaEl: HTMLTextAreaElement;
   let highlightEl: HTMLPreElement;
   let editorWrap: HTMLDivElement;
   let highlighted = "";
 
+  // When modal opens, copy script to local state
   $: if (visible) {
-    localScript = script;
-    updateHighlight();
+    localScript = script || "";
+    doHighlight();
+    tick().then(() => {
+      textareaEl?.focus();
+    });
   }
+
+  // Recompute on every keystroke
   $: lineCount = Math.max((localScript || "").split("\n").length, 1);
+  $: lineNumbers = Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
 
-  function updateHighlight() {
+  function doHighlight() {
     const code = localScript || "";
-    // Prism highlight, then append a trailing newline so the pre matches textarea height
-    highlighted = Prism.highlight(code, Prism.languages.python, "python") + "\n";
+    try {
+      highlighted = Prism.highlight(code, Prism.languages.python, "python") + "\n";
+    } catch {
+      highlighted = code + "\n";
+    }
   }
 
-  $: if (localScript !== undefined) updateHighlight();
+  function onInput() {
+    doHighlight();
+    syncScroll();
+  }
 
   function syncScroll() {
     if (highlightEl && textareaEl) {
       highlightEl.scrollTop = textareaEl.scrollTop;
       highlightEl.scrollLeft = textareaEl.scrollLeft;
     }
-    // Sync line numbers too
     const lnEl = editorWrap?.querySelector(".line-numbers pre") as HTMLElement;
     if (lnEl && textareaEl) {
       lnEl.style.transform = `translateY(-${textareaEl.scrollTop}px)`;
@@ -54,9 +65,13 @@
     if ((e.ctrlKey || e.metaKey) && e.key === "s") {
       e.preventDefault();
       save();
+      return;
     }
     if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
       close();
+      return;
     }
     if (e.key === "Tab") {
       e.preventDefault();
@@ -69,12 +84,6 @@
       });
     }
   }
-
-  function getLineNumbers(): string {
-    return Array.from({ length: lineCount }, (_, i) => i + 1).join("\n");
-  }
-
-  $: lineNumbers = getLineNumbers();
 </script>
 
 {#if visible}
@@ -110,7 +119,7 @@
             bind:this={textareaEl}
             bind:value={localScript}
             on:scroll={syncScroll}
-            on:input={syncScroll}
+            on:input={onInput}
             spellcheck="false"
             autocomplete="off"
             autocorrect="off"
@@ -173,7 +182,7 @@
   .btn-cancel:hover { background: var(--bg-tertiary); color: var(--text-primary); }
   .btn-save {
     padding: 5px 14px; border-radius: 6px; font-size: 12px; font-weight: 500;
-    background: var(--code-accent); border: 1px solid var(--code-accent); color: var(--bg-code); transition: all 150ms ease;
+    background: var(--accent); border: 1px solid var(--accent); color: white; transition: all 150ms ease;
   }
   .btn-save:hover { opacity: 0.9; }
 
@@ -229,8 +238,6 @@
     -webkit-text-fill-color: transparent;
   }
 
-  /* Prism tokens are styled in global.css using CSS variables */
-
   .modal-footer {
     padding: 8px 20px; background: var(--bg-sidebar); border-top: 1px solid var(--border-sidebar); flex-shrink: 0;
   }
@@ -241,6 +248,6 @@
   .ref-sep { color: var(--text-ghost); margin: 0 2px; }
   .footer-ref code {
     font-family: var(--font-mono); font-size: 9.5px;
-    background: var(--bg-secondary); color: var(--code-accent); padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-secondary); color: var(--accent); padding: 1px 5px; border-radius: 3px;
   }
 </style>
