@@ -17,8 +17,8 @@ import (
 type CodeNodeInput struct {
 	Columns []string                 `json:"columns"`
 	Rows    []map[string]interface{} `json:"rows"`
-	Config  map[string]interface{}   `json:"config"`  // node config (minus script)
-	Params  map[string]string        `json:"params"`  // pipeline run params
+	Config  map[string]interface{}   `json:"config"` // node config (minus script)
+	Params  map[string]string        `json:"params"` // pipeline run params
 }
 
 // CodeNodeOutput is the JSON structure expected from the Python script on stdout.

@@ -14,11 +14,11 @@ type PipelineVersion struct {
 
 // CalendarDay aggregates run statuses for a single day.
 type CalendarDay struct {
-	Date      string `json:"date"`      // YYYY-MM-DD
-	Total     int    `json:"total"`
-	Success   int    `json:"success"`
-	Failed    int    `json:"failed"`
-	Running   int    `json:"running"`
+	Date    string `json:"date"` // YYYY-MM-DD
+	Total   int    `json:"total"`
+	Success int    `json:"success"`
+	Failed  int    `json:"failed"`
+	Running int    `json:"running"`
 }
 
 // Store defines the persistence interface for Broked.

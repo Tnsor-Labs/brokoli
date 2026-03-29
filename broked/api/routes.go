@@ -160,11 +160,11 @@ func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 		pipelines, _ := s.ListPipelines()
 		active, maxC := e.GetQueueInfo()
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"version":            "0.1.0-dev",
-			"db_size":            size,
-			"db_size_mb":         fmt.Sprintf("%.2f MB", float64(size)/1024/1024),
-			"pipelines":          len(pipelines),
-			"active_runs":        active,
+			"version":             "0.1.0-dev",
+			"db_size":             size,
+			"db_size_mb":          fmt.Sprintf("%.2f MB", float64(size)/1024/1024),
+			"pipelines":           len(pipelines),
+			"active_runs":         active,
 			"max_concurrent_runs": maxC,
 		})
 	}

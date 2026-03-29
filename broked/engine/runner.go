@@ -21,18 +21,18 @@ import (
 
 // Runner executes a single pipeline run.
 type Runner struct {
-	store        store.Store
-	eventCh      chan<- models.Event
-	varStore     VariableStore      // for ${var.key} resolution
-	connResolver *ConnectionResolver // for conn_id → URI
-	run            *models.Run
-	pipe           *models.Pipeline
-	skipNodes      map[string]bool
-	dryRun         bool
-	dryRunMaxRows  int
-	dryRunResults  map[string]*DryRunNodeResult
-	params         map[string]string // runtime params
-	varCtx         *VariableContext
+	store         store.Store
+	eventCh       chan<- models.Event
+	varStore      VariableStore       // for ${var.key} resolution
+	connResolver  *ConnectionResolver // for conn_id → URI
+	run           *models.Run
+	pipe          *models.Pipeline
+	skipNodes     map[string]bool
+	dryRun        bool
+	dryRunMaxRows int
+	dryRunResults map[string]*DryRunNodeResult
+	params        map[string]string // runtime params
+	varCtx        *VariableContext
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -40,9 +40,9 @@ func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline
 	return &Runner{
 		varStore:     vs,
 		connResolver: cr,
-		store:   s,
-		eventCh: eventCh,
-		pipe:    pipe,
+		store:        s,
+		eventCh:      eventCh,
+		pipe:         pipe,
 	}
 }
 

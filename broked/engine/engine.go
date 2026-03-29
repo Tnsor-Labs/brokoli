@@ -18,7 +18,7 @@ type Engine struct {
 	active        map[string]*Runner
 	maxConcurrent int
 	runSem        chan struct{}
-	VarStore      VariableStore      // for resolving ${var.key}
+	VarStore      VariableStore       // for resolving ${var.key}
 	ConnResolver  *ConnectionResolver // for resolving conn_id → URI
 	RunsTotal     int64
 	RunsSucceeded int64

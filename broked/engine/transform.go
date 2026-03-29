@@ -21,8 +21,8 @@ type TransformRule struct {
 	Condition  string            `json:"condition,omitempty"`
 	Ascending  bool              `json:"ascending,omitempty"`
 	// Aggregate fields
-	GroupBy    []string          `json:"group_by,omitempty"`    // columns to group by
-	AggFields []AggField        `json:"agg_fields,omitempty"`  // aggregation definitions
+	GroupBy   []string   `json:"group_by,omitempty"`   // columns to group by
+	AggFields []AggField `json:"agg_fields,omitempty"` // aggregation definitions
 }
 
 // AggField defines an aggregation operation on a column.

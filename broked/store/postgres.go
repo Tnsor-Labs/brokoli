@@ -48,7 +48,7 @@ func (s *PostgresStore) migrate() error {
 	return err
 }
 
-func (s *PostgresStore) Close() error  { return s.db.Close() }
+func (s *PostgresStore) Close() error       { return s.db.Close() }
 func (s *PostgresStore) RawDB() interface{} { return s.db }
 
 // --- Pipelines ---

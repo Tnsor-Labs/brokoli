@@ -55,7 +55,7 @@ func (s *SQLiteStore) migrate() error {
 	return nil
 }
 
-func (s *SQLiteStore) Close() error { return s.db.Close() }
+func (s *SQLiteStore) Close() error       { return s.db.Close() }
 func (s *SQLiteStore) RawDB() interface{} { return s.db }
 
 // --- Pipelines ---

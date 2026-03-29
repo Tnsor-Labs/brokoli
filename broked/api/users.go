@@ -360,7 +360,7 @@ type claimsContext struct {
 }
 
 func (c *claimsContext) Deadline() (time.Time, bool) { return c.parent.Deadline() }
-func (c *claimsContext) Done() <-chan struct{}        { return c.parent.Done() }
+func (c *claimsContext) Done() <-chan struct{}       { return c.parent.Done() }
 func (c *claimsContext) Err() error                  { return c.parent.Err() }
 func (c *claimsContext) Value(key any) any {
 	if k, ok := key.(string); ok && k == "claims" {

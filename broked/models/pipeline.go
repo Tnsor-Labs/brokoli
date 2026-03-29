@@ -4,18 +4,18 @@ import "time"
 
 // Pipeline represents a data processing pipeline with its nodes and edges.
 type Pipeline struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description"`
-	Nodes       []Node    `json:"nodes"`
-	Edges       []Edge    `json:"edges"`
-	Schedule    string    `json:"schedule"`    // cron expression, empty for manual-only
-	WebhookURL  string            `json:"webhook_url"`  // URL for event notifications
-	Params      map[string]string `json:"params"`       // default parameter values
-	Tags        []string          `json:"tags"`         // labels for filtering/grouping
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Description string            `json:"description"`
+	Nodes       []Node            `json:"nodes"`
+	Edges       []Edge            `json:"edges"`
+	Schedule    string            `json:"schedule"`    // cron expression, empty for manual-only
+	WebhookURL  string            `json:"webhook_url"` // URL for event notifications
+	Params      map[string]string `json:"params"`      // default parameter values
+	Tags        []string          `json:"tags"`        // labels for filtering/grouping
 	Enabled     bool              `json:"enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	CreatedAt   time.Time         `json:"created_at"`
+	UpdatedAt   time.Time         `json:"updated_at"`
 }
 
 // NodeType defines the kind of operation a node performs.

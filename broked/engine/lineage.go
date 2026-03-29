@@ -11,11 +11,11 @@ import (
 // LineageNode represents a data asset or processing step in the lineage graph.
 type LineageNode struct {
 	ID         string `json:"id"`
-	Type       string `json:"type"`                  // file, table, api, processing
+	Type       string `json:"type"` // file, table, api, processing
 	Name       string `json:"name"`
-	SubType    string `json:"sub_type,omitempty"`     // for processing: transform, join, code, quality_check, sql_generate
-	PipelineID string `json:"pipeline_id,omitempty"`  // which pipeline owns this (processing nodes only)
-	Pipeline   string `json:"pipeline,omitempty"`     // pipeline name (processing nodes only)
+	SubType    string `json:"sub_type,omitempty"`    // for processing: transform, join, code, quality_check, sql_generate
+	PipelineID string `json:"pipeline_id,omitempty"` // which pipeline owns this (processing nodes only)
+	Pipeline   string `json:"pipeline,omitempty"`    // pipeline name (processing nodes only)
 }
 
 // LineageEdge represents data flow between nodes through a pipeline.

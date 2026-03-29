@@ -18,12 +18,12 @@ const (
 // Connection stores credentials and config for an external system.
 type Connection struct {
 	ID          string         `json:"id"`
-	ConnID      string         `json:"conn_id"`      // human-readable slug, e.g. "prod_postgres"
+	ConnID      string         `json:"conn_id"` // human-readable slug, e.g. "prod_postgres"
 	Type        ConnectionType `json:"type"`
 	Description string         `json:"description"`
 	Host        string         `json:"host"`
 	Port        int            `json:"port,omitempty"`
-	Schema      string         `json:"schema"`        // database name or path
+	Schema      string         `json:"schema"` // database name or path
 	Login       string         `json:"login"`
 	Password    string         `json:"password,omitempty"` // plaintext in memory, encrypted at rest
 	Extra       string         `json:"extra,omitempty"`    // JSON blob for type-specific fields

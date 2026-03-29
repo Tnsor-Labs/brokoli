@@ -138,13 +138,13 @@ func isDate(s string) bool {
 // --- Dialects ---
 
 type dialect struct {
-	name         string
-	quoteChar    string
-	strQuote     string
-	terminator   string
-	boolTrue     string
-	boolFalse    string
-	typeMap      map[string]string
+	name       string
+	quoteChar  string
+	strQuote   string
+	terminator string
+	boolTrue   string
+	boolFalse  string
+	typeMap    map[string]string
 }
 
 func getDialect(name string) dialect {
