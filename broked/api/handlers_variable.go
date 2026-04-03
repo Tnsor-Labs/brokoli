@@ -22,7 +22,8 @@ func NewVariableHandler(s store.Store, c *crypto.Config) *VariableHandler {
 }
 
 func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
-	vars, err := h.store.ListVariables()
+	wsID := GetWorkspaceID(r)
+	vars, err := h.store.ListVariablesByWorkspace(wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -105,6 +106,8 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	AuditLog(r, "set", "variable", v.Key, nil, map[string]interface{}{"type": string(v.Type)})
+
 	// Return with masked secret
 	if v.Type == models.VarTypeSecret {
 		v.Value = "********"
@@ -118,5 +121,6 @@ func (h *VariableHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return
 	}
+	AuditLog(r, "delete", "variable", key, nil, nil)
 	w.WriteHeader(http.StatusNoContent)
 }

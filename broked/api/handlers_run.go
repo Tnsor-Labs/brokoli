@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -32,12 +33,19 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	}
 	json.NewDecoder(r.Body).Decode(&req) // ignore error — body may be empty
 
-	run, err := h.engine.RunPipeline(pipelineID, req.Params)
+	// Async: return immediately with run ID. Pipeline executes in background.
+	// This prevents client timeouts from creating duplicate runs.
+	runID, err := h.engine.RunPipelineAsync(pipelineID, req.Params)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, run)
+	AuditLog(r, "run", "pipeline", pipelineID, nil, map[string]interface{}{"run_id": runID})
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"id":          runID,
+		"pipeline_id": pipelineID,
+		"status":      "pending",
+	})
 }
 
 func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +58,9 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	if runs == nil {
 		runs = []models.Run{}
 	}
+	for i := range runs {
+		runs[i].PopulateError()
+	}
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -60,6 +71,7 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
+	run.PopulateError()
 	writeJSON(w, http.StatusOK, run)
 }
 
@@ -91,6 +103,15 @@ func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 		line += " " + l.Message + "\n"
 		w.Write([]byte(line))
 	}
+}
+
+func (h *RunHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := h.engine.CancelRun(id); err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "cancelled"})
 }
 
 func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
@@ -179,6 +200,18 @@ func (h *RunHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "driver": driver})
+}
+
+func (h *RunHandler) GetNodeProfile(w http.ResponseWriter, r *http.Request) {
+	runID := chi.URLParam(r, "id")
+	nodeID := chi.URLParam(r, "nodeId")
+	profile, schema, drift, err := h.store.GetNodeProfile(runID, nodeID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "profile not found")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"profile":%s,"schema":%s,"drift":%s}`, profile, schema, drift)
 }
 
 func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {

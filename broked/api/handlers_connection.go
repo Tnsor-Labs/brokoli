@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -29,7 +30,8 @@ func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
 }
 
 func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
-	conns, err := h.store.ListConnections()
+	wsID := GetWorkspaceID(r)
+	conns, err := h.store.ListConnectionsByWorkspace(wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -124,6 +126,7 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		decrypted, _ := h.crypto.Decrypt(c.Extra)
 		c.Extra = decrypted
 	}
+	AuditLog(r, "create", "connection", c.ConnID, nil, map[string]interface{}{"type": string(c.Type), "host": c.Host})
 	writeJSON(w, http.StatusCreated, c)
 }
 
@@ -179,6 +182,7 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 		decrypted, _ := h.crypto.Decrypt(c.Extra)
 		c.Extra = decrypted
 	}
+	AuditLog(r, "update", "connection", c.ConnID, nil, map[string]interface{}{"type": string(c.Type), "host": c.Host})
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -188,6 +192,7 @@ func (h *ConnectionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
+	AuditLog(r, "delete", "connection", connID, nil, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -249,18 +254,20 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
+		log.Printf("Connection test failed (open %s): %v", driver, err)
 		return map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Failed to open: %v", err),
+			"error":   "connection test failed — check server logs for details",
 			"driver":  driver,
 		}
 	}
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
+		log.Printf("Connection test failed (ping %s): %v", driver, err)
 		return map[string]interface{}{
 			"success": false,
-			"error":   fmt.Sprintf("Ping failed: %v", err),
+			"error":   "connection test failed — check server logs for details",
 			"driver":  driver,
 		}
 	}

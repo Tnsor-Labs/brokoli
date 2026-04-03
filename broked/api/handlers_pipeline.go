@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -19,20 +21,71 @@ type PipelineHandler struct {
 	sched *engine.Scheduler
 }
 
+// PipelineSummary is a lean DTO for the pipeline list — no nodes/edges/hooks.
+type PipelineSummary struct {
+	ID           string   `json:"id"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Schedule     string   `json:"schedule"`
+	Enabled      bool     `json:"enabled"`
+	Tags         []string `json:"tags"`
+	NodeCount    int      `json:"node_count"`
+	EdgeCount    int      `json:"edge_count"`
+	SLADeadline  string   `json:"sla_deadline,omitempty"`
+	SLATimezone  string   `json:"sla_timezone,omitempty"`
+	DependsOn    []string `json:"depends_on,omitempty"`
+	WebhookToken string   `json:"webhook_token,omitempty"`
+	PipelineID   string   `json:"pipeline_id,omitempty"`
+	Source       string   `json:"source,omitempty"`
+	CreatedAt    string   `json:"created_at"`
+	UpdatedAt    string   `json:"updated_at"`
+}
+
+func toPipelineSummary(p models.Pipeline) PipelineSummary {
+	tags := p.Tags
+	if tags == nil {
+		tags = []string{}
+	}
+	deps := p.DependsOn
+	if deps == nil {
+		deps = []string{}
+	}
+	return PipelineSummary{
+		ID:           p.ID,
+		Name:         p.Name,
+		Description:  p.Description,
+		Schedule:     p.Schedule,
+		Enabled:      p.Enabled,
+		Tags:         tags,
+		NodeCount:    len(p.Nodes),
+		EdgeCount:    len(p.Edges),
+		SLADeadline:  p.SLADeadline,
+		SLATimezone:  p.SLATimezone,
+		DependsOn:    deps,
+		WebhookToken: p.WebhookToken,
+		PipelineID:   p.PipelineID,
+		Source:       p.Source,
+		CreatedAt:    p.CreatedAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+		UpdatedAt:    p.UpdatedAt.Format("2006-01-02T15:04:05.999999999Z07:00"),
+	}
+}
+
 func NewPipelineHandler(s store.Store, sched *engine.Scheduler) *PipelineHandler {
 	return &PipelineHandler{store: s, sched: sched}
 }
 
 func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
-	pipelines, err := h.store.ListPipelines()
+	wsID := GetWorkspaceID(r)
+	pipelines, err := h.store.ListPipelinesByWorkspace(wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	if pipelines == nil {
-		pipelines = []models.Pipeline{}
+	summaries := make([]PipelineSummary, 0, len(pipelines))
+	for _, p := range pipelines {
+		summaries = append(summaries, toPipelineSummary(p))
 	}
-	writeJSON(w, http.StatusOK, pipelines)
+	writeJSON(w, http.StatusOK, summaries)
 }
 
 func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
@@ -52,8 +105,8 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if p.Name == "" {
-		writeError(w, http.StatusBadRequest, "name is required")
+	if err := p.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
@@ -68,10 +121,26 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Edges = []models.Edge{}
 	}
 
+	// Auto-generate pipeline_id from name if not provided
+	if p.PipelineID == "" && p.Name != "" {
+		pid := strings.ToLower(p.Name)
+		pid = strings.ReplaceAll(pid, " ", "-")
+		pid = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(pid, "")
+		pid = regexp.MustCompile(`-+`).ReplaceAllString(pid, "-")
+		pid = strings.Trim(pid, "-")
+		p.PipelineID = pid
+	}
+	// UI-created pipelines are always source "ui"
+	if p.Source == "" {
+		p.Source = models.PipelineSourceUI
+	}
+
 	if err := h.store.CreatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	AuditLog(r, "create", "pipeline", p.ID, nil, map[string]interface{}{"name": p.Name, "nodes": len(p.Nodes)})
 
 	// Sync scheduler if created with a schedule
 	if h.sched != nil && p.Schedule != "" && p.Enabled {
@@ -90,6 +159,12 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Reject UI updates for git-managed pipelines
+	if existing.Source == models.PipelineSourceGit {
+		writeError(w, http.StatusForbidden, "This pipeline is managed by Git. Push changes to your repository.")
+		return
+	}
+
 	var p models.Pipeline
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -97,6 +172,8 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.ID = existing.ID
+	p.PipelineID = existing.PipelineID
+	p.Source = existing.Source
 	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now()
 	if p.Nodes == nil {
@@ -104,6 +181,11 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Edges == nil {
 		p.Edges = []models.Edge{}
+	}
+
+	if err := p.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
@@ -120,6 +202,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		h.sched.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled)
 	}
 
+	AuditLog(r, "update", "pipeline", p.ID, map[string]interface{}{"name": existing.Name}, map[string]interface{}{"name": p.Name, "nodes": len(p.Nodes)})
 	writeJSON(w, http.StatusOK, p)
 }
 
@@ -132,6 +215,7 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if h.sched != nil {
 		h.sched.Unregister(id)
 	}
+	AuditLog(r, "delete", "pipeline", id, nil, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -206,11 +290,31 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p, err := engine.ImportPipelineYAML(data)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	// Try JSON first, then YAML
+	var p *models.Pipeline
+	contentType := r.Header.Get("Content-Type")
+	if contentType == "application/json" || data[0] == '{' || data[0] == '[' {
+		var pipeline models.Pipeline
+		if jsonErr := json.Unmarshal(data, &pipeline); jsonErr == nil {
+			p = &pipeline
+		}
 	}
+	if p == nil {
+		var err error
+		p, err = engine.ImportPipelineYAML(data)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	if p.ID == "" {
+		p.ID = uuid.New().String()
+	}
+	now := time.Now()
+	if p.CreatedAt.IsZero() {
+		p.CreatedAt = now
+	}
+	p.UpdatedAt = now
 
 	if err := h.store.CreatePipeline(p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
