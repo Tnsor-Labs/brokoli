@@ -61,11 +61,11 @@ func (s *Scheduler) Start() error {
 		}
 	}
 
+	// Run catch-up BEFORE starting cron to prevent duplicate runs
+	s.catchUpMissedRuns(pipelines)
+
 	s.cron.Start()
 	log.Printf("Scheduler started: %d pipelines scheduled", registered)
-
-	// Check for missed runs (catch-up)
-	go s.catchUpMissedRuns(pipelines)
 
 	return nil
 }
@@ -73,9 +73,6 @@ func (s *Scheduler) Start() error {
 // catchUpMissedRuns checks each scheduled pipeline's last run vs its schedule.
 // If a run was missed during downtime, triggers it now.
 func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
-	// Small delay to let the server fully start
-	time.Sleep(2 * time.Second)
-
 	for _, p := range pipelines {
 		if !p.Enabled || p.Schedule == "" {
 			continue
@@ -141,6 +138,20 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule string) error {
 
 	pid := pipelineID // capture for closure
 	entryID, err := s.cron.AddFunc(schedule, func() {
+		// Check cross-pipeline dependencies before running
+		if pipe, pErr := s.engine.store.GetPipeline(pid); pErr == nil && len(pipe.DependsOn) > 0 {
+			for _, depID := range pipe.DependsOn {
+				runs, _ := s.engine.store.ListRunsByPipeline(depID, 1)
+				if len(runs) == 0 || string(runs[0].Status) != "completed" {
+					depName := depID[:8]
+					if dp, e := s.engine.store.GetPipeline(depID); e == nil {
+						depName = dp.Name
+					}
+					log.Printf("Skipping scheduled run for %s: dependency %q not satisfied (last: %s)", pid, depName, func() string { if len(runs) > 0 { return string(runs[0].Status) }; return "no runs" }())
+					return
+				}
+			}
+		}
 		log.Printf("Scheduled run triggered for pipeline %s", pid)
 		if _, err := s.engine.RunPipeline(pid); err != nil {
 			log.Printf("ERROR: scheduled run failed for pipeline %s: %v", pid, err)

@@ -29,7 +29,7 @@ type TransformRule struct {
 type AggField struct {
 	Column   string `json:"column"`   // source column
 	Function string `json:"function"` // sum, count, avg, min, max
-	Alias    string `json:"alias"`    // output column name
+	Alias    string `json:"alias,omitempty"` // output column name (optional override)
 }
 
 // ApplyTransforms runs a sequence of transform rules on a dataset.
