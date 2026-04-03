@@ -1,6 +1,10 @@
 package models
 
-import "time"
+import (
+	"net/url"
+	"strconv"
+	"time"
+)
 
 // ConnectionType identifies the kind of external system.
 type ConnectionType string
@@ -32,67 +36,89 @@ type Connection struct {
 }
 
 // BuildURI constructs a connection URI from the connection fields.
+// Uses net/url builder to prevent URI injection via special characters.
 func (c *Connection) BuildURI() string {
 	switch c.Type {
 	case ConnTypePostgres:
-		uri := "postgres://"
+		u := &url.URL{Scheme: "postgres"}
 		if c.Login != "" {
-			uri += c.Login
 			if c.Password != "" {
-				uri += ":" + c.Password
+				u.User = url.UserPassword(c.Login, c.Password)
+			} else {
+				u.User = url.User(c.Login)
 			}
-			uri += "@"
 		}
-		uri += c.Host
 		if c.Port > 0 {
-			uri += ":" + itoa(c.Port)
+			u.Host = c.Host + ":" + strconv.Itoa(c.Port)
+		} else {
+			u.Host = c.Host
 		}
 		if c.Schema != "" {
-			uri += "/" + c.Schema
+			u.Path = "/" + c.Schema
 		}
-		return uri
+		return u.String()
+
 	case ConnTypeMySQL:
-		if c.Login == "" {
-			return c.Host
+		// MySQL DSN format: user:password@tcp(host:port)/dbname
+		u := &url.URL{Scheme: "mysql"}
+		if c.Login != "" {
+			if c.Password != "" {
+				u.User = url.UserPassword(c.Login, c.Password)
+			} else {
+				u.User = url.User(c.Login)
+			}
 		}
-		uri := c.Login
-		if c.Password != "" {
-			uri += ":" + c.Password
-		}
-		uri += "@tcp(" + c.Host
+		host := c.Host
 		if c.Port > 0 {
-			uri += ":" + itoa(c.Port)
+			host = c.Host + ":" + strconv.Itoa(c.Port)
 		}
-		uri += ")"
+		u.Host = "tcp(" + host + ")"
 		if c.Schema != "" {
-			uri += "/" + c.Schema
+			u.Path = "/" + c.Schema
 		}
-		return uri
+		return u.String()
+
 	case ConnTypeSQLite:
 		return c.Host // host is the file path
+
 	case ConnTypeHTTP:
 		scheme := "https"
 		if c.Port == 80 {
 			scheme = "http"
 		}
-		uri := scheme + "://" + c.Host
+		u := &url.URL{Scheme: scheme, Host: c.Host}
 		if c.Port > 0 && c.Port != 80 && c.Port != 443 {
-			uri += ":" + itoa(c.Port)
+			u.Host = c.Host + ":" + strconv.Itoa(c.Port)
 		}
-		return uri
+		return u.String()
+
+	case ConnTypeSFTP:
+		u := &url.URL{Scheme: "sftp"}
+		if c.Login != "" {
+			if c.Password != "" {
+				u.User = url.UserPassword(c.Login, c.Password)
+			} else {
+				u.User = url.User(c.Login)
+			}
+		}
+		if c.Port > 0 {
+			u.Host = c.Host + ":" + strconv.Itoa(c.Port)
+		} else {
+			u.Host = c.Host
+		}
+		if c.Schema != "" {
+			u.Path = "/" + c.Schema
+		}
+		return u.String()
+
+	case ConnTypeS3:
+		u := &url.URL{Scheme: "s3", Host: c.Host}
+		if c.Schema != "" {
+			u.Path = "/" + c.Schema
+		}
+		return u.String()
+
 	default:
 		return c.Host
 	}
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	s := ""
-	for n > 0 {
-		s = string(rune('0'+n%10)) + s
-		n /= 10
-	}
-	return s
 }

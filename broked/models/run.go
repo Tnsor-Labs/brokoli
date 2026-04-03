@@ -18,10 +18,24 @@ type Run struct {
 	ID         string            `json:"id"`
 	PipelineID string            `json:"pipeline_id"`
 	Status     RunStatus         `json:"status"`
+	Error      string            `json:"error,omitempty"` // top-level error (from first failed node)
 	Params     map[string]string `json:"params,omitempty"` // runtime parameter overrides
 	StartedAt  *time.Time        `json:"started_at"`
 	FinishedAt *time.Time        `json:"finished_at"`
 	NodeRuns   []NodeRun         `json:"node_runs"`
+}
+
+// PopulateError sets the Error field from the first failed NodeRun.
+func (r *Run) PopulateError() {
+	if r.Error != "" || r.Status != RunStatusFailed {
+		return
+	}
+	for _, nr := range r.NodeRuns {
+		if nr.Error != "" {
+			r.Error = nr.Error
+			return
+		}
+	}
 }
 
 // NodeRun represents the execution of a single node within a pipeline run.
