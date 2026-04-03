@@ -3,6 +3,7 @@
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import Pagination from "../components/Pagination.svelte";
 
   interface Variable {
     key: string;
@@ -16,6 +17,8 @@
   let variables: Variable[] = [];
   let loading = true;
   let searchQuery = "";
+  let varPage = 1;
+  let varPageSize = 25;
 
   // Modal
   let showModal = false;
@@ -100,6 +103,8 @@
     v.key.toLowerCase().includes(searchQuery.toLowerCase()) ||
     v.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  $: paginatedVars = filtered.slice((varPage - 1) * varPageSize, varPage * varPageSize);
+  $: if (searchQuery) varPage = 1;
 </script>
 
 <div class="variables-page animate-in">
@@ -139,7 +144,7 @@
         <span class="col-desc">Description</span>
         <span class="col-actions">Actions</span>
       </div>
-      {#each filtered as v}
+      {#each paginatedVars as v}
         <div class="table-row">
           <span class="col-key"><code class="key-badge">{v.key}</code></span>
           <span class="col-type">
@@ -167,6 +172,8 @@
         </div>
       {/each}
     </div>
+    <Pagination total={filtered.length} page={varPage} pageSize={varPageSize}
+      on:page={(e) => varPage = e.detail} on:pagesize={(e) => { varPageSize = e.detail; varPage = 1; }} />
   {/if}
 
   {#if showModal}

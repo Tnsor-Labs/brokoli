@@ -1,5 +1,6 @@
 <script lang="ts">
   import { login, createFirstUser, needsSetup, authUser } from "../lib/auth";
+  import { loadPermissions } from "../lib/auth";
   import { push } from "svelte-spa-router";
 
   let username = "";
@@ -26,6 +27,7 @@
       error = err;
       loading = false;
     } else {
+      await loadPermissions();
       push("/");
     }
   }
@@ -79,6 +81,10 @@
           Sign In
         {/if}
       </button>
+
+      {#if !$needsSetup}
+        <p class="signup-link">Don't have an account? <a href="#/signup">Sign up</a></p>
+      {/if}
     </div>
   </div>
 </div>
@@ -166,4 +172,18 @@
   }
   .btn-login:hover { opacity: 0.9; }
   .btn-login:disabled { opacity: 0.6; cursor: wait; }
+
+  .signup-link {
+    font-size: 13px;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 4px;
+  }
+  .signup-link a {
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .signup-link a:hover {
+    color: var(--accent-hover);
+  }
 </style>

@@ -3,6 +3,7 @@
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import Pagination from "../components/Pagination.svelte";
 
   interface Connection {
     id: string;
@@ -26,6 +27,8 @@
   }
 
   let connections: Connection[] = [];
+  let connPage = 1;
+  let connPageSize = 25;
   let connTypes: ConnType[] = [];
   let loading = true;
 
@@ -180,7 +183,7 @@
         <span class="col-desc">Description</span>
         <span class="col-actions">Actions</span>
       </div>
-      {#each connections as conn}
+      {#each connections.slice((connPage - 1) * connPageSize, connPage * connPageSize) as conn}
         <div class="table-row">
           <span class="col-id"><code class="conn-id-badge">{conn.conn_id}</code></span>
           <span class="col-type"><span class="type-badge">{typeLabel(conn.type)}</span></span>
@@ -197,6 +200,8 @@
         </div>
       {/each}
     </div>
+    <Pagination total={connections.length} page={connPage} pageSize={connPageSize}
+      on:page={(e) => connPage = e.detail} on:pagesize={(e) => { connPageSize = e.detail; connPage = 1; }} />
   {/if}
 
   {#if showModal}
