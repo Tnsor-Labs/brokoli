@@ -1,22 +1,19 @@
 package engine
 
 import (
-	"encoding/csv"
+	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/models"
-	"github.com/hc12r/broked/quality"
 	"github.com/hc12r/broked/store"
 	"github.com/hc12r/brokolisql-go/pkg/common"
-	"github.com/hc12r/brokolisql-go/pkg/fetchers"
-	"github.com/hc12r/brokolisql-go/pkg/loaders"
 )
 
 // Runner executes a single pipeline run.
@@ -25,6 +22,8 @@ type Runner struct {
 	eventCh       chan<- models.Event
 	varStore      VariableStore       // for ${var.key} resolution
 	connResolver  *ConnectionResolver // for conn_id → URI
+	ctx           context.Context
+	cancel        context.CancelFunc
 	run           *models.Run
 	pipe          *models.Pipeline
 	skipNodes     map[string]bool
@@ -33,24 +32,43 @@ type Runner struct {
 	dryRunResults map[string]*DryRunNodeResult
 	params        map[string]string // runtime params
 	varCtx        *VariableContext
+	preRunID      string // pre-generated run ID (for registration before Execute)
+	executors     []extensions.NodeExecutor // enterprise: external executors (K8s, Docker)
+	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 }
 
 // NewRunner creates a runner for the given pipeline.
-func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver) *Runner {
+func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider) *Runner {
 	return &Runner{
 		varStore:     vs,
 		connResolver: cr,
+		executors:    execs,
+		notifier:     notifier,
 		store:        s,
 		eventCh:      eventCh,
 		pipe:         pipe,
 	}
 }
 
+// Cancel stops a running pipeline.
+func (r *Runner) Cancel() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
 // Execute runs the pipeline end-to-end.
 func (r *Runner) Execute() (*models.Run, error) {
+	r.ctx, r.cancel = context.WithCancel(context.Background())
+	defer r.cancel()
+
 	now := time.Now()
+	runID := r.preRunID
+	if runID == "" {
+		runID = uuid.New().String()
+	}
 	r.run = &models.Run{
-		ID:         uuid.New().String(),
+		ID:         runID,
 		PipelineID: r.pipe.ID,
 		Status:     models.RunStatusRunning,
 		StartedAt:  &now,
@@ -59,6 +77,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 		return nil, fmt.Errorf("create run: %w", err)
 	}
 	r.emit(models.Event{Type: models.EventRunStarted, RunID: r.run.ID, PipelineID: r.pipe.ID})
+	r.fireHook("on_start", nil)
 
 	// Initialize variable context — merge pipeline default params with runtime params
 	mergedParams := make(map[string]string)
@@ -101,6 +120,12 @@ func (r *Runner) Execute() (*models.Run, error) {
 
 	var runErr error
 	for {
+		// Check if cancelled
+		if r.ctx.Err() != nil {
+			runErr = fmt.Errorf("pipeline cancelled")
+			break
+		}
+
 		// Collect ready nodes (in-degree == 0 and not yet processed)
 		var ready []models.Node
 		for id, deg := range remaining {
@@ -127,6 +152,20 @@ func (r *Runner) Execute() (*models.Run, error) {
 			go func(n models.Node) {
 				defer wg.Done()
 				defer func() { <-sem }() // release semaphore
+
+				// Recover from panics — never let a node crash the server
+				defer func() {
+					if rec := recover(); rec != nil {
+						r.log(n.ID, models.LogLevelError, "PANIC in node %s: %v", n.Name, rec)
+						errCh <- fmt.Errorf("node %s panicked: %v", n.Name, rec)
+					}
+				}()
+
+				// Check cancellation before starting node
+				if r.ctx.Err() != nil {
+					errCh <- fmt.Errorf("pipeline cancelled")
+					return
+				}
 
 				if err := r.executeNode(n, outputs, &outputsMu); err != nil {
 					errCh <- err
@@ -160,10 +199,34 @@ func (r *Runner) Execute() (*models.Run, error) {
 	}
 
 	finishTime := time.Now()
+
+	// Check if already cancelled (by CancelRun)
+	if r.ctx.Err() != nil {
+		r.run.Status = models.RunStatusCancelled
+		r.run.FinishedAt = &finishTime
+		r.store.UpdateRun(r.run)
+		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
+		r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
+		return r.run, fmt.Errorf("pipeline cancelled")
+	}
+
+	if runErr != nil {
+		r.run.Status = models.RunStatusFailed
+		r.run.FinishedAt = &finishTime
+		r.store.UpdateRun(r.run)
+		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
+		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
+		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
+		NotifyPipelineEvent(r.pipe, r.run, "run.failed", runErr.Error())
+		return r.run, runErr
+	}
+
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
 	r.store.UpdateRun(r.run)
 	r.emit(models.Event{Type: models.EventRunCompleted, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusSuccess})
+	r.fireHook("on_success", nil)
+	r.sendNotification("run.completed", "info", fmt.Sprintf("Pipeline \"%s\" completed", r.pipe.Name), "Run finished successfully")
 	NotifyPipelineEvent(r.pipe, r.run, "run.completed", "")
 	return r.run, nil
 }
@@ -214,29 +277,80 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	}
 	outputsMu.Unlock()
 
-	// Retry logic
+	// Ensure input is never nil for non-source nodes (prevents panics)
+	if input == nil && node.Type != models.NodeTypeSourceFile &&
+		node.Type != models.NodeTypeSourceAPI && node.Type != models.NodeTypeSourceDB {
+		input = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
+	}
+
+	// Retry logic with exponential backoff
 	maxRetries := 0
 	if mr, ok := node.Config["max_retries"].(float64); ok {
 		maxRetries = int(mr)
 	}
-	retryDelay := time.Second
+	baseDelay := time.Second
 	if rd, ok := node.Config["retry_delay"].(float64); ok && rd > 0 {
-		retryDelay = time.Duration(rd) * time.Millisecond
+		baseDelay = time.Duration(rd) * time.Millisecond
 	}
 
 	var output *common.DataSet
 	var err error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			r.log(node.ID, models.LogLevelWarning, "Retry %d/%d after %v", attempt, maxRetries, retryDelay)
-			time.Sleep(retryDelay)
+			// Exponential backoff: baseDelay * 2^(attempt-1), max 60s
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			if delay > 60*time.Second {
+				delay = 60 * time.Second
+			}
+			r.log(node.ID, models.LogLevelWarning, "Retry %d/%d in %v (exponential backoff)", attempt, maxRetries, delay)
+			r.emit(models.Event{
+				Type:   models.EventNodeStarted,
+				RunID:  r.run.ID,
+				NodeID: node.ID,
+				Status: "retrying",
+				Error:  fmt.Sprintf("retry %d/%d", attempt, maxRetries),
+			})
+			// Context-aware sleep
+			select {
+			case <-time.After(delay):
+			case <-r.ctx.Done():
+				return fmt.Errorf("cancelled during retry wait")
+			}
 		}
-		output, err = r.runNodeLogic(node, input, allInputs)
+		// Per-node timeout (default 30m for most, configurable via node config "timeout" in seconds)
+		type nodeResult struct {
+			output *common.DataSet
+			err    error
+		}
+
+		nodeTimeout := 30 * time.Minute
+		if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
+			nodeTimeout = time.Duration(t) * time.Second
+		}
+
+		resultCh := make(chan nodeResult, 1)
+		go func() {
+			out, e := r.runNodeLogic(node, input, allInputs)
+			resultCh <- nodeResult{out, e}
+		}()
+
+		select {
+		case result := <-resultCh:
+			output, err = result.output, result.err
+		case <-time.After(nodeTimeout):
+			err = fmt.Errorf("node timed out after %s", nodeTimeout)
+		case <-r.ctx.Done():
+			err = fmt.Errorf("pipeline cancelled")
+		}
+
 		if err == nil {
+			if attempt > 0 {
+				r.log(node.ID, models.LogLevelInfo, "Succeeded after %d retries", attempt)
+			}
 			break
 		}
 		if attempt < maxRetries {
-			r.log(node.ID, models.LogLevelWarning, "Attempt %d failed: %v", attempt+1, err)
+			r.log(node.ID, models.LogLevelWarning, "Attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
 		}
 	}
 
@@ -292,13 +406,61 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	if !r.dryRun {
 		r.store.UpdateNodeRun(nr)
 	}
-	r.log(node.ID, models.LogLevelInfo, "Node completed: %d rows in %dms", rowCount, duration)
+	// Detailed completion log
+	durStr := fmt.Sprintf("%dms", duration)
+	if duration >= 1000 {
+		durStr = fmt.Sprintf("%.1fs", float64(duration)/1000)
+	}
+	throughput := ""
+	if duration > 0 && rowCount > 0 {
+		rps := float64(rowCount) / (float64(duration) / 1000)
+		if rps >= 1000 {
+			throughput = fmt.Sprintf(" (%.0fK rows/sec)", rps/1000)
+		} else {
+			throughput = fmt.Sprintf(" (%.0f rows/sec)", rps)
+		}
+	}
+	colInfo := ""
+	if output != nil && len(output.Columns) > 0 {
+		colInfo = fmt.Sprintf(", columns: [%s]", truncateList(output.Columns, 8))
+	}
+	r.log(node.ID, models.LogLevelInfo, "Node completed: %d rows in %s%s%s", rowCount, durStr, throughput, colInfo)
 	r.emit(models.Event{Type: models.EventNodeCompleted, RunID: r.run.ID, NodeID: node.ID, RowCount: rowCount, DurationMs: duration})
 
 	return nil
 }
 
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet) (*common.DataSet, error) {
+	// Check if an external executor handles this node type (enterprise: K8s, Docker)
+	for _, exec := range r.executors {
+		if exec != nil && exec.CanHandle(string(node.Type)) {
+			r.log(node.ID, models.LogLevelInfo, "Dispatching to %s executor", exec.Name())
+			result, err := exec.Execute(extensions.ExecutionContext{
+				RunID:      r.run.ID,
+				NodeID:     node.ID,
+				NodeType:   string(node.Type),
+				NodeName:   node.Name,
+				Config:     node.Config,
+				InputData:  input,
+				PipelineID: r.pipe.ID,
+			})
+			if err != nil {
+				return nil, err
+			}
+			for _, logLine := range result.Logs {
+				if logLine != "" {
+					r.log(node.ID, models.LogLevelInfo, "[%s] %s", exec.Name(), logLine)
+				}
+			}
+			if result.OutputData != nil {
+				if ds, ok := result.OutputData.(*common.DataSet); ok {
+					return ds, nil
+				}
+			}
+			return nil, nil
+		}
+	}
+
 	switch node.Type {
 	case models.NodeTypeSourceFile:
 		return r.runSourceFile(node)
@@ -320,399 +482,17 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		return r.runSinkFile(node, input)
 	case models.NodeTypeSinkDB:
 		return r.runSinkDB(node, input)
+	case models.NodeTypeSinkAPI:
+		return r.runSinkAPI(node, input)
+	case models.NodeTypeMigrate:
+		return r.runMigrate(node)
+	case models.NodeTypeCondition:
+		return r.runCondition(node, input)
 	default:
 		return input, nil
 	}
 }
 
-func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
-	path, _ := node.Config["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("source_file node requires 'path' config")
-	}
-
-	loader, err := loaders.GetLoader(path)
-	if err != nil {
-		return nil, fmt.Errorf("get loader: %w", err)
-	}
-
-	ds, err := loader.Load(path)
-	if err != nil {
-		return nil, fmt.Errorf("load %s: %w", path, err)
-	}
-	r.log(node.ID, models.LogLevelInfo, "Loaded %d rows from %s", len(ds.Rows), path)
-	return ds, nil
-}
-
-func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
-	source, _ := node.Config["url"].(string)
-	sourceType, _ := node.Config["source_type"].(string)
-	if source == "" {
-		return nil, fmt.Errorf("source_api node requires 'url' config")
-	}
-	if sourceType == "" {
-		sourceType = "rest"
-	}
-
-	fetcher, err := fetchers.GetFetcher(sourceType)
-	if err != nil {
-		return nil, fmt.Errorf("get fetcher: %w", err)
-	}
-
-	ds, err := fetcher.Fetch(source, node.Config)
-	if err != nil {
-		return nil, fmt.Errorf("fetch %s: %w", source, err)
-	}
-	r.log(node.ID, models.LogLevelInfo, "Fetched %d rows from %s", len(ds.Rows), source)
-	return ds, nil
-}
-
-func (r *Runner) runSourceDB(node models.Node) (*common.DataSet, error) {
-	uri, _ := node.Config["uri"].(string)
-	query, _ := node.Config["query"].(string)
-	if uri == "" {
-		return nil, fmt.Errorf("source_db node requires 'uri' config")
-	}
-	if query == "" {
-		return nil, fmt.Errorf("source_db node requires 'query' config")
-	}
-
-	ds, err := QueryDatabase(uri, query)
-	if err != nil {
-		return nil, fmt.Errorf("query database: %w", err)
-	}
-	r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from database", len(ds.Rows), len(ds.Columns))
-	return ds, nil
-}
-
-func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	script, _ := node.Config["script"].(string)
-	if script == "" {
-		return nil, fmt.Errorf("code node requires 'script' in config")
-	}
-
-	timeoutSec := 30
-	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
-		timeoutSec = int(t)
-	}
-
-	// Remove script from config before passing to the script (avoid circular ref)
-	configForScript := make(map[string]interface{})
-	for k, v := range node.Config {
-		if k != "script" {
-			configForScript[k] = v
-		}
-	}
-
-	// Get run params
-	var runParams map[string]string
-	if r.varCtx != nil {
-		runParams = r.varCtx.Params
-	}
-
-	result, stderr, err := ExecuteCodeNode(script, input, configForScript, runParams, timeoutSec)
-	if stderr != "" {
-		// Log stderr as warnings (user print statements, warnings, etc.)
-		for _, line := range splitLines(stderr) {
-			if line != "" {
-				r.log(node.ID, models.LogLevelWarning, "python: %s", line)
-			}
-		}
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "Python script executed: %d rows in, %d rows out", len(input.Rows), len(result.Rows))
-	return result, nil
-}
-
-func splitLines(s string) []string {
-	var lines []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\n' {
-			lines = append(lines, s[start:i])
-			start = i + 1
-		}
-	}
-	if start < len(s) {
-		lines = append(lines, s[start:])
-	}
-	return lines
-}
-
-func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.DataSet, error) {
-	if len(inputs) < 2 {
-		return nil, fmt.Errorf("join node requires exactly 2 inputs, got %d", len(inputs))
-	}
-
-	leftKey, _ := node.Config["left_key"].(string)
-	rightKey, _ := node.Config["right_key"].(string)
-	joinTypeStr, _ := node.Config["join_type"].(string)
-
-	if leftKey == "" {
-		return nil, fmt.Errorf("join node requires 'left_key' config")
-	}
-	if rightKey == "" {
-		rightKey = leftKey
-	}
-
-	jt := ParseJoinType(joinTypeStr)
-	result, err := JoinDatasets(inputs[0], inputs[1], leftKey, rightKey, jt)
-	if err != nil {
-		return nil, err
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "%s join on %s=%s: %d + %d -> %d rows",
-		jt, leftKey, rightKey, len(inputs[0].Rows), len(inputs[1].Rows), len(result.Rows))
-	return result, nil
-}
-
-func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("transform node requires input data")
-	}
-
-	// Parse rules from node config
-	rulesRaw, _ := node.Config["rules"]
-	rulesJSON, err := json.Marshal(rulesRaw)
-	if err != nil {
-		return nil, fmt.Errorf("marshal transform rules: %w", err)
-	}
-
-	var rules []TransformRule
-	if err := json.Unmarshal(rulesJSON, &rules); err != nil {
-		return nil, fmt.Errorf("parse transform rules: %w", err)
-	}
-
-	// Clone dataset to avoid mutating upstream
-	clone := &common.DataSet{
-		Columns: make([]string, len(input.Columns)),
-		Rows:    make([]common.DataRow, len(input.Rows)),
-	}
-	copy(clone.Columns, input.Columns)
-	for i, row := range input.Rows {
-		newRow := make(common.DataRow, len(row))
-		for k, v := range row {
-			newRow[k] = v
-		}
-		clone.Rows[i] = newRow
-	}
-
-	if err := ApplyTransforms(rules, clone); err != nil {
-		return nil, err
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "Applied %d transforms: %d rows in, %d rows out",
-		len(rules), len(input.Rows), len(clone.Rows))
-	return clone, nil
-}
-
-func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("quality_check node requires input data")
-	}
-
-	// Parse checks from node config
-	checksRaw, _ := node.Config["checks"]
-	checksJSON, err := json.Marshal(checksRaw)
-	if err != nil {
-		return nil, fmt.Errorf("marshal checks config: %w", err)
-	}
-
-	var checks []quality.Check
-	if err := json.Unmarshal(checksJSON, &checks); err != nil {
-		return nil, fmt.Errorf("parse checks config: %w", err)
-	}
-
-	// Apply default on_failure from node config
-	defaultOnFailure, _ := node.Config["on_failure"].(string)
-	if defaultOnFailure == "" {
-		defaultOnFailure = "warn"
-	}
-	for i := range checks {
-		if checks[i].OnFailure == "" {
-			checks[i].OnFailure = defaultOnFailure
-		}
-	}
-
-	checker := quality.NewChecker()
-	result, err := checker.Run(checks, input)
-	if err != nil {
-		return nil, err
-	}
-
-	// Log each check result
-	for _, cr := range result.Results {
-		if cr.Passed {
-			r.log(node.ID, models.LogLevelInfo, "PASS: %s", cr.Message)
-		} else {
-			r.log(node.ID, models.LogLevelWarning, "FAIL: %s", cr.Message)
-		}
-	}
-	r.log(node.ID, models.LogLevelInfo, "Quality check: %s", result.Summary)
-
-	if result.ShouldBlock() {
-		return nil, fmt.Errorf("quality check failed (blocking): %s", result.Summary)
-	}
-
-	// Pass data through
-	return input, nil
-}
-
-func (r *Runner) runSQLGenerate(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("sql_generate node requires input data")
-	}
-
-	dialectName, _ := node.Config["dialect"].(string)
-	tableName, _ := node.Config["table"].(string)
-	batchSize := 100
-	if bs, ok := node.Config["batch_size"].(float64); ok {
-		batchSize = int(bs)
-	}
-	createTable, _ := node.Config["create_table"].(bool)
-
-	cfg := SQLGenConfig{
-		Dialect:     dialectName,
-		Table:       tableName,
-		BatchSize:   batchSize,
-		CreateTable: createTable,
-	}
-
-	sql, err := GenerateSQL(cfg, input)
-	if err != nil {
-		return nil, fmt.Errorf("generate SQL: %w", err)
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "Generated %s SQL for table %q: %d rows, %d bytes",
-		cfg.Dialect, cfg.Table, len(input.Rows), len(sql))
-
-	// Pass SQL downstream as a single-row dataset
-	return &common.DataSet{
-		Columns: []string{"sql_output"},
-		Rows:    []common.DataRow{{"sql_output": sql}},
-	}, nil
-}
-
-func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("sink_file node requires input data")
-	}
-
-	path, _ := node.Config["path"].(string)
-	if path == "" {
-		return nil, fmt.Errorf("sink_file node requires 'path' config")
-	}
-
-	// Determine format from config or file extension
-	format, _ := node.Config["format"].(string)
-	if format == "" {
-		// Auto-detect from extension
-		switch {
-		case strings.HasSuffix(path, ".csv") || strings.HasSuffix(path, ".tsv"):
-			format = "csv"
-		case strings.HasSuffix(path, ".sql"):
-			format = "sql"
-		default:
-			format = "json"
-		}
-	}
-
-	// Ensure output directory exists
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create output directory: %w", err)
-		}
-	}
-
-	var content []byte
-	var err error
-
-	switch format {
-	case "csv":
-		content, err = r.marshalCSV(input)
-	case "sql":
-		// If input has sql_output column, write it directly
-		if len(input.Rows) > 0 {
-			if sql, ok := input.Rows[0]["sql_output"].(string); ok {
-				content = []byte(sql)
-				break
-			}
-		}
-		content, err = json.MarshalIndent(input.Rows, "", "  ")
-	default: // json
-		content, err = json.MarshalIndent(input.Rows, "", "  ")
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf("marshal output as %s: %w", format, err)
-	}
-
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		return nil, fmt.Errorf("write %s: %w", path, err)
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "Wrote %s output to %s (%d bytes, %d rows)", format, path, len(content), len(input.Rows))
-	return nil, nil
-}
-
-func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
-	var buf strings.Builder
-	w := csv.NewWriter(&buf)
-
-	// Header
-	if err := w.Write(ds.Columns); err != nil {
-		return nil, err
-	}
-
-	// Rows
-	for _, row := range ds.Rows {
-		record := make([]string, len(ds.Columns))
-		for i, col := range ds.Columns {
-			if v, ok := row[col]; ok && v != nil {
-				record[i] = fmt.Sprintf("%v", v)
-			}
-		}
-		if err := w.Write(record); err != nil {
-			return nil, err
-		}
-	}
-
-	w.Flush()
-	return []byte(buf.String()), w.Error()
-}
-
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("sink_db node requires input data")
-	}
-
-	uri, _ := node.Config["uri"].(string)
-	if uri == "" {
-		return nil, fmt.Errorf("sink_db node requires 'uri' config")
-	}
-
-	// Input should have sql_output from a sql_generate node
-	var sqlContent string
-	if len(input.Rows) == 1 {
-		if s, ok := input.Rows[0]["sql_output"].(string); ok {
-			sqlContent = s
-		}
-	}
-	if sqlContent == "" {
-		return nil, fmt.Errorf("sink_db expects input from sql_generate node (sql_output column)")
-	}
-
-	affected, err := ExecuteSQL(uri, sqlContent)
-	if err != nil {
-		return nil, fmt.Errorf("execute SQL: %w", err)
-	}
-
-	r.log(node.ID, models.LogLevelInfo, "Executed SQL against database: %d rows affected", affected)
-	return nil, nil
-}
 
 func (r *Runner) failRun(err error) error {
 	finishTime := time.Now()
@@ -720,7 +500,12 @@ func (r *Runner) failRun(err error) error {
 	r.run.FinishedAt = &finishTime
 	r.store.UpdateRun(r.run)
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
+	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), err.Error())
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())
+	// Add to dead letter queue
+	if r.store != nil {
+		r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", err.Error(), "")
+	}
 	return err
 }
 
@@ -793,3 +578,49 @@ func topoSort(nodes []models.Node, edges []models.Edge) ([]models.Node, error) {
 
 	return sorted, nil
 }
+
+
+// ── Lifecycle Hooks ─────────────────────────────────────────
+
+func (r *Runner) fireHook(hookName string, extra map[string]string) {
+	if r.pipe.Hooks == nil {
+		return
+	}
+	hook, ok := r.pipe.Hooks[hookName]
+	if !ok || !hook.Enabled || hook.URL == "" {
+		return
+	}
+
+	payload := map[string]interface{}{
+		"event":       hookName,
+		"pipeline_id": r.pipe.ID,
+		"pipeline":    r.pipe.Name,
+		"run_id":      r.run.ID,
+		"timestamp":   time.Now().Format(time.RFC3339),
+	}
+	for k, v := range extra {
+		payload[k] = v
+	}
+
+	data, _ := json.Marshal(payload)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", hook.URL, strings.NewReader(string(data)))
+	if err != nil {
+		r.log("", models.LogLevelWarning, "Hook %s: failed to create request: %v", hookName, err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		r.log("", models.LogLevelWarning, "Hook %s: request failed: %v", hookName, err)
+		return
+	}
+	resp.Body.Close()
+	r.log("", models.LogLevelInfo, "Hook %s fired: HTTP %d", hookName, resp.StatusCode)
+}
+

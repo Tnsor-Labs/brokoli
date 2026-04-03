@@ -3,10 +3,12 @@ package engine
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
 
+	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/models"
 )
 
@@ -41,6 +43,67 @@ func SendWebhook(url string, payload WebhookPayload) {
 	}
 	resp.Body.Close()
 	log.Printf("webhook: POST %s -> %d", url, resp.StatusCode)
+}
+
+// sendNotification dispatches an alert via the configured NotificationProvider.
+func (r *Runner) sendNotification(event, severity, title, message string) {
+	if r.notifier == nil || !r.notifier.Enabled() {
+		return
+	}
+	runID := ""
+	if r.run != nil {
+		runID = r.run.ID
+	}
+
+	extra := make(map[string]string)
+	extra["schedule"] = r.pipe.Schedule
+
+	// Duration
+	if r.run != nil && r.run.StartedAt != nil {
+		end := time.Now()
+		if r.run.FinishedAt != nil {
+			end = *r.run.FinishedAt
+		}
+		dur := end.Sub(*r.run.StartedAt)
+		if dur < time.Second {
+			extra["duration"] = fmt.Sprintf("%dms", dur.Milliseconds())
+		} else if dur < time.Minute {
+			extra["duration"] = fmt.Sprintf("%.1fs", dur.Seconds())
+		} else {
+			extra["duration"] = fmt.Sprintf("%.1fm", dur.Minutes())
+		}
+	}
+
+	// Node stats
+	total := len(r.pipe.Nodes)
+	extra["nodes"] = fmt.Sprintf("%d", total)
+
+	// Failed node name
+	if r.run != nil && severity == "critical" {
+		for _, nr := range r.run.NodeRuns {
+			if nr.Error != "" {
+				node := r.nodeByID(nr.NodeID)
+				if node != nil {
+					extra["failed_node"] = node.Name
+				}
+				break
+			}
+		}
+	}
+
+	n := extensions.Notification{
+		Event:      event,
+		Severity:   severity,
+		Title:      title,
+		Message:    message,
+		PipelineID: r.pipe.ID,
+		Pipeline:   r.pipe.Name,
+		RunID:      runID,
+		Extra:      extra,
+	}
+	if err := r.notifier.Send(n); err != nil {
+		r.log("", models.LogLevelWarning, "Notification (%s) failed: %v", r.notifier.Name(), err)
+	}
 }
 
 // NotifyPipelineEvent sends webhook notifications if configured.
