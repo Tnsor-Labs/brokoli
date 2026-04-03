@@ -266,6 +266,9 @@
           {#each filteredConns as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
+          {#if node.config["conn_id"] && !filteredConns.find(c => c.conn_id === node.config["conn_id"])}
+            <option value={node.config["conn_id"]}>{node.config["conn_id"]} (not found)</option>
+          {/if}
         </select>
       </div>
       {#if !usingConnection}
@@ -302,6 +305,10 @@
 
     <!-- ── Code (Python) ── -->
     {#if node.type === "code"}
+      <div class="field">
+        <label>Python Path</label>
+        <input value={node.config["python_path"] || ""} on:input={(e) => updateConfig("python_path", e.currentTarget.value)} placeholder="python3 (default, or /path/to/venv/bin/python)" />
+      </div>
       <div class="field">
         <label>Timeout (seconds)</label>
         <input type="number" value={node.config["timeout"] || 30} on:input={(e) => updateConfig("timeout", Number(e.currentTarget.value))} min="1" />
@@ -450,6 +457,9 @@
           {#each filteredConns as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
+          {#if node.config["conn_id"] && !filteredConns.find(c => c.conn_id === node.config["conn_id"])}
+            <option value={node.config["conn_id"]}>{node.config["conn_id"]} (not found)</option>
+          {/if}
         </select>
       </div>
       {#if !node.config["conn_id"]}
@@ -466,6 +476,134 @@
         <button class="btn-test-conn" on:click={testConnection} disabled={testingConnection}>
           {testingConnection ? "Testing..." : "Test Connection"}
         </button>
+      </div>
+    {/if}
+
+    <!-- ── Sink API ── -->
+    {#if node.type === "sink_api"}
+      {#if filteredConns.length > 0}
+        <div class="field">
+          <label>Connection</label>
+          <select value={node.config["conn_id"] || ""} on:change={(e) => {
+            const val = e.currentTarget.value;
+            if (val) { updateConfig("conn_id", val); }
+            else { updateConfig("conn_id", ""); }
+          }}>
+            <option value="">Manual URL</option>
+            {#each filteredConns as c}
+              <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
+            {/each}
+          </select>
+        </div>
+      {/if}
+      <div class="field">
+        <label>URL</label>
+        <input value={node.config["url"] || ""} on:input={(e) => updateConfig("url", e.currentTarget.value)} placeholder="https://api.example.com/ingest" />
+      </div>
+      <div class="field">
+        <label>Method</label>
+        <select value={node.config["method"] || "POST"} on:change={(e) => updateConfig("method", e.currentTarget.value)}>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="PATCH">PATCH</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Batch Size</label>
+        <input type="number" value={node.config["batch_size"] || 100} on:input={(e) => updateConfig("batch_size", Number(e.currentTarget.value))} min="1" />
+      </div>
+    {/if}
+
+    <!-- ── DB Migration ── -->
+    {#if node.type === "migrate"}
+      <div class="field">
+        <label>Source Connection</label>
+        <select value={node.config["source_conn_id"] || ""} on:change={(e) => {
+          const val = e.currentTarget.value;
+          if (val) { updateConfig("source_conn_id", val); updateConfig("source_uri", ""); }
+          else { updateConfig("source_conn_id", ""); }
+        }}>
+          <option value="">Manual URI</option>
+          {#each availableConnections.filter(c => ["postgres","mysql","sqlite","generic"].includes(c.type)) as c}
+            <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
+          {/each}
+        </select>
+      </div>
+      {#if !node.config["source_conn_id"]}
+        <div class="field">
+          <label>Source URI</label>
+          <input value={node.config["source_uri"] || ""} on:input={(e) => updateConfig("source_uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/source_db" />
+        </div>
+      {:else}
+        <div class="field"><div class="conn-badge">Source: <strong>{node.config["source_conn_id"]}</strong></div></div>
+      {/if}
+      <div class="field">
+        <label>Source Query</label>
+        <textarea class="code-input" rows="3" value={node.config["source_query"] || ""} on:input={(e) => updateConfig("source_query", e.currentTarget.value)} placeholder="SELECT * FROM users"></textarea>
+      </div>
+      <div class="field">
+        <label>Destination Connection</label>
+        <select value={node.config["dest_conn_id"] || ""} on:change={(e) => {
+          const val = e.currentTarget.value;
+          if (val) { updateConfig("dest_conn_id", val); updateConfig("dest_uri", ""); }
+          else { updateConfig("dest_conn_id", ""); }
+        }}>
+          <option value="">Manual URI</option>
+          {#each availableConnections.filter(c => ["postgres","mysql","sqlite","generic"].includes(c.type)) as c}
+            <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
+          {/each}
+        </select>
+      </div>
+      {#if !node.config["dest_conn_id"]}
+        <div class="field">
+          <label>Destination URI</label>
+          <input value={node.config["dest_uri"] || ""} on:input={(e) => updateConfig("dest_uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/dest_db" />
+        </div>
+      {:else}
+        <div class="field"><div class="conn-badge">Destination: <strong>{node.config["dest_conn_id"]}</strong></div></div>
+      {/if}
+      <div class="field">
+        <label>Destination Table</label>
+        <input value={node.config["dest_table"] || ""} on:input={(e) => updateConfig("dest_table", e.currentTarget.value)} placeholder="users_migrated" />
+      </div>
+      <div class="field">
+        <label>Dialect</label>
+        <select value={node.config["dialect"] || "postgres"} on:change={(e) => updateConfig("dialect", e.currentTarget.value)}>
+          <option value="postgres">PostgreSQL</option>
+          <option value="mysql">MySQL</option>
+          <option value="sqlite">SQLite</option>
+          <option value="generic">Generic</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Chunk Size</label>
+        <input type="number" value={node.config["chunk_size"] || 5000} on:input={(e) => updateConfig("chunk_size", Number(e.currentTarget.value))} min="100" />
+      </div>
+      <div class="field">
+        <label class="toggle">
+          <input type="checkbox" checked={!!node.config["create_table"]} on:change={(e) => updateConfig("create_table", e.currentTarget.checked)} />
+          <span class="toggle-label">Create Table</span>
+        </label>
+      </div>
+    {/if}
+
+    <!-- ── Condition (If/Else) ── -->
+    {#if node.type === "condition"}
+      <div class="field">
+        <label>Condition Expression</label>
+        <input
+          value={node.config["expression"] || ""}
+          on:input={(e) => updateConfig("expression", e.currentTarget.value)}
+          placeholder='row_count > 0'
+        />
+      </div>
+      <div class="field-hint">
+        Expressions: <code>row_count &gt; N</code>, <code>column_exists("name")</code>,
+        <code>null_pct("col") &lt; 10</code>, <code>min("col") &gt; 0</code>
+      </div>
+      <div class="field">
+        <label>On True → continue downstream</label>
+        <label>On False → skip downstream nodes</label>
       </div>
     {/if}
 
@@ -497,7 +635,10 @@
     </div>
 
     <div class="panel-footer">
-      <button class="btn-danger" on:click={deleteNode}>Delete Node</button>
+      <div class="footer-actions">
+        <button class="btn-duplicate" on:click={() => dispatch("duplicate", node.id)}>Duplicate (D)</button>
+        <button class="btn-danger" on:click={deleteNode}>Delete</button>
+      </div>
     </div>
   {:else}
     <div class="empty-panel">
@@ -584,6 +725,14 @@
     letter-spacing: 0;
   }
 
+  .field-hint {
+    padding: 0 var(--space-lg) var(--space-sm);
+    font-size: 10px; color: var(--text-ghost); line-height: 1.6;
+  }
+  .field-hint code {
+    font-family: var(--font-mono); font-size: 10px; color: var(--accent);
+    background: var(--bg-tertiary); padding: 0 3px; border-radius: 2px;
+  }
   .field-group {
     padding: var(--space-sm) var(--space-lg);
     border-top: 1px solid var(--border);
@@ -694,8 +843,17 @@
     padding: var(--space-md) var(--space-lg);
     border-top: 1px solid var(--border);
   }
+  .footer-actions { display: flex; gap: 8px; }
+  .btn-duplicate {
+    flex: 1; padding: var(--space-sm);
+    border-radius: var(--radius-md);
+    background: var(--bg-tertiary); color: var(--text-secondary);
+    font-weight: 500; font-size: 12px;
+    transition: all 150ms ease;
+  }
+  .btn-duplicate:hover { background: var(--accent-glow); color: var(--accent); }
   .btn-danger {
-    width: 100%; padding: var(--space-sm);
+    flex: 1; padding: var(--space-sm);
     border-radius: var(--radius-md);
     background: var(--failed-bg); color: var(--failed);
     font-weight: 500; transition: background var(--transition-fast);

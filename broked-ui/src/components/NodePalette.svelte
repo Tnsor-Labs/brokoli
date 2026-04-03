@@ -5,7 +5,9 @@
   const categories = [
     { title: "Sources", types: ["source_file", "source_api", "source_db"] },
     { title: "Processing", types: ["transform", "code", "join", "quality_check", "sql_generate"] },
-    { title: "Outputs", types: ["sink_file", "sink_db"] },
+    { title: "Outputs", types: ["sink_file", "sink_db", "sink_api"] },
+    { title: "Migration", types: ["migrate"] },
+    { title: "Flow Control", types: ["condition"] },
   ];
 
   function onDragStart(e: DragEvent, type: string) {

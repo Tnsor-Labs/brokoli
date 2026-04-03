@@ -8,7 +8,6 @@
   let loading = true;
   let error = "";
 
-  // Re-load whenever runId or nodeId changes
   $: if (runId && nodeId) {
     load(runId, nodeId);
   }
@@ -42,14 +41,12 @@
 </script>
 
 <div class="preview">
-  <div class="preview-header">
-    <span class="preview-title">Data Preview{nodeName ? ` — ${nodeName}` : ""}</span>
-    <span class="preview-meta">
-      {#if !loading && !error}
-        {rows.length} row{rows.length !== 1 ? "s" : ""} / {columns.length} column{columns.length !== 1 ? "s" : ""}
-      {/if}
-    </span>
-  </div>
+  {#if !loading && !error && rows.length > 0}
+    <div class="preview-summary">
+      <span class="summary-stat">{rows.length} rows</span>
+      <span class="summary-stat">{columns.length} columns</span>
+    </div>
+  {/if}
 
   {#if loading}
     <div class="preview-empty">Loading...</div>
@@ -62,7 +59,7 @@
       <table>
         <thead>
           <tr>
-            <th class="row-num">#</th>
+            <th class="col-num">#</th>
             {#each columns as col}
               <th>{col}</th>
             {/each}
@@ -71,7 +68,7 @@
         <tbody>
           {#each rows as row, i}
             <tr>
-              <td class="row-num">{i + 1}</td>
+              <td class="col-num">{i + 1}</td>
               {#each columns as col}
                 <td class:null-val={row[col] === null || row[col] === undefined || row[col] === ""}>
                   {formatCell(row[col])}
@@ -87,96 +84,86 @@
 
 <style>
   .preview {
-    background: var(--bg-code);
-    border: 1px solid var(--border-sidebar);
-    border-radius: 8px;
     overflow: hidden;
   }
 
-  .preview-header {
+  .preview-summary {
     display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px 14px;
-    border-bottom: 1px solid var(--border-sidebar);
-    background: var(--bg-sidebar);
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 4px;
   }
-  .preview-title {
+  .summary-stat {
+    font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
-  }
-  .preview-meta {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 10.5px;
-    color: var(--text-dim);
   }
 
   .preview-empty {
     padding: 24px;
     text-align: center;
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 12px;
   }
 
   .table-scroll {
     overflow-x: auto;
-    max-height: 320px;
+    max-height: 360px;
     overflow-y: auto;
   }
 
   table {
     width: 100%;
     border-collapse: collapse;
-    font-size: 12px;
-    font-family: 'JetBrains Mono', monospace;
-  }
-
-  thead {
-    position: sticky;
-    top: 0;
-    z-index: 1;
+    font-size: 11px;
+    font-family: var(--font-mono);
   }
 
   th {
-    background: var(--bg-secondary);
-    color: var(--text-secondary);
-    font-weight: 600;
-    font-size: 10.5px;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 7px 12px;
     text-align: left;
-    white-space: nowrap;
+    padding: 5px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-ghost);
     border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    background: var(--bg-primary);
+    z-index: 1;
   }
 
   td {
-    padding: 5px 12px;
-    color: var(--text-primary);
-    border-bottom: 1px solid var(--border-sidebar);
+    padding: 4px 8px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
     white-space: nowrap;
-    max-width: 300px;
+    max-width: 280px;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
   tr:hover td {
-    background: var(--bg-card-hover);
+    background: var(--bg-tertiary);
   }
 
-  .row-num {
+  .col-num {
     color: var(--text-ghost);
-    width: 40px;
+    width: 32px;
     text-align: right;
-    padding-right: 8px;
+    padding-right: 6px;
+    font-size: 10px;
   }
 
-  .null-val {
+  td.null-val {
     color: var(--text-ghost);
     font-style: italic;
   }
-  .null-val::after {
+  td.null-val:empty::after {
     content: "null";
   }
 </style>

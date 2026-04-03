@@ -3,7 +3,6 @@
   import { theme, toggleTheme } from "../lib/theme";
   import { authUser, logout } from "../lib/auth";
   import { wsConnected } from "../lib/ws";
-
   export let currentPath: string = "/";
 
   const nav = [
@@ -149,6 +148,21 @@
     text-transform: uppercase; letter-spacing: 0.12em; margin-top: 2px;
   }
 
+  .ws-switcher {
+    padding: 0 12px 8px;
+  }
+  .ws-select {
+    width: 100%; padding: 6px 10px;
+    background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
+    border-radius: 6px; color: var(--text-primary);
+    font-size: 12px; font-weight: 500;
+    font-family: var(--font-ui);
+    cursor: pointer;
+    transition: border-color 150ms ease;
+  }
+  .ws-select:hover { border-color: var(--border-hover); }
+  .ws-select:focus { border-color: var(--accent); outline: none; }
+
   nav {
     flex: 1; padding: 12px 10px;
     display: flex; flex-direction: column; gap: 1px;
@@ -269,5 +283,27 @@
   .theme-toggle:hover {
     color: var(--text-primary);
     background: var(--bg-tertiary);
+  }
+
+  /* ── Tablet: icon-only sidebar ── */
+  @media (max-width: 1024px) {
+    .sidebar { width: 60px; overflow: hidden; }
+    .logo-text, .logo-sub { display: none; }
+    .logo { padding: 16px 12px; justify-content: center; }
+    .nav-item span { display: none; }
+    .nav-item { justify-content: center; padding: 10px; }
+    .ws-switcher { display: none; }
+    .user-details { display: none; }
+    .user-info { justify-content: center; }
+    .logout-btn { display: none; }
+    .footer-row { justify-content: center; }
+    .server-status span { display: none; }
+    .version { display: none; }
+    .open-label { display: none; }
+  }
+
+  /* ── Mobile: hide sidebar completely ── */
+  @media (max-width: 768px) {
+    .sidebar { display: none; }
   }
 </style>

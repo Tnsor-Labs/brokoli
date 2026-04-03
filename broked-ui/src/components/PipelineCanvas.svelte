@@ -2,7 +2,7 @@
   import type { Node, Edge, RunStatus } from "../lib/types";
   import { edgePath, outputPort, inputPort, NODE_WIDTH, NODE_HEIGHT } from "../lib/dag";
   import NodeCard from "./NodeCard.svelte";
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount, onDestroy } from "svelte";
   import { theme } from "../lib/theme";
 
   export let nodes: Node[] = [];
@@ -195,15 +195,34 @@
   }
 
   function onCanvasMouseDown(e: MouseEvent) {
-    if (e.button === 1 || (e.button === 0 && e.altKey)) {
-      panning = true;
-      panStart = { x: e.clientX + viewBox.x, y: e.clientY + viewBox.y };
+    const target = e.target as Element;
+    const isBackground = target.classList.contains("canvas-bg") || target.tagName === "svg";
+
+    // Allow panning: middle-click, alt+click, or left-click on canvas background
+    if (e.button === 1 || (e.button === 0 && e.altKey) || (e.button === 0 && isBackground)) {
       e.preventDefault();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const startViewX = viewBox.x;
+      const startViewY = viewBox.y;
+      let dragged = false;
 
       const onMove = (ev: MouseEvent) => {
-        viewBox.x = panStart.x - ev.clientX;
-        viewBox.y = panStart.y - ev.clientY;
-        viewBox = viewBox;
+        const dx = ev.clientX - startX;
+        const dy = ev.clientY - startY;
+        if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+          dragged = true;
+          panning = true;
+        }
+        if (dragged) {
+          // Scale mouse movement by viewBox/screen ratio for correct pan speed
+          const svgRect = svgEl?.getBoundingClientRect();
+          const scaleX = svgRect ? viewBox.w / svgRect.width : 1;
+          const scaleY = svgRect ? viewBox.h / svgRect.height : 1;
+          viewBox.x = startViewX - dx * scaleX;
+          viewBox.y = startViewY - dy * scaleY;
+          viewBox = viewBox;
+        }
       };
       const onUp = () => {
         panning = false;
@@ -213,6 +232,17 @@
       window.addEventListener("mousemove", onMove);
       window.addEventListener("mouseup", onUp);
     }
+  }
+
+  function onWheel(e: WheelEvent) {
+    e.preventDefault();
+    const zoomFactor = e.deltaY > 0 ? 1.08 : 1 / 1.08;
+    const pt = clientToSvg(e.clientX, e.clientY);
+    viewBox.x = pt.x - (pt.x - viewBox.x) * zoomFactor;
+    viewBox.y = pt.y - (pt.y - viewBox.y) * zoomFactor;
+    viewBox.w *= zoomFactor;
+    viewBox.h *= zoomFactor;
+    viewBox = viewBox;
   }
 
   function onDrop(e: DragEvent) {
@@ -231,6 +261,18 @@
   }
 
   // Recompute edge paths whenever nodes or edges change
+  // Attach wheel listener with { passive: false } to allow preventDefault
+  onMount(() => {
+    if (svgEl) {
+      svgEl.addEventListener("wheel", onWheel, { passive: false });
+    }
+  });
+  onDestroy(() => {
+    if (svgEl) {
+      svgEl.removeEventListener("wheel", onWheel);
+    }
+  });
+
   $: edgePaths = (() => { nodes; edges; return getEdgePaths(); })();
 </script>
 

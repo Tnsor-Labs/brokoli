@@ -63,7 +63,7 @@
     border: 1px solid var(--border);
     border-radius: var(--radius-md);
     padding: var(--space-sm);
-    overflow-y: auto;
+    overflow: auto;
     max-height: 300px;
   }
 
@@ -97,7 +97,5 @@
   }
   .log-msg {
     color: var(--text-primary);
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 </style>
