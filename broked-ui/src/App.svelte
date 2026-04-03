@@ -17,7 +17,8 @@
   import { addEvent } from "./lib/stores";
   import { notify } from "./lib/toast";
   import { initTheme } from "./lib/theme";
-  import { initAuth, authReady, authUser, needsSetup } from "./lib/auth";
+  import { initAuth, authReady, authUser, needsSetup, loadPermissions } from "./lib/auth";
+  import GlobalSearch from "./components/GlobalSearch.svelte";
 
   initTheme();
 
@@ -39,6 +40,7 @@
 
   onMount(async () => {
     await initAuth();
+    await loadPermissions();
     ws = createWebSocket((event) => {
       addEvent(event);
       // Global notifications for run events
@@ -69,12 +71,15 @@
     }
   }
 
-  // Determine if we need the login page
-  $: isLoginRoute = window.location.hash === "#/login" || window.location.hash === "";
+  // Track current hash reactively
+  let currentHash = window.location.hash;
+  function onHashChange() { currentHash = window.location.hash; }
+
+  $: isLoginRoute = currentHash === "#/login" || currentHash === "";
   $: requiresAuth = $authReady && !$authUser && !$needsSetup;
 </script>
 
-<svelte:window on:keydown={handleGlobalKey} />
+<svelte:window on:keydown={handleGlobalKey} on:hashchange={onHashChange} />
 
 {#if showShortcuts}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -94,7 +99,9 @@
           <div class="shortcut-row"><kbd>Ctrl+Z</kbd><span>Undo</span></div>
           <div class="shortcut-row"><kbd>Ctrl+Shift+Z</kbd><span>Redo</span></div>
           <div class="shortcut-row"><kbd>Delete</kbd><span>Delete selected node</span></div>
-          <div class="shortcut-row"><kbd>Alt+Drag</kbd><span>Pan canvas</span></div>
+          <div class="shortcut-row"><kbd>D</kbd><span>Duplicate selected node</span></div>
+          <div class="shortcut-row"><kbd>Drag bg</kbd><span>Pan canvas</span></div>
+          <div class="shortcut-row"><kbd>Scroll</kbd><span>Zoom in/out</span></div>
         </div>
         <div class="shortcut-section">
           <h3>Code Editor</h3>
@@ -115,7 +122,7 @@
   <Login />
 {:else if $needsSetup && !$authUser}
   <Login />
-{:else if window.location.hash === "#/login"}
+{:else if isLoginRoute}
   <Router {routes} />
 {:else}
   <Layout>
@@ -123,6 +130,7 @@
   </Layout>
 {/if}
 <ToastContainer />
+<GlobalSearch />
 
 <style>
   .loading-screen {

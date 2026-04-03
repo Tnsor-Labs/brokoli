@@ -308,3 +308,38 @@ code, pre {
 .token.property {
   color: var(--text-primary);
 }
+
+/* ═══════════════════════════════════════════════════════════
+   Mobile Responsiveness
+   ═══════════════════════════════════════════════════════════ */
+
+/* Tablet: collapse sidebar */
+@media (max-width: 1024px) {
+  :root {
+    --sidebar-width: 60px;
+    --space-xl: 16px;
+  }
+}
+
+/* Mobile: stack layout, hide sidebar */
+@media (max-width: 768px) {
+  :root {
+    --sidebar-width: 0px;
+    --space-xl: 12px;
+    --space-lg: 10px;
+  }
+
+  /* Show bottom nav instead of sidebar */
+  body {
+    padding-bottom: 56px;
+  }
+}
+
+/* Small mobile */
+@media (max-width: 480px) {
+  :root {
+    --space-xl: 8px;
+    --space-lg: 8px;
+    --space-md: 6px;
+  }
+}

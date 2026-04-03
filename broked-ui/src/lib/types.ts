@@ -5,9 +5,37 @@ export interface Pipeline {
   nodes: Node[];
   edges: Edge[];
   schedule: string;
+  webhook_url?: string;
+  params?: Record<string, string>;
+  tags?: string[];
+  hooks?: Record<string, Hook>;
+  sla_deadline?: string;
+  sla_timezone?: string;
+  depends_on?: string[];
+  webhook_token?: string;
+  node_count?: number;
+  edge_count?: number;
+  last_run_status?: string;
+  last_run_at?: string;
+  runs_total?: number;
+  runs_success?: number;
+  runs_failed?: number;
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export interface Hook {
+  type: string;
+  url: string;
+  enabled: boolean;
+  extra?: Record<string, string>;
+}
+
+export interface PipelineVersion {
+  version: number;
+  message: string;
+  created_at: string;
 }
 
 export type NodeType =
@@ -20,7 +48,10 @@ export type NodeType =
   | "quality_check"
   | "sql_generate"
   | "sink_file"
-  | "sink_db";
+  | "sink_db"
+  | "sink_api"
+  | "migrate"
+  | "condition";
 
 export interface Position {
   x: number;
@@ -51,6 +82,7 @@ export interface Run {
   id: string;
   pipeline_id: string;
   status: RunStatus;
+  error?: string;
   started_at: string | null;
   finished_at: string | null;
   node_runs: NodeRun[];

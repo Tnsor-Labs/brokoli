@@ -97,6 +97,9 @@ export const nodeTypeConfig: Record<string, { label: string; color: string }> = 
   sql_generate: { label: "SQL Generate", color: "#6366f1" },
   sink_file: { label: "File Output", color: "#ec4899" },
   sink_db: { label: "Database Sink", color: "#f97316" },
+  sink_api: { label: "API Sink", color: "#a855f7" },
+  migrate: { label: "DB Migration", color: "#0ea5e9" },
+  condition: { label: "If/Else", color: "#f43f5e" },
 };
 
 /** Generate a unique node ID */

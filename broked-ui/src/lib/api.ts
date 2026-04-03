@@ -1,32 +1,86 @@
-import type { Pipeline, Run, LogEntry } from "./types";
+import type { Pipeline, PipelineVersion, Run, LogEntry } from "./types";
 import { authHeaders, logout } from "./auth";
 
 const BASE = "/api";
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
+function getWorkspaceId(): string {
+  return localStorage.getItem("brokoli-workspace") || "default";
+}
+
+interface RequestOptions extends RequestInit {
+  timeout?: number;
+  maxRetries?: number;
+}
+
+async function request<T>(path: string, options?: RequestOptions): Promise<T> {
+  const {
+    timeout = 15000,
+    maxRetries = 2,
+    ...fetchOpts
+  } = options || {};
+
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    "X-Workspace-ID": getWorkspaceId(),
     ...authHeaders(),
-    ...(options?.headers as Record<string, string> || {}),
+    ...(fetchOpts.headers as Record<string, string> || {}),
   };
 
-  const res = await fetch(`${BASE}${path}`, {
-    ...options,
-    headers,
-  });
+  let lastErr: Error | null = null;
 
-  // Auto-logout on 401
-  if (res.status === 401 && !path.startsWith("/auth/")) {
-    logout();
-    throw new Error("Session expired");
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+      const res = await fetch(`${BASE}${path}`, {
+        ...fetchOpts,
+        headers,
+        signal: controller.signal,
+      });
+
+      clearTimeout(timeoutId);
+
+      // Auto-logout on 401
+      if (res.status === 401 && !path.startsWith("/auth/")) {
+        logout();
+        throw new Error("Session expired");
+      }
+
+      // Retry on 5xx (server error) — not on 4xx (client error)
+      if (res.status >= 500 && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        continue;
+      }
+
+      if (!res.ok) {
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          errMsg = body.error || errMsg;
+        } catch {}
+        throw new Error(errMsg);
+      }
+
+      if (res.status === 204) return undefined as T;
+      return res.json();
+    } catch (err: any) {
+      lastErr = err;
+
+      // Don't retry on auth errors or client errors
+      if (err.message === "Session expired") throw err;
+
+      // Retry on network errors and timeouts
+      if (attempt < maxRetries && (err.name === "AbortError" || err instanceof TypeError)) {
+        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        continue;
+      }
+
+      if (attempt === maxRetries) break;
+    }
   }
 
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(body.error || `HTTP ${res.status}`);
-  }
-  if (res.status === 204) return undefined as T;
-  return res.json();
+  throw lastErr || new Error("Request failed");
 }
 
 export const api = {
@@ -45,6 +99,13 @@ export const api = {
       }),
     delete: (id: string) =>
       request<void>(`/pipelines/${id}`, { method: "DELETE" }),
+    versions: (id: string) =>
+      request<PipelineVersion[]>(`/pipelines/${id}/versions`),
+    rollback: (id: string, version: number) =>
+      request<Pipeline>(`/pipelines/${id}/rollback`, {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      }),
   },
   runs: {
     trigger: (pipelineId: string, params?: Record<string, string>) =>

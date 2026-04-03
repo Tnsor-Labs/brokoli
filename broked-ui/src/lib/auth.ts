@@ -36,6 +36,27 @@ export function authHeaders(): Record<string, string> {
   return {};
 }
 
+// Permissions store — loaded after login
+export const userPermissions = writable<string[]>([]);
+
+export async function loadPermissions() {
+  try {
+    const res = await fetch("/api/auth/me/permissions", { headers: authHeaders() });
+    if (res.ok) {
+      const data = await res.json();
+      userPermissions.set(data.permissions || []);
+    }
+  } catch {}
+}
+
+/** Check if current user has a specific permission */
+export function userCan(permission: string): boolean {
+  const perms = get(userPermissions);
+  // If no permissions loaded yet, allow everything (backward compat)
+  if (perms.length === 0) return true;
+  return perms.includes(permission);
+}
+
 /** Check auth status on app load */
 export async function initAuth() {
   try {
