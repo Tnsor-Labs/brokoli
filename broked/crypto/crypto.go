@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 )
@@ -84,14 +85,28 @@ func (c *Config) Decrypt(encoded string) (string, error) {
 	return string(plaintext), nil
 }
 
-// LoadOrCreateKey loads an encryption key from keyPath, or generates one.
+// LoadOrCreateKey loads an encryption key from environment, file, or generates one.
 func LoadOrCreateKey(keyPath string) ([]byte, error) {
-	data, err := os.ReadFile(keyPath)
-	if err == nil && len(data) == 32 {
-		return data, nil
+	// Priority 1: Environment variable (production)
+	if envKey := os.Getenv("BROKOLI_ENCRYPTION_KEY"); envKey != "" {
+		decoded, err := base64.StdEncoding.DecodeString(envKey)
+		if err != nil {
+			return nil, fmt.Errorf("BROKOLI_ENCRYPTION_KEY must be base64-encoded: %w", err)
+		}
+		if len(decoded) != 32 {
+			return nil, fmt.Errorf("BROKOLI_ENCRYPTION_KEY must be exactly 32 bytes (got %d)", len(decoded))
+		}
+		return decoded, nil
 	}
 
-	// Generate a new random key
+	// Priority 2: File-based key (development)
+	if key, err := os.ReadFile(keyPath); err == nil {
+		if len(key) >= 32 {
+			return key[:32], nil
+		}
+	}
+
+	// Priority 3: Generate new key (first run)
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
 		return nil, fmt.Errorf("generate key: %w", err)
@@ -104,7 +119,7 @@ func LoadOrCreateKey(keyPath string) ([]byte, error) {
 	}
 
 	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
-		return nil, fmt.Errorf("write key file: %w", err)
+		log.Printf("WARNING: could not persist encryption key: %v", err)
 	}
 
 	return key, nil

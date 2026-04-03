@@ -2,8 +2,11 @@ package quality
 
 import (
 	"fmt"
+	"net/mail"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/hc12r/brokolisql-go/pkg/common"
 )
@@ -18,7 +21,10 @@ const (
 	RuleMax      RuleType = "max"
 	RuleRange    RuleType = "range"
 	RuleRegex    RuleType = "regex"
-	RuleRowCount RuleType = "row_count"
+	RuleRowCount  RuleType = "row_count"
+	RuleTypeCheck RuleType = "type_check" // verify values parse as int/float/date/email
+	RuleFreshness RuleType = "freshness"  // date column has values within N hours of now
+	RuleNoBlank   RuleType = "no_blank"   // no empty strings (stricter than not_null)
 )
 
 // Check defines a single data quality assertion.
@@ -54,6 +60,12 @@ func RunCheck(check Check, dataset *common.DataSet) CheckResult {
 		return checkRegex(check, dataset)
 	case RuleRowCount:
 		return checkRowCount(check, dataset)
+	case RuleTypeCheck:
+		return checkTypeCheck(check, dataset)
+	case RuleFreshness:
+		return checkFreshness(check, dataset)
+	case RuleNoBlank:
+		return checkNoBlank(check, dataset)
 	default:
 		return CheckResult{Check: check, Passed: false, Message: fmt.Sprintf("unknown rule: %s", check.Rule)}
 	}
@@ -226,4 +238,125 @@ func toFloat(v interface{}) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// ── New quality rules ────────────────────────────────────────
+
+// checkTypeCheck verifies values in a column parse as the expected type.
+// Params: "expected_type" = "int", "float", "date", "email"
+func checkTypeCheck(check Check, ds *common.DataSet) CheckResult {
+	expectedType, _ := check.Params["expected_type"].(string)
+	if expectedType == "" {
+		expectedType = "int"
+	}
+
+	violations := 0
+	for _, row := range ds.Rows {
+		v := row[check.Column]
+		if v == nil {
+			continue // nulls are ok, use not_null to catch those
+		}
+		s := fmt.Sprintf("%v", v)
+		if s == "" {
+			continue
+		}
+
+		valid := false
+		switch expectedType {
+		case "int", "integer":
+			_, err := strconv.Atoi(s)
+			valid = err == nil
+		case "float", "number":
+			_, err := strconv.ParseFloat(s, 64)
+			valid = err == nil
+		case "date":
+			for _, layout := range []string{time.RFC3339, "2006-01-02", "2006-01-02T15:04:05", "01/02/2006", "02-Jan-2006"} {
+				if _, err := time.Parse(layout, s); err == nil {
+					valid = true
+					break
+				}
+			}
+		case "email":
+			_, err := mail.ParseAddress(s)
+			valid = err == nil
+		default:
+			valid = true // unknown type, pass
+		}
+
+		if !valid {
+			violations++
+		}
+	}
+
+	passed := violations == 0
+	msg := fmt.Sprintf("type_check(%s) on %q: %d/%d values are valid %s", expectedType, check.Column, len(ds.Rows)-violations, len(ds.Rows), expectedType)
+	return CheckResult{Check: check, Passed: passed, Message: msg, Value: violations}
+}
+
+// checkFreshness verifies a date column has values within N hours of now.
+// Params: "max_hours" = "24"
+func checkFreshness(check Check, ds *common.DataSet) CheckResult {
+	maxHoursStr, _ := check.Params["max_hours"].(string)
+	maxHours := 24.0
+	if h, err := strconv.ParseFloat(maxHoursStr, 64); err == nil && h > 0 {
+		maxHours = h
+	}
+
+	now := time.Now()
+	staleCount := 0
+	latestTime := time.Time{}
+
+	for _, row := range ds.Rows {
+		v := row[check.Column]
+		if v == nil {
+			continue
+		}
+		s := fmt.Sprintf("%v", v)
+		var t time.Time
+		var parsed bool
+		for _, layout := range []string{time.RFC3339, "2006-01-02T15:04:05", "2006-01-02", "2006-01-02 15:04:05"} {
+			if pt, err := time.Parse(layout, s); err == nil {
+				t = pt
+				parsed = true
+				break
+			}
+		}
+		if !parsed {
+			continue
+		}
+		if t.After(latestTime) {
+			latestTime = t
+		}
+		if now.Sub(t).Hours() > maxHours {
+			staleCount++
+		}
+	}
+
+	passed := staleCount == 0
+	latestStr := "none"
+	if !latestTime.IsZero() {
+		latestStr = latestTime.Format(time.RFC3339)
+	}
+	msg := fmt.Sprintf("freshness(%s, max %.0fh) on %q: %d stale values, latest=%s", check.Column, maxHours, check.Column, staleCount, latestStr)
+	return CheckResult{Check: check, Passed: passed, Message: msg, Value: staleCount}
+}
+
+// checkNoBlank checks that no values are empty strings (stricter than not_null).
+func checkNoBlank(check Check, ds *common.DataSet) CheckResult {
+	blankCount := 0
+	for _, row := range ds.Rows {
+		v := row[check.Column]
+		if v == nil {
+			blankCount++
+			continue
+		}
+		s := strings.TrimSpace(fmt.Sprintf("%v", v))
+		if s == "" {
+			blankCount++
+		}
+	}
+
+	passed := blankCount == 0
+	msg := fmt.Sprintf("no_blank on %q: %d/%d values are non-blank", check.Column, len(ds.Rows)-blankCount, len(ds.Rows))
+	return CheckResult{Check: check, Passed: passed, Message: msg, Value: blankCount}
 }

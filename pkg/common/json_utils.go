@@ -14,24 +14,41 @@ type DataSet struct {
 }
 
 func ParseJSONData(jsonBytes []byte) ([]map[string]interface{}, error) {
+	// Try 1: array of objects — most common: [{...}, {...}]
 	var data []map[string]interface{}
-	err := json.Unmarshal(jsonBytes, &data)
+	if err := json.Unmarshal(jsonBytes, &data); err == nil && len(data) > 0 {
+		return data, nil
+	}
 
-	if err != nil || len(data) == 0 {
+	// Try 2: single object — {...}
+	var singleObject map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &singleObject); err == nil {
+		return []map[string]interface{}{singleObject}, nil
+	}
 
-		var singleObject map[string]interface{}
-		err = json.Unmarshal(jsonBytes, &singleObject)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse JSON data: %w", err)
+	// Try 3: mixed array — [dict, [array], value, ...]
+	// Handles APIs like World Bank: [metadata_dict, [data_dict, data_dict, ...]]
+	var mixedArray []interface{}
+	if err := json.Unmarshal(jsonBytes, &mixedArray); err == nil && len(mixedArray) > 0 {
+		var result []map[string]interface{}
+		for _, item := range mixedArray {
+			switch v := item.(type) {
+			case map[string]interface{}:
+				result = append(result, v)
+			case []interface{}:
+				for _, sub := range v {
+					if m, ok := sub.(map[string]interface{}); ok {
+						result = append(result, m)
+					}
+				}
+			}
 		}
-		data = []map[string]interface{}{singleObject}
+		if len(result) > 0 {
+			return result, nil
+		}
 	}
 
-	if len(data) == 0 {
-		return nil, fmt.Errorf("no data found in JSON content")
-	}
-
-	return data, nil
+	return nil, fmt.Errorf("no data found in JSON content")
 }
 
 func ConvertToDataSet(data []map[string]interface{}) *DataSet {
@@ -52,17 +69,9 @@ func ConvertToDataSet(data []map[string]interface{}) *DataSet {
 	for _, obj := range data {
 		row := make(DataRow)
 		for key, value := range obj {
-
-			if IsComplex(value) {
-				jsonBytes, err := json.Marshal(value)
-				if err == nil {
-					row[key] = string(jsonBytes)
-				} else {
-					row[key] = fmt.Sprintf("%v", value)
-				}
-			} else {
-				row[key] = value
-			}
+			// Keep native types — Python code nodes need dicts/lists as-is.
+			// Stringification happens at the output boundary (CSV, SQL, JSON preview).
+			row[key] = value
 		}
 		rows = append(rows, row)
 	}
