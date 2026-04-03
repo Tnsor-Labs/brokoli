@@ -6,6 +6,7 @@
   import { notify } from "../lib/toast";
   import StatusBadge from "../components/StatusBadge.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import Pagination from "../components/Pagination.svelte";
   import type { Pipeline, Run } from "../lib/types";
 
   let confirmDelete = false;
@@ -13,12 +14,52 @@
   let deleteTargetName = "";
 
   let loading = true;
+  let pgPage = 1;
+  let pgSize = 25;
   let pipelineRuns: Map<string, Run[]> = new Map();
   let scheduleInfo: Map<string, { next_run: string; schedule: string }> = new Map();
   let showCreateModal = false;
   let newName = "";
   let newDescription = "";
   let searchQuery = "";
+  let statusFilter = "";
+  let tagFilter = "";
+  let sortBy = "name";
+
+  // Collect all unique tags
+  $: allTags = [...new Set($pipelines.flatMap((p: any) => p.tags || []))].sort();
+
+  $: filteredPipelines = $pipelines
+    .filter((p: any) => {
+      // Text search
+      if (searchQuery) {
+        const s = searchQuery.toLowerCase();
+        if (!p.name.toLowerCase().includes(s) && !(p.description || "").toLowerCase().includes(s) && !(p.tags || []).some((t: string) => t.toLowerCase().includes(s)))
+          return false;
+      }
+      // Status filter
+      if (statusFilter) {
+        const runs = pipelineRuns.get(p.id) || [];
+        const lastStatus = runs[0]?.status || runs[0]?.last_run_status || "";
+        if (statusFilter === "failed" && lastStatus !== "failed") return false;
+        if (statusFilter === "success" && lastStatus !== "success" && lastStatus !== "completed") return false;
+        if (statusFilter === "running" && lastStatus !== "running") return false;
+        if (statusFilter === "paused" && p.enabled !== false) return false;
+        if (statusFilter === "never" && lastStatus) return false;
+      }
+      // Tag filter
+      if (tagFilter && !(p.tags || []).includes(tagFilter)) return false;
+      return true;
+    })
+    .sort((a: any, b: any) => {
+      if (sortBy === "name") return a.name.localeCompare(b.name);
+      if (sortBy === "last_run") return (b.last_run_at || "").localeCompare(a.last_run_at || "");
+      if (sortBy === "nodes") return (b.node_count || 0) - (a.node_count || 0);
+      return 0;
+    });
+
+  $: paginatedPipelines = filteredPipelines.slice((pgPage - 1) * pgSize, pgPage * pgSize);
+  $: if (searchQuery || statusFilter || tagFilter) pgPage = 1;
   let selectedIds: Set<string> = new Set();
 
   function toggleSelect(id: string) {
@@ -60,18 +101,15 @@
   onMount(async () => {
     await loadPipelines();
 
-    // Listen for real-time run events to update counts
-    unsubWS = onWSEvent(async (event) => {
-      if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") {
-        // Find which pipeline this run belongs to and refresh its runs
-        const pipelineId = event.pipeline_id;
-        if (pipelineId) {
-          try {
-            const runs = await api.runs.listByPipeline(pipelineId);
-            pipelineRuns.set(pipelineId, runs);
-            pipelineRuns = new Map(pipelineRuns);
-          } catch {}
-        }
+    // Listen for real-time run events — update status inline (no API call)
+    unsubWS = onWSEvent((event) => {
+      if ((event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") && event.pipeline_id) {
+        const status = event.status || (event.type === "run.completed" ? "success" : event.type === "run.failed" ? "failed" : "running");
+        pipelineRuns.set(event.pipeline_id, [{
+          id: event.run_id, pipeline_id: event.pipeline_id, status,
+          started_at: event.timestamp, finished_at: null, node_runs: [],
+        }]);
+        pipelineRuns = new Map(pipelineRuns);
       }
     });
   });
@@ -83,25 +121,37 @@
   async function loadPipelines() {
     loading = true;
     try {
-      const list = await api.pipelines.list();
-      pipelines.set(list);
-      for (const p of list) {
-        const runs = await api.runs.listByPipeline(p.id);
-        pipelineRuns.set(p.id, runs);
-      }
-      pipelineRuns = pipelineRuns; // trigger reactivity
+      // Single request: pipelines + last run status + run counts
+      const [summaryRes, schedRes] = await Promise.all([
+        fetch("/api/pipelines/summary", { headers: { ...authHeaders(), "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default" } }),
+        fetch("/api/scheduler/status", { headers: authHeaders() }),
+      ]);
 
-      // Load scheduler status
-      try {
-        const schedRes = await fetch("/api/scheduler/status", { headers: authHeaders() });
-        if (schedRes.ok) {
-          const schedData = await schedRes.json();
-          for (const s of schedData) {
-            scheduleInfo.set(s.pipeline_id, { next_run: s.next_run, schedule: s.schedule });
+      if (summaryRes.ok) {
+        const list = await summaryRes.json();
+        pipelines.set(list);
+
+        // Build run map from embedded data (no extra requests)
+        for (const p of list) {
+          if (p.last_run_status) {
+            pipelineRuns.set(p.id, [{
+              id: "", pipeline_id: p.id, status: p.last_run_status,
+              started_at: p.last_run_at, finished_at: null, node_runs: [],
+              _total: p.runs_total, _success: p.runs_success,
+              _failed: p.runs_failed, _running: p.runs_running,
+            }]);
           }
-          scheduleInfo = new Map(scheduleInfo);
         }
-      } catch {}
+        pipelineRuns = new Map(pipelineRuns);
+      }
+
+      if (schedRes.ok) {
+        const schedData = await schedRes.json();
+        for (const s of schedData) {
+          scheduleInfo.set(s.pipeline_id, { next_run: s.next_run, schedule: s.schedule });
+        }
+        scheduleInfo = new Map(scheduleInfo);
+      }
     } catch (e) {
       notify.error("Failed to load pipelines");
     } finally {
@@ -109,14 +159,16 @@
     }
   }
 
-  async function toggleEnabled(pipeline: Pipeline) {
+  async function toggleEnabled(pipeline: any) {
+    const newEnabled = !pipeline.enabled;
     try {
-      pipeline.enabled = !pipeline.enabled;
-      await api.pipelines.update(pipeline.id, pipeline);
-      pipelines.update(list => list.map(p => p.id === pipeline.id ? { ...p, enabled: pipeline.enabled } : p));
-      notify.success(pipeline.enabled ? `${pipeline.name} enabled` : `${pipeline.name} paused`);
+      // Fetch full pipeline first to avoid overwriting nodes/edges with empty data
+      const full = await api.pipelines.get(pipeline.id);
+      full.enabled = newEnabled;
+      await api.pipelines.update(pipeline.id, full);
+      pipelines.update(list => list.map(p => p.id === pipeline.id ? { ...p, enabled: newEnabled } : p));
+      notify.success(newEnabled ? `${pipeline.name} enabled` : `${pipeline.name} paused`);
     } catch {
-      pipeline.enabled = !pipeline.enabled; // revert
       notify.error("Failed to toggle pipeline");
     }
   }
@@ -147,8 +199,8 @@
       const runs = await api.runs.listByPipeline(pipelineId);
       pipelineRuns.set(pipelineId, runs);
       pipelineRuns = new Map(pipelineRuns);
-    } catch (e) {
-      notify.error("Failed to trigger run");
+    } catch (e: any) {
+      notify.error("Failed to trigger run: " + (e.message || e));
     }
   }
 
@@ -173,6 +225,15 @@
 
   function getRunCounts(pipelineId: string): { success: number; failed: number; running: number; total: number } {
     const runs = pipelineRuns.get(pipelineId) || [];
+    // Use pre-computed counts from summary endpoint if available
+    if (runs.length > 0 && runs[0]._total !== undefined) {
+      return {
+        success: runs[0]._success || 0,
+        failed: runs[0]._failed || 0,
+        running: runs[0]._running || 0,
+        total: runs[0]._total || 0,
+      };
+    }
     return {
       success: runs.filter(r => r.status === "success").length,
       failed: runs.filter(r => r.status === "failed").length,
@@ -206,9 +267,13 @@
     if (!file) return;
     try {
       const text = await file.text();
+      const isJSON = file.name.endsWith(".json");
       const res = await fetch("/api/pipelines/import", {
         method: "POST",
-        headers: { "Content-Type": "application/x-yaml" },
+        headers: {
+          "Content-Type": isJSON ? "application/json" : "application/x-yaml",
+          ...authHeaders(),
+        },
         body: text,
       });
       if (!res.ok) {
@@ -345,12 +410,12 @@
 </script>
 
 <div class="pipelines-page animate-in">
-  <input type="file" accept=".yaml,.yml" bind:this={fileInput} on:change={handleFileUpload} style="display:none" />
+  <input type="file" accept=".yaml,.yml,.json" bind:this={fileInput} on:change={handleFileUpload} style="display:none" />
 
   <header class="page-header">
     <h1>Pipelines</h1>
     <div class="header-actions">
-      <button class="btn-secondary" on:click={importYaml}>Import YAML</button>
+      <button class="btn-secondary" on:click={importYaml}>Import</button>
       <button class="btn-primary" on:click={() => (showCreateModal = true)}>
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.plus.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
         New Pipeline
@@ -358,16 +423,43 @@
     </div>
   </header>
 
-  <div class="search-bar">
-    <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-      <path d={icons.search.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-    </svg>
-    <input
-      type="text"
-      class="search-input"
-      bind:value={searchQuery}
-      placeholder="Search pipelines..."
-    />
+  <div class="filter-bar">
+    <div class="search-bar">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+        <path d={icons.search.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+      </svg>
+      <input
+        type="text"
+        class="search-input"
+        bind:value={searchQuery}
+        placeholder="Search pipelines..."
+      />
+      <span class="search-hint">Ctrl+K</span>
+    </div>
+    <div class="filter-controls">
+      <select class="filter-select" bind:value={statusFilter}>
+        <option value="">All Status</option>
+        <option value="success">Succeeded</option>
+        <option value="failed">Failed</option>
+        <option value="running">Running</option>
+        <option value="paused">Paused</option>
+        <option value="never">Never Run</option>
+      </select>
+      {#if allTags.length > 0}
+        <select class="filter-select" bind:value={tagFilter}>
+          <option value="">All Tags</option>
+          {#each allTags as tag}
+            <option value={tag}>{tag}</option>
+          {/each}
+        </select>
+      {/if}
+      <select class="filter-select" bind:value={sortBy}>
+        <option value="name">Sort: Name</option>
+        <option value="last_run">Sort: Last Run</option>
+        <option value="nodes">Sort: Nodes</option>
+      </select>
+      <span class="filter-count">{filteredPipelines.length} pipeline{filteredPipelines.length !== 1 ? "s" : ""}</span>
+    </div>
   </div>
 
   {#if selectedIds.size > 0}
@@ -399,7 +491,7 @@
         <span class="th-nodes">Nodes</span>
         <span class="th-actions">Actions</span>
       </div>
-      {#each $pipelines.filter(p => !searchQuery || p.name.toLowerCase().includes(searchQuery.toLowerCase()) || p.description.toLowerCase().includes(searchQuery.toLowerCase())) as pipeline}
+      {#each paginatedPipelines as pipeline}
         {@const lastRun = getLastRun(pipeline.id)}
         {@const counts = getRunCounts(pipeline.id)}
         {@const si = scheduleInfo.get(pipeline.id)}
@@ -475,7 +567,7 @@
           </span>
 
           <!-- Node count -->
-          <span class="td-nodes mono">{pipeline.nodes.length}</span>
+          <span class="td-nodes mono">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</span>
 
           <!-- Actions -->
           <span class="td-actions">
@@ -490,6 +582,8 @@
         </div>
       {/each}
     </div>
+    <Pagination total={filteredPipelines.length} page={pgPage} pageSize={pgSize}
+      on:page={(e) => pgPage = e.detail} on:pagesize={(e) => { pgSize = e.detail; pgPage = 1; }} />
   {/if}
 
   {#if showCreateModal}
@@ -559,6 +653,10 @@
     align-items: center;
   }
 
+  .filter-bar {
+    display: flex; flex-direction: column; gap: 8px;
+    margin-bottom: var(--space-md);
+  }
   .search-bar {
     display: flex;
     align-items: center;
@@ -567,8 +665,27 @@
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
-    margin-bottom: var(--space-md);
     color: var(--text-muted);
+  }
+  .search-hint {
+    font-size: 10px; color: var(--text-ghost); font-family: var(--font-mono);
+    padding: 2px 6px; border-radius: 4px;
+    background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
+    flex-shrink: 0;
+  }
+  .filter-controls {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  }
+  .filter-select {
+    padding: 5px 10px; border-radius: 6px; font-size: 12px;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    color: var(--text-secondary); font-family: var(--font-ui);
+    cursor: pointer;
+  }
+  .filter-select:focus { border-color: var(--accent); outline: none; }
+  .filter-count {
+    font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+    margin-left: auto;
   }
   .search-input {
     flex: 1;
@@ -869,5 +986,14 @@
     font-size: 9px;
     color: var(--text-dim);
     margin-top: 2px;
+  }
+
+  @media (max-width: 768px) {
+    .page-header { flex-wrap: wrap; gap: 8px; }
+    .search-bar { width: 100%; }
+    .table-header { display: none; }
+    .table-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px; }
+    .td-name { flex: 1; min-width: 60%; }
+    .td-schedule, .td-nodes, .td-runs, .td-next { font-size: 10px; }
   }
 </style>

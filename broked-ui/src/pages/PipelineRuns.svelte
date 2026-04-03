@@ -10,9 +10,12 @@
   import LogStream from "../components/LogStream.svelte";
   import DataPreview from "../components/DataPreview.svelte";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
+  import Pagination from "../components/Pagination.svelte";
   import type { Pipeline, Run, LogEntry, RunStatus } from "../lib/types";
 
   export let params: { id?: string } = {};
+  let runPage = 1;
+  let runPageSize = 25;
 
   let pipeline: Pipeline | null = null;
   let runs: Run[] = [];
@@ -25,6 +28,30 @@
   let backfillStart = "";
   let backfillEnd = "";
   let backfilling = false;
+  let showParamsModal = false;
+  let runParams: Record<string, string> = {};
+
+  // Profile viewer
+  let profileNodeId: string | null = null;
+  let profileData: any = null;
+  let loadingProfile = false;
+
+  async function loadProfile(runId: string, nodeId: string) {
+    if (profileNodeId === nodeId) { profileNodeId = null; profileData = null; return; }
+    profileNodeId = nodeId;
+    loadingProfile = true;
+    try {
+      const res = await fetch(`/api/runs/${runId}/nodes/${nodeId}/profile`, { headers: authHeaders() });
+      if (res.ok) {
+        profileData = await res.json();
+      } else {
+        profileData = null;
+      }
+    } catch {
+      profileData = null;
+    }
+    loadingProfile = false;
+  }
 
   let unsubWS: (() => void) | null = null;
 
@@ -49,8 +76,12 @@
         // Refresh expanded run detail
         if (expandedRunId && (event.type === "run.completed" || event.type === "run.failed")) {
           try {
-            selectedRun = await api.runs.get(expandedRunId);
-            logs = await api.runs.getLogs(expandedRunId);
+            const [runData, logData] = await Promise.all([
+              api.runs.get(expandedRunId),
+              api.runs.getLogs(expandedRunId),
+            ]);
+            selectedRun = runData;
+            logs = logData;
           } catch { /* ignore */ }
         }
       }
@@ -87,13 +118,40 @@
     }
   }
 
+  function addParam() {
+    runParams = { ...runParams, "": "" };
+  }
+
+  function removeParam(key: string) {
+    const copy = { ...runParams };
+    delete copy[key];
+    runParams = copy;
+  }
+
+  function updateParamKey(oldKey: string, newKey: string) {
+    const entries = Object.entries(runParams);
+    const updated: Record<string, string> = {};
+    for (const [k, v] of entries) {
+      updated[k === oldKey ? newKey : k] = v;
+    }
+    runParams = updated;
+  }
+
+  function openParamsModal() {
+    runParams = {};
+    showParamsModal = true;
+  }
+
   async function triggerRun() {
     if (!pipeline) return;
     try {
-      await api.runs.trigger(pipeline.id);
+      const params = Object.keys(runParams).length > 0 ? runParams : undefined;
+      await api.runs.trigger(pipeline.id, params);
       runs = await api.runs.listByPipeline(pipeline.id);
-    } catch (e) {
-      notify.error("Failed to trigger run");
+      showParamsModal = false;
+      runParams = {};
+    } catch (e: any) {
+      notify.error("Failed to trigger run: " + (e.message || e));
     }
   }
 
@@ -109,6 +167,29 @@
       notify.error("Backfill failed: " + e.message);
     } finally {
       backfilling = false;
+    }
+  }
+
+  async function cancelRun(runId: string) {
+    try {
+      await fetch(`/api/runs/${runId}/cancel`, { method: "POST", headers: authHeaders() });
+      notify.success("Run cancelled");
+      if (params.id) {
+        runs = await api.runs.listByPipeline(params.id);
+      }
+    } catch {
+      notify.error("Failed to cancel run");
+    }
+  }
+
+  async function rerunPipeline() {
+    if (!params.id) return;
+    try {
+      await api.runs.trigger(params.id);
+      notify.success("Pipeline re-triggered");
+      runs = await api.runs.listByPipeline(params.id);
+    } catch {
+      notify.error("Failed to re-run pipeline");
     }
   }
 
@@ -167,6 +248,7 @@
     <div class="toolbar-right">
       <a href="#/pipelines/{params.id}/edit" class="btn-sm">Edit Pipeline</a>
       <button class="btn-sm" on:click={() => showBackfill = !showBackfill}>Backfill</button>
+      <button class="btn-sm" on:click={openParamsModal}>Run with Params</button>
       <button class="btn-sm btn-run" on:click={triggerRun}>Run Now</button>
     </div>
   </div>
@@ -193,7 +275,7 @@
     </div>
   {:else}
     <div class="runs-list">
-      {#each runs as run}
+      {#each runs.slice((runPage - 1) * runPageSize, runPage * runPageSize) as run}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="run-card" class:expanded={expandedRunId === run.id} on:click={() => selectRun(run)} on:keydown={() => {}}>
           <div class="run-header">
@@ -202,9 +284,13 @@
             <span class="run-time">{formatTime(run.started_at)}</span>
             <span class="run-duration mono">{formatDuration(run)}</span>
             <span class="run-rows mono">{totalRows(run)} rows</span>
+            {#if run.status === "running"}
+              <button class="btn-cancel" on:click|stopPropagation={() => cancelRun(run.id)}>Cancel</button>
+            {/if}
             {#if run.status === "failed"}
               <span class="run-error-hint" title={run.error || "Check logs for details"}>Error</span>
               <button class="btn-resume" on:click|stopPropagation={() => resumeRun(run.id)}>Resume</button>
+              <button class="btn-rerun" on:click|stopPropagation={() => rerunPipeline()}>Re-run</button>
             {/if}
             <a href="/api/runs/{run.id}/logs/export" class="btn-export" on:click|stopPropagation title="Download logs" target="_blank">Logs</a>
             <svg class="expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" style="transform: rotate({expandedRunId === run.id ? 90 : 0}deg); transition: transform 150ms ease">
@@ -218,8 +304,11 @@
               <!-- DAG with live status -->
               {#if pipeline && pipeline.nodes.length > 0}
                 <div class="detail-section">
-                  <h3>Pipeline Status</h3>
-                  <div class="canvas-mini">
+                  <div class="canvas-header">
+                    <h3>Pipeline Status</h3>
+                    <span class="canvas-hint">Scroll to zoom, Alt+drag to pan</span>
+                  </div>
+                  <div class="canvas-status">
                     <PipelineCanvas
                       nodes={pipeline.nodes}
                       edges={pipeline.edges}
@@ -270,6 +359,80 @@
                 </div>
               {/if}
 
+              <!-- Node Profiling -->
+              {#if selectedRun.node_runs && selectedRun.node_runs.length > 0}
+                <div class="detail-section">
+                  <h3>Data Profile</h3>
+                  <div class="preview-tabs">
+                    {#each selectedRun.node_runs as nr}
+                      {@const node = (pipeline?.nodes || []).find(n => n.id === nr.node_id)}
+                      <button
+                        class="preview-tab"
+                        class:active={profileNodeId === nr.node_id}
+                        on:click={() => loadProfile(selectedRun.id, nr.node_id)}
+                      >
+                        {node?.name || nr.node_id}
+                      </button>
+                    {/each}
+                  </div>
+                  {#if loadingProfile}
+                    <div class="profile-loading">Loading profile...</div>
+                  {:else if profileData?.profile}
+                    {@const p = profileData.profile}
+                    <div class="profile-summary">
+                      <span class="profile-stat">{p.row_count} rows</span>
+                      <span class="profile-stat">{p.column_count} columns</span>
+                      <span class="profile-stat">{p.profiling_ms}ms</span>
+                    </div>
+                    {#if p.columns && p.columns.length > 0}
+                      <div class="profile-table-wrap">
+                        <table class="profile-table">
+                          <thead>
+                            <tr>
+                              <th>Column</th>
+                              <th>Type</th>
+                              <th>Null %</th>
+                              <th>Unique %</th>
+                              <th>Min</th>
+                              <th>Max</th>
+                              <th>Mean</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {#each p.columns as col}
+                              <tr>
+                                <td class="col-name">{col.name}</td>
+                                <td><span class="type-badge">{col.type}</span></td>
+                                <td class:high-null={col.null_pct > 20}>{col.null_pct.toFixed(1)}%</td>
+                                <td>{col.unique_pct.toFixed(1)}%</td>
+                                <td class="mono">{col.min_val || "—"}</td>
+                                <td class="mono">{col.max_val || "—"}</td>
+                                <td class="mono">{col.is_numeric ? col.mean_val?.toFixed(2) : "—"}</td>
+                              </tr>
+                            {/each}
+                          </tbody>
+                        </table>
+                      </div>
+                    {/if}
+                    <!-- Drift alerts -->
+                    {#if profileData.drift && profileData.drift.length > 0}
+                      <div class="drift-section">
+                        <h4>Schema Drift Alerts</h4>
+                        {#each profileData.drift as alert}
+                          <div class="drift-alert" class:critical={alert.severity === "critical"}>
+                            <span class="drift-type">{alert.type}</span>
+                            <span class="drift-col">{alert.column}</span>
+                            <span class="drift-detail">{alert.previous} → {alert.current}</span>
+                          </div>
+                        {/each}
+                      </div>
+                    {/if}
+                  {:else if profileNodeId}
+                    <div class="profile-loading">No profile data for this node.</div>
+                  {/if}
+                </div>
+              {/if}
+
               <!-- Logs -->
               <div class="detail-section">
                 <h3>Logs</h3>
@@ -279,6 +442,42 @@
           {/if}
         </div>
       {/each}
+    </div>
+    <Pagination total={runs.length} page={runPage} pageSize={runPageSize}
+      on:page={(e) => runPage = e.detail} on:pagesize={(e) => { runPageSize = e.detail; runPage = 1; }} />
+  {/if}
+
+  {#if showParamsModal}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="modal-overlay" on:click={() => showParamsModal = false} on:keydown={() => {}}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="modal-content" on:click|stopPropagation on:keydown={() => {}}>
+        <h3>Run with Parameters</h3>
+        <div class="params-list">
+          {#each Object.entries(runParams) as [key, value], i}
+            <div class="param-row">
+              <input
+                class="param-input"
+                placeholder="Key"
+                value={key}
+                on:input={(e) => updateParamKey(key, e.currentTarget.value)}
+              />
+              <input
+                class="param-input"
+                placeholder="Value"
+                value={value}
+                on:input={(e) => { runParams[key] = e.currentTarget.value; runParams = runParams; }}
+              />
+              <button class="btn-remove-param" on:click={() => removeParam(key)}>x</button>
+            </div>
+          {/each}
+        </div>
+        <button class="btn-sm" on:click={addParam}>+ Add Parameter</button>
+        <div class="modal-actions">
+          <button class="btn-sm" on:click={() => showParamsModal = false}>Cancel</button>
+          <button class="btn-sm btn-run" on:click={triggerRun}>Run</button>
+        </div>
+      </div>
     </div>
   {/if}
 </div>
@@ -375,6 +574,19 @@
     transition: all 150ms ease;
   }
   .btn-resume:hover { background: rgba(245, 158, 11, 0.15); }
+  .btn-rerun {
+    padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
+    background: var(--success-bg); color: #22c55e;
+    border: 1px solid rgba(34, 197, 94, 0.2);
+    transition: background 150ms ease;
+  }
+  .btn-rerun:hover { background: rgba(34, 197, 94, 0.15); }
+  .btn-cancel {
+    padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
+    background: var(--failed-bg); border: 1px solid rgba(239,68,68,0.3);
+    color: var(--failed); transition: all 150ms ease;
+  }
+  .btn-cancel:hover { background: rgba(239,68,68,0.15); }
   .run-error-hint {
     font-size: 10px; font-weight: 600; color: var(--failed);
     background: var(--failed-bg); padding: 2px 6px; border-radius: 3px;
@@ -427,10 +639,18 @@
     margin-bottom: var(--space-sm);
   }
 
-  .canvas-mini {
-    height: 200px;
-    border-radius: var(--radius-md);
+  .canvas-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .canvas-hint {
+    font-size: 10px; color: var(--text-dim); font-family: var(--font-mono);
+  }
+  .canvas-status {
+    height: 220px;
+    border-radius: var(--radius-lg);
     overflow: hidden;
+    border: 1px solid var(--border-subtle);
   }
 
   .preview-tabs {
@@ -470,4 +690,130 @@
     color: var(--accent);
     background: rgba(99, 102, 241, 0.1);
   }
+
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-content {
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-lg);
+    min-width: 400px;
+    max-width: 540px;
+  }
+  .modal-content h3 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: var(--space-md);
+  }
+  .params-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    margin-bottom: var(--space-md);
+  }
+  .param-row {
+    display: flex;
+    gap: var(--space-sm);
+    align-items: center;
+  }
+  .param-input {
+    flex: 1;
+    padding: 6px 10px;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    font-family: var(--font-mono);
+  }
+  .param-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .btn-remove-param {
+    padding: 4px 8px;
+    border-radius: var(--radius-md);
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: var(--failed-bg);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: var(--failed);
+    cursor: pointer;
+  }
+  .btn-remove-param:hover { background: rgba(239, 68, 68, 0.15); }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: var(--space-md);
+  }
+
+  /* ── Profile ── */
+  .profile-loading {
+    padding: 12px; font-size: 12px; color: var(--text-muted); text-align: center;
+  }
+  .profile-summary {
+    display: flex; gap: 16px; padding: 10px 0;
+    border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px;
+  }
+  .profile-stat {
+    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    color: var(--text-primary);
+  }
+  .profile-table-wrap { overflow-x: auto; }
+  .profile-table {
+    width: 100%; border-collapse: collapse;
+    font-size: 11px; font-family: var(--font-mono);
+  }
+  .profile-table th {
+    text-align: left; padding: 5px 8px;
+    font-size: 9px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-ghost);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .profile-table td {
+    padding: 4px 8px; color: var(--text-secondary);
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .profile-table .col-name { font-weight: 600; color: var(--text-primary); }
+  .profile-table .mono { font-family: var(--font-mono); }
+  .type-badge {
+    font-size: 9px; font-weight: 600; padding: 1px 5px;
+    border-radius: 3px; background: var(--bg-tertiary); color: var(--text-muted);
+  }
+  .high-null { color: var(--warning); font-weight: 600; }
+
+  /* ── Drift ── */
+  .drift-section { margin-top: 12px; }
+  .drift-section h4 {
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.08em; color: var(--warning); margin-bottom: 6px;
+  }
+  .drift-alert {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px; border-radius: 4px;
+    font-size: 11px; margin-bottom: 3px;
+    background: rgba(245, 158, 11, 0.08);
+    border: 1px solid rgba(245, 158, 11, 0.15);
+  }
+  .drift-alert.critical {
+    background: var(--failed-bg);
+    border-color: rgba(239, 68, 68, 0.2);
+  }
+  .drift-type {
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    padding: 1px 5px; border-radius: 3px;
+    background: var(--bg-tertiary); color: var(--warning);
+  }
+  .drift-alert.critical .drift-type { color: var(--failed); }
+  .drift-col { font-weight: 600; color: var(--text-primary); }
+  .drift-detail { color: var(--text-muted); font-size: 10px; }
 </style>
