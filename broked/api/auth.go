@@ -79,8 +79,14 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip WebSocket upgrade
+			// WebSocket — let JWT middleware handle auth
 			if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip webhook triggers (own token auth)
+			if strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -95,11 +101,6 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 			// Also accept X-API-Key header
 			if key == "" {
 				key = r.Header.Get("X-API-Key")
-			}
-
-			// Also accept query param (for simple testing)
-			if key == "" {
-				key = r.URL.Query().Get("api_key")
 			}
 
 			if key == "" {

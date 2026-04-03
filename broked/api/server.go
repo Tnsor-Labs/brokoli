@@ -9,12 +9,17 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/hc12r/broked/crypto"
 	"github.com/hc12r/broked/engine"
+	"github.com/hc12r/broked/extensions"
+	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
 )
 
@@ -23,16 +28,19 @@ type Server struct {
 	router *chi.Mux
 	port   int
 	hub    *Hub
+	ext    *extensions.Registry
 }
 
 // NewServer creates a fully configured HTTP server.
-func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *AuthConfig, userStore *UserStore, sched *engine.Scheduler, cryptoCfg ...*crypto.Config) *Server {
+func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *AuthConfig, userStore *UserStore, sched *engine.Scheduler, ext *extensions.Registry, cryptoCfg ...*crypto.Config) *Server {
 	r := chi.NewRouter()
 	metrics := NewMetrics()
 	r.Use(MetricsMiddleware(metrics))
 	r.Use(Logger)
 	r.Use(CORS)
-	r.Use(RateLimiter(100)) // 100 req/s per IP
+	r.Use(RateLimiter(200)) // 200 req/s per IP
+	r.Use(RequestTimeout(60)) // 60s default timeout for API requests
+	r.Use(WorkspaceMiddleware)
 
 	// Auth layers
 	if auth != nil {
@@ -50,12 +58,44 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	hub := NewHub()
 	hub.StartBroadcasting(e.Events())
 
-	RegisterRoutes(r, s, e, hub, sched, cryptoCfg...)
+	// Enterprise: SSO middleware
+	if ext != nil && ext.Auth != nil && ext.Auth.Enabled() {
+		r.Use(ext.Auth.Middleware())
+		log.Printf("Enterprise: SSO (%s) enabled", ext.Auth.Name())
+	}
+
+	// Enterprise: Git sync webhook
+	if ext != nil && ext.GitSync != nil && ext.GitSync.Enabled() {
+		r.Post("/api/git/webhook", ext.GitSync.WebhookHandler())
+		log.Println("Enterprise: Git sync enabled")
+	}
+
+	pc := NewPermissionChecker(s)
+	RegisterRoutes(r, s, e, hub, sched, ext, userStore, cryptoCfg...)
 
 	// Auth routes
 	if userStore != nil {
-		r.Post("/api/auth/login", LoginHandler(userStore))
+		loginLimiter := RateLimiter(10) // 10 req/s for auth (stricter than global 200)
+		r.With(loginLimiter).Post("/api/auth/login", withSessionCookie(LoginHandler(userStore), r))
+		// Self-service signup is registered by enterprise platform provider
 		r.Get("/api/auth/me", MeHandler())
+		r.Get("/api/auth/me/permissions", func(w http.ResponseWriter, req *http.Request) {
+			claims := req.Context().Value("claims")
+			if claims == nil {
+				// Open mode — return all permissions
+				writeJSON(w, http.StatusOK, models.AllPermissions())
+				return
+			}
+			mapClaims, ok := claims.(*jwt.MapClaims)
+			if !ok || mapClaims == nil {
+				writeJSON(w, http.StatusOK, []models.Permission{})
+				return
+			}
+			role, _ := (*mapClaims)["role"].(string)
+			wsID := GetWorkspaceID(req)
+			perms := pc.GetUserPermissions(role, wsID)
+			writeJSON(w, http.StatusOK, perms)
+		})
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))
 		r.Get("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
@@ -63,7 +103,66 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				"needs_setup": userStore.UserCount() == 0,
 			})
 		})
+		r.Post("/api/auth/admin-reset-password", func(w http.ResponseWriter, r *http.Request) {
+			claimsRaw := r.Context().Value("claims")
+			claims, _ := claimsRaw.(*jwt.MapClaims)
+			if claims == nil {
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			role, _ := (*claims)["role"].(string)
+			if role != "admin" {
+				writeError(w, http.StatusForbidden, "admin role required")
+				return
+			}
+			var req struct {
+				UserID      string `json:"user_id"`
+				NewPassword string `json:"new_password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			if err := userStore.AdminResetPassword(req.UserID, req.NewPassword); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "password reset"})
+		})
+		r.Post("/api/auth/change-password", func(w http.ResponseWriter, r *http.Request) {
+			claimsRaw := r.Context().Value("claims")
+			claims, _ := claimsRaw.(*jwt.MapClaims)
+			if claims == nil {
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			var req struct {
+				CurrentPassword string `json:"current_password"`
+				NewPassword     string `json:"new_password"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid JSON")
+				return
+			}
+			userID, _ := (*claims)["sub"].(string)
+			if err := userStore.ChangePassword(userID, req.CurrentPassword, req.NewPassword); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
+		})
 	}
+
+	// Serve uploaded files (ticket attachments)
+	r.Get("/uploads/{filename}", func(w http.ResponseWriter, r *http.Request) {
+		filename := chi.URLParam(r, "filename")
+		filePath := filepath.Join("./uploads", filepath.Base(filename))
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, filePath)
+	})
 
 	// Serve embedded UI (or fallback)
 	if uiFS != nil {
@@ -78,6 +177,10 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			f, err := uiFS.Open(path[1:]) // strip leading /
 			if err == nil {
 				f.Close()
+				// Cache static assets (JS/CSS have content hashes in filenames)
+				if strings.HasPrefix(path, "/assets/") {
+					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				}
 				http.FileServerFS(uiFS).ServeHTTP(w, req)
 				return
 			}
@@ -98,7 +201,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		})
 	}
 
-	return &Server{router: r, port: port, hub: hub}
+	return &Server{router: r, port: port, hub: hub, ext: ext}
 }
 
 // Start begins listening for HTTP requests with graceful shutdown.
@@ -215,4 +318,51 @@ func writeJSON(w http.ResponseWriter, status int, data interface{}) {
 // writeError writes a JSON error response.
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// withSessionCookie wraps a login handler to set an httpOnly session cookie on success.
+func withSessionCookie(handler http.Handler, router *chi.Mux) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Wrap response writer to intercept the token from the JSON response
+		rec := &cookieResponseWriter{ResponseWriter: w, statusCode: 200}
+		handler.ServeHTTP(rec, r)
+
+		// If login succeeded (200), try to set cookie from the response body
+		if rec.statusCode == 200 && len(rec.body) > 0 {
+			var resp map[string]interface{}
+			if json.Unmarshal(rec.body, &resp) == nil {
+				if token, ok := resp["token"].(string); ok && token != "" {
+					secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
+					http.SetCookie(w, &http.Cookie{
+						Name:     "brokoli_session",
+						Value:    token,
+						Path:     "/",
+						HttpOnly: true,
+						Secure:   secure,
+						SameSite: http.SameSiteLaxMode,
+						MaxAge:   86400,
+					})
+				}
+			}
+		}
+		// Always write the response back
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(rec.statusCode)
+		w.Write(rec.body)
+	}
+}
+
+type cookieResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+	body       []byte
+}
+
+func (w *cookieResponseWriter) WriteHeader(code int) {
+	w.statusCode = code
+}
+
+func (w *cookieResponseWriter) Write(b []byte) (int, error) {
+	w.body = append(w.body, b...)
+	return len(b), nil
 }

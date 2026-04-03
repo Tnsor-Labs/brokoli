@@ -2,10 +2,12 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -21,12 +23,28 @@ func Logger(next http.Handler) http.Handler {
 	})
 }
 
-// CORS adds permissive CORS headers for development.
+// CORS adds CORS headers. Set BROKOLI_CORS_ORIGINS for production (comma-separated).
 func CORS(next http.Handler) http.Handler {
+	allowedOrigins := os.Getenv("BROKOLI_CORS_ORIGINS") // comma-separated, e.g. "https://orkestri.site,http://localhost:9900"
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
+		origin := r.Header.Get("Origin")
+
+		if allowedOrigins == "" || allowedOrigins == "*" {
+			// Default: allow all (development mode)
+			w.Header().Set("Access-Control-Allow-Origin", "*")
+		} else {
+			// Production: check against allowed list
+			for _, allowed := range strings.Split(allowedOrigins, ",") {
+				if strings.TrimSpace(allowed) == origin {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					break
+				}
+			}
+		}
+
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Workspace-ID, X-Webhook-Token")
 
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
@@ -92,6 +110,30 @@ func RateLimiter(requestsPerSecond int) func(http.Handler) http.Handler {
 			mu.Unlock()
 
 			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// RequestTimeout adds a deadline to non-WebSocket, non-streaming requests.
+func RequestTimeout(seconds int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Skip WebSocket and streaming endpoints
+			if strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Skip long-running endpoints (dry-run, backfill, run trigger)
+			if strings.Contains(r.URL.Path, "/dry-run") ||
+				strings.Contains(r.URL.Path, "/backfill") ||
+				(strings.Contains(r.URL.Path, "/run") && r.Method == "POST") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			ctx, cancel := context.WithTimeout(r.Context(), time.Duration(seconds)*time.Second)
+			defer cancel()
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
