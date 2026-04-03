@@ -1,6 +1,8 @@
 package store
 
 import (
+	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -244,6 +246,297 @@ func TestCascadeDelete(t *testing.T) {
 	logs, _ := s.GetLogs("run-1")
 	if len(logs) != 0 {
 		t.Errorf("logs after cascade delete = %d, want 0", len(logs))
+	}
+}
+
+func TestWithTx_Commit(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	// Create pipeline via transaction
+	err := s.WithTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"tx-pipe-1", "TX Pipeline", "", "[]", "[]", "", "", "{}", "[]", "", "", "[]", "", 1,
+			now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+		)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("WithTx commit: %v", err)
+	}
+
+	// Verify the pipeline exists
+	p, err := s.GetPipeline("tx-pipe-1")
+	if err != nil {
+		t.Fatalf("GetPipeline after tx commit: %v", err)
+	}
+	if p.Name != "TX Pipeline" {
+		t.Errorf("Name = %q, want %q", p.Name, "TX Pipeline")
+	}
+}
+
+func TestWithTx_Rollback(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	// Transaction that returns an error should rollback
+	err := s.WithTx(func(tx *sql.Tx) error {
+		tx.Exec(
+			`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			"tx-pipe-rollback", "Rollback Pipeline", "", "[]", "[]", "", "", "{}", "[]", "", "", "[]", "", 1,
+			now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano),
+		)
+		return fmt.Errorf("intentional error")
+	})
+	if err == nil {
+		t.Fatal("WithTx should have returned an error")
+	}
+
+	// Verify the pipeline does NOT exist
+	_, err = s.GetPipeline("tx-pipe-rollback")
+	if err == nil {
+		t.Fatal("Pipeline should not exist after rollback")
+	}
+}
+
+func TestDLQ_AddAndList(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	// Create a pipeline (FK constraint)
+	s.CreatePipeline(&models.Pipeline{
+		ID: "pipe-dlq", Name: "DLQ Test", Nodes: []models.Node{}, Edges: []models.Edge{},
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Add DLQ entry
+	err := s.AddToDLQ("pipe-dlq", "run-1", "node-1", "Load CSV", "connection refused", `{"key":"value"}`)
+	if err != nil {
+		t.Fatalf("AddToDLQ: %v", err)
+	}
+
+	// List
+	entries, err := s.ListDLQ("pipe-dlq", false, 10)
+	if err != nil {
+		t.Fatalf("ListDLQ: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("len(entries) = %d, want 1", len(entries))
+	}
+
+	e := entries[0]
+	if e.PipelineID != "pipe-dlq" {
+		t.Errorf("PipelineID = %q, want %q", e.PipelineID, "pipe-dlq")
+	}
+	if e.RunID != "run-1" {
+		t.Errorf("RunID = %q, want %q", e.RunID, "run-1")
+	}
+	if e.NodeID != "node-1" {
+		t.Errorf("NodeID = %q, want %q", e.NodeID, "node-1")
+	}
+	if e.NodeName != "Load CSV" {
+		t.Errorf("NodeName = %q, want %q", e.NodeName, "Load CSV")
+	}
+	if e.Error != "connection refused" {
+		t.Errorf("Error = %q, want %q", e.Error, "connection refused")
+	}
+	if e.Payload != `{"key":"value"}` {
+		t.Errorf("Payload = %q, want %q", e.Payload, `{"key":"value"}`)
+	}
+	if e.Resolved {
+		t.Error("Resolved should be false")
+	}
+}
+
+func TestDLQ_Resolve(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	s.CreatePipeline(&models.Pipeline{
+		ID: "pipe-dlq-r", Name: "DLQ Resolve", Nodes: []models.Node{}, Edges: []models.Edge{},
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	s.AddToDLQ("pipe-dlq-r", "run-1", "", "", "timeout", "")
+
+	entries, _ := s.ListDLQ("pipe-dlq-r", false, 10)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(entries))
+	}
+
+	// Resolve it
+	if err := s.ResolveDLQ(entries[0].ID); err != nil {
+		t.Fatalf("ResolveDLQ: %v", err)
+	}
+
+	// List without resolved — should be empty
+	unresolved, _ := s.ListDLQ("pipe-dlq-r", false, 10)
+	if len(unresolved) != 0 {
+		t.Errorf("unresolved entries = %d, want 0", len(unresolved))
+	}
+
+	// List with resolved — should have 1
+	all, _ := s.ListDLQ("pipe-dlq-r", true, 10)
+	if len(all) != 1 {
+		t.Errorf("all entries = %d, want 1", len(all))
+	}
+	if !all[0].Resolved {
+		t.Error("entry should be resolved")
+	}
+	if all[0].ResolvedAt == "" {
+		t.Error("ResolvedAt should not be empty")
+	}
+}
+
+func TestDLQ_ListLimit(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	s.CreatePipeline(&models.Pipeline{
+		ID: "pipe-dlq-l", Name: "DLQ Limit", Nodes: []models.Node{}, Edges: []models.Edge{},
+		CreatedAt: now, UpdatedAt: now,
+	})
+
+	// Add 5 entries
+	for i := 0; i < 5; i++ {
+		s.AddToDLQ("pipe-dlq-l", fmt.Sprintf("run-%d", i), "", "", fmt.Sprintf("error %d", i), "")
+	}
+
+	// List with limit 3
+	entries, err := s.ListDLQ("pipe-dlq-l", false, 3)
+	if err != nil {
+		t.Fatalf("ListDLQ: %v", err)
+	}
+	if len(entries) != 3 {
+		t.Errorf("len(entries) = %d, want 3", len(entries))
+	}
+}
+
+func TestGetPipelineByPipelineID(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	p := &models.Pipeline{
+		ID:         "pipe-pid-1",
+		Name:       "Orders ETL",
+		PipelineID: "orders-etl",
+		Source:     models.PipelineSourceGit,
+		Nodes:      []models.Node{},
+		Edges:      []models.Edge{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+
+	got, err := s.GetPipelineByPipelineID("orders-etl")
+	if err != nil {
+		t.Fatalf("GetPipelineByPipelineID: %v", err)
+	}
+	if got.ID != "pipe-pid-1" {
+		t.Errorf("ID = %q, want %q", got.ID, "pipe-pid-1")
+	}
+	if got.Name != "Orders ETL" {
+		t.Errorf("Name = %q, want %q", got.Name, "Orders ETL")
+	}
+	if got.PipelineID != "orders-etl" {
+		t.Errorf("PipelineID = %q, want %q", got.PipelineID, "orders-etl")
+	}
+	if got.Source != models.PipelineSourceGit {
+		t.Errorf("Source = %q, want %q", got.Source, models.PipelineSourceGit)
+	}
+}
+
+func TestGetPipelineByPipelineID_NotFound(t *testing.T) {
+	s := newTestStore(t)
+
+	_, err := s.GetPipelineByPipelineID("nonexistent-pipeline")
+	if err == nil {
+		t.Fatal("expected error for non-existent pipeline_id, got nil")
+	}
+}
+
+func TestPipeline_SourceField(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	// Create with source="git"
+	p := &models.Pipeline{
+		ID:         "pipe-src-1",
+		Name:       "Git Pipeline",
+		PipelineID: "git-pipeline",
+		Source:     models.PipelineSourceGit,
+		Nodes:      []models.Node{},
+		Edges:      []models.Edge{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+
+	got, err := s.GetPipeline("pipe-src-1")
+	if err != nil {
+		t.Fatalf("GetPipeline: %v", err)
+	}
+	if got.Source != models.PipelineSourceGit {
+		t.Errorf("Source = %q, want %q", got.Source, models.PipelineSourceGit)
+	}
+
+	// Create with source="ui"
+	p2 := &models.Pipeline{
+		ID:         "pipe-src-2",
+		Name:       "UI Pipeline",
+		PipelineID: "ui-pipeline",
+		Source:     models.PipelineSourceUI,
+		Nodes:      []models.Node{},
+		Edges:      []models.Edge{},
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	if err := s.CreatePipeline(p2); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+
+	got2, err := s.GetPipeline("pipe-src-2")
+	if err != nil {
+		t.Fatalf("GetPipeline: %v", err)
+	}
+	if got2.Source != models.PipelineSourceUI {
+		t.Errorf("Source = %q, want %q", got2.Source, models.PipelineSourceUI)
+	}
+}
+
+// Enterprise store tests (Organization CRUD, OrgMember CRUD) moved to brokoli-enterprise.
+
+func TestOrganization_Validate(t *testing.T) {
+	tests := []struct {
+		name string
+		org  models.Organization
+		ok   bool
+	}{
+		{"valid", models.Organization{Name: "Acme", Slug: "acme"}, true},
+		{"empty name", models.Organization{Name: "", Slug: "acme"}, false},
+		{"empty slug", models.Organization{Name: "Acme", Slug: ""}, false},
+		{"uppercase slug", models.Organization{Name: "Acme", Slug: "Acme"}, false},
+		{"slug with spaces", models.Organization{Name: "Acme", Slug: "my org"}, false},
+		{"short slug", models.Organization{Name: "A", Slug: "a"}, false},
+		{"valid slug with hyphen", models.Organization{Name: "Acme Corp", Slug: "acme-corp"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.org.Validate()
+			if tt.ok && err != nil {
+				t.Errorf("expected valid, got error: %v", err)
+			}
+			if !tt.ok && err == nil {
+				t.Error("expected error, got nil")
+			}
+		})
 	}
 }
 

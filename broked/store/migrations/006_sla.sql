@@ -1,0 +1,2 @@
+ALTER TABLE pipelines ADD COLUMN sla_deadline TEXT NOT NULL DEFAULT '';
+ALTER TABLE pipelines ADD COLUMN sla_timezone TEXT NOT NULL DEFAULT '';

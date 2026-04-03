@@ -1,9 +1,26 @@
 package store
 
 import (
+	"database/sql"
+	"time"
+
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 )
+
+// DLQEntry represents a dead letter queue entry for a failed run.
+type DLQEntry struct {
+	ID         string `json:"id"`
+	PipelineID string `json:"pipeline_id"`
+	RunID      string `json:"run_id"`
+	Error      string `json:"error"`
+	NodeID     string `json:"node_id"`
+	NodeName   string `json:"node_name"`
+	Payload    string `json:"payload"`
+	CreatedAt  string `json:"created_at"`
+	Resolved   bool   `json:"resolved"`
+	ResolvedAt string `json:"resolved_at,omitempty"`
+}
 
 // PipelineVersion represents a saved version of a pipeline.
 type PipelineVersion struct {
@@ -28,8 +45,10 @@ type Store interface {
 	CreatePipeline(p *models.Pipeline) error
 	GetPipeline(id string) (*models.Pipeline, error)
 	ListPipelines() ([]models.Pipeline, error)
+	ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error)
 	UpdatePipeline(p *models.Pipeline) error
 	DeletePipeline(id string) error
+	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
 
 	// Runs
 	CreateRun(r *models.Run) error
@@ -59,6 +78,7 @@ type Store interface {
 	CreateConnection(c *models.Connection) error
 	GetConnection(connID string) (*models.Connection, error)
 	ListConnections() ([]models.Connection, error)
+	ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error)
 	UpdateConnection(c *models.Connection) error
 	DeleteConnection(connID string) error
 
@@ -66,10 +86,56 @@ type Store interface {
 	SetVariable(v *models.Variable) error
 	GetVariable(key string) (*models.Variable, error)
 	ListVariables() ([]models.Variable, error)
+	ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error)
 	DeleteVariable(key string) error
+
+	// Workspaces
+	CreateWorkspace(w *models.Workspace) error
+	GetWorkspace(id string) (*models.Workspace, error)
+	ListWorkspaces() ([]models.Workspace, error)
+	DeleteWorkspace(id string) error
+	AddWorkspaceMember(m *models.WorkspaceMember) error
+	RemoveWorkspaceMember(workspaceID, userID string) error
+	ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error)
+	GetUserWorkspaces(userID string) ([]models.Workspace, error)
+
+	// API Tokens
+	CreateAPIToken(t *models.APIToken) error
+	GetAPITokenByHash(hash string) (*models.APIToken, error)
+	ListAPITokens(workspaceID string) ([]models.APIToken, error)
+	DeleteAPIToken(id string) error
+
+	// Node Profiles
+	SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, driftJSON string) error
+	GetNodeProfile(runID, nodeID string) (profileJSON, schemaJSON, driftJSON string, err error)
+	GetLatestNodeProfile(pipelineID, nodeID string) (profileJSON, schemaJSON string, err error)
 
 	// Calendar / Aggregation
 	GetRunCalendar(days int) ([]CalendarDay, error)
+
+	// Settings (key-value)
+	GetSetting(key string) (string, error)
+	SetSetting(key, value string) error
+
+	// Roles
+	CreateRole(r *models.Role) error
+	GetRole(id string) (*models.Role, error)
+	ListRoles() ([]models.Role, error)
+	UpdateRole(r *models.Role) error
+	DeleteRole(id string) error
+
+	// Login attempt tracking
+	RecordLoginAttempt(username, ip string, success bool) error
+	GetRecentFailedAttempts(username string, since time.Time) (int, error)
+	ClearLoginAttempts(username string) error
+
+	// Transactions
+	WithTx(fn func(*sql.Tx) error) error
+
+	// Dead Letter Queue
+	AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error
+	ListDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error)
+	ResolveDLQ(id string) error
 
 	// Maintenance
 	PurgeRunsOlderThan(days int) (int64, error)

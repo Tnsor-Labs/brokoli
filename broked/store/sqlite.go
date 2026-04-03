@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 	_ "modernc.org/sqlite"
@@ -16,6 +17,17 @@ import (
 var migrationsFS embed.FS
 
 const timeFormat = time.RFC3339Nano
+
+// wrapStoreErr annotates storage errors with the operation name and resource ID.
+func wrapStoreErr(op string, id string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if id != "" {
+		return fmt.Errorf("[%s:%s] %w", op, id, err)
+	}
+	return fmt.Errorf("[%s] %w", op, err)
+}
 
 // SQLiteStore implements Store using an embedded SQLite database.
 type SQLiteStore struct {
@@ -29,6 +41,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
+	// Connection pool tuning for concurrent access
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+
 	s := &SQLiteStore{db: db}
 	if err := s.migrate(); err != nil {
 		db.Close()
@@ -38,7 +55,7 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 }
 
 func (s *SQLiteStore) migrate() error {
-	files := []string{"001_initial.sql", "002_connections.sql", "003_variables.sql"}
+	files := []string{"001_initial.sql", "002_connections.sql", "003_variables.sql", "005_workspaces.sql"}
 	for _, f := range files {
 		migration, err := migrationsFS.ReadFile("migrations/" + f)
 		if err != nil {
@@ -51,8 +68,178 @@ func (s *SQLiteStore) migrate() error {
 
 	// Schema additions (safe to re-run, ignores "already exists" errors)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_deadline TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_timezone TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN pipeline_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE variables ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
+
+	// Node profiles table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS node_profiles (
+		run_id TEXT NOT NULL, node_id TEXT NOT NULL,
+		profile TEXT NOT NULL DEFAULT '{}', schema_snapshot TEXT NOT NULL DEFAULT '{}',
+		drift_alerts TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL,
+		PRIMARY KEY (run_id, node_id),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_profiles ON node_profiles(run_id)`)
+
+	// Performance indexes (safe to re-run)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(run_id, status)`)
+
+	// Settings key-value store
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '')`)
+
+	// Login attempts tracking (account lockout)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS login_attempts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		username TEXT NOT NULL,
+		ip TEXT NOT NULL DEFAULT '',
+		success INTEGER NOT NULL DEFAULT 0,
+		attempted_at TEXT NOT NULL)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(username, attempted_at DESC)`)
+
+	// Roles table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS roles (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
+		permissions TEXT NOT NULL DEFAULT '[]', is_system INTEGER NOT NULL DEFAULT 0,
+		created_at TEXT NOT NULL)`)
+
+	// Seed default roles on first run
+	var roleCount int
+	s.db.QueryRow("SELECT COUNT(*) FROM roles").Scan(&roleCount)
+	if roleCount == 0 {
+		for _, role := range models.DefaultRoles() {
+			permsJSON, _ := json.Marshal(role.Permissions)
+			s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)",
+				role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().Format(timeFormat))
+		}
+	}
+
+	// Dead letter queue
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS dead_letter_queue (
+		id TEXT PRIMARY KEY,
+		pipeline_id TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		error TEXT NOT NULL,
+		node_id TEXT NOT NULL DEFAULT '',
+		node_name TEXT NOT NULL DEFAULT '',
+		payload TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL,
+		resolved INTEGER NOT NULL DEFAULT 0,
+		resolved_at TEXT,
+		FOREIGN KEY (pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_dlq_pipeline ON dead_letter_queue(pipeline_id, resolved, created_at DESC)`)
 
 	return nil
+}
+
+// --- Settings ---
+
+func (s *SQLiteStore) GetSetting(key string) (string, error) {
+	var val string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key = ?`, key).Scan(&val)
+	if err != nil {
+		return "", nil // not found = empty, not an error
+	}
+	return val, nil
+}
+
+func (s *SQLiteStore) SetSetting(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?`,
+		key, value, value,
+	)
+	return err
+}
+
+// --- Login Attempts ---
+
+func (s *SQLiteStore) RecordLoginAttempt(username, ip string, success bool) error {
+	successInt := 0
+	if success {
+		successInt = 1
+	}
+	_, err := s.db.Exec(
+		`INSERT INTO login_attempts (username, ip, success, attempted_at) VALUES (?, ?, ?, ?)`,
+		username, ip, successInt, time.Now().Format(timeFormat),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetRecentFailedAttempts(username string, since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM login_attempts WHERE username = ? AND success = 0 AND attempted_at > ?`,
+		username, since.Format(timeFormat),
+	).Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) ClearLoginAttempts(username string) error {
+	_, err := s.db.Exec(`DELETE FROM login_attempts WHERE username = ?`, username)
+	return err
+}
+
+// WithTx executes a function within a database transaction.
+func (s *SQLiteStore) WithTx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// --- Dead Letter Queue ---
+
+func (s *SQLiteStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error {
+	id := uuid.New().String()
+	_, err := s.db.Exec(
+		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES (?,?,?,?,?,?,?,?)`,
+		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now().Format(timeFormat),
+	)
+	return wrapStoreErr("AddToDLQ", id, err)
+}
+
+func (s *SQLiteStore) ListDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error) {
+	query := `SELECT id, pipeline_id, run_id, error, node_id, node_name, payload, created_at, resolved, COALESCE(resolved_at,'') FROM dead_letter_queue WHERE pipeline_id = ?`
+	if !includeResolved {
+		query += " AND resolved = 0"
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+	rows, err := s.db.Query(query, pipelineID, limit)
+	if err != nil {
+		return nil, wrapStoreErr("ListDLQ", pipelineID, err)
+	}
+	defer rows.Close()
+	var entries []DLQEntry
+	for rows.Next() {
+		var e DLQEntry
+		var resolved int
+		if err := rows.Scan(&e.ID, &e.PipelineID, &e.RunID, &e.Error, &e.NodeID, &e.NodeName, &e.Payload, &e.CreatedAt, &resolved, &e.ResolvedAt); err != nil {
+			return nil, err
+		}
+		e.Resolved = resolved != 0
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func (s *SQLiteStore) ResolveDLQ(id string) error {
+	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = 1, resolved_at = ? WHERE id = ?`, time.Now().Format(timeFormat), id)
+	return wrapStoreErr("ResolveDLQ", id, err)
 }
 
 func (s *SQLiteStore) Close() error       { return s.db.Close() }
@@ -60,44 +247,62 @@ func (s *SQLiteStore) RawDB() interface{} { return s.db }
 
 // --- Pipelines ---
 
-func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
+// pipelineFields holds pre-marshaled JSON for pipeline storage operations.
+type pipelineFields struct {
+	nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
+}
+
+// marshalPipelineJSON marshals the JSON fields of a pipeline for storage.
+func marshalPipelineJSON(p *models.Pipeline) (*pipelineFields, error) {
 	nodesJSON, err := json.Marshal(p.Nodes)
 	if err != nil {
-		return fmt.Errorf("marshal nodes: %w", err)
+		return nil, fmt.Errorf("marshal nodes: %w", err)
 	}
 	edgesJSON, err := json.Marshal(p.Edges)
 	if err != nil {
-		return fmt.Errorf("marshal edges: %w", err)
+		return nil, fmt.Errorf("marshal edges: %w", err)
 	}
-	paramsJSON, err := json.Marshal(p.Params)
-	if err != nil {
-		return fmt.Errorf("marshal params: %w", err)
-	}
+	paramsJSON, _ := json.Marshal(p.Params)
 	tagsJSON, _ := json.Marshal(p.Tags)
 	if tagsJSON == nil {
 		tagsJSON = []byte("[]")
 	}
+	depsJSON, _ := json.Marshal(p.DependsOn)
+	if depsJSON == nil {
+		depsJSON = []byte("[]")
+	}
+	return &pipelineFields{nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON}, nil
+}
 
+func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
+	f, err := marshalPipelineJSON(p)
+	if err != nil {
+		return wrapStoreErr("CreatePipeline", p.ID, err)
+	}
 	_, err = s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, tags, enabled, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Description, string(nodesJSON), string(edgesJSON),
-		p.Schedule, p.WebhookURL, string(paramsJSON), string(tagsJSON), boolToInt(p.Enabled), p.CreatedAt.Format(timeFormat), p.UpdatedAt.Format(timeFormat),
+		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		p.Schedule, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.Format(timeFormat), p.UpdatedAt.Format(timeFormat), p.PipelineID, p.Source,
 	)
-	return err
+	return wrapStoreErr("CreatePipeline", p.ID, err)
 }
 
 func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, enabled, created_at, updated_at
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
 		 FROM pipelines WHERE id = ?`, id,
 	)
-	return scanPipeline(row)
+	p, err := scanPipeline(row)
+	if err != nil {
+		return nil, wrapStoreErr("GetPipeline", id, err)
+	}
+	return p, nil
 }
 
 func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, enabled, created_at, updated_at
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
 		 FROM pipelines ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -116,39 +321,62 @@ func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 	return pipelines, rows.Err()
 }
 
+func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		 FROM pipelines WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := scanPipelineRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
+}
+
 func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
-	nodesJSON, err := json.Marshal(p.Nodes)
+	f, err := marshalPipelineJSON(p)
 	if err != nil {
-		return fmt.Errorf("marshal nodes: %w", err)
-	}
-	edgesJSON, err := json.Marshal(p.Edges)
-	if err != nil {
-		return fmt.Errorf("marshal edges: %w", err)
-	}
-	paramsJSON, _ := json.Marshal(p.Params)
-	tagsJSON, _ := json.Marshal(p.Tags)
-	if tagsJSON == nil {
-		tagsJSON = []byte("[]")
+		return wrapStoreErr("UpdatePipeline", p.ID, err)
 	}
 
 	result, err := s.db.Exec(
-		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, webhook_url=?, params=?, tags=?, enabled=?, updated_at=?
+		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?
 		 WHERE id=?`,
-		p.Name, p.Description, string(nodesJSON), string(edgesJSON),
-		p.Schedule, p.WebhookURL, string(paramsJSON), string(tagsJSON), boolToInt(p.Enabled), p.UpdatedAt.Format(timeFormat), p.ID,
+		p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		p.Schedule, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.Format(timeFormat), p.PipelineID, p.Source, p.ID,
 	)
 	if err != nil {
-		return err
+		return wrapStoreErr("UpdatePipeline", p.ID, err)
 	}
-	return checkRowsAffected(result, "pipeline", p.ID)
+	return wrapStoreErr("UpdatePipeline", p.ID, checkRowsAffected(result, "pipeline", p.ID))
+}
+
+func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
+	row := s.db.QueryRow(
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		 FROM pipelines WHERE pipeline_id = ?`, pipelineID,
+	)
+	p, err := scanPipeline(row)
+	if err != nil {
+		return nil, wrapStoreErr("GetPipelineByPipelineID", pipelineID, err)
+	}
+	return p, nil
 }
 
 func (s *SQLiteStore) DeletePipeline(id string) error {
 	result, err := s.db.Exec(`DELETE FROM pipelines WHERE id=?`, id)
 	if err != nil {
-		return err
+		return wrapStoreErr("DeletePipeline", id, err)
 	}
-	return checkRowsAffected(result, "pipeline", id)
+	return wrapStoreErr("DeletePipeline", id, checkRowsAffected(result, "pipeline", id))
 }
 
 // --- Runs ---
@@ -158,7 +386,7 @@ func (s *SQLiteStore) CreateRun(r *models.Run) error {
 		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?)`,
 		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt),
 	)
-	return err
+	return wrapStoreErr("CreateRun", r.ID, err)
 }
 
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
@@ -167,12 +395,12 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	)
 	r, err := scanRun(row)
 	if err != nil {
-		return nil, err
+		return nil, wrapStoreErr("GetRun", id, err)
 	}
 
 	nodeRuns, err := s.ListNodeRunsByRun(id)
 	if err != nil {
-		return nil, err
+		return nil, wrapStoreErr("GetRun", id, err)
 	}
 	r.NodeRuns = nodeRuns
 	return r, nil
@@ -206,9 +434,9 @@ func (s *SQLiteStore) UpdateRun(r *models.Run) error {
 		string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.ID,
 	)
 	if err != nil {
-		return err
+		return wrapStoreErr("UpdateRun", r.ID, err)
 	}
-	return checkRowsAffected(result, "run", r.ID)
+	return wrapStoreErr("UpdateRun", r.ID, checkRowsAffected(result, "run", r.ID))
 }
 
 // --- Node Runs ---
@@ -381,6 +609,37 @@ func (s *SQLiteStore) GetPipelineVersion(pipelineID string, version int) (string
 	return snapshot, err
 }
 
+// --- Node Profiles ---
+
+func (s *SQLiteStore) SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, driftJSON string) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO node_profiles (run_id, node_id, profile, schema_snapshot, drift_alerts, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		runID, nodeID, profileJSON, schemaJSON, driftJSON, time.Now().Format(timeFormat),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetNodeProfile(runID, nodeID string) (string, string, string, error) {
+	var profile, schema, drift string
+	err := s.db.QueryRow(
+		`SELECT profile, schema_snapshot, drift_alerts FROM node_profiles WHERE run_id = ? AND node_id = ?`,
+		runID, nodeID,
+	).Scan(&profile, &schema, &drift)
+	return profile, schema, drift, err
+}
+
+func (s *SQLiteStore) GetLatestNodeProfile(pipelineID, nodeID string) (string, string, error) {
+	var profile, schema string
+	err := s.db.QueryRow(
+		`SELECT np.profile, np.schema_snapshot FROM node_profiles np
+		 JOIN runs r ON r.id = np.run_id
+		 WHERE r.pipeline_id = ? AND np.node_id = ?
+		 ORDER BY np.created_at DESC LIMIT 1`, pipelineID, nodeID,
+	).Scan(&profile, &schema)
+	return profile, schema, err
+}
+
 // --- Maintenance ---
 
 func (s *SQLiteStore) PurgeRunsOlderThan(days int) (int64, error) {
@@ -409,10 +668,10 @@ type scanner interface {
 
 func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, createdAt, updatedAt string
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, createdAt, updatedAt string
 	var enabled int
 
-	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.WebhookURL, &paramsJSON, &tagsJSON, &enabled, &createdAt, &updatedAt); err != nil {
+	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source); err != nil {
 		return nil, err
 	}
 
@@ -428,8 +687,14 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	if tagsJSON != "" && tagsJSON != "null" {
 		json.Unmarshal([]byte(tagsJSON), &p.Tags)
 	}
+	if depsJSON != "" && depsJSON != "null" {
+		json.Unmarshal([]byte(depsJSON), &p.DependsOn)
+	}
 	if p.Tags == nil {
 		p.Tags = []string{}
+	}
+	if p.DependsOn == nil {
+		p.DependsOn = []string{}
 	}
 	p.Enabled = enabled != 0
 	p.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -549,6 +814,30 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	return conns, nil
 }
 
+func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
+	rows, err := s.db.Query(
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		 FROM connections WHERE workspace_id = ? ORDER BY conn_id`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var conns []models.Connection
+	for rows.Next() {
+		var c models.Connection
+		var createdAt, updatedAt string
+		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
+			&c.Password, &c.Extra, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		conns = append(conns, c)
+	}
+	return conns, nil
+}
+
 func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 	result, err := s.db.Exec(
 		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, updated_at=?
@@ -589,6 +878,176 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 	c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 	return &c, nil
+}
+
+// ── Workspaces ───────────────────────────────────────────────
+
+func (s *SQLiteStore) CreateWorkspace(w *models.Workspace) error {
+	_, err := s.db.Exec(
+		`INSERT INTO workspaces (id, name, slug, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		w.ID, w.Name, w.Slug, w.Description, w.CreatedAt.Format(timeFormat), w.UpdatedAt.Format(timeFormat),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetWorkspace(id string) (*models.Workspace, error) {
+	var w models.Workspace
+	var createdAt, updatedAt string
+	err := s.db.QueryRow(`SELECT id, name, slug, description, created_at, updated_at FROM workspaces WHERE id = ?`, id).
+		Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &createdAt, &updatedAt)
+	if err != nil {
+		return nil, err
+	}
+	w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	return &w, nil
+}
+
+func (s *SQLiteStore) ListWorkspaces() ([]models.Workspace, error) {
+	rows, err := s.db.Query(`SELECT id, name, slug, description, created_at, updated_at FROM workspaces ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ws []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		var createdAt, updatedAt string
+		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &createdAt, &updatedAt)
+		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		ws = append(ws, w)
+	}
+	return ws, nil
+}
+
+func (s *SQLiteStore) DeleteWorkspace(id string) error {
+	if id == models.DefaultWorkspaceID {
+		return fmt.Errorf("cannot delete default workspace")
+	}
+	result, err := s.db.Exec(`DELETE FROM workspaces WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("workspace not found")
+	}
+	return nil
+}
+
+func (s *SQLiteStore) AddWorkspaceMember(m *models.WorkspaceMember) error {
+	_, err := s.db.Exec(
+		`INSERT OR REPLACE INTO workspace_members (workspace_id, user_id, username, role, joined_at) VALUES (?, ?, ?, ?, ?)`,
+		m.WorkspaceID, m.UserID, m.Username, m.Role, m.JoinedAt.Format(timeFormat),
+	)
+	return err
+}
+
+func (s *SQLiteStore) RemoveWorkspaceMember(workspaceID, userID string) error {
+	_, err := s.db.Exec(`DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ?`, workspaceID, userID)
+	return err
+}
+
+func (s *SQLiteStore) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
+	rows, err := s.db.Query(
+		`SELECT workspace_id, user_id, username, role, joined_at FROM workspace_members WHERE workspace_id = ? ORDER BY username`,
+		workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []models.WorkspaceMember
+	for rows.Next() {
+		var m models.WorkspaceMember
+		var joinedAt string
+		rows.Scan(&m.WorkspaceID, &m.UserID, &m.Username, &m.Role, &joinedAt)
+		m.JoinedAt, _ = time.Parse(timeFormat, joinedAt)
+		members = append(members, m)
+	}
+	return members, nil
+}
+
+func (s *SQLiteStore) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
+	rows, err := s.db.Query(
+		`SELECT w.id, w.name, w.slug, w.description, w.created_at, w.updated_at
+		 FROM workspaces w
+		 JOIN workspace_members wm ON w.id = wm.workspace_id
+		 WHERE wm.user_id = ?
+		 ORDER BY w.name`, userID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ws []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		var createdAt, updatedAt string
+		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &createdAt, &updatedAt)
+		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		ws = append(ws, w)
+	}
+	return ws, nil
+}
+
+// ── API Tokens ───────────────────────────────────────────────
+
+func (s *SQLiteStore) CreateAPIToken(t *models.APIToken) error {
+	_, err := s.db.Exec(
+		`INSERT INTO api_tokens (id, name, token_hash, workspace_id, user_id, role, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.TokenHash, t.WorkspaceID, t.UserID, t.Role,
+		t.ExpiresAt.Format(timeFormat), t.CreatedAt.Format(timeFormat),
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetAPITokenByHash(hash string) (*models.APIToken, error) {
+	var t models.APIToken
+	var expiresAt, createdAt, lastUsed string
+	err := s.db.QueryRow(
+		`SELECT id, name, token_hash, workspace_id, user_id, role, expires_at, created_at, last_used_at FROM api_tokens WHERE token_hash = ?`, hash,
+	).Scan(&t.ID, &t.Name, &t.TokenHash, &t.WorkspaceID, &t.UserID, &t.Role, &expiresAt, &createdAt, &lastUsed)
+	if err != nil {
+		return nil, err
+	}
+	t.ExpiresAt, _ = time.Parse(timeFormat, expiresAt)
+	t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	if lastUsed != "" {
+		t.LastUsedAt, _ = time.Parse(timeFormat, lastUsed)
+	}
+	return &t, nil
+}
+
+func (s *SQLiteStore) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, workspace_id, user_id, role, expires_at, created_at, last_used_at FROM api_tokens WHERE workspace_id = ? ORDER BY created_at DESC`,
+		workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var tokens []models.APIToken
+	for rows.Next() {
+		var t models.APIToken
+		var expiresAt, createdAt, lastUsed string
+		rows.Scan(&t.ID, &t.Name, &t.WorkspaceID, &t.UserID, &t.Role, &expiresAt, &createdAt, &lastUsed)
+		t.ExpiresAt, _ = time.Parse(timeFormat, expiresAt)
+		t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		if lastUsed != "" {
+			t.LastUsedAt, _ = time.Parse(timeFormat, lastUsed)
+		}
+		tokens = append(tokens, t)
+	}
+	return tokens, nil
+}
+
+func (s *SQLiteStore) DeleteAPIToken(id string) error {
+	_, err := s.db.Exec(`DELETE FROM api_tokens WHERE id = ?`, id)
+	return err
 }
 
 // ── Calendar / Aggregation ────────────────────────────────────
@@ -671,6 +1130,28 @@ func (s *SQLiteStore) ListVariables() ([]models.Variable, error) {
 	return vars, nil
 }
 
+func (s *SQLiteStore) ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error) {
+	rows, err := s.db.Query(
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = ? ORDER BY key`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var vars []models.Variable
+	for rows.Next() {
+		var v models.Variable
+		var createdAt, updatedAt string
+		if err := rows.Scan(&v.Key, &v.Value, &v.Type, &v.Description, &createdAt, &updatedAt); err != nil {
+			return nil, err
+		}
+		v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		vars = append(vars, v)
+	}
+	return vars, nil
+}
+
 func (s *SQLiteStore) DeleteVariable(key string) error {
 	result, err := s.db.Exec("DELETE FROM variables WHERE key = ?", key)
 	if err != nil {
@@ -679,6 +1160,100 @@ func (s *SQLiteStore) DeleteVariable(key string) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("variable not found: %s", key)
+	}
+	return nil
+}
+
+// --- Roles ---
+
+func (s *SQLiteStore) CreateRole(r *models.Role) error {
+	permsJSON, err := json.Marshal(r.Permissions)
+	if err != nil {
+		return fmt.Errorf("marshal permissions: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)`,
+		r.ID, r.Name, r.Description, string(permsJSON), boolToInt(r.IsSystem), r.CreatedAt,
+	)
+	return err
+}
+
+func (s *SQLiteStore) GetRole(id string) (*models.Role, error) {
+	var r models.Role
+	var permsJSON string
+	var isSystem int
+	err := s.db.QueryRow(
+		`SELECT id, name, description, permissions, is_system, created_at FROM roles WHERE id = ?`, id,
+	).Scan(&r.ID, &r.Name, &r.Description, &permsJSON, &isSystem, &r.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	r.IsSystem = isSystem != 0
+	if err := json.Unmarshal([]byte(permsJSON), &r.Permissions); err != nil {
+		return nil, fmt.Errorf("unmarshal permissions: %w", err)
+	}
+	return &r, nil
+}
+
+func (s *SQLiteStore) ListRoles() ([]models.Role, error) {
+	rows, err := s.db.Query(`SELECT id, name, description, permissions, is_system, created_at FROM roles ORDER BY is_system DESC, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roles []models.Role
+	for rows.Next() {
+		var r models.Role
+		var permsJSON string
+		var isSystem int
+		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &permsJSON, &isSystem, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		r.IsSystem = isSystem != 0
+		json.Unmarshal([]byte(permsJSON), &r.Permissions)
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateRole(r *models.Role) error {
+	permsJSON, err := json.Marshal(r.Permissions)
+	if err != nil {
+		return fmt.Errorf("marshal permissions: %w", err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE roles SET name=?, description=?, permissions=? WHERE id=? AND is_system=0`,
+		r.Name, r.Description, string(permsJSON), r.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		// Check if it exists at all
+		var exists int
+		s.db.QueryRow("SELECT COUNT(*) FROM roles WHERE id=?", r.ID).Scan(&exists)
+		if exists > 0 {
+			return fmt.Errorf("cannot modify system role")
+		}
+		return fmt.Errorf("role not found: %s", r.ID)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeleteRole(id string) error {
+	result, err := s.db.Exec("DELETE FROM roles WHERE id = ? AND is_system = 0", id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		var exists int
+		s.db.QueryRow("SELECT COUNT(*) FROM roles WHERE id=?", id).Scan(&exists)
+		if exists > 0 {
+			return fmt.Errorf("cannot delete system role")
+		}
+		return fmt.Errorf("role not found: %s", id)
 	}
 	return nil
 }

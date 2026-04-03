@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -44,7 +45,126 @@ func (s *PostgresStore) migrate() error {
 	if err != nil {
 		return fmt.Errorf("read migration: %w", err)
 	}
-	_, err = s.db.Exec(string(migration))
+	if _, err := s.db.Exec(string(migration)); err != nil {
+		return err
+	}
+
+	// Login attempts tracking (account lockout)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS login_attempts (
+		id SERIAL PRIMARY KEY,
+		username TEXT NOT NULL,
+		ip TEXT NOT NULL DEFAULT '',
+		success BOOLEAN NOT NULL DEFAULT FALSE,
+		attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(username, attempted_at DESC)`)
+
+	// Roles table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS roles (
+		id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '',
+		permissions JSONB NOT NULL DEFAULT '[]', is_system BOOLEAN NOT NULL DEFAULT FALSE,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+
+	// Seed default roles on first run
+	var roleCount int
+	s.db.QueryRow("SELECT COUNT(*) FROM roles").Scan(&roleCount)
+	if roleCount == 0 {
+		for _, role := range models.DefaultRoles() {
+			permsJSON, _ := json.Marshal(role.Permissions)
+			s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
+				role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem)
+		}
+	}
+
+	// Dead letter queue
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS dead_letter_queue (
+		id TEXT PRIMARY KEY,
+		pipeline_id TEXT NOT NULL,
+		run_id TEXT NOT NULL,
+		error TEXT NOT NULL,
+		node_id TEXT NOT NULL DEFAULT '',
+		node_name TEXT NOT NULL DEFAULT '',
+		payload TEXT NOT NULL DEFAULT '{}',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		resolved BOOLEAN NOT NULL DEFAULT FALSE,
+		resolved_at TIMESTAMPTZ,
+		FOREIGN KEY (pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_dlq_pipeline ON dead_letter_queue(pipeline_id, resolved, created_at DESC)`)
+
+	return nil
+}
+
+// --- Login Attempts ---
+
+func (s *PostgresStore) RecordLoginAttempt(username, ip string, success bool) error {
+	_, err := s.db.Exec(
+		`INSERT INTO login_attempts (username, ip, success, attempted_at) VALUES ($1, $2, $3, NOW())`,
+		username, ip, success,
+	)
+	return err
+}
+
+func (s *PostgresStore) GetRecentFailedAttempts(username string, since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM login_attempts WHERE username = $1 AND success = false AND attempted_at > $2`,
+		username, since,
+	).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) ClearLoginAttempts(username string) error {
+	_, err := s.db.Exec(`DELETE FROM login_attempts WHERE username = $1`, username)
+	return err
+}
+
+// WithTx executes a function within a database transaction.
+func (s *PostgresStore) WithTx(fn func(*sql.Tx) error) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// --- Dead Letter Queue ---
+
+func (s *PostgresStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error {
+	id := uuid.New().String()
+	_, err := s.db.Exec(
+		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now(),
+	)
+	return err
+}
+
+func (s *PostgresStore) ListDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error) {
+	query := `SELECT id, pipeline_id, run_id, error, node_id, node_name, payload, created_at, resolved, COALESCE(resolved_at::text,'') FROM dead_letter_queue WHERE pipeline_id = $1`
+	if !includeResolved {
+		query += " AND resolved = false"
+	}
+	query += " ORDER BY created_at DESC LIMIT $2"
+	rows, err := s.db.Query(query, pipelineID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []DLQEntry
+	for rows.Next() {
+		var e DLQEntry
+		if err := rows.Scan(&e.ID, &e.PipelineID, &e.RunID, &e.Error, &e.NodeID, &e.NodeName, &e.Payload, &e.CreatedAt, &e.Resolved, &e.ResolvedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+func (s *PostgresStore) ResolveDLQ(id string) error {
+	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = true, resolved_at = NOW() WHERE id = $1`, id)
 	return err
 }
 
@@ -57,35 +177,37 @@ func (s *PostgresStore) CreatePipeline(p *models.Pipeline) error {
 	nodesJSON, _ := json.Marshal(p.Nodes)
 	edgesJSON, _ := json.Marshal(p.Edges)
 	paramsJSON, _ := json.Marshal(p.Params)
+	depsJSON, _ := json.Marshal(p.DependsOn)
 	_, err := s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, enabled, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
 		p.ID, p.Name, p.Description, nodesJSON, edgesJSON,
-		p.Schedule, p.WebhookURL, paramsJSON, p.Enabled, p.CreatedAt, p.UpdatedAt,
+		p.Schedule, p.WebhookURL, paramsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.CreatedAt, p.UpdatedAt, p.PipelineID, p.Source,
 	)
 	return err
 }
 
 func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, enabled, created_at, updated_at
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
 		 FROM pipelines WHERE id = $1`, id,
 	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.WebhookURL, &paramsJSON, &p.Enabled, &p.CreatedAt, &p.UpdatedAt)
+		&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal(nodesJSON, &p.Nodes)
 	json.Unmarshal(edgesJSON, &p.Edges)
 	json.Unmarshal(paramsJSON, &p.Params)
+	json.Unmarshal(depsJSON, &p.DependsOn)
 	return &p, nil
 }
 
 func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, enabled, created_at, updated_at
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
 		 FROM pipelines ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -95,14 +217,15 @@ func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 	var pipelines []models.Pipeline
 	for rows.Next() {
 		var p models.Pipeline
-		var nodesJSON, edgesJSON, paramsJSON []byte
+		var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
 		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-			&p.Schedule, &p.WebhookURL, &paramsJSON, &p.Enabled, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source); err != nil {
 			return nil, err
 		}
 		json.Unmarshal(nodesJSON, &p.Nodes)
 		json.Unmarshal(edgesJSON, &p.Edges)
 		json.Unmarshal(paramsJSON, &p.Params)
+		json.Unmarshal(depsJSON, &p.DependsOn)
 		pipelines = append(pipelines, p)
 	}
 	return pipelines, rows.Err()
@@ -112,11 +235,12 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 	nodesJSON, _ := json.Marshal(p.Nodes)
 	edgesJSON, _ := json.Marshal(p.Edges)
 	paramsJSON, _ := json.Marshal(p.Params)
+	depsJSON, _ := json.Marshal(p.DependsOn)
 	result, err := s.db.Exec(
 		`UPDATE pipelines SET name=$1, description=$2, nodes=$3, edges=$4, schedule=$5,
-		 webhook_url=$6, params=$7, enabled=$8, updated_at=$9 WHERE id=$10`,
+		 webhook_url=$6, params=$7, sla_deadline=$8, sla_timezone=$9, depends_on=$10, webhook_token=$11, enabled=$12, updated_at=$13, pipeline_id=$14, source=$15 WHERE id=$16`,
 		p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule,
-		p.WebhookURL, paramsJSON, p.Enabled, p.UpdatedAt, p.ID,
+		p.WebhookURL, paramsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.UpdatedAt, p.PipelineID, p.Source, p.ID,
 	)
 	if err != nil {
 		return err
@@ -126,6 +250,24 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 		return fmt.Errorf("pipeline not found: %s", p.ID)
 	}
 	return nil
+}
+
+func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
+	var p models.Pipeline
+	var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
+	err := s.db.QueryRow(
+		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		 FROM pipelines WHERE pipeline_id = $1`, pipelineID,
+	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
+		&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source)
+	if err != nil {
+		return nil, err
+	}
+	json.Unmarshal(nodesJSON, &p.Nodes)
+	json.Unmarshal(edgesJSON, &p.Edges)
+	json.Unmarshal(paramsJSON, &p.Params)
+	json.Unmarshal(depsJSON, &p.DependsOn)
+	return &p, nil
 }
 
 func (s *PostgresStore) DeletePipeline(id string) error {
@@ -529,6 +671,246 @@ func (s *PostgresStore) DeleteVariable(key string) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("variable not found: %s", key)
+	}
+	return nil
+}
+
+// ── Workspaces (Postgres) ──
+
+func (s *PostgresStore) CreateWorkspace(w *models.Workspace) error {
+	_, err := s.db.Exec(`INSERT INTO workspaces (id, name, slug, description, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+		w.ID, w.Name, w.Slug, w.Description, w.CreatedAt, w.UpdatedAt)
+	return err
+}
+func (s *PostgresStore) GetWorkspace(id string) (*models.Workspace, error) {
+	var w models.Workspace
+	err := s.db.QueryRow(`SELECT id,name,slug,description,created_at,updated_at FROM workspaces WHERE id=$1`, id).
+		Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
+	return &w, err
+}
+func (s *PostgresStore) ListWorkspaces() ([]models.Workspace, error) {
+	rows, err := s.db.Query(`SELECT id,name,slug,description,created_at,updated_at FROM workspaces ORDER BY name`)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var ws []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
+		ws = append(ws, w)
+	}
+	return ws, nil
+}
+func (s *PostgresStore) DeleteWorkspace(id string) error {
+	_, err := s.db.Exec(`DELETE FROM workspaces WHERE id=$1`, id)
+	return err
+}
+func (s *PostgresStore) AddWorkspaceMember(m *models.WorkspaceMember) error {
+	_, err := s.db.Exec(`INSERT INTO workspace_members (workspace_id,user_id,username,role,joined_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(workspace_id,user_id) DO UPDATE SET role=EXCLUDED.role`,
+		m.WorkspaceID, m.UserID, m.Username, m.Role, m.JoinedAt)
+	return err
+}
+func (s *PostgresStore) RemoveWorkspaceMember(workspaceID, userID string) error {
+	_, err := s.db.Exec(`DELETE FROM workspace_members WHERE workspace_id=$1 AND user_id=$2`, workspaceID, userID)
+	return err
+}
+func (s *PostgresStore) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
+	rows, err := s.db.Query(`SELECT workspace_id,user_id,username,role,joined_at FROM workspace_members WHERE workspace_id=$1`, workspaceID)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var ms []models.WorkspaceMember
+	for rows.Next() {
+		var m models.WorkspaceMember
+		rows.Scan(&m.WorkspaceID, &m.UserID, &m.Username, &m.Role, &m.JoinedAt)
+		ms = append(ms, m)
+	}
+	return ms, nil
+}
+func (s *PostgresStore) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
+	rows, err := s.db.Query(`SELECT w.id,w.name,w.slug,w.description,w.created_at,w.updated_at FROM workspaces w JOIN workspace_members wm ON w.id=wm.workspace_id WHERE wm.user_id=$1`, userID)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var ws []models.Workspace
+	for rows.Next() {
+		var w models.Workspace
+		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
+		ws = append(ws, w)
+	}
+	return ws, nil
+}
+func (s *PostgresStore) CreateAPIToken(t *models.APIToken) error {
+	_, err := s.db.Exec(`INSERT INTO api_tokens (id,name,token_hash,workspace_id,user_id,role,expires_at,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		t.ID, t.Name, t.TokenHash, t.WorkspaceID, t.UserID, t.Role, t.ExpiresAt, t.CreatedAt)
+	return err
+}
+func (s *PostgresStore) GetAPITokenByHash(hash string) (*models.APIToken, error) {
+	var t models.APIToken
+	err := s.db.QueryRow(`SELECT id,name,token_hash,workspace_id,user_id,role,expires_at,created_at,last_used_at FROM api_tokens WHERE token_hash=$1`, hash).
+		Scan(&t.ID, &t.Name, &t.TokenHash, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt, &t.LastUsedAt)
+	return &t, err
+}
+func (s *PostgresStore) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
+	rows, err := s.db.Query(`SELECT id,name,workspace_id,user_id,role,expires_at,created_at FROM api_tokens WHERE workspace_id=$1 ORDER BY created_at DESC`, workspaceID)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var ts []models.APIToken
+	for rows.Next() {
+		var t models.APIToken
+		rows.Scan(&t.ID, &t.Name, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt)
+		ts = append(ts, t)
+	}
+	return ts, nil
+}
+func (s *PostgresStore) DeleteAPIToken(id string) error {
+	_, err := s.db.Exec(`DELETE FROM api_tokens WHERE id=$1`, id)
+	return err
+}
+
+func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
+	return s.ListPipelines() // TODO: filter by workspace_id
+}
+func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
+	return s.ListConnections() // TODO: filter by workspace_id
+}
+func (s *PostgresStore) ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error) {
+	return s.ListVariables() // TODO: filter by workspace_id
+}
+
+// --- Node Profiles ---
+
+func (s *PostgresStore) SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, driftJSON string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO node_profiles (run_id, node_id, profile, schema_snapshot, drift_alerts, created_at)
+		 VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (run_id, node_id) DO UPDATE SET profile=$3, schema_snapshot=$4, drift_alerts=$5`,
+		runID, nodeID, profileJSON, schemaJSON, driftJSON, time.Now(),
+	)
+	return err
+}
+
+func (s *PostgresStore) GetNodeProfile(runID, nodeID string) (string, string, string, error) {
+	var profile, schema, drift string
+	err := s.db.QueryRow(
+		`SELECT profile, schema_snapshot, drift_alerts FROM node_profiles WHERE run_id=$1 AND node_id=$2`,
+		runID, nodeID,
+	).Scan(&profile, &schema, &drift)
+	return profile, schema, drift, err
+}
+
+func (s *PostgresStore) GetLatestNodeProfile(pipelineID, nodeID string) (string, string, error) {
+	var profile, schema string
+	err := s.db.QueryRow(
+		`SELECT np.profile, np.schema_snapshot FROM node_profiles np
+		 JOIN runs r ON r.id = np.run_id
+		 WHERE r.pipeline_id=$1 AND np.node_id=$2
+		 ORDER BY np.created_at DESC LIMIT 1`, pipelineID, nodeID,
+	).Scan(&profile, &schema)
+	return profile, schema, err
+}
+
+// --- Settings ---
+
+func (s *PostgresStore) GetSetting(key string) (string, error) {
+	var val string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=$1`, key).Scan(&val)
+	if err != nil {
+		return "", nil
+	}
+	return val, nil
+}
+
+func (s *PostgresStore) SetSetting(key, value string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO settings (key, value) VALUES ($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2`,
+		key, value,
+	)
+	return err
+}
+
+// --- Roles ---
+
+func (s *PostgresStore) CreateRole(r *models.Role) error {
+	permsJSON, err := json.Marshal(r.Permissions)
+	if err != nil {
+		return fmt.Errorf("marshal permissions: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6)`,
+		r.ID, r.Name, r.Description, string(permsJSON), r.IsSystem, r.CreatedAt,
+	)
+	return err
+}
+
+func (s *PostgresStore) GetRole(id string) (*models.Role, error) {
+	var r models.Role
+	var permsJSON string
+	err := s.db.QueryRow(
+		`SELECT id, name, description, permissions, is_system, created_at FROM roles WHERE id=$1`, id,
+	).Scan(&r.ID, &r.Name, &r.Description, &permsJSON, &r.IsSystem, &r.CreatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(permsJSON), &r.Permissions); err != nil {
+		return nil, fmt.Errorf("unmarshal permissions: %w", err)
+	}
+	return &r, nil
+}
+
+func (s *PostgresStore) ListRoles() ([]models.Role, error) {
+	rows, err := s.db.Query(`SELECT id, name, description, permissions, is_system, created_at FROM roles ORDER BY is_system DESC, name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var roles []models.Role
+	for rows.Next() {
+		var r models.Role
+		var permsJSON string
+		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &permsJSON, &r.IsSystem, &r.CreatedAt); err != nil {
+			return nil, err
+		}
+		json.Unmarshal([]byte(permsJSON), &r.Permissions)
+		roles = append(roles, r)
+	}
+	return roles, rows.Err()
+}
+
+func (s *PostgresStore) UpdateRole(r *models.Role) error {
+	permsJSON, err := json.Marshal(r.Permissions)
+	if err != nil {
+		return fmt.Errorf("marshal permissions: %w", err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=false`,
+		r.Name, r.Description, string(permsJSON), r.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		var exists int
+		s.db.QueryRow("SELECT COUNT(*) FROM roles WHERE id=$1", r.ID).Scan(&exists)
+		if exists > 0 {
+			return fmt.Errorf("cannot modify system role")
+		}
+		return fmt.Errorf("role not found: %s", r.ID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeleteRole(id string) error {
+	result, err := s.db.Exec("DELETE FROM roles WHERE id=$1 AND is_system=false", id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		var exists int
+		s.db.QueryRow("SELECT COUNT(*) FROM roles WHERE id=$1", id).Scan(&exists)
+		if exists > 0 {
+			return fmt.Errorf("cannot delete system role")
+		}
+		return fmt.Errorf("role not found: %s", id)
 	}
 	return nil
 }
