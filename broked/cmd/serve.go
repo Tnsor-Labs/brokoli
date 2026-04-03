@@ -9,6 +9,7 @@ import (
 	"github.com/hc12r/broked/api"
 	"github.com/hc12r/broked/crypto"
 	"github.com/hc12r/broked/engine"
+	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/store"
 	"github.com/hc12r/broked/ui"
 	"github.com/spf13/cobra"
@@ -20,6 +21,14 @@ var (
 	apiKey string
 )
 
+// Extensions is the plugin registry. Open source uses defaults.
+// Enterprise binary overrides this before calling Execute().
+var Extensions *extensions.Registry
+
+// UIOverride allows the enterprise binary to provide its own UI assets.
+// When set, this FS is used instead of the open source embedded UI.
+var UIOverride fs.FS
+
 var rootCmd = &cobra.Command{
 	Use:   "broked",
 	Short: "Broked — Data Orchestration Platform",
@@ -30,6 +39,16 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the Broked server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Initialize extensions (community defaults unless overridden by enterprise binary)
+		if Extensions == nil {
+			Extensions = extensions.DefaultRegistry()
+		}
+		license, _ := Extensions.License.Validate()
+		log.Printf("Edition: %s", license.Edition)
+		if license.Company != "" {
+			log.Printf("Licensed to: %s", license.Company)
+		}
+
 		s, err := store.NewStore(dbPath)
 		if err != nil {
 			return fmt.Errorf("open database: %w", err)
@@ -47,8 +66,17 @@ var serveCmd = &cobra.Command{
 		}
 		defer sched.Stop()
 
+		// Platform services (enterprise: trial checker, SLA checker, etc)
+		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() {
+			Extensions.Platform.StartServices(s)
+			defer Extensions.Platform.StopServices()
+		}
+
 		var uiFS fs.FS
-		if distFS, err := fs.Sub(ui.Dist, "dist"); err == nil {
+		if UIOverride != nil {
+			uiFS = UIOverride
+			log.Println("Serving enterprise UI")
+		} else if distFS, err := fs.Sub(ui.Dist, "dist"); err == nil {
 			if _, err := fs.Stat(distFS, "index.html"); err == nil {
 				uiFS = distFS
 				log.Println("Serving embedded UI")
@@ -92,8 +120,19 @@ var serveCmd = &cobra.Command{
 		// Wire variable store and connection resolver into engine
 		eng.VarStore = engine.NewVarStoreAdapter(s, cryptoCfg)
 		eng.ConnResolver = engine.NewConnectionResolver(s, cryptoCfg)
+		if Extensions != nil && len(Extensions.Executors) > 0 {
+			eng.Executors = Extensions.Executors
+			log.Printf("Enterprise: %d external executor(s) registered", len(Extensions.Executors))
+		}
+		// Wire notification provider from extensions (enterprise: Slack, PagerDuty, etc.)
+		if Extensions != nil && Extensions.Notifier != nil {
+			eng.Notifier = Extensions.Notifier
+			if Extensions.Notifier.Enabled() {
+				log.Printf("Notifications enabled (%s)", Extensions.Notifier.Name())
+			}
+		}
 
-		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, cryptoCfg)
+		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, Extensions, cryptoCfg)
 		return srv.Start()
 	},
 }
