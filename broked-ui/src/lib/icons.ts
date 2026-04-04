@@ -183,6 +183,9 @@ export const icons: Record<string, IconDef> = {
   building: {
     d: `M3 21h18M5 21V7l7-4 7 4v14M9 21v-4h6v4M9 9h.01M15 9h.01M9 13h.01M15 13h.01`,
   },
+  helpCircle: {
+    d: `M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01`,
+  },
 };
 
 /** Get the icon key for a node type */

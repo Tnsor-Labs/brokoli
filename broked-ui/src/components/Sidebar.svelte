@@ -23,18 +23,25 @@
 <aside class="sidebar">
   <div class="logo">
     <div class="logo-mark">
+      <!-- Brokoli logo — broccoli floret as data node graph -->
       <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
         <!-- Stem -->
-        <rect x="14.5" y="20" width="3" height="10" rx="1.5" fill="var(--accent)" opacity="0.6" />
-        <!-- Tree crown (fractal DAG shape) -->
-        <circle cx="16" cy="13" r="5" fill="var(--accent)" />
-        <circle cx="10" cy="10" r="4" fill="var(--accent)" />
-        <circle cx="22" cy="10" r="4" fill="var(--accent)" />
-        <circle cx="8" cy="5" r="3" fill="var(--accent)" opacity="0.85" />
-        <circle cx="16" cy="4" r="3.5" fill="var(--accent)" opacity="0.9" />
-        <circle cx="24" cy="5" r="3" fill="var(--accent)" opacity="0.85" />
-        <circle cx="13" cy="7" r="2.5" fill="var(--accent)" opacity="0.7" />
-        <circle cx="19" cy="7" r="2.5" fill="var(--accent)" opacity="0.7" />
+        <path d="M16 19v9" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M14 22l2-3 2 3" stroke="#4ade80" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.5"/>
+        <!-- Crown nodes (3 connected florets = pipeline nodes) -->
+        <circle cx="16" cy="11" r="4.5" fill="#0d9488"/>
+        <circle cx="9" cy="7" r="3.5" fill="#16a34a"/>
+        <circle cx="23" cy="7" r="3.5" fill="#16a34a"/>
+        <circle cx="6" cy="2" r="2.5" fill="#22c55e"/>
+        <circle cx="16" cy="2" r="3" fill="#22c55e"/>
+        <circle cx="26" cy="2" r="2.5" fill="#22c55e"/>
+        <!-- Connection lines (data flow between nodes) -->
+        <line x1="9" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4"/>
+        <line x1="23" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4"/>
+        <line x1="6" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3"/>
+        <line x1="16" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3"/>
+        <line x1="16" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3"/>
+        <line x1="26" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3"/>
       </svg>
     </div>
     <div class="logo-text">
