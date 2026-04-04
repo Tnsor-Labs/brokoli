@@ -2,9 +2,14 @@ package cmd
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/hc12r/broked/api"
 	"github.com/hc12r/broked/crypto"
@@ -20,6 +25,13 @@ var (
 	dbPath string
 	apiKey string
 )
+
+// RunMode controls which components this instance runs.
+// "all" (default): API + Scheduler + Worker (single binary mode)
+// "api": HTTP server + WebSocket only (enterprise distributed mode)
+// "scheduler": Cron scheduler only (enterprise distributed mode)
+// "worker": Pipeline executor only (enterprise distributed mode)
+var RunMode = "all"
 
 // Extensions is the plugin registry. Open source uses defaults.
 // Enterprise binary overrides this before calling Execute().
@@ -58,13 +70,21 @@ var serveCmd = &cobra.Command{
 
 		eng := engine.NewEngine(s)
 
-		// Wire variable store after crypto is loaded (see below)
-
-		sched := engine.NewScheduler(eng, s)
-		if err := sched.Start(); err != nil {
-			log.Printf("WARNING: scheduler failed to start: %v", err)
+		// Wire job queue from extensions (enterprise distributed mode)
+		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
+			eng.JobQueue = Extensions.JobQueue
+			log.Printf("Job queue enabled (mode: %s)", RunMode)
 		}
-		defer sched.Stop()
+
+		// Only start scheduler if mode is "all" or "scheduler"
+		var sched *engine.Scheduler
+		if RunMode == "all" || RunMode == "scheduler" {
+			sched = engine.NewScheduler(eng, s)
+			if err := sched.Start(); err != nil {
+				log.Printf("WARNING: scheduler failed to start: %v", err)
+			}
+			defer sched.Stop()
+		}
 
 		// Platform services (enterprise: trial checker, SLA checker, etc)
 		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() {
@@ -132,6 +152,71 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		// Worker-only mode: pull jobs from the queue and execute them
+		if RunMode == "worker" {
+			if Extensions == nil || Extensions.JobQueue == nil {
+				return fmt.Errorf("worker mode requires a job queue (set BROKOLI_REDIS_URL)")
+			}
+
+			// Forward engine events to EventBus so API pods can broadcast via WebSocket
+			if Extensions.EventBus != nil {
+				go func() {
+					for event := range eng.Events() {
+						channel := "events:run"
+						if event.OrgID != "" {
+							channel = "events:org:" + event.OrgID
+						}
+						if data, err := json.Marshal(event); err == nil {
+							Extensions.EventBus.Publish(channel, data)
+						}
+					}
+				}()
+				log.Println("Worker: forwarding events to EventBus")
+			} else {
+				// Drain the channel to prevent blocking
+				go func() {
+					for range eng.Events() {
+					}
+				}()
+			}
+
+			log.Println("Worker mode: waiting for jobs...")
+			for {
+				job, err := Extensions.JobQueue.Dequeue()
+				if err != nil {
+					if err == extensions.ErrQueueClosed {
+						return nil
+					}
+					log.Printf("Dequeue error: %v", err)
+					time.Sleep(time.Second)
+					continue
+				}
+				if job.PipelineID == "" {
+					continue // empty job (timeout)
+				}
+				log.Printf("Worker: executing pipeline %s (run %s)", job.PipelineID, job.RunID)
+				go func(j extensions.RunJob) {
+					if _, err := eng.RunPipeline(j.PipelineID, j.Params); err != nil {
+						log.Printf("Worker: run failed: %v", err)
+						Extensions.JobQueue.Fail(j.ID, err)
+					} else {
+						Extensions.JobQueue.Ack(j.ID)
+					}
+				}(job)
+			}
+		}
+
+		// Scheduler-only mode: no HTTP server, just block until signal
+		if RunMode == "scheduler" {
+			log.Println("Scheduler mode: running (no HTTP server)")
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+			<-quit
+			log.Println("Scheduler shutting down...")
+			return nil
+		}
+
+		// API or all mode: start HTTP server
 		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, Extensions, cryptoCfg)
 		return srv.Start()
 	},
@@ -154,6 +239,7 @@ func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "HTTP server port")
 	serveCmd.Flags().StringVar(&dbPath, "db", "./broked.db", "SQLite database path")
 	serveCmd.Flags().StringVar(&apiKey, "api-key", "", "Enable auth with this API key")
+	serveCmd.Flags().StringVar(&RunMode, "mode", "all", "Run mode: all, api, scheduler, worker")
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(generateKeyCmd)
 }
