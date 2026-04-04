@@ -33,6 +33,7 @@ type Runner struct {
 	params        map[string]string // runtime params
 	varCtx        *VariableContext
 	preRunID      string // pre-generated run ID (for registration before Execute)
+	orgID         string // tenant isolation for WebSocket events
 	executors     []extensions.NodeExecutor // enterprise: external executors (K8s, Docker)
 	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 }
@@ -62,7 +63,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	defer r.cancel()
 
-	now := time.Now()
+	now := time.Now().UTC()
 	runID := r.preRunID
 	if runID == "" {
 		runID = uuid.New().String()
@@ -198,7 +199,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 		}
 	}
 
-	finishTime := time.Now()
+	finishTime := time.Now().UTC()
 
 	// Check if already cancelled (by CancelRun)
 	if r.ctx.Err() != nil {
@@ -238,7 +239,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		return nil
 	}
 
-	startTime := time.Now()
+	startTime := time.Now().UTC()
 	nr := &models.NodeRun{
 		ID:        uuid.New().String(),
 		RunID:     r.run.ID,
@@ -495,7 +496,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 
 
 func (r *Runner) failRun(err error) error {
-	finishTime := time.Now()
+	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusFailed
 	r.run.FinishedAt = &finishTime
 	r.store.UpdateRun(r.run)
@@ -510,7 +511,8 @@ func (r *Runner) failRun(err error) error {
 }
 
 func (r *Runner) emit(e models.Event) {
-	e.Timestamp = time.Now()
+	e.Timestamp = time.Now().UTC()
+	e.OrgID = r.orgID // tenant isolation
 	select {
 	case r.eventCh <- e:
 	default:
@@ -524,7 +526,7 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 		NodeID:    nodeID,
 		Level:     level,
 		Message:   msg,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().UTC(),
 	})
 	r.emit(models.Event{
 		Type:    models.EventLog,
@@ -596,7 +598,7 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 		"pipeline_id": r.pipe.ID,
 		"pipeline":    r.pipe.Name,
 		"run_id":      r.run.ID,
-		"timestamp":   time.Now().Format(time.RFC3339),
+		"timestamp":   time.Now().UTC().Format(time.RFC3339),
 	}
 	for k, v := range extra {
 		payload[k] = v

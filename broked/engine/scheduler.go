@@ -34,13 +34,26 @@ type Scheduler struct {
 // NewScheduler creates a scheduler that uses the given engine to run pipelines.
 func NewScheduler(engine *Engine, s store.Store) *Scheduler {
 	return &Scheduler{
-		cron:      cron.New(),
+		cron:      cron.New(cron.WithLocation(time.UTC)),
 		engine:    engine,
 		store:     s,
 		entries:   make(map[string]cron.EntryID),
 		schedules: make(map[string]string),
 		names:     make(map[string]string),
 	}
+}
+
+// tzCronSchedule wraps a cron.Schedule with per-pipeline timezone support.
+type tzCronSchedule struct {
+	inner cron.Schedule
+	loc   *time.Location
+}
+
+func (s *tzCronSchedule) Next(t time.Time) time.Time {
+	// Convert to pipeline's timezone, compute next fire time, convert back to UTC
+	tInTZ := t.In(s.loc)
+	nextInTZ := s.inner.Next(tInTZ)
+	return nextInTZ.UTC()
 }
 
 // Start loads all scheduled pipelines, checks for missed runs, and begins the cron scheduler.
@@ -53,7 +66,7 @@ func (s *Scheduler) Start() error {
 	registered := 0
 	for _, p := range pipelines {
 		if p.Enabled && p.Schedule != "" {
-			if err := s.Register(p.ID, p.Name, p.Schedule); err != nil {
+			if err := s.Register(p.ID, p.Name, p.Schedule, p.ScheduleTimezone); err != nil {
 				log.Printf("WARNING: failed to register schedule for pipeline %s (%s): %v", p.Name, p.Schedule, err)
 			} else {
 				registered++
@@ -85,13 +98,21 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 			continue
 		}
 
+		// Wrap with timezone if configured
+		var schedule cron.Schedule = sched
+		if p.ScheduleTimezone != "" {
+			if loc, lerr := time.LoadLocation(p.ScheduleTimezone); lerr == nil {
+				schedule = &tzCronSchedule{inner: sched, loc: loc}
+			}
+		}
+
 		// Get the last run for this pipeline
 		runs, err := s.store.ListRunsByPipeline(p.ID, 1)
 		if err != nil || len(runs) == 0 {
 			continue // no runs yet, don't catch up on first deploy
 		}
 
-		now := time.Now()
+		now := time.Now().UTC()
 
 		// Get last run time (may be a pointer)
 		var lastRunTime time.Time
@@ -102,7 +123,7 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 		}
 
 		// Find when the schedule should have fired after the last run
-		nextExpected := sched.Next(lastRunTime)
+		nextExpected := schedule.Next(lastRunTime)
 
 		// If the expected fire time is in the past (we missed it), and it's been less than 24h
 		if nextExpected.Before(now) && now.Sub(nextExpected) < 24*time.Hour {
@@ -124,7 +145,8 @@ func (s *Scheduler) Stop() {
 }
 
 // Register adds or updates a cron schedule for a pipeline.
-func (s *Scheduler) Register(pipelineID, pipelineName, schedule string) error {
+// scheduleTimezone is optional — if empty, UTC is used.
+func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezone string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -136,8 +158,30 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule string) error {
 		delete(s.names, pipelineID)
 	}
 
+	// Parse timezone
+	loc := time.UTC
+	if scheduleTimezone != "" {
+		parsed, err := time.LoadLocation(scheduleTimezone)
+		if err == nil {
+			loc = parsed
+		} else {
+			log.Printf("WARNING: invalid schedule timezone %q for pipeline %s, falling back to UTC", scheduleTimezone, pipelineName)
+		}
+	}
+
+	// Parse cron expression and wrap with timezone
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	cronSchedule, err := parser.Parse(schedule)
+	if err != nil {
+		return fmt.Errorf("parse cron: %w", err)
+	}
+	var tzSched cron.Schedule = cronSchedule
+	if loc != time.UTC {
+		tzSched = &tzCronSchedule{inner: cronSchedule, loc: loc}
+	}
+
 	pid := pipelineID // capture for closure
-	entryID, err := s.cron.AddFunc(schedule, func() {
+	entryID := s.cron.Schedule(tzSched, cron.FuncJob(func() {
 		// Check cross-pipeline dependencies before running
 		if pipe, pErr := s.engine.store.GetPipeline(pid); pErr == nil && len(pipe.DependsOn) > 0 {
 			for _, depID := range pipe.DependsOn {
@@ -156,10 +200,7 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule string) error {
 		if _, err := s.engine.RunPipeline(pid); err != nil {
 			log.Printf("ERROR: scheduled run failed for pipeline %s: %v", pid, err)
 		}
-	})
-	if err != nil {
-		return fmt.Errorf("add cron entry: %w", err)
-	}
+	}))
 
 	s.entries[pipelineID] = entryID
 	s.schedules[pipelineID] = schedule
@@ -182,9 +223,9 @@ func (s *Scheduler) Unregister(pipelineID string) {
 
 // SyncPipeline updates the scheduler when a pipeline is saved.
 // Call this after every pipeline update.
-func (s *Scheduler) SyncPipeline(pipelineID, pipelineName, schedule string, enabled bool) {
+func (s *Scheduler) SyncPipeline(pipelineID, pipelineName, schedule string, enabled bool, scheduleTimezone string) {
 	if enabled && schedule != "" {
-		if err := s.Register(pipelineID, pipelineName, schedule); err != nil {
+		if err := s.Register(pipelineID, pipelineName, schedule, scheduleTimezone); err != nil {
 			log.Printf("WARNING: failed to sync schedule for %s: %v", pipelineName, err)
 		}
 	} else {
@@ -209,8 +250,8 @@ func (s *Scheduler) Status() []ScheduleInfo {
 
 		// Get last run time
 		runs, err := s.store.ListRunsByPipeline(pid, 1)
-		if err == nil && len(runs) > 0 {
-			info.LastRun = runs[0].StartedAt.Format(time.RFC3339)
+		if err == nil && len(runs) > 0 && runs[0].StartedAt != nil {
+			info.LastRun = runs[0].StartedAt.UTC().Format(time.RFC3339)
 		}
 
 		infos = append(infos, info)

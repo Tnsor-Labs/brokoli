@@ -26,6 +26,7 @@ type Engine struct {
 	ConnResolver  *ConnectionResolver // for resolving conn_id → URI
 	Executors     []extensions.NodeExecutor // enterprise: K8s, Docker, etc.
 	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+	JobQueue      extensions.JobQueue             // nil = run in-process (default)
 	RunsTotal     int64
 	RunsSucceeded int64
 	RunsFailed    int64
@@ -117,6 +118,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	}
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner.orgID = pipe.OrgID
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
@@ -157,6 +159,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 
 // RunPipelineAsync triggers execution and returns the run ID immediately.
 // The pipeline runs in a background goroutine. Use WebSocket events or polling to track status.
+// If a JobQueue is configured, the run is enqueued for distributed execution instead.
 func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string) (string, error) {
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
@@ -168,12 +171,33 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		return "", ve
 	}
 
+	runID := uuid.New().String()
+
+	// If job queue is available, enqueue for distributed execution
+	if e.JobQueue != nil {
+		job := extensions.RunJob{
+			ID:         uuid.New().String(),
+			PipelineID: pipelineID,
+			RunID:      runID,
+			OrgID:      pipe.OrgID,
+			EnqueuedAt: time.Now().UTC(),
+		}
+		if len(params) > 0 && params[0] != nil {
+			job.Params = params[0]
+		}
+		if err := e.JobQueue.Enqueue(job); err != nil {
+			return "", fmt.Errorf("enqueue job: %w", err)
+		}
+		return runID, nil
+	}
+
+	// Default: run in-process (current behavior)
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner.orgID = pipe.OrgID
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
 
-	runID := uuid.New().String()
 	runner.preRunID = runID
 	e.mu.Lock()
 	e.active[runID] = runner
