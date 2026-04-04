@@ -69,12 +69,14 @@ func (s *SQLiteStore) migrate() error {
 	// Schema additions (safe to re-run, ignores "already exists" errors)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN schedule_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_deadline TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN webhook_token TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN pipeline_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN org_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE variables ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
@@ -120,7 +122,7 @@ func (s *SQLiteStore) migrate() error {
 		for _, role := range models.DefaultRoles() {
 			permsJSON, _ := json.Marshal(role.Permissions)
 			s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)",
-				role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().Format(timeFormat))
+				role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().UTC().Format(timeFormat))
 		}
 	}
 
@@ -170,7 +172,7 @@ func (s *SQLiteStore) RecordLoginAttempt(username, ip string, success bool) erro
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO login_attempts (username, ip, success, attempted_at) VALUES (?, ?, ?, ?)`,
-		username, ip, successInt, time.Now().Format(timeFormat),
+		username, ip, successInt, time.Now().UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -179,7 +181,7 @@ func (s *SQLiteStore) GetRecentFailedAttempts(username string, since time.Time) 
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM login_attempts WHERE username = ? AND success = 0 AND attempted_at > ?`,
-		username, since.Format(timeFormat),
+		username, since.UTC().Format(timeFormat),
 	).Scan(&count)
 	return count, err
 }
@@ -208,7 +210,7 @@ func (s *SQLiteStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payl
 	id := uuid.New().String()
 	_, err := s.db.Exec(
 		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now().Format(timeFormat),
+		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now().UTC().Format(timeFormat),
 	)
 	return wrapStoreErr("AddToDLQ", id, err)
 }
@@ -238,7 +240,7 @@ func (s *SQLiteStore) ListDLQ(pipelineID string, includeResolved bool, limit int
 }
 
 func (s *SQLiteStore) ResolveDLQ(id string) error {
-	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = 1, resolved_at = ? WHERE id = ?`, time.Now().Format(timeFormat), id)
+	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = 1, resolved_at = ? WHERE id = ?`, time.Now().UTC().Format(timeFormat), id)
 	return wrapStoreErr("ResolveDLQ", id, err)
 }
 
@@ -280,17 +282,17 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 		return wrapStoreErr("CreatePipeline", p.ID, err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.Format(timeFormat), p.UpdatedAt.Format(timeFormat), p.PipelineID, p.Source,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID,
 	)
 	return wrapStoreErr("CreatePipeline", p.ID, err)
 }
 
 func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE id = ?`, id,
 	)
 	p, err := scanPipeline(row)
@@ -302,7 +304,7 @@ func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -323,7 +325,7 @@ func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID,
 	)
 	if err != nil {
@@ -348,10 +350,10 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 	}
 
 	result, err := s.db.Exec(
-		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?
+		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
 		 WHERE id=?`,
 		p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.Format(timeFormat), p.PipelineID, p.Source, p.ID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipeline", p.ID, err)
@@ -361,7 +363,7 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 
 func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE pipeline_id = ?`, pipelineID,
 	)
 	p, err := scanPipeline(row)
@@ -492,7 +494,7 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 func (s *SQLiteStore) AppendLog(entry *models.LogEntry) error {
 	_, err := s.db.Exec(
 		`INSERT INTO logs (run_id, node_id, level, message, timestamp) VALUES (?, ?, ?, ?, ?)`,
-		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp.Format(timeFormat),
+		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp.UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -574,7 +576,7 @@ func (s *SQLiteStore) SavePipelineVersion(pipelineID string, snapshot string, me
 
 	_, err := s.db.Exec(
 		`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES (?, ?, ?, ?, ?)`,
-		pipelineID, nextVer, snapshot, message, time.Now().Format(timeFormat),
+		pipelineID, nextVer, snapshot, message, time.Now().UTC().Format(timeFormat),
 	)
 	return nextVer, err
 }
@@ -615,7 +617,7 @@ func (s *SQLiteStore) SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, dr
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO node_profiles (run_id, node_id, profile, schema_snapshot, drift_alerts, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		runID, nodeID, profileJSON, schemaJSON, driftJSON, time.Now().Format(timeFormat),
+		runID, nodeID, profileJSON, schemaJSON, driftJSON, time.Now().UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -640,16 +642,51 @@ func (s *SQLiteStore) GetLatestNodeProfile(pipelineID, nodeID string) (string, s
 	return profile, schema, err
 }
 
+// --- Pagination Counts ---
+
+func (s *SQLiteStore) CountPipelines(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM pipelines WHERE workspace_id = ?", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) CountConnections(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM connections WHERE workspace_id = ?", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) CountVariables(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM variables WHERE workspace_id = ?", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *SQLiteStore) CountRunsByPipeline(pipelineID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM runs WHERE pipeline_id = ?", pipelineID).Scan(&count)
+	return count, err
+}
+
 // --- Maintenance ---
 
 func (s *SQLiteStore) PurgeRunsOlderThan(days int) (int64, error) {
-	cutoff := time.Now().AddDate(0, 0, -days).Format(timeFormat)
+	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
 	result, err := s.db.Exec(`DELETE FROM runs WHERE started_at < ? AND started_at IS NOT NULL`, cutoff)
 	if err != nil {
 		return 0, err
 	}
 	// VACUUM to reclaim space
 	s.db.Exec("VACUUM")
+	return result.RowsAffected()
+}
+
+func (s *SQLiteStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error) {
+	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	result, err := s.db.Exec(`DELETE FROM runs WHERE started_at < ? AND started_at IS NOT NULL AND org_id = ?`, cutoff, orgID)
+	if err != nil {
+		return 0, err
+	}
 	return result.RowsAffected()
 }
 
@@ -671,7 +708,7 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, createdAt, updatedAt string
 	var enabled int
 
-	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source); err != nil {
+	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
 		return nil, err
 	}
 
@@ -743,7 +780,7 @@ func formatTimePtr(t *time.Time) sql.NullString {
 	if t == nil {
 		return sql.NullString{}
 	}
-	return sql.NullString{String: t.Format(timeFormat), Valid: true}
+	return sql.NullString{String: t.UTC().Format(timeFormat), Valid: true}
 }
 
 func parseTimePtr(ns sql.NullString) *time.Time {
@@ -776,7 +813,7 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		c.Password, c.Extra, // caller is responsible for encrypting before calling
-		c.CreatedAt.Format(timeFormat), c.UpdatedAt.Format(timeFormat),
+		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -844,7 +881,7 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 		 WHERE conn_id = ?`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		c.Password, c.Extra,
-		c.UpdatedAt.Format(timeFormat), c.ConnID,
+		c.UpdatedAt.UTC().Format(timeFormat), c.ConnID,
 	)
 	if err != nil {
 		return err
@@ -885,7 +922,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 func (s *SQLiteStore) CreateWorkspace(w *models.Workspace) error {
 	_, err := s.db.Exec(
 		`INSERT INTO workspaces (id, name, slug, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Name, w.Slug, w.Description, w.CreatedAt.Format(timeFormat), w.UpdatedAt.Format(timeFormat),
+		w.ID, w.Name, w.Slug, w.Description, w.CreatedAt.UTC().Format(timeFormat), w.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -939,7 +976,7 @@ func (s *SQLiteStore) DeleteWorkspace(id string) error {
 func (s *SQLiteStore) AddWorkspaceMember(m *models.WorkspaceMember) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO workspace_members (workspace_id, user_id, username, role, joined_at) VALUES (?, ?, ?, ?, ?)`,
-		m.WorkspaceID, m.UserID, m.Username, m.Role, m.JoinedAt.Format(timeFormat),
+		m.WorkspaceID, m.UserID, m.Username, m.Role, m.JoinedAt.UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -999,7 +1036,7 @@ func (s *SQLiteStore) CreateAPIToken(t *models.APIToken) error {
 	_, err := s.db.Exec(
 		`INSERT INTO api_tokens (id, name, token_hash, workspace_id, user_id, role, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.TokenHash, t.WorkspaceID, t.UserID, t.Role,
-		t.ExpiresAt.Format(timeFormat), t.CreatedAt.Format(timeFormat),
+		t.ExpiresAt.UTC().Format(timeFormat), t.CreatedAt.UTC().Format(timeFormat),
 	)
 	return err
 }
@@ -1088,7 +1125,7 @@ func (s *SQLiteStore) SetVariable(v *models.Variable) error {
 		 VALUES (?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, type=excluded.type, description=excluded.description, updated_at=excluded.updated_at`,
 		v.Key, v.Value, v.Type, v.Description,
-		v.CreatedAt.Format(timeFormat), v.UpdatedAt.Format(timeFormat),
+		v.CreatedAt.UTC().Format(timeFormat), v.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
 }

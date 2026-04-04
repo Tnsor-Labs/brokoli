@@ -75,6 +75,19 @@ func (s *PostgresStore) migrate() error {
 		}
 	}
 
+	// Pipeline schema additions (safe to re-run — errors ignored for existing columns)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS schedule_timezone TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_deadline TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_timezone TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS depends_on JSONB NOT NULL DEFAULT '[]'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS webhook_token TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS pipeline_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'ui'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
+
 	// Dead letter queue
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS dead_letter_queue (
 		id TEXT PRIMARY KEY,
@@ -89,6 +102,121 @@ func (s *PostgresStore) migrate() error {
 		resolved_at TIMESTAMPTZ,
 		FOREIGN KEY (pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_dlq_pipeline ON dead_letter_queue(pipeline_id, resolved, created_at DESC)`)
+
+	// Connections table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS connections (
+		id TEXT PRIMARY KEY,
+		conn_id TEXT NOT NULL UNIQUE,
+		type TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		host TEXT NOT NULL DEFAULT '',
+		port INTEGER NOT NULL DEFAULT 0,
+		schema_name TEXT NOT NULL DEFAULT '',
+		login TEXT NOT NULL DEFAULT '',
+		password_enc TEXT NOT NULL DEFAULT '',
+		extra_enc TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		org_id TEXT NOT NULL DEFAULT 'default'
+	)`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_conn_id ON connections(conn_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_org ON connections(org_id)`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default'`)
+
+	// Variables table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS variables (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT 'string',
+		description TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL,
+		workspace_id TEXT NOT NULL DEFAULT 'default'
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+
+	// Workspaces + related tables
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		slug TEXT NOT NULL UNIQUE,
+		description TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspace_members (
+		workspace_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		username TEXT NOT NULL DEFAULT '',
+		role TEXT NOT NULL DEFAULT 'viewer',
+		joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (workspace_id, user_id),
+		FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS permissions (
+		id TEXT PRIMARY KEY,
+		workspace_id TEXT NOT NULL,
+		user_id TEXT NOT NULL,
+		resource TEXT NOT NULL DEFAULT '*',
+		resource_id TEXT NOT NULL DEFAULT '*',
+		action TEXT NOT NULL DEFAULT '*',
+		FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS api_tokens (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		token_hash TEXT NOT NULL UNIQUE,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		user_id TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'editor',
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		last_used_at TIMESTAMPTZ,
+		FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+	)`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS oidc_group_mappings (
+		oidc_group TEXT NOT NULL,
+		workspace_id TEXT NOT NULL,
+		role TEXT NOT NULL DEFAULT 'viewer',
+		PRIMARY KEY (oidc_group, workspace_id),
+		FOREIGN KEY (workspace_id) REFERENCES workspaces(id) ON DELETE CASCADE
+	)`)
+
+	// Settings key-value store
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT NOT NULL DEFAULT ''
+	)`)
+
+	// Node profiles table
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS node_profiles (
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		profile JSONB NOT NULL DEFAULT '{}',
+		schema_snapshot JSONB NOT NULL DEFAULT '{}',
+		drift_alerts JSONB NOT NULL DEFAULT '[]',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (run_id, node_id),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_profiles ON node_profiles(run_id)`)
+
+	// Runs table additions
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(org_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(run_id, status)`)
+
+	// Pipelines tags column
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS tags JSONB NOT NULL DEFAULT '[]'`)
+
+	// Default workspace seed
+	s.db.Exec(`INSERT INTO workspaces (id, name, slug, description, created_at, updated_at)
+		VALUES ('default', 'Default', 'default', 'Default workspace', NOW(), NOW())
+		ON CONFLICT (id) DO NOTHING`)
 
 	return nil
 }
@@ -177,37 +305,42 @@ func (s *PostgresStore) CreatePipeline(p *models.Pipeline) error {
 	nodesJSON, _ := json.Marshal(p.Nodes)
 	edgesJSON, _ := json.Marshal(p.Edges)
 	paramsJSON, _ := json.Marshal(p.Params)
+	tagsJSON, _ := json.Marshal(p.Tags)
 	depsJSON, _ := json.Marshal(p.DependsOn)
 	_, err := s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`,
+		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
 		p.ID, p.Name, p.Description, nodesJSON, edgesJSON,
-		p.Schedule, p.WebhookURL, paramsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.CreatedAt, p.UpdatedAt, p.PipelineID, p.Source,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID,
 	)
 	return err
 }
 
 func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE id = $1`, id,
 	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source)
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal(nodesJSON, &p.Nodes)
 	json.Unmarshal(edgesJSON, &p.Edges)
 	json.Unmarshal(paramsJSON, &p.Params)
+	json.Unmarshal(tagsJSON, &p.Tags)
 	json.Unmarshal(depsJSON, &p.DependsOn)
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
 	return &p, nil
 }
 
 func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -216,31 +349,45 @@ func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 
 	var pipelines []models.Pipeline
 	for rows.Next() {
-		var p models.Pipeline
-		var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-			&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source); err != nil {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
 			return nil, err
 		}
-		json.Unmarshal(nodesJSON, &p.Nodes)
-		json.Unmarshal(edgesJSON, &p.Edges)
-		json.Unmarshal(paramsJSON, &p.Params)
-		json.Unmarshal(depsJSON, &p.DependsOn)
-		pipelines = append(pipelines, p)
+		pipelines = append(pipelines, *p)
 	}
 	return pipelines, rows.Err()
+}
+
+// scanPipelineRow scans a pipeline row from any scanner (Row or Rows).
+func (s *PostgresStore) scanPipelineRow(sc interface{ Scan(...interface{}) error }) (*models.Pipeline, error) {
+	var p models.Pipeline
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
+	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
+		return nil, err
+	}
+	json.Unmarshal(nodesJSON, &p.Nodes)
+	json.Unmarshal(edgesJSON, &p.Edges)
+	json.Unmarshal(paramsJSON, &p.Params)
+	json.Unmarshal(tagsJSON, &p.Tags)
+	json.Unmarshal(depsJSON, &p.DependsOn)
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
+	return &p, nil
 }
 
 func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 	nodesJSON, _ := json.Marshal(p.Nodes)
 	edgesJSON, _ := json.Marshal(p.Edges)
 	paramsJSON, _ := json.Marshal(p.Params)
+	tagsJSON, _ := json.Marshal(p.Tags)
 	depsJSON, _ := json.Marshal(p.DependsOn)
 	result, err := s.db.Exec(
-		`UPDATE pipelines SET name=$1, description=$2, nodes=$3, edges=$4, schedule=$5,
-		 webhook_url=$6, params=$7, sla_deadline=$8, sla_timezone=$9, depends_on=$10, webhook_token=$11, enabled=$12, updated_at=$13, pipeline_id=$14, source=$15 WHERE id=$16`,
-		p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule,
-		p.WebhookURL, paramsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.UpdatedAt, p.PipelineID, p.Source, p.ID,
+		`UPDATE pipelines SET name=$1, description=$2, nodes=$3, edges=$4, schedule=$5, schedule_timezone=$6,
+		 webhook_url=$7, params=$8, tags=$9, sla_deadline=$10, sla_timezone=$11, depends_on=$12, webhook_token=$13, enabled=$14, updated_at=$15, pipeline_id=$16, source=$17, workspace_id=$18, org_id=$19 WHERE id=$20`,
+		p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule, p.ScheduleTimezone,
+		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
 	)
 	if err != nil {
 		return err
@@ -254,19 +401,23 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 
 func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, depsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, webhook_url, params, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE pipeline_id = $1`, pipelineID,
 	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.WebhookURL, &paramsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source)
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
 	if err != nil {
 		return nil, err
 	}
 	json.Unmarshal(nodesJSON, &p.Nodes)
 	json.Unmarshal(edgesJSON, &p.Edges)
 	json.Unmarshal(paramsJSON, &p.Params)
+	json.Unmarshal(tagsJSON, &p.Tags)
 	json.Unmarshal(depsJSON, &p.DependsOn)
+	if p.Tags == nil {
+		p.Tags = []string{}
+	}
 	return &p, nil
 }
 
@@ -496,12 +647,49 @@ func (s *PostgresStore) GetPipelineVersion(pipelineID string, version int) (stri
 	return snapshot, err
 }
 
+// --- Pagination Counts ---
+
+func (s *PostgresStore) CountPipelines(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM pipelines WHERE workspace_id = $1", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) CountConnections(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM connections WHERE workspace_id = $1", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) CountVariables(workspaceID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM variables WHERE workspace_id = $1", workspaceID).Scan(&count)
+	return count, err
+}
+
+func (s *PostgresStore) CountRunsByPipeline(pipelineID string) (int, error) {
+	var count int
+	err := s.db.QueryRow("SELECT COUNT(*) FROM runs WHERE pipeline_id = $1", pipelineID).Scan(&count)
+	return count, err
+}
+
 // --- Maintenance ---
 
 func (s *PostgresStore) PurgeRunsOlderThan(days int) (int64, error) {
 	result, err := s.db.Exec(
 		`DELETE FROM runs WHERE started_at < NOW() - $1 * INTERVAL '1 day' AND started_at IS NOT NULL`,
 		days,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+func (s *PostgresStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error) {
+	result, err := s.db.Exec(
+		`DELETE FROM runs WHERE started_at < NOW() - $1 * INTERVAL '1 day' AND started_at IS NOT NULL AND org_id = $2`,
+		days, orgID,
 	)
 	if err != nil {
 		return 0, err
@@ -766,13 +954,63 @@ func (s *PostgresStore) DeleteAPIToken(id string) error {
 }
 
 func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
-	return s.ListPipelines() // TODO: filter by workspace_id
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		 FROM pipelines WHERE workspace_id = $1 ORDER BY created_at DESC`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
 }
+
 func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
-	return s.ListConnections() // TODO: filter by workspace_id
+	rows, err := s.db.Query(
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var conns []models.Connection
+	for rows.Next() {
+		var c models.Connection
+		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
+			&c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			return nil, err
+		}
+		conns = append(conns, c)
+	}
+	return conns, rows.Err()
 }
+
 func (s *PostgresStore) ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error) {
-	return s.ListVariables() // TODO: filter by workspace_id
+	rows, err := s.db.Query(
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = $1 ORDER BY key`, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var vars []models.Variable
+	for rows.Next() {
+		var v models.Variable
+		if err := rows.Scan(&v.Key, &v.Value, &v.Type, &v.Description, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, err
+		}
+		vars = append(vars, v)
+	}
+	return vars, rows.Err()
 }
 
 // --- Node Profiles ---

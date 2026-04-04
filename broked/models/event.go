@@ -20,6 +20,7 @@ type Event struct {
 	Type       EventType `json:"type"`
 	RunID      string    `json:"run_id"`
 	PipelineID string    `json:"pipeline_id,omitempty"`
+	OrgID      string    `json:"org_id,omitempty"` // tenant isolation
 	NodeID     string    `json:"node_id,omitempty"`
 	Status     RunStatus `json:"status,omitempty"`
 	RowCount   int       `json:"row_count,omitempty"`

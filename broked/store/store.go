@@ -2,11 +2,64 @@ package store
 
 import (
 	"database/sql"
+	"math"
 	"time"
 
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 )
+
+// PageParams holds pagination parameters.
+type PageParams struct {
+	Page     int // 1-based
+	PageSize int // items per page
+}
+
+// PageResult holds paginated results with metadata.
+type PageResult struct {
+	Total    int         `json:"total"`
+	Page     int         `json:"page"`
+	PageSize int         `json:"page_size"`
+	Pages    int         `json:"pages"`
+	Items    interface{} `json:"items"`
+}
+
+// NewPageParams creates validated pagination parameters.
+// Defaults: page=1, page_size=25. Max page_size=100.
+func NewPageParams(page, pageSize int) PageParams {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 {
+		pageSize = 25
+	}
+	if pageSize > 100 {
+		pageSize = 100
+	}
+	return PageParams{Page: page, PageSize: pageSize}
+}
+
+// Offset returns the zero-based offset for SQL queries.
+func (p PageParams) Offset() int {
+	return (p.Page - 1) * p.PageSize
+}
+
+// Limit returns the page size (alias for clarity in SQL queries).
+func (p PageParams) Limit() int {
+	return p.PageSize
+}
+
+// NewPageResult creates a PageResult from a total count and items slice.
+func NewPageResult(items interface{}, total int, params PageParams) PageResult {
+	pages := int(math.Ceil(float64(total) / float64(params.PageSize)))
+	return PageResult{
+		Total:    total,
+		Page:     params.Page,
+		PageSize: params.PageSize,
+		Pages:    pages,
+		Items:    items,
+	}
+}
 
 // DLQEntry represents a dead letter queue entry for a failed run.
 type DLQEntry struct {
@@ -137,8 +190,15 @@ type Store interface {
 	ListDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error)
 	ResolveDLQ(id string) error
 
+	// Pagination counts
+	CountPipelines(workspaceID string) (int, error)
+	CountConnections(workspaceID string) (int, error)
+	CountVariables(workspaceID string) (int, error)
+	CountRunsByPipeline(pipelineID string) (int, error)
+
 	// Maintenance
 	PurgeRunsOlderThan(days int) (int64, error)
+	PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error)
 	GetDBSize() (int64, error)
 
 	// Lifecycle
