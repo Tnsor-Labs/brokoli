@@ -56,7 +56,13 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	r.Get("/metrics", PrometheusHandler(metrics, s, e))
 
 	hub := NewHub()
-	hub.StartBroadcasting(e.Events())
+	// Wire EventBus for distributed WebSocket broadcasting
+	if ext != nil && ext.EventBus != nil {
+		hub.SetEventBus(ext.EventBus)
+		hub.StartDistributedBroadcasting(e.Events())
+	} else {
+		hub.StartBroadcasting(e.Events())
+	}
 
 	// Enterprise: SSO middleware
 	if ext != nil && ext.Auth != nil && ext.Auth.Enabled() {
