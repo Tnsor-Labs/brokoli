@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,10 @@ func DefaultOrganization() *Organization {
 func (o *Organization) Validate() error {
 	if o.Name == "" {
 		return fmt.Errorf("organization name is required")
+	}
+	// Prevent XSS
+	if strings.ContainsAny(o.Name, "<>\"'&") {
+		return fmt.Errorf("organization name contains invalid characters")
 	}
 	if o.Slug == "" {
 		return fmt.Errorf("organization slug is required")

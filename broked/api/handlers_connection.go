@@ -39,18 +39,28 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	if conns == nil {
 		conns = []models.Connection{}
 	}
-	// Mask passwords, decrypt extras
+	// Mask all secrets in list responses — Extra is never exposed in lists
 	for i := range conns {
-		conns[i].Password = "********"
-		if conns[i].Extra != "" {
-			decrypted, err := h.crypto.Decrypt(conns[i].Extra)
-			if err == nil {
-				conns[i].Extra = decrypted
-			} else {
-				conns[i].Extra = "{}"
-			}
-		}
+		conns[i].Password = ""
+		conns[i].Extra = "" // never expose encrypted extras in list view
 	}
+
+	// Paginated response when ?page= is set
+	if r.URL.Query().Get("page") != "" {
+		pp := ParsePageParams(r)
+		total := len(conns)
+		start := pp.Offset()
+		end := start + pp.Limit()
+		if start > total {
+			start = total
+		}
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, PaginateSlice(conns[start:end], total, pp))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, conns)
 }
 

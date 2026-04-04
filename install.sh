@@ -1,8 +1,8 @@
 #!/bin/sh
-# Broked installer for Linux and macOS.
+# Brokoli Orchestrator installer for Linux and macOS.
 # Usage: curl -fsSL https://raw.githubusercontent.com/hc12r/brokolisql-go/main/install.sh | sh
 #
-# Windows: download the .zip from GitHub Releases and add broked.exe to your PATH.
+# Windows: download the .zip from GitHub Releases and add brokoli.exe to your PATH.
 
 set -e
 
@@ -16,9 +16,9 @@ GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-info() { printf "${CYAN}[broked]${NC} %s\n" "$1"; }
-success() { printf "${GREEN}[broked]${NC} %s\n" "$1"; }
-error() { printf "${RED}[broked]${NC} %s\n" "$1" >&2; exit 1; }
+info() { printf "${CYAN}[brokoli]${NC} %s\n" "$1"; }
+success() { printf "${GREEN}[brokoli]${NC} %s\n" "$1"; }
+error() { printf "${RED}[brokoli]${NC} %s\n" "$1" >&2; exit 1; }
 
 # Detect OS
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -73,14 +73,16 @@ fi
 chmod +x "${INSTALL_DIR}/${BINARY}"
 
 # Verify
-if command -v broked >/dev/null 2>&1; then
-  success "Installed broked to ${INSTALL_DIR}/${BINARY}"
+if command -v "$BINARY" >/dev/null 2>&1; then
+  success "Brokoli Orchestrator installed to ${INSTALL_DIR}/${BINARY}"
   echo ""
-  info "Quick start:"
-  echo "  broked serve              # Start on port 8080"
-  echo "  broked serve --port 9900  # Custom port"
+  echo "  Quick start:"
+  echo "    ${BINARY} serve              # Start on port 8080"
+  echo "    ${BINARY} serve --port 9900  # Custom port"
   echo ""
-  info "Then open http://localhost:8080 in your browser."
+  echo "  Then open http://localhost:8080 in your browser."
+  echo ""
+  echo "  Docs: https://github.com/${REPO}/tree/main/broked"
 else
   success "Installed to ${INSTALL_DIR}/${BINARY}"
   info "You may need to add ${INSTALL_DIR} to your PATH."

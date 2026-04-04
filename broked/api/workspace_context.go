@@ -45,3 +45,14 @@ func GetWorkspaceID(r *http.Request) string {
 	}
 	return models.DefaultWorkspaceID
 }
+
+// ValidateWorkspaceAccess checks if a resource belongs to the user's current workspace.
+// In community edition (default workspace), always returns true.
+// When team features assign non-default workspaces, the resource's workspace must match.
+func ValidateWorkspaceAccess(r *http.Request, resourceWorkspaceID string) bool {
+	requestedWS := GetWorkspaceID(r)
+	if requestedWS == models.DefaultWorkspaceID {
+		return true // community edition or default workspace
+	}
+	return requestedWS == resourceWorkspaceID
+}

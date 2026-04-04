@@ -21,6 +21,37 @@ import (
 	"github.com/hc12r/brokolisql-go/pkg/loaders"
 )
 
+// allowedDataDirs defines directories where source/sink file nodes may read/write.
+// Configurable via BROKOLI_DATA_DIRS environment variable (colon-separated).
+var allowedDataDirs = func() []string {
+	dirs := os.Getenv("BROKOLI_DATA_DIRS")
+	if dirs == "" {
+		return []string{"/data", "/tmp", "."}
+	}
+	return strings.Split(dirs, ":")
+}()
+
+// validateFilePath ensures the path is within allowed directories and has no traversal.
+func validateFilePath(path string) error {
+	if strings.Contains(path, "..") {
+		return fmt.Errorf("path traversal not allowed")
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return fmt.Errorf("invalid path")
+	}
+	for _, dir := range allowedDataDirs {
+		absDir, err := filepath.Abs(dir)
+		if err != nil {
+			continue
+		}
+		if strings.HasPrefix(absPath, absDir+string(filepath.Separator)) || absPath == absDir {
+			return nil
+		}
+	}
+	return fmt.Errorf("file path %q outside allowed directories (%s); set BROKOLI_DATA_DIRS to allow additional paths", path, strings.Join(allowedDataDirs, ", "))
+}
+
 // runCondition evaluates a condition expression and returns the input unchanged if true.
 // If false, it returns nil output — downstream nodes will get no input and be skipped.
 func (r *Runner) runCondition(node models.Node, input *common.DataSet) (*common.DataSet, error) {
@@ -45,6 +76,10 @@ func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
 	path, _ := node.Config["path"].(string)
 	if path == "" {
 		return nil, fmt.Errorf("source_file node requires 'path' config")
+	}
+
+	if err := validateFilePath(path); err != nil {
+		return nil, fmt.Errorf("source_file: %w", err)
 	}
 
 	loader, err := loaders.GetLoader(path)
@@ -503,6 +538,10 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 	path, _ := node.Config["path"].(string)
 	if path == "" {
 		return nil, fmt.Errorf("sink_file node requires 'path' config")
+	}
+
+	if err := validateFilePath(path); err != nil {
+		return nil, fmt.Errorf("sink_file: %w", err)
 	}
 
 	// Determine format from config or file extension

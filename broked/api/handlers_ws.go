@@ -4,15 +4,34 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/models"
 )
 
 var upgrader = websocket.Upgrader{
-	CheckOrigin: func(r *http.Request) bool { return true },
+	CheckOrigin: func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" {
+			return true // non-browser clients
+		}
+		allowed := os.Getenv("BROKOLI_CORS_ORIGINS")
+		if allowed == "" || allowed == "*" {
+			return true // development mode
+		}
+		for _, a := range strings.Split(allowed, ",") {
+			if strings.TrimSpace(a) == origin {
+				return true
+			}
+		}
+		return false
+	},
 }
 
 const (
@@ -24,19 +43,67 @@ const (
 
 // wsClient wraps a WebSocket connection with a buffered send channel.
 type wsClient struct {
-	conn *websocket.Conn
-	send chan []byte
+	conn  *websocket.Conn
+	send  chan []byte
+	orgID string // tenant isolation — only receives events for this org
 }
 
 // Hub manages WebSocket connections and broadcasts events.
 type Hub struct {
-	clients map[*wsClient]struct{}
-	mu      sync.RWMutex
+	clients  map[*wsClient]struct{}
+	mu       sync.RWMutex
+	eventBus extensions.EventBus // nil = local-only broadcast (open source default)
 }
 
 func NewHub() *Hub {
 	return &Hub{
 		clients: make(map[*wsClient]struct{}),
+	}
+}
+
+// SetEventBus wires a distributed event bus for cross-pod broadcasting.
+// When set, StartBroadcasting will publish events to the bus and subscribe
+// to events from other instances.
+func (h *Hub) SetEventBus(eb extensions.EventBus) {
+	h.eventBus = eb
+}
+
+// StartDistributedBroadcasting reads events from the engine, publishes them
+// to the EventBus, and subscribes to the EventBus for events from other pods.
+// Use this instead of StartBroadcasting when running in distributed mode.
+func (h *Hub) StartDistributedBroadcasting(events <-chan models.Event) {
+	// Forward local engine events to the event bus
+	go func() {
+		for event := range events {
+			if h.eventBus == nil {
+				continue
+			}
+			channel := "events:run"
+			if event.OrgID != "" {
+				channel = "events:org:" + event.OrgID
+			}
+			if data, err := json.Marshal(event); err == nil {
+				h.eventBus.Publish(channel, data)
+			}
+		}
+	}()
+
+	// Subscribe to event bus and broadcast to local WebSocket clients
+	if h.eventBus != nil {
+		go func() {
+			msgs, closer, err := h.eventBus.Subscribe("events:*")
+			if err != nil {
+				log.Printf("EventBus subscribe error: %v", err)
+				return
+			}
+			defer closer()
+			for msg := range msgs {
+				var event models.Event
+				if err := json.Unmarshal(msg.Data, &event); err == nil {
+					h.Broadcast(event)
+				}
+			}
+		}()
 	}
 }
 
@@ -48,9 +115,21 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Extract org_id from JWT claims for tenant isolation
+	orgID := "default"
+	claims := r.Context().Value("claims")
+	if claims != nil {
+		if mc, ok := claims.(*jwt.MapClaims); ok {
+			if id, ok := (*mc)["org_id"].(string); ok && id != "" {
+				orgID = id
+			}
+		}
+	}
+
 	client := &wsClient{
-		conn: conn,
-		send: make(chan []byte, clientBufferSize),
+		conn:  conn,
+		send:  make(chan []byte, clientBufferSize),
+		orgID: orgID,
 	}
 
 	conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -115,7 +194,7 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}()
 }
 
-// Broadcast sends an event to all connected clients (non-blocking).
+// Broadcast sends an event to clients in the matching org only (tenant isolation).
 func (h *Hub) Broadcast(event models.Event) {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -126,12 +205,17 @@ func (h *Hub) Broadcast(event models.Event) {
 	defer h.mu.RUnlock()
 
 	for client := range h.clients {
+		// Tenant isolation: only send to clients in the same org
+		// "default" org receives all events (single-tenant / community mode)
+		if client.orgID != "default" && event.OrgID != "" && client.orgID != event.OrgID {
+			continue
+		}
+
 		select {
 		case client.send <- data:
 			// Sent to buffer
 		default:
 			// Client buffer full — drop message (slow client)
-			// The write pump will eventually close this client
 		}
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -49,10 +50,26 @@ func dlqResolveHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
+var webhookLimiter = struct {
+	sync.Mutex
+	last map[string]time.Time
+}{last: make(map[string]time.Time)}
+
 // webhookTriggerHandler handles POST /pipelines/{id}/webhook — triggers a pipeline run via webhook token.
 func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
+
+		// Rate limit: max 1 webhook trigger per pipeline per 10 seconds
+		webhookLimiter.Lock()
+		if last, ok := webhookLimiter.last[id]; ok && time.Since(last) < 10*time.Second {
+			webhookLimiter.Unlock()
+			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded — try again in 10 seconds")
+			return
+		}
+		webhookLimiter.last[id] = time.Now()
+		webhookLimiter.Unlock()
+
 		token := r.URL.Query().Get("token")
 		if token == "" {
 			token = r.Header.Get("X-Webhook-Token")

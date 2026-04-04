@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/hc12r/broked/crypto"
 	"github.com/hc12r/broked/engine"
 	"github.com/hc12r/broked/extensions"
@@ -33,14 +34,32 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 		auditLogger = ext.Audit
 	}
 
-	// Permission check - no-op if team features disabled
+	// Permission check - enterprise team features provide full RBAC;
+	// fallback enforces basic role-based checks for open source.
 	requirePerm := func(perm models.Permission) func(http.Handler) http.Handler {
 		if ext != nil && ext.Team != nil && ext.Team.Enabled() {
 			if mw := ext.Team.PermissionMiddleware(string(perm)); mw != nil {
 				return mw.(func(http.Handler) http.Handler)
 			}
 		}
-		return func(next http.Handler) http.Handler { return next }
+		// Fallback: basic role-based check for open source
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				claims := r.Context().Value("claims")
+				if claims == nil {
+					next.ServeHTTP(w, r) // open mode (no users created)
+					return
+				}
+				mc := claims.(*jwt.MapClaims)
+				role, _ := (*mc)["role"].(string)
+				// Viewers can only access read-only endpoints
+				if role == "viewer" && isWritePermission(string(perm)) {
+					writeError(w, http.StatusForbidden, "insufficient permissions")
+					return
+				}
+				next.ServeHTTP(w, r)
+			})
+		}
 	}
 
 	r.Route("/api", func(r chi.Router) {
@@ -282,6 +301,19 @@ func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 	}
 }
 
+// isWritePermission returns true for permissions that modify data.
+// Read-only permissions that viewers can access return false.
+func isWritePermission(perm string) bool {
+	readPerms := map[string]bool{
+		"pipelines.view":   true,
+		"runs.view":        true,
+		"connections.view": true,
+		"variables.view":   true,
+		"settings.view":    true,
+	}
+	return !readPerms[perm]
+}
+
 func systemPurge(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -290,6 +322,24 @@ func systemPurge(s store.Store) http.HandlerFunc {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Days <= 0 {
 			req.Days = 30
 		}
+
+		// Scope purge by org if available (multi-tenant isolation)
+		orgID := GetOrgIDFromRequest(r)
+		if orgID != "" && orgID != "default" {
+			deleted, err := s.PurgeRunsOlderThanByOrg(req.Days, orgID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"deleted": deleted,
+				"days":    req.Days,
+				"org_id":  orgID,
+			})
+			return
+		}
+
+		// Community edition / default org — purge all (single tenant)
 		deleted, err := s.PurgeRunsOlderThan(req.Days)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

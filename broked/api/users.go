@@ -417,9 +417,31 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "username and password required")
 			return
 		}
+
+		// If users already exist, require admin role to create new users.
+		// First user creation (setup) is allowed without auth.
+		if us.UserCount() > 0 {
+			claims := r.Context().Value("claims")
+			if claims == nil {
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			mc := claims.(*jwt.MapClaims)
+			callerRole, _ := (*mc)["role"].(string)
+			if callerRole != "admin" && callerRole != "superadmin" {
+				writeError(w, http.StatusForbidden, "admin role required to create users")
+				return
+			}
+		}
+
 		role := Role(req.Role)
 		if role != RoleSuperAdmin && role != RoleAdmin && role != RoleEditor && role != RoleViewer {
 			role = RoleViewer
+		}
+
+		// First user must be admin (prevent creating viewer-only accounts during setup)
+		if us.UserCount() == 0 {
+			role = RoleAdmin
 		}
 
 		user, err := us.CreateUser(req.Username, req.Password, role)
@@ -454,6 +476,12 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 
 			// Skip auth endpoints
 			if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/signup" {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip worker endpoints (they use work pool token auth)
+			if strings.HasPrefix(r.URL.Path, "/api/workers/") {
 				next.ServeHTTP(w, r)
 				return
 			}
