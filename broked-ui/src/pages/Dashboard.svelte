@@ -161,7 +161,7 @@
 
   function updateClock() {
     const now = new Date();
-    localTime = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+    localTime = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false, timeZoneName: "short" });
   }
   updateClock();
   const clockInterval = setInterval(updateClock, 1000);

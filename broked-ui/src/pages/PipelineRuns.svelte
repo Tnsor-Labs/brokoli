@@ -25,6 +25,7 @@
   let expandedRunId: string | null = null;
   let previewNodeId: string | null = null;
   let showBackfill = false;
+  let historyExpanded = false;
   let backfillStart = "";
   let backfillEnd = "";
   let backfilling = false;
@@ -234,6 +235,46 @@
   function totalRows(run: Run): number {
     return (run.node_runs || []).reduce((sum, nr) => sum + nr.row_count, 0);
   }
+
+  function formatFullTime(ts: string | null): string {
+    if (!ts) return "--";
+    const d = new Date(ts);
+    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+           " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
+  }
+
+  interface DayRuns {
+    date: string;
+    label: string;
+    runs: Run[];
+    success: number;
+    failed: number;
+    total: number;
+  }
+
+  function groupRunsByDate(allRuns: Run[]): DayRuns[] {
+    const map = new Map<string, Run[]>();
+    for (const r of allRuns) {
+      if (!r.started_at) continue;
+      const date = r.started_at.slice(0, 10);
+      if (!map.has(date)) map.set(date, []);
+      map.get(date)!.push(r);
+    }
+    const result: DayRuns[] = [];
+    for (const [date, dayRuns] of map) {
+      result.push({
+        date,
+        label: new Date(date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        runs: dayRuns.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "")),
+        success: dayRuns.filter(r => r.status === "success" || r.status === "succeeded" || r.status === "completed").length,
+        failed: dayRuns.filter(r => r.status === "failed").length,
+        total: dayRuns.length,
+      });
+    }
+    return result.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14);
+  }
+
+  $: runsByDate = groupRunsByDate(runs);
 </script>
 
 <div class="runs-page animate-in">
@@ -246,10 +287,22 @@
       <span class="page-label">Runs</span>
     </div>
     <div class="toolbar-right">
-      <a href="#/pipelines/{params.id}/edit" class="btn-sm">Edit Pipeline</a>
-      <button class="btn-sm" on:click={() => showBackfill = !showBackfill}>Backfill</button>
-      <button class="btn-sm" on:click={openParamsModal}>Run with Params</button>
-      <button class="btn-sm btn-run" on:click={triggerRun}>Run Now</button>
+      <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.layout.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span class="btn-label">Edit Pipeline</span>
+      </a>
+      <button class="btn-sm" on:click={() => showBackfill = !showBackfill} title="Backfill">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.history.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span class="btn-label">Backfill</span>
+      </button>
+      <button class="btn-sm" on:click={openParamsModal} title="Run with Params">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.settings.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span class="btn-label">Run with Params</span>
+      </button>
+      <button class="btn-sm btn-run" on:click={triggerRun} title="Run Now">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <span class="btn-label">Run Now</span>
+      </button>
     </div>
   </div>
 
@@ -263,6 +316,40 @@
         {backfilling ? "Running..." : "Start Backfill"}
       </button>
       <button class="btn-sm" on:click={() => showBackfill = false}>Cancel</button>
+    </div>
+  {/if}
+
+  <!-- Run History Grid (collapsed by default, shows last 3 days) -->
+  {#if runs.length > 0}
+    <div class="history-section">
+      <div class="history-header">
+        <h3 class="detail-section-title" style="margin:0">Run History</h3>
+        <button class="history-toggle" on:click={() => historyExpanded = !historyExpanded}>
+          {historyExpanded ? "Collapse" : `Show all ${runsByDate.length} days`}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style="transform:rotate({historyExpanded ? 180 : 0}deg);transition:transform 150ms ease"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <div class="history-grid">
+        {#each (historyExpanded ? runsByDate : runsByDate.slice(0, 3)) as day}
+          <div class="history-row">
+            <span class="history-date mono">{day.label}</span>
+            <div class="history-cells">
+              {#each day.runs as r}
+                <button
+                  class="history-cell"
+                  class:cell-success={r.status === "success" || r.status === "succeeded" || r.status === "completed"}
+                  class:cell-failed={r.status === "failed"}
+                  class:cell-running={r.status === "running"}
+                  class:cell-pending={r.status === "pending"}
+                  title="{r.id.slice(0,8)} | {r.status} | {formatTime(r.started_at)} | {formatDuration(r)} | {totalRows(r)} rows{r.error ? ' | ' + r.error.slice(0,50) : ''}"
+                  on:click={() => selectRun(r)}
+                ></button>
+              {/each}
+            </div>
+            <span class="history-count mono">{day.total}</span>
+          </div>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -301,6 +388,39 @@
           {#if expandedRunId === run.id && selectedRun}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div class="run-detail" on:click|stopPropagation on:keydown={() => {}}>
+              <!-- Run Summary Bar -->
+              <div class="run-summary-bar">
+                <div class="summary-item">
+                  <span class="summary-label">Started</span>
+                  <span class="summary-value">{formatFullTime(selectedRun.started_at)}</span>
+                </div>
+                <div class="summary-item">
+                  <span class="summary-label">Finished</span>
+                  <span class="summary-value">{formatFullTime(selectedRun.finished_at)}</span>
+                </div>
+                <div class="summary-item">
+                  <span class="summary-label">Duration</span>
+                  <span class="summary-value mono">{formatDuration(selectedRun)}</span>
+                </div>
+                <div class="summary-item">
+                  <span class="summary-label">Rows</span>
+                  <span class="summary-value mono">{totalRows(selectedRun)}</span>
+                </div>
+                <div class="summary-item">
+                  <span class="summary-label">Nodes</span>
+                  <span class="summary-value mono">
+                    {selectedRun.node_runs?.filter(n => n.status === "success").length || 0} ok,
+                    {selectedRun.node_runs?.filter(n => n.status === "failed").length || 0} failed
+                  </span>
+                </div>
+                {#if selectedRun.error}
+                  <div class="summary-item summary-error">
+                    <span class="summary-label">Error</span>
+                    <span class="summary-value">{selectedRun.error.slice(0, 100)}</span>
+                  </div>
+                {/if}
+              </div>
+
               <!-- DAG with live status -->
               {#if pipeline && pipeline.nodes.length > 0}
                 <div class="detail-section">
@@ -816,4 +936,163 @@
   .drift-alert.critical .drift-type { color: var(--failed); }
   .drift-col { font-weight: 600; color: var(--text-primary); }
   .drift-detail { color: var(--text-muted); font-size: 10px; }
+
+  /* Toolbar buttons: icon + label on desktop, icon-only on mobile */
+  .btn-sm {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .btn-icon { flex-shrink: 0; }
+
+  @media (max-width: 768px) {
+    .toolbar {
+      flex-wrap: wrap;
+      gap: var(--space-sm);
+    }
+    .toolbar-left {
+      flex: 1;
+      min-width: 0;
+    }
+    .pipeline-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 140px;
+      display: inline-block;
+    }
+    .toolbar-right {
+      gap: 4px;
+    }
+    .btn-label {
+      display: none;
+    }
+    .btn-sm {
+      padding: 6px 8px;
+    }
+    .backfill-panel {
+      flex-wrap: wrap;
+    }
+    .run-header {
+      flex-wrap: wrap;
+      gap: var(--space-sm);
+    }
+    .run-rows { margin-left: 0; }
+  }
+
+  /* ── Run History Grid ── */
+  .history-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: var(--space-sm);
+  }
+  .history-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: var(--radius-sm);
+    transition: color 150ms ease;
+  }
+  .history-toggle:hover { color: var(--text-primary); }
+  .history-section {
+    margin-bottom: var(--space-lg);
+  }
+  .detail-section-title {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: var(--space-sm);
+  }
+  .history-grid {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: var(--space-md);
+  }
+  .history-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .history-row:last-child { border-bottom: none; }
+  .history-date {
+    width: 55px;
+    flex-shrink: 0;
+    font-size: 0.6875rem;
+    color: var(--text-muted);
+  }
+  .history-cells {
+    display: flex;
+    gap: 3px;
+    flex: 1;
+    flex-wrap: wrap;
+  }
+  .history-cell {
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+    border: none;
+    cursor: pointer;
+    transition: transform 100ms ease, box-shadow 100ms ease;
+    background: var(--bg-tertiary);
+  }
+  .history-cell:hover {
+    transform: scale(1.3);
+    box-shadow: 0 0 4px rgba(255,255,255,0.1);
+  }
+  .cell-success { background: var(--success); }
+  .cell-failed { background: var(--failed); }
+  .cell-running { background: var(--running); animation: pulse-cell 1.5s ease-in-out infinite; }
+  .cell-pending { background: var(--pending); }
+  @keyframes pulse-cell {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .history-count {
+    width: 30px;
+    text-align: right;
+    font-size: 0.6875rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+
+  /* ── Run Summary Bar ── */
+  .run-summary-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-md);
+    padding: var(--space-md) 0;
+    margin-bottom: var(--space-md);
+    border-bottom: 1px solid var(--border);
+  }
+  .summary-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .summary-label {
+    font-size: 0.625rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+  .summary-value {
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+  }
+  .summary-error .summary-value {
+    color: var(--failed);
+    font-size: 0.75rem;
+  }
 </style>

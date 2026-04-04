@@ -9,6 +9,7 @@ export interface Pipeline {
   params?: Record<string, string>;
   tags?: string[];
   hooks?: Record<string, Hook>;
+  schedule_timezone?: string;
   sla_deadline?: string;
   sla_timezone?: string;
   depends_on?: string[];
