@@ -43,6 +43,23 @@ func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Paginated response when ?page= is set
+	if r.URL.Query().Get("page") != "" {
+		pp := ParsePageParams(r)
+		total := len(vars)
+		start := pp.Offset()
+		end := start + pp.Limit()
+		if start > total {
+			start = total
+		}
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, PaginateSlice(vars[start:end], total, pp))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, vars)
 }
 

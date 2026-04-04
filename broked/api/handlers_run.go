@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/hc12r/broked/engine"
@@ -14,6 +15,20 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
+
+// sanitizeRunError removes potentially sensitive information from run error messages.
+func sanitizeRunError(err string) string {
+	if err == "" {
+		return ""
+	}
+	// Remove connection strings (postgres://user:pass@host, mysql://...)
+	re := regexp.MustCompile(`(postgres|mysql|sqlite|mongodb|redis)://[^\s]+`)
+	err = re.ReplaceAllString(err, "$1://****")
+	// Remove file paths outside /data and /tmp
+	pathRe := regexp.MustCompile(`/(?:home|etc|usr|var|root)/[^\s:]+`)
+	err = pathRe.ReplaceAllString(err, "/****/")
+	return err
+}
 
 type RunHandler struct {
 	store  store.Store
@@ -61,6 +76,23 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	for i := range runs {
 		runs[i].PopulateError()
 	}
+
+	// Paginated response when ?page= is set
+	if r.URL.Query().Get("page") != "" {
+		pp := ParsePageParams(r)
+		total := len(runs)
+		start := pp.Offset()
+		end := start + pp.Limit()
+		if start > total {
+			start = total
+		}
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, PaginateSlice(runs[start:end], total, pp))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, runs)
 }
 
@@ -72,6 +104,9 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	run.PopulateError()
+	if run.Error != "" {
+		run.Error = sanitizeRunError(run.Error)
+	}
 	writeJSON(w, http.StatusOK, run)
 }
 

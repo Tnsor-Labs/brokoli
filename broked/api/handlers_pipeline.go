@@ -85,6 +85,23 @@ func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pipelines {
 		summaries = append(summaries, toPipelineSummary(p))
 	}
+
+	// Paginated response when ?page= is set
+	if r.URL.Query().Get("page") != "" {
+		pp := ParsePageParams(r)
+		total := len(summaries)
+		start := pp.Offset()
+		end := start + pp.Limit()
+		if start > total {
+			start = total
+		}
+		if end > total {
+			end = total
+		}
+		writeJSON(w, http.StatusOK, PaginateSlice(summaries[start:end], total, pp))
+		return
+	}
+
 	writeJSON(w, http.StatusOK, summaries)
 }
 
@@ -111,7 +128,7 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.ID = uuid.New().String()
-	now := time.Now()
+	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
 	if p.Nodes == nil {
@@ -135,6 +152,9 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		p.Source = models.PipelineSourceUI
 	}
 
+	// Set workspace and org from request context
+	p.WorkspaceID = GetWorkspaceID(r)
+
 	if err := h.store.CreatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -144,7 +164,7 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Sync scheduler if created with a schedule
 	if h.sched != nil && p.Schedule != "" && p.Enabled {
-		h.sched.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled)
+		h.sched.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled, p.ScheduleTimezone)
 	}
 
 	writeJSON(w, http.StatusCreated, p)
@@ -174,8 +194,10 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	p.ID = existing.ID
 	p.PipelineID = existing.PipelineID
 	p.Source = existing.Source
+	p.WorkspaceID = existing.WorkspaceID
+	p.OrgID = existing.OrgID
 	p.CreatedAt = existing.CreatedAt
-	p.UpdatedAt = time.Now()
+	p.UpdatedAt = time.Now().UTC()
 	if p.Nodes == nil {
 		p.Nodes = []models.Node{}
 	}
@@ -199,7 +221,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	// Sync scheduler
 	if h.sched != nil {
-		h.sched.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled)
+		h.sched.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled, p.ScheduleTimezone)
 	}
 
 	AuditLog(r, "update", "pipeline", p.ID, map[string]interface{}{"name": existing.Name}, map[string]interface{}{"name": p.Name, "nodes": len(p.Nodes)})
@@ -254,7 +276,7 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "corrupt snapshot")
 		return
 	}
-	p.UpdatedAt = time.Now()
+	p.UpdatedAt = time.Now().UTC()
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -310,7 +332,7 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	if p.ID == "" {
 		p.ID = uuid.New().String()
 	}
-	now := time.Now()
+	now := time.Now().UTC()
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = now
 	}
@@ -335,7 +357,7 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	clone := *orig
 	clone.ID = uuid.New().String()
 	clone.Name = orig.Name + " (copy)"
-	now := time.Now()
+	now := time.Now().UTC()
 	clone.CreatedAt = now
 	clone.UpdatedAt = now
 
