@@ -1,6 +1,11 @@
 package extensions
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+)
 
 // ── Default implementations (open source / community edition) ──
 
@@ -91,6 +96,125 @@ func (n *noopTeam) RegisterRoutes(r, s interface{})                  {}
 func (n *noopTeam) PermissionMiddleware(permission string) interface{} { return nil }
 func (n *noopTeam) MigrateDB(db interface{})                         {}
 
+// ── In-memory EventBus (single-process default) ──
+
+// inMemoryEventBus implements EventBus using Go channels (single process).
+type inMemoryEventBus struct {
+	mu   sync.RWMutex
+	subs map[string][]chan EventMessage
+}
+
+func newInMemoryEventBus() *inMemoryEventBus {
+	return &inMemoryEventBus{subs: make(map[string][]chan EventMessage)}
+}
+
+func (b *inMemoryEventBus) Publish(channel string, data []byte) error {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	msg := EventMessage{Channel: channel, Data: data}
+	for pattern, chs := range b.subs {
+		if matchPattern(pattern, channel) {
+			for _, ch := range chs {
+				select {
+				case ch <- msg:
+				default: // drop if subscriber is slow
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (b *inMemoryEventBus) Subscribe(pattern string) (<-chan EventMessage, func(), error) {
+	ch := make(chan EventMessage, 64)
+	b.mu.Lock()
+	b.subs[pattern] = append(b.subs[pattern], ch)
+	b.mu.Unlock()
+
+	closer := func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+		subs := b.subs[pattern]
+		for i, s := range subs {
+			if s == ch {
+				b.subs[pattern] = append(subs[:i], subs[i+1:]...)
+				break
+			}
+		}
+		close(ch)
+	}
+	return ch, closer, nil
+}
+
+func (b *inMemoryEventBus) Close() error { return nil }
+
+// matchPattern checks if a channel matches a subscription pattern.
+// Supports simple glob: "events:*" matches "events:run:123".
+func matchPattern(pattern, channel string) bool {
+	if pattern == channel || pattern == "*" {
+		return true
+	}
+	if strings.HasSuffix(pattern, "*") {
+		prefix := pattern[:len(pattern)-1]
+		return strings.HasPrefix(channel, prefix)
+	}
+	return false
+}
+
+// ── In-memory JobQueue (single-process default) ──
+
+// inMemoryJobQueue implements JobQueue using a Go channel (single process).
+type inMemoryJobQueue struct {
+	jobs   chan RunJob
+	closed bool
+	mu     sync.Mutex
+}
+
+func newInMemoryJobQueue() *inMemoryJobQueue {
+	return &inMemoryJobQueue{jobs: make(chan RunJob, 1000)}
+}
+
+func (q *inMemoryJobQueue) Enqueue(job RunJob) error {
+	q.mu.Lock()
+	if q.closed {
+		q.mu.Unlock()
+		return ErrQueueClosed
+	}
+	q.mu.Unlock()
+
+	select {
+	case q.jobs <- job:
+		return nil
+	default:
+		return fmt.Errorf("job queue full")
+	}
+}
+
+func (q *inMemoryJobQueue) Dequeue() (RunJob, error) {
+	job, ok := <-q.jobs
+	if !ok {
+		return RunJob{}, ErrQueueClosed
+	}
+	return job, nil
+}
+
+func (q *inMemoryJobQueue) Ack(jobID string) error              { return nil }
+func (q *inMemoryJobQueue) Fail(jobID string, err error) error  { return nil }
+
+func (q *inMemoryJobQueue) Len() int {
+	return len(q.jobs)
+}
+
+func (q *inMemoryJobQueue) Close() error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if !q.closed {
+		q.closed = true
+		close(q.jobs)
+	}
+	return nil
+}
+
 // DefaultRegistry returns the community defaults.
 func DefaultRegistry() *Registry {
 	return &Registry{
@@ -104,5 +228,7 @@ func DefaultRegistry() *Registry {
 		OpenLineage: &CommunityOpenLineage{},
 		Platform:    &noopPlatform{},
 		Team:        &noopTeam{},
+		EventBus:    newInMemoryEventBus(),
+		JobQueue:    newInMemoryJobQueue(),
 	}
 }

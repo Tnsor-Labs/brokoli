@@ -4,6 +4,7 @@
 package extensions
 
 import (
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -231,6 +232,67 @@ type TeamProvider interface {
 	// MigrateDB runs team-specific database migrations.
 	MigrateDB(db interface{})
 }
+
+// ── Distributed Infrastructure ──
+
+// EventBus distributes real-time events across service instances.
+// Open source: in-memory channel (single process).
+// Enterprise: Redis pub/sub (multi-process, multi-pod).
+type EventBus interface {
+	// Publish sends an event to all subscribers.
+	Publish(channel string, data []byte) error
+
+	// Subscribe listens for events on a channel pattern.
+	// Returns a channel that receives messages and a close function.
+	Subscribe(pattern string) (<-chan EventMessage, func(), error)
+
+	// Close shuts down the event bus.
+	Close() error
+}
+
+// EventMessage is a message received from the event bus.
+type EventMessage struct {
+	Channel string
+	Data    []byte
+}
+
+// JobQueue manages pipeline execution jobs.
+// Open source: in-memory (runs in goroutines in the same process).
+// Enterprise: Redis queue (distributed workers).
+type JobQueue interface {
+	// Enqueue adds a pipeline run job to the queue.
+	Enqueue(job RunJob) error
+
+	// Dequeue blocks until a job is available, then returns it.
+	// Returns ErrQueueClosed when the queue is shut down.
+	Dequeue() (RunJob, error)
+
+	// Ack marks a job as completed.
+	Ack(jobID string) error
+
+	// Fail marks a job as failed.
+	Fail(jobID string, err error) error
+
+	// Len returns the current queue length.
+	Len() int
+
+	// Close shuts down the queue.
+	Close() error
+}
+
+// RunJob represents a pipeline execution request in the job queue.
+type RunJob struct {
+	ID         string            `json:"id"`
+	PipelineID string            `json:"pipeline_id"`
+	RunID      string            `json:"run_id"`
+	OrgID      string            `json:"org_id"`
+	Params     map[string]string `json:"params,omitempty"`
+	Priority   int               `json:"priority"`
+	EnqueuedAt time.Time         `json:"enqueued_at"`
+}
+
+// ErrQueueClosed is returned by Dequeue when the queue is shut down.
+var ErrQueueClosed = fmt.Errorf("queue closed")
 
 // ── Column Lineage, Data Contracts, PII Detection, OpenLineage ──
 

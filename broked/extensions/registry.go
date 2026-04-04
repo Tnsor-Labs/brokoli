@@ -16,4 +16,6 @@ type Registry struct {
 	OpenLineage OpenLineageEmitter
 	Platform    PlatformProvider
 	Team        TeamProvider
+	EventBus    EventBus
+	JobQueue    JobQueue
 }
