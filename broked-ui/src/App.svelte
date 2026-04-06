@@ -13,6 +13,7 @@
   import Connections from "./pages/Connections.svelte";
   import Variables from "./pages/Variables.svelte";
   import Calendar from "./pages/Calendar.svelte";
+  import APIIntegrations from "./pages/APIIntegrations.svelte";
   import { createWebSocket } from "./lib/ws";
   import { addEvent } from "./lib/stores";
   import { notify } from "./lib/toast";
@@ -33,6 +34,7 @@
     "/variables": Variables,
     "/connections": Connections,
     "/settings": Settings,
+    "/api": APIIntegrations,
     "/login": Login,
   };
 
@@ -69,13 +71,28 @@
     if (e.key === "Escape" && showShortcuts) {
       showShortcuts = false;
     }
+    // Navigation shortcuts: g then key
+    if (e.key === "g") {
+      const handler = (e2: KeyboardEvent) => {
+        window.removeEventListener("keydown", handler);
+        const tag2 = (e2.target as HTMLElement)?.tagName;
+        if (tag2 === "INPUT" || tag2 === "TEXTAREA") return;
+        const map: Record<string, string> = {
+          d: "#/", p: "#/pipelines", c: "#/connections", v: "#/variables",
+          l: "#/lineage", s: "#/settings", a: "#/api",
+        };
+        if (map[e2.key]) { e2.preventDefault(); window.location.hash = map[e2.key]; }
+      };
+      window.addEventListener("keydown", handler);
+      setTimeout(() => window.removeEventListener("keydown", handler), 1000);
+    }
   }
 
   // Track current hash reactively
   let currentHash = window.location.hash;
   function onHashChange() { currentHash = window.location.hash; }
 
-  $: isLoginRoute = currentHash === "#/login" || currentHash === "";
+  $: isLoginRoute = currentHash === "#/login";
   $: requiresAuth = $authReady && !$authUser && !$needsSetup;
 </script>
 
@@ -91,7 +108,17 @@
         <div class="shortcut-section">
           <h3>Global</h3>
           <div class="shortcut-row"><kbd>?</kbd><span>Show this help</span></div>
-          <div class="shortcut-row"><kbd>Esc</kbd><span>Close modal / deselect</span></div>
+          <div class="shortcut-row"><kbd>Cmd+K</kbd><span>Search</span></div>
+          <div class="shortcut-row"><kbd>Esc</kbd><span>Close modal</span></div>
+        </div>
+        <div class="shortcut-section">
+          <h3>Go to (g then...)</h3>
+          <div class="shortcut-row"><kbd>g d</kbd><span>Dashboard</span></div>
+          <div class="shortcut-row"><kbd>g p</kbd><span>Pipelines</span></div>
+          <div class="shortcut-row"><kbd>g c</kbd><span>Connections</span></div>
+          <div class="shortcut-row"><kbd>g v</kbd><span>Variables</span></div>
+          <div class="shortcut-row"><kbd>g l</kbd><span>Lineage</span></div>
+          <div class="shortcut-row"><kbd>g a</kbd><span>API</span></div>
         </div>
         <div class="shortcut-section">
           <h3>Pipeline Editor</h3>
