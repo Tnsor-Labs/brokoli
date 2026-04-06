@@ -54,6 +54,8 @@ const (
 	NodeTypeSinkAPI      NodeType = "sink_api"
 	NodeTypeMigrate      NodeType = "migrate"
 	NodeTypeCondition    NodeType = "condition"     // if/else branching
+	NodeTypeDBT          NodeType = "dbt"           // dbt run/test/build
+	NodeTypeNotify       NodeType = "notify"        // send Slack/email/webhook notification
 )
 
 // Position represents a node's position on the visual canvas.
