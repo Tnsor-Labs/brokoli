@@ -12,6 +12,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/hc12r/broked/engine"
 	"github.com/hc12r/broked/extensions"
+	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
 )
 
@@ -19,6 +20,11 @@ import (
 func dlqListHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
+		if p, err := s.GetPipeline(id); err == nil {
+			if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
+		} else {
+			writeError(w, http.StatusNotFound, "pipeline not found"); return
+		}
 		includeResolved := r.URL.Query().Get("include_resolved") == "true"
 		limit := 50
 		if l := r.URL.Query().Get("limit"); l != "" {
@@ -41,6 +47,12 @@ func dlqListHandler(s store.Store) http.HandlerFunc {
 // dlqResolveHandler handles POST /pipelines/{id}/dlq/{dlqId}/resolve — marks a DLQ entry as resolved.
 func dlqResolveHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		pipelineID := chi.URLParam(r, "id")
+		if p, err := s.GetPipeline(pipelineID); err == nil {
+			if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
+		} else {
+			writeError(w, http.StatusNotFound, "pipeline not found"); return
+		}
 		dlqID := chi.URLParam(r, "dlqId")
 		if err := s.ResolveDLQ(dlqID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -108,6 +120,7 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "pipeline not found")
 			return
 		}
+		if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
 		deps := make([]map[string]interface{}, 0)
 		for _, depID := range p.DependsOn {
 			dep := map[string]interface{}{"pipeline_id": depID, "satisfied": false}
@@ -135,7 +148,9 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 		if days < 1 || days > 365 {
 			days = 90
 		}
-		cal, err := s.GetRunCalendar(days)
+
+		orgID := GetOrgIDFromRequest(r)
+		cal, err := s.GetRunCalendarByOrg(days, orgID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -147,11 +162,34 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
+// listPipelinesForRequest returns pipelines scoped to the user's org or workspace.
+func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline, error) {
+	orgID := GetOrgIDFromRequest(r)
+	if orgID != "" {
+		return s.ListPipelinesByOrg(orgID)
+	}
+	// In multi-tenant mode (OrgResolverFunc set), users without an org see nothing
+	if OrgResolverFunc != nil {
+		return []models.Pipeline{}, nil
+	}
+	// Community/self-hosted mode: fall back to workspace
+	return s.ListPipelinesByWorkspace(GetWorkspaceID(r))
+}
+
 // dashboardHandler handles GET /dashboard — returns aggregated dashboard data.
 func dashboardHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		wsID := GetWorkspaceID(r)
-		pipelines, _ := s.ListPipelinesByWorkspace(wsID)
+		orgID := GetOrgIDFromRequest(r)
+		var pipelines []models.Pipeline
+		if orgID != "" {
+			pipelines, _ = s.ListPipelinesByOrg(orgID)
+		} else if OrgResolverFunc != nil {
+			// Multi-tenant: user with no org sees empty dashboard
+			pipelines = []models.Pipeline{}
+		} else {
+			wsID := GetWorkspaceID(r)
+			pipelines, _ = s.ListPipelinesByWorkspace(wsID)
+		}
 		type runEntry struct {
 			PipelineID   string `json:"pipeline_id"`
 			PipelineName string `json:"pipeline_name"`
@@ -277,8 +315,7 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 // pipelineSummaryHandler handles GET /pipelines/summary — returns pipelines with run stats.
 func pipelineSummaryHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		wsID := GetWorkspaceID(r)
-		pipelinesList, _ := s.ListPipelinesByWorkspace(wsID)
+		pipelinesList, _ := listPipelinesForRequest(s, r)
 		type PipelineWithRun struct {
 			PipelineSummary
 			LastRunStatus string `json:"last_run_status"`
@@ -341,7 +378,7 @@ func searchHandler(s store.Store) http.HandlerFunc {
 		wsID := GetWorkspaceID(r)
 
 		// Search pipelines
-		if pipes, err := s.ListPipelinesByWorkspace(wsID); err == nil {
+		if pipes, err := listPipelinesForRequest(s, r); err == nil {
 			for _, p := range pipes {
 				if strings.Contains(strings.ToLower(p.Name), q) || strings.Contains(strings.ToLower(p.Description), q) {
 					results = append(results, SearchResult{Type: "pipeline", ID: p.ID, Name: p.Name, Description: p.Description, Meta: p.Schedule})
@@ -514,8 +551,7 @@ func (h *NotificationSettingsHandler) Delete(w http.ResponseWriter, r *http.Requ
 // lineageHandler handles GET /lineage — returns pipeline lineage graph.
 func lineageHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		wsID := GetWorkspaceID(r)
-		pipelines, err := s.ListPipelinesByWorkspace(wsID)
+		pipelines, err := listPipelinesForRequest(s, r)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -563,17 +599,22 @@ func bulkPipelineHandler(s store.Store) http.HandlerFunc {
 		var failed []BulkResultItem
 
 		for _, id := range req.IDs {
+			p, e := s.GetPipeline(id)
+			if e != nil {
+				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
+				continue
+			}
+			if !ValidateOrgAccess(r, p.OrgID) {
+				failed = append(failed, BulkResultItem{ID: id, Error: "access denied"})
+				continue
+			}
 			var err error
 			switch req.Action {
 			case "delete":
 				err = s.DeletePipeline(id)
 			case "enable", "disable":
-				if p, e := s.GetPipeline(id); e == nil {
-					p.Enabled = req.Action == "enable"
-					err = s.UpdatePipeline(p)
-				} else {
-					err = e
-				}
+				p.Enabled = req.Action == "enable"
+				err = s.UpdatePipeline(p)
 			}
 			if err != nil {
 				failed = append(failed, BulkResultItem{ID: id, Error: err.Error()})
@@ -595,8 +636,7 @@ func bulkPipelineHandler(s store.Store) http.HandlerFunc {
 func connectionUsedByHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		connID := chi.URLParam(r, "connId")
-		wsID := GetWorkspaceID(r)
-		pipelines, _ := s.ListPipelinesByWorkspace(wsID)
+		pipelines, _ := listPipelinesForRequest(s, r)
 		var usedBy []map[string]string
 		for _, p := range pipelines {
 			for _, n := range p.Nodes {
@@ -616,8 +656,7 @@ func connectionUsedByHandler(s store.Store) http.HandlerFunc {
 func variableUsedByHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		varKey := chi.URLParam(r, "key")
-		wsID := GetWorkspaceID(r)
-		pipelines, _ := s.ListPipelinesByWorkspace(wsID)
+		pipelines, _ := listPipelinesForRequest(s, r)
 		pattern := "${var." + varKey + "}"
 		var usedBy []map[string]string
 		for _, p := range pipelines {

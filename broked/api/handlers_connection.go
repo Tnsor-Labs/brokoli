@@ -13,7 +13,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/google/uuid"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 	"github.com/hc12r/broked/crypto"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
@@ -25,12 +26,78 @@ type ConnectionHandler struct {
 	crypto *crypto.Config
 }
 
+// validateConnectionAccess checks if a connection exists in the user's org-scoped connection set.
+func (h *ConnectionHandler) validateConnectionAccess(r *http.Request, connID string) bool {
+	orgID := GetOrgIDFromRequest(r)
+	if orgID == "" {
+		return true // community edition
+	}
+	// Get user's actual workspaces (not the spoofable header)
+	var userWSIDs []string
+	if UserWorkspaceResolverFunc != nil {
+		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+			if sub, ok := (*claims)["sub"].(string); ok {
+				userWSIDs = UserWorkspaceResolverFunc(sub)
+			}
+		}
+	}
+	if len(userWSIDs) == 0 {
+		return false // org user with no workspaces = no connections
+	}
+	// Check each of the user's workspaces for the connection
+	for _, wsID := range userWSIDs {
+		conns, _ := h.store.ListConnectionsByWorkspace(wsID)
+		for _, c := range conns {
+			if c.ConnID == connID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
 	return &ConnectionHandler{store: s, crypto: c}
 }
 
 func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
+	// Org-scoped users should only see connections from their workspace,
+	// not the shared "default" workspace from other orgs
+	orgID := GetOrgIDFromRequest(r)
 	wsID := GetWorkspaceID(r)
+	if orgID != "" && wsID == "default" {
+		// User has an org but no specific workspace — check their actual workspaces
+		if UserWorkspaceResolverFunc != nil {
+			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+				if sub, ok := (*claims)["sub"].(string); ok {
+					userWS := UserWorkspaceResolverFunc(sub)
+					if len(userWS) > 0 {
+						wsID = userWS[0] // Use their first workspace
+					} else {
+						// No workspace = no connections
+						writeJSON(w, http.StatusOK, []models.Connection{})
+						return
+					}
+				}
+			}
+		}
+	}
+	// Paginated — use SQL LIMIT/OFFSET
+	if r.URL.Query().Get("page") != "" {
+		pp := ParsePageParams(r)
+		conns, total, err := h.store.ListConnectionsByWorkspacePaged(wsID, pp.Limit(), pp.Offset())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for i := range conns {
+			conns[i].Password = ""
+			conns[i].Extra = ""
+		}
+		writeJSON(w, http.StatusOK, store.NewPageResult(conns, total, pp))
+		return
+	}
+
 	conns, err := h.store.ListConnectionsByWorkspace(wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -39,26 +106,9 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	if conns == nil {
 		conns = []models.Connection{}
 	}
-	// Mask all secrets in list responses — Extra is never exposed in lists
 	for i := range conns {
 		conns[i].Password = ""
-		conns[i].Extra = "" // never expose encrypted extras in list view
-	}
-
-	// Paginated response when ?page= is set
-	if r.URL.Query().Get("page") != "" {
-		pp := ParsePageParams(r)
-		total := len(conns)
-		start := pp.Offset()
-		end := start + pp.Limit()
-		if start > total {
-			start = total
-		}
-		if end > total {
-			end = total
-		}
-		writeJSON(w, http.StatusOK, PaginateSlice(conns[start:end], total, pp))
-		return
+		conns[i].Extra = ""
 	}
 
 	writeJSON(w, http.StatusOK, conns)
@@ -68,6 +118,11 @@ func (h *ConnectionHandler) Get(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
 	c, err := h.store.GetConnection(connID)
 	if err != nil {
+		writeError(w, http.StatusNotFound, "connection not found")
+		return
+	}
+	// Verify connection belongs to user's workspace scope
+	if !h.validateConnectionAccess(r, connID) {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -98,10 +153,27 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// Validate conn_id format (slug-like)
 	c.ConnID = strings.ToLower(strings.TrimSpace(c.ConnID))
 
-	c.ID = uuid.New().String()
+	c.ID = common.NewID()
 	now := time.Now()
 	c.CreatedAt = now
 	c.UpdatedAt = now
+
+	// Resolve workspace: if not set, use the user's actual workspace
+	if c.WorkspaceID == "" || c.WorkspaceID == "default" {
+		orgID := GetOrgIDFromRequest(r)
+		if orgID != "" && UserWorkspaceResolverFunc != nil {
+			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+				if sub, ok := (*claims)["sub"].(string); ok {
+					if userWS := UserWorkspaceResolverFunc(sub); len(userWS) > 0 {
+						c.WorkspaceID = userWS[0]
+					}
+				}
+			}
+		}
+		if c.WorkspaceID == "" {
+			c.WorkspaceID = GetWorkspaceID(r)
+		}
+	}
 
 	// Encrypt password and extra
 	if c.Password != "" {
@@ -142,6 +214,10 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
+	if !h.validateConnectionAccess(r, connID) {
+		writeError(w, http.StatusNotFound, "connection not found")
+		return
+	}
 	existing, err := h.store.GetConnection(connID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "connection not found")
@@ -198,6 +274,10 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
+	if !h.validateConnectionAccess(r, connID) {
+		writeError(w, http.StatusNotFound, "connection not found")
+		return
+	}
 	if err := h.store.DeleteConnection(connID); err != nil {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
@@ -208,6 +288,10 @@ func (h *ConnectionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
+	if !h.validateConnectionAccess(r, connID) {
+		writeError(w, http.StatusNotFound, "connection not found")
+		return
+	}
 	c, err := h.store.GetConnection(connID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "connection not found")
@@ -516,13 +600,31 @@ func testGeneric(ctx context.Context, c *models.Connection, extra map[string]int
 // ConnectionTypes returns available connection type metadata.
 func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 	types := []map[string]interface{}{
-		{"type": "postgres", "label": "PostgreSQL", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "mysql", "label": "MySQL", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "sqlite", "label": "SQLite", "fields": []string{"host"}},
-		{"type": "http", "label": "HTTP / REST API", "fields": []string{"host", "port", "login", "password", "extra"}},
-		{"type": "sftp", "label": "SFTP / SSH", "fields": []string{"host", "port", "login", "password", "extra"}},
-		{"type": "s3", "label": "Amazon S3", "fields": []string{"extra"}},
-		{"type": "generic", "label": "Generic", "fields": []string{"host", "port", "login", "password", "extra"}},
+		// Databases
+		{"type": "postgres", "label": "PostgreSQL", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
+		{"type": "mysql", "label": "MySQL", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
+		{"type": "snowflake", "label": "Snowflake", "category": "database", "fields": []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints": map[string]string{"host": "account.snowflakecomputing.com", "schema": "database/schema", "extra": `{"warehouse": "COMPUTE_WH", "role": "SYSADMIN"}`}},
+		{"type": "redshift", "label": "Amazon Redshift", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"},
+			"hints": map[string]string{"host": "cluster.region.redshift.amazonaws.com", "port": "5439"}},
+		{"type": "bigquery", "label": "Google BigQuery", "category": "database", "fields": []string{"schema", "extra"},
+			"hints": map[string]string{"schema": "project_id.dataset", "extra": "Service account JSON key"}},
+		{"type": "databricks", "label": "Databricks", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"},
+			"hints": map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
+		{"type": "oracle", "label": "Oracle", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
+		{"type": "mssql", "label": "SQL Server", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
+		{"type": "sqlite", "label": "SQLite", "category": "database", "fields": []string{"host"}},
+		// Cloud Storage
+		{"type": "s3", "label": "Amazon S3", "category": "storage", "fields": []string{"extra"},
+			"hints": map[string]string{"extra": `{"bucket": "my-bucket", "region": "us-east-1", "access_key": "...", "secret_key": "..."}`}},
+		{"type": "gcs", "label": "Google Cloud Storage", "category": "storage", "fields": []string{"extra"},
+			"hints": map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
+		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "fields": []string{"extra"},
+			"hints": map[string]string{"extra": `{"container": "my-container", "account": "storageaccount", "key": "..."}`}},
+		// APIs & Other
+		{"type": "http", "label": "HTTP / REST API", "category": "api", "fields": []string{"host", "port", "login", "password", "extra"}},
+		{"type": "sftp", "label": "SFTP / SSH", "category": "api", "fields": []string{"host", "port", "login", "password", "extra"}},
+		{"type": "generic", "label": "Generic", "category": "other", "fields": []string{"host", "port", "login", "password", "extra"}},
 	}
 	writeJSON(w, http.StatusOK, types)
 }

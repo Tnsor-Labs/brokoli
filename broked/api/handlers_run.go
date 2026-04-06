@@ -39,8 +39,29 @@ func NewRunHandler(s store.Store, e *engine.Engine) *RunHandler {
 	return &RunHandler{store: s, engine: e}
 }
 
+// validateRunAccess checks that a run's pipeline belongs to the user's org.
+func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
+	run, err := h.store.GetRun(runID)
+	if err != nil {
+		return false
+	}
+	p, err := h.store.GetPipeline(run.PipelineID)
+	if err != nil {
+		return false
+	}
+	return ValidateOrgAccess(r, p.OrgID)
+}
+
 func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
+
+	// Verify pipeline belongs to user's org
+	if p, err := h.store.GetPipeline(pipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
 
 	// Parse optional params from request body
 	var req struct {
@@ -103,6 +124,13 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
+	// Verify run's pipeline belongs to user's org
+	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
 	run.PopulateError()
 	if run.Error != "" {
 		run.Error = sanitizeRunError(run.Error)
@@ -112,6 +140,10 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, id) {
+		DenyOrgAccess(w)
+		return
+	}
 	logs, err := h.store.GetLogs(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -122,6 +154,10 @@ func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, id) {
+		DenyOrgAccess(w)
+		return
+	}
 	logs, err := h.store.GetLogs(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -142,6 +178,10 @@ func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, id) {
+		DenyOrgAccess(w)
+		return
+	}
 	if err := h.engine.CancelRun(id); err != nil {
 		writeError(w, http.StatusNotFound, err.Error())
 		return
@@ -198,6 +238,10 @@ func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, runID) {
+		DenyOrgAccess(w)
+		return
+	}
 	run, err := h.engine.ResumeRun(runID)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -239,6 +283,10 @@ func (h *RunHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) GetNodeProfile(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, runID) {
+		DenyOrgAccess(w)
+		return
+	}
 	nodeID := chi.URLParam(r, "nodeId")
 	profile, schema, drift, err := h.store.GetNodeProfile(runID, nodeID)
 	if err != nil {
@@ -251,6 +299,10 @@ func (h *RunHandler) GetNodeProfile(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, runID) {
+		DenyOrgAccess(w)
+		return
+	}
 	nodeID := chi.URLParam(r, "nodeId")
 
 	columns, rows, err := h.store.GetNodePreview(runID, nodeID)

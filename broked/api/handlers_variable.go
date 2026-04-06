@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/hc12r/broked/crypto"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
@@ -21,8 +22,50 @@ func NewVariableHandler(s store.Store, c *crypto.Config) *VariableHandler {
 	return &VariableHandler{store: s, crypto: c}
 }
 
+// validateVariableAccess verifies a variable exists in the user's workspace scope.
+func (h *VariableHandler) validateVariableAccess(r *http.Request, key string) bool {
+	orgID := GetOrgIDFromRequest(r)
+	if orgID == "" {
+		return true
+	}
+	var userWSIDs []string
+	if UserWorkspaceResolverFunc != nil {
+		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+			if sub, ok := (*claims)["sub"].(string); ok {
+				userWSIDs = UserWorkspaceResolverFunc(sub)
+			}
+		}
+	}
+	if len(userWSIDs) == 0 {
+		return false
+	}
+	for _, wsID := range userWSIDs {
+		vars, _ := h.store.ListVariablesByWorkspace(wsID)
+		for _, v := range vars {
+			if v.Key == key {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
+	orgID := GetOrgIDFromRequest(r)
 	wsID := GetWorkspaceID(r)
+	if orgID != "" && wsID == "default" && UserWorkspaceResolverFunc != nil {
+		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+			if sub, ok := (*claims)["sub"].(string); ok {
+				userWS := UserWorkspaceResolverFunc(sub)
+				if len(userWS) > 0 {
+					wsID = userWS[0]
+				} else {
+					writeJSON(w, http.StatusOK, []models.Variable{})
+					return
+				}
+			}
+		}
+	}
 	vars, err := h.store.ListVariablesByWorkspace(wsID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -65,6 +108,10 @@ func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *VariableHandler) Get(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
+	if !h.validateVariableAccess(r, key) {
+		writeError(w, http.StatusNotFound, "variable not found")
+		return
+	}
 	v, err := h.store.GetVariable(key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "variable not found")
@@ -95,6 +142,24 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
+
+	// Resolve workspace for the variable
+	if v.WorkspaceID == "" || v.WorkspaceID == "default" {
+		orgID := GetOrgIDFromRequest(r)
+		if orgID != "" && UserWorkspaceResolverFunc != nil {
+			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+				if sub, ok := (*claims)["sub"].(string); ok {
+					if userWS := UserWorkspaceResolverFunc(sub); len(userWS) > 0 {
+						v.WorkspaceID = userWS[0]
+					}
+				}
+			}
+		}
+		if v.WorkspaceID == "" {
+			v.WorkspaceID = GetWorkspaceID(r)
+		}
+	}
+
 	// Check if update (preserve created_at)
 	existing, err := h.store.GetVariable(v.Key)
 	if err == nil {
@@ -134,6 +199,10 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 
 func (h *VariableHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
+	if !h.validateVariableAccess(r, key) {
+		writeError(w, http.StatusNotFound, "variable not found")
+		return
+	}
 	if err := h.store.DeleteVariable(key); err != nil {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return

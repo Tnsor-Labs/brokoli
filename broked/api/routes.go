@@ -166,12 +166,12 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 			})
 		})
 
-		// Enterprise: Git Sync API
+		// Enterprise: Git Sync API (requires "gitsync" feature)
 		if ext != nil && ext.GitSync != nil {
-			r.Get("/git/config", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("gitsync")).Get("/git/config", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, ext.GitSync.Config())
 			})
-			r.Get("/git/status", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("gitsync")).Get("/git/status", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, ext.GitSync.Status())
 			})
 			r.With(requirePerm(models.PermGitSyncPull)).Post("/git/pull", func(w http.ResponseWriter, r *http.Request) {
@@ -196,9 +196,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 			})
 		}
 
-		// Enterprise: Audit log API
+		// Enterprise: Audit log API (requires "audit" feature)
 		if ext != nil && ext.Audit != nil {
-			r.Get("/audit", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("audit")).Get("/audit", func(w http.ResponseWriter, r *http.Request) {
 				filter := extensions.AuditFilter{Limit: 500}
 				if u := r.URL.Query().Get("user_id"); u != "" {
 					filter.UserID = u
@@ -275,7 +275,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 
 		// Platform features (enterprise: orgs, admin, tickets, announcements)
 		if ext != nil && ext.Platform != nil && ext.Platform.Enabled() {
-			ext.Platform.RegisterRoutes(r, s, userStore)
+			ext.Platform.RegisterRoutes(r, s, userStore, e)
 		}
 
 		// Team features (enterprise: workspaces, roles, permissions, RBAC)

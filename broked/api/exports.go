@@ -35,6 +35,48 @@ func PaginatePublic(items interface{}, total int, params store.PageParams) store
 // Enterprise sets this; open source reads it for multi-tenant scoping.
 type OrgIDContextKey struct{}
 
+// OrgResolverFunc resolves the org ID for a given user ID.
+// Set by enterprise platform to include org_id in JWT claims.
+var OrgResolverFunc func(userID string) string
+
+// FeatureGateFunc checks if the requesting user's plan includes a feature.
+// Set by enterprise. Returns true if allowed, false if blocked.
+// When nil (community edition), all features are allowed.
+var FeatureGateFunc func(r *http.Request, feature string) bool
+
+// RequireFeature middleware blocks access if the user's plan doesn't include the feature.
+// In community edition (FeatureGateFunc nil), all features are allowed.
+func RequireFeature(feature string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if FeatureGateFunc != nil && !FeatureGateFunc(r, feature) {
+				writeError(w, http.StatusForbidden, "this feature requires a plan upgrade")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// ValidateOrgAccess checks if a resource belongs to the requesting user's org.
+// Returns true if: no org context (community edition), or orgs match.
+func ValidateOrgAccess(r *http.Request, resourceOrgID string) bool {
+	reqOrg := GetOrgIDFromRequest(r)
+	if reqOrg == "" {
+		return true // community edition — no org isolation
+	}
+	if resourceOrgID == "" {
+		return true // resource without org assignment (legacy)
+	}
+	return reqOrg == resourceOrgID
+}
+
+// DenyOrgAccess writes a 404 for resources that don't belong to the user's org.
+// Uses 404 instead of 403 to avoid leaking resource existence.
+func DenyOrgAccess(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not found")
+}
+
 // GetOrgIDFromRequest extracts the org ID set by enterprise OrgMiddleware.
 // Returns "" if no org context is set (community edition).
 func GetOrgIDFromRequest(r *http.Request) string {

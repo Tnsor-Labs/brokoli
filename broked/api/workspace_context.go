@@ -46,6 +46,10 @@ func GetWorkspaceID(r *http.Request) string {
 	return models.DefaultWorkspaceID
 }
 
+// UserWorkspaceResolverFunc resolves workspace IDs for a user (set by enterprise).
+// Returns the user's workspace IDs so we can validate workspace access.
+var UserWorkspaceResolverFunc func(userID string) []string
+
 // ValidateWorkspaceAccess checks if a resource belongs to the user's current workspace.
 // In community edition (default workspace), always returns true.
 // When team features assign non-default workspaces, the resource's workspace must match.

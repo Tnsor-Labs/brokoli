@@ -6,11 +6,12 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 	"github.com/hc12r/broked/engine"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
@@ -75,8 +76,44 @@ func NewPipelineHandler(s store.Store, sched *engine.Scheduler) *PipelineHandler
 }
 
 func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
-	wsID := GetWorkspaceID(r)
-	pipelines, err := h.store.ListPipelinesByWorkspace(wsID)
+	orgID := GetOrgIDFromRequest(r)
+	after := r.URL.Query().Get("after")
+	limit := 25
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, _ := strconv.Atoi(l); n > 0 && n <= 100 {
+			limit = n
+		}
+	}
+
+	// Cursor-based pagination — no COUNT, uses UUIDv7 ordering
+	if orgID != "" {
+		pipelines, hasNext, err := h.store.ListPipelinesByOrgCursor(orgID, after, limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		summaries := make([]PipelineSummary, 0, len(pipelines))
+		for _, p := range pipelines {
+			summaries = append(summaries, toPipelineSummary(p))
+		}
+		cursor := ""
+		if len(pipelines) > 0 {
+			cursor = pipelines[len(pipelines)-1].ID
+		}
+		writeJSON(w, http.StatusOK, store.CursorResult{
+			Items: summaries, HasNext: hasNext, Cursor: cursor, Limit: limit,
+		})
+		return
+	}
+
+	// Community mode fallback
+	var pipelines []models.Pipeline
+	var err error
+	if OrgResolverFunc != nil {
+		pipelines = []models.Pipeline{}
+	} else {
+		pipelines, err = h.store.ListPipelinesByWorkspace(GetWorkspaceID(r))
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -85,23 +122,6 @@ func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 	for _, p := range pipelines {
 		summaries = append(summaries, toPipelineSummary(p))
 	}
-
-	// Paginated response when ?page= is set
-	if r.URL.Query().Get("page") != "" {
-		pp := ParsePageParams(r)
-		total := len(summaries)
-		start := pp.Offset()
-		end := start + pp.Limit()
-		if start > total {
-			start = total
-		}
-		if end > total {
-			end = total
-		}
-		writeJSON(w, http.StatusOK, PaginateSlice(summaries[start:end], total, pp))
-		return
-	}
-
 	writeJSON(w, http.StatusOK, summaries)
 }
 
@@ -110,6 +130,10 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 	pipeline, err := h.store.GetPipeline(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	if !ValidateOrgAccess(r, pipeline.OrgID) {
+		DenyOrgAccess(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, pipeline)
@@ -127,7 +151,7 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	p.ID = uuid.New().String()
+	p.ID = common.NewID()
 	now := time.Now().UTC()
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -154,6 +178,9 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Set workspace and org from request context
 	p.WorkspaceID = GetWorkspaceID(r)
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		p.OrgID = orgID
+	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -176,6 +203,10 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	existing, err := h.store.GetPipeline(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	if !ValidateOrgAccess(r, existing.OrgID) {
+		DenyOrgAccess(w)
 		return
 	}
 
@@ -230,6 +261,15 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	existing, err := h.store.GetPipeline(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	if !ValidateOrgAccess(r, existing.OrgID) {
+		DenyOrgAccess(w)
+		return
+	}
 	if err := h.store.DeletePipeline(id); err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
@@ -243,6 +283,9 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if p, err := h.store.GetPipeline(id); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
+	}
 	versions, err := h.store.ListPipelineVersions(id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -256,6 +299,11 @@ func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 
 func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	if existing, err := h.store.GetPipeline(id); err == nil {
+		if !ValidateOrgAccess(r, existing.OrgID) { DenyOrgAccess(w); return }
+	} else {
+		writeError(w, http.StatusNotFound, "pipeline not found"); return
+	}
 
 	var req struct {
 		Version int `json:"version"`
@@ -283,7 +331,6 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Save rollback as a new version
 	h.store.SavePipelineVersion(p.ID, snapshot, fmt.Sprintf("rollback to v%d", req.Version))
 
 	writeJSON(w, http.StatusOK, p)
@@ -296,6 +343,7 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
+	if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
 
 	ve := engine.ValidatePipeline(p)
 	if ve.HasErrors() {
@@ -330,13 +378,21 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if p.ID == "" {
-		p.ID = uuid.New().String()
+		p.ID = common.NewID()
 	}
 	now := time.Now().UTC()
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = now
 	}
 	p.UpdatedAt = now
+
+	// Set org/workspace ownership
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		p.OrgID = orgID
+	}
+	if p.WorkspaceID == "" {
+		p.WorkspaceID = GetWorkspaceID(r)
+	}
 
 	if err := h.store.CreatePipeline(p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -353,9 +409,15 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate org access
+	if !ValidateOrgAccess(r, orig.OrgID) {
+		DenyOrgAccess(w)
+		return
+	}
+
 	// Create a deep copy with new IDs
 	clone := *orig
-	clone.ID = uuid.New().String()
+	clone.ID = common.NewID()
 	clone.Name = orig.Name + " (copy)"
 	now := time.Now().UTC()
 	clone.CreatedAt = now
@@ -365,7 +427,7 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	idMap := make(map[string]string, len(orig.Nodes))
 	newNodes := make([]models.Node, len(orig.Nodes))
 	for i, n := range orig.Nodes {
-		newID := uuid.New().String()[:8]
+		newID := common.NewID()[:8]
 		idMap[n.ID] = newID
 		newNodes[i] = n
 		newNodes[i].ID = newID
@@ -388,6 +450,14 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	}
 	clone.Edges = newEdges
 
+	// Ensure clone belongs to current user's org/workspace
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		clone.OrgID = orgID
+	}
+	if wsID := GetWorkspaceID(r); wsID != "" {
+		clone.WorkspaceID = wsID
+	}
+
 	if err := h.store.CreatePipeline(&clone); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -402,6 +472,7 @@ func (h *PipelineHandler) ValidateNodes(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
+	if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
 
 	results := engine.ValidateNodes(p.Nodes)
 	if results == nil {
@@ -419,6 +490,7 @@ func (h *PipelineHandler) Export(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
+	if !ValidateOrgAccess(r, p.OrgID) { DenyOrgAccess(w); return }
 
 	yamlData, err := engine.ExportPipelineYAML(p)
 	if err != nil {

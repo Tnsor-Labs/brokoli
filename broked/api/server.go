@@ -117,7 +117,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				return
 			}
 			role, _ := (*claims)["role"].(string)
-			if role != "admin" {
+			if role != "admin" && role != "superadmin" {
 				writeError(w, http.StatusForbidden, "admin role required")
 				return
 			}
