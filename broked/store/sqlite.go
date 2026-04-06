@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 	_ "modernc.org/sqlite"
@@ -207,7 +206,7 @@ func (s *SQLiteStore) WithTx(fn func(*sql.Tx) error) error {
 // --- Dead Letter Queue ---
 
 func (s *SQLiteStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error {
-	id := uuid.New().String()
+	id := common.NewID()
 	_, err := s.db.Exec(
 		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES (?,?,?,?,?,?,?,?)`,
 		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now().UTC().Format(timeFormat),
@@ -341,6 +340,88 @@ func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pip
 		pipelines = append(pipelines, *p)
 	}
 	return pipelines, rows.Err()
+}
+
+func (s *SQLiteStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC`, orgID,
+	)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := scanPipelineRows(rows)
+		if err != nil { return nil, err }
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
+}
+
+func (s *SQLiteStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = ?`, orgID).Scan(&total)
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, orgID, limit, offset,
+	)
+	if err != nil { return nil, 0, err }
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := scanPipelineRows(rows)
+		if err != nil { return nil, 0, err }
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, total, rows.Err()
+}
+
+func (s *SQLiteStore) ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error) {
+	fetchN := limit + 1
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			 FROM pipelines WHERE org_id = ? ORDER BY id DESC LIMIT ?`, orgID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			 FROM pipelines WHERE org_id = ? AND id < ? ORDER BY id DESC LIMIT ?`, orgID, afterID, fetchN)
+	}
+	if err != nil { return nil, false, err }
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := scanPipelineRows(rows)
+		if err != nil { return nil, false, err }
+		pipelines = append(pipelines, *p)
+	}
+	hasNext := len(pipelines) > limit
+	if hasNext { pipelines = pipelines[:limit] }
+	return pipelines, hasNext, rows.Err()
+}
+
+func (s *SQLiteStore) ListConnectionsByWorkspacePaged(wsID string, limit, offset int) ([]models.Connection, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM connections WHERE workspace_id = ?`, wsID).Scan(&total)
+	conns, err := s.ListConnectionsByWorkspace(wsID)
+	if err != nil { return nil, 0, err }
+	end := offset + limit
+	if end > len(conns) { end = len(conns) }
+	if offset > len(conns) { offset = len(conns) }
+	return conns[offset:end], total, nil
+}
+
+func (s *SQLiteStore) ListVariablesByWorkspacePaged(wsID string, limit, offset int) ([]models.Variable, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM variables WHERE workspace_id = ?`, wsID).Scan(&total)
+	vars, err := s.ListVariablesByWorkspace(wsID)
+	if err != nil { return nil, 0, err }
+	end := offset + limit
+	if end > len(vars) { end = len(vars) }
+	if offset > len(vars) { offset = len(vars) }
+	return vars[offset:end], total, nil
 }
 
 func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
@@ -808,11 +889,15 @@ func checkRowsAffected(result sql.Result, entity, id string) error {
 // ── Connections ──────────────────────────────────────────────
 
 func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
+	wsID := c.WorkspaceID
+	if wsID == "" {
+		wsID = "default"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, workspace_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra, // caller is responsible for encrypting before calling
+		c.Password, c.Extra, wsID,
 		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
@@ -1117,14 +1202,43 @@ func (s *SQLiteStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 	return result, nil
 }
 
+func (s *SQLiteStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error) {
+	query := `SELECT substr(started_at, 1, 10) as day,
+		COUNT(*) as total,
+		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+		SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
+	 FROM runs WHERE started_at >= date('now', ?)`
+	args := []interface{}{fmt.Sprintf("-%d days", days)}
+	if orgID != "" {
+		query += ` AND org_id = ?`
+		args = append(args, orgID)
+	}
+	query += ` GROUP BY day ORDER BY day`
+	rows, err := s.db.Query(query, args...)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var result []CalendarDay
+	for rows.Next() {
+		var d CalendarDay
+		if err := rows.Scan(&d.Date, &d.Total, &d.Success, &d.Failed, &d.Running); err != nil { return nil, err }
+		result = append(result, d)
+	}
+	return result, nil
+}
+
 // ── Variables ────────────────────────────────────────────────
 
 func (s *SQLiteStore) SetVariable(v *models.Variable) error {
+	wsID := v.WorkspaceID
+	if wsID == "" {
+		wsID = "default"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO variables (key, value, type, description, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)
+		`INSERT INTO variables (key, value, type, description, workspace_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, type=excluded.type, description=excluded.description, updated_at=excluded.updated_at`,
-		v.Key, v.Value, v.Type, v.Description,
+		v.Key, v.Value, v.Type, v.Description, wsID,
 		v.CreatedAt.UTC().Format(timeFormat), v.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err

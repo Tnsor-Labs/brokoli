@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/brokolisql-go/pkg/common"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -261,7 +260,7 @@ func (s *PostgresStore) WithTx(fn func(*sql.Tx) error) error {
 // --- Dead Letter Queue ---
 
 func (s *PostgresStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error {
-	id := uuid.New().String()
+	id := common.NewID()
 	_, err := s.db.Exec(
 		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now(),
@@ -733,14 +732,44 @@ func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 	return result, nil
 }
 
+func (s *PostgresStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error) {
+	query := `SELECT date(started_at) as day,
+		COUNT(*) as total,
+		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
+		SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
+		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
+	 FROM runs WHERE started_at >= NOW() - INTERVAL '1 day' * $1`
+	var args []interface{}
+	args = append(args, days)
+	if orgID != "" {
+		query += ` AND org_id = $2`
+		args = append(args, orgID)
+	}
+	query += ` GROUP BY day ORDER BY day`
+	rows, err := s.db.Query(query, args...)
+	if err != nil { return nil, err }
+	defer rows.Close()
+	var result []CalendarDay
+	for rows.Next() {
+		var d CalendarDay
+		if err := rows.Scan(&d.Date, &d.Total, &d.Success, &d.Failed, &d.Running); err != nil { return nil, err }
+		result = append(result, d)
+	}
+	return result, nil
+}
+
 // ── Connections (same implementation as SQLite, Postgres-compatible) ──
 
 func (s *PostgresStore) CreateConnection(c *models.Connection) error {
+	wsID := c.WorkspaceID
+	if wsID == "" {
+		wsID = "default"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, workspace_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra, c.CreatedAt, c.UpdatedAt,
+		c.Password, c.Extra, wsID, c.CreatedAt, c.UpdatedAt,
 	)
 	return err
 }
@@ -812,11 +841,15 @@ func (s *PostgresStore) DeleteConnection(connID string) error {
 // ── Variables ──
 
 func (s *PostgresStore) SetVariable(v *models.Variable) error {
+	wsID := v.WorkspaceID
+	if wsID == "" {
+		wsID = "default"
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO variables (key, value, type, description, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO variables (key, value, type, description, workspace_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, type=EXCLUDED.type, description=EXCLUDED.description, updated_at=EXCLUDED.updated_at`,
-		v.Key, v.Value, v.Type, v.Description, v.CreatedAt, v.UpdatedAt,
+		v.Key, v.Value, v.Type, v.Description, wsID, v.CreatedAt, v.UpdatedAt,
 	)
 	return err
 }
@@ -971,6 +1004,107 @@ func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.P
 		pipelines = append(pipelines, *p)
 	}
 	return pipelines, rows.Err()
+}
+
+func (s *PostgresStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC`, orgID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
+}
+
+func (s *PostgresStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = $1`, orgID).Scan(&total)
+	rows, err := s.db.Query(
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, orgID, limit, offset,
+	)
+	if err != nil { return nil, 0, err }
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil { return nil, 0, err }
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, total, rows.Err()
+}
+
+func (s *PostgresStore) ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error) {
+	var rows *sql.Rows
+	var err error
+	fetchN := limit + 1 // fetch one extra to detect has_next
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			 FROM pipelines WHERE org_id = $1 ORDER BY id DESC LIMIT $2`, orgID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			 FROM pipelines WHERE org_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, orgID, afterID, fetchN)
+	}
+	if err != nil { return nil, false, err }
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil { return nil, false, err }
+		pipelines = append(pipelines, *p)
+	}
+	hasNext := len(pipelines) > limit
+	if hasNext {
+		pipelines = pipelines[:limit]
+	}
+	return pipelines, hasNext, rows.Err()
+}
+
+func (s *PostgresStore) ListConnectionsByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Connection, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM connections WHERE workspace_id = $1`, workspaceID).Scan(&total)
+	rows, err := s.db.Query(
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id LIMIT $2 OFFSET $3`, workspaceID, limit, offset,
+	)
+	if err != nil { return nil, 0, err }
+	defer rows.Close()
+	var conns []models.Connection
+	for rows.Next() {
+		var c models.Connection
+		rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login, &c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt)
+		conns = append(conns, c)
+	}
+	return conns, total, rows.Err()
+}
+
+func (s *PostgresStore) ListVariablesByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Variable, int, error) {
+	var total int
+	s.db.QueryRow(`SELECT COUNT(*) FROM variables WHERE workspace_id = $1`, workspaceID).Scan(&total)
+	rows, err := s.db.Query(
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = $1 ORDER BY key LIMIT $2 OFFSET $3`, workspaceID, limit, offset,
+	)
+	if err != nil { return nil, 0, err }
+	defer rows.Close()
+	var vars []models.Variable
+	for rows.Next() {
+		var v models.Variable
+		rows.Scan(&v.Key, &v.Value, &v.Type, &v.Description, &v.CreatedAt, &v.UpdatedAt)
+		vars = append(vars, v)
+	}
+	return vars, total, rows.Err()
 }
 
 func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {

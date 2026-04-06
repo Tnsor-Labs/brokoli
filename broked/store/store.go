@@ -24,6 +24,15 @@ type PageResult struct {
 	Items    interface{} `json:"items"`
 }
 
+// CursorResult holds cursor-based pagination results.
+// No COUNT query needed — uses UUIDv7 for efficient keyset pagination.
+type CursorResult struct {
+	Items   interface{} `json:"items"`
+	HasNext bool        `json:"has_next"`
+	Cursor  string      `json:"cursor,omitempty"` // ID of last item — pass as ?after= for next page
+	Limit   int         `json:"limit"`
+}
+
 // NewPageParams creates validated pagination parameters.
 // Defaults: page=1, page_size=25. Max page_size=100.
 func NewPageParams(page, pageSize int) PageParams {
@@ -99,6 +108,9 @@ type Store interface {
 	GetPipeline(id string) (*models.Pipeline, error)
 	ListPipelines() ([]models.Pipeline, error)
 	ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error)
+	ListPipelinesByOrg(orgID string) ([]models.Pipeline, error)
+	ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error)
+	ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error)
 	UpdatePipeline(p *models.Pipeline) error
 	DeletePipeline(id string) error
 	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
@@ -132,6 +144,7 @@ type Store interface {
 	GetConnection(connID string) (*models.Connection, error)
 	ListConnections() ([]models.Connection, error)
 	ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error)
+	ListConnectionsByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Connection, int, error)
 	UpdateConnection(c *models.Connection) error
 	DeleteConnection(connID string) error
 
@@ -140,6 +153,7 @@ type Store interface {
 	GetVariable(key string) (*models.Variable, error)
 	ListVariables() ([]models.Variable, error)
 	ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error)
+	ListVariablesByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Variable, int, error)
 	DeleteVariable(key string) error
 
 	// Workspaces
@@ -165,6 +179,7 @@ type Store interface {
 
 	// Calendar / Aggregation
 	GetRunCalendar(days int) ([]CalendarDay, error)
+	GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error)
 
 	// Settings (key-value)
 	GetSetting(key string) (string, error)
