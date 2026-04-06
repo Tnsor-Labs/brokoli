@@ -75,6 +75,44 @@ export async function initAuth() {
       return;
     }
 
+    // Pick up token from URL fragment (e.g. #/auth-callback?token=xxx&ws=yyy)
+    // Fragments are never sent to the server — safer than query params
+    const hash = window.location.hash;
+    if (hash.includes("/auth-callback")) {
+      const hashParams = new URLSearchParams(hash.split("?")[1] || "");
+      const urlToken = hashParams.get("token");
+      const wsId = hashParams.get("ws");
+      if (urlToken) {
+        setToken(urlToken);
+        if (wsId) {
+          localStorage.setItem("brokoli-workspace", wsId);
+        }
+        // Store onboarding flag for new signups
+        const isNew = hashParams.get("new");
+        if (isNew === "1") {
+          localStorage.setItem("brokoli-onboarding", JSON.stringify({
+            show_welcome: true,
+            steps: [
+              { id: "create_connection", label: "Add your first data source", completed: false },
+              { id: "create_pipeline", label: "Build your first pipeline", completed: false },
+              { id: "first_run", label: "Run your pipeline", completed: false },
+              { id: "invite_member", label: "Invite a team member", completed: false },
+            ],
+          }));
+        }
+        // Clean URL immediately — remove token from browser history
+        window.history.replaceState({}, "", window.location.pathname + "#/");
+      }
+    }
+
+    // Also handle legacy ?token= query param (e.g. from OAuth callbacks)
+    const queryParams = new URLSearchParams(window.location.search);
+    const queryToken = queryParams.get("token");
+    if (queryToken) {
+      setToken(queryToken);
+      window.history.replaceState({}, "", window.location.pathname + "#/");
+    }
+
     // Try to validate existing token
     const token = get(authToken);
     if (token) {
