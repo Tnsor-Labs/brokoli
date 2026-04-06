@@ -6,6 +6,7 @@
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import { createEventDispatcher } from "svelte";
   import { notify } from "../lib/toast";
+  import Stepper from "./Stepper.svelte";
   import { authHeaders } from "../lib/auth";
 
   export let node: Node | null = null;
@@ -115,7 +116,7 @@
 
   function connTypeFilter(nodeType: string): string[] {
     switch (nodeType) {
-      case "source_db": case "sink_db": return ["postgres", "mysql", "sqlite", "generic"];
+      case "source_db": case "sink_db": return ["postgres", "mysql", "sqlite", "snowflake", "redshift", "bigquery", "databricks", "oracle", "mssql", "generic"];
       case "source_api": return ["http", "generic"];
       default: return [];
     }
@@ -141,6 +142,26 @@
     regex: ["pattern"],
     row_count: ["min", "max"],
   };
+
+  const nodeDescriptions: Record<string, string> = {
+    source_file: "Read data from CSV, JSON, or TSV files on disk.",
+    source_api: "Fetch data from an HTTP/REST API endpoint.",
+    source_db: "Query data from a database using SQL.",
+    transform: "Apply transformations: filter, rename, sort, aggregate, and more.",
+    code: "Run custom Python code to transform data.",
+    join: "Combine two datasets by matching columns.",
+    quality_check: "Validate data against rules before proceeding.",
+    sql_generate: "Generate and execute SQL statements.",
+    sink_file: "Write output data to a file.",
+    sink_db: "Insert data into a database table.",
+    sink_api: "Send data to an external API endpoint.",
+    migrate: "Copy data between two databases.",
+    condition: "Branch the pipeline based on a condition.",
+    dbt: "Run dbt models to transform data in your warehouse. Requires dbt-core installed on the worker.",
+    notify: "Send notifications when the pipeline reaches this point.",
+  };
+
+  let showAdvanced = false;
 </script>
 
 <div class="config-panel">
@@ -159,7 +180,12 @@
           </svg>
         {/if}
       </div>
-      <span class="panel-title">{typeConfig?.label || node.type}</span>
+      <div class="panel-header-text">
+        <span class="panel-title">{typeConfig?.label || node.type}</span>
+        {#if nodeDescriptions[node.type]}
+          <span class="panel-desc">{nodeDescriptions[node.type]}</span>
+        {/if}
+      </div>
     </div>
 
     <div class="field">
@@ -311,7 +337,7 @@
       </div>
       <div class="field">
         <label>Timeout (seconds)</label>
-        <input type="number" value={node.config["timeout"] || 30} on:input={(e) => updateConfig("timeout", Number(e.currentTarget.value))} min="1" />
+        <Stepper value={node.config["timeout"] || 30} min={1} max={600} step={5} on:change={(e) => updateConfig("timeout", e.detail)} />
       </div>
       <div class="field-group">
         <span class="group-title">Python Script</span>
@@ -418,7 +444,7 @@
       </div>
       <div class="field">
         <label>Batch Size</label>
-        <input type="number" value={node.config["batch_size"] || 100} on:input={(e) => updateConfig("batch_size", Number(e.currentTarget.value))} min="1" />
+        <Stepper value={node.config["batch_size"] || 100} min={1} max={10000} step={50} on:change={(e) => updateConfig("batch_size", e.detail)} />
       </div>
       <div class="field">
         <label class="toggle">
@@ -510,7 +536,7 @@
       </div>
       <div class="field">
         <label>Batch Size</label>
-        <input type="number" value={node.config["batch_size"] || 100} on:input={(e) => updateConfig("batch_size", Number(e.currentTarget.value))} min="1" />
+        <Stepper value={node.config["batch_size"] || 100} min={1} max={10000} step={50} on:change={(e) => updateConfig("batch_size", e.detail)} />
       </div>
     {/if}
 
@@ -577,7 +603,7 @@
       </div>
       <div class="field">
         <label>Chunk Size</label>
-        <input type="number" value={node.config["chunk_size"] || 5000} on:input={(e) => updateConfig("chunk_size", Number(e.currentTarget.value))} min="100" />
+        <Stepper value={node.config["chunk_size"] || 5000} min={100} max={100000} step={500} on:change={(e) => updateConfig("chunk_size", e.detail)} />
       </div>
       <div class="field">
         <label class="toggle">
@@ -607,29 +633,123 @@
       </div>
     {/if}
 
+    <!-- ── dbt ── -->
+    {#if node.type === "dbt"}
+      <div class="field-group">
+        <span class="group-title">What to run</span>
+        <div class="field">
+          <label>Command</label>
+          <div class="select-cards">
+            {#each [
+              { val: "run", label: "Run", desc: "Execute SQL models" },
+              { val: "test", label: "Test", desc: "Validate data" },
+              { val: "build", label: "Build", desc: "Run + Test" },
+              { val: "seed", label: "Seed", desc: "Load CSVs" },
+            ] as cmd}
+              <button class="select-card" class:active={( node.config["command"] || "run") === cmd.val}
+                on:click={() => updateConfig("command", cmd.val)}>
+                <strong>{cmd.label}</strong>
+                <span>{cmd.desc}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="field">
+          <label>Select Models</label>
+          <input value={node.config["select"] || ""} on:input={(e) => updateConfig("select", e.currentTarget.value)} placeholder="model_name, +tag:daily, path:marts/*" />
+          <span class="field-hint">Leave blank to run all models. Use dbt selection syntax.</span>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <span class="group-title">Project</span>
+        <div class="field">
+          <label>Project Directory</label>
+          <input value={node.config["project_dir"] || ""} on:input={(e) => updateConfig("project_dir", e.currentTarget.value)} placeholder="/path/to/dbt/project" />
+          <span class="field-hint">Path to your dbt project root (where dbt_project.yml lives).</span>
+        </div>
+        <div class="field">
+          <label>Target Environment</label>
+          <input value={node.config["target"] || ""} on:input={(e) => updateConfig("target", e.currentTarget.value)} placeholder="dev" />
+          <span class="field-hint">Which profile target to use (dev, staging, prod). Leave blank for default.</span>
+        </div>
+      </div>
+
+      <button class="toggle-advanced" on:click={() => showAdvanced = !showAdvanced}>
+        {showAdvanced ? "Hide" : "Show"} advanced options
+      </button>
+      {#if showAdvanced}
+        <div class="field-group">
+          <span class="group-title">Advanced</span>
+          <div class="field">
+            <label>Profiles Directory</label>
+            <input value={node.config["profiles_dir"] || ""} on:input={(e) => updateConfig("profiles_dir", e.currentTarget.value)} placeholder="~/.dbt" />
+          </div>
+          <div class="field">
+            <label>Variables</label>
+            <textarea rows="2" class="code-input" value={node.config["vars"] || ""} on:input={(e) => updateConfig("vars", e.currentTarget.value)} placeholder="date: 2024-01-01"></textarea>
+            <span class="field-hint">YAML format. Passed as --vars to dbt.</span>
+          </div>
+        </div>
+      {/if}
+    {/if}
+
+    <!-- ── Notify ── -->
+    {#if node.type === "notify"}
+      <div class="field-group">
+        <span class="group-title">Destination</span>
+        <div class="field">
+          <label>Send via</label>
+          <div class="select-cards">
+            {#each [
+              { val: "slack", label: "Slack", desc: "Post to a channel" },
+              { val: "webhook", label: "Webhook", desc: "HTTP POST to any URL" },
+            ] as opt}
+              <button class="select-card" class:active={(node.config["notify_type"] || "webhook") === opt.val}
+                on:click={() => updateConfig("notify_type", opt.val)}>
+                <strong>{opt.label}</strong>
+                <span>{opt.desc}</span>
+              </button>
+            {/each}
+          </div>
+        </div>
+        <div class="field">
+          <label>{(node.config["notify_type"] || "webhook") === "slack" ? "Slack Webhook URL" : "Webhook URL"}</label>
+          <input value={node.config["webhook_url"] || ""} on:input={(e) => updateConfig("webhook_url", e.currentTarget.value)}
+            placeholder={(node.config["notify_type"] || "webhook") === "slack" ? "https://hooks.slack.com/services/T.../B.../..." : "https://api.example.com/webhook"} />
+        </div>
+        {#if (node.config["notify_type"] || "webhook") === "slack"}
+          <div class="field">
+            <label>Channel</label>
+            <input value={node.config["channel"] || ""} on:input={(e) => updateConfig("channel", e.currentTarget.value)} placeholder="#data-alerts" />
+            <span class="field-hint">Optional. Override the default channel set in Slack.</span>
+          </div>
+        {/if}
+      </div>
+      <div class="field-group">
+        <span class="group-title">Message</span>
+        <div class="field">
+          <label>Template</label>
+          <textarea rows="3" value={node.config["message"] || ""} on:input={(e) => updateConfig("message", e.currentTarget.value)}
+            placeholder="Pipeline completed successfully with {{rows}} rows processed."></textarea>
+          <span class="field-hint">
+            Available variables: <code>{"{{pipeline}}"}</code> <code>{"{{run_id}}"}</code> <code>{"{{rows}}"}</code>
+          </span>
+        </div>
+      </div>
+    {/if}
+
     <!-- ── Common: Retry Config ── -->
     <div class="field-group">
       <span class="group-title">Retry</span>
       <div class="field-row">
         <div class="field compact">
-          <label for="retry-max">Retries</label>
-          <input
-            id="retry-max"
-            type="number"
-            value={node.config["max_retries"] || 0}
-            on:input={(e) => updateConfig("max_retries", Number(e.currentTarget.value))}
-            min="0" max="10"
-          />
+          <label>Retries</label>
+          <Stepper value={node.config["max_retries"] || 0} min={0} max={10} on:change={(e) => updateConfig("max_retries", e.detail)} />
         </div>
         <div class="field compact">
-          <label for="retry-delay">Delay (ms)</label>
-          <input
-            id="retry-delay"
-            type="number"
-            value={node.config["retry_delay"] || 1000}
-            on:input={(e) => updateConfig("retry_delay", Number(e.currentTarget.value))}
-            min="0" step="500"
-          />
+          <label>Delay (ms)</label>
+          <Stepper value={node.config["retry_delay"] || 1000} min={0} max={60000} step={500} on:change={(e) => updateConfig("retry_delay", e.detail)} />
         </div>
       </div>
     </div>
@@ -670,7 +790,37 @@
     background: color-mix(in srgb, var(--node-color) 10%, transparent);
     flex-shrink: 0;
   }
+  .panel-header-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
   .panel-title { font-weight: 600; font-size: 0.875rem; }
+  .panel-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+
+  /* Select cards — visual option picker */
+  .select-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .select-card {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 10px; border: 1px solid var(--border);
+    border-radius: 8px; background: none; cursor: pointer;
+    text-align: left; color: var(--text-secondary);
+    transition: all 150ms ease;
+  }
+  .select-card:hover { border-color: var(--border-hover); }
+  .select-card.active {
+    border-color: var(--accent); background: var(--accent-glow);
+    color: var(--text-primary);
+  }
+  .select-card strong { font-size: 12px; font-weight: 600; }
+  .select-card span { font-size: 10px; color: var(--text-dim); }
+  .select-card.active span { color: var(--text-muted); }
+
+  /* Advanced toggle */
+  .toggle-advanced {
+    display: block; width: 100%; padding: 8px;
+    font-size: 11px; color: var(--text-dim); background: none;
+    border: none; border-top: 1px solid var(--border-subtle);
+    cursor: pointer; text-align: center;
+    transition: color 150ms ease;
+  }
+  .toggle-advanced:hover { color: var(--accent); }
 
   .field { padding: var(--space-sm) var(--space-lg); }
   .field label {

@@ -100,6 +100,8 @@ export const nodeTypeConfig: Record<string, { label: string; color: string }> = 
   sink_api: { label: "API Sink", color: "#a855f7" },
   migrate: { label: "DB Migration", color: "#0ea5e9" },
   condition: { label: "If/Else", color: "#f43f5e" },
+  dbt: { label: "dbt", color: "#ff694a" },
+  notify: { label: "Notify", color: "#8b5cf6" },
 };
 
 /** Generate a unique node ID */

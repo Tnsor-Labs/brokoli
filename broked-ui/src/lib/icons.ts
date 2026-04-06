@@ -46,9 +46,9 @@ export const icons: Record<string, IconDef> = {
     d: `M4 17l6-5-6-5M12 19h8M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z`,
   },
 
-  // Join/merge: two paths converging
+  // Join/merge: two inputs converging into one output (Venn diagram style)
   merge: {
-    d: `M6 4v16M18 4v16M6 8h12M6 16h12`,
+    d: `M8 12a5 5 0 1 0 0-0.01M16 12a5 5 0 1 0 0-0.01`,
   },
 
   // Sink (DB output): database with arrow going in
@@ -163,6 +163,9 @@ export const icons: Record<string, IconDef> = {
   logout: {
     d: `M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9`,
   },
+  workers: {
+    d: `M22 12H2M5.45 5.11L2 12v6a2 2 0 002 2h16a2 2 0 002-2v-6l-3.45-6.89A2 2 0 0016.76 4H7.24a2 2 0 00-1.79 1.11zM6 16h.01M10 16h.01`,
+  },
   upload: {
     d: `M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12`,
   },
@@ -177,6 +180,14 @@ export const icons: Record<string, IconDef> = {
   },
   condition: {
     d: `M12 3l9 5v8l-9 5-9-5V8l9-5zM12 8v8M8 10l4 2 4-2`,
+  },
+  // dbt: bracket with layers (data transformation)
+  dbt: {
+    d: `M4 6l4 4-4 4M12 6l4 4-4 4M20 6v12M8 18h8`,
+  },
+  // Notify: bell with signal waves
+  notify: {
+    d: `M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9M13.73 21a2 2 0 0 1-3.46 0M21 4l-2 2M3 4l2 2`,
   },
 
   // Organization: building
@@ -204,6 +215,8 @@ export function nodeTypeIcon(type: string): string {
     sink_api: "sinkapi",
     migrate: "migrate",
     condition: "condition",
+    dbt: "dbt",
+    notify: "notify",
   };
   return map[type] || "file";
 }

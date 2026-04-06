@@ -53,7 +53,7 @@
   .running .dot.pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
 
   .success { color: var(--success); background: var(--success-bg); }
-  .success .dot { background: var(--success); }
+  .success .dot { background: var(--success); animation: success-pop 0.4s ease-out; }
 
   .failed { color: var(--failed); background: var(--failed-bg); }
   .failed .dot { background: var(--failed); }
@@ -64,5 +64,10 @@
   @keyframes pulse-dot {
     0%, 100% { opacity: 1; transform: scale(1); }
     50% { opacity: 0.4; transform: scale(0.8); }
+  }
+  @keyframes success-pop {
+    0% { transform: scale(0.4); }
+    60% { transform: scale(1.3); }
+    100% { transform: scale(1); }
   }
 </style>

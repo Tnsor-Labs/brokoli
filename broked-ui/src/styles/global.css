@@ -4,14 +4,14 @@
 
 :root {
   /* Background */
-  --bg-primary: #09090b;
+  --bg-primary: #000000;
   --bg-secondary: #18181b;
   --bg-tertiary: #27272a;
   --bg-sidebar: #111114;
-  --bg-canvas: #09090b;
+  --bg-canvas: #000000;
   --bg-code: #0c0c0f;
   --bg-code-line: #0a0a0d;
-  --bg-input: #09090b;
+  --bg-input: #000000;
   --bg-card-hover: #1c1c24;
   --bg-overlay: rgba(0, 0, 0, 0.85);
 
@@ -80,8 +80,13 @@
   --canvas-edge: #3f3f46;
   --canvas-edge-hover: #ef4444;
 
-  /* Shadow */
+  /* Shadows & Depth */
   --shadow-node: rgba(0, 0, 0, 0.3);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
 
   /* Spacing */
   --space-xs: 0.25rem;
@@ -93,7 +98,8 @@
   /* Radii */
   --radius-sm: 4px;
   --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 14px;
 
   /* Fonts */
   --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
@@ -176,6 +182,11 @@
   --canvas-edge-hover: #f04438;
 
   --shadow-node: rgba(0, 0, 0, 0.06);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04) inset;
+  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
 }
 
 *, *::before, *::after {
@@ -221,17 +232,24 @@ button {
 input, textarea, select {
   font-family: var(--font-ui);
   font-size: 0.875rem;
-  background: var(--bg-input);
+  background: var(--bg-secondary);
   color: var(--text-primary);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: var(--space-sm) var(--space-md);
-  transition: border-color var(--transition-fast);
+  padding: 9px var(--space-md);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+input:hover, textarea:hover, select:hover {
+  border-color: var(--border-hover);
 }
 input:focus, textarea:focus, select:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent-glow);
+  background: var(--bg-primary);
+  box-shadow: 0 0 0 3px var(--accent-glow), 0 0 0 1px var(--accent);
+}
+input::placeholder, textarea::placeholder {
+  color: var(--text-dim);
 }
 
 code, pre {

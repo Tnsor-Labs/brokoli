@@ -61,7 +61,7 @@
       replace_values: { type, column: "", mapping: {} },
       sort: { type, columns: [], ascending: true },
       deduplicate: { type, columns: [] },
-      aggregate: { type, group_by: [], agg_fields: [] },
+      aggregate: { type, group_by: [], agg_fields: [{ column: "", function: "count", alias: "count" }] },
     };
     rules[index] = defaults[type] || { type };
     rules = rules;

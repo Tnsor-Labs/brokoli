@@ -1,5 +1,6 @@
 <script lang="ts">
   import Sidebar from "./Sidebar.svelte";
+  import RunIndicator from "./RunIndicator.svelte";
   import { icons } from "../lib/icons";
 
   let currentPath = window.location.hash.replace("#", "") || "/";
@@ -27,6 +28,7 @@
     </main>
   </div>
 </div>
+<RunIndicator />
 
 <!-- Mobile bottom nav -->
 <nav class="mobile-nav">
