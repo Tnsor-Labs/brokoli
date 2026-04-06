@@ -8,6 +8,8 @@
   import NodeConfigPanel from "../components/NodeConfigPanel.svelte";
   import type { Pipeline, PipelineVersion, Node, Edge, NodeType } from "../lib/types";
   import { notify } from "../lib/toast";
+  import Skeleton from "../components/Skeleton.svelte";
+  import Breadcrumb from "../components/Breadcrumb.svelte";
   import { authHeaders } from "../lib/auth";
 
   export let params: { id?: string } = {};
@@ -386,18 +388,17 @@
 
 <div class="editor animate-in">
   {#if loading}
-    <div class="loading">Loading...</div>
+    <div style="display:flex;flex-direction:column;gap:8px;padding:24px">
+      <Skeleton height="40px" /><Skeleton height="calc(100vh - 160px)" />
+    </div>
   {:else}
     <div class="toolbar">
       <div class="toolbar-left">
-        <a href="#/pipelines" class="back-link">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path d={icons.arrowLeft.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-          Pipelines
-        </a>
-        <span class="separator">/</span>
-        <span class="pipeline-name">{pipeline?.name || "New Pipeline"}</span>
+        <Breadcrumb items={[
+          { label: "Pipelines", href: "#/pipelines" },
+          { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params?.id}/runs` },
+          { label: "Editor" }
+        ]} />
         <span class="separator">|</span>
         <div class="schedule-input">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none">

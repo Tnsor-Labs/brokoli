@@ -3,6 +3,7 @@
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
   import { theme } from "../lib/theme";
+  import Skeleton from "../components/Skeleton.svelte";
 
   interface LineageNode {
     id: string;
@@ -351,7 +352,9 @@
   </header>
 
   {#if loading}
-    <div class="empty-state">Loading lineage graph...</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <Skeleton height="400px" />
+    </div>
   {:else if nodes.length === 0}
     <div class="empty-state">
       <p>No data lineage detected.</p>

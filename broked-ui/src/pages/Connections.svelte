@@ -4,6 +4,9 @@
   import { authHeaders } from "../lib/auth";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
+  import EmptyState from "../components/EmptyState.svelte";
+  import { icons } from "../lib/icons";
 
   interface Connection {
     id: string;
@@ -168,12 +171,19 @@
   </header>
 
   {#if loading}
-    <div class="empty-state">Loading...</div>
-  {:else if connections.length === 0}
-    <div class="empty-state">
-      <p>No connections configured.</p>
-      <p class="hint">Connections store credentials for databases, APIs, and other external services.</p>
+    <div class="skeleton-rows">
+      {#each Array(4) as _}
+        <Skeleton height="48px" width="100%" />
+      {/each}
     </div>
+  {:else if connections.length === 0}
+    <EmptyState
+      icon={icons.connection.d}
+      title="No connections configured"
+      description="Connections store credentials for databases, APIs, and other external services your pipelines use."
+      ctaLabel="+ New Connection"
+      on:click={() => (showCreateModal = true)}
+    />
   {:else}
     <div class="table">
       <div class="table-header">
@@ -324,18 +334,20 @@
   }
   .hint { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-xs); }
 
-  .table { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+  .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
+  .table { border: 1px solid var(--border-subtle); border-radius: var(--radius-xl, 14px); overflow: hidden; box-shadow: var(--shadow-card); }
   .table-header, .table-row {
     display: flex; align-items: center; padding: 10px 16px; gap: 12px;
   }
   .table-header {
-    background: var(--bg-secondary); font-size: 10px; font-weight: 600;
-    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
-    border-bottom: 1px solid var(--border);
+    background: transparent;
+    font-size: 11px; font-weight: 600;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 2px solid var(--border-subtle);
   }
   .table-row { border-bottom: 1px solid var(--border-subtle); transition: background 150ms ease; }
   .table-row:last-child { border-bottom: none; }
-  .table-row:hover { background: var(--bg-secondary); }
+  .table-row:hover { background: rgba(255, 255, 255, 0.02); }
 
   .col-id { flex: 1.5; }
   .col-type { flex: 1; }
@@ -345,8 +357,8 @@
 
   .conn-id-badge {
     font-family: var(--font-mono); font-size: 12px; font-weight: 600;
-    color: var(--accent-text); background: var(--accent-glow);
-    padding: 2px 8px; border-radius: 4px;
+    color: var(--accent); background: none;
+    padding: 0;
   }
   .type-badge {
     font-size: 11px; font-weight: 500; color: var(--text-secondary);
@@ -376,31 +388,40 @@
 
   /* Modal */
   .modal-overlay {
-    position: fixed; inset: 0; background: var(--bg-overlay);
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
     display: flex; align-items: center; justify-content: center; z-index: 100;
+    animation: overlay-in 150ms ease;
   }
+  @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
   .modal {
     background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); padding: var(--space-xl);
-    width: 520px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+    border-radius: var(--radius-xl, 14px); padding: 28px 32px;
+    width: 540px; max-width: 90vw; max-height: 85vh; overflow-y: auto;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .modal h2 { font-size: 1.125rem; margin-bottom: var(--space-lg); }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(0.96) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  .modal h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; letter-spacing: -0.01em; }
 
-  .form-group { margin-bottom: var(--space-md); }
+  .form-group { margin-bottom: 16px; }
   .form-group label {
-    display: block; font-size: 0.6875rem; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--space-xs);
+    display: block; font-size: 11px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500;
   }
   .form-group input, .form-group select, .form-group textarea { width: 100%; }
   .form-group select {
-    padding: var(--space-sm) var(--space-md); background: var(--bg-input);
+    padding: 9px var(--space-md); background: var(--bg-secondary);
     color: var(--text-primary); border: 1px solid var(--border);
     border-radius: var(--radius-md); font-family: var(--font-ui); font-size: 0.875rem;
   }
-  .form-row { display: flex; gap: var(--space-sm); }
+  .form-row { display: flex; gap: 12px; }
   .flex-1 { flex: 1; }
   .flex-2 { flex: 2; }
-  .field-hint { font-size: 10px; color: var(--text-dim); margin-top: 2px; display: block; }
+  .field-hint { font-size: 10.5px; color: var(--text-dim); margin-top: 4px; display: block; }
 
   .code-input {
     font-family: var(--font-mono); font-size: 11px;

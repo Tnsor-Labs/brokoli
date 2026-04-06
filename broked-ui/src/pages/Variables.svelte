@@ -4,6 +4,9 @@
   import { authHeaders } from "../lib/auth";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
+  import EmptyState from "../components/EmptyState.svelte";
+  import { icons } from "../lib/icons";
 
   interface Variable {
     key: string;
@@ -129,12 +132,19 @@
   </div>
 
   {#if loading}
-    <div class="empty-state">Loading...</div>
-  {:else if variables.length === 0}
-    <div class="empty-state">
-      <p>No variables configured.</p>
-      <p class="hint">Variables let you store reusable values like file paths, API endpoints, or secrets.</p>
+    <div class="skeleton-rows">
+      {#each Array(4) as _}
+        <Skeleton height="48px" width="100%" />
+      {/each}
     </div>
+  {:else if variables.length === 0}
+    <EmptyState
+      icon={icons.variable.d}
+      title="No variables configured"
+      description="Variables let you store reusable values like file paths, API endpoints, or secrets that pipelines can reference."
+      ctaLabel="+ New Variable"
+      on:click={() => (showCreateModal = true)}
+    />
   {:else}
     <div class="table">
       <div class="table-header">
@@ -276,18 +286,20 @@
     color: var(--text-primary); outline: none;
   }
 
-  .table { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+  .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
+  .table { border: 1px solid var(--border-subtle); border-radius: var(--radius-xl, 14px); overflow: hidden; box-shadow: var(--shadow-card); }
   .table-header, .table-row {
     display: flex; align-items: center; padding: 10px 16px; gap: 12px;
   }
   .table-header {
-    background: var(--bg-secondary); font-size: 10px; font-weight: 600;
-    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
-    border-bottom: 1px solid var(--border);
+    background: transparent;
+    font-size: 11px; font-weight: 600;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 2px solid var(--border-subtle);
   }
   .table-row { border-bottom: 1px solid var(--border-subtle); transition: background 150ms ease; }
   .table-row:last-child { border-bottom: none; }
-  .table-row:hover { background: var(--bg-secondary); }
+  .table-row:hover { background: rgba(255, 255, 255, 0.02); }
 
   .col-key { flex: 1.5; }
   .col-type { flex: 0.8; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
@@ -297,8 +309,8 @@
 
   .key-badge {
     font-family: var(--font-mono); font-size: 12px; font-weight: 600;
-    color: var(--accent-text); background: var(--accent-glow);
-    padding: 2px 8px; border-radius: 4px;
+    color: var(--accent); background: none;
+    padding: 0;
   }
   .type-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
   .mono { font-family: var(--font-mono); font-size: 11px; }
@@ -326,28 +338,37 @@
   .btn-icon.danger:hover { color: var(--failed); background: var(--failed-bg); }
 
   .modal-overlay {
-    position: fixed; inset: 0; background: var(--bg-overlay);
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
     display: flex; align-items: center; justify-content: center; z-index: 100;
+    animation: overlay-in 150ms ease;
   }
+  @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
   .modal {
     background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); padding: var(--space-xl);
-    width: 480px; max-width: 90vw;
+    border-radius: var(--radius-xl, 14px); padding: 28px 32px;
+    width: 500px; max-width: 90vw;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .modal h2 { font-size: 1.125rem; margin-bottom: var(--space-lg); }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(0.96) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  .modal h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; letter-spacing: -0.01em; }
 
-  .form-group { margin-bottom: var(--space-md); }
+  .form-group { margin-bottom: 16px; }
   .form-group label {
-    display: block; font-size: 0.6875rem; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: var(--space-xs);
+    display: block; font-size: 11px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500;
   }
   .form-group input, .form-group select, .form-group textarea { width: 100%; }
   .form-group select {
-    padding: var(--space-sm) var(--space-md); background: var(--bg-input);
+    padding: 9px var(--space-md); background: var(--bg-secondary);
     color: var(--text-primary); border: 1px solid var(--border);
     border-radius: var(--radius-md); font-family: var(--font-ui); font-size: 0.875rem;
   }
-  .field-hint { font-size: 10px; color: var(--text-dim); margin-top: 2px; display: block; }
+  .field-hint { font-size: 10.5px; color: var(--text-dim); margin-top: 4px; display: block; }
   .field-hint code {
     font-family: var(--font-mono); font-size: 10px;
     background: var(--bg-code); padding: 1px 4px; border-radius: 3px; color: var(--accent-text);

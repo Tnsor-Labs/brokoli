@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
+  import Skeleton from "../components/Skeleton.svelte";
 
   interface CalendarDay {
     date: string;
@@ -159,7 +160,9 @@
   </div>
 
   {#if loading}
-    <div class="empty-state">Loading calendar...</div>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <Skeleton height="40px" /><Skeleton height="280px" />
+    </div>
   {:else}
     <div class="calendar-grid">
       <div class="weekday-header">

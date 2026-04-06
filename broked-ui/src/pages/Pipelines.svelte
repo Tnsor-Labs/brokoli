@@ -7,6 +7,7 @@
   import StatusBadge from "../components/StatusBadge.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, Run } from "../lib/types";
 
   let confirmDelete = false;
@@ -290,7 +291,7 @@
 
   import { authHeaders } from "../lib/auth";
 
-  // Pipeline templates
+  // Pipeline templates — use sample data so they work out of the box
   const templates = [
     {
       name: "Blank",
@@ -300,51 +301,51 @@
       edges: [] as any[],
     },
     {
-      name: "CSV to File",
-      description: "Read CSV, transform, write output",
+      name: "Hello World",
+      description: "Minimal: fetch, transform, save",
       icon: "file",
       nodes: [
-        { id: "s1", type: "source_file", name: "Read CSV", config: { path: "/data/input.csv" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Transform", config: { rules: [] }, position: { x: 360, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Write Output", config: { path: "/data/output.csv" }, position: { x: 680, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.csv", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "t1", type: "transform", name: "Add Column", config: { rules: [{ type: "add_column", name: "greeting", expression: "'Hello, ' + name" }] }, position: { x: 360, y: 120 } },
+        { id: "o1", type: "sink_file", name: "Save Result", config: { path: "/tmp/hello-output.csv" }, position: { x: 680, y: 120 } },
       ],
       edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
     },
     {
-      name: "API to File",
-      description: "Fetch API data, transform, save",
+      name: "API Fetch",
+      description: "Fetch, filter, save",
       icon: "api",
       nodes: [
-        { id: "s1", type: "source_api", name: "Fetch API", config: { url: "https://api.example.com/data", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Transform", config: { rules: [] }, position: { x: 360, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Save to File", config: { path: "/data/api-output.json" }, position: { x: 680, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Orders", config: { url: "/api/samples/data/orders.csv", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", column: "status", operator: "equals", value: "completed" }] }, position: { x: 360, y: 120 } },
+        { id: "o1", type: "sink_file", name: "Save Orders", config: { path: "/tmp/completed-orders.csv" }, position: { x: 680, y: 120 } },
       ],
       edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
     },
     {
       name: "Join + Aggregate",
-      description: "Join two sources, aggregate, output",
+      description: "Join two sources, aggregate results",
       icon: "merge",
       nodes: [
-        { id: "s1", type: "source_file", name: "Orders", config: { path: "/data/orders.csv" }, position: { x: 40, y: 60 } },
-        { id: "s2", type: "source_file", name: "Customers", config: { path: "/data/customers.csv" }, position: { x: 40, y: 220 } },
-        { id: "j1", type: "join", name: "Join", config: { join_type: "inner", left_key: "customer_id", right_key: "id" }, position: { x: 360, y: 140 } },
-        { id: "t1", type: "transform", name: "Aggregate", config: { rules: [{ type: "aggregate", group_by: ["customer_id"], aggregations: [{ column: "amount", function: "sum" }] }] }, position: { x: 680, y: 140 } },
-        { id: "o1", type: "sink_file", name: "Output", config: { path: "/data/summary.csv" }, position: { x: 1000, y: 140 } },
+        { id: "s1", type: "source_api", name: "Orders", config: { url: "/api/samples/data/orders.csv", method: "GET" }, position: { x: 40, y: 60 } },
+        { id: "s2", type: "source_api", name: "Products", config: { url: "/api/samples/data/products.csv", method: "GET" }, position: { x: 40, y: 220 } },
+        { id: "j1", type: "join", name: "Join", config: { join_type: "inner", left_key: "product", right_key: "name" }, position: { x: 360, y: 140 } },
+        { id: "t1", type: "transform", name: "Aggregate", config: { rules: [{ type: "aggregate", group_by: ["product"], agg_fields: [{ column: "total", function: "sum", alias: "total_revenue" }] }] }, position: { x: 680, y: 140 } },
+        { id: "o1", type: "sink_file", name: "Summary", config: { path: "/tmp/product-summary.csv" }, position: { x: 1000, y: 140 } },
       ],
       edges: [{ from: "s1", to: "j1" }, { from: "s2", to: "j1" }, { from: "j1", to: "t1" }, { from: "t1", to: "o1" }],
     },
     {
-      name: "Python ETL",
-      description: "Source → Python code → Quality check → Output",
+      name: "Data Quality",
+      description: "Validate data with quality gates",
       icon: "code",
       nodes: [
-        { id: "s1", type: "source_file", name: "Input Data", config: { path: "/data/input.csv" }, position: { x: 40, y: 120 } },
-        { id: "c1", type: "code", name: "Python Process", config: { script: "# Process data\noutput_data = {\"columns\": columns, \"rows\": rows}" }, position: { x: 360, y: 120 } },
-        { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "id", check: "not_null", policy: "block" }] }, position: { x: 680, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Output", config: { path: "/data/processed.csv" }, position: { x: 1000, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.csv", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", check: "not_null", policy: "block" }, { column: "salary", check: "positive", policy: "warn" }] }, position: { x: 360, y: 120 } },
+        { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", old_name: "hire_date", new_name: "start_date" }] }, position: { x: 680, y: 120 } },
+        { id: "o1", type: "sink_file", name: "Output", config: { path: "/tmp/clean-employees.csv" }, position: { x: 1000, y: 120 } },
       ],
-      edges: [{ from: "s1", to: "c1" }, { from: "c1", to: "q1" }, { from: "q1", to: "o1" }],
+      edges: [{ from: "s1", to: "q1" }, { from: "q1", to: "t1" }, { from: "t1", to: "o1" }],
     },
   ];
 
@@ -473,11 +474,36 @@
   {/if}
 
   {#if loading}
-    <div class="empty-state">Loading...</div>
+    <div class="skeleton-rows">
+      {#each Array(5) as _}
+        <Skeleton height="48px" width="100%" />
+      {/each}
+    </div>
   {:else if $pipelines.length === 0}
-    <div class="empty-state">
-      <p>No pipelines yet.</p>
-      <p class="hint">Create your first pipeline to get started.</p>
+    <div class="empty-hero">
+      <h2>Build your first pipeline</h2>
+      <p class="empty-hero-sub">Choose a template to get started quickly, or start from scratch.</p>
+      <div class="template-grid">
+        {#each templates as tmpl, i}
+          <button class="template-card" on:click={() => { selectedTemplate = i; showCreateModal = true; }}>
+            <div class="tmpl-icon">
+              {#if tmpl.icon === "plus"}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              {:else if tmpl.icon === "file"}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+              {:else if tmpl.icon === "api"}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+              {:else if tmpl.icon === "merge"}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 21v-4a6 6 0 0 1 12 0v4"/></svg>
+              {:else}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+              {/if}
+            </div>
+            <span class="tmpl-name">{tmpl.name}</span>
+            <span class="tmpl-desc">{tmpl.description}</span>
+          </button>
+        {/each}
+      </div>
     </div>
   {:else}
     <div class="table">
@@ -727,30 +753,31 @@
 
   /* ── Airflow-style pipeline table ── */
   .table {
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px);
     overflow: hidden;
+    box-shadow: var(--shadow-card);
   }
   .table-header, .table-row {
     display: grid;
     grid-template-columns: 42px 1fr 160px 100px 130px 130px 50px 90px;
     align-items: center;
-    padding: 0 12px;
+    padding: 0 14px;
     min-height: 42px;
   }
   .table-header {
-    background: var(--bg-tertiary);
-    font-size: 10px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
-    border-bottom: 1px solid var(--border);
-    min-height: 36px;
+    background: transparent;
+    font-size: 11px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    border-bottom: 2px solid var(--border-subtle);
+    min-height: 38px;
   }
   .table-row {
     border-bottom: 1px solid var(--border-subtle);
     transition: background 150ms ease;
   }
   .table-row:last-child { border-bottom: none; }
-  .table-row:hover { background: var(--bg-secondary); }
+  .table-row:hover { background: rgba(255, 255, 255, 0.02); }
   .table-row.selected { background: var(--accent-glow); }
 
   /* Toggle switch */
@@ -770,8 +797,8 @@
     top: 2px; left: 2px;
     transition: all 200ms ease;
   }
-  .slider.on { background: rgba(59, 130, 246, 0.15); border-color: #3b82f6; }
-  .slider.on::after { transform: translateX(12px); background: #3b82f6; }
+  .slider.on { background: var(--accent-glow); border-color: var(--accent); }
+  .slider.on::after { transform: translateX(12px); background: var(--accent); }
 
   /* Name */
   .td-name { min-width: 0; padding: 6px 0; }
@@ -792,17 +819,17 @@
   .td-runs { display: flex; align-items: center; }
   .status-circles { display: flex; gap: 6px; }
   .circle {
-    width: 24px; height: 24px; border-radius: 50%;
+    width: 22px; height: 22px; border-radius: 50%;
     display: flex; align-items: center; justify-content: center;
-    font-family: var(--font-mono); font-size: 10px; font-weight: 700;
-    border: 1.5px solid var(--border);
-    color: var(--text-ghost);
+    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    border: 1.5px solid var(--border-subtle);
+    color: var(--text-ghost); background: none;
     transition: all 150ms ease;
   }
-  .circle.has { border-width: 2px; }
-  .circle.circle-ok.has { border-color: var(--success); color: var(--success); background: var(--success-bg); cursor: pointer; }
-  .circle.circle-fail.has { border-color: var(--failed); color: var(--failed); background: var(--failed-bg); cursor: pointer; }
-  .circle.circle-run.has { border-color: var(--running); color: var(--running); background: var(--running-bg); cursor: pointer; }
+  .circle.has { cursor: pointer; }
+  .circle.circle-ok.has { border-color: var(--success); color: var(--success); }
+  .circle.circle-fail.has { border-color: var(--failed); color: var(--failed); }
+  .circle.circle-run.has { border-color: var(--running); color: var(--running); }
 
   /* Circle tooltip */
   .circle { position: relative; }
@@ -855,6 +882,7 @@
   .act-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
   .act-danger:hover { color: var(--failed); background: var(--failed-bg); }
 
+  .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
   .empty-state {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -865,46 +893,71 @@
   }
   .hint { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-xs); }
 
+  /* Empty hero with template picker */
+  .empty-hero {
+    display: flex; flex-direction: column; align-items: center;
+    text-align: center; padding: 48px 24px 40px;
+    background: radial-gradient(ellipse at 50% 0%, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
+    border-radius: var(--radius-xl, 14px);
+    margin: -8px -8px 0;
+  }
+  .empty-hero h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.03em; }
+  .empty-hero-sub { font-size: 14px; color: var(--text-muted); margin-bottom: 36px; }
+  .template-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 16px; width: 100%; max-width: 900px;
+  }
+  .template-card {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    padding: 40px 24px 32px;
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px); cursor: pointer; color: inherit;
+    transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: var(--shadow-card);
+  }
+  .template-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-card-hover), 0 0 20px var(--accent-glow);
+  }
+  .template-card.active {
+    border-color: var(--accent); background: var(--accent-glow);
+  }
+  .tmpl-icon { color: var(--accent); }
+  .tmpl-name { font-size: 14px; font-weight: 600; }
+  .tmpl-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+  @media (max-width: 768px) {
+    .template-grid { grid-template-columns: repeat(2, 1fr); }
+  }
+
   .modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+    animation: overlay-in 150ms ease;
   }
+  @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
   .modal {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: var(--space-xl);
-    width: 400px;
-    max-width: 90vw;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: var(--radius-xl, 14px); padding: 28px 32px;
+    width: 480px; max-width: 90vw;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+    animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .modal h2 {
-    font-size: 1.125rem;
-    margin-bottom: var(--space-lg);
+  .modal-wide { width: 580px; }
+  @keyframes modal-in {
+    from { opacity: 0; transform: scale(0.96) translateY(8px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
   }
-  .form-group {
-    margin-bottom: var(--space-md);
-  }
+  .modal h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; letter-spacing: -0.01em; }
+  .form-group { margin-bottom: 16px; }
   .form-group label {
-    display: block;
-    font-size: 0.75rem;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: var(--space-xs);
+    display: block; font-size: 11px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500;
   }
-  .form-group input {
-    width: 100%;
-  }
+  .form-group input { width: 100%; }
   .modal-actions {
-    display: flex;
-    justify-content: flex-end;
-    gap: var(--space-sm);
-    margin-top: var(--space-lg);
+    display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: 20px;
   }
   .next-run {
     display: block;

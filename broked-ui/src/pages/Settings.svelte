@@ -3,6 +3,7 @@
   import { notify } from "../lib/toast";
   import { authHeaders, authUser } from "../lib/auth";
   import { icons } from "../lib/icons";
+  import Stepper from "../components/Stepper.svelte";
 
   interface UserInfo { id: string; username: string; role: string; created_at: string; }
 
@@ -331,7 +332,7 @@
             <p class="auth-desc">Purge old pipeline runs to free disk space.</p>
             <div class="purge-controls">
               <span class="purge-label">Delete runs older than</span>
-              <input type="number" class="purge-input" bind:value={purgeDays} min="1" max="365" />
+              <Stepper bind:value={purgeDays} min={1} max={365} />
               <span class="purge-label">days</span>
               <button class="btn-action" on:click={purgeRuns} disabled={purging}>
                 {purging ? "Purging..." : "Purge"}

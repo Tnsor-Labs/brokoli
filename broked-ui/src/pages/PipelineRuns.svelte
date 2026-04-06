@@ -8,6 +8,8 @@
   import StatusBadge from "../components/StatusBadge.svelte";
   import RunTimeline from "../components/RunTimeline.svelte";
   import LogStream from "../components/LogStream.svelte";
+  import Breadcrumb from "../components/Breadcrumb.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
   import DataPreview from "../components/DataPreview.svelte";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
   import Pagination from "../components/Pagination.svelte";
@@ -280,11 +282,11 @@
 <div class="runs-page animate-in">
   <div class="toolbar">
     <div class="toolbar-left">
-      <a href="#/pipelines" class="back-link"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" style="display:inline;vertical-align:middle"><path d={icons.arrowLeft.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg> Pipelines</a>
-      <span class="separator">/</span>
-      <span class="pipeline-name">{pipeline?.name || "Pipeline"}</span>
-      <span class="separator">/</span>
-      <span class="page-label">Runs</span>
+      <Breadcrumb items={[
+        { label: "Pipelines", href: "#/pipelines" },
+        { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params.id}/edit` },
+        { label: "Runs" }
+      ]} />
     </div>
     <div class="toolbar-right">
       <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
@@ -354,11 +356,15 @@
   {/if}
 
   {#if loading}
-    <div class="empty-state">Loading...</div>
+    <div class="skeleton-rows">
+      {#each Array(4) as _}
+        <Skeleton height="64px" width="100%" />
+      {/each}
+    </div>
   {:else if runs.length === 0}
     <div class="empty-state">
-      <p>No runs yet for this pipeline.</p>
-      <button class="btn-primary" on:click={triggerRun}>Trigger First Run</button>
+      <p style="margin-bottom: 12px">No runs yet for this pipeline.</p>
+      <button class="btn-primary" on:click={triggerRun}>Run Now</button>
     </div>
   {:else}
     <div class="runs-list">
