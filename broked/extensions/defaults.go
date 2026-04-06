@@ -83,7 +83,7 @@ func (c *CommunityOpenLineage) EmitRunFail(pipelineID, pipelineName, runID strin
 type noopPlatform struct{}
 
 func (n *noopPlatform) Enabled() bool                         { return false }
-func (n *noopPlatform) RegisterRoutes(r, s, us interface{})   {}
+func (n *noopPlatform) RegisterRoutes(r, s, us interface{}, eng ...interface{}) {}
 func (n *noopPlatform) StartServices(s interface{})            {}
 func (n *noopPlatform) StopServices()                          {}
 func (n *noopPlatform) MigrateDB(db interface{})               {}

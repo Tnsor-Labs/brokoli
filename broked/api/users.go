@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
@@ -260,6 +261,31 @@ func (us *UserStore) ListUsers() ([]User, error) {
 	return users, rows.Err()
 }
 
+// ListUsersByOrg returns users that belong to a specific org via org_members join.
+func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
+	rows, err := us.db.Query(
+		`SELECT u.id, u.username, u.role, u.created_at
+		 FROM users u
+		 INNER JOIN org_members om ON u.id = om.user_id
+		 WHERE om.org_id = $1
+		 ORDER BY u.created_at`, orgID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var users []User
+	for rows.Next() {
+		var u User
+		var createdAt string
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdAt); err != nil {
+			return nil, err
+		}
+		u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 func (us *UserStore) UserCount() int {
 	var count int
 	us.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
@@ -299,6 +325,12 @@ func GenerateToken(user *User) (string, error) {
 		"username": user.Username,
 		"role":     string(user.Role),
 		"exp":      time.Now().Add(24 * time.Hour).Unix(),
+	}
+	// Include org_id if enterprise org resolver is configured
+	if OrgResolverFunc != nil {
+		if orgID := OrgResolverFunc(user.ID); orgID != "" {
+			claims["org_id"] = orgID
+		}
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(jwtSecret)
@@ -393,10 +425,27 @@ func MeHandler() http.HandlerFunc {
 
 func ListUsersHandler(us *UserStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		users, err := us.ListUsers()
+		orgID := GetOrgIDFromRequest(r)
+
+		// Superadmin or community mode: show all users
+		role := ""
+		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+			role, _ = (*claims)["role"].(string)
+		}
+
+		var users []User
+		var err error
+		if orgID != "" && role != "superadmin" {
+			users, err = us.ListUsersByOrg(orgID)
+		} else {
+			users, err = us.ListUsers()
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		if users == nil {
+			users = []User{}
 		}
 		writeJSON(w, http.StatusOK, users)
 	}
@@ -480,8 +529,26 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
+			// Skip OAuth endpoints (redirect flows — no JWT)
+			if strings.HasPrefix(r.URL.Path, "/api/auth/oauth/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Skip worker endpoints (they use work pool token auth)
 			if strings.HasPrefix(r.URL.Path, "/api/workers/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip invite endpoints (public access for accepting invites)
+			if strings.HasPrefix(r.URL.Path, "/api/invites/") {
+				next.ServeHTTP(w, r)
+				return
+			}
+
+			// Skip sample data endpoints (public)
+			if strings.HasPrefix(r.URL.Path, "/api/samples/") {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -547,6 +614,17 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 			// Add claims to context
 			ctx := r.Context()
 			ctx = contextWithClaims(ctx, claims)
+			// Extract org_id from JWT claims and set in context for data isolation
+			orgID, _ := (*claims)["org_id"].(string)
+			// If org_id missing from JWT (old token), resolve it dynamically
+			if orgID == "" && OrgResolverFunc != nil {
+				if sub, ok := (*claims)["sub"].(string); ok {
+					orgID = OrgResolverFunc(sub)
+				}
+			}
+			if orgID != "" {
+				ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+			}
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

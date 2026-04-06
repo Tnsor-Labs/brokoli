@@ -9,6 +9,10 @@ import (
 	"time"
 )
 
+// NodeTypeGateFunc checks if an org's plan allows a specific node type.
+// Set by enterprise. Returns error message if blocked, "" if allowed.
+var NodeTypeGateFunc func(orgID, nodeType string) string
+
 // AuthProvider handles external authentication (SSO/OIDC).
 // Open source: uses built-in JWT auth.
 // Enterprise: implements OIDC with Okta, Azure AD, Google Workspace, etc.
@@ -204,7 +208,8 @@ type PlatformProvider interface {
 	Enabled() bool
 
 	// RegisterRoutes adds platform-specific API routes (admin, signup, tickets, orgs).
-	RegisterRoutes(r interface{}, s interface{}, userStore interface{})
+	// engine is *engine.Engine for fallback pipeline execution.
+	RegisterRoutes(r interface{}, s interface{}, userStore interface{}, engine ...interface{})
 
 	// StartServices starts background services (trial checker, etc).
 	StartServices(s interface{})
