@@ -363,3 +363,93 @@ func TestEmptyRules(t *testing.T) {
 		t.Error("empty rules should not change data")
 	}
 }
+
+func TestAggregate_AggregationsAlias(t *testing.T) {
+	// This is the exact format the "Join + Aggregate" template sends
+	ds := &common.DataSet{
+		Columns: []string{"product", "total"},
+		Rows: []common.DataRow{
+			{"product": "Widget", "total": "100"},
+			{"product": "Widget", "total": "200"},
+			{"product": "Gadget", "total": "50"},
+		},
+	}
+	err := ApplyTransforms([]TransformRule{
+		{
+			Type:         "aggregate",
+			GroupBy:      []string{"product"},
+			Aggregations: []AggField{{Column: "total", Function: "sum"}},
+		},
+	}, ds)
+	if err != nil {
+		t.Fatalf("aggregate with 'aggregations' alias failed: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Errorf("expected 2 groups, got %d", len(ds.Rows))
+	}
+}
+
+func TestTransformAliases(t *testing.T) {
+	// "filter" should work as alias for "filter_rows"
+	ds := sampleDS()
+	err := ApplyTransforms([]TransformRule{
+		{Type: "filter", Condition: "status == active"},
+	}, ds)
+	if err != nil {
+		t.Fatalf("filter alias: %v", err)
+	}
+	if len(ds.Rows) != 3 {
+		t.Errorf("filter alias: expected 3 rows, got %d", len(ds.Rows))
+	}
+
+	// "rename" alias for "rename_columns"
+	ds2 := sampleDS()
+	err = ApplyTransforms([]TransformRule{
+		{Type: "rename", Mapping: map[string]string{"name": "full_name"}},
+	}, ds2)
+	if err != nil {
+		t.Fatalf("rename alias: %v", err)
+	}
+	if ds2.Columns[1] != "full_name" {
+		t.Errorf("rename alias: expected 'full_name', got %q", ds2.Columns[1])
+	}
+
+	// "drop" alias for "drop_columns"
+	ds3 := sampleDS()
+	err = ApplyTransforms([]TransformRule{
+		{Type: "drop", Columns: []string{"email", "status"}},
+	}, ds3)
+	if err != nil {
+		t.Fatalf("drop alias: %v", err)
+	}
+	if len(ds3.Columns) != 3 {
+		t.Errorf("drop alias: expected 3 columns, got %d", len(ds3.Columns))
+	}
+
+	// "dedup" alias for "deduplicate"
+	ds4 := &common.DataSet{
+		Columns: []string{"name"},
+		Rows:    []common.DataRow{{"name": "A"}, {"name": "A"}, {"name": "B"}},
+	}
+	err = ApplyTransforms([]TransformRule{
+		{Type: "dedup", Columns: []string{"name"}},
+	}, ds4)
+	if err != nil {
+		t.Fatalf("dedup alias: %v", err)
+	}
+	if len(ds4.Rows) != 2 {
+		t.Errorf("dedup alias: expected 2 rows, got %d", len(ds4.Rows))
+	}
+
+	// "function" alias for "apply_function"
+	ds5 := sampleDS()
+	err = ApplyTransforms([]TransformRule{
+		{Type: "function", Column: "name", Function: "upper"},
+	}, ds5)
+	if err != nil {
+		t.Fatalf("function alias: %v", err)
+	}
+	if ds5.Rows[0]["name"] != "ALICE" {
+		t.Errorf("function alias: expected ALICE, got %v", ds5.Rows[0]["name"])
+	}
+}

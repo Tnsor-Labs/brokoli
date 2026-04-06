@@ -21,8 +21,9 @@ type TransformRule struct {
 	Condition  string            `json:"condition,omitempty"`
 	Ascending  bool              `json:"ascending,omitempty"`
 	// Aggregate fields
-	GroupBy   []string   `json:"group_by,omitempty"`   // columns to group by
-	AggFields []AggField `json:"agg_fields,omitempty"` // aggregation definitions
+	GroupBy      []string   `json:"group_by,omitempty"`      // columns to group by
+	AggFields    []AggField `json:"agg_fields,omitempty"`    // aggregation definitions
+	Aggregations []AggField `json:"aggregations,omitempty"`  // alias for agg_fields (template compat)
 }
 
 // AggField defines an aggregation operation on a column.
@@ -44,23 +45,23 @@ func ApplyTransforms(rules []TransformRule, ds *common.DataSet) error {
 
 func applyRule(r TransformRule, ds *common.DataSet) error {
 	switch r.Type {
-	case "rename_columns":
+	case "rename_columns", "rename":
 		return renameColumns(r, ds)
 	case "add_column":
 		return addColumn(r, ds)
-	case "filter_rows":
+	case "filter_rows", "filter":
 		return filterRows(r, ds)
-	case "apply_function":
+	case "apply_function", "function":
 		return applyFunction(r, ds)
-	case "replace_values":
+	case "replace_values", "replace":
 		return replaceValues(r, ds)
-	case "drop_columns":
+	case "drop_columns", "drop":
 		return dropColumns(r, ds)
 	case "sort":
 		return sortRows(r, ds)
-	case "deduplicate":
+	case "deduplicate", "dedup":
 		return deduplicate(r, ds)
-	case "aggregate":
+	case "aggregate", "agg":
 		return aggregate(r, ds)
 	default:
 		return fmt.Errorf("unsupported transform type: %s", r.Type)
@@ -153,7 +154,13 @@ func matchesCondition(cond string, row common.DataRow) bool {
 		return fmt.Sprintf("%v", row[col]) != val
 	}
 
-	// Handle "column = value"
+	// Handle "column == value" or "column = value"
+	if strings.Contains(cond, "==") {
+		parts := strings.SplitN(cond, "==", 2)
+		col := strings.TrimSpace(parts[0])
+		val := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
+		return fmt.Sprintf("%v", row[col]) == val
+	}
 	if strings.Contains(cond, "=") {
 		parts := strings.SplitN(cond, "=", 2)
 		col := strings.TrimSpace(parts[0])
@@ -275,8 +282,12 @@ func aggregate(r TransformRule, ds *common.DataSet) error {
 	if len(r.GroupBy) == 0 {
 		return fmt.Errorf("aggregate requires group_by columns")
 	}
+	// Accept both "agg_fields" and "aggregations" (template compat)
+	if len(r.AggFields) == 0 && len(r.Aggregations) > 0 {
+		r.AggFields = r.Aggregations
+	}
 	if len(r.AggFields) == 0 {
-		return fmt.Errorf("aggregate requires agg_fields")
+		return fmt.Errorf("aggregate requires at least one aggregation (e.g. sum, count, avg) — add aggregation fields in the transform config")
 	}
 
 	// Group rows by key
