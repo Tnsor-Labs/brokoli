@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -88,6 +89,18 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 }
 
 func (f *RESTFetcher) executeRequest(url string, options RequestOptions) ([]byte, error) {
+	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the server
+	if strings.HasPrefix(url, "/") {
+		base := os.Getenv("BROKOLI_SERVER_URL")
+		if base == "" {
+			port := os.Getenv("PORT")
+			if port == "" {
+				port = "8080"
+			}
+			base = "http://127.0.0.1:" + port
+		}
+		url = strings.TrimRight(base, "/") + url
+	}
 
 	req, err := http.NewRequest(options.Method, url, nil)
 	if err != nil {
