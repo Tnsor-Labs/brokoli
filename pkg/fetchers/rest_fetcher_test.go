@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hc12r/brokolisql-go/pkg/errors"
+	"github.com/Tnsor-Labs/brokoli/pkg/errors"
 )
 
 func TestRESTFetcher_Fetch(t *testing.T) {

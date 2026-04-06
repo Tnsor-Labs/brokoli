@@ -1,430 +1,337 @@
-# BrokoliSQL-Go
+<p align="center">
+  <img src="https://raw.githubusercontent.com/hc12r/brokoli/main/broked-ui/public/favicon.svg" width="64" height="64" alt="Brokoli" />
+</p>
 
-BrokoliSQL-Go is a powerful command-line tool written in Go that converts structured data files (CSV, Excel, JSON, XML) into SQL INSERT statements. It provides flexible data transformation capabilities and supports multiple SQL dialects, making it ideal for database seeding, data migration, and ETL workflows.
+<h1 align="center">Brokoli</h1>
 
-![BrokoliSQL-Go](https://img.shields.io/badge/BrokoliSQL-Go-brightgreen)
+<p align="center">
+  <strong>Data orchestration that deploys in 30 seconds, not 30 minutes.</strong><br/>
+  Single binary. Visual editor. Built-in data quality. No infrastructure required.
+</p>
+
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#why-brokoli">Why Brokoli</a> ·
+  <a href="#enterprise">Enterprise</a> ·
+  <a href="#api-reference">API</a>
+</p>
+
+---
+
+## Quick Start
+
+### Option A: Binary
+
+```bash
+# Download and run — that's it
+curl -L https://github.com/hc12r/brokoli/releases/latest/download/brokoli-linux-amd64 -o brokoli
+chmod +x brokoli
+./brokoli serve
+```
+
+Open `http://localhost:8080`. Create your admin account. Build your first pipeline.
+
+### Option B: Python SDK
+
+```bash
+pip install brokoli
+```
+
+```python
+from brokoli import Pipeline, task, source_api, quality_check, sink_file
+
+with Pipeline("my_pipeline", schedule="0 6 * * *") as p:
+
+    data = source_api("Fetch", url="https://api.example.com/data", retries=3)
+
+    @task("Transform")
+    def clean(raw):
+        return [r for r in raw if r.get("status") == "active"]
+
+    cleaned = clean(data)
+    quality_check("Validate", cleaned, rules=["not_null(id)", "unique(id)"])
+    cleaned >> sink_file("Save", path="/tmp/output.csv")
+```
+
+```bash
+brokoli deploy my_pipeline.py --server http://localhost:8080
+# Pipeline appears in the visual editor instantly
+```
+
+See the [Python SDK documentation](../brokoli-python/README.md) and [7 runnable demo pipelines](../brokoli-python/examples/demo/).
+
+**From source:**
+
+```bash
+cd broked-ui && npm install && npm run build && cd ..
+cd broked && go build -o brokoli . && ./brokoli serve
+```
+
+## Why Brokoli
+
+|  | Airflow | Dagster | Prefect | **Brokoli** |
+|---|---|---|---|---|
+| **Setup** | Docker + Redis + Celery + Postgres | Docker + Dagit + Daemon | Cloud signup or Docker | `./brokoli serve` |
+| **Binary size** | ~500MB with deps | ~400MB | Cloud-dependent | **26MB** |
+| **First pipeline** | ~30 min (write Python DAG) | ~20 min (write Python assets) | ~15 min (write Python flow) | **~2 min** (drag and drop) |
+| **Visual editor** | No | No | No | **Yes** |
+| **Data preview** | No | Limited | No | **Every node, every run** |
+| **Data quality** | External (Great Expectations) | External | External | **Built-in (10 rules)** |
+| **Auto-profiling** | No | No | No | **Yes — null%, unique%, min/max/mean per column** |
+| **Schema drift detection** | No | No | No | **Yes — alerts on column changes** |
+| **Self-hosted** | Complex | Complex | Limited | **One file** |
 
 ## Features
 
-- **Multi-format Support**: Process CSV, Excel (XLSX), JSON, and XML files
-- **Remote Data Fetching**: Retrieve data directly from REST APIs and other remote sources
-- **Nested JSON Support**: Automatically normalize nested JSON objects into proper relational tables
-- **SQL Dialect Support**: Generate SQL for PostgreSQL, MySQL, SQLite, SQL Server, Oracle, and more
-- **Automatic Table Creation**: Optionally generate CREATE TABLE statements based on input data
-- **Smart Type Inference**: Automatically detect appropriate SQL data types
-- **Batch Processing**: Control the number of rows per INSERT statement for optimal performance
-- **Powerful Transformations**: Apply various transformations to your data before SQL generation
-- **Column Normalization**: Automatically normalize column names for SQL compatibility
-- **Streaming Processing** (Experimental): Process large files with constant memory usage
+### Visual Pipeline Editor
+Drag-and-drop pipeline builder with 13 node types. No code required for common ETL patterns — but full Python support when you need it.
 
-## Installation
+- SVG canvas with zoom, pan, snap-to-port connections
+- Undo/redo, auto-layout, node duplication
+- Inline node config with connection selector
+- Dry-run preview with data at every node
+- YAML import/export for pipeline-as-code
 
-### Prerequisites
+### 13 Node Types
 
-- Go 1.24 or higher
+| Sources | Processing | Outputs | Flow Control |
+|---|---|---|---|
+| File (CSV/JSON/Excel) | Transform (filter, sort, rename, aggregate) | File Output | **If/Else Condition** |
+| REST API | Python Code | Database Sink | |
+| Database (Postgres/MySQL/SQLite) | Join (inner/left/right/full) | API Sink | |
+| | Quality Check (10 rules) | DB Migration | |
+| | SQL Generate | | |
 
-### From Source
+### Data Quality — Built In, Not Bolted On
+- **10 quality rules**: not_null, unique, min, max, range, regex, row_count, type_check, freshness, no_blank
+- **Auto-profiling**: every node output gets profiled — row count, null%, unique%, min/max/mean, type inference, cardinality
+- **Schema drift detection**: automatic comparison against previous runs — alerts on column added/removed, type changes, null rate spikes
+- **Quality trends**: profile data stored as time series for historical analysis
+- Block or warn policies per rule
 
-```bash
-# Clone the repository
-git clone https://github.com/hc12r/brokolisql-go.git
-cd brokolisql-go
+### Smart Execution
+- **Parallel DAG execution** — wave-based Kahn's algorithm with configurable concurrency
+- **Smart retry per node** — exponential/linear/fixed backoff, node-type-aware defaults (DB sources get 3 retries, transforms get 0)
+- **Resume from failure** — skip succeeded nodes, retry from the point of failure
+- **Cross-pipeline dependencies** — `depends_on` field, scheduler checks before triggering
+- **Condition branching** — if/else nodes evaluate expressions (`row_count > 0`, `null_pct("col") < 10`) and route data accordingly
+- **Cancellation** — cancel running pipelines via API or UI
 
-# Build the binary
-go build -o brokolisql
+### Monitoring & Alerts
+- **Real-time WebSocket** updates — live run status, node progress, log streaming
+- **Slack notifications** — configurable via UI, fires on run success, failure, and SLA breach
+- **Schema drift alerts** — critical schema changes trigger Slack notifications with column details
+- **SLA deadlines** — per-pipeline "must complete by HH:MM" with timezone support
+- **Run calendar** — GitHub-style heatmap of daily run activity
+- **Data lineage** — interactive cross-pipeline DAG visualization
+- **Gantt timeline** — node-level execution timing per run
 
-# Install globally (optional)
-go install
-```
+### Connections & Secrets
+- **7 connection types**: Postgres, MySQL, SQLite, HTTP, SFTP, S3, Generic
+- **AES-256-GCM encryption** for all secrets at rest
+- **Real connection testing** — actually connects and authenticates, not just ping
+- **Variables** with typed values (string, number, JSON, secret) and `${var.key}` resolution in any config field
 
-## Usage
+### Pipeline Versioning
+- Auto-snapshot on every save
+- Version history with timestamps
+- One-click rollback to any version
 
-### Basic Usage
+### Webhook Triggers
+- Per-pipeline webhook tokens
+- Trigger runs via HTTP: `POST /api/pipelines/:id/webhook?token=whk_...`
+- Use with GitHub Actions, dbt, Kafka consumers, or any external event
 
-```bash
-brokolisql --input data.csv --output output.sql --table users
-```
-
-### Command-Line Options
-
-```
-Usage:
-  brokolisql [flags]
-
-Flags:
-  -b, --batch-size int       Number of rows per INSERT statement (default 100)
-  -c, --create-table         Generate CREATE TABLE statement
-  -d, --dialect string       SQL dialect (generic, postgres, mysql, sqlite, sqlserver, oracle) (default "generic")
-      --fetch                Enable fetch mode to retrieve data from remote sources
-  -f, --format string        Input file format (csv, json, xml, xlsx) - if not specified, will be inferred from file extension
-  -h, --help                 help for brokolisql
-  -i, --input string         Input file path (required unless using fetch mode)
-      --log-level string     Log level (debug, info, warning, error, fatal) (default "info")
-  -n, --normalize            Normalize column names for SQL compatibility (default true)
-  -o, --output string        Output SQL file path (required)
-      --source string        Source URL or connection string for fetch mode
-      --source-type string   Source type for fetch mode (rest, etc.) (default "rest")
-  -r, --transform string     JSON file with transformation rules
-  -t, --table string         Table name for SQL statements (required)
-      --streaming            Enable streaming mode for processing large files with constant memory usage
-      --buffer-size int      Number of rows to buffer in memory when using streaming mode (default 1000)
-```
-
-### Examples
-
-Generate SQL with a specific dialect:
+### CLI for CI/CD
 
 ```bash
-brokolisql --input data.csv --output output.sql --table users --dialect mysql
+# Trigger a run and wait for completion
+brokoli run <pipeline-id> --server http://localhost:8080
+
+# Run with assertions (exits non-zero on failure)
+brokoli assert <pipeline-id> -a assertions.yaml
 ```
 
-Generate a CREATE TABLE statement:
+**Assertion file format:**
+
+```yaml
+assertions:
+  - name: "Has data"
+    type: min_rows
+    value: "1"
+  - name: "ID is unique"
+    type: unique
+    column: id
+  - name: "Email not null"
+    type: no_nulls
+    column: email
+```
+
+### Python Integration
+
+Works with any `python3`. For large datasets:
 
 ```bash
-brokolisql --input data.csv --output output.sql --table users --create-table
+pip install pyarrow pandas
 ```
 
-Use batch inserts for better performance:
+| Dataset size | Method | Speed |
+|---|---|---|
+| < 10K rows | JSON stdin/stdout | Baseline |
+| ≥ 10K rows | CSV temp files | 3–5x faster |
+| ≥ 10K rows + pyarrow | Arrow IPC | 5–10x faster |
+
+Auto-detected. No configuration needed.
+
+## Enterprise
+
+Brokoli Enterprise adds governance, compliance, and team features for production deployments. Same single binary — just with a license key.
+
+| Feature | Community | Enterprise |
+|---|---|---|
+| Visual pipeline editor | ✓ | ✓ |
+| 13 node types + data quality | ✓ | ✓ |
+| Auto-profiling + schema drift | ✓ | ✓ |
+| Slack alerts (via UI config) | ✓ | ✓ |
+| SLA monitoring | ✓ | ✓ |
+| Webhook triggers + CLI | ✓ | ✓ |
+| Pipeline versioning + rollback | ✓ | ✓ |
+| Cross-pipeline dependencies | ✓ | ✓ |
+| Smart retry per node | ✓ | ✓ |
+| Condition branching (if/else) | ✓ | ✓ |
+| **SSO/OIDC** (Okta, Azure AD, Google) | | ✓ |
+| **Audit logging** with before/after diff | | ✓ |
+| **Workspaces** with RBAC (owner/admin/editor/viewer) | | ✓ |
+| **API tokens** per workspace | | ✓ |
+| **Git Sync** — pipeline-as-code with auto-deploy | | ✓ |
+| **Data contracts** — schema enforcement between teams | | ✓ |
+| **Column-level lineage** tracking | | ✓ |
+| **PII detection** — auto-scan for email, phone, SSN, IP, credit card | | ✓ |
+| **OpenLineage** export to DataHub/Marquez/Atlan | | ✓ |
+| **Kubernetes executor** — dispatch nodes as K8s Jobs | | ✓ |
 
 ```bash
-brokolisql --input data.csv --output output.sql --table users --batch-size 100
+BROKOLI_LICENSE_KEY=enterprise-yourco-sso,audit,k8s,gitsync,alerts-2027-01-01-xxx \
+  ./brokoli-ee serve --port 9900
 ```
 
-Apply transformations:
+## API Reference
+
+All endpoints require authentication (except `/health` and `/api/auth/setup`).
+
+### Pipelines
+```
+GET    /api/pipelines                List pipelines (lean DTO — no nodes/edges)
+POST   /api/pipelines                Create pipeline
+GET    /api/pipelines/:id            Get pipeline (full detail)
+PUT    /api/pipelines/:id            Update pipeline
+DELETE /api/pipelines/:id            Delete pipeline
+POST   /api/pipelines/:id/run        Trigger run
+POST   /api/pipelines/:id/dry-run    Preview with sample rows
+POST   /api/pipelines/:id/clone      Duplicate pipeline
+POST   /api/pipelines/:id/backfill   Backfill date range
+GET    /api/pipelines/:id/export     Export as YAML
+GET    /api/pipelines/:id/versions   Version history
+POST   /api/pipelines/:id/rollback   Restore version
+GET    /api/pipelines/:id/deps       Dependency status
+GET    /api/pipelines/:id/impact     Downstream impact analysis
+POST   /api/pipelines/:id/webhook    Webhook trigger (token auth)
+POST   /api/pipelines/import         Import YAML/JSON
+POST   /api/pipelines/bulk           Bulk enable/disable/delete
+```
+
+### Runs
+```
+GET    /api/pipelines/:id/runs            List runs
+GET    /api/runs/:id                      Run detail (with error)
+POST   /api/runs/:id/resume               Resume from failure
+POST   /api/runs/:id/cancel               Cancel running pipeline
+GET    /api/runs/:id/logs                  Run logs
+GET    /api/runs/:id/logs/export           Download logs
+GET    /api/runs/:id/nodes/:nid/preview    Node data preview
+GET    /api/runs/:id/nodes/:nid/profile    Node profiling data + drift alerts
+GET    /api/runs/calendar                  Daily run heatmap
+```
+
+### Connections & Variables
+```
+GET    /api/connections                    List connections
+POST   /api/connections                    Create connection
+POST   /api/connections/:id/test           Test connection
+GET    /api/variables                      List variables
+POST   /api/variables                      Create/update variable
+```
+
+### Settings & Notifications
+```
+GET    /api/settings/notifications         Slack config (masked)
+PUT    /api/settings/notifications         Save Slack config
+POST   /api/settings/notifications/test    Send test Slack message
+```
+
+### System
+```
+GET    /health                             Health check (no auth)
+GET    /metrics                            Prometheus metrics (no auth)
+GET    /api/system/info                    System info
+GET    /api/scheduler/status               Active schedules
+GET    /api/lineage                        Cross-pipeline lineage graph
+```
+
+## Architecture
+
+```
+26MB single binary
+├── Go backend (chi router, gorilla/websocket, SQLite/PostgreSQL)
+├── Svelte 5 frontend (embedded via go:embed)
+├── Pipeline engine (parallel DAG execution, retry, profiling)
+└── Extension system (enterprise plugins via interface injection)
+```
+
+```
+broked/
+  cmd/           CLI — serve, run, assert, generate-key
+  engine/        Execution, transforms, profiling, drift, conditions, retry, deps, scheduler, SLA
+  api/           HTTP handlers, auth, WebSocket, middleware, rate limiting
+  store/         SQLite + PostgreSQL with migrations
+  crypto/        AES-256-GCM encryption
+  quality/       10 data quality rules
+  extensions/    Enterprise plugin interfaces
+  models/        Pipeline, Run, Node, Connection, Variable, Workspace
+  ui/            Embedded Svelte frontend
+
+broked-ui/
+  src/pages/     Dashboard, Pipelines, Editor, Runs, Calendar, Lineage,
+                 Connections, Variables, Workspaces, Audit Log, Git Sync, Settings
+  src/components/ Canvas, NodeCard, Sidebar, ConfigPanel, CodeEditor, Pagination, etc.
+```
+
+## Tests
 
 ```bash
-brokolisql --input data.csv --output output.sql --table users --transform transforms.json
+go test ./broked/... -v
+# 219+ Go tests + 52 Python SDK tests across engine, crypto, quality, store, validation
+# Covers: profiling, drift detection, conditions, assertions,
+#         retry logic, dependencies, webhooks, contracts, PII, lineage
 ```
 
-Fetch data from a REST API:
-
-```bash
-brokolisql --fetch --source https://api.example.com/data --output output.sql --table users
-```
-
-Fetch data and apply transformations:
-
-```bash
-brokolisql --fetch --source https://api.example.com/data --output output.sql --table users --transform transforms.json
-```
-
-Process a large file with streaming mode:
-
-```bash
-brokolisql --input large_file.json --output output.sql --table users --streaming --buffer-size 1000 --create-table
-```
-
-## Remote Data Fetching
-
-BrokoliSQL-Go can fetch data directly from remote sources, eliminating the need to download files locally before processing. Currently, it supports:
-
-- **REST APIs**: Fetch JSON data from HTTP endpoints
-
-### Using Fetch Mode
-
-To use fetch mode, use the `--fetch` flag along with the following options:
-
-- `--source`: The URL or connection string for the data source
-- `--source-type`: The type of source (currently supports "rest")
-
-Example:
-
-```bash
-brokolisql --fetch --source https://api.example.com/users --source-type rest --output users.sql --table users
-```
-
-### REST API Options
-
-When fetching from REST APIs, the following default settings are applied:
-
-- HTTP Method: GET
-- Accept Header: application/json
-
-The fetched JSON data is automatically parsed and converted to the same internal format used by the file loaders, allowing you to apply transformations and generate SQL just like with local files.
-
-## Logging
-
-BrokoliSQL-Go provides comprehensive logging capabilities:
-
-- **Log Levels**: Control verbosity with different log levels (debug, info, warning, error, fatal)
-- **File Logging**: All logs are written to `brok.log` for troubleshooting and auditing
-- **Console Output**: Only important messages are displayed in the console
-- **In-place Updates**: Progress messages use carriage returns for cleaner console output
-- **Security**: Sensitive data is only logged at debug level and only to the log file
-
-### Using Logging Options
-
-To control logging behavior, use the `--log-level` flag:
-
-```bash
-# Minimal logging (only errors and fatal messages)
-brokolisql --input data.csv --output output.sql --table users --log-level error
-
-# Default logging level (informational messages)
-brokolisql --input data.csv --output output.sql --table users --log-level info
-
-# Verbose logging for troubleshooting (includes sensitive data in log file)
-brokolisql --input data.csv --output output.sql --table users --log-level debug
-```
-
-All logs are written to `brok.log` in the current directory, regardless of the console output level.
-
-## Streaming Processing (Experimental)
-
-BrokoliSQL-Go includes an experimental streaming mode that processes large files with constant memory usage, allowing you to handle files of any size without loading the entire file into memory.
-
-### Using Streaming Mode
-
-To use streaming mode, use the `--streaming` flag along with the following options:
-
-- `--buffer-size`: Number of rows to buffer in memory (default: 1000)
-
-Example:
-
-```bash
-brokolisql --input large_file.json --output output.sql --table users --streaming --buffer-size 1000
-```
-
-### Supported Formats
-
-Currently, streaming mode supports:
-
-- **CSV files**: Process CSV files line by line
-- **JSON files**: Process JSON files incrementally
-- **Nested JSON**: Automatically detect and normalize nested JSON objects into proper relational tables
-
-### Limitations
-
-As this is an experimental feature:
-
-- Excel and XML files are not yet supported in streaming mode
-- Memory usage may still spike when processing nested JSON objects
-- Performance optimizations are ongoing
-
-## Data Transformations
-
-BrokoliSQL-Go supports powerful data transformations through a JSON configuration file. Here's an example:
-
-```json
-{
-  "transformations": [
-    {
-      "type": "rename_columns",
-      "mapping": {
-        "FIRST_NAME": "GIVEN_NAME",
-        "LAST_NAME": "SURNAME"
-      }
-    },
-    {
-      "type": "add_column",
-      "name": "FULL_NAME",
-      "expression": "GIVEN_NAME + ' ' + SURNAME"
-    },
-    {
-      "type": "filter_rows",
-      "condition": "COUNTRY in ['USA', 'Canada', 'UK', 'Germany']"
-    },
-    {
-      "type": "apply_function",
-      "column": "EMAIL",
-      "function": "lower"
-    },
-    {
-      "type": "replace_values",
-      "column": "COUNTRY",
-      "mapping": {
-        "USA": "United States",
-        "UK": "United Kingdom"
-      }
-    },
-    {
-      "type": "drop_columns",
-      "columns": ["TEMP_COLUMN"]
-    },
-    {
-      "type": "sort",
-      "columns": ["COUNTRY", "CITY"],
-      "ascending": true
-    }
-  ]
-}
-```
-
-## Use Cases
-
-BrokoliSQL-Go is particularly useful in the following scenarios:
-
-### Data Migration
-
-When migrating data between systems, BrokoliSQL-Go can transform source data into SQL statements compatible with the target database, handling format conversions and data transformations in a single step.
-
-### Database Seeding
-
-For development and testing environments, BrokoliSQL-Go makes it easy to convert sample data from various formats into SQL for database initialization.
-
-### ETL Workflows
-
-As part of Extract-Transform-Load (ETL) pipelines, BrokoliSQL-Go can transform data from various sources and prepare it for loading into a database.
-
-### Data Analysis
-
-Data analysts can use BrokoliSQL-Go to quickly convert data from various formats into SQL for further analysis in a database environment.
-
-### API Integration
-
-When integrating with APIs that provide data in JSON or XML format, BrokoliSQL-Go can transform this data into SQL for storage in a relational database.
-
-## Continuous Integration and GitHub Actions
-
-![Tests](https://github.com/hc12r/brokolisql-go/actions/workflows/tests.yml/badge.svg)
-![Code Quality](https://github.com/hc12r/brokolisql-go/actions/workflows/code-quality.yml/badge.svg)
-![Security Scan](https://github.com/hc12r/brokolisql-go/actions/workflows/security.yml/badge.svg)
-
-BrokoliSQL-Go uses GitHub Actions for continuous integration, testing, and deployment. The following workflows are available:
-
-- **Tests**: Runs the test suite and generates code coverage reports
-- **Code Quality**: Checks code quality using linters and formatters
-- **Cross-Platform Tests**: Ensures the code works across different operating systems and Go versions
-- **Release Automation**: Automates the release process when a new version is tagged
-- **Dependency Updates**: Keeps dependencies up-to-date with weekly checks
-- **Security Scan**: Scans the code for security vulnerabilities
-
-For more details on how to use and customize these workflows, see [GITHUB_ACTIONS.md](docs/GITHUB_ACTIONS.md).  
-For a summary of the GitHub Actions implementation, benefits, and next steps, see [GITHUB_ACTIONS_SUMMARY.md](docs/GITHUB_ACTIONS_SUMMARY.md).  
-For a comprehensive overview of the entire implementation, see [IMPLEMENTATION_SUMMARY.md](docs/IMPLEMENTATION_SUMMARY.md).
-
-## Project Structure
-
-```
-brokolisql-go/
-├── brokolisql
-├── brokolisql-go.iml
-├── cmd
-│   └── root.go
-├── docs
-│   ├── FETCHERS.md
-│   ├── GITHUB_ACTIONS.md
-│   ├── GITHUB_ACTIONS_SUMMARY.md
-│   ├── IMPLEMENTATION_SUMMARY.md
-│   └── NESTED_JSON.md
-├── examples
-│   ├── customers.csv
-│   ├── output-100.sql
-│   ├── output.sql
-│   ├── output_transformed.sql
-│   ├── rest_api_example.go
-│   ├── transforms.json
-│   ├── users.json
-│   └── users.sql
-├── go.mod
-├── go.sum
-├── internal
-│   ├── dialects
-│   │   ├── dialect.go
-│   │   ├── dialect_test.go
-│   │   ├── generic.go
-│   │   ├── generic_test.go
-│   │   ├── mysql.go
-│   │   ├── oracle.go
-│   │   ├── postgres.go
-│   │   ├── sqlite.go
-│   │   └── sqlserver.go
-│   ├── processing
-│   │   ├── json_analyzer.go
-│   │   ├── multi_table_generator.go
-│   │   ├── nested_json_processor.go
-│   │   ├── nested_json_processor_test.go
-│   │   ├── normalizer.go
-│   │   ├── normalizer_test.go
-│   │   ├── schema.go
-│   │   ├── sql_generator.go
-│   │   ├── sql_generator_test.go
-│   │   ├── type_inference.go
-│   │   └── type_inference_test.go
-│   └── transformers
-│       ├── transform_engine.go
-│       └── transform_engine_test.go
-├── pkg
-│   ├── common
-│   │   ├── json_utils.go
-│   │   ├── logger.go
-│   │   ├── logger_test.go
-│   │   └── safe_reading.go
-│   ├── errors
-│   │   ├── errors.go
-│   │   ├── errors_test.go
-│   │   ├── handler.go
-│   │   └── handler_test.go
-│   ├── fetchers
-│   │   ├── fetcher.go
-│   │   ├── rest_fetcher.go
-│   │   └── rest_fetcher_test.go
-│   └── loaders
-│       ├── csv_loader.go
-│       ├── csv_loader_test.go
-│       ├── excel_loader.go
-│       ├── excel_loader_test.go
-│       ├── json_loader.go
-│       ├── json_loader_test.go
-│       ├── loader.go
-│       ├── loader_test.go
-│       ├── xml_loader.go
-│       └── xml_loader_test.go
-├── README.md
-├── LICENSE
-├── main.go
-└── test_fetch.sh
-```
-
-## Contributing
-
-Contributions to BrokoliSQL-Go are welcome! Here's how you can contribute:
-
-1. **Fork the Repository**: Create your own fork of the project.
-
-2. **Create a Feature Branch**:
-   ```bash
-   git checkout -b feature/your-feature-name
-   ```
-
-3. **Make Your Changes**: Implement your feature or bug fix.
-
-4. **Write Tests**: Add tests for your changes to ensure they work correctly.
-
-5. **Run Tests**:
-   ```bash
-   go test ./...
-   ```
-
-6. **Format Your Code**:
-   ```bash
-   go fmt ./...
-   ```
-
-7. **Commit Your Changes**:
-   ```bash
-   git commit -m "Add feature: your feature description"
-   ```
-
-8. **Push to Your Fork**:
-   ```bash
-   git push origin feature/your-feature-name
-   ```
-
-9. **Create a Pull Request**: Open a pull request from your fork to the main repository.
-
-### Development Guidelines
-
-- Follow Go best practices and coding conventions
-- Write clear, concise commit messages
-- Document your code with comments
-- Add unit tests for new functionality
-- Update documentation when necessary
+## Configuration
+
+| Flag | Default | Description |
+|---|---|---|
+| `--port` / `-p` | 8080 | HTTP server port |
+| `--db` | ./broked.db | SQLite path (or `postgres://...` URI) |
+| `--api-key` | — | Enable API key authentication |
+
+| Env Variable | Description |
+|---|---|
+| `BROKOLI_APP_URL` | Base URL for Slack deep links (default: `http://localhost:8080`) |
+| `BROKOLI_JWT_SECRET` | Persistent JWT signing secret |
+| `BROKED_SECRET_*` | Resolved via `${secret.name}` in node configs |
 
 ## License
 
-BrokoliSQL-Go is licensed under the GNU GPL-3.0 License. See the [LICENSE](LICENSE) file for details.
+Apache 2.0 — see [LICENSE](../LICENSE).
 
-## Acknowledgments
-
-BrokoliSQL-Go is a Go implementation of the original [BrokoliSQL](https://github.com/hc12r/brokolisql) Python project, reimagined with Go's performance and concurrency benefits.
+Enterprise features are available under a separate commercial license. Contact us for pricing.

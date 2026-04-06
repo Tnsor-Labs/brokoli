@@ -7,7 +7,7 @@
 set -e
 
 REPO="hc12r/brokolisql-go"
-BINARY="broked"
+BINARY="brokoli"
 INSTALL_DIR="/usr/local/bin"
 
 # Colors
@@ -47,7 +47,7 @@ fi
 info "Latest version: ${LATEST}"
 
 # Build download URL
-ARCHIVE="broked_${OS}_${ARCH}.tar.gz"
+ARCHIVE="brokoli_${OS}_${ARCH}.tar.gz"
 URL="https://github.com/${REPO}/releases/download/${LATEST}/${ARCHIVE}"
 
 # Download
@@ -82,7 +82,7 @@ if command -v "$BINARY" >/dev/null 2>&1; then
   echo ""
   echo "  Then open http://localhost:8080 in your browser."
   echo ""
-  echo "  Docs: https://github.com/${REPO}/tree/main/broked"
+  echo "  Docs: https://github.com/${REPO}/tree/main/brokoli"
 else
   success "Installed to ${INSTALL_DIR}/${BINARY}"
   info "You may need to add ${INSTALL_DIR} to your PATH."

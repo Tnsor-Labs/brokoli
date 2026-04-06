@@ -7,7 +7,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hc12r/brokolisql-go/pkg/errors"
+	"github.com/Tnsor-Labs/brokoli/pkg/errors"
 )
 
 type LogLevel int

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 type XMLLoader struct{}

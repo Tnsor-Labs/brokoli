@@ -3,7 +3,7 @@ package loaders
 import (
 	"testing"
 
-	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 func TestGetLoader(t *testing.T) {

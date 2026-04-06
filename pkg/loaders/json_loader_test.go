@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hc12r/brokolisql-go/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 func TestJSONLoader_Load(t *testing.T) {
@@ -120,13 +120,13 @@ func TestJSONLoader_Load(t *testing.T) {
 					t.Errorf("Expected 2 rows, got %d", len(ds.Rows))
 				}
 
-				// Check that address is serialized as a string
-				addressStr, ok := ds.Rows[0]["address"].(string)
+				// Nested objects are kept as maps (not stringified)
+				addressMap, ok := ds.Rows[0]["address"].(map[string]interface{})
 				if !ok {
-					t.Errorf("Expected address to be a string, got %T", ds.Rows[0]["address"])
+					t.Errorf("Expected address to be a map, got %T", ds.Rows[0]["address"])
 				}
-				if addressStr == "" {
-					t.Errorf("Expected non-empty address string")
+				if len(addressMap) == 0 {
+					t.Errorf("Expected non-empty address map")
 				}
 			},
 		},
