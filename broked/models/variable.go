@@ -18,6 +18,7 @@ type Variable struct {
 	Value       string       `json:"value"`
 	Type        VariableType `json:"type"`
 	Description string       `json:"description"`
+	WorkspaceID string       `json:"workspace_id,omitempty"`
 	CreatedAt   time.Time    `json:"created_at"`
 	UpdatedAt   time.Time    `json:"updated_at"`
 }

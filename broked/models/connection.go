@@ -10,13 +10,21 @@ import (
 type ConnectionType string
 
 const (
-	ConnTypePostgres ConnectionType = "postgres"
-	ConnTypeMySQL    ConnectionType = "mysql"
-	ConnTypeSQLite   ConnectionType = "sqlite"
-	ConnTypeHTTP     ConnectionType = "http"
-	ConnTypeSFTP     ConnectionType = "sftp"
-	ConnTypeS3       ConnectionType = "s3"
-	ConnTypeGeneric  ConnectionType = "generic"
+	ConnTypePostgres   ConnectionType = "postgres"
+	ConnTypeMySQL      ConnectionType = "mysql"
+	ConnTypeSQLite     ConnectionType = "sqlite"
+	ConnTypeHTTP       ConnectionType = "http"
+	ConnTypeSFTP       ConnectionType = "sftp"
+	ConnTypeS3         ConnectionType = "s3"
+	ConnTypeSnowflake  ConnectionType = "snowflake"
+	ConnTypeRedshift   ConnectionType = "redshift"
+	ConnTypeBigQuery   ConnectionType = "bigquery"
+	ConnTypeAzureBlob  ConnectionType = "azure_blob"
+	ConnTypeGCS        ConnectionType = "gcs"
+	ConnTypeDatabricks ConnectionType = "databricks"
+	ConnTypeOracle     ConnectionType = "oracle"
+	ConnTypeMSSQL      ConnectionType = "mssql"
+	ConnTypeGeneric    ConnectionType = "generic"
 )
 
 // Connection stores credentials and config for an external system.
@@ -31,6 +39,7 @@ type Connection struct {
 	Login       string         `json:"login"`
 	Password    string         `json:"password,omitempty"` // plaintext in memory, encrypted at rest
 	Extra       string         `json:"extra,omitempty"`    // JSON blob for type-specific fields
+	WorkspaceID string         `json:"workspace_id,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
 }

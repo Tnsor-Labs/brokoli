@@ -41,6 +41,15 @@ type Organization struct {
 	PlanStartedAt   *time.Time `json:"plan_started_at,omitempty"`
 	SuspendedAt     *time.Time `json:"suspended_at,omitempty"`
 	SuspendedReason string     `json:"suspended_reason,omitempty"`
+
+	// Billing & Subscription
+	BillingCycle      string     `json:"billing_cycle"`                 // "monthly", "yearly", "" (trial/free)
+	SubscriptionEndsAt *time.Time `json:"subscription_ends_at,omitempty"` // when current billing period ends
+	AutoRenew         bool       `json:"auto_renew"`                    // auto-renew subscription
+	WarningsSent      int        `json:"warnings_sent"`                 // how many expiry warnings sent (0-3)
+	LastWarningAt     *time.Time `json:"last_warning_at,omitempty"`     // when last warning was sent
+	StripeCustomerID  string     `json:"stripe_customer_id,omitempty"`  // future: Stripe integration
+	StripeSubID       string     `json:"stripe_sub_id,omitempty"`       // future: Stripe subscription ID
 }
 
 // OrgMember represents a user's membership in an organization.
