@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
@@ -66,7 +65,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 	now := time.Now().UTC()
 	runID := r.preRunID
 	if runID == "" {
-		runID = uuid.New().String()
+		runID = common.NewID()
 	}
 	r.run = &models.Run{
 		ID:         runID,
@@ -241,7 +240,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 
 	startTime := time.Now().UTC()
 	nr := &models.NodeRun{
-		ID:        uuid.New().String(),
+		ID:        common.NewID(),
 		RunID:     r.run.ID,
 		NodeID:    node.ID,
 		Status:    models.RunStatusRunning,
@@ -462,6 +461,13 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		}
 	}
 
+	// Check if the org's plan allows this node type
+	if extensions.NodeTypeGateFunc != nil {
+		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+	}
+
 	switch node.Type {
 	case models.NodeTypeSourceFile:
 		return r.runSourceFile(node)
@@ -489,6 +495,10 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		return r.runMigrate(node)
 	case models.NodeTypeCondition:
 		return r.runCondition(node, input)
+	case models.NodeTypeDBT:
+		return r.runDBT(node)
+	case models.NodeTypeNotify:
+		return r.runNotify(node, input)
 	default:
 		return input, nil
 	}

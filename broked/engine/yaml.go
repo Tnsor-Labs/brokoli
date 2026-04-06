@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 	"github.com/hc12r/broked/models"
 	"gopkg.in/yaml.v3"
 )
@@ -56,7 +56,7 @@ func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
 
 	now := time.Now()
 	p := &models.Pipeline{
-		ID:          uuid.New().String(),
+		ID:          common.NewID(),
 		Name:        py.Name,
 		Description: py.Description,
 		Schedule:    py.Schedule,

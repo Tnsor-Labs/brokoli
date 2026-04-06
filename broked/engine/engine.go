@@ -8,7 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
+	"github.com/hc12r/brokolisql-go/pkg/common"
 	"github.com/hc12r/broked/extensions"
 	"github.com/hc12r/broked/models"
 	"github.com/hc12r/broked/store"
@@ -129,7 +129,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	atomic.AddInt64(&e.RunsTotal, 1)
 
 	// Pre-generate run ID so we can register the runner for cancellation
-	runID := uuid.New().String()
+	runID := common.NewID()
 	runner.preRunID = runID
 	e.mu.Lock()
 	e.active[runID] = runner
@@ -171,12 +171,12 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		return "", ve
 	}
 
-	runID := uuid.New().String()
+	runID := common.NewID()
 
 	// If job queue is available, enqueue for distributed execution
 	if e.JobQueue != nil {
 		job := extensions.RunJob{
-			ID:         uuid.New().String(),
+			ID:         common.NewID(),
 			PipelineID: pipelineID,
 			RunID:      runID,
 			OrgID:      pipe.OrgID,
