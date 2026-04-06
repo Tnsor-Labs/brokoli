@@ -2,9 +2,10 @@
   import { onMount, onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { notify } from "../lib/toast";
-  import { pipelines, onWSEvent } from "../lib/stores";
+  import { pipelines, onWSEvent, events } from "../lib/stores";
   import { authHeaders } from "../lib/auth";
   import StatusBadge from "../components/StatusBadge.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, Run } from "../lib/types";
 
   let recentRuns: { pipeline: Pipeline; run: Run }[] = [];
@@ -21,6 +22,18 @@
   let failedLast24h = 0;
   let currentlyRunning = 0;
 
+  // Onboarding step tracking
+  let totalConnections = 0;
+  let totalRuns = 0;
+  $: onboardingSteps = [
+    { label: "Connect a Data Source", done: totalConnections > 0, href: "#/connections" },
+    { label: "Build a Pipeline", done: totalPipelines > 0, href: "#/pipelines" },
+    { label: "Run your Pipeline", done: totalRuns > 0, href: "#/pipelines" },
+  ];
+  $: onboardingDone = onboardingSteps.filter(s => s.done).length;
+  $: onboardingPct = Math.round((onboardingDone / onboardingSteps.length) * 100);
+  $: onboardingComplete = onboardingDone === onboardingSteps.length;
+
   // Scheduler
   let nextScheduled: { name: string; next: string }[] = [];
 
@@ -36,9 +49,10 @@
   async function loadDashboard() {
     try {
       // Single API call for all dashboard data
-      const [dashRes, schedRes] = await Promise.all([
+      const [dashRes, schedRes, connRes] = await Promise.all([
         fetch("/api/dashboard", { headers: authHeaders() }),
         fetch("/api/scheduler/status", { headers: authHeaders() }),
+        fetch("/api/connections", { headers: authHeaders() }),
       ]);
 
       if (dashRes.ok) {
@@ -103,6 +117,14 @@
           .slice(0, 5)
           .map((s: any) => ({ name: s.pipeline_name, next: s.next_run }));
       }
+
+      if (connRes.ok) {
+        const connData = await connRes.json();
+        totalConnections = Array.isArray(connData) ? connData.length : 0;
+      }
+
+      // Track total runs for onboarding
+      totalRuns = recentRuns.length;
 
     } catch (e) {
       notify.error("Failed to load dashboard");
@@ -181,7 +203,83 @@
   </header>
 
   {#if loading}
-    <div class="empty-state">Loading...</div>
+    <div class="skeleton-grid">
+      {#each Array(5) as _}
+        <Skeleton variant="card" height="80px" />
+      {/each}
+    </div>
+    <div class="skeleton-grid three" style="margin-top: 16px">
+      {#each Array(3) as _}
+        <Skeleton variant="card" height="200px" />
+      {/each}
+    </div>
+  {:else if !onboardingComplete}
+    <!-- Welcome hero for new users -->
+    <div class="welcome-hero">
+      <div class="welcome-icon">
+        <svg width="56" height="56" viewBox="0 0 32 32" fill="none">
+          <path d="M16 19v9" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"/>
+          <circle cx="16" cy="11" r="4.5" fill="var(--accent)"/>
+          <circle cx="9" cy="7" r="3.5" fill="#16a34a"/>
+          <circle cx="23" cy="7" r="3.5" fill="#16a34a"/>
+          <circle cx="6" cy="2" r="2.5" fill="#22c55e"/>
+          <circle cx="16" cy="2" r="3" fill="#22c55e"/>
+          <circle cx="26" cy="2" r="2.5" fill="#22c55e"/>
+        </svg>
+      </div>
+      <h2 class="welcome-title">Let's build your first pipeline</h2>
+      <p class="welcome-sub">Brokoli lets you build, schedule, and monitor data pipelines visually. Follow the steps below to get running in minutes.</p>
+
+      <!-- Progress bar -->
+      <div class="onboarding-progress">
+        <div class="progress-header">
+          <span class="progress-label">{onboardingDone} of {onboardingSteps.length} steps complete</span>
+          <span class="progress-pct">{onboardingPct}%</span>
+        </div>
+        <div class="progress-track">
+          <div class="progress-fill" style="width: {onboardingPct}%"></div>
+        </div>
+      </div>
+
+      <div class="quick-start-grid">
+        {#each onboardingSteps as step, i}
+          <a href={step.href} class="quick-card" class:done={step.done}>
+            <div class="qc-step" class:done={step.done}>
+              {#if step.done}
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+              {:else}
+                {i + 1}
+              {/if}
+            </div>
+            <div class="qc-icon">
+              {#if i === 0}
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+              {:else if i === 1}
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="3" width="6" height="6" rx="1"/><rect x="9" y="15" width="6" height="6" rx="1"/><path d="M6 9v3a3 3 0 003 3h0M18 9v3a3 3 0 01-3 3h0"/></svg>
+              {:else}
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              {/if}
+            </div>
+            <span class="qc-title">{step.label}</span>
+            <span class="qc-desc">
+              {#if i === 0}PostgreSQL, MySQL, APIs, CSV files, and more
+              {:else if i === 1}Drag-and-drop nodes to design your data flow
+              {:else}Execute instantly or set a cron schedule
+              {/if}
+            </span>
+          </a>
+        {/each}
+      </div>
+
+      <div class="quick-alt">
+        <span class="quick-alt-text">Or start from a template:</span>
+        <a href="#/pipelines" class="quick-alt-link">Hello World</a>
+        <span class="quick-alt-sep">&middot;</span>
+        <a href="#/pipelines" class="quick-alt-link">API Fetch</a>
+        <span class="quick-alt-sep">&middot;</span>
+        <a href="#/pipelines" class="quick-alt-link">Data Quality Check</a>
+      </div>
+    </div>
   {:else}
     <!-- Stats row -->
     <div class="stats-grid">
@@ -314,7 +412,8 @@
       </div>
     </div>
 
-    <!-- Row 3: Recent Runs (full width) -->
+    <!-- Row 3: Recent Runs + Activity Feed -->
+    <div class="bottom-grid">
     <section class="section">
       <h2 class="section-title">Recent Runs</h2>
       {#if recentRuns.length === 0}
@@ -353,6 +452,32 @@
         </div>
       {/if}
     </section>
+
+    <!-- Activity Feed -->
+    <section class="section activity-section">
+      <h2 class="section-title">Activity</h2>
+      {#if $events.length === 0}
+        <div class="empty-hint">Events will appear here as pipelines run.</div>
+      {:else}
+        <div class="activity-feed">
+          {#each $events.slice(0, 15) as event}
+            <div class="activity-item">
+              <span class="activity-dot"
+                class:dot-success={event.type?.includes("completed")}
+                class:dot-failed={event.type?.includes("failed")}
+                class:dot-running={event.type?.includes("started")}
+              ></span>
+              <span class="activity-text">
+                <strong>{event.pipeline_name || event.node_id || "Pipeline"}</strong>
+                {event.type?.replace(".", " ") || "event"}
+              </span>
+              <span class="activity-time mono">{event.timestamp ? timeAgo(event.timestamp) : ""}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
+    </div>
   {/if}
 </div>
 
@@ -381,10 +506,16 @@
   }
   .stat-card {
     background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    padding: 16px 18px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px);
+    padding: 18px 20px;
     display: flex; flex-direction: column; gap: 4px;
+    box-shadow: var(--shadow-card);
+    transition: border-color 200ms ease, box-shadow 200ms ease;
+  }
+  .stat-card:hover {
+    border-color: var(--border);
+    box-shadow: var(--shadow-card-hover);
   }
   .stat-top { display: flex; align-items: baseline; gap: 8px; }
   .stat-value {
@@ -416,6 +547,8 @@
   }
   .section-title-red { color: #ef4444; }
 
+  .skeleton-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .skeleton-grid.three { grid-template-columns: repeat(3, 1fr); }
   .empty-state {
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: var(--radius-lg); padding: var(--space-lg);
@@ -426,8 +559,9 @@
 
   /* Recent Runs table */
   .runs-table {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); overflow: hidden;
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px); overflow: hidden;
+    box-shadow: var(--shadow-card);
   }
   .table-header, .table-row {
     display: grid;
@@ -435,9 +569,10 @@
     padding: 8px 14px; align-items: center;
   }
   .table-header {
-    background: var(--bg-tertiary); font-size: 10px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
-    border-bottom: 1px solid var(--border);
+    background: transparent;
+    font-size: 11px; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    border-bottom: 2px solid var(--border-subtle);
   }
   .table-row {
     border-bottom: 1px solid var(--border-subtle);
@@ -449,6 +584,30 @@
   .table-row.row-failed { border-left: 3px solid #ef4444; }
   .table-row.row-running { border-left: 3px solid #3b82f6; }
   .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+
+  /* Bottom grid: runs + activity */
+  .bottom-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
+  .activity-section .section-title { margin-bottom: 8px; }
+  .activity-feed {
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px); overflow: hidden; box-shadow: var(--shadow-card);
+  }
+  .activity-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 9px 14px; border-bottom: 1px solid var(--border-subtle);
+    font-size: 12px;
+  }
+  .activity-item:last-child { border-bottom: none; }
+  .activity-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+    background: var(--text-dim);
+  }
+  .activity-dot.dot-success { background: var(--success); }
+  .activity-dot.dot-failed { background: var(--failed); }
+  .activity-dot.dot-running { background: var(--running); animation: pulse-run 1s ease-in-out infinite; }
+  .activity-text { flex: 1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .activity-text strong { font-weight: 600; color: var(--text-primary); }
+  .activity-time { flex-shrink: 0; font-size: 10px; }
   .running-dot {
     display: inline-block; width: 6px; height: 6px; border-radius: 50%;
     background: #3b82f6; animation: pulse-run 1s ease-in-out infinite;
@@ -502,10 +661,13 @@
   }
   .overview-grid { align-items: stretch; }
   .overview-card {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); padding: var(--space-lg);
+    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px); padding: var(--space-lg);
     display: flex; flex-direction: column;
+    box-shadow: var(--shadow-card);
+    transition: border-color 200ms ease;
   }
+  .overview-card:hover { border-color: var(--border); }
   .overview-card .section-title { margin-bottom: var(--space-sm); }
   .empty-hint { font-size: 12px; color: var(--text-dim); padding: 12px 0; }
 
@@ -566,12 +728,117 @@
     font-family: var(--font-mono);
   }
 
+  /* Welcome Hero */
+  .welcome-hero {
+    display: flex; flex-direction: column; align-items: center;
+    text-align: center; padding: 48px 24px 40px;
+    background: radial-gradient(ellipse at 50% 0%, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
+    border-radius: var(--radius-xl, 14px);
+    margin: -8px -8px 0;
+  }
+  .welcome-icon {
+    margin-bottom: 24px;
+    filter: drop-shadow(0 4px 12px rgba(13, 148, 136, 0.25));
+  }
+  .welcome-title {
+    font-size: 1.75rem; font-weight: 700; letter-spacing: -0.03em;
+    margin-bottom: 10px;
+    background: linear-gradient(135deg, var(--text-primary) 0%, var(--text-secondary) 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+  .welcome-sub {
+    font-size: 14px; color: var(--text-muted); max-width: 480px;
+    margin-bottom: 40px; line-height: 1.7;
+  }
+  .quick-start-grid {
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    gap: 16px; width: 100%; max-width: 780px;
+  }
+  .quick-card {
+    position: relative;
+    display: flex; flex-direction: column; align-items: center;
+    gap: 12px; padding: 36px 24px 28px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px);
+    text-decoration: none; color: inherit;
+    transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
+    box-shadow: var(--shadow-card);
+  }
+  .quick-card:hover {
+    border-color: var(--accent);
+    background: linear-gradient(135deg, var(--accent-glow) 0%, var(--bg-secondary) 100%);
+    transform: translateY(-4px);
+    box-shadow: var(--shadow-card-hover), 0 0 20px var(--accent-glow);
+  }
+  .qc-step {
+    position: absolute; top: -13px; left: 50%; transform: translateX(-50%);
+    width: 26px; height: 26px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
+    color: white;
+    font-size: 12px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 2px 10px rgba(13, 148, 136, 0.4);
+  }
+  .qc-step.done {
+    background: linear-gradient(135deg, #22c55e, #16a34a);
+    box-shadow: 0 2px 10px rgba(34, 197, 94, 0.4);
+  }
+  .quick-card.done {
+    border-color: rgba(34, 197, 94, 0.3);
+    opacity: 0.7;
+  }
+  .quick-card.done .qc-title { text-decoration: line-through; color: var(--text-muted); }
+  .qc-icon { color: var(--accent); opacity: 0.85; }
+  .quick-card:hover .qc-icon { opacity: 1; }
+  .qc-title { font-size: 14px; font-weight: 600; }
+  .qc-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* Onboarding progress bar */
+  .onboarding-progress {
+    width: 100%; max-width: 420px; margin-bottom: 32px;
+  }
+  .progress-header {
+    display: flex; justify-content: space-between; align-items: center;
+    margin-bottom: 8px;
+  }
+  .progress-label { font-size: 12px; font-weight: 500; color: var(--text-secondary); }
+  .progress-pct { font-size: 12px; font-weight: 700; color: var(--accent); font-family: var(--font-mono); }
+  .progress-track {
+    height: 6px; border-radius: 3px;
+    background: var(--bg-tertiary);
+    overflow: hidden;
+  }
+  .progress-fill {
+    height: 100%; border-radius: 3px;
+    background: linear-gradient(90deg, var(--accent), #22c55e);
+    transition: width 500ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .quick-alt {
+    margin-top: 32px; display: flex; align-items: center; gap: 8px;
+    font-size: 12px;
+    padding: 10px 20px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+  }
+  .quick-alt-text { color: var(--text-dim); }
+  .quick-alt-link {
+    color: var(--accent); text-decoration: none; font-weight: 500;
+    transition: color 150ms ease;
+  }
+  .quick-alt-link:hover { color: var(--accent-hover); }
+  .quick-alt-sep { color: var(--text-ghost); }
+
   @media (max-width: 768px) {
     .stats-grid { grid-template-columns: repeat(2, 1fr); }
     .overview-grid { grid-template-columns: 1fr; }
+    .bottom-grid { grid-template-columns: 1fr; }
     .main-grid { grid-template-columns: 1fr; }
     .run-row { grid-template-columns: 1fr 70px 60px; }
     .page-header h1 { font-size: 1.2rem; }
+    .quick-start-grid { grid-template-columns: 1fr; }
   }
   @media (max-width: 1100px) and (min-width: 769px) {
     .overview-grid { grid-template-columns: 1fr 1fr; }
