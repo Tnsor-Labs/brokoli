@@ -28,14 +28,14 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Run tests
-        run: go test ./... -count=1
-
-      - name: Build UI
+      - name: Build UI (required for go:embed before tests)
         working-directory: ui
         run: |
           npm ci
           npm run build
+
+      - name: Run tests
+        run: go test ./... -count=1
 
       - name: Verify UI build
         run: test -f web/dist/index.html
