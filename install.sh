@@ -1,12 +1,12 @@
 #!/bin/sh
 # Brokoli Orchestrator installer for Linux and macOS.
-# Usage: curl -fsSL https://raw.githubusercontent.com/hc12r/brokolisql-go/main/install.sh | sh
+# Usage: curl -fsSL https://raw.githubusercontent.com/Tnsor-Labs/brokoli/main/install.sh | sh
 #
 # Windows: download the .zip from GitHub Releases and add brokoli.exe to your PATH.
 
 set -e
 
-REPO="hc12r/brokolisql-go"
+REPO="Tnsor-Labs/brokoli"
 BINARY="brokoli"
 INSTALL_DIR="/usr/local/bin"
 
@@ -82,7 +82,7 @@ if command -v "$BINARY" >/dev/null 2>&1; then
   echo ""
   echo "  Then open http://localhost:8080 in your browser."
   echo ""
-  echo "  Docs: https://github.com/${REPO}/tree/main/brokoli"
+  echo "  Docs: https://github.com/${REPO}"
 else
   success "Installed to ${INSTALL_DIR}/${BINARY}"
   info "You may need to add ${INSTALL_DIR} to your PATH."
