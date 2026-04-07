@@ -3,7 +3,7 @@ name: Release
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 jobs:
   release:
@@ -13,54 +13,45 @@ jobs:
       packages: write
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.25'
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
 
-    - name: Set up Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
 
-    - name: Build Broked UI
-      working-directory: broked-ui
-      run: |
-        npm ci
-        npm run build
+      - name: Run tests
+        run: go test ./... -count=1
 
-    - name: Verify UI build
-      run: |
-        ls -la broked/ui/dist/
-        test -f broked/ui/dist/index.html
+      - name: Build UI
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
 
-    - name: Run BrokoliSQL tests
-      run: go test ./... -count=1
+      - name: Verify UI build
+        run: test -f web/dist/index.html
 
-    - name: Run Broked tests
-      working-directory: broked
-      run: go test ./... -count=1
+      - name: Package UI artifact for enterprise builds
+        run: tar -czf ui-dist.tar.gz -C web/dist .
 
-    - name: Run GoReleaser
-      uses: goreleaser/goreleaser-action@v6
-      with:
-        version: latest
-        args: release --clean
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - name: Generate checksums for VirusTotal
-      run: |
-        echo "## Security Verification" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "SHA-256 checksums for all release binaries:" >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        cat dist/checksums.txt >> $GITHUB_STEP_SUMMARY
-        echo '```' >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "Verify Windows binary on [VirusTotal](https://www.virustotal.com/) by uploading the .zip or checking the SHA-256 hash above." >> $GITHUB_STEP_SUMMARY
+      - name: Upload UI artifact to release
+        run: gh release upload ${{ github.ref_name }} ui-dist.tar.gz --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

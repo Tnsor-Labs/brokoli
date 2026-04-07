@@ -2,24 +2,62 @@ name: Security
 
 on:
   pull_request:
-    branches: [ main ]
+    branches: [main]
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: "0 0 * * 0" # Weekly on Sunday
 
 jobs:
-  scan:
+  code-scan:
+    name: Code Security
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
-    - name: Set up Go
-      uses: actions/setup-go@v5
-      with:
-        go-version: '1.25'
-    - name: Gosec
-      uses: securego/gosec@master
-      with:
-        args: ./...
-    - name: govulncheck
-      run: |
-        go install golang.org/x/vuln/cmd/govulncheck@latest
-        govulncheck ./...
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Gosec (static analysis)
+        uses: securego/gosec@master
+        with:
+          args: ./...
+
+      - name: govulncheck (known vulnerabilities)
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+
+  license-compliance:
+    name: License Compliance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+
+      - name: Install go-licenses
+        run: go install github.com/google/go-licenses@latest
+
+      - name: Check for forbidden licenses
+        run: |
+          echo "Scanning dependency licenses..."
+          go-licenses report ./... 2>/dev/null | tee /tmp/licenses.txt || true
+
+          FORBIDDEN="GPL-2.0\|GPL-3.0\|AGPL\|SSPL\|EUPL"
+          if grep -i "$FORBIDDEN" /tmp/licenses.txt; then
+            echo "::error::Forbidden license detected! GPL/AGPL/SSPL dependencies cannot be used."
+            exit 1
+          fi
+          echo "✓ No forbidden licenses found"
+
+      - name: License summary
+        if: always()
+        run: |
+          echo "## License Summary" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          go-licenses report ./... 2>/dev/null | sort -t, -k3 | awk -F, '{print $3}' | sort | uniq -c | sort -rn >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
