@@ -31,17 +31,18 @@ go.work.sum
 # .idea/
 # .vscode/
 
-dist
+# Build output
+ui/dist/
+web/dist/assets/
 
 .todo
 
-# Broked runtime files
+# Runtime files
 brok.log
 *.db
 *.db-shm
 *.db-wal
 *.db.key
-broked/ui/dist/
 
 # Node modules
 node_modules/

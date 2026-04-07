@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Brokoli</title>
+    <script>
+      // Sync splash background with saved theme to prevent flash
+      (function() {
+        var t = localStorage.getItem('broked-theme');
+        var light = t === 'light';
+        document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+        var s = document.createElement('style');
+        var bg = light ? '#ffffff' : '#09090b';
+        var border = light ? '#e4e7ec' : '#27272a';
+        s.textContent = 'body{margin:0;background:' + bg + '}'
+          + '#app-loader{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:' + bg + '}'
+          + '#app-loader .spinner{width:28px;height:28px;border:3px solid ' + border + ';border-top-color:#0d9488;border-radius:50%;animation:spin .7s linear infinite}'
+          + '@keyframes spin{to{transform:rotate(360deg)}}';
+        document.head.appendChild(s);
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-DSxllz7S.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-DjTjlx6g.css">
+  </head>
+  <body>
+    <div id="app-loader"><div class="spinner"></div></div>
+    <div id="app"></div>
+  </body>
+</html>
