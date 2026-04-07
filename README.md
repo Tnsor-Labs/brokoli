@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/hc12r/brokoli/main/broked-ui/public/favicon.svg" width="64" height="64" alt="Brokoli" />
+  <img src="https://raw.githubusercontent.com/Tnsor-Labs/brokoli/main/ui/public/favicon.svg" width="64" height="64" alt="Brokoli" />
 </p>
 
 <h1 align="center">Brokoli</h1>
@@ -21,18 +21,24 @@
 
 ## Quick Start
 
-### Option A: Binary
+### Option A: Install Script
 
 ```bash
-# Download and run — that's it
-curl -L https://github.com/hc12r/brokoli/releases/latest/download/brokoli-linux-amd64 -o brokoli
-chmod +x brokoli
-./brokoli serve
+curl -fsSL https://raw.githubusercontent.com/Tnsor-Labs/brokoli/main/install.sh | sh
+brokoli serve
 ```
 
 Open `http://localhost:8080`. Create your admin account. Build your first pipeline.
 
-### Option B: Python SDK
+### Option B: Download Binary
+
+```bash
+# Linux x86_64
+curl -L https://github.com/Tnsor-Labs/brokoli/releases/latest/download/brokoli_Linux_x86_64.tar.gz | tar xz
+./brokoli serve
+```
+
+### Option C: Python SDK
 
 ```bash
 pip install brokoli
@@ -59,13 +65,11 @@ brokoli deploy my_pipeline.py --server http://localhost:8080
 # Pipeline appears in the visual editor instantly
 ```
 
-See the [Python SDK documentation](../brokoli-python/README.md) and [7 runnable demo pipelines](../brokoli-python/examples/demo/).
-
-**From source:**
+### From Source
 
 ```bash
-cd broked-ui && npm install && npm run build && cd ..
-cd broked && go build -o brokoli . && ./brokoli serve
+cd ui && npm install && npm run build && cd ..
+go build -o brokoli . && ./brokoli serve
 ```
 
 ## Why Brokoli
@@ -91,7 +95,7 @@ Drag-and-drop pipeline builder with 13 node types. No code required for common E
 - Undo/redo, auto-layout, node duplication
 - Inline node config with connection selector
 - Dry-run preview with data at every node
-- YAML import/export for pipeline-as-code
+- YAML/JSON import/export for pipeline-as-code
 
 ### 13 Node Types
 
@@ -110,28 +114,39 @@ Drag-and-drop pipeline builder with 13 node types. No code required for common E
 - **Quality trends**: profile data stored as time series for historical analysis
 - Block or warn policies per rule
 
-### Smart Execution
+### Execution Engine
 - **Parallel DAG execution** — wave-based Kahn's algorithm with configurable concurrency
-- **Smart retry per node** — exponential/linear/fixed backoff, node-type-aware defaults (DB sources get 3 retries, transforms get 0)
+- **Distributed tracing** — trace_id per run, span_id per node attempt for correlation across workers
+- **Per-attempt tracking** — each retry creates a separate record with its own timing and status
+- **Smart retry per node** — exponential backoff, configurable max retries and delay
 - **Resume from failure** — skip succeeded nodes, retry from the point of failure
+- **Wait time tracking** — measures queue delay between node readiness and execution start
+- **Throughput metrics** — rows/sec calculated per node execution
 - **Cross-pipeline dependencies** — `depends_on` field, scheduler checks before triggering
-- **Condition branching** — if/else nodes evaluate expressions (`row_count > 0`, `null_pct("col") < 10`) and route data accordingly
+- **Condition branching** — if/else nodes evaluate expressions and route data accordingly
 - **Cancellation** — cancel running pipelines via API or UI
 
 ### Monitoring & Alerts
 - **Real-time WebSocket** updates — live run status, node progress, log streaming
+- **Gantt timeline** — full-page interactive execution timeline with dependency arrows
+- **Node stats** — historical duration tracking with sparklines across runs
 - **Slack notifications** — configurable via UI, fires on run success, failure, and SLA breach
 - **Schema drift alerts** — critical schema changes trigger Slack notifications with column details
 - **SLA deadlines** — per-pipeline "must complete by HH:MM" with timezone support
 - **Run calendar** — GitHub-style heatmap of daily run activity
 - **Data lineage** — interactive cross-pipeline DAG visualization
-- **Gantt timeline** — node-level execution timing per run
 
 ### Connections & Secrets
 - **7 connection types**: Postgres, MySQL, SQLite, HTTP, SFTP, S3, Generic
 - **AES-256-GCM encryption** for all secrets at rest
 - **Real connection testing** — actually connects and authenticates, not just ping
 - **Variables** with typed values (string, number, JSON, secret) and `${var.key}` resolution in any config field
+
+### Authentication & Security
+- **httpOnly cookie sessions** — no tokens in localStorage
+- **JWT auth** with persistent secret
+- **API key authentication** for automation
+- **Role-based access** — admin, editor, viewer
 
 ### Pipeline Versioning
 - Auto-snapshot on every save
@@ -200,6 +215,8 @@ Brokoli Enterprise adds governance, compliance, and team features for production
 | Cross-pipeline dependencies | ✓ | ✓ |
 | Smart retry per node | ✓ | ✓ |
 | Condition branching (if/else) | ✓ | ✓ |
+| Distributed tracing | ✓ | ✓ |
+| Gantt execution timeline | ✓ | ✓ |
 | **SSO/OIDC** (Okta, Azure AD, Google) | | ✓ |
 | **Audit logging** with before/after diff | | ✓ |
 | **Workspaces** with RBAC (owner/admin/editor/viewer) | | ✓ |
@@ -210,110 +227,110 @@ Brokoli Enterprise adds governance, compliance, and team features for production
 | **PII detection** — auto-scan for email, phone, SSN, IP, credit card | | ✓ |
 | **OpenLineage** export to DataHub/Marquez/Atlan | | ✓ |
 | **Kubernetes executor** — dispatch nodes as K8s Jobs | | ✓ |
-
-```bash
-BROKOLI_LICENSE_KEY=enterprise-yourco-sso,audit,k8s,gitsync,alerts-2027-01-01-xxx \
-  ./brokoli-ee serve --port 9900
-```
+| **Work pools** — managed and self-hosted remote workers | | ✓ |
 
 ## API Reference
 
 All endpoints require authentication (except `/health` and `/api/auth/setup`).
+Authentication via httpOnly session cookie (set on login) or `Authorization: Bearer <token>` header.
+
+### Auth
+```
+POST   /api/auth/login                 Login (sets session cookie)
+POST   /api/auth/logout                Logout (clears session cookie)
+GET    /api/auth/me                    Current user info
+GET    /api/auth/setup                 Check if setup needed (no auth)
+```
 
 ### Pipelines
 ```
-GET    /api/pipelines                List pipelines (lean DTO — no nodes/edges)
-POST   /api/pipelines                Create pipeline
-GET    /api/pipelines/:id            Get pipeline (full detail)
-PUT    /api/pipelines/:id            Update pipeline
-DELETE /api/pipelines/:id            Delete pipeline
-POST   /api/pipelines/:id/run        Trigger run
-POST   /api/pipelines/:id/dry-run    Preview with sample rows
-POST   /api/pipelines/:id/clone      Duplicate pipeline
-POST   /api/pipelines/:id/backfill   Backfill date range
-GET    /api/pipelines/:id/export     Export as YAML
-GET    /api/pipelines/:id/versions   Version history
-POST   /api/pipelines/:id/rollback   Restore version
-GET    /api/pipelines/:id/deps       Dependency status
-GET    /api/pipelines/:id/impact     Downstream impact analysis
-POST   /api/pipelines/:id/webhook    Webhook trigger (token auth)
-POST   /api/pipelines/import         Import YAML/JSON
-POST   /api/pipelines/bulk           Bulk enable/disable/delete
+GET    /api/pipelines                  List pipelines
+POST   /api/pipelines                  Create pipeline
+GET    /api/pipelines/:id              Get pipeline (full detail)
+PUT    /api/pipelines/:id              Update pipeline
+DELETE /api/pipelines/:id              Delete pipeline
+POST   /api/pipelines/:id/run          Trigger run
+POST   /api/pipelines/:id/dry-run      Preview with sample rows
+POST   /api/pipelines/:id/clone        Duplicate pipeline
+POST   /api/pipelines/:id/backfill     Backfill date range
+GET    /api/pipelines/:id/export       Export as YAML
+GET    /api/pipelines/:id/versions     Version history
+POST   /api/pipelines/:id/rollback     Restore version
+GET    /api/pipelines/:id/node-stats   Historical node durations
+POST   /api/pipelines/:id/webhook      Webhook trigger (token auth)
+POST   /api/pipelines/import           Import YAML/JSON
 ```
 
 ### Runs
 ```
-GET    /api/pipelines/:id/runs            List runs
-GET    /api/runs/:id                      Run detail (with error)
-POST   /api/runs/:id/resume               Resume from failure
-POST   /api/runs/:id/cancel               Cancel running pipeline
-GET    /api/runs/:id/logs                  Run logs
-GET    /api/runs/:id/logs/export           Download logs
-GET    /api/runs/:id/nodes/:nid/preview    Node data preview
-GET    /api/runs/:id/nodes/:nid/profile    Node profiling data + drift alerts
-GET    /api/runs/calendar                  Daily run heatmap
+GET    /api/pipelines/:id/runs              List runs
+GET    /api/runs/:id                        Run detail (with node_runs, trace_id)
+POST   /api/runs/:id/resume                 Resume from failure
+POST   /api/runs/:id/cancel                 Cancel running pipeline
+GET    /api/runs/:id/logs                   Run logs (with trace_id, span_id)
+GET    /api/runs/:id/logs/export            Download logs
+GET    /api/runs/:id/nodes/:nid/preview     Node data preview
+GET    /api/runs/:id/nodes/:nid/profile     Node profiling data + drift alerts
+GET    /api/runs/calendar                   Daily run heatmap
 ```
 
 ### Connections & Variables
 ```
-GET    /api/connections                    List connections
-POST   /api/connections                    Create connection
-POST   /api/connections/:id/test           Test connection
-GET    /api/variables                      List variables
-POST   /api/variables                      Create/update variable
+GET    /api/connections                     List connections
+POST   /api/connections                     Create connection
+POST   /api/connections/:id/test            Test connection
+GET    /api/variables                       List variables
+POST   /api/variables                       Create/update variable
 ```
 
 ### Settings & Notifications
 ```
-GET    /api/settings/notifications         Slack config (masked)
-PUT    /api/settings/notifications         Save Slack config
-POST   /api/settings/notifications/test    Send test Slack message
+GET    /api/settings/notifications          Slack config (masked)
+PUT    /api/settings/notifications          Save Slack config
+POST   /api/settings/notifications/test     Send test Slack message
 ```
 
 ### System
 ```
-GET    /health                             Health check (no auth)
-GET    /metrics                            Prometheus metrics (no auth)
-GET    /api/system/info                    System info
-GET    /api/scheduler/status               Active schedules
-GET    /api/lineage                        Cross-pipeline lineage graph
+GET    /health                              Health check (no auth)
+GET    /metrics                             Prometheus metrics (no auth)
+GET    /api/system/info                     System info
+GET    /api/scheduler/status                Active schedules
+GET    /api/lineage                         Cross-pipeline lineage graph
 ```
 
 ## Architecture
 
 ```
-26MB single binary
+~30MB single binary
 ├── Go backend (chi router, gorilla/websocket, SQLite/PostgreSQL)
 ├── Svelte 5 frontend (embedded via go:embed)
-├── Pipeline engine (parallel DAG execution, retry, profiling)
+├── Execution engine (parallel DAG, tracing, retry, profiling)
 └── Extension system (enterprise plugins via interface injection)
 ```
 
 ```
-broked/
-  cmd/           CLI — serve, run, assert, generate-key
-  engine/        Execution, transforms, profiling, drift, conditions, retry, deps, scheduler, SLA
-  api/           HTTP handlers, auth, WebSocket, middleware, rate limiting
-  store/         SQLite + PostgreSQL with migrations
-  crypto/        AES-256-GCM encryption
-  quality/       10 data quality rules
-  extensions/    Enterprise plugin interfaces
-  models/        Pipeline, Run, Node, Connection, Variable, Workspace
-  ui/            Embedded Svelte frontend
-
-broked-ui/
-  src/pages/     Dashboard, Pipelines, Editor, Runs, Calendar, Lineage,
-                 Connections, Variables, Workspaces, Audit Log, Git Sync, Settings
-  src/components/ Canvas, NodeCard, Sidebar, ConfigPanel, CodeEditor, Pagination, etc.
+├── cmd/           CLI — serve, run, assert, generate-key
+├── engine/        Execution, transforms, profiling, drift, conditions, retry, scheduler
+├── api/           HTTP handlers, auth, WebSocket, middleware, rate limiting
+├── store/         SQLite + PostgreSQL dual-dialect store with migrations
+├── crypto/        AES-256-GCM encryption
+├── quality/       10 data quality rules
+├── extensions/    Enterprise plugin interfaces
+├── models/        Pipeline, Run, NodeRun, Connection, Variable, Workspace
+├── pkg/           Shared utilities (common types, fetchers)
+├── web/           Embedded Svelte frontend (go:embed)
+└── ui/            Svelte 5 source (components, pages, stores)
 ```
 
 ## Tests
 
 ```bash
-go test ./broked/... -v
-# 219+ Go tests + 52 Python SDK tests across engine, crypto, quality, store, validation
-# Covers: profiling, drift detection, conditions, assertions,
-#         retry logic, dependencies, webhooks, contracts, PII, lineage
+# Build UI first (required for go:embed)
+cd ui && npm install && npm run build && cd ..
+
+# Run all tests
+go test ./... -v
 ```
 
 ## Configuration
@@ -321,17 +338,17 @@ go test ./broked/... -v
 | Flag | Default | Description |
 |---|---|---|
 | `--port` / `-p` | 8080 | HTTP server port |
-| `--db` | ./broked.db | SQLite path (or `postgres://...` URI) |
+| `--db` | ./brokoli.db | SQLite path (or `postgres://...` URI) |
 | `--api-key` | — | Enable API key authentication |
 
 | Env Variable | Description |
 |---|---|
 | `BROKOLI_APP_URL` | Base URL for Slack deep links (default: `http://localhost:8080`) |
 | `BROKOLI_JWT_SECRET` | Persistent JWT signing secret |
-| `BROKED_SECRET_*` | Resolved via `${secret.name}` in node configs |
+| `BROKOLI_CORS_ORIGINS` | Allowed CORS origins (comma-separated, default: `*`) |
 
 ## License
 
-Apache 2.0 — see [LICENSE](../LICENSE).
+Apache 2.0 — see [LICENSE](LICENSE).
 
-Enterprise features are available under a separate commercial license. Contact us for pricing.
+Enterprise features are available under a separate commercial license. [Contact us](https://brokoli.dev) for pricing.
