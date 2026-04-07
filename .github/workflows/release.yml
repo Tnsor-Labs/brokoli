@@ -40,6 +40,9 @@ jobs:
       - name: Verify UI build
         run: test -f web/dist/index.html
 
+      - name: Stage UI build output (GoReleaser requires clean git)
+        run: git add web/dist/
+
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
