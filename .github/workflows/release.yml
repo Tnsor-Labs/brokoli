@@ -40,9 +40,6 @@ jobs:
       - name: Verify UI build
         run: test -f web/dist/index.html
 
-      - name: Package UI artifact for enterprise builds
-        run: tar -czf ui-dist.tar.gz -C web/dist .
-
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
@@ -51,7 +48,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Upload UI artifact to release
-        run: gh release upload ${{ github.ref_name }} ui-dist.tar.gz --clobber
+      - name: Package and upload UI artifact for enterprise builds
+        run: |
+          tar -czf /tmp/ui-dist.tar.gz -C web/dist .
+          gh release upload ${{ github.ref_name }} /tmp/ui-dist.tar.gz#ui-dist.tar.gz --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
