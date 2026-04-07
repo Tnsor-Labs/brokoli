@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/Tnsor-Labs/brokoli/extensions"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Global audit logger — set by RegisterRoutes from the extensions registry.

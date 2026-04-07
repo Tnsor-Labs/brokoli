@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/go-chi/chi/v5"
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // RegisterRoutes sets up all API routes on the given router.

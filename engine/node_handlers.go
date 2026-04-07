@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/quality"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
+	"github.com/Tnsor-Labs/brokoli/quality"
 )
 
 // allowedDataDirs defines directories where source/sink file nodes may read/write.

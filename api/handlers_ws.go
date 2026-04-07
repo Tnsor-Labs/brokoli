@@ -9,10 +9,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/gorilla/websocket"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/gorilla/websocket"
 )
 
 var upgrader = websocket.Upgrader{

@@ -3,9 +3,9 @@ package api
 import (
 	"net/http"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // PermissionChecker validates user permissions against roles stored in the database.

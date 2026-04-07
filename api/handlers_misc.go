@@ -9,11 +9,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/go-chi/chi/v5"
 )
 
 // dlqListHandler handles GET /pipelines/{id}/dlq — returns dead letter queue entries.
