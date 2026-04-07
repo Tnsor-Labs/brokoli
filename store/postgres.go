@@ -217,6 +217,20 @@ func (s *PostgresStore) migrate() error {
 		VALUES ('default', 'Default', 'default', 'Default workspace', NOW(), NOW())
 		ON CONFLICT (id) DO NOTHING`)
 
+	// Tracing & observability columns
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS queue_ms BIGINT NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS rows_per_sec REAL NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
+
 	return nil
 }
 
@@ -436,8 +450,8 @@ func (s *PostgresStore) DeletePipeline(id string) error {
 
 func (s *PostgresStore) CreateRun(r *models.Run) error {
 	_, err := s.db.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at) VALUES ($1,$2,$3,$4,$5)`,
-		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt,
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id) VALUES ($1,$2,$3,$4,$5,$6)`,
+		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID,
 	)
 	return err
 }
@@ -446,8 +460,8 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 	var r models.Run
 	var status string
 	err := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at FROM runs WHERE id = $1`, id,
-	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt)
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id FROM runs WHERE id = $1`, id,
+	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID)
 	if err != nil {
 		return nil, err
 	}
@@ -463,7 +477,7 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 
 func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id
 		 FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC LIMIT $2`,
 		pipelineID, limit,
 	)
@@ -476,7 +490,7 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 	for rows.Next() {
 		var r models.Run
 		var status string
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID); err != nil {
 			return nil, err
 		}
 		r.Status = models.RunStatus(status)
@@ -487,8 +501,8 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 
 func (s *PostgresStore) UpdateRun(r *models.Run) error {
 	_, err := s.db.Exec(
-		`UPDATE runs SET status=$1, started_at=$2, finished_at=$3 WHERE id=$4`,
-		string(r.Status), r.StartedAt, r.FinishedAt, r.ID,
+		`UPDATE runs SET status=$1, started_at=$2, finished_at=$3, trace_id=$4 WHERE id=$5`,
+		string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.ID,
 	)
 	return err
 }
@@ -497,24 +511,26 @@ func (s *PostgresStore) UpdateRun(r *models.Run) error {
 
 func (s *PostgresStore) CreateNodeRun(nr *models.NodeRun) error {
 	_, err := s.db.Exec(
-		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
 		nr.ID, nr.RunID, nr.NodeID, string(nr.Status), nr.RowCount, nr.StartedAt, nr.DurationMs, nr.Error,
+		nr.Attempt, nr.ReadyAt, nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID,
 	)
 	return err
 }
 
 func (s *PostgresStore) UpdateNodeRun(nr *models.NodeRun) error {
 	_, err := s.db.Exec(
-		`UPDATE node_runs SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5 WHERE id=$6`,
-		string(nr.Status), nr.RowCount, nr.StartedAt, nr.DurationMs, nr.Error, nr.ID,
+		`UPDATE node_runs SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5, attempt=$6, ready_at=$7, queue_ms=$8, rows_per_sec=$9, trace_id=$10, span_id=$11 WHERE id=$12`,
+		string(nr.Status), nr.RowCount, nr.StartedAt, nr.DurationMs, nr.Error,
+		nr.Attempt, nr.ReadyAt, nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
 	)
 	return err
 }
 
 func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) {
 	rows, err := s.db.Query(
-		`SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error
+		`SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id
 		 FROM node_runs WHERE run_id = $1`, runID,
 	)
 	if err != nil {
@@ -526,7 +542,8 @@ func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error
 	for rows.Next() {
 		var nr models.NodeRun
 		var status string
-		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount, &nr.StartedAt, &nr.DurationMs, &nr.Error); err != nil {
+		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount, &nr.StartedAt, &nr.DurationMs, &nr.Error,
+			&nr.Attempt, &nr.ReadyAt, &nr.QueueMs, &nr.RowsPerSec, &nr.TraceID, &nr.SpanID); err != nil {
 			return nil, err
 		}
 		nr.Status = models.RunStatus(status)
@@ -538,16 +555,21 @@ func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error
 // --- Logs ---
 
 func (s *PostgresStore) AppendLog(entry *models.LogEntry) error {
+	metadataJSON, _ := json.Marshal(entry.Metadata)
+	if entry.Metadata == nil {
+		metadataJSON = []byte("{}")
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO logs (run_id, node_id, level, message, timestamp) VALUES ($1,$2,$3,$4,$5)`,
+		`INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
 		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp,
+		entry.TraceID, entry.SpanID, entry.Attempt, string(metadataJSON),
 	)
 	return err
 }
 
 func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
 	rows, err := s.db.Query(
-		`SELECT run_id, node_id, level, message, timestamp FROM logs WHERE run_id = $1 ORDER BY timestamp`, runID,
+		`SELECT run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata FROM logs WHERE run_id = $1 ORDER BY timestamp`, runID,
 	)
 	if err != nil {
 		return nil, err
@@ -558,10 +580,15 @@ func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
 	for rows.Next() {
 		var entry models.LogEntry
 		var level string
-		if err := rows.Scan(&entry.RunID, &entry.NodeID, &level, &entry.Message, &entry.Timestamp); err != nil {
+		var metadataStr string
+		if err := rows.Scan(&entry.RunID, &entry.NodeID, &level, &entry.Message, &entry.Timestamp,
+			&entry.TraceID, &entry.SpanID, &entry.Attempt, &metadataStr); err != nil {
 			return nil, err
 		}
 		entry.Level = models.LogLevel(level)
+		if metadataStr != "" && metadataStr != "{}" {
+			json.Unmarshal([]byte(metadataStr), &entry.Metadata)
+		}
 		logs = append(logs, entry)
 	}
 	return logs, rows.Err()

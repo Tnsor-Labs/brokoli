@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/Tnsor-Labs/brokoli/engine"
@@ -314,4 +316,78 @@ func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 		"columns": columns,
 		"rows":    rows,
 	})
+}
+
+// NodeStats returns historical execution durations per node for sparkline charts.
+// GET /api/pipelines/{id}/node-stats?runs=10
+func (h *RunHandler) NodeStats(w http.ResponseWriter, r *http.Request) {
+	pipelineID := chi.URLParam(r, "id")
+
+	numRuns := 10
+	if n := r.URL.Query().Get("runs"); n != "" {
+		if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 50 {
+			numRuns = parsed
+		}
+	}
+
+	runs, err := h.store.ListRunsByPipeline(pipelineID, numRuns)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type nodeStat struct {
+		Durations []int64 `json:"durations"`
+		Avg       int64   `json:"avg"`
+		P95       int64   `json:"p95"`
+	}
+	nodes := make(map[string]*nodeStat)
+
+	for _, run := range runs {
+		nodeRuns, err := h.store.ListNodeRunsByRun(run.ID)
+		if err != nil {
+			continue
+		}
+		// For each node, take the final attempt's duration (highest attempt with success)
+		best := make(map[string]*models.NodeRun) // nodeID → best attempt
+		for i := range nodeRuns {
+			nr := &nodeRuns[i]
+			if nr.Status != models.RunStatusSuccess {
+				continue
+			}
+			if prev, ok := best[nr.NodeID]; !ok || nr.Attempt > prev.Attempt {
+				best[nr.NodeID] = nr
+			}
+		}
+		for nodeID, nr := range best {
+			stat, ok := nodes[nodeID]
+			if !ok {
+				stat = &nodeStat{}
+				nodes[nodeID] = stat
+			}
+			stat.Durations = append(stat.Durations, nr.DurationMs)
+		}
+	}
+
+	// Compute avg and p95
+	for _, stat := range nodes {
+		if len(stat.Durations) == 0 {
+			continue
+		}
+		sorted := make([]int64, len(stat.Durations))
+		copy(sorted, stat.Durations)
+		sort.Slice(sorted, func(i, j int) bool { return sorted[i] < sorted[j] })
+		var sum int64
+		for _, d := range sorted {
+			sum += d
+		}
+		stat.Avg = sum / int64(len(sorted))
+		p95idx := int(float64(len(sorted)) * 0.95)
+		if p95idx >= len(sorted) {
+			p95idx = len(sorted) - 1
+		}
+		stat.P95 = sorted[p95idx]
+	}
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{"nodes": nodes})
 }

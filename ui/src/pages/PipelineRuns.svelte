@@ -7,6 +7,7 @@
   import { onWSEvent, liveNodeStatuses } from "../lib/stores";
   import StatusBadge from "../components/StatusBadge.svelte";
   import RunTimeline from "../components/RunTimeline.svelte";
+  import GanttChart from "../components/GanttChart.svelte";
   import LogStream from "../components/LogStream.svelte";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -449,9 +450,13 @@
               {#if selectedRun.node_runs && selectedRun.node_runs.length > 0}
                 <div class="detail-section">
                   <h3>Execution Timeline</h3>
-                  <RunTimeline
+                  <GanttChart
                     nodeRuns={selectedRun.node_runs}
                     nodes={pipeline?.nodes || []}
+                    runStartedAt={selectedRun.started_at}
+                    pipelineId={pipeline?.id || params.id || ""}
+                    runId={selectedRun.id}
+                    onSelectNode={(nodeId) => { previewNodeId = previewNodeId === nodeId ? null : nodeId; }}
                   />
                 </div>
               {/if}

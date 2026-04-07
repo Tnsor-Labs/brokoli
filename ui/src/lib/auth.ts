@@ -6,29 +6,32 @@ export interface AuthUser {
   role: "admin" | "editor" | "viewer";
 }
 
-export const authToken = writable<string | null>(
-  typeof localStorage !== "undefined" ? localStorage.getItem("brokoli-token") : null
-);
+// Auth state is managed via httpOnly session cookie (set by server on login).
+// No tokens in localStorage — prevents XSS token theft.
+export const authToken = writable<string | null>(null);
 export const authUser = writable<AuthUser | null>(null);
 export const needsSetup = writable<boolean>(false);
 export const authReady = writable<boolean>(false);
 
 export function setToken(token: string | null) {
   authToken.set(token);
-  if (token) {
-    localStorage.setItem("brokoli-token", token);
-  } else {
-    localStorage.removeItem("brokoli-token");
-  }
+  // Token is only held in memory for the auth-callback flow (OAuth/signup).
+  // The httpOnly cookie is the real auth credential — set by the server.
 }
 
 export function logout() {
-  setToken(null);
+  authToken.set(null);
   authUser.set(null);
+  // Clear the httpOnly cookie via server endpoint
+  fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
+  // Also clean up any legacy localStorage tokens
+  localStorage.removeItem("brokoli-token");
   window.location.hash = "#/login";
 }
 
 export function authHeaders(): Record<string, string> {
+  // httpOnly cookie is sent automatically by the browser on same-origin requests.
+  // Only use Authorization header for in-memory tokens (OAuth callback flow).
   const token = get(authToken);
   if (token) {
     return { Authorization: `Bearer ${token}` };
@@ -113,22 +116,15 @@ export async function initAuth() {
       window.history.replaceState({}, "", window.location.pathname + "#/");
     }
 
-    // Try to validate existing token
-    const token = get(authToken);
-    if (token) {
-      const meRes = await fetch("/api/auth/me", {
-        headers: { Authorization: `Bearer ${token}` },
+    // Validate session via httpOnly cookie (sent automatically by browser)
+    const meRes = await fetch("/api/auth/me");
+    if (meRes.ok) {
+      const claims = await meRes.json();
+      authUser.set({
+        id: claims.sub,
+        username: claims.username,
+        role: claims.role,
       });
-      if (meRes.ok) {
-        const claims = await meRes.json();
-        authUser.set({
-          id: claims.sub,
-          username: claims.username,
-          role: claims.role,
-        });
-      } else {
-        setToken(null);
-      }
     }
   } catch {
     // Server might not have auth — open mode
@@ -148,7 +144,10 @@ export async function login(username: string, password: string): Promise<string 
       return data.error || "Login failed";
     }
     const data = await res.json();
-    setToken(data.token);
+    // Server sets httpOnly cookie via withSessionCookie wrapper.
+    // Keep token in memory only for the current page load (used by authHeaders
+    // until the next request picks up the cookie).
+    authToken.set(data.token);
     authUser.set(data.user);
     return null;
   } catch {

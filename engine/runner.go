@@ -33,6 +33,7 @@ type Runner struct {
 	varCtx        *VariableContext
 	preRunID      string                          // pre-generated run ID (for registration before Execute)
 	orgID         string                          // tenant isolation for WebSocket events
+	traceID       string                          // distributed tracing correlation ID
 	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
 	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 }
@@ -67,11 +68,13 @@ func (r *Runner) Execute() (*models.Run, error) {
 	if runID == "" {
 		runID = common.NewID()
 	}
+	r.traceID = common.NewID()
 	r.run = &models.Run{
 		ID:         runID,
 		PipelineID: r.pipe.ID,
 		Status:     models.RunStatusRunning,
 		StartedAt:  &now,
+		TraceID:    r.traceID,
 	}
 	if err := r.store.CreateRun(r.run); err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
@@ -145,6 +148,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 		// Execute ready nodes in parallel
 		var wg sync.WaitGroup
 		errCh := make(chan error, len(ready))
+		readyAt := time.Now().UTC() // all nodes in this wave became ready at this moment
 
 		for _, node := range ready {
 			wg.Add(1)
@@ -167,7 +171,7 @@ func (r *Runner) Execute() (*models.Run, error) {
 					return
 				}
 
-				if err := r.executeNode(n, outputs, &outputsMu); err != nil {
+				if err := r.executeNode(n, outputs, &outputsMu, readyAt); err != nil {
 					errCh <- err
 					return
 				}
@@ -231,25 +235,12 @@ func (r *Runner) Execute() (*models.Run, error) {
 	return r.run, nil
 }
 
-func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSet, outputsMu *sync.Mutex) error {
+func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSet, outputsMu *sync.Mutex, readyAt time.Time) error {
 	// Skip nodes that already succeeded (resume mode)
 	if r.skipNodes != nil && r.skipNodes[node.ID] {
 		r.log(node.ID, models.LogLevelInfo, "Skipping node %s (already succeeded)", node.Name)
 		return nil
 	}
-
-	startTime := time.Now().UTC()
-	nr := &models.NodeRun{
-		ID:        common.NewID(),
-		RunID:     r.run.ID,
-		NodeID:    node.ID,
-		Status:    models.RunStatusRunning,
-		StartedAt: &startTime,
-	}
-	r.store.CreateNodeRun(nr)
-	r.emit(models.Event{Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID})
-
-	r.log(node.ID, models.LogLevelInfo, "Starting node: %s (%s)", node.Name, node.Type)
 
 	// Resolve variables in node config
 	if r.varCtx != nil && node.Config != nil {
@@ -264,7 +255,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	// Find input data from connected upstream nodes (thread-safe read)
 	outputsMu.Lock()
 	var input *common.DataSet
-	var allInputs []*common.DataSet // for multi-input nodes like join
+	var allInputs []*common.DataSet
 	for _, edge := range r.pipe.Edges {
 		if edge.To == node.ID {
 			if ds, ok := outputs[edge.From]; ok {
@@ -283,7 +274,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		input = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
 	}
 
-	// Retry logic with exponential backoff
+	// Retry config
 	maxRetries := 0
 	if mr, ok := node.Config["max_retries"].(float64); ok {
 		maxRetries = int(mr)
@@ -292,9 +283,21 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	if rd, ok := node.Config["retry_delay"].(float64); ok && rd > 0 {
 		baseDelay = time.Duration(rd) * time.Millisecond
 	}
+	nodeTimeout := 30 * time.Minute
+	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
+		nodeTimeout = time.Duration(t) * time.Second
+	}
+
+	type nodeResult struct {
+		output *common.DataSet
+		err    error
+	}
+
+	r.emit(models.Event{Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID})
 
 	var output *common.DataSet
-	var err error
+	var lastErr error
+
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			// Exponential backoff: baseDelay * 2^(attempt-1), max 60s
@@ -302,38 +305,60 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			if delay > 60*time.Second {
 				delay = 60 * time.Second
 			}
-			r.log(node.ID, models.LogLevelWarning, "Retry %d/%d in %v (exponential backoff)", attempt, maxRetries, delay)
+			r.logWithTrace(node.ID, models.LogLevelWarning, "", attempt, nil,
+				"Retry %d/%d in %v (exponential backoff)", attempt, maxRetries, delay)
 			r.emit(models.Event{
-				Type:   models.EventNodeStarted,
-				RunID:  r.run.ID,
-				NodeID: node.ID,
-				Status: "retrying",
-				Error:  fmt.Sprintf("retry %d/%d", attempt, maxRetries),
+				Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID,
+				Status: "retrying", Error: fmt.Sprintf("retry %d/%d", attempt, maxRetries),
 			})
-			// Context-aware sleep
 			select {
 			case <-time.After(delay):
 			case <-r.ctx.Done():
 				return fmt.Errorf("cancelled during retry wait")
 			}
 		}
-		// Per-node timeout (default 30m for most, configurable via node config "timeout" in seconds)
-		type nodeResult struct {
-			output *common.DataSet
-			err    error
+
+		// Create a NodeRun for THIS attempt
+		spanID := common.NewID()
+		startTime := time.Now().UTC()
+		queueMs := int64(0)
+		if attempt == 0 {
+			queueMs = startTime.Sub(readyAt).Milliseconds()
 		}
 
-		nodeTimeout := 30 * time.Minute
-		if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
-			nodeTimeout = time.Duration(t) * time.Second
+		nr := &models.NodeRun{
+			ID:        common.NewID(),
+			RunID:     r.run.ID,
+			NodeID:    node.ID,
+			Status:    models.RunStatusRunning,
+			StartedAt: &startTime,
+			Attempt:   attempt,
+			ReadyAt:   &readyAt,
+			QueueMs:   queueMs,
+			TraceID:   r.traceID,
+			SpanID:    spanID,
+		}
+		if !r.dryRun {
+			r.store.CreateNodeRun(nr)
 		}
 
+		if attempt == 0 {
+			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt,
+				map[string]string{"queue_ms": fmt.Sprintf("%d", queueMs)},
+				"Starting node: %s (%s)", node.Name, node.Type)
+		} else {
+			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt, nil,
+				"Retry attempt %d for node: %s", attempt, node.Name)
+		}
+
+		// Execute with timeout
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			out, e := r.runNodeLogic(node, input, allInputs)
 			resultCh <- nodeResult{out, e}
 		}()
 
+		var err error
 		select {
 		case result := <-resultCh:
 			output, err = result.output, result.err
@@ -343,90 +368,106 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			err = fmt.Errorf("pipeline cancelled")
 		}
 
+		duration := time.Since(startTime).Milliseconds()
+
 		if err == nil {
-			if attempt > 0 {
-				r.log(node.ID, models.LogLevelInfo, "Succeeded after %d retries", attempt)
+			// ── Success ──
+			rowCount := 0
+			if output != nil {
+				rowCount = len(output.Rows)
 			}
+			rowsPerSec := float64(0)
+			if duration > 0 && rowCount > 0 {
+				rowsPerSec = float64(rowCount) / (float64(duration) / 1000.0)
+			}
+
+			nr.Status = models.RunStatusSuccess
+			nr.DurationMs = duration
+			nr.RowCount = rowCount
+			nr.RowsPerSec = rowsPerSec
+			if !r.dryRun {
+				r.store.UpdateNodeRun(nr)
+			}
+
+			if attempt > 0 {
+				r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt, nil,
+					"Succeeded after %d retries", attempt)
+			}
+
+			// Store output
+			if output != nil {
+				if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
+					output.Rows = output.Rows[:r.dryRunMaxRows]
+				}
+				outputsMu.Lock()
+				outputs[node.ID] = output
+				outputsMu.Unlock()
+
+				if r.dryRun {
+					if r.dryRunResults == nil {
+						r.dryRunResults = make(map[string]*DryRunNodeResult)
+					}
+					previewRows := make([]map[string]interface{}, len(output.Rows))
+					for i, row := range output.Rows {
+						previewRows[i] = map[string]interface{}(row)
+					}
+					r.dryRunResults[node.ID] = &DryRunNodeResult{
+						NodeID: node.ID, Name: node.Name, Status: "success",
+						Columns: output.Columns, Rows: previewRows,
+					}
+				} else {
+					r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows)
+				}
+			}
+
+			// Completion log with throughput
+			durStr := fmt.Sprintf("%dms", duration)
+			if duration >= 1000 {
+				durStr = fmt.Sprintf("%.1fs", float64(duration)/1000)
+			}
+			tpStr := ""
+			if rowsPerSec >= 1000 {
+				tpStr = fmt.Sprintf(" (%.0fK rows/sec)", rowsPerSec/1000)
+			} else if rowsPerSec > 0 {
+				tpStr = fmt.Sprintf(" (%.0f rows/sec)", rowsPerSec)
+			}
+			colInfo := ""
+			if output != nil && len(output.Columns) > 0 {
+				colInfo = fmt.Sprintf(", columns: [%s]", truncateList(output.Columns, 8))
+			}
+			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt,
+				map[string]string{
+					"duration_ms":  fmt.Sprintf("%d", duration),
+					"row_count":    fmt.Sprintf("%d", rowCount),
+					"rows_per_sec": fmt.Sprintf("%.1f", rowsPerSec),
+					"queue_ms":     fmt.Sprintf("%d", queueMs),
+				},
+				"Node completed: %d rows in %s%s%s", rowCount, durStr, tpStr, colInfo)
+			r.emit(models.Event{Type: models.EventNodeCompleted, RunID: r.run.ID, NodeID: node.ID, RowCount: rowCount, DurationMs: duration})
+			lastErr = nil
 			break
 		}
-		if attempt < maxRetries {
-			r.log(node.ID, models.LogLevelWarning, "Attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
-		}
-	}
 
-	duration := time.Since(startTime).Milliseconds()
-
-	if err != nil {
+		// ── Failure for this attempt ──
 		nr.Status = models.RunStatusFailed
 		nr.DurationMs = duration
 		nr.Error = err.Error()
-		r.store.UpdateNodeRun(nr)
-		r.log(node.ID, models.LogLevelError, "Node failed after %d attempts: %v", maxRetries+1, err)
-		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: err.Error()})
-		return fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, err)
-	}
-
-	rowCount := 0
-	if output != nil {
-		// In dry run mode, truncate rows and capture results
-		if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
-			output.Rows = output.Rows[:r.dryRunMaxRows]
+		if !r.dryRun {
+			r.store.UpdateNodeRun(nr)
 		}
+		lastErr = err
 
-		rowCount = len(output.Rows)
-		outputsMu.Lock()
-		outputs[node.ID] = output
-		outputsMu.Unlock()
-
-		if r.dryRun {
-			// Capture preview for dry run results
-			if r.dryRunResults == nil {
-				r.dryRunResults = make(map[string]*DryRunNodeResult)
-			}
-			previewRows := make([]map[string]interface{}, len(output.Rows))
-			for i, row := range output.Rows {
-				previewRows[i] = map[string]interface{}(row)
-			}
-			r.dryRunResults[node.ID] = &DryRunNodeResult{
-				NodeID:  node.ID,
-				Name:    node.Name,
-				Status:  "success",
-				Columns: output.Columns,
-				Rows:    previewRows,
-			}
-		} else {
-			// Save data preview (first 50 rows) for the UI
-			r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows)
-		}
+		r.logWithTrace(node.ID, models.LogLevelWarning, spanID, attempt,
+			map[string]string{"error": err.Error(), "duration_ms": fmt.Sprintf("%d", duration)},
+			"Attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
 	}
 
-	nr.Status = models.RunStatusSuccess
-	nr.DurationMs = duration
-	nr.RowCount = rowCount
-	if !r.dryRun {
-		r.store.UpdateNodeRun(nr)
+	if lastErr != nil {
+		r.logWithTrace(node.ID, models.LogLevelError, "", maxRetries, nil,
+			"Node %s failed after %d attempt(s): %v", node.Name, maxRetries+1, lastErr)
+		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
+		return fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
-	// Detailed completion log
-	durStr := fmt.Sprintf("%dms", duration)
-	if duration >= 1000 {
-		durStr = fmt.Sprintf("%.1fs", float64(duration)/1000)
-	}
-	throughput := ""
-	if duration > 0 && rowCount > 0 {
-		rps := float64(rowCount) / (float64(duration) / 1000)
-		if rps >= 1000 {
-			throughput = fmt.Sprintf(" (%.0fK rows/sec)", rps/1000)
-		} else {
-			throughput = fmt.Sprintf(" (%.0f rows/sec)", rps)
-		}
-	}
-	colInfo := ""
-	if output != nil && len(output.Columns) > 0 {
-		colInfo = fmt.Sprintf(", columns: [%s]", truncateList(output.Columns, 8))
-	}
-	r.log(node.ID, models.LogLevelInfo, "Node completed: %d rows in %s%s%s", rowCount, durStr, throughput, colInfo)
-	r.emit(models.Event{Type: models.EventNodeCompleted, RunID: r.run.ID, NodeID: node.ID, RowCount: rowCount, DurationMs: duration})
-
 	return nil
 }
 
@@ -529,6 +570,10 @@ func (r *Runner) emit(e models.Event) {
 }
 
 func (r *Runner) log(nodeID string, level models.LogLevel, format string, args ...interface{}) {
+	r.logWithTrace(nodeID, level, "", 0, nil, format, args...)
+}
+
+func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID string, attempt int, metadata map[string]string, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
 	r.store.AppendLog(&models.LogEntry{
 		RunID:     r.run.ID,
@@ -536,6 +581,10 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 		Level:     level,
 		Message:   msg,
 		Timestamp: time.Now().UTC(),
+		TraceID:   r.traceID,
+		SpanID:    spanID,
+		Attempt:   attempt,
+		Metadata:  metadata,
 	})
 	r.emit(models.Event{
 		Type:    models.EventLog,

@@ -140,6 +140,20 @@ func (s *SQLiteStore) migrate() error {
 		FOREIGN KEY (pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_dlq_pipeline ON dead_letter_queue(pipeline_id, resolved, created_at DESC)`)
 
+	// Tracing & observability columns
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN ready_at TEXT`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN rows_per_sec REAL NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN span_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN span_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE logs ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
+
 	return nil
 }
 
@@ -492,15 +506,15 @@ func (s *SQLiteStore) DeletePipeline(id string) error {
 
 func (s *SQLiteStore) CreateRun(r *models.Run) error {
 	_, err := s.db.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at) VALUES (?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt),
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id) VALUES (?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID,
 	)
 	return wrapStoreErr("CreateRun", r.ID, err)
 }
 
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at FROM runs WHERE id = ?`, id,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id FROM runs WHERE id = ?`, id,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -517,7 +531,7 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id
 		 FROM runs WHERE pipeline_id = ? ORDER BY started_at DESC LIMIT ?`,
 		pipelineID, limit,
 	)
@@ -539,8 +553,8 @@ func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models
 
 func (s *SQLiteStore) UpdateRun(r *models.Run) error {
 	result, err := s.db.Exec(
-		`UPDATE runs SET status=?, started_at=?, finished_at=? WHERE id=?`,
-		string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.ID,
+		`UPDATE runs SET status=?, started_at=?, finished_at=?, trace_id=? WHERE id=?`,
+		string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdateRun", r.ID, err)
@@ -552,18 +566,20 @@ func (s *SQLiteStore) UpdateRun(r *models.Run) error {
 
 func (s *SQLiteStore) CreateNodeRun(nr *models.NodeRun) error {
 	_, err := s.db.Exec(
-		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		nr.ID, nr.RunID, nr.NodeID, string(nr.Status), nr.RowCount,
 		formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID,
 	)
 	return err
 }
 
 func (s *SQLiteStore) UpdateNodeRun(nr *models.NodeRun) error {
 	result, err := s.db.Exec(
-		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=? WHERE id=?`,
-		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error, nr.ID,
+		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=?, attempt=?, ready_at=?, queue_ms=?, rows_per_sec=?, trace_id=?, span_id=? WHERE id=?`,
+		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
 	)
 	if err != nil {
 		return err
@@ -573,7 +589,7 @@ func (s *SQLiteStore) UpdateNodeRun(nr *models.NodeRun) error {
 
 func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) {
 	rows, err := s.db.Query(
-		`SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error
+		`SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id
 		 FROM node_runs WHERE run_id = ?`, runID,
 	)
 	if err != nil {
@@ -585,12 +601,14 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 	for rows.Next() {
 		var nr models.NodeRun
 		var status string
-		var startedAt sql.NullString
-		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount, &startedAt, &nr.DurationMs, &nr.Error); err != nil {
+		var startedAt, readyAt sql.NullString
+		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount, &startedAt, &nr.DurationMs, &nr.Error,
+			&nr.Attempt, &readyAt, &nr.QueueMs, &nr.RowsPerSec, &nr.TraceID, &nr.SpanID); err != nil {
 			return nil, err
 		}
 		nr.Status = models.RunStatus(status)
 		nr.StartedAt = parseTimePtr(startedAt)
+		nr.ReadyAt = parseTimePtr(readyAt)
 		nodeRuns = append(nodeRuns, nr)
 	}
 	return nodeRuns, rows.Err()
@@ -599,16 +617,25 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 // --- Logs ---
 
 func (s *SQLiteStore) AppendLog(entry *models.LogEntry) error {
+	metadata := "{}"
+	if entry.Metadata != nil {
+		metaBytes, err := json.Marshal(entry.Metadata)
+		if err != nil {
+			return fmt.Errorf("marshal log metadata: %w", err)
+		}
+		metadata = string(metaBytes)
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO logs (run_id, node_id, level, message, timestamp) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp.UTC().Format(timeFormat),
+		entry.TraceID, entry.SpanID, entry.Attempt, metadata,
 	)
 	return err
 }
 
 func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {
 	rows, err := s.db.Query(
-		`SELECT run_id, node_id, level, message, timestamp FROM logs WHERE run_id = ? ORDER BY timestamp`, runID,
+		`SELECT run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata FROM logs WHERE run_id = ? ORDER BY timestamp`, runID,
 	)
 	if err != nil {
 		return nil, err
@@ -618,12 +645,16 @@ func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {
 	var logs []models.LogEntry
 	for rows.Next() {
 		var entry models.LogEntry
-		var level, ts string
-		if err := rows.Scan(&entry.RunID, &entry.NodeID, &level, &entry.Message, &ts); err != nil {
+		var level, ts, metadataStr string
+		if err := rows.Scan(&entry.RunID, &entry.NodeID, &level, &entry.Message, &ts,
+			&entry.TraceID, &entry.SpanID, &entry.Attempt, &metadataStr); err != nil {
 			return nil, err
 		}
 		entry.Level = models.LogLevel(level)
 		entry.Timestamp, _ = time.Parse(timeFormat, ts)
+		if metadataStr != "" {
+			_ = json.Unmarshal([]byte(metadataStr), &entry.Metadata)
+		}
 		logs = append(logs, entry)
 	}
 	return logs, rows.Err()
@@ -859,7 +890,7 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	var status string
 	var startedAt, finishedAt sql.NullString
 
-	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt); err != nil {
+	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID); err != nil {
 		return nil, err
 	}
 	r.Status = models.RunStatus(status)

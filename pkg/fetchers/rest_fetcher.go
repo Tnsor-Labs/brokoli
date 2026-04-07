@@ -73,8 +73,14 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 		requestOptions.Method = methodOpt
 	}
 
-	if headers, ok := options["headers"].(map[string]string); ok {
-		requestOptions.Headers = headers
+	switch h := options["headers"].(type) {
+	case map[string]string:
+		requestOptions.Headers = h
+	case map[string]interface{}:
+		requestOptions.Headers = make(map[string]string, len(h))
+		for k, v := range h {
+			requestOptions.Headers[k] = fmt.Sprintf("%v", v)
+		}
 	}
 
 	if body, ok := options["body"]; ok {

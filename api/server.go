@@ -83,6 +83,16 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	if userStore != nil {
 		loginLimiter := RateLimiter(10) // 10 req/s for auth (stricter than global 200)
 		r.With(loginLimiter).Post("/api/auth/login", withSessionCookie(LoginHandler(userStore), r))
+		r.Post("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
+			http.SetCookie(w, &http.Cookie{
+				Name:     "brokoli_session",
+				Value:    "",
+				Path:     "/",
+				HttpOnly: true,
+				MaxAge:   -1, // delete cookie
+			})
+			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		})
 		// Self-service signup is registered by enterprise platform provider
 		r.Get("/api/auth/me", MeHandler())
 		r.Get("/api/auth/me/permissions", func(w http.ResponseWriter, req *http.Request) {

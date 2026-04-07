@@ -17,10 +17,7 @@
     error = "";
     try {
       const url = `/api/runs/${rid}/nodes/${nid}/preview`;
-      const token = localStorage.getItem("brokoli-token");
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-      const res = await fetch(url, { headers });
+      const res = await fetch(url);
       if (!res.ok) throw new Error("No preview available");
       const data = await res.json();
       columns = data.columns || [];

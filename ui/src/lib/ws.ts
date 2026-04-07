@@ -8,9 +8,8 @@ export const wsConnected = writable(false);
 
 export function createWebSocket(onEvent: EventHandler): { close: () => void } {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const token = typeof localStorage !== "undefined" ? localStorage.getItem("brokoli-token") || "" : "";
-  // Pass token via subprotocol to avoid URL logging (query params leak in logs/history)
-  const url = `${protocol}//${window.location.host}/api/ws${token ? "?token=" + token : ""}`; // TODO: migrate to first-message auth
+  // Auth handled by httpOnly session cookie (sent automatically on same-origin WS)
+  const url = `${protocol}//${window.location.host}/api/ws`;
 
   let ws: WebSocket | null = null;
   let reconnectTimeout: ReturnType<typeof setTimeout>;

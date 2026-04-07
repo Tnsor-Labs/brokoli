@@ -524,7 +524,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 			}
 
 			// Skip auth endpoints
-			if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/signup" {
+			if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/logout" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/signup" {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -583,6 +583,12 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				token := r.URL.Query().Get("token")
 				if token == "" {
 					token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+				}
+				// Fall back to httpOnly session cookie for WebSocket auth
+				if token == "" {
+					if cookie, err := r.Cookie("brokoli_session"); err == nil && cookie.Value != "" {
+						token = cookie.Value
+					}
 				}
 				if token != "" {
 					if _, err := ParseToken(token); err == nil {

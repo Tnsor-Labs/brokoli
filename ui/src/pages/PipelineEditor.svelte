@@ -11,6 +11,7 @@
   import Skeleton from "../components/Skeleton.svelte";
   import Breadcrumb from "../components/Breadcrumb.svelte";
   import { authHeaders } from "../lib/auth";
+  import jsYaml from "js-yaml";
 
   export let params: { id?: string } = {};
 
@@ -20,8 +21,9 @@
   let selectedNodeId: string | null = null;
   let loading = true;
   let saving = false;
-  let showYaml = false;
-  let yamlText = "";
+  let showCode = false;
+  let codeFormat: "yaml" | "json" = "yaml";
+  let codeText = "";
   let error = "";
   let previewing = false;
   let previewResults: Record<string, { columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }> = {};
@@ -321,22 +323,75 @@
     nodes = autoLayout(nodes, edges);
   }
 
-  function toYaml(): string {
-    const p = {
+  function pipelineData() {
+    return {
       name: pipeline?.name || "untitled",
+      description: pipeline?.description || "",
       schedule: pipeline?.schedule || "",
+      enabled: true,
       nodes: nodes.map((n) => ({
         id: n.id, type: n.type, name: n.name, config: n.config,
       })),
       edges: edges.map((e) => ({ from: e.from, to: e.to })),
     };
-    return JSON.stringify(p, null, 2);
   }
 
-  function toggleYaml() {
-    showYaml = !showYaml;
-    if (showYaml) yamlText = toYaml();
+  function toYaml(): string {
+    return jsYaml.dump(pipelineData(), { lineWidth: 120, noRefs: true, sortKeys: false });
   }
+
+  function toJson(): string {
+    return JSON.stringify(pipelineData(), null, 2);
+  }
+
+  function toggleCode() {
+    showCode = !showCode;
+    if (showCode) codeText = codeFormat === "yaml" ? toYaml() : toJson();
+  }
+
+  function setCodeFormat(fmt: "yaml" | "json") {
+    codeFormat = fmt;
+    codeText = fmt === "yaml" ? toYaml() : toJson();
+  }
+
+  function highlightYaml(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      // Comments
+      .replace(/(#.*)$/gm, '<span class="hl-comment">$1</span>')
+      // Keys (word followed by colon)
+      .replace(/^(\s*)([\w.-]+)(:)/gm, '$1<span class="hl-key">$2</span><span class="hl-colon">$3</span>')
+      // Booleans
+      .replace(/:\s+(true|false)\b/g, ': <span class="hl-bool">$1</span>')
+      // Numbers
+      .replace(/:\s+(\d+\.?\d*)\b/g, ': <span class="hl-num">$1</span>')
+      // Strings in quotes
+      .replace(/'([^']*)'/g, "'<span class=\"hl-str\">$1</span>'")
+      .replace(/"([^"]*)"/g, '"<span class="hl-str">$1</span>"')
+      // List dashes
+      .replace(/^(\s*)(- )/gm, '$1<span class="hl-dash">$2</span>');
+  }
+
+  function highlightJson(text: string): string {
+    return text
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      // Keys
+      .replace(/"(\w+)"(\s*:)/g, '<span class="hl-key">"$1"</span>$2')
+      // String values
+      .replace(/:\s*"([^"]*)"/g, ': <span class="hl-str">"$1"</span>')
+      // Numbers
+      .replace(/:\s*(\d+\.?\d*)/g, ': <span class="hl-num">$1</span>')
+      // Booleans/null
+      .replace(/:\s*(true|false|null)/g, ': <span class="hl-bool">$1</span>');
+  }
+
+  $: highlightedCode = showCode
+    ? (codeFormat === "yaml" ? highlightYaml(codeText) : highlightJson(codeText))
+    : "";
 
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 
@@ -437,11 +492,11 @@
           </svg>
           Layout
         </button>
-        <button class="btn-sm" on:click={toggleYaml}>
+        <button class="btn-sm" on:click={toggleCode}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d={icons.code.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
           </svg>
-          {showYaml ? "Canvas" : "JSON"}
+          {showCode ? "Canvas" : "YAML"}
         </button>
         <button class="btn-sm" on:click={validateNodes} title="Check node configs">
           Validate
@@ -669,8 +724,19 @@
       </div>
 
       <div class="canvas-area">
-        {#if showYaml}
-          <pre class="yaml-view">{yamlText}</pre>
+        {#if showCode}
+          <div class="code-view">
+            <div class="code-tabs">
+              <button class="code-tab" class:active={codeFormat === "yaml"} on:click={() => setCodeFormat("yaml")}>YAML</button>
+              <button class="code-tab" class:active={codeFormat === "json"} on:click={() => setCodeFormat("json")}>JSON</button>
+              <button class="code-copy" on:click={() => { navigator.clipboard.writeText(codeText); notify.success("Copied to clipboard"); }} title="Copy">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+                </svg>
+              </button>
+            </div>
+            <pre class="code-content {codeFormat}">{@html highlightedCode}</pre>
+          </div>
         {:else}
           <PipelineCanvas
             bind:nodes
@@ -1002,20 +1068,75 @@
   .issue-error { color: var(--failed); }
   .issue-warning { color: var(--warning); }
 
-  .yaml-view {
+  .code-view {
     width: 100%;
     height: 100%;
-    background: var(--bg-code);
+    display: flex;
+    flex-direction: column;
+    background: var(--bg-code, #0a0a0a);
     border: 1px solid var(--border-sidebar);
     border-radius: 8px;
-    padding: 14px;
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 12px;
+    overflow: hidden;
+  }
+  .code-tabs {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-sidebar);
+    background: var(--bg-tertiary);
+  }
+  .code-tab {
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    font-family: var(--font-mono);
+    color: var(--text-muted);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .code-tab:hover { color: var(--text-secondary); }
+  .code-tab.active {
+    color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .code-copy {
+    margin-left: auto;
+    padding: 4px 8px;
+    color: var(--text-muted);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .code-copy:hover { color: var(--text-primary); background: var(--bg-secondary); }
+  .code-content {
+    flex: 1;
+    padding: 16px;
+    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-size: 12.5px;
+    line-height: 1.7;
     color: var(--text-secondary);
     overflow: auto;
-    white-space: pre-wrap;
+    white-space: pre;
     margin: 0;
+    tab-size: 2;
   }
+  /* YAML syntax colors via text color on key patterns */
+  .code-content.yaml {
+    color: #e2e8f0;
+  }
+  .code-content.json {
+    color: #e2e8f0;
+  }
+  /* Syntax highlighting */
+  :global(.hl-key) { color: #7dd3fc; }
+  :global(.hl-colon) { color: #64748b; }
+  :global(.hl-str) { color: #86efac; }
+  :global(.hl-num) { color: #fbbf24; }
+  :global(.hl-bool) { color: #c084fc; }
+  :global(.hl-comment) { color: #475569; font-style: italic; }
+  :global(.hl-dash) { color: #f97316; }
 
   .preview-panel {
     flex-shrink: 0;

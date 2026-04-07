@@ -14,6 +14,7 @@
   import Variables from "./pages/Variables.svelte";
   import Calendar from "./pages/Calendar.svelte";
   import APIIntegrations from "./pages/APIIntegrations.svelte";
+  import FullGantt from "./pages/FullGantt.svelte";
   import { createWebSocket } from "./lib/ws";
   import { addEvent } from "./lib/stores";
   import { notify } from "./lib/toast";
@@ -28,6 +29,7 @@
     "/pipelines": Pipelines,
     "/calendar": Calendar,
     "/pipelines/:id/edit": PipelineEditor,
+    "/pipelines/:id/runs/:runId/gantt": FullGantt,
     "/pipelines/:id/runs": PipelineRuns,
     "/pipelines/:id": PipelineRuns,
     "/lineage": Lineage,

@@ -86,6 +86,7 @@ export interface Run {
   error?: string;
   started_at: string | null;
   finished_at: string | null;
+  trace_id?: string;
   node_runs: NodeRun[];
 }
 
@@ -98,6 +99,12 @@ export interface NodeRun {
   started_at: string | null;
   duration_ms: number;
   error?: string;
+  attempt?: number;
+  ready_at?: string | null;
+  queue_ms?: number;
+  rows_per_sec?: number;
+  trace_id?: string;
+  span_id?: string;
 }
 
 export interface LogEntry {
@@ -106,7 +113,19 @@ export interface LogEntry {
   level: "debug" | "info" | "warning" | "error";
   message: string;
   timestamp: string;
+  trace_id?: string;
+  span_id?: string;
+  attempt?: number;
+  metadata?: Record<string, string>;
 }
+
+export interface NodeStatEntry {
+  durations: number[];
+  avg: number;
+  p95: number;
+}
+
+export type NodeStats = Record<string, NodeStatEntry>;
 
 export type EventType =
   | "run.started"
