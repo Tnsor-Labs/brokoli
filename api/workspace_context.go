@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/golang-jwt/jwt/v5"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 const workspaceKey = "workspace_id"
