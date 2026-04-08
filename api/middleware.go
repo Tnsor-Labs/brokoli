@@ -23,25 +23,41 @@ func Logger(next http.Handler) http.Handler {
 	})
 }
 
+// SecurityHeaders adds standard security headers to every response.
+func SecurityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Frame-Options", "SAMEORIGIN")
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("X-XSS-Protection", "1; mode=block")
+		w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		// HSTS: enforce HTTPS for 1 year, including subdomains
+		if r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https" {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // CORS adds CORS headers. Set BROKOLI_CORS_ORIGINS for production (comma-separated).
+// When not set, allows same-origin only (no Access-Control-Allow-Origin header).
 func CORS(next http.Handler) http.Handler {
-	allowedOrigins := os.Getenv("BROKOLI_CORS_ORIGINS") // comma-separated, e.g. "https://orkestri.site,http://localhost:9900"
+	allowedOrigins := os.Getenv("BROKOLI_CORS_ORIGINS")
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
 
-		if allowedOrigins == "" || allowedOrigins == "*" {
-			// Default: allow all (development mode)
-			w.Header().Set("Access-Control-Allow-Origin", "*")
-		} else {
-			// Production: check against allowed list
+		if origin != "" && allowedOrigins != "" {
 			for _, allowed := range strings.Split(allowedOrigins, ",") {
 				if strings.TrimSpace(allowed) == origin {
 					w.Header().Set("Access-Control-Allow-Origin", origin)
 					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
 					break
 				}
 			}
 		}
+		// If BROKOLI_CORS_ORIGINS is not set, no CORS header is sent —
+		// browsers will only allow same-origin requests (secure default).
 
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Workspace-ID, X-Webhook-Token")

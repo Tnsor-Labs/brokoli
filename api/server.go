@@ -37,6 +37,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	metrics := NewMetrics()
 	r.Use(MetricsMiddleware(metrics))
 	r.Use(Logger)
+	r.Use(SecurityHeaders)
 	r.Use(CORS)
 	r.Use(RateLimiter(200))   // 200 req/s per IP
 	r.Use(RequestTimeout(60)) // 60s default timeout for API requests
@@ -81,7 +82,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 
 	// Auth routes
 	if userStore != nil {
-		loginLimiter := RateLimiter(10) // 10 req/s for auth (stricter than global 200)
+		loginLimiter := RateLimiter(3) // 3 req/s for auth — prevents brute force
 		r.With(loginLimiter).Post("/api/auth/login", withSessionCookie(LoginHandler(userStore), r))
 		r.Post("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
 			http.SetCookie(w, &http.Cookie{
@@ -138,6 +139,16 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid JSON")
 				return
+			}
+			// Validate org ownership: admin can only reset passwords for users in their own org
+			if OrgResolverFunc != nil {
+				callerID, _ := (*claims)["sub"].(string)
+				callerOrg := OrgResolverFunc(callerID)
+				targetOrg := OrgResolverFunc(req.UserID)
+				if callerOrg != targetOrg && role != "superadmin" {
+					writeError(w, http.StatusForbidden, "cannot reset password for users outside your organization")
+					return
+				}
 			}
 			if err := userStore.AdminResetPassword(req.UserID, req.NewPassword); err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())

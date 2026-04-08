@@ -142,7 +142,7 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var p models.Pipeline
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
@@ -218,7 +218,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 	var p models.Pipeline
 	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 

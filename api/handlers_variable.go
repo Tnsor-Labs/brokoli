@@ -126,7 +126,7 @@ func (h *VariableHandler) Get(w http.ResponseWriter, r *http.Request) {
 func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	var v models.Variable
 	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
 
