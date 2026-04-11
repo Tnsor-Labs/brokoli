@@ -98,8 +98,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 		// Webhook trigger
 		r.Post("/pipelines/{id}/webhook", webhookTriggerHandler(s, e))
 
-		// Pipeline dependencies status
+		// Pipeline dependencies status + graph
 		r.Get("/pipelines/{id}/deps", pipelineDepsHandler(s))
+		r.Get("/pipelines/{id}/dependents", pipelineDependentsHandler(s))
+		r.Get("/pipelines/dependency-graph", pipelineDependencyGraphHandler(s))
 		r.Get("/runs/{id}/nodes/{nodeId}/preview", rh.GetNodePreview)
 
 		// Connections

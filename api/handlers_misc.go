@@ -132,20 +132,103 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 			DenyOrgAccess(w)
 			return
 		}
-		deps := make([]map[string]interface{}, 0)
-		for _, depID := range p.DependsOn {
-			dep := map[string]interface{}{"pipeline_id": depID, "satisfied": false}
-			if dp, err := s.GetPipeline(depID); err == nil {
-				dep["name"] = dp.Name
-				runs, _ := s.ListRunsByPipeline(depID, 1)
-				if len(runs) > 0 {
-					dep["last_status"] = runs[0].Status
-					dep["satisfied"] = runs[0].Status == "completed"
-				}
+		satisfied, statuses, reason := engine.CheckDependencies(s, p, time.Now().UTC())
+		enriched := make([]map[string]interface{}, 0, len(statuses))
+		for _, st := range statuses {
+			entry := map[string]interface{}{
+				"pipeline_id": st.Rule.PipelineID,
+				"state":       st.Rule.State,
+				"mode":        st.Rule.Mode,
+				"satisfied":   st.Satisfied,
+				"reason":      st.Reason,
+				"missing":     st.Missing,
 			}
-			deps = append(deps, dep)
+			if st.LastStatus != "" {
+				entry["last_status"] = st.LastStatus
+			}
+			if st.LastRunAt != nil {
+				entry["last_run_at"] = st.LastRunAt.Format(time.RFC3339)
+			}
+			if dp, err := s.GetPipeline(st.Rule.PipelineID); err == nil {
+				entry["name"] = dp.Name
+			}
+			enriched = append(enriched, entry)
 		}
-		writeJSON(w, http.StatusOK, deps)
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"satisfied": satisfied,
+			"reason":    reason,
+			"deps":      enriched,
+		})
+	}
+}
+
+// pipelineDependentsHandler handles GET /pipelines/{id}/dependents — lists pipelines that depend on this one.
+func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := chi.URLParam(r, "id")
+		p, err := s.GetPipeline(id)
+		if err != nil {
+			writeError(w, http.StatusNotFound, "pipeline not found")
+			return
+		}
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+		deps, err := s.PipelinesDependingOn(id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		out := make([]map[string]interface{}, 0, len(deps))
+		for _, d := range deps {
+			if d.OrgID != p.OrgID {
+				continue
+			}
+			out = append(out, map[string]interface{}{
+				"id":   d.ID,
+				"name": d.Name,
+			})
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// pipelineDependencyGraphHandler handles GET /pipelines/dependency-graph — returns full org graph.
+func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		orgID := GetOrgIDFromRequest(r)
+		var pipelines []models.Pipeline
+		var err error
+		if orgID != "" {
+			pipelines, err = s.ListPipelinesByOrg(orgID)
+		} else {
+			pipelines, err = s.ListPipelines()
+		}
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		nodes := make([]map[string]interface{}, 0, len(pipelines))
+		edges := make([]map[string]interface{}, 0)
+		for _, p := range pipelines {
+			nodes = append(nodes, map[string]interface{}{
+				"id":   p.ID,
+				"name": p.Name,
+			})
+			for _, rule := range p.EffectiveDependencies() {
+				edges = append(edges, map[string]interface{}{
+					"from":  rule.PipelineID,
+					"to":    p.ID,
+					"state": rule.State,
+					"mode":  rule.Mode,
+				})
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"nodes": nodes,
+			"edges": edges,
+		})
 	}
 }
 
