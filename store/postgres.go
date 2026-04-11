@@ -79,6 +79,7 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_deadline TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS depends_on JSONB NOT NULL DEFAULT '[]'`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS dependency_rules JSONB NOT NULL DEFAULT '[]'`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS webhook_token TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS pipeline_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'ui'`)
@@ -320,23 +321,27 @@ func (s *PostgresStore) CreatePipeline(p *models.Pipeline) error {
 	paramsJSON, _ := json.Marshal(p.Params)
 	tagsJSON, _ := json.Marshal(p.Tags)
 	depsJSON, _ := json.Marshal(p.DependsOn)
+	depRulesJSON, _ := json.Marshal(p.DependencyRules)
+	if depRulesJSON == nil {
+		depRulesJSON = []byte("[]")
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
+		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)`,
 		p.ID, p.Name, p.Description, nodesJSON, edgesJSON,
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID,
 	)
 	return err
 }
 
 func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE id = $1`, id,
 	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -345,15 +350,19 @@ func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
 	json.Unmarshal(paramsJSON, &p.Params)
 	json.Unmarshal(tagsJSON, &p.Tags)
 	json.Unmarshal(depsJSON, &p.DependsOn)
+	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if p.Tags == nil {
 		p.Tags = []string{}
+	}
+	if p.DependencyRules == nil {
+		p.DependencyRules = []models.DependencyRule{}
 	}
 	return &p, nil
 }
 
 func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -374,9 +383,9 @@ func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 // scanPipelineRow scans a pipeline row from any scanner (Row or Rows).
 func (s *PostgresStore) scanPipelineRow(sc interface{ Scan(...interface{}) error }) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON []byte
 	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
 		return nil, err
 	}
 	json.Unmarshal(nodesJSON, &p.Nodes)
@@ -384,8 +393,12 @@ func (s *PostgresStore) scanPipelineRow(sc interface{ Scan(...interface{}) error
 	json.Unmarshal(paramsJSON, &p.Params)
 	json.Unmarshal(tagsJSON, &p.Tags)
 	json.Unmarshal(depsJSON, &p.DependsOn)
+	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if p.Tags == nil {
 		p.Tags = []string{}
+	}
+	if p.DependencyRules == nil {
+		p.DependencyRules = []models.DependencyRule{}
 	}
 	return &p, nil
 }
@@ -396,11 +409,15 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 	paramsJSON, _ := json.Marshal(p.Params)
 	tagsJSON, _ := json.Marshal(p.Tags)
 	depsJSON, _ := json.Marshal(p.DependsOn)
+	depRulesJSON, _ := json.Marshal(p.DependencyRules)
+	if depRulesJSON == nil {
+		depRulesJSON = []byte("[]")
+	}
 	result, err := s.db.Exec(
 		`UPDATE pipelines SET name=$1, description=$2, nodes=$3, edges=$4, schedule=$5, schedule_timezone=$6,
-		 webhook_url=$7, params=$8, tags=$9, sla_deadline=$10, sla_timezone=$11, depends_on=$12, webhook_token=$13, enabled=$14, updated_at=$15, pipeline_id=$16, source=$17, workspace_id=$18, org_id=$19 WHERE id=$20`,
+		 webhook_url=$7, params=$8, tags=$9, sla_deadline=$10, sla_timezone=$11, depends_on=$12, dependency_rules=$13, webhook_token=$14, enabled=$15, updated_at=$16, pipeline_id=$17, source=$18, workspace_id=$19, org_id=$20 WHERE id=$21`,
 		p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule, p.ScheduleTimezone,
-		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
+		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
 	)
 	if err != nil {
 		return err
@@ -414,12 +431,12 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 
 func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON []byte
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE pipeline_id = $1`, pipelineID,
 	).Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID)
 	if err != nil {
 		return nil, err
 	}
@@ -428,10 +445,31 @@ func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipe
 	json.Unmarshal(paramsJSON, &p.Params)
 	json.Unmarshal(tagsJSON, &p.Tags)
 	json.Unmarshal(depsJSON, &p.DependsOn)
+	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if p.Tags == nil {
 		p.Tags = []string{}
 	}
+	if p.DependencyRules == nil {
+		p.DependencyRules = []models.DependencyRule{}
+	}
 	return &p, nil
+}
+
+func (s *PostgresStore) PipelinesDependingOn(pipelineID string) ([]models.Pipeline, error) {
+	all, err := s.ListPipelines()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]models.Pipeline, 0)
+	for _, p := range all {
+		for _, dep := range p.EffectiveDependencies() {
+			if dep.PipelineID == pipelineID {
+				out = append(out, p)
+				break
+			}
+		}
+	}
+	return out, nil
 }
 
 func (s *PostgresStore) DeletePipeline(id string) error {
@@ -1027,7 +1065,7 @@ func (s *PostgresStore) DeleteAPIToken(id string) error {
 
 func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE workspace_id = $1 ORDER BY created_at DESC`, workspaceID,
 	)
 	if err != nil {
@@ -1047,7 +1085,7 @@ func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.P
 
 func (s *PostgresStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC`, orgID,
 	)
 	if err != nil {
@@ -1069,7 +1107,7 @@ func (s *PostgresStore) ListPipelinesByOrgPaged(orgID string, limit, offset int)
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = $1`, orgID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, orgID, limit, offset,
 	)
 	if err != nil {
@@ -1093,11 +1131,11 @@ func (s *PostgresStore) ListPipelinesByOrgCursor(orgID string, afterID string, l
 	fetchN := limit + 1 // fetch one extra to detect has_next
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 			 FROM pipelines WHERE org_id = $1 ORDER BY id DESC LIMIT $2`, orgID, fetchN)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 			 FROM pipelines WHERE org_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, orgID, afterID, fetchN)
 	}
 	if err != nil {

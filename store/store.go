@@ -114,6 +114,8 @@ type Store interface {
 	UpdatePipeline(p *models.Pipeline) error
 	DeletePipeline(id string) error
 	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
+	// PipelinesDependingOn returns pipelines that list the given id in DependsOn or DependencyRules.
+	PipelinesDependingOn(pipelineID string) ([]models.Pipeline, error)
 
 	// Runs
 	CreateRun(r *models.Run) error
