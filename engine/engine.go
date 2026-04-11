@@ -117,6 +117,26 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		return nil, ve
 	}
 
+	// Check cross-pipeline dependencies; persist a blocked run if unsatisfied.
+	if ok, _, reason := CheckDependencies(e.store, pipe, time.Now().UTC()); !ok {
+		now := time.Now().UTC()
+		blocked := &models.Run{
+			ID:         common.NewID(),
+			PipelineID: pipe.ID,
+			Status:     models.RunStatusBlocked,
+			Error:      reason,
+			StartedAt:  &now,
+			FinishedAt: &now,
+		}
+		if len(params) > 0 && params[0] != nil {
+			blocked.Params = params[0]
+		}
+		if err := e.store.CreateRun(blocked); err != nil {
+			return nil, fmt.Errorf("create blocked run: %w", err)
+		}
+		return blocked, nil
+	}
+
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
 	runner.orgID = pipe.OrgID
 	if len(params) > 0 && params[0] != nil {
@@ -149,12 +169,53 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		} else {
 			atomic.AddInt64(&e.RunsSucceeded, 1)
 		}
+		if run != nil {
+			e.fireTriggerModeDependents(run)
+		}
 		resultCh <- runResult{run: run, err: err}
 	}()
 
 	// Wait briefly for the run to be created so we can return its ID
 	result := <-resultCh
 	return result.run, result.err
+}
+
+// fireTriggerModeDependents scans for pipelines that list the finished run's pipeline
+// as a trigger-mode dependency and fires them asynchronously when satisfied.
+func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
+	if finished == nil || finished.PipelineID == "" {
+		return
+	}
+	// Only fire on terminal states.
+	switch finished.Status {
+	case models.RunStatusSuccess, models.RunStatusFailed, models.RunStatusCancelled:
+	default:
+		return
+	}
+	dependents, err := e.store.PipelinesDependingOn(finished.PipelineID)
+	if err != nil {
+		return
+	}
+	for _, d := range dependents {
+		downstream := d
+		hasTrigger := false
+		for _, rule := range downstream.EffectiveDependencies() {
+			if rule.PipelineID == finished.PipelineID && rule.Mode == models.DepModeTrigger {
+				hasTrigger = true
+				break
+			}
+		}
+		if !hasTrigger {
+			continue
+		}
+		// Fire asynchronously so we don't deadlock the producer.
+		go func(pid string) {
+			if _, err := e.RunPipeline(pid); err != nil {
+				// best-effort — log and continue
+				fmt.Printf("trigger-mode fire failed for %s: %v\n", pid, err)
+			}
+		}(downstream.ID)
+	}
 }
 
 // RunPipelineAsync triggers execution and returns the run ID immediately.
@@ -169,6 +230,26 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	// Validate before running
 	if ve := ValidatePipeline(pipe); ve.HasErrors() {
 		return "", ve
+	}
+
+	// Check cross-pipeline dependencies; persist a blocked run if unsatisfied.
+	if ok, _, reason := CheckDependencies(e.store, pipe, time.Now().UTC()); !ok {
+		now := time.Now().UTC()
+		blocked := &models.Run{
+			ID:         common.NewID(),
+			PipelineID: pipe.ID,
+			Status:     models.RunStatusBlocked,
+			Error:      reason,
+			StartedAt:  &now,
+			FinishedAt: &now,
+		}
+		if len(params) > 0 && params[0] != nil {
+			blocked.Params = params[0]
+		}
+		if err := e.store.CreateRun(blocked); err != nil {
+			return "", fmt.Errorf("create blocked run: %w", err)
+		}
+		return blocked.ID, nil
 	}
 
 	runID := common.NewID()

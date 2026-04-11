@@ -182,28 +182,14 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 
 	pid := pipelineID // capture for closure
 	entryID := s.cron.Schedule(tzSched, cron.FuncJob(func() {
-		// Check cross-pipeline dependencies before running
-		if pipe, pErr := s.engine.store.GetPipeline(pid); pErr == nil && len(pipe.DependsOn) > 0 {
-			for _, depID := range pipe.DependsOn {
-				runs, _ := s.engine.store.ListRunsByPipeline(depID, 1)
-				if len(runs) == 0 || string(runs[0].Status) != "completed" {
-					depName := depID[:8]
-					if dp, e := s.engine.store.GetPipeline(depID); e == nil {
-						depName = dp.Name
-					}
-					log.Printf("Skipping scheduled run for %s: dependency %q not satisfied (last: %s)", pid, depName, func() string {
-						if len(runs) > 0 {
-							return string(runs[0].Status)
-						}
-						return "no runs"
-					}())
-					return
-				}
-			}
-		}
 		log.Printf("Scheduled run triggered for pipeline %s", pid)
-		if _, err := s.engine.RunPipeline(pid); err != nil {
+		run, err := s.engine.RunPipeline(pid)
+		if err != nil {
 			log.Printf("ERROR: scheduled run failed for pipeline %s: %v", pid, err)
+			return
+		}
+		if run != nil && run.Status == models.RunStatusBlocked {
+			log.Printf("Scheduled run for %s blocked: %s", pid, run.Error)
 		}
 	}))
 
