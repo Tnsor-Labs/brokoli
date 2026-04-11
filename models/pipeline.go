@@ -21,7 +21,8 @@ type Pipeline struct {
 	ScheduleTimezone string            `json:"schedule_timezone,omitempty"` // e.g. "America/New_York", defaults to UTC
 	SLADeadline      string            `json:"sla_deadline,omitempty"`      // "HH:MM" — must complete by this time daily
 	SLATimezone      string            `json:"sla_timezone,omitempty"`      // e.g. "America/New_York", defaults to UTC
-	DependsOn        []string          `json:"depends_on,omitempty"`        // pipeline IDs that must succeed before this runs
+	DependsOn        []string          `json:"depends_on,omitempty"`        // legacy: pipeline IDs that must succeed before this runs
+	DependencyRules  []DependencyRule  `json:"dependency_rules,omitempty"`  // rich cross-pipeline dependency rules
 	WebhookToken     string            `json:"webhook_token,omitempty"`     // token for triggering via webhook
 	Enabled          bool              `json:"enabled"`
 	PipelineID       string            `json:"pipeline_id"`            // stable slug for git-sync matching
@@ -122,6 +123,20 @@ func (p *Pipeline) Validate() error {
 		}
 		seen[n.ID] = true
 	}
+	// Validate dependency rules
+	for i := range p.DependencyRules {
+		if err := p.DependencyRules[i].Validate(); err != nil {
+			return err
+		}
+		if p.DependencyRules[i].PipelineID == p.ID && p.ID != "" {
+			return fmt.Errorf("dependency rule: pipeline cannot depend on itself")
+		}
+	}
+	for _, dep := range p.DependsOn {
+		if dep == p.ID && p.ID != "" {
+			return fmt.Errorf("depends_on: pipeline cannot depend on itself")
+		}
+	}
 	// Validate edges reference existing nodes
 	for _, e := range p.Edges {
 		if !seen[e.From] {
@@ -132,6 +147,31 @@ func (p *Pipeline) Validate() error {
 		}
 	}
 	return nil
+}
+
+// EffectiveDependencies returns the normalized rules, merging legacy DependsOn strings
+// (treated as default gate/succeeded rules) with explicit DependencyRules. When the same
+// PipelineID appears in both, the explicit rule wins.
+func (p *Pipeline) EffectiveDependencies() []DependencyRule {
+	seen := make(map[string]bool)
+	out := make([]DependencyRule, 0, len(p.DependencyRules)+len(p.DependsOn))
+	for _, r := range p.DependencyRules {
+		rule := r
+		rule.Normalize()
+		if rule.PipelineID == "" || seen[rule.PipelineID] {
+			continue
+		}
+		seen[rule.PipelineID] = true
+		out = append(out, rule)
+	}
+	for _, id := range p.DependsOn {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, DependencyRule{PipelineID: id, State: DepStateSucceeded, Mode: DepModeGate})
+	}
+	return out
 }
 
 // Edge represents a directed connection between two nodes.

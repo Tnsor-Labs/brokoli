@@ -11,6 +11,7 @@ const (
 	RunStatusSuccess   RunStatus = "success"
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCancelled RunStatus = "cancelled"
+	RunStatusBlocked   RunStatus = "blocked" // dependencies not satisfied, trigger skipped
 )
 
 // Run represents a single execution of a pipeline.
