@@ -98,8 +98,8 @@ func TestFireTriggerModeDependents_SkipsCrossOrg(t *testing.T) {
 	now := time.Now().UTC()
 	finished := &models.Run{
 		ID: "a-up-run", PipelineID: "a-up",
-		Status:     models.RunStatusSuccess,
-		StartedAt:  &now, FinishedAt: &now,
+		Status:    models.RunStatusSuccess,
+		StartedAt: &now, FinishedAt: &now,
 	}
 	if err := s.CreateRun(finished); err != nil {
 		t.Fatalf("CreateRun: %v", err)
@@ -144,4 +144,3 @@ func TestPipelinesDependingOn_ReturnsCrossOrgRaw(t *testing.T) {
 		t.Errorf("want 1 raw match, got %d", len(deps))
 	}
 }
-

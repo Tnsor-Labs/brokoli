@@ -30,9 +30,9 @@ const (
 // DependencyRule describes a cross-pipeline dependency.
 type DependencyRule struct {
 	PipelineID string          `json:"pipeline_id"`
-	State      DependencyState `json:"state,omitempty"`              // default: succeeded
-	WithinSec  int64           `json:"within_seconds,omitempty"`     // 0 = no freshness requirement
-	Mode       DependencyMode  `json:"mode,omitempty"`               // default: gate
+	State      DependencyState `json:"state,omitempty"`          // default: succeeded
+	WithinSec  int64           `json:"within_seconds,omitempty"` // 0 = no freshness requirement
+	Mode       DependencyMode  `json:"mode,omitempty"`           // default: gate
 }
 
 // Normalize fills in defaults so callers can assume non-empty State/Mode.
