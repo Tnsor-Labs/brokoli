@@ -1,4 +1,11 @@
-import type { Pipeline, PipelineVersion, Run, LogEntry } from "./types";
+import type {
+  Pipeline,
+  PipelineVersion,
+  Run,
+  LogEntry,
+  DependencyStatus,
+  DependencyGraph,
+} from "./types";
 import { authHeaders, logout } from "./auth";
 
 const BASE = "/api";
@@ -55,11 +62,15 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
 
       if (!res.ok) {
         let errMsg = `HTTP ${res.status}`;
+        let errBody: any = null;
         try {
-          const body = await res.json();
-          errMsg = body.error || errMsg;
+          errBody = await res.json();
+          errMsg = errBody.error || errMsg;
         } catch {}
-        throw new Error(errMsg);
+        const err: any = new Error(errMsg);
+        err.status = res.status;
+        err.body = errBody;
+        throw err;
       }
 
       if (res.status === 204) return undefined as T;
@@ -97,8 +108,18 @@ export const api = {
         method: "PUT",
         body: JSON.stringify(data),
       }),
-    delete: (id: string) =>
-      request<void>(`/pipelines/${id}`, { method: "DELETE" }),
+    delete: (id: string, resolve?: "abort" | "cascade" | "decouple") => {
+      const qs = resolve ? `?resolve=${resolve}` : "";
+      return request<void>(`/pipelines/${id}${qs}`, { method: "DELETE" });
+    },
+    deps: (id: string) =>
+      request<{ satisfied: boolean; reason?: string; deps: DependencyStatus[] }>(
+        `/pipelines/${id}/deps`,
+      ),
+    dependents: (id: string) =>
+      request<{ id: string; name: string }[]>(`/pipelines/${id}/dependents`),
+    dependencyGraph: () =>
+      request<DependencyGraph>(`/pipelines/dependency-graph`),
     versions: (id: string) =>
       request<PipelineVersion[]>(`/pipelines/${id}/versions`),
     rollback: (id: string, version: number) =>

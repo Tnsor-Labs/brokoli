@@ -6,6 +6,7 @@
   import { notify } from "../lib/toast";
   import StatusBadge from "../components/StatusBadge.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
+  import DeletePipelineDialog from "../components/DeletePipelineDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, Run } from "../lib/types";
@@ -13,6 +14,8 @@
   let confirmDelete = false;
   let deleteTargetId = "";
   let deleteTargetName = "";
+  let conflictDialogVisible = false;
+  let conflictDependents: { id: string; name: string }[] = [];
 
   let loading = true;
   let pgPage = 1;
@@ -205,14 +208,31 @@
     }
   }
 
-  async function deletePipeline(id: string) {
+  async function deletePipeline(id: string, resolve?: "cascade" | "decouple") {
     try {
-      await api.pipelines.delete(id);
-      pipelines.update(list => list.filter(p => p.id !== id));
-      notify.success("Pipeline deleted");
-    } catch (e) {
-      notify.error("Failed to delete pipeline");
+      await api.pipelines.delete(id, resolve);
+      if (resolve === "cascade") {
+        // Also drop any cascaded dependents from the local list.
+        const cascadedIds = new Set([id, ...conflictDependents.map(d => d.id)]);
+        pipelines.update(list => list.filter(p => !cascadedIds.has(p.id)));
+        notify.success(`Deleted pipeline and ${conflictDependents.length} dependent(s)`);
+      } else {
+        pipelines.update(list => list.filter(p => p.id !== id));
+        notify.success("Pipeline deleted");
+      }
+      conflictDependents = [];
+    } catch (e: any) {
+      if (e.status === 409 && e.body?.dependents) {
+        conflictDependents = e.body.dependents;
+        conflictDialogVisible = true;
+        return;
+      }
+      notify.error("Failed to delete pipeline: " + (e.message || e));
     }
+  }
+
+  function handleConflictResolve(e: CustomEvent<{ mode: "cascade" | "decouple" }>) {
+    deletePipeline(deleteTargetId, e.detail.mode);
   }
 
   function getLastRun(pipelineId: string): Run | undefined {
@@ -659,6 +679,14 @@
   confirmLabel="Delete"
   destructive={true}
   on:confirm={() => deletePipeline(deleteTargetId)}
+/>
+
+<DeletePipelineDialog
+  bind:visible={conflictDialogVisible}
+  pipelineName={deleteTargetName}
+  dependents={conflictDependents}
+  on:resolve={handleConflictResolve}
+  on:cancel={() => { conflictDependents = []; }}
 />
 
 <style>

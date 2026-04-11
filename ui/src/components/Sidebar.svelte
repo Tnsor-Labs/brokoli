@@ -10,6 +10,7 @@
     { path: "/pipelines", label: "Pipelines", icon: icons.pipeline },
     { path: "/calendar", label: "Calendar", icon: icons.calendar },
     { path: "/lineage", label: "Lineage", icon: icons.lineage },
+    { path: "/dependencies", label: "Dependencies", icon: icons.dependency },
     { path: "/variables", label: "Variables", icon: icons.variable },
     { path: "/connections", label: "Connections", icon: icons.connection },
     { path: "/settings", label: "Settings", icon: icons.settings },

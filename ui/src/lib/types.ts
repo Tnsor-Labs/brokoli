@@ -13,6 +13,7 @@ export interface Pipeline {
   sla_deadline?: string;
   sla_timezone?: string;
   depends_on?: string[];
+  dependency_rules?: DependencyRule[];
   webhook_token?: string;
   node_count?: number;
   edge_count?: number;
@@ -24,6 +25,33 @@ export interface Pipeline {
   enabled: boolean;
   created_at: string;
   updated_at: string;
+}
+
+export type DependencyState = "succeeded" | "completed" | "failed";
+export type DependencyMode = "gate" | "trigger";
+
+export interface DependencyRule {
+  pipeline_id: string;
+  state?: DependencyState;
+  within_seconds?: number;
+  mode?: DependencyMode;
+}
+
+export interface DependencyStatus {
+  pipeline_id: string;
+  name?: string;
+  state?: DependencyState;
+  mode?: DependencyMode;
+  satisfied: boolean;
+  reason?: string;
+  missing?: boolean;
+  last_status?: RunStatus;
+  last_run_at?: string;
+}
+
+export interface DependencyGraph {
+  nodes: { id: string; name: string }[];
+  edges: { from: string; to: string; state: DependencyState; mode: DependencyMode }[];
 }
 
 export interface Hook {
@@ -77,7 +105,8 @@ export type RunStatus =
   | "running"
   | "success"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  | "blocked";
 
 export interface Run {
   id: string;

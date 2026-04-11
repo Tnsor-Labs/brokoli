@@ -6,7 +6,8 @@
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
   import NodePalette from "../components/NodePalette.svelte";
   import NodeConfigPanel from "../components/NodeConfigPanel.svelte";
-  import type { Pipeline, PipelineVersion, Node, Edge, NodeType } from "../lib/types";
+  import DependencyPicker from "../components/DependencyPicker.svelte";
+  import type { Pipeline, PipelineVersion, Node, Edge, NodeType, DependencyRule } from "../lib/types";
   import { notify } from "../lib/toast";
   import Skeleton from "../components/Skeleton.svelte";
   import Breadcrumb from "../components/Breadcrumb.svelte";
@@ -634,6 +635,22 @@
                 <button class="setting-btn" on:click={generateWebhookToken}>Generate Token</button>
               {/if}
             </div>
+          </div>
+
+          <!-- Pipeline dependencies -->
+          <div class="setting-item full">
+            <label>Upstream Dependencies</label>
+            <DependencyPicker
+              rules={pipeline.dependency_rules || []}
+              legacyDependsOn={pipeline.depends_on || []}
+              currentPipelineId={pipeline.id}
+              onChange={(r, legacy) => {
+                if (pipeline) {
+                  pipeline.dependency_rules = r;
+                  pipeline.depends_on = legacy;
+                }
+              }}
+            />
           </div>
         </div>
       </div>

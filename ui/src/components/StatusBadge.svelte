@@ -10,6 +10,7 @@
     success: "Success",
     failed: "Failed",
     cancelled: "Cancelled",
+    blocked: "Blocked",
   };
 </script>
 
@@ -60,6 +61,9 @@
 
   .cancelled { color: var(--text-muted); background: var(--pending-bg); }
   .cancelled .dot { background: var(--text-muted); }
+
+  .blocked { color: #f59e0b; background: rgba(245, 158, 11, 0.12); }
+  .blocked .dot { background: #f59e0b; }
 
   @keyframes pulse-dot {
     0%, 100% { opacity: 1; transform: scale(1); }

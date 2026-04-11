@@ -15,6 +15,7 @@
   import Calendar from "./pages/Calendar.svelte";
   import APIIntegrations from "./pages/APIIntegrations.svelte";
   import FullGantt from "./pages/FullGantt.svelte";
+  import DependencyGraph from "./pages/DependencyGraph.svelte";
   import { createWebSocket } from "./lib/ws";
   import { addEvent } from "./lib/stores";
   import { notify } from "./lib/toast";
@@ -33,6 +34,7 @@
     "/pipelines/:id/runs": PipelineRuns,
     "/pipelines/:id": PipelineRuns,
     "/lineage": Lineage,
+    "/dependencies": DependencyGraph,
     "/variables": Variables,
     "/connections": Connections,
     "/settings": Settings,
