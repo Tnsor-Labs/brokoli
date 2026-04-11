@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -169,10 +170,13 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		} else {
 			atomic.AddInt64(&e.RunsSucceeded, 1)
 		}
-		if run != nil {
-			e.fireTriggerModeDependents(run)
-		}
+		// Signal the caller first so the RunPipeline return latency does not include
+		// downstream trigger-mode fan-out. Fire dependents asynchronously — they'll
+		// re-enter RunPipeline through their own goroutines.
 		resultCh <- runResult{run: run, err: err}
+		if run != nil {
+			go e.fireTriggerModeDependents(run)
+		}
 	}()
 
 	// Wait briefly for the run to be created so we can return its ID
@@ -181,7 +185,11 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 }
 
 // fireTriggerModeDependents scans for pipelines that list the finished run's pipeline
-// as a trigger-mode dependency and fires them asynchronously when satisfied.
+// as a trigger-mode dependency and fires them when upstream reaches a terminal state.
+//
+// Tenant isolation: only pipelines in the same org as the finished run are considered.
+// This is the last line of defense if save-time validation is bypassed. Traversal uses
+// the lightweight dep adjacency query so we never load nodes/edges JSON blobs.
 func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 	if finished == nil || finished.PipelineID == "" {
 		return
@@ -192,30 +200,38 @@ func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 	default:
 		return
 	}
-	dependents, err := e.store.PipelinesDependingOn(finished.PipelineID)
-	if err != nil {
+	upstream, err := e.store.GetPipeline(finished.PipelineID)
+	if err != nil || upstream == nil {
+		log.Printf("trigger-mode: cannot resolve upstream %s: %v", finished.PipelineID, err)
 		return
 	}
-	for _, d := range dependents {
-		downstream := d
-		hasTrigger := false
-		for _, rule := range downstream.EffectiveDependencies() {
-			if rule.PipelineID == finished.PipelineID && rule.Mode == models.DepModeTrigger {
-				hasTrigger = true
-				break
-			}
-		}
-		if !hasTrigger {
+	summaries, err := e.store.ListPipelineDepsByOrg(upstream.OrgID)
+	if err != nil {
+		log.Printf("trigger-mode: list deps for org %s: %v", upstream.OrgID, err)
+		return
+	}
+	for i := range summaries {
+		sum := &summaries[i]
+		if !hasTriggerOn(sum, finished.PipelineID) {
 			continue
 		}
-		// Fire asynchronously so we don't deadlock the producer.
-		go func(pid string) {
+		pid := sum.ID
+		go func() {
 			if _, err := e.RunPipeline(pid); err != nil {
-				// best-effort — log and continue
-				fmt.Printf("trigger-mode fire failed for %s: %v\n", pid, err)
+				log.Printf("trigger-mode: fire failed for %s: %v", pid, err)
 			}
-		}(downstream.ID)
+		}()
 	}
+}
+
+// hasTriggerOn reports whether any rule on the summary is a trigger-mode dep on upstreamID.
+func hasTriggerOn(sum *models.PipelineDepSummary, upstreamID string) bool {
+	for _, rule := range sum.EffectiveDependencies() {
+		if rule.PipelineID == upstreamID && rule.Mode == models.DepModeTrigger {
+			return true
+		}
+	}
+	return false
 }
 
 // RunPipelineAsync triggers execution and returns the run ID immediately.

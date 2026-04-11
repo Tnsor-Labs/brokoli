@@ -53,6 +53,10 @@ func (d *DependencyRule) Within() time.Duration {
 	return time.Duration(d.WithinSec) * time.Second
 }
 
+// maxDependencyWindow caps the freshness window to ~100 years so WithinSec * time.Second
+// cannot overflow time.Duration (which is int64 nanoseconds).
+const maxDependencyWindow = int64(100 * 365 * 24 * 3600)
+
 // Validate checks a rule for structural errors.
 func (d *DependencyRule) Validate() error {
 	if d.PipelineID == "" {
@@ -79,5 +83,53 @@ func (d *DependencyRule) Validate() error {
 	if d.WithinSec < 0 {
 		return fmt.Errorf("dependency rule: within_seconds must be >= 0")
 	}
+	if d.WithinSec > maxDependencyWindow {
+		return fmt.Errorf("dependency rule: within_seconds too large (max %d)", maxDependencyWindow)
+	}
 	return nil
+}
+
+// PipelineDepSummary is a lightweight projection of a Pipeline that only carries
+// the fields needed for dependency-graph operations (cycle detection, save-time
+// validation, reverse lookups, trigger-mode fan-out, /dependency-graph endpoint).
+// Using it avoids loading multi-KB nodes/edges/params blobs that the graph code
+// never reads.
+type PipelineDepSummary struct {
+	ID              string           `json:"id"`
+	Name            string           `json:"name"`
+	OrgID           string           `json:"org_id"`
+	DependsOn       []string         `json:"depends_on,omitempty"`
+	DependencyRules []DependencyRule `json:"dependency_rules,omitempty"`
+}
+
+// EffectiveDependencies merges legacy DependsOn + rich DependencyRules and
+// returns the normalized rule set. Explicit rules win on conflict.
+//
+// Exported as a free function so both Pipeline and PipelineDepSummary share
+// the same semantics without duplicating the logic.
+func EffectiveDependencies(rules []DependencyRule, legacy []string) []DependencyRule {
+	seen := make(map[string]bool, len(rules)+len(legacy))
+	out := make([]DependencyRule, 0, len(rules)+len(legacy))
+	for _, r := range rules {
+		if r.PipelineID == "" || seen[r.PipelineID] {
+			continue
+		}
+		rule := r
+		rule.Normalize()
+		seen[rule.PipelineID] = true
+		out = append(out, rule)
+	}
+	for _, id := range legacy {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, DependencyRule{PipelineID: id, State: DepStateSucceeded, Mode: DepModeGate})
+	}
+	return out
+}
+
+// EffectiveDependencies returns normalized dependency rules for the summary.
+func (s *PipelineDepSummary) EffectiveDependencies() []DependencyRule {
+	return EffectiveDependencies(s.DependencyRules, s.DependsOn)
 }

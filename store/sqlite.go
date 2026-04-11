@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -497,6 +498,131 @@ func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeli
 		return nil, wrapStoreErr("GetPipelineByPipelineID", pipelineID, err)
 	}
 	return p, nil
+}
+
+// ListPipelineDepsByOrg returns a projection that only reads the dep columns (no nodes/edges).
+func (s *SQLiteStore) ListPipelineDepsByOrg(orgID string) ([]models.PipelineDepSummary, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if orgID != "" {
+		rows, err = s.db.Query(
+			`SELECT id, name, org_id, depends_on, dependency_rules FROM pipelines WHERE org_id = ?`,
+			orgID,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, name, org_id, depends_on, dependency_rules FROM pipelines`,
+		)
+	}
+	if err != nil {
+		return nil, wrapStoreErr("ListPipelineDepsByOrg", orgID, err)
+	}
+	defer rows.Close()
+
+	out := make([]models.PipelineDepSummary, 0, 64)
+	for rows.Next() {
+		var (
+			s            models.PipelineDepSummary
+			depsJSON     string
+			depRulesJSON string
+		)
+		if err := rows.Scan(&s.ID, &s.Name, &s.OrgID, &depsJSON, &depRulesJSON); err != nil {
+			return nil, wrapStoreErr("ListPipelineDepsByOrg", orgID, err)
+		}
+		if depsJSON != "" && depsJSON != "null" {
+			json.Unmarshal([]byte(depsJSON), &s.DependsOn)
+		}
+		if depRulesJSON != "" && depRulesJSON != "null" {
+			json.Unmarshal([]byte(depRulesJSON), &s.DependencyRules)
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// GetLatestRunsByPipelineIDs returns a map of pipelineID → most recent run in one query.
+func (s *SQLiteStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*models.Run, error) {
+	out := make(map[string]*models.Run, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	// Dedupe IDs and build placeholders for WHERE IN (...)
+	uniq := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(uniq))
+	args := make([]interface{}, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	// Per-pipeline latest run via a correlated subquery — avoids loading every run.
+	query := `
+		SELECT id, pipeline_id, status, started_at, finished_at, trace_id
+		FROM runs r
+		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
+		  AND started_at = (
+		      SELECT MAX(started_at) FROM runs WHERE pipeline_id = r.pipeline_id
+		  )
+	`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, wrapStoreErr("GetLatestRunsByPipelineIDs", "", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		run, err := scanRunRows(rows)
+		if err != nil {
+			return nil, wrapStoreErr("GetLatestRunsByPipelineIDs", "", err)
+		}
+		// In case of ties on started_at, keep whichever sorts first — harmless for dep checks.
+		if _, exists := out[run.PipelineID]; !exists {
+			out[run.PipelineID] = run
+		}
+	}
+	return out, rows.Err()
+}
+
+// DeletePipelineTx deletes a pipeline inside an active transaction.
+func (s *SQLiteStore) DeletePipelineTx(tx *sql.Tx, id string) error {
+	result, err := tx.Exec(`DELETE FROM pipelines WHERE id=?`, id)
+	if err != nil {
+		return wrapStoreErr("DeletePipelineTx", id, err)
+	}
+	return wrapStoreErr("DeletePipelineTx", id, checkRowsAffected(result, "pipeline", id))
+}
+
+// UpdatePipelineTx updates a pipeline inside an active transaction.
+func (s *SQLiteStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
+	f, err := marshalPipelineJSON(p)
+	if err != nil {
+		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
+	}
+	result, err := tx.Exec(
+		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
+		 WHERE id=?`,
+		p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
+	)
+	if err != nil {
+		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
+	}
+	return wrapStoreErr("UpdatePipelineTx", p.ID, checkRowsAffected(result, "pipeline", p.ID))
 }
 
 func (s *SQLiteStore) PipelinesDependingOn(pipelineID string) ([]models.Pipeline, error) {

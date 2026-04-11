@@ -153,25 +153,7 @@ func (p *Pipeline) Validate() error {
 // (treated as default gate/succeeded rules) with explicit DependencyRules. When the same
 // PipelineID appears in both, the explicit rule wins.
 func (p *Pipeline) EffectiveDependencies() []DependencyRule {
-	seen := make(map[string]bool)
-	out := make([]DependencyRule, 0, len(p.DependencyRules)+len(p.DependsOn))
-	for _, r := range p.DependencyRules {
-		rule := r
-		rule.Normalize()
-		if rule.PipelineID == "" || seen[rule.PipelineID] {
-			continue
-		}
-		seen[rule.PipelineID] = true
-		out = append(out, rule)
-	}
-	for _, id := range p.DependsOn {
-		if id == "" || seen[id] {
-			continue
-		}
-		seen[id] = true
-		out = append(out, DependencyRule{PipelineID: id, State: DepStateSucceeded, Mode: DepModeGate})
-	}
-	return out
+	return EffectiveDependencies(p.DependencyRules, p.DependsOn)
 }
 
 // Edge represents a directed connection between two nodes.

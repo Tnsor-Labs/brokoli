@@ -112,10 +112,26 @@ type Store interface {
 	ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error)
 	ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error)
 	UpdatePipeline(p *models.Pipeline) error
+	// UpdatePipelineTx runs inside an existing transaction; for atomic cascades/decouples.
+	UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error
 	DeletePipeline(id string) error
+	// DeletePipelineTx runs inside an existing transaction; for atomic cascade deletes.
+	DeletePipelineTx(tx *sql.Tx, id string) error
 	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
 	// PipelinesDependingOn returns pipelines that list the given id in DependsOn or DependencyRules.
+	// NOTE: returns raw cross-org matches; callers are responsible for org filtering when relevant.
+	// Prefer ListPipelineDepsByOrg for graph walks — it avoids loading nodes/edges/params blobs.
 	PipelinesDependingOn(pipelineID string) ([]models.Pipeline, error)
+
+	// ListPipelineDepsByOrg returns a lightweight projection of every pipeline in the given org,
+	// carrying only the fields needed for dependency-graph operations. Use this for cycle
+	// detection, save-time validation, reverse-lookup, and the /dependency-graph endpoint —
+	// it's a single query and skips loading multi-KB nodes/edges JSON blobs.
+	ListPipelineDepsByOrg(orgID string) ([]models.PipelineDepSummary, error)
+
+	// GetLatestRunsByPipelineIDs returns the most recent run per pipeline ID in a single query.
+	// Used by the dependency gate check to fold an O(N) loop of ListRunsByPipeline calls into O(1).
+	GetLatestRunsByPipelineIDs(ids []string) (map[string]*models.Run, error)
 
 	// Runs
 	CreateRun(r *models.Run) error

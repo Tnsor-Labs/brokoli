@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -151,6 +152,17 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set org/workspace before cycle detection so traversal is org-scoped.
+	p.WorkspaceID = GetWorkspaceID(r)
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		p.OrgID = orgID
+	}
+
+	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := engine.DetectDependencyCycle(h.store, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -179,12 +191,6 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	// UI-created pipelines are always source "ui"
 	if p.Source == "" {
 		p.Source = models.PipelineSourceUI
-	}
-
-	// Set workspace and org from request context
-	p.WorkspaceID = GetWorkspaceID(r)
-	if orgID := GetOrgIDFromRequest(r); orgID != "" {
-		p.OrgID = orgID
 	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
@@ -246,6 +252,11 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	if err := engine.DetectDependencyCycle(h.store, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -285,81 +296,192 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	if resolve == "" {
 		resolve = "abort"
 	}
-
-	dependents, _ := h.store.PipelinesDependingOn(id)
-	// Only consider dependents in the same org — cross-org leakage would be a bug.
-	filtered := make([]models.Pipeline, 0, len(dependents))
-	for _, d := range dependents {
-		if d.OrgID == existing.OrgID {
-			filtered = append(filtered, d)
-		}
-	}
-	dependents = filtered
-
-	if len(dependents) > 0 {
-		switch resolve {
-		case "abort":
-			deps := make([]map[string]string, 0, len(dependents))
-			for _, d := range dependents {
-				deps = append(deps, map[string]string{"id": d.ID, "name": d.Name})
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusConflict)
-			json.NewEncoder(w).Encode(map[string]interface{}{
-				"error":      "pipeline has dependents",
-				"dependents": deps,
-				"hint":       "retry with ?resolve=cascade to delete dependents, or ?resolve=decouple to strip this dependency from them",
-			})
-			return
-		case "cascade":
-			for _, d := range dependents {
-				_ = h.store.DeletePipeline(d.ID)
-				if h.sched != nil {
-					h.sched.Unregister(d.ID)
-				}
-				AuditLog(r, "delete", "pipeline", d.ID, map[string]interface{}{"name": d.Name}, map[string]interface{}{"cascade_from": id})
-			}
-		case "decouple":
-			for _, d := range dependents {
-				stripped := stripDependency(&d, id)
-				stripped.UpdatedAt = time.Now().UTC()
-				_ = h.store.UpdatePipeline(stripped)
-				AuditLog(r, "update", "pipeline", d.ID, map[string]interface{}{"name": d.Name}, map[string]interface{}{"decoupled_from": id})
-			}
-		default:
-			writeError(w, http.StatusBadRequest, "invalid resolve value, use abort|cascade|decouple")
-			return
-		}
-	}
-
-	if err := h.store.DeletePipeline(id); err != nil {
-		writeError(w, http.StatusNotFound, "pipeline not found")
+	if resolve != "abort" && resolve != "cascade" && resolve != "decouple" {
+		writeError(w, http.StatusBadRequest, "invalid resolve value, use abort|cascade|decouple")
 		return
 	}
+
+	// Load the org adjacency once and compute direct + transitive dependents from it.
+	summaries, err := h.store.ListPipelineDepsByOrg(existing.OrgID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "load dependents: "+err.Error())
+		return
+	}
+	direct := directDependents(summaries, id)
+
+	if len(direct) > 0 && resolve == "abort" {
+		respDeps := make([]map[string]string, 0, len(direct))
+		for _, d := range direct {
+			respDeps = append(respDeps, map[string]string{"id": d.ID, "name": d.Name})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"error":      "pipeline has dependents",
+			"dependents": respDeps,
+			"hint":       "retry with ?resolve=cascade to delete dependents, or ?resolve=decouple to strip this dependency from them",
+		})
+		return
+	}
+
+	// Compute the transitive closure for cascade, so a->b->c cascade from a wipes all three.
+	var toDelete []models.PipelineDepSummary
+	if resolve == "cascade" {
+		toDelete = transitiveDependents(summaries, id)
+	}
+
+	// All mutations happen inside a single transaction using the tx-scoped store methods.
+	// If any step fails, the transaction rolls back and nothing is persisted.
+	err = h.store.WithTx(func(tx *sql.Tx) error {
+		switch resolve {
+		case "cascade":
+			for _, d := range toDelete {
+				if err := h.store.DeletePipelineTx(tx, d.ID); err != nil {
+					return fmt.Errorf("cascade delete %s: %w", d.ID, err)
+				}
+			}
+		case "decouple":
+			for _, d := range direct {
+				stripped, err := h.store.GetPipeline(d.ID)
+				if err != nil {
+					return fmt.Errorf("decouple load %s: %w", d.ID, err)
+				}
+				stripDependencyInPlace(stripped, id)
+				stripped.UpdatedAt = time.Now().UTC()
+				if err := h.store.UpdatePipelineTx(tx, stripped); err != nil {
+					return fmt.Errorf("decouple update %s: %w", d.ID, err)
+				}
+			}
+		}
+		return h.store.DeletePipelineTx(tx, id)
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Post-commit side effects: scheduler unregistration + audit logging.
+	// These run after the transaction so a partial commit can't leave ghost schedule entries.
 	if h.sched != nil {
 		h.sched.Unregister(id)
+		for _, d := range toDelete {
+			h.sched.Unregister(d.ID)
+		}
 	}
-	AuditLog(r, "delete", "pipeline", id, nil, map[string]interface{}{"resolve": resolve, "dependents": len(dependents)})
+	switch resolve {
+	case "cascade":
+		for _, d := range toDelete {
+			AuditLog(r, "delete", "pipeline", d.ID,
+				map[string]interface{}{"name": d.Name},
+				map[string]interface{}{"cascade_from": id})
+		}
+	case "decouple":
+		for _, d := range direct {
+			AuditLog(r, "update", "pipeline", d.ID,
+				map[string]interface{}{"name": d.Name},
+				map[string]interface{}{"decoupled_from": id})
+		}
+	}
+	AuditLog(r, "delete", "pipeline", id, nil, map[string]interface{}{
+		"resolve":             resolve,
+		"direct_dependents":   len(direct),
+		"cascaded_dependents": len(toDelete),
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// stripDependency removes all references to depID from DependsOn and DependencyRules.
-func stripDependency(p *models.Pipeline, depID string) *models.Pipeline {
-	newDeps := make([]string, 0, len(p.DependsOn))
+// directDependents returns same-org summaries whose rules reference targetID.
+func directDependents(summaries []models.PipelineDepSummary, targetID string) []models.PipelineDepSummary {
+	out := make([]models.PipelineDepSummary, 0)
+	for _, sum := range summaries {
+		for _, rule := range sum.EffectiveDependencies() {
+			if rule.PipelineID == targetID {
+				out = append(out, sum)
+				break
+			}
+		}
+	}
+	return out
+}
+
+// transitiveDependents returns the full set of pipelines reachable as dependents
+// of targetID via the dep graph, in leaf-first order so the caller can delete
+// them safely without violating any lingering foreign-key-ish expectations.
+func transitiveDependents(summaries []models.PipelineDepSummary, targetID string) []models.PipelineDepSummary {
+	// Build reverse adjacency: pipelineID -> summaries that list it as a dep.
+	reverse := make(map[string][]models.PipelineDepSummary, len(summaries))
+	for _, sum := range summaries {
+		for _, rule := range sum.EffectiveDependencies() {
+			reverse[rule.PipelineID] = append(reverse[rule.PipelineID], sum)
+		}
+	}
+
+	visited := make(map[string]bool)
+	order := make([]models.PipelineDepSummary, 0)
+
+	var dfs func(id string)
+	dfs = func(id string) {
+		for _, child := range reverse[id] {
+			if visited[child.ID] {
+				continue
+			}
+			visited[child.ID] = true
+			dfs(child.ID)
+			order = append(order, child)
+		}
+	}
+	dfs(targetID)
+	return order
+}
+
+// validateDependencyOrgScope rejects any dependency rule that references a pipeline
+// outside the caller's org. Prevents cross-tenant side channels via trigger-mode auto-firing
+// or blocked-run reason leaks. Must be called after p.OrgID has been set.
+//
+// Uses a single ListPipelineDepsByOrg query for all rules (was N GetPipeline round-trips).
+func validateDependencyOrgScope(s store.Store, p *models.Pipeline) error {
+	rules := p.EffectiveDependencies()
+	if len(rules) == 0 {
+		return nil
+	}
+	summaries, err := s.ListPipelineDepsByOrg(p.OrgID)
+	if err != nil {
+		return fmt.Errorf("load org pipelines: %w", err)
+	}
+	sameOrg := make(map[string]bool, len(summaries))
+	for _, sum := range summaries {
+		sameOrg[sum.ID] = true
+	}
+	for _, rule := range rules {
+		if rule.PipelineID == p.ID {
+			// Self-dep is rejected by Pipeline.Validate(), but guard here too.
+			continue
+		}
+		if !sameOrg[rule.PipelineID] {
+			// Treat missing and cross-org identically — the error message never reveals
+			// whether the pipeline ID exists in another org.
+			return fmt.Errorf("dependency pipeline not found: %s", rule.PipelineID)
+		}
+	}
+	return nil
+}
+
+// stripDependencyInPlace removes all references to depID from DependsOn and DependencyRules.
+func stripDependencyInPlace(p *models.Pipeline, depID string) {
+	newDeps := p.DependsOn[:0]
 	for _, d := range p.DependsOn {
 		if d != depID {
 			newDeps = append(newDeps, d)
 		}
 	}
 	p.DependsOn = newDeps
-	newRules := make([]models.DependencyRule, 0, len(p.DependencyRules))
+	newRules := p.DependencyRules[:0]
 	for _, r := range p.DependencyRules {
 		if r.PipelineID != depID {
 			newRules = append(newRules, r)
 		}
 	}
 	p.DependencyRules = newRules
-	return p
 }
 
 func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {

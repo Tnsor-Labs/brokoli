@@ -5,6 +5,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -453,6 +454,152 @@ func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipe
 		p.DependencyRules = []models.DependencyRule{}
 	}
 	return &p, nil
+}
+
+// ListPipelineDepsByOrg returns only the dep columns, avoiding expensive JSONB blob loads.
+func (s *PostgresStore) ListPipelineDepsByOrg(orgID string) ([]models.PipelineDepSummary, error) {
+	var (
+		rows *sql.Rows
+		err  error
+	)
+	if orgID != "" {
+		rows, err = s.db.Query(
+			`SELECT id, name, org_id, depends_on, dependency_rules FROM pipelines WHERE org_id = $1`,
+			orgID,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, name, org_id, depends_on, dependency_rules FROM pipelines`,
+		)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]models.PipelineDepSummary, 0, 64)
+	for rows.Next() {
+		var (
+			summary      models.PipelineDepSummary
+			depsJSON     []byte
+			depRulesJSON []byte
+		)
+		if err := rows.Scan(&summary.ID, &summary.Name, &summary.OrgID, &depsJSON, &depRulesJSON); err != nil {
+			return nil, err
+		}
+		if len(depsJSON) > 0 {
+			json.Unmarshal(depsJSON, &summary.DependsOn)
+		}
+		if len(depRulesJSON) > 0 {
+			json.Unmarshal(depRulesJSON, &summary.DependencyRules)
+		}
+		out = append(out, summary)
+	}
+	return out, rows.Err()
+}
+
+// GetLatestRunsByPipelineIDs returns the most recent run per pipeline id in a single query
+// using DISTINCT ON (postgres-specific, index-friendly).
+func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*models.Run, error) {
+	out := make(map[string]*models.Run, len(ids))
+	if len(ids) == 0 {
+		return out, nil
+	}
+
+	uniq := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(uniq))
+	args := make([]interface{}, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := `
+		SELECT DISTINCT ON (pipeline_id)
+		    id, pipeline_id, status, started_at, finished_at, trace_id
+		FROM runs
+		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY pipeline_id, started_at DESC
+	`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var (
+			r                     models.Run
+			status                string
+			startedAt, finishedAt sql.NullTime
+		)
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID); err != nil {
+			return nil, err
+		}
+		r.Status = models.RunStatus(status)
+		if startedAt.Valid {
+			t := startedAt.Time
+			r.StartedAt = &t
+		}
+		if finishedAt.Valid {
+			t := finishedAt.Time
+			r.FinishedAt = &t
+		}
+		out[r.PipelineID] = &r
+	}
+	return out, rows.Err()
+}
+
+// DeletePipelineTx deletes a pipeline inside an active transaction.
+func (s *PostgresStore) DeletePipelineTx(tx *sql.Tx, id string) error {
+	result, err := tx.Exec(`DELETE FROM pipelines WHERE id=$1`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("pipeline not found: %s", id)
+	}
+	return nil
+}
+
+// UpdatePipelineTx updates a pipeline inside an active transaction.
+func (s *PostgresStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
+	nodesJSON, _ := json.Marshal(p.Nodes)
+	edgesJSON, _ := json.Marshal(p.Edges)
+	paramsJSON, _ := json.Marshal(p.Params)
+	tagsJSON, _ := json.Marshal(p.Tags)
+	depsJSON, _ := json.Marshal(p.DependsOn)
+	depRulesJSON, _ := json.Marshal(p.DependencyRules)
+	if depRulesJSON == nil {
+		depRulesJSON = []byte("[]")
+	}
+	result, err := tx.Exec(
+		`UPDATE pipelines SET name=$1, description=$2, nodes=$3, edges=$4, schedule=$5, schedule_timezone=$6,
+		 webhook_url=$7, params=$8, tags=$9, sla_deadline=$10, sla_timezone=$11, depends_on=$12, dependency_rules=$13, webhook_token=$14, enabled=$15, updated_at=$16, pipeline_id=$17, source=$18, workspace_id=$19, org_id=$20 WHERE id=$21`,
+		p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule, p.ScheduleTimezone,
+		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("pipeline not found: %s", p.ID)
+	}
+	return nil
 }
 
 func (s *PostgresStore) PipelinesDependingOn(pipelineID string) ([]models.Pipeline, error) {

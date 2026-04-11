@@ -143,14 +143,14 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 				"reason":      st.Reason,
 				"missing":     st.Missing,
 			}
+			if st.UpstreamName != "" {
+				entry["name"] = st.UpstreamName
+			}
 			if st.LastStatus != "" {
 				entry["last_status"] = st.LastStatus
 			}
 			if st.LastRunAt != nil {
 				entry["last_run_at"] = st.LastRunAt.Format(time.RFC3339)
-			}
-			if dp, err := s.GetPipeline(st.Rule.PipelineID); err == nil {
-				entry["name"] = dp.Name
 			}
 			enriched = append(enriched, entry)
 		}
@@ -163,6 +163,7 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 }
 
 // pipelineDependentsHandler handles GET /pipelines/{id}/dependents — lists pipelines that depend on this one.
+// Scoped to the caller's org via the lightweight adjacency query (no nodes/edges blob load).
 func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
@@ -175,59 +176,76 @@ func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
 			DenyOrgAccess(w)
 			return
 		}
-		deps, err := s.PipelinesDependingOn(id)
+		summaries, err := s.ListPipelineDepsByOrg(p.OrgID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		out := make([]map[string]interface{}, 0, len(deps))
-		for _, d := range deps {
-			if d.OrgID != p.OrgID {
-				continue
+		out := make([]map[string]interface{}, 0)
+		for _, sum := range summaries {
+			for _, rule := range sum.EffectiveDependencies() {
+				if rule.PipelineID != id {
+					continue
+				}
+				out = append(out, map[string]interface{}{
+					"id":   sum.ID,
+					"name": sum.Name,
+				})
+				break
 			}
-			out = append(out, map[string]interface{}{
-				"id":   d.ID,
-				"name": d.Name,
-			})
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
 }
 
-// pipelineDependencyGraphHandler handles GET /pipelines/dependency-graph — returns full org graph.
+// maxGraphNodes caps the dependency-graph payload so a single slow client can't force the
+// server to serialize tens of thousands of pipelines into one JSON response.
+const maxGraphNodes = 2000
+
+// pipelineDependencyGraphHandler handles GET /pipelines/dependency-graph — returns the
+// caller's org dep graph, capped at maxGraphNodes to bound response size.
 func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID := GetOrgIDFromRequest(r)
-		var pipelines []models.Pipeline
-		var err error
-		if orgID != "" {
-			pipelines, err = s.ListPipelinesByOrg(orgID)
-		} else {
-			pipelines, err = s.ListPipelines()
-		}
+		summaries, err := s.ListPipelineDepsByOrg(orgID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		nodes := make([]map[string]interface{}, 0, len(pipelines))
+		truncated := false
+		if len(summaries) > maxGraphNodes {
+			summaries = summaries[:maxGraphNodes]
+			truncated = true
+		}
+		nodes := make([]map[string]interface{}, 0, len(summaries))
 		edges := make([]map[string]interface{}, 0)
-		for _, p := range pipelines {
+		inGraph := make(map[string]bool, len(summaries))
+		for _, sum := range summaries {
+			inGraph[sum.ID] = true
 			nodes = append(nodes, map[string]interface{}{
-				"id":   p.ID,
-				"name": p.Name,
+				"id":   sum.ID,
+				"name": sum.Name,
 			})
-			for _, rule := range p.EffectiveDependencies() {
+		}
+		for _, sum := range summaries {
+			for _, rule := range sum.EffectiveDependencies() {
+				// Only draw edges to nodes that are in the graph — drops dangling references
+				// so the client never has to handle edges pointing at nothing.
+				if !inGraph[rule.PipelineID] {
+					continue
+				}
 				edges = append(edges, map[string]interface{}{
 					"from":  rule.PipelineID,
-					"to":    p.ID,
+					"to":    sum.ID,
 					"state": rule.State,
 					"mode":  rule.Mode,
 				})
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"nodes": nodes,
-			"edges": edges,
+			"nodes":     nodes,
+			"edges":     edges,
+			"truncated": truncated,
 		})
 	}
 }
