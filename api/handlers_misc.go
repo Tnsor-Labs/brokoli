@@ -289,6 +289,13 @@ func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline,
 }
 
 // dashboardHandler handles GET /dashboard — returns aggregated dashboard data.
+//
+// The aggregate counts (runs_today, runs_yesterday, runs_running, etc.) are
+// computed server-side from a bounded per-pipeline window of recent runs
+// (matching what pipelineSummaryHandler already does). The frontend should
+// display these directly rather than re-deriving stats from `recent_runs`,
+// which is intentionally a small UI sample, not the source of truth for any
+// counter.
 func dashboardHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID := GetOrgIDFromRequest(r)
@@ -296,7 +303,6 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		if orgID != "" {
 			pipelines, _ = s.ListPipelinesByOrg(orgID)
 		} else if OrgResolverFunc != nil {
-			// Multi-tenant: user with no org sees empty dashboard
 			pipelines = []models.Pipeline{}
 		} else {
 			wsID := GetWorkspaceID(r)
@@ -311,9 +317,14 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			StartedAt    string `json:"started_at,omitempty"`
 			FinishedAt   string `json:"finished_at,omitempty"`
 		}
-		var recentRuns []runEntry
+
+		// Load a wider per-pipeline window so the aggregates below reflect
+		// reality, not the last few entries. We load all of them into one
+		// flat list (`allRuns`), then take the head as the small UI sample
+		// (`recentRuns`). 200 per pipeline matches pipelineSummaryHandler.
+		var allRuns []runEntry
 		for _, p := range pipelines {
-			runs, _ := s.ListRunsByPipeline(p.ID, 3)
+			runs, _ := s.ListRunsByPipeline(p.ID, 200)
 			for _, run := range runs {
 				run.PopulateError()
 				entry := runEntry{
@@ -329,23 +340,75 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 				if run.FinishedAt != nil {
 					entry.FinishedAt = run.FinishedAt.Format("2006-01-02T15:04:05Z07:00")
 				}
-				recentRuns = append(recentRuns, entry)
+				allRuns = append(allRuns, entry)
 			}
 		}
-		// Sort by started_at desc
-		for i := 0; i < len(recentRuns); i++ {
-			for j := i + 1; j < len(recentRuns); j++ {
-				if recentRuns[j].StartedAt > recentRuns[i].StartedAt {
-					recentRuns[i], recentRuns[j] = recentRuns[j], recentRuns[i]
+		// Sort all runs by started_at desc so head = most recent.
+		for i := 0; i < len(allRuns); i++ {
+			for j := i + 1; j < len(allRuns); j++ {
+				if allRuns[j].StartedAt > allRuns[i].StartedAt {
+					allRuns[i], allRuns[j] = allRuns[j], allRuns[i]
 				}
 			}
 		}
-		if recentRuns == nil {
-			recentRuns = []runEntry{}
+
+		// Compute the real aggregates from the full window, not from the
+		// 50-entry recentRuns slice that follows.
+		now := time.Now()
+		todayStr := now.Format("2006-01-02")
+		yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
+		last24hCutoff := now.Add(-24 * time.Hour)
+
+		var runsToday, runsYesterday int
+		var runs24hTotal, runs24hSuccess, runs24hFailed int
+		var runsRunning int
+		// Authoritative list of currently-running run IDs. The frontend uses
+		// this to reconcile its client-side liveRunStatuses store: any "running"
+		// entry whose ID is NOT in this list is stale (probably from a missed
+		// run.completed event during a reconnect window) and should be cleared.
+		runningRunIDs := make([]string, 0, 4)
+		for _, run := range allRuns {
+			if len(run.StartedAt) >= 10 {
+				day := run.StartedAt[:10]
+				if day == todayStr {
+					runsToday++
+				} else if day == yesterdayStr {
+					runsYesterday++
+				}
+			}
+			if run.StartedAt != "" {
+				if t, err := time.Parse("2006-01-02T15:04:05Z07:00", run.StartedAt); err == nil && !t.Before(last24hCutoff) {
+					runs24hTotal++
+					switch run.Status {
+					case "success", "completed":
+						runs24hSuccess++
+					case "failed":
+						runs24hFailed++
+					}
+				}
+			}
+			if run.Status == "running" {
+				runsRunning++
+				runningRunIDs = append(runningRunIDs, run.RunID)
+			}
 		}
-		// Truncate
+
+		var successRate24h int
+		if runs24hTotal > 0 {
+			successRate24h = int((float64(runs24hSuccess) / float64(runs24hTotal)) * 100)
+		} else {
+			successRate24h = 100 // no runs in window — neutral default
+		}
+
+		// Build the small UI sample (recent_runs) from the head of the
+		// already-sorted list. Kept around for the "Recent activity" list
+		// only — never used as a source of truth for any counter.
+		recentRuns := allRuns
 		if len(recentRuns) > 50 {
 			recentRuns = recentRuns[:50]
+		}
+		if recentRuns == nil {
+			recentRuns = []runEntry{}
 		}
 
 		summaries := make([]PipelineSummary, 0, len(pipelines))
@@ -353,7 +416,8 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			summaries = append(summaries, toPipelineSummary(p))
 		}
 
-		// Compute daily trends (last 7 days)
+		// Compute daily trends (last 7 days) from the full window, not the
+		// 50-entry recentRuns sample.
 		type dayTrend struct {
 			Date    string `json:"date"`
 			Success int    `json:"success"`
@@ -365,10 +429,10 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			d := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
 			trendMap[d] = &dayTrend{Date: d}
 		}
-		// Top failing pipelines
+		// Top failing pipelines, also from the full window.
 		failCounts := make(map[string]int)
 		failNames := make(map[string]string)
-		for _, r := range recentRuns {
+		for _, r := range allRuns {
 			if len(r.StartedAt) >= 10 {
 				day := r.StartedAt[:10]
 				if t, ok := trendMap[day]; ok {
@@ -420,6 +484,17 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			"recent_runs": recentRuns,
 			"trends":      trends,
 			"top_failing": topFailing,
+			// Real aggregate counts. The frontend should read these directly
+			// instead of deriving stats from `recent_runs` (which is a small
+			// UI sample, not a complete count).
+			"runs_today":        runsToday,
+			"runs_yesterday":    runsYesterday,
+			"runs_running":      runsRunning,
+			"running_run_ids":   runningRunIDs,
+			"runs_24h_total":    runs24hTotal,
+			"runs_24h_success":  runs24hSuccess,
+			"runs_24h_failed":   runs24hFailed,
+			"success_rate_24h":  successRate24h,
 		})
 	}
 }
