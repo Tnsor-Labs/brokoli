@@ -122,7 +122,10 @@ Drag-and-drop pipeline builder with 13 node types. No code required for common E
 - **Resume from failure** — skip succeeded nodes, retry from the point of failure
 - **Wait time tracking** — measures queue delay between node readiness and execution start
 - **Throughput metrics** — rows/sec calculated per node execution
-- **Cross-pipeline dependencies** — `depends_on` field, scheduler checks before triggering
+- **Cross-pipeline dependencies** — rich `dependency_rules` with state (`succeeded`/`completed`/`failed`), mode (`gate`/`trigger`), and freshness windows. Blocked runs are persisted with reasons, not silently skipped
+- **Trigger-mode chaining** — mark a dependency as `trigger` to auto-fire downstream when upstream completes, no cron required
+- **Cycle detection** — DFS prevents dependency cycles on save with human-readable error paths
+- **Smart delete resolver** — `DELETE ?resolve=cascade|decouple|abort` with transitive cascade and atomic transactions
 - **Condition branching** — if/else nodes evaluate expressions and route data accordingly
 - **Cancellation** — cancel running pipelines via API or UI
 
@@ -158,14 +161,27 @@ Drag-and-drop pipeline builder with 13 node types. No code required for common E
 - Trigger runs via HTTP: `POST /api/pipelines/:id/webhook?token=whk_...`
 - Use with GitHub Actions, dbt, Kafka consumers, or any external event
 
-### CLI for CI/CD
+### CLI
 
 ```bash
-# Trigger a run and wait for completion
-brokoli run <pipeline-id> --server http://localhost:8080
+# Authenticate once — credentials stored in ~/.brokoli/config.json
+brokoli login
 
-# Run with assertions (exits non-zero on failure)
-brokoli assert <pipeline-id> -a assertions.yaml
+# Start dev server with file watching and hot-reload
+brokoli dev ./pipelines --port 8080
+
+# Trigger a run and wait for completion
+brokoli run <pipeline-id>
+
+# Stream real-time logs via WebSocket
+brokoli run <pipeline-id> --follow
+
+# Check who you're logged in as
+brokoli whoami
+
+# Import/export pipeline YAML
+brokoli import pipeline.yaml
+brokoli export <pipeline-id> -o pipeline.yaml
 ```
 
 **Assertion file format:**
@@ -261,14 +277,24 @@ POST   /api/pipelines/:id/webhook      Webhook trigger (token auth)
 POST   /api/pipelines/import           Import YAML/JSON
 ```
 
+### Dependencies
+```
+GET    /api/pipelines/:id/deps              Dependency status (per-rule state, freshness, blockers)
+GET    /api/pipelines/:id/dependents        Reverse lookup — who depends on me
+GET    /api/pipelines/dependency-graph       Full org dependency graph (capped at 2000 nodes)
+DELETE /api/pipelines/:id?resolve=abort     409 with dependent list (default)
+DELETE /api/pipelines/:id?resolve=cascade   Delete this + all transitive dependents
+DELETE /api/pipelines/:id?resolve=decouple  Strip references, then delete
+```
+
 ### Runs
 ```
 GET    /api/pipelines/:id/runs              List runs
 GET    /api/runs/:id                        Run detail (with node_runs, trace_id)
 POST   /api/runs/:id/resume                 Resume from failure
 POST   /api/runs/:id/cancel                 Cancel running pipeline
-GET    /api/runs/:id/logs                   Run logs (with trace_id, span_id)
-GET    /api/runs/:id/logs/export            Download logs
+GET    /api/runs/:id/logs                   Run logs (?node_id=&level= filters)
+GET    /api/runs/:id/logs/export            Download logs (?node_id=&level= filters)
 GET    /api/runs/:id/nodes/:nid/preview     Node data preview
 GET    /api/runs/:id/nodes/:nid/profile     Node profiling data + drift alerts
 GET    /api/runs/calendar                   Daily run heatmap
@@ -310,7 +336,7 @@ GET    /api/lineage                         Cross-pipeline lineage graph
 ```
 
 ```
-├── cmd/           CLI — serve, run, assert, generate-key
+├── cmd/           CLI — serve, dev, run, login, import, export
 ├── engine/        Execution, transforms, profiling, drift, conditions, retry, scheduler
 ├── api/           HTTP handlers, auth, WebSocket, middleware, rate limiting
 ├── store/         SQLite + PostgreSQL dual-dialect store with migrations
@@ -335,17 +361,32 @@ go test ./... -v
 
 ## Configuration
 
+### Server flags
+
 | Flag | Default | Description |
 |---|---|---|
 | `--port` / `-p` | 8080 | HTTP server port |
 | `--db` | ./brokoli.db | SQLite path (or `postgres://...` URI) |
 | `--api-key` | — | Enable API key authentication |
 
+### Environment variables
+
 | Env Variable | Description |
 |---|---|
 | `BROKOLI_APP_URL` | Base URL for Slack deep links (default: `http://localhost:8080`) |
 | `BROKOLI_JWT_SECRET` | Persistent JWT signing secret |
-| `BROKOLI_CORS_ORIGINS` | Allowed CORS origins (comma-separated, default: `*`) |
+| `BROKOLI_CORS_ORIGINS` | Allowed CORS origins (comma-separated) |
+| `BROKOLI_MAX_CONCURRENT_RUNS` | Max parallel pipeline runs (default: 4) |
+
+### CLI credentials
+
+```bash
+brokoli login                           # interactive — stores to ~/.brokoli/config.json
+brokoli whoami                          # verify current session
+brokoli logout                          # clear stored credentials
+```
+
+All CLI commands (`run`, `import`, `export`) automatically read credentials from `~/.brokoli/config.json`. Override with `--server` and `--api-key` flags.
 
 ## License
 
