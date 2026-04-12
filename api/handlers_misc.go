@@ -487,14 +487,14 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			// Real aggregate counts. The frontend should read these directly
 			// instead of deriving stats from `recent_runs` (which is a small
 			// UI sample, not a complete count).
-			"runs_today":        runsToday,
-			"runs_yesterday":    runsYesterday,
-			"runs_running":      runsRunning,
-			"running_run_ids":   runningRunIDs,
-			"runs_24h_total":    runs24hTotal,
-			"runs_24h_success":  runs24hSuccess,
-			"runs_24h_failed":   runs24hFailed,
-			"success_rate_24h":  successRate24h,
+			"runs_today":       runsToday,
+			"runs_yesterday":   runsYesterday,
+			"runs_running":     runsRunning,
+			"running_run_ids":  runningRunIDs,
+			"runs_24h_total":   runs24hTotal,
+			"runs_24h_success": runs24hSuccess,
+			"runs_24h_failed":  runs24hFailed,
+			"success_rate_24h": successRate24h,
 		})
 	}
 }

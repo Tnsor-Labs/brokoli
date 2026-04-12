@@ -160,10 +160,10 @@ func dashboardKey(orgID string) string {
 //
 // We compute everything from the current state store rather than maintaining
 // running counters because:
-//   1. Snapshots are always correct — no drift from missed events.
-//   2. Cost is O(active runs) which is bounded by maxKeys.
-//   3. The state store's diff machinery (StateStore.Apply) sends only the
-//      changed fields on the wire, so a snapshot rewrite is cheap to broadcast.
+//  1. Snapshots are always correct — no drift from missed events.
+//  2. Cost is O(active runs) which is bounded by maxKeys.
+//  3. The state store's diff machinery (StateStore.Apply) sends only the
+//     changed fields on the wire, so a snapshot rewrite is cheap to broadcast.
 func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	if asOf.IsZero() {
 		asOf = time.Now().UTC()

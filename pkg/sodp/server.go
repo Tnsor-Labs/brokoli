@@ -21,10 +21,10 @@ const (
 	serverPongWait     = 60 * time.Second
 	serverWriteWait    = 10 * time.Second
 
-	maxFrameBytes  = 64 * 1024 // 64 KiB max inbound frame — prevents OOM
-	maxKeyLen      = 256       // max state key length
-	maxValueBytes  = 512 * 1024 // 512 KiB max value in a CALL mutation
-	maxSessions    = 4096      // hard cap on concurrent WebSocket sessions
+	maxFrameBytes = 64 * 1024  // 64 KiB max inbound frame — prevents OOM
+	maxKeyLen     = 256        // max state key length
+	maxValueBytes = 512 * 1024 // 512 KiB max value in a CALL mutation
+	maxSessions   = 4096       // hard cap on concurrent WebSocket sessions
 )
 
 // Server is the SODP WebSocket server. It owns the state store and fanout bus,
@@ -37,10 +37,10 @@ type Server struct {
 	sessions     map[string]*Session
 	sessionCount atomic.Int64
 
-	serverID  string
-	jwtSecret []byte // HS256 secret; empty = auth disabled
-	requireAuth bool // when true, WATCH/CALL require authenticated session
-	upgrader  websocket.Upgrader
+	serverID    string
+	jwtSecret   []byte // HS256 secret; empty = auth disabled
+	requireAuth bool   // when true, WATCH/CALL require authenticated session
+	upgrader    websocket.Upgrader
 }
 
 // NewServer creates a new SODP server instance.

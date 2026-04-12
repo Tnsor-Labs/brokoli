@@ -10,8 +10,8 @@ import (
 type Subscriber struct {
 	SessionID string
 	StreamID  uint32
-	OrgID     string         // tenant scope — subscriber only receives matching keys
-	Send      chan<- []byte   // pre-encoded frame bytes
+	OrgID     string        // tenant scope — subscriber only receives matching keys
+	Send      chan<- []byte // pre-encoded frame bytes
 }
 
 // FanoutBus manages per-key subscriber lists and broadcasts pre-encoded

@@ -19,14 +19,14 @@ type Session struct {
 	OrgID  string         // tenant isolation — set at connect, immutable after auth
 	Sub    string         // JWT subject claim
 	Claims map[string]any // all JWT claims
-	Send   chan []byte     // outbound pre-encoded frames
-	Done   chan struct{}    // closed on disconnect
+	Send   chan []byte    // outbound pre-encoded frames
+	Done   chan struct{}  // closed on disconnect
 
-	mu          sync.Mutex
-	watches     map[uint32]string // stream_id → watched key
-	nextStream  atomic.Uint32
-	authed      bool // true after successful AUTH or if HTTP middleware pre-authenticated
-	maxWatches  int
+	mu         sync.Mutex
+	watches    map[uint32]string // stream_id → watched key
+	nextStream atomic.Uint32
+	authed     bool // true after successful AUTH or if HTTP middleware pre-authenticated
+	maxWatches int
 
 	// Rate limiting (simple 1-second fixed window)
 	rateCount atomic.Int64

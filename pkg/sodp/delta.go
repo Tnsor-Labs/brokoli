@@ -14,7 +14,7 @@ const (
 // DeltaOp represents a single field-level change within a state entry.
 type DeltaOp struct {
 	Op    DeltaOpType `msgpack:"op" json:"op"`
-	Path  string      `msgpack:"path" json:"path"`   // JSON Pointer (e.g. "/status")
+	Path  string      `msgpack:"path" json:"path"` // JSON Pointer (e.g. "/status")
 	Value any         `msgpack:"value,omitempty" json:"value,omitempty"`
 }
 

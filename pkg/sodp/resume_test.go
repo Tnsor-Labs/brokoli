@@ -11,12 +11,12 @@ import (
 // flow that the OSS client (@sodp/client) relies on to survive transient
 // network drops without losing events:
 //
-//   1. Client connects, sends WATCH, receives STATE_INIT (version V0).
-//   2. Server applies one mutation. Client receives DELTA at version V1.
-//   3. Client kills its WebSocket without sending UNWATCH (network blip).
-//   4. While disconnected, the server applies two more mutations (V2, V3).
-//   5. Client reconnects, sends RESUME { since_version: V1 }.
-//   6. Server replays the missed deltas (V2, V3) in order.
+//  1. Client connects, sends WATCH, receives STATE_INIT (version V0).
+//  2. Server applies one mutation. Client receives DELTA at version V1.
+//  3. Client kills its WebSocket without sending UNWATCH (network blip).
+//  4. While disconnected, the server applies two more mutations (V2, V3).
+//  5. Client reconnects, sends RESUME { since_version: V1 }.
+//  6. Server replays the missed deltas (V2, V3) in order.
 //
 // This is the only path that proves the delta-log + RESUME machinery works
 // end-to-end. Without it, brief disconnects would silently drop events and
