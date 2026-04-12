@@ -151,7 +151,7 @@ func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, logs)
+	writeJSON(w, http.StatusOK, filterLogs(logs, r))
 }
 
 func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
@@ -166,9 +166,10 @@ func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	filtered := filterLogs(logs, r)
 	w.Header().Set("Content-Type", "text/plain")
 	w.Header().Set("Content-Disposition", "attachment; filename=run-"+id[:8]+"-logs.txt")
-	for _, l := range logs {
+	for _, l := range filtered {
 		line := l.Timestamp.Format("2006-01-02T15:04:05Z") + " [" + string(l.Level) + "]"
 		if l.NodeID != "" {
 			line += " [" + l.NodeID + "]"
@@ -176,6 +177,40 @@ func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 		line += " " + l.Message + "\n"
 		w.Write([]byte(line))
 	}
+}
+
+// filterLogs applies ?node_id= and ?level= query filters to a log slice.
+// Input validation: level is checked against the known enum; node_id is an
+// opaque string filter (the store already scoped logs to the run, so the
+// node_id cannot leak data from another run/pipeline).
+func filterLogs(logs []models.LogEntry, r *http.Request) []models.LogEntry {
+	nodeID := r.URL.Query().Get("node_id")
+	level := models.LogLevel(r.URL.Query().Get("level"))
+	if nodeID == "" && level == "" {
+		return logs
+	}
+	if level != "" && !isValidLogLevel(level) {
+		return logs
+	}
+	out := make([]models.LogEntry, 0, len(logs))
+	for _, l := range logs {
+		if nodeID != "" && l.NodeID != nodeID {
+			continue
+		}
+		if level != "" && l.Level != level {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
+func isValidLogLevel(l models.LogLevel) bool {
+	switch l {
+	case models.LogLevelDebug, models.LogLevelInfo, models.LogLevelWarning, models.LogLevelError:
+		return true
+	}
+	return false
 }
 
 func (h *RunHandler) CancelRun(w http.ResponseWriter, r *http.Request) {

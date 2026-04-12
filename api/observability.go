@@ -40,10 +40,8 @@ func MetricsMiddleware(m *Metrics) func(http.Handler) http.Handler {
 // HealthHandler returns 200 if the server is alive and DB is reachable.
 func HealthHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Quick DB check
 		_, err := s.ListPipelines()
 		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 				"status": "unhealthy",
 				"error":  err.Error(),
