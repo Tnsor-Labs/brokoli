@@ -68,7 +68,22 @@ try {
   assert(threw, "applyOps should throw on unknown op type");
 
   const WebSocketImpl = await resolveWebSocket();
-  console.log("WebSocket source:", typeof globalThis.WebSocket === "function" ? "native" : "ws package");
+  const usedNative = typeof globalThis.WebSocket === "function";
+  console.log("WebSocket source:", usedNative ? "native" : "ws package");
+
+  // SODP-WORKAROUND(client-ts#bare-WebSocket.OPEN-reference):
+  // @sodp/client@0.2.1 references `WebSocket.OPEN` as a bare global inside
+  // SodpClient.send(), even when a custom WebSocket implementation is passed
+  // via the `WebSocket` constructor option. On Node < 21 (CI runners) the
+  // global is undefined and the client crashes after the connection opens
+  // with `ReferenceError: WebSocket is not defined`. Polyfill globalThis so
+  // the bare lookup resolves to the same constructor we're already passing
+  // via options. When upstream switches to `this.opts.WebSocket.OPEN` (or
+  // hard-codes the literal `1` from the WebSocket spec), this block can be
+  // deleted along with the entry in pkg/sodp/WORKAROUNDS.md.
+  if (!usedNative) {
+    globalThis.WebSocket = WebSocketImpl;
+  }
 
   const client = new SodpClient(url, {
     WebSocket: WebSocketImpl,

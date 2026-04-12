@@ -10,7 +10,44 @@ Current pinned version: **`@sodp/client@0.2.1`**
 
 ## Open issues
 
-_None._ All known SODP-client integration issues are now resolved upstream.
+### `client-ts#bare-WebSocket.OPEN-reference` — P1
+
+**Problem**: `SodpClient.send()` references `WebSocket.OPEN` as a bare global
+constant when checking the underlying socket's readyState, even when the
+caller passes a custom `WebSocket` implementation via the constructor's
+`WebSocket` option. On Node.js < 21 (the global doesn't exist) the bare
+lookup throws `ReferenceError: WebSocket is not defined` the moment any
+operation tries to send a frame — including the very first WATCH after the
+HELLO handshake completes.
+
+Reproducible from `@sodp/client@0.2.1` source (`dist/esm/index.js:256`):
+
+```js
+send(type, streamId, body) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN)  // ← bare global
+        return;
+    this.ws.send(...);
+}
+```
+
+The `this.opts.WebSocket` constructor is honoured for the connection itself,
+but the readyState comparison still requires the global. The two paths are
+inconsistent.
+
+**Workaround location**: `pkg/sodp/testdata/sodp_client_test.mjs`
+
+When the native `WebSocket` is missing, after resolving the implementation
+via `import("ws")`, the test script also assigns it to `globalThis.WebSocket`
+so the bare lookup inside `send()` resolves to the same constructor we're
+already passing through options.
+
+**Cleanup when fixed**: Delete the `if (!usedNative) globalThis.WebSocket = ...`
+block in `sodp_client_test.mjs`. The right upstream fix is one of:
+
+1. `this.opts.WebSocket.OPEN` — read OPEN from the user-supplied constructor
+2. Hard-code the literal `1` — the WebSocket spec defines OPEN as exactly 1
+   on every implementation (`CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3`),
+   so the constant lookup is gratuitous indirection
 
 ---
 
