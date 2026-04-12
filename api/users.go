@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,6 +16,17 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 	"golang.org/x/crypto/bcrypt"
+)
+
+// Sentinel errors returned by CreateUser so the handler can map them to the
+// correct HTTP status without string-matching the underlying driver error.
+var (
+	// ErrUserExists is returned when the username is already taken.
+	ErrUserExists = errors.New("user already exists")
+	// ErrInvalidPassword wraps the underlying password validation error.
+	// The wrapped error carries the human-readable reason (length, mixed case,
+	// digit requirement, etc.) which the handler surfaces to the caller.
+	ErrInvalidPassword = errors.New("invalid password")
 )
 
 // Role defines user permission levels.
@@ -118,11 +130,13 @@ func (us *UserStore) GetUserByID(id string) (*User, error) {
 
 func (us *UserStore) CreateUser(username, password string, role Role) (*User, error) {
 	if err := validatePassword(password); err != nil {
-		return nil, err
+		// Wrap so the handler can errors.Is(err, ErrInvalidPassword) AND still
+		// recover the human-readable reason via err.Error().
+		return nil, fmt.Errorf("%w: %s", ErrInvalidPassword, err.Error())
 	}
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("hash password: %w", err)
 	}
 	id := generateID()
 	now := time.Now()
@@ -138,7 +152,14 @@ func (us *UserStore) CreateUser(username, password string, role Role) (*User, er
 		)
 	}
 	if err != nil {
-		return nil, err
+		// Both SQLite and Postgres surface UNIQUE constraint violations as
+		// errors whose Error() contains "UNIQUE" or "unique". Map those to
+		// ErrUserExists; everything else stays as-is and becomes a 500.
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate") {
+			return nil, ErrUserExists
+		}
+		return nil, fmt.Errorf("insert user: %w", err)
 	}
 	return &User{ID: id, Username: username, Role: role, CreatedAt: now}, nil
 }
@@ -495,7 +516,17 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 
 		user, err := us.CreateUser(req.Username, req.Password, role)
 		if err != nil {
-			writeError(w, http.StatusConflict, "user already exists")
+			switch {
+			case errors.Is(err, ErrInvalidPassword):
+				// Surface the actual validation reason ("password must be at
+				// least 10 characters", etc.) so the caller knows what to fix.
+				writeError(w, http.StatusBadRequest, err.Error())
+			case errors.Is(err, ErrUserExists):
+				writeError(w, http.StatusConflict, "user already exists")
+			default:
+				log.Printf("CreateUser failed: %v", err)
+				writeError(w, http.StatusInternalServerError, "failed to create user")
+			}
 			return
 		}
 		writeJSON(w, http.StatusCreated, user)
@@ -591,8 +622,23 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 					}
 				}
 				if token != "" {
-					if _, err := ParseToken(token); err == nil {
-						next.ServeHTTP(w, r)
+					if claims, err := ParseToken(token); err == nil {
+						// Propagate claims and org_id into the request context so
+						// downstream WebSocket handlers (sodp.Server.HandleWS) can
+						// enforce per-session tenant isolation. Without this the
+						// SODP server treats every session as the "default" org
+						// and multi-tenant separation collapses on the WS path.
+						ctx := contextWithClaims(r.Context(), claims)
+						orgID, _ := (*claims)["org_id"].(string)
+						if orgID == "" && OrgResolverFunc != nil {
+							if sub, ok := (*claims)["sub"].(string); ok {
+								orgID = OrgResolverFunc(sub)
+							}
+						}
+						if orgID != "" {
+							ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+						}
+						next.ServeHTTP(w, r.WithContext(ctx))
 						return
 					}
 				}
