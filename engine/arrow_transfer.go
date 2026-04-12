@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -106,7 +107,10 @@ func WriteColumnarBinary(path string, ds *common.DataSet) error {
 	if err != nil {
 		return err
 	}
-	if err := binary.Write(f, binary.LittleEndian, uint32(len(schemaJSON))); err != nil {
+	if len(schemaJSON) > math.MaxUint32 {
+		return fmt.Errorf("schema too large: %d bytes", len(schemaJSON))
+	}
+	if err := binary.Write(f, binary.LittleEndian, uint32(len(schemaJSON))); err != nil { //nolint:gosec
 		return err
 	}
 	if _, err := f.Write(schemaJSON); err != nil {
@@ -144,7 +148,7 @@ func ReadColumnarBinary(path string) (*common.DataSet, error) {
 
 	// Read schema
 	schemaLen := binary.LittleEndian.Uint32(data[8:12])
-	if uint32(len(data)) < 12+schemaLen {
+	if int64(len(data)) < 12+int64(schemaLen) { //nolint:gosec
 		return nil, fmt.Errorf("truncated BROK file: schema extends beyond file")
 	}
 	var schema struct {

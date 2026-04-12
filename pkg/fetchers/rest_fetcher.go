@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -17,7 +19,50 @@ var (
 	ErrInvalidURL        = errors.New("invalid URL provided")
 	ErrHTTPRequestFailed = errors.New("HTTP request failed")
 	ErrEmptyResponse     = errors.New("empty response received")
+	ErrSSRFBlocked       = errors.New("request to private/internal network blocked")
 )
+
+// isBlockedHost returns true if the host resolves to a private, loopback, or
+// cloud metadata IP range. Prevents SSRF attacks that probe internal networks
+// or steal cloud credentials via the metadata endpoint.
+func isBlockedHost(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ErrInvalidURL
+	}
+	host := u.Hostname()
+
+	// Block cloud metadata endpoints by hostname.
+	blockedHosts := []string{
+		"169.254.169.254",
+		"metadata.google.internal",
+		"metadata.internal",
+	}
+	for _, b := range blockedHosts {
+		if strings.EqualFold(host, b) {
+			return ErrSSRFBlocked
+		}
+	}
+
+	// Resolve and check IP ranges.
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return nil // DNS failure will be caught by the HTTP client
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		// Block private ranges (10.x, 172.16-31.x, 192.168.x) and link-local.
+		// Allow loopback (127.x) because the fetcher uses it for self-referencing
+		// sample data URLs resolved via BROKOLI_SERVER_URL.
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return ErrSSRFBlocked
+		}
+	}
+	return nil
+}
 
 type RESTFetcher struct {
 	client *http.Client
@@ -106,6 +151,13 @@ func (f *RESTFetcher) executeRequest(url string, options RequestOptions) ([]byte
 			base = "http://127.0.0.1:" + port
 		}
 		url = strings.TrimRight(base, "/") + url
+	}
+
+	// SSRF protection: block requests to private networks and cloud metadata.
+	if !strings.HasPrefix(url, "/") {
+		if err := isBlockedHost(url); err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrSSRFBlocked, err)
+		}
 	}
 
 	req, err := http.NewRequest(options.Method, url, nil)

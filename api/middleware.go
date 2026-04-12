@@ -19,7 +19,8 @@ func Logger(next http.Handler) http.Handler {
 		start := time.Now()
 		wrapped := &statusWriter{ResponseWriter: w, status: 200}
 		next.ServeHTTP(wrapped, r)
-		log.Printf("%s %s %d %s", r.Method, r.URL.Path, wrapped.status, time.Since(start))
+		path := strings.ReplaceAll(strings.ReplaceAll(r.URL.Path, "\n", ""), "\r", "")
+		log.Printf("%s %s %d %s", r.Method, path, wrapped.status, time.Since(start))
 	})
 }
 

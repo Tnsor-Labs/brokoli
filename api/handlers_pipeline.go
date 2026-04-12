@@ -466,6 +466,21 @@ func validateDependencyOrgScope(s store.Store, p *models.Pipeline) error {
 	return nil
 }
 
+// sanitizeFilename strips characters that could cause header injection or path traversal.
+func sanitizeFilename(name string) string {
+	clean := make([]byte, 0, len(name))
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' {
+			clean = append(clean, c)
+		}
+	}
+	if len(clean) == 0 {
+		return "pipeline"
+	}
+	return string(clean)
+}
+
 // stripDependencyInPlace removes all references to depID from DependsOn and DependencyRules.
 func stripDependencyInPlace(p *models.Pipeline, depID string) {
 	newDeps := p.DependsOn[:0]
@@ -717,7 +732,8 @@ func (h *PipelineHandler) Export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	safeName := sanitizeFilename(p.Name)
 	w.Header().Set("Content-Type", "application/x-yaml")
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%s.yaml", p.Name))
-	w.Write(yamlData)
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.yaml"`, safeName))
+	w.Write(yamlData) //nolint:errcheck
 }

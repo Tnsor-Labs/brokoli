@@ -90,6 +90,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				Value:    "",
 				Path:     "/",
 				HttpOnly: true,
+				Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
+				SameSite: http.SameSiteLaxMode,
 				MaxAge:   -1, // delete cookie
 			})
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -234,7 +236,11 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 // Start begins listening for HTTP requests with graceful shutdown.
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
-	srv := &http.Server{Addr: addr, Handler: s.router}
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.router,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
 
 	// Graceful shutdown on SIGINT/SIGTERM
 	quit := make(chan os.Signal, 1)

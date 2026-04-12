@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -376,6 +377,13 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	url := c.BuildURI()
 
+	if err := validateExternalURL(url); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   "blocked: " + err.Error(),
+		}
+	}
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return map[string]interface{}{
@@ -627,4 +635,34 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 		{"type": "generic", "label": "Generic", "category": "other", "fields": []string{"host", "port", "login", "password", "extra"}},
 	}
 	writeJSON(w, http.StatusOK, types)
+}
+
+// validateExternalURL blocks requests to private networks, loopback, and
+// cloud metadata endpoints. Prevents SSRF via connection testing.
+func validateExternalURL(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL")
+	}
+	host := u.Hostname()
+	blocked := []string{"169.254.169.254", "metadata.google.internal", "metadata.internal"}
+	for _, b := range blocked {
+		if strings.EqualFold(host, b) {
+			return fmt.Errorf("internal network address blocked")
+		}
+	}
+	ips, err := net.LookupHost(host)
+	if err != nil {
+		return nil
+	}
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			return fmt.Errorf("internal network address blocked")
+		}
+	}
+	return nil
 }
