@@ -6,6 +6,12 @@
  * events on a fixed schedule (see crosslang_test.go).
  *
  * Exit 0 = pass, exit 1 = fail (stderr has the reason).
+ *
+ * WebSocket source: Node.js 21+ ships a native `globalThis.WebSocket` and
+ * @sodp/client uses it automatically. On older Node (e.g. CI runners on
+ * Node 20 LTS), the global is undefined and SodpClient throws unless we
+ * pass an implementation. We dynamically import the `ws` package as a
+ * fallback so the test runs on every supported Node release.
  */
 import { SodpClient, applyOps } from "@sodp/client";
 
@@ -23,6 +29,30 @@ function assert(cond, msg) {
   }
 }
 
+/**
+ * Resolve a WebSocket implementation. Prefer the native one on modern Node;
+ * fall back to the `ws` package (declared as a devDependency in ui/) on Node
+ * 20 and older. Throws with a clear message if neither is available so the
+ * Go test fails loudly instead of timing out on a half-broken client.
+ */
+async function resolveWebSocket() {
+  if (typeof globalThis.WebSocket === "function") {
+    return globalThis.WebSocket;
+  }
+  try {
+    const wsModule = await import("ws");
+    // The `ws` package's default export is the WebSocket constructor.
+    return wsModule.default ?? wsModule.WebSocket;
+  } catch (e) {
+    throw new Error(
+      "no WebSocket implementation available — Node " +
+      process.version +
+      " has no global WebSocket and the `ws` package failed to import: " +
+      (e?.message || e)
+    );
+  }
+}
+
 try {
   // =========================================================================
   // Sanity: applyOps is re-exported from package root (P3 fix in 0.2.0)
@@ -37,7 +67,11 @@ try {
   catch (e) { threw = true; }
   assert(threw, "applyOps should throw on unknown op type");
 
+  const WebSocketImpl = await resolveWebSocket();
+  console.log("WebSocket source:", typeof globalThis.WebSocket === "function" ? "native" : "ws package");
+
   const client = new SodpClient(url, {
+    WebSocket: WebSocketImpl,
     reconnect: false,
     onConnect: () => console.log("connected"),
     onDisconnect: () => console.log("disconnected"),

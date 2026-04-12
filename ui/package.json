@@ -17,7 +17,8 @@
     "svelte": "^5.55.0",
     "svelte-check": "^4.4.5",
     "typescript": "~5.9.3",
-    "vite": "^8.0.1"
+    "vite": "^8.0.1",
+    "ws": "^8.20.0"
   },
   "dependencies": {
     "@sodp/client": "^0.2.1",
