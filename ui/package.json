@@ -20,6 +20,7 @@
     "vite": "^8.0.1"
   },
   "dependencies": {
+    "@sodp/client": "^0.2.1",
     "@types/prismjs": "^1.26.6",
     "js-yaml": "^4.1.1",
     "prismjs": "^1.30.0",
