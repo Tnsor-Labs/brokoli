@@ -182,7 +182,7 @@
       title="No connections configured"
       description="Connections store credentials for databases, APIs, and other external services your pipelines use."
       ctaLabel="+ New Connection"
-      on:click={() => (showCreateModal = true)}
+      on:click={openCreate}
     />
   {:else}
     <div class="table">

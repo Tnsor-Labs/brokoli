@@ -143,7 +143,7 @@
       title="No variables configured"
       description="Variables let you store reusable values like file paths, API endpoints, or secrets that pipelines can reference."
       ctaLabel="+ New Variable"
-      on:click={() => (showCreateModal = true)}
+      on:click={openCreate}
     />
   {:else}
     <div class="table">
