@@ -130,7 +130,7 @@ Drag-and-drop pipeline builder with 13 node types. No code required for common E
 - **Cancellation** — cancel running pipelines via API or UI
 
 ### Monitoring & Alerts
-- **Real-time WebSocket** updates — live run status, node progress, log streaming
+- **Real-time WebSocket** updates over [SODP](docs/realtime.md) — binary, msgpack-framed, per-key subscriptions with delta fanout. Live run status, node progress, log streaming. Reconnect-resilient via the protocol's `RESUME` frame.
 - **Gantt timeline** — full-page interactive execution timeline with dependency arrows
 - **Node stats** — historical duration tracking with sparklines across runs
 - **Slack notifications** — configurable via UI, fires on run success, failure, and SLA breach
@@ -332,13 +332,15 @@ GET    /api/lineage                         Cross-pipeline lineage graph
 ├── Go backend (chi router, gorilla/websocket, SQLite/PostgreSQL)
 ├── Svelte 5 frontend (embedded via go:embed)
 ├── Execution engine (parallel DAG, tracing, retry, profiling)
+├── SODP realtime (binary state-sync over WebSocket — see docs/realtime.md)
 └── Extension system (enterprise plugins via interface injection)
 ```
 
 ```
 ├── cmd/           CLI — serve, dev, run, login, import, export
 ├── engine/        Execution, transforms, profiling, drift, conditions, retry, scheduler
-├── api/           HTTP handlers, auth, WebSocket, middleware, rate limiting
+├── api/           HTTP handlers, auth, middleware, rate limiting
+├── pkg/sodp/      SODP realtime server (state store, fanout, bridge, msgpack frames)
 ├── store/         SQLite + PostgreSQL dual-dialect store with migrations
 ├── crypto/        AES-256-GCM encryption
 ├── quality/       10 data quality rules
@@ -346,7 +348,8 @@ GET    /api/lineage                         Cross-pipeline lineage graph
 ├── models/        Pipeline, Run, NodeRun, Connection, Variable, Workspace
 ├── pkg/           Shared utilities (common types, fetchers)
 ├── web/           Embedded Svelte frontend (go:embed)
-└── ui/            Svelte 5 source (components, pages, stores)
+├── ui/            Svelte 5 source (components, pages, stores)
+└── docs/          Architecture and protocol notes
 ```
 
 ## Tests
