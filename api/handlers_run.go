@@ -3,7 +3,6 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
@@ -330,8 +329,11 @@ func (h *RunHandler) GetNodeProfile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "profile not found")
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprintf(w, `{"profile":%s,"schema":%s,"drift":%s}`, profile, schema, drift)
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"profile": json.RawMessage(profile),
+		"schema":  json.RawMessage(schema),
+		"drift":   json.RawMessage(drift),
+	})
 }
 
 func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
