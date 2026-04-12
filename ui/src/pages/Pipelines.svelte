@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { api } from "../lib/api";
-  import { pipelines, onWSEvent } from "../lib/stores";
+  import { pipelines } from "../lib/stores";
+  import { getSodpClient } from "../lib/sodp";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
   import StatusBadge from "../components/StatusBadge.svelte";
@@ -100,26 +101,51 @@
     }
   }
 
-  let unsubWS: (() => void) | null = null;
+  let unsubDashboard: (() => void) | null = null;
+  // Debounce timer so back-to-back snapshot updates collapse into a single
+  // REST refetch instead of triggering an avalanche of GET /pipelines/summary.
+  let summaryReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(async () => {
     await loadPipelines();
 
-    // Listen for real-time run events — update status inline (no API call)
-    unsubWS = onWSEvent((event) => {
-      if ((event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") && event.pipeline_id) {
-        const status = event.status || (event.type === "run.completed" ? "success" : event.type === "run.failed" ? "failed" : "running");
-        pipelineRuns.set(event.pipeline_id, [{
-          id: event.run_id, pipeline_id: event.pipeline_id, status,
-          started_at: event.timestamp, finished_at: null, node_runs: [],
-        }]);
-        pipelineRuns = new Map(pipelineRuns);
+    // Subscribe to the dashboard.{org} state key. Every time a run state
+    // changes anywhere in this org, the bridge recomputes the snapshot, the
+    // SODP server fans out a delta, and we get a callback. We don't read
+    // anything FROM the snapshot here — we use it as a tripwire to refetch
+    // /api/pipelines/summary, which has the authoritative per-pipeline
+    // counters this page actually displays.
+    //
+    // The previous event-stream + in-place counter increment was complicated
+    // and accumulated bugs (counter clobbering, duplicate increments on
+    // reconnect, stale entries). Refetching from REST on every state change
+    // is O(pipelines) per change but always correct, and `/api/pipelines/summary`
+    // is cheap enough that this is fine for OSS workloads.
+    const client = getSodpClient();
+    let firstCallback = true;
+    unsubDashboard = client.watch("dashboard.default", () => {
+      // Skip the very first callback — that's STATE_INIT, which fires
+      // immediately with whatever's currently in the store. We already have
+      // the data via loadPipelines() in onMount; refetching for the init
+      // would be wasted work.
+      if (firstCallback) {
+        firstCallback = false;
+        return;
       }
+      // Debounce: collapse multi-event bursts (e.g. node.* events that don't
+      // affect run-level state but might still trigger a snapshot rewrite
+      // due to updated_at) into one refetch.
+      if (summaryReloadTimer) clearTimeout(summaryReloadTimer);
+      summaryReloadTimer = setTimeout(() => {
+        loadPipelines();
+        summaryReloadTimer = null;
+      }, 150);
     });
   });
 
   onDestroy(() => {
-    if (unsubWS) unsubWS();
+    if (unsubDashboard) unsubDashboard();
+    if (summaryReloadTimer) clearTimeout(summaryReloadTimer);
   });
 
   async function loadPipelines() {
@@ -199,10 +225,12 @@
     try {
       await api.runs.trigger(pipelineId);
       notify.success("Run triggered");
-      // Update just this pipeline's runs without reloading everything
-      const runs = await api.runs.listByPipeline(pipelineId);
-      pipelineRuns.set(pipelineId, runs);
-      pipelineRuns = new Map(pipelineRuns);
+      // Don't refetch the runs list here — the WS handler above will receive
+      // run.started / run.completed / run.failed events and update the cached
+      // counters in place. Refetching with api.runs.listByPipeline() returns
+      // raw Run objects WITHOUT the _total/_success/_failed/_running fields,
+      // which would clobber the cached summary counts and make getRunCounts()
+      // fall back to counting array length.
     } catch (e: any) {
       notify.error("Failed to trigger run: " + (e.message || e));
     }

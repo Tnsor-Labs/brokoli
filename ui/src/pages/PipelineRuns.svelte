@@ -4,7 +4,7 @@
   import { api } from "../lib/api";
   import { authHeaders } from "../lib/auth";
   import { notify } from "../lib/toast";
-  import { onWSEvent, liveNodeStatuses } from "../lib/stores";
+  import { getSodpClient } from "../lib/sodp";
   import StatusBadge from "../components/StatusBadge.svelte";
   import RunTimeline from "../components/RunTimeline.svelte";
   import GanttChart from "../components/GanttChart.svelte";
@@ -57,7 +57,53 @@
     loadingProfile = false;
   }
 
-  let unsubWS: (() => void) | null = null;
+  // Subscriptions managed across the page lifecycle:
+  //   • dashboardUnsub  — fires whenever any run state changes anywhere in
+  //                       the org. Used as a tripwire to refetch the runs list
+  //                       and the expanded run detail via REST.
+  //   • logsUnsub       — fires whenever the expanded run's logs array changes.
+  //                       Replaces the old onWSEvent log-streaming path.
+  let dashboardUnsub: (() => void) | null = null;
+  let logsUnsub: (() => void) | null = null;
+  let runListReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function reloadRunList() {
+    if (!params.id) return;
+    try {
+      runs = await api.runs.listByPipeline(params.id);
+    } catch { /* ignore */ }
+    if (expandedRunId) {
+      try {
+        selectedRun = await api.runs.get(expandedRunId);
+      } catch { /* ignore */ }
+    }
+  }
+
+  // Watch the per-run logs key for the currently-expanded run. The bridge
+  // appends every log event to runs.{id}.logs, capped at 200 entries. The
+  // SODP server's diff machinery sends only the appended entry on the wire,
+  // not the whole array, so this is efficient even at high log throughput.
+  function subscribeLogs(runId: string) {
+    logsUnsub?.();
+    logsUnsub = null;
+    if (!runId) return;
+    const client = getSodpClient();
+    logsUnsub = client.watch<any[]>(`runs.${runId}.logs`, (value) => {
+      if (!value) {
+        logs = [];
+        return;
+      }
+      // Map the bridge's log entry shape to LogEntry. The bridge writes
+      // {node_id, level, message, timestamp}; we need a run_id field too.
+      logs = (value as any[]).map(entry => ({
+        run_id: runId,
+        node_id: (entry?.node_id ?? "") as string,
+        level: (entry?.level ?? "info") as any,
+        message: (entry?.message ?? "") as string,
+        timestamp: (entry?.timestamp ?? "") as string,
+      }));
+    });
+  }
 
   onMount(async () => {
     if (!params.id) return;
@@ -70,47 +116,35 @@
       loading = false;
     }
 
-    // Live updates: refresh run list when a run completes/fails for this pipeline
-    unsubWS = onWSEvent(async (event) => {
-      if (!params.id) return;
-      if (event.pipeline_id !== params.id && !event.run_id) return;
-
-      if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") {
-        runs = await api.runs.listByPipeline(params.id);
-        // Refresh expanded run detail
-        if (expandedRunId && (event.type === "run.completed" || event.type === "run.failed")) {
-          try {
-            const [runData, logData] = await Promise.all([
-              api.runs.get(expandedRunId),
-              api.runs.getLogs(expandedRunId),
-            ]);
-            selectedRun = runData;
-            logs = logData;
-          } catch { /* ignore */ }
-        }
-      }
-
-      // Live log streaming
-      if (event.type === "log" && expandedRunId === event.run_id) {
-        logs = [...logs, {
-          run_id: event.run_id,
-          node_id: event.node_id || "",
-          level: (event.level as any) || "info",
-          message: event.message || "",
-          timestamp: event.timestamp,
-        }];
-      }
+    // Tripwire on dashboard.default — when ANY run state changes in this
+    // org, debounce-refetch our run list. The dashboard changes for any
+    // run's start/complete/fail, which is exactly when this page's data
+    // also needs refreshing.
+    const client = getSodpClient();
+    let firstCallback = true;
+    dashboardUnsub = client.watch("dashboard.default", () => {
+      if (firstCallback) { firstCallback = false; return; }
+      if (runListReloadTimer) clearTimeout(runListReloadTimer);
+      runListReloadTimer = setTimeout(() => {
+        reloadRunList();
+        runListReloadTimer = null;
+      }, 150);
     });
   });
 
   onDestroy(() => {
-    unsubWS?.();
+    dashboardUnsub?.();
+    logsUnsub?.();
+    if (runListReloadTimer) clearTimeout(runListReloadTimer);
   });
 
   async function selectRun(run: Run) {
     if (expandedRunId === run.id) {
       expandedRunId = null;
       selectedRun = null;
+      logsUnsub?.();
+      logsUnsub = null;
+      logs = [];
       return;
     }
     expandedRunId = run.id;
@@ -120,6 +154,10 @@
     } catch (e) {
       notify.error("Failed to load run");
     }
+    // Subscribe to live log streaming for this run. The initial REST fetch
+    // above gives us any historical logs from the database; the SODP watch
+    // takes over from here for new entries the engine emits.
+    subscribeLogs(run.id);
   }
 
   function addParam() {
@@ -225,13 +263,10 @@
     for (const nr of run.node_runs || []) {
       map[nr.node_id] = nr.status;
     }
-    // Merge live WS updates (overrides stored status with real-time)
-    const live = $liveNodeStatuses[run.id];
-    if (live) {
-      for (const [nodeId, status] of Object.entries(live)) {
-        map[nodeId] = status;
-      }
-    }
+    // Per-node live state comes from the dashboard tripwire above, which
+    // refetches the run via REST whenever any state changes. The previous
+    // liveNodeStatuses overlay is no longer needed — `selectedRun` is
+    // already up to date by the time this function reads `run.node_runs`.
     return map;
   }
 

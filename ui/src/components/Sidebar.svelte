@@ -2,7 +2,7 @@
   import { icons } from "../lib/icons";
   import { theme, toggleTheme } from "../lib/theme";
   import { authUser, logout } from "../lib/auth";
-  import { wsConnected } from "../lib/ws";
+  import { wsConnected } from "../lib/sodp";
   export let currentPath: string = "/";
 
   const nav = [

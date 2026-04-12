@@ -16,8 +16,7 @@
   import APIIntegrations from "./pages/APIIntegrations.svelte";
   import FullGantt from "./pages/FullGantt.svelte";
   import DependencyGraph from "./pages/DependencyGraph.svelte";
-  import { createWebSocket } from "./lib/ws";
-  import { addEvent } from "./lib/stores";
+  import { getSodpClient, closeSodpClient } from "./lib/sodp";
   import { notify } from "./lib/toast";
   import { initTheme } from "./lib/theme";
   import { initAuth, authReady, authUser, needsSetup, loadPermissions } from "./lib/auth";
@@ -42,25 +41,69 @@
     "/login": Login,
   };
 
-  let ws: { close: () => void } | null = null;
+  // Connection lifecycle and global toast subscription.
+  //
+  // wsOpen tracks whether the SODP client is currently instantiated. We
+  // open it on login (when $authUser becomes truthy) and close it on logout.
+  // This prevents the SODP client from burning exponential-backoff retries
+  // against /api/ws while no session cookie exists.
+  //
+  // notifyUnsub is the SODP watch on dashboard.default that fires the
+  // global toast notifications when a run terminates. We compare the
+  // 24h success/fail counters between snapshots and notify on any
+  // positive delta. This replaces the old event-stream toast pipeline.
+  let wsOpen = false;
+  let notifyUnsub: (() => void) | null = null;
+  let prevSuccess = -1;
+  let prevFailed = -1;
+
+  function openWebSocket() {
+    if (wsOpen) return;
+    wsOpen = true;
+    const client = getSodpClient();
+    notifyUnsub = client.watch<any>("dashboard.default", (snap) => {
+      if (!snap) return;
+      // Skip the very first snapshot — that's the existing state at page
+      // load, not a new event we want to toast about.
+      if (prevSuccess >= 0 && prevFailed >= 0) {
+        if ((snap.runs_24h_success ?? 0) > prevSuccess) {
+          notify.success("Pipeline run completed");
+        }
+        if ((snap.runs_24h_failed ?? 0) > prevFailed) {
+          notify.error("Pipeline run failed");
+        }
+      }
+      prevSuccess = snap.runs_24h_success ?? 0;
+      prevFailed = snap.runs_24h_failed ?? 0;
+    });
+  }
+
+  function closeWebSocket() {
+    notifyUnsub?.();
+    notifyUnsub = null;
+    closeSodpClient();
+    wsOpen = false;
+    prevSuccess = -1;
+    prevFailed = -1;
+  }
 
   onMount(async () => {
     await initAuth();
     await loadPermissions();
-    ws = createWebSocket((event) => {
-      addEvent(event);
-      // Global notifications for run events
-      if (event.type === "run.failed") {
-        notify.error(`Pipeline run failed${event.error ? ": " + event.error : ""}`);
-      }
-      if (event.type === "run.completed") {
-        notify.success("Pipeline run completed");
-      }
-    });
+    // Reactive block below handles connection lifecycle once auth is settled.
   });
 
+  // React to login/logout transitions.
+  $: if ($authReady) {
+    if ($authUser && !wsOpen) {
+      openWebSocket();
+    } else if (!$authUser && wsOpen) {
+      closeWebSocket();
+    }
+  }
+
   onDestroy(() => {
-    ws?.close();
+    closeWebSocket();
   });
 
   let showShortcuts = false;

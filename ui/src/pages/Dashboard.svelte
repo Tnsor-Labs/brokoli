@@ -2,23 +2,47 @@
   import { onMount, onDestroy } from "svelte";
   import { api } from "../lib/api";
   import { notify } from "../lib/toast";
-  import { pipelines, onWSEvent, events } from "../lib/stores";
+  import { pipelines } from "../lib/stores";
   import { authHeaders } from "../lib/auth";
+  import { getSodpClient } from "../lib/sodp";
   import StatusBadge from "../components/StatusBadge.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, Run } from "../lib/types";
 
+  // Shape of the dashboard.{org} state key the bridge maintains. Mirrors
+  // the field names emitted by pkg/sodp/bridge.go:recomputeDashboard.
+  interface DashboardSnapshot {
+    updated_at: string;
+    runs_today: number;
+    runs_yesterday: number;
+    runs_running: number;
+    running_run_ids: string[];
+    runs_24h_total: number;
+    runs_24h_success: number;
+    runs_24h_failed: number;
+    success_rate_24h: number;
+    recent_runs: Array<{
+      run_id: string;
+      pipeline_id: string;
+      status: string;
+      started_at: string;
+      finished_at: string | null;
+    }>;
+    top_failing: Array<{ pipeline_id: string; fail_count: number }>;
+    trends: Array<{ date: string; success: number; failed: number; total: number }>;
+  }
+
   let recentRuns: { pipeline: Pipeline; run: Run }[] = [];
   let loading = true;
-  let unsubWS: (() => void) | null = null;
+  let unsubDashboard: (() => void) | null = null;
 
-  // Stats
+  // Stats — populated reactively from the SODP-watched dashboard snapshot
   let totalPipelines = 0;
   let activePipelines = 0;
   let pausedPipelines = 0;
   let runsToday = 0;
   let runsYesterday = 0;
-  let successRate = 0;
+  let successRate = 100;
   let failedLast24h = 0;
   let currentlyRunning = 0;
 
@@ -46,67 +70,78 @@
   let hoveredDay: number = -1;
   $: trendMax = Math.max(...(trends.length ? trends.map(t => t.total) : [1]), 1);
 
-  async function loadDashboard() {
+  // Map of pipeline_id → Pipeline metadata, populated from REST and used to
+  // attach pipeline display info to entries in the SODP snapshot's recent_runs.
+  let pipelineMap: Map<string, Pipeline> = new Map();
+
+  // applySnapshot is called every time the bridge writes a new
+  // dashboard.{org} value. It pulls the aggregates and the recent_runs list
+  // from the snapshot and updates the local state. Counters always reflect
+  // the server's current view — there's no client-side derivation.
+  function applySnapshot(snap: DashboardSnapshot | null) {
+    if (!snap) return;
+
+    runsToday        = snap.runs_today        ?? 0;
+    runsYesterday    = snap.runs_yesterday    ?? 0;
+    successRate      = snap.success_rate_24h  ?? 100;
+    failedLast24h    = snap.runs_24h_failed   ?? 0;
+    currentlyRunning = snap.runs_running      ?? 0;
+    trends           = snap.trends            ?? [];
+    topFailing       = (snap.top_failing ?? []).map(t => ({
+      pipeline_id: t.pipeline_id,
+      name: pipelineMap.get(t.pipeline_id)?.name ?? t.pipeline_id,
+      fail_count: t.fail_count,
+    }));
+
+    // Stitch the snapshot's recent_runs (which carries IDs) with the
+    // pipeline metadata loaded via REST so the UI gets names and tags.
+    recentRuns = (snap.recent_runs ?? []).map(r => ({
+      pipeline: pipelineMap.get(r.pipeline_id) ?? ({ id: r.pipeline_id, name: r.pipeline_id } as Pipeline),
+      run: {
+        id: r.run_id,
+        pipeline_id: r.pipeline_id,
+        status: r.status as any,
+        started_at: r.started_at,
+        finished_at: r.finished_at,
+      } as Run,
+    }));
+
+    // Onboarding: "you've run a pipeline" only needs to be true once
+    if (recentRuns.length > 0) totalRuns = Math.max(totalRuns, recentRuns.length);
+
+    // Failed pipelines list for the "Needs attention" widget
+    const seenFailed = new Set<string>();
+    const failed: { pipeline: Pipeline; run: Run }[] = [];
+    for (const r of recentRuns) {
+      if (r.run.status === "failed" && !seenFailed.has(r.pipeline.id)) {
+        seenFailed.add(r.pipeline.id);
+        failed.push(r);
+      }
+    }
+    failedPipelines = failed;
+  }
+
+  // loadStaticData fetches the data the SODP snapshot doesn't carry: the
+  // pipeline list (for names/tags/enabled state), scheduler info, and the
+  // connection count for the onboarding widget. These don't need realtime
+  // updates — pipelines.summary changes are infrequent compared to runs.
+  async function loadStaticData() {
     try {
-      // Single API call for all dashboard data
-      const [dashRes, schedRes, connRes] = await Promise.all([
-        fetch("/api/dashboard", { headers: authHeaders() }),
+      const [pipesRes, schedRes, connRes] = await Promise.all([
+        fetch("/api/pipelines/summary", {
+          headers: { ...authHeaders(), "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default" },
+        }),
         fetch("/api/scheduler/status", { headers: authHeaders() }),
         fetch("/api/connections", { headers: authHeaders() }),
       ]);
 
-      if (dashRes.ok) {
-        const dash = await dashRes.json();
-        const pipelineList = dash.pipelines || [];
+      if (pipesRes.ok) {
+        const pipelineList: Pipeline[] = await pipesRes.json();
         pipelines.set(pipelineList);
+        pipelineMap = new Map(pipelineList.map(p => [p.id, p]));
         totalPipelines = pipelineList.length;
-        activePipelines = pipelineList.filter((p: any) => p.enabled).length;
+        activePipelines = pipelineList.filter(p => p.enabled).length;
         pausedPipelines = totalPipelines - activePipelines;
-
-        // Trends data
-        trends = dash.trends || [];
-        topFailing = dash.top_failing || [];
-
-        const allRuns: { pipeline: any; run: any }[] = [];
-        const pipeMap = new Map(pipelineList.map((p: any) => [p.id, p]));
-        for (const r of dash.recent_runs || []) {
-          allRuns.push({
-            pipeline: pipeMap.get(r.pipeline_id) || { id: r.pipeline_id, name: r.pipeline_name },
-            run: { id: r.run_id, status: r.status, error: r.error, started_at: r.started_at, finished_at: r.finished_at },
-          });
-        }
-
-        recentRuns = allRuns.slice(0, 12);
-
-        // Today's stats
-        const now = new Date();
-        const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
-        const yesterday = new Date(now);
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
-
-        const todayRuns = allRuns.filter(r => r.run.started_at?.startsWith(todayStr));
-        const yesterdayRuns = allRuns.filter(r => r.run.started_at?.startsWith(yesterdayStr));
-        runsToday = todayRuns.length;
-        runsYesterday = yesterdayRuns.length;
-
-        const last24h = allRuns.filter(r => {
-          if (!r.run.started_at) return false;
-          return (now.getTime() - new Date(r.run.started_at).getTime()) < 86400000;
-        });
-        const succeeded = last24h.filter(r => r.run.status === "success").length;
-        successRate = last24h.length ? Math.round((succeeded / last24h.length) * 100) : 100;
-        failedLast24h = last24h.filter(r => r.run.status === "failed").length;
-        currentlyRunning = allRuns.filter(r => r.run.status === "running").length;
-
-        const seenFailed = new Set<string>();
-        failedPipelines = [];
-        for (const r of allRuns) {
-          if (r.run.status === "failed" && !seenFailed.has(r.pipeline.id)) {
-            seenFailed.add(r.pipeline.id);
-            failedPipelines.push(r);
-          }
-        }
       }
 
       if (schedRes.ok) {
@@ -122,27 +157,29 @@
         const connData = await connRes.json();
         totalConnections = Array.isArray(connData) ? connData.length : 0;
       }
-
-      // Track total runs for onboarding
-      totalRuns = recentRuns.length;
-
-    } catch (e) {
+    } catch {
       notify.error("Failed to load dashboard");
-    } finally {
-      loading = false;
     }
   }
 
-  onMount(() => {
-    loadDashboard();
-    unsubWS = onWSEvent((event) => {
-      if (event.type === "run.completed" || event.type === "run.failed" || event.type === "run.started") {
-        loadDashboard();
-      }
+  onMount(async () => {
+    await loadStaticData();
+    loading = false;
+
+    // Subscribe to the SODP-maintained dashboard snapshot. Every change to
+    // any run state triggers a recompute on the server side and a delta on
+    // this watch. No event-stream, no client-side aggregation, no
+    // reconciliation — the value we receive IS the current state.
+    //
+    // The first callback fires with `null` if the key hasn't been written yet
+    // (no runs ever) — applySnapshot handles that case as a no-op.
+    const client = getSodpClient();
+    unsubDashboard = client.watch<DashboardSnapshot>("dashboard.default", (value) => {
+      applySnapshot(value);
     });
   });
 
-  onDestroy(() => { unsubWS?.(); });
+  onDestroy(() => { unsubDashboard?.(); });
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return "";
@@ -453,25 +490,25 @@
       {/if}
     </section>
 
-    <!-- Activity Feed -->
+    <!-- Activity Feed: derived from the dashboard.{org} recent_runs slice -->
     <section class="section activity-section">
       <h2 class="section-title">Activity</h2>
-      {#if $events.length === 0}
-        <div class="empty-hint">Events will appear here as pipelines run.</div>
+      {#if recentRuns.length === 0}
+        <div class="empty-hint">Activity will appear here as pipelines run.</div>
       {:else}
         <div class="activity-feed">
-          {#each $events.slice(0, 15) as event}
+          {#each recentRuns as { pipeline, run }}
             <div class="activity-item">
               <span class="activity-dot"
-                class:dot-success={event.type?.includes("completed")}
-                class:dot-failed={event.type?.includes("failed")}
-                class:dot-running={event.type?.includes("started")}
+                class:dot-success={run.status === "success" || run.status === "completed"}
+                class:dot-failed={run.status === "failed"}
+                class:dot-running={run.status === "running"}
               ></span>
               <span class="activity-text">
-                <strong>{event.pipeline_name || event.node_id || "Pipeline"}</strong>
-                {event.type?.replace(".", " ") || "event"}
+                <strong>{pipeline.name}</strong>
+                {run.status}
               </span>
-              <span class="activity-time mono">{event.timestamp ? timeAgo(event.timestamp) : ""}</span>
+              <span class="activity-time mono">{run.started_at ? timeAgo(run.started_at) : ""}</span>
             </div>
           {/each}
         </div>
