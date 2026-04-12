@@ -355,44 +355,7 @@
     codeText = fmt === "yaml" ? toYaml() : toJson();
   }
 
-  function highlightYaml(text: string): string {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      // Comments
-      .replace(/(#.*)$/gm, '<span class="hl-comment">$1</span>')
-      // Keys (word followed by colon)
-      .replace(/^(\s*)([\w.-]+)(:)/gm, '$1<span class="hl-key">$2</span><span class="hl-colon">$3</span>')
-      // Booleans
-      .replace(/:\s+(true|false)\b/g, ': <span class="hl-bool">$1</span>')
-      // Numbers
-      .replace(/:\s+(\d+\.?\d*)\b/g, ': <span class="hl-num">$1</span>')
-      // Strings in quotes
-      .replace(/'([^']*)'/g, "'<span class=\"hl-str\">$1</span>'")
-      .replace(/"([^"]*)"/g, '"<span class="hl-str">$1</span>"')
-      // List dashes
-      .replace(/^(\s*)(- )/gm, '$1<span class="hl-dash">$2</span>');
-  }
-
-  function highlightJson(text: string): string {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      // Keys
-      .replace(/"(\w+)"(\s*:)/g, '<span class="hl-key">"$1"</span>$2')
-      // String values
-      .replace(/:\s*"([^"]*)"/g, ': <span class="hl-str">"$1"</span>')
-      // Numbers
-      .replace(/:\s*(\d+\.?\d*)/g, ': <span class="hl-num">$1</span>')
-      // Booleans/null
-      .replace(/:\s*(true|false|null)/g, ': <span class="hl-bool">$1</span>');
-  }
-
-  $: highlightedCode = showCode
-    ? (codeFormat === "yaml" ? highlightYaml(codeText) : highlightJson(codeText))
-    : "";
+  $: void (showCode && codeFormat); // keep reactivity on these
 
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 
@@ -752,7 +715,7 @@
                 </svg>
               </button>
             </div>
-            <pre class="code-content {codeFormat}">{@html highlightedCode}</pre>
+            <pre class="code-content {codeFormat}">{codeText}</pre>
           </div>
         {:else}
           <PipelineCanvas
@@ -1139,21 +1102,9 @@
     margin: 0;
     tab-size: 2;
   }
-  /* YAML syntax colors via text color on key patterns */
-  .code-content.yaml {
+  .code-content {
     color: #e2e8f0;
   }
-  .code-content.json {
-    color: #e2e8f0;
-  }
-  /* Syntax highlighting */
-  :global(.hl-key) { color: #7dd3fc; }
-  :global(.hl-colon) { color: #64748b; }
-  :global(.hl-str) { color: #86efac; }
-  :global(.hl-num) { color: #fbbf24; }
-  :global(.hl-bool) { color: #c084fc; }
-  :global(.hl-comment) { color: #475569; font-style: italic; }
-  :global(.hl-dash) { color: #f97316; }
 
   .preview-panel {
     flex-shrink: 0;
