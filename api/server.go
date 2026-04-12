@@ -18,6 +18,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
@@ -25,10 +26,11 @@ import (
 
 // Server is the main HTTP server for Broked.
 type Server struct {
-	router *chi.Mux
-	port   int
-	hub    *Hub
-	ext    *extensions.Registry
+	router    *chi.Mux
+	port      int
+	sodp      *sodp.Server
+	ext       *extensions.Registry
+	evictDone chan struct{} // closed on shutdown to stop state eviction
 }
 
 // NewServer creates a fully configured HTTP server.
@@ -56,13 +58,30 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	r.Get("/health", HealthHandler(s))
 	r.Get("/metrics", PrometheusHandler(metrics, s, e))
 
-	hub := NewHub()
-	// Wire EventBus for distributed WebSocket broadcasting
+	// SODP state server replaces the old WebSocket hub.
+	// Engine events are bridged into state mutations with delta fanout.
+	sodpSrv := sodp.NewServer()
+	bridgeCh := make(chan sodp.BridgeEvent, 512)
+	sodp.Bridge(sodpSrv, bridgeCh)
+
+	// Evict completed run state after 30 minutes (prevents unbounded memory growth)
+	evictDone := make(chan struct{})
+	sodpSrv.StartEviction(30*time.Minute, 5*time.Minute, evictDone)
+
+	// Local engine events (all-in-one mode and the API's own engine instance).
+	go func() {
+		for ev := range e.Events() {
+			bridgeCh <- modelEventToBridge(ev)
+		}
+	}()
+
+	// Distributed mode: subscribe to the EventBus and forward worker-published
+	// events into the same bridge channel. In all-in-one mode without any
+	// remote workers, this subscriber sits idle. In distributed mode, this is
+	// the only path that delivers events from worker pods to the API's SODP
+	// fanout — the API's own engine.Events() is empty because workers run jobs.
 	if ext != nil && ext.EventBus != nil {
-		hub.SetEventBus(ext.EventBus)
-		hub.StartDistributedBroadcasting(e.Events())
-	} else {
-		hub.StartBroadcasting(e.Events())
+		startEventBusBridge(ext.EventBus, bridgeCh)
 	}
 
 	// Enterprise: SSO middleware
@@ -78,7 +97,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	}
 
 	pc := NewPermissionChecker(s)
-	RegisterRoutes(r, s, e, hub, sched, ext, userStore, cryptoCfg...)
+	RegisterRoutes(r, s, e, sodpSrv, sched, ext, userStore, cryptoCfg...)
 
 	// Auth routes
 	if userStore != nil {
@@ -230,7 +249,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		})
 	}
 
-	return &Server{router: r, port: port, hub: hub, ext: ext}
+	return &Server{router: r, port: port, sodp: sodpSrv, ext: ext, evictDone: evictDone}
 }
 
 // Start begins listening for HTTP requests with graceful shutdown.
@@ -265,6 +284,7 @@ func (s *Server) Start() error {
 			log.Printf("Server shutdown error: %v", err)
 			return err
 		}
+		close(s.evictDone)
 		log.Println("Server stopped cleanly")
 		return nil
 	}
@@ -340,6 +360,61 @@ const placeholderHTML = `<!DOCTYPE html>
   </div>
 </body>
 </html>`
+
+// modelEventToBridge converts an engine models.Event into the dependency-free
+// sodp.BridgeEvent struct. The conversion is identical for local engine events
+// and EventBus-delivered events.
+func modelEventToBridge(ev models.Event) sodp.BridgeEvent {
+	return sodp.BridgeEvent{
+		Type:       string(ev.Type),
+		RunID:      ev.RunID,
+		PipelineID: ev.PipelineID,
+		OrgID:      ev.OrgID,
+		NodeID:     ev.NodeID,
+		Status:     string(ev.Status),
+		RowCount:   ev.RowCount,
+		DurationMs: ev.DurationMs,
+		Error:      ev.Error,
+		Level:      string(ev.Level),
+		Message:    ev.Message,
+		Timestamp:  ev.Timestamp,
+	}
+}
+
+// startEventBusBridge subscribes to the EventBus on the "events:*" pattern,
+// decodes each JSON-marshaled models.Event published by worker pods, and
+// forwards it into the SODP bridge channel for state mutation + fanout.
+//
+// Worker pods publish on either "events:run" (no org) or "events:org:{orgID}".
+// The "events:*" subscription receives both. If subscription fails (bus
+// implementation error or transient connection issue), we log and skip —
+// the API still functions, just without distributed event delivery.
+func startEventBusBridge(bus extensions.EventBus, bridgeCh chan<- sodp.BridgeEvent) {
+	go func() {
+		msgs, closer, err := bus.Subscribe("events:*")
+		if err != nil {
+			log.Printf("EventBus subscribe failed; distributed events disabled: %v", err)
+			return
+		}
+		defer closer()
+		log.Println("EventBus → SODP bridge: subscribed to events:*")
+
+		for msg := range msgs {
+			var ev models.Event
+			if err := json.Unmarshal(msg.Data, &ev); err != nil {
+				log.Printf("EventBus → SODP bridge: malformed event on %q: %v", msg.Channel, err)
+				continue
+			}
+			// Non-blocking: drop on bridge backpressure rather than stalling
+			// the bus consumer (which would back up Redis pub/sub).
+			select {
+			case bridgeCh <- modelEventToBridge(ev):
+			default:
+				log.Printf("EventBus → SODP bridge: dropped event (bridge channel full)")
+			}
+		}
+	}()
+}
 
 // writeJSON writes a JSON response.
 func writeJSON(w http.ResponseWriter, status int, data interface{}) {

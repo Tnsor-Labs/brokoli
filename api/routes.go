@@ -8,13 +8,14 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 )
 
 // RegisterRoutes sets up all API routes on the given router.
-func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sched *engine.Scheduler, ext *extensions.Registry, userStore *UserStore, cryptoCfg ...*crypto.Config) {
+func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Server, sched *engine.Scheduler, ext *extensions.Registry, userStore *UserStore, cryptoCfg ...*crypto.Config) {
 	ph := NewPipelineHandler(s, sched)
 	rh := NewRunHandler(s, e)
 
@@ -157,8 +158,8 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, hub *Hub, sch
 		r.Get("/system/info", systemInfo(s, e))
 		r.With(requirePerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s))
 
-		// WebSocket
-		r.Get("/ws", hub.HandleWS)
+		// WebSocket (SODP binary protocol)
+		r.Get("/ws", ws.HandleWS)
 
 		// Impact analysis (stub — returns downstream dependencies)
 		r.Get("/pipelines/{id}/impact", func(w http.ResponseWriter, r *http.Request) {
