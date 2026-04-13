@@ -140,8 +140,15 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 }
 
 func (f *RESTFetcher) executeRequest(url string, options RequestOptions) ([]byte, error) {
-	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the server
-	if strings.HasPrefix(url, "/") {
+	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the
+	// Brokoli server. A relative path is an implicit self-reference to the
+	// trusted server, so the SSRF guard must not block it — in k8s/docker
+	// deployments BROKOLI_SERVER_URL typically resolves to a private cluster
+	// IP (10.x / 172.16.x / ClusterIP), which is exactly what isBlockedHost
+	// rejects. Track whether the URL originated as relative so we can skip
+	// the SSRF check for trusted self-references only.
+	trustedSelfRef := strings.HasPrefix(url, "/")
+	if trustedSelfRef {
 		base := os.Getenv("BROKOLI_SERVER_URL")
 		if base == "" {
 			port := os.Getenv("PORT")
@@ -154,7 +161,8 @@ func (f *RESTFetcher) executeRequest(url string, options RequestOptions) ([]byte
 	}
 
 	// SSRF protection: block requests to private networks and cloud metadata.
-	if !strings.HasPrefix(url, "/") {
+	// Skip for trusted self-references to the Brokoli server itself.
+	if !trustedSelfRef {
 		if err := isBlockedHost(url); err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrSSRFBlocked, err)
 		}
