@@ -138,7 +138,8 @@
       // due to updated_at) into one refetch.
       if (summaryReloadTimer) clearTimeout(summaryReloadTimer);
       summaryReloadTimer = setTimeout(() => {
-        loadPipelines();
+        // Silent: don't flash a skeleton on every state change.
+        loadPipelines({ silent: true });
         summaryReloadTimer = null;
       }, 150);
     });
@@ -149,8 +150,13 @@
     if (summaryReloadTimer) clearTimeout(summaryReloadTimer);
   });
 
-  async function loadPipelines() {
-    loading = true;
+  async function loadPipelines(opts: { silent?: boolean } = {}) {
+    // Silent mode: don't flip `loading` to true, so the existing list
+    // stays rendered while the refetch happens in the background. Used
+    // for SODP tripwire-driven refreshes, where flashing a skeleton
+    // every time a run state changes looks like a forced page reload
+    // and kills the whole point of realtime updates.
+    if (!opts.silent) loading = true;
     try {
       // Single request: pipelines + last run status + run counts
       const [summaryRes, schedRes] = await Promise.all([
