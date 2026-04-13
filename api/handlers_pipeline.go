@@ -23,6 +23,32 @@ type PipelineHandler struct {
 	sched *engine.Scheduler
 }
 
+// requirePipelineOrg returns the caller's org_id for a pipeline create/clone/
+// import flow, or writes a 400 and returns ok=false if multi-tenant mode is
+// active and the caller has none.
+//
+// Without this check, users without an org membership could write pipelines
+// with org_id="" — which are then invisible to every list/dashboard handler
+// (those reject empty-org rows to prevent cross-tenant leaks). The result is
+// a pipeline that exists in the database but cannot be seen by anyone: a
+// silent data-loss bug. This helper makes the failure loud.
+//
+// In non-multi-tenant mode (community / self-hosted OSS with no
+// OrgResolverFunc set), an empty org_id is legitimate and we let it through
+// so the pipeline ends up scoped by workspace instead.
+func requirePipelineOrg(w http.ResponseWriter, r *http.Request) (string, bool) {
+	orgID := GetOrgIDFromRequest(r)
+	if orgID != "" {
+		return orgID, true
+	}
+	if OrgResolverFunc != nil {
+		writeError(w, http.StatusBadRequest,
+			"cannot create pipeline: user has no organization membership")
+		return "", false
+	}
+	return "", true
+}
+
 // PipelineSummary is a lean DTO for the pipeline list — no nodes/edges/hooks.
 type PipelineSummary struct {
 	ID           string   `json:"id"`
@@ -154,9 +180,11 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 	// Set org/workspace before cycle detection so traversal is org-scoped.
 	p.WorkspaceID = GetWorkspaceID(r)
-	if orgID := GetOrgIDFromRequest(r); orgID != "" {
-		p.OrgID = orgID
+	orgID, ok := requirePipelineOrg(w, r)
+	if !ok {
+		return
 	}
+	p.OrgID = orgID
 
 	if err := validateDependencyOrgScope(h.store, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -614,10 +642,14 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 	p.UpdatedAt = now
 
-	// Set org/workspace ownership
-	if orgID := GetOrgIDFromRequest(r); orgID != "" {
-		p.OrgID = orgID
+	// Set org/workspace ownership. Import is a create-flow, so it gets
+	// the same empty-org gate as Create — an imported YAML with no org
+	// context would produce an invisible pipeline.
+	orgID, ok := requirePipelineOrg(w, r)
+	if !ok {
+		return
 	}
+	p.OrgID = orgID
 	if p.WorkspaceID == "" {
 		p.WorkspaceID = GetWorkspaceID(r)
 	}
@@ -678,10 +710,13 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	}
 	clone.Edges = newEdges
 
-	// Ensure clone belongs to current user's org/workspace
-	if orgID := GetOrgIDFromRequest(r); orgID != "" {
-		clone.OrgID = orgID
+	// Ensure clone belongs to current user's org/workspace. Clone is a
+	// create-flow, so it gets the same empty-org gate as Create.
+	orgID, ok := requirePipelineOrg(w, r)
+	if !ok {
+		return
 	}
+	clone.OrgID = orgID
 	if wsID := GetWorkspaceID(r); wsID != "" {
 		clone.WorkspaceID = wsID
 	}

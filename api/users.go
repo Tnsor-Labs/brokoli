@@ -472,6 +472,18 @@ func ListUsersHandler(us *UserStore) http.HandlerFunc {
 	}
 }
 
+// UserPostCreateHook is called after a user is successfully created via
+// CreateUserHandler. Enterprise platform sets this to attach the new user
+// to an org (default org for setup, caller's org otherwise). Without this
+// hook, users created via /api/auth/users in enterprise mode have no org
+// membership and are silently unable to see any data — every list filter
+// rejects empty-org users in multi-tenant mode.
+//
+// The hook receives the new user and the request so it can inspect the
+// caller's claims. Return an error to fail the user creation (the caller
+// sees 500); returning nil commits success.
+var UserPostCreateHook func(user *User, r *http.Request) error
+
 func CreateUserHandler(us *UserStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
@@ -529,6 +541,20 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 			}
 			return
 		}
+
+		// Enterprise hook: attach the new user to an organization so they
+		// aren't stranded without an org_id. Without this, admin-created
+		// users (via /api/auth/users) in multi-tenant mode can log in but
+		// see nothing — every list endpoint filters by org_id and rejects
+		// empty-org users to prevent cross-tenant data leaks.
+		if UserPostCreateHook != nil {
+			if err := UserPostCreateHook(user, r); err != nil {
+				log.Printf("UserPostCreateHook failed for %s: %v", user.Username, err)
+				writeError(w, http.StatusInternalServerError, "failed to attach user to organization")
+				return
+			}
+		}
+
 		writeJSON(w, http.StatusCreated, user)
 	}
 }
