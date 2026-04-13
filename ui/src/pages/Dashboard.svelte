@@ -3,7 +3,7 @@
   import { api } from "../lib/api";
   import { notify } from "../lib/toast";
   import { pipelines } from "../lib/stores";
-  import { authHeaders } from "../lib/auth";
+  import { authHeaders, dashboardKey } from "../lib/auth";
   import { getSodpClient } from "../lib/sodp";
   import StatusBadge from "../components/StatusBadge.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -174,7 +174,7 @@
     // The first callback fires with `null` if the key hasn't been written yet
     // (no runs ever) — applySnapshot handles that case as a no-op.
     const client = getSodpClient();
-    unsubDashboard = client.watch<DashboardSnapshot>("dashboard.default", (value) => {
+    unsubDashboard = client.watch<DashboardSnapshot>(dashboardKey(), (value) => {
       applySnapshot(value);
     });
   });

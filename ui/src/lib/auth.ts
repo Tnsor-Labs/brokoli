@@ -4,6 +4,24 @@ export interface AuthUser {
   id: string;
   username: string;
   role: "admin" | "editor" | "viewer";
+  org_id?: string;
+}
+
+/**
+ * Returns the SODP key for the current user's dashboard aggregate snapshot.
+ *
+ * The bridge maintains one `dashboard.{orgID}` key per tenant. In OSS
+ * open-mode (no auth) this is "default". In EE multi-tenant, it's the
+ * org_id from the user's JWT claims. Watching the wrong key means deltas
+ * never arrive and the UI only updates on page refresh — which is the
+ * whole class of "realtime broken in production" bugs.
+ *
+ * Callers must subscribe *after* `authReady` is true so `authUser` has
+ * been populated from /api/auth/me.
+ */
+export function dashboardKey(): string {
+  const u = get(authUser);
+  return "dashboard." + (u?.org_id || "default");
 }
 
 // Auth state is managed via httpOnly session cookie (set by server on login).
@@ -124,6 +142,7 @@ export async function initAuth() {
         id: claims.sub,
         username: claims.username,
         role: claims.role,
+        org_id: claims.org_id,
       });
     }
   } catch {

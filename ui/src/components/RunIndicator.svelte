@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from "svelte";
   import { getSodpClient } from "../lib/sodp";
+  import { dashboardKey } from "../lib/auth";
   import type { RunStatus } from "../lib/types";
 
   // Subset of dashboard.{org} we read here. Mirrors the field names in
@@ -38,7 +39,7 @@
 
   onMount(() => {
     const client = getSodpClient();
-    unsubDashboard = client.watch<DashboardSnapshot>("dashboard.default", (snap) => {
+    unsubDashboard = client.watch<DashboardSnapshot>(dashboardKey(), (snap) => {
       if (!snap) return;
 
       // Detect transitions for the flash effect (skip the very first snapshot

@@ -19,7 +19,7 @@
   import { getSodpClient, closeSodpClient } from "./lib/sodp";
   import { notify } from "./lib/toast";
   import { initTheme } from "./lib/theme";
-  import { initAuth, authReady, authUser, needsSetup, loadPermissions } from "./lib/auth";
+  import { initAuth, authReady, authUser, needsSetup, loadPermissions, dashboardKey } from "./lib/auth";
   import GlobalSearch from "./components/GlobalSearch.svelte";
 
   initTheme();
@@ -48,10 +48,13 @@
   // This prevents the SODP client from burning exponential-backoff retries
   // against /api/ws while no session cookie exists.
   //
-  // notifyUnsub is the SODP watch on dashboard.default that fires the
-  // global toast notifications when a run terminates. We compare the
-  // 24h success/fail counters between snapshots and notify on any
-  // positive delta. This replaces the old event-stream toast pipeline.
+  // notifyUnsub is the SODP watch on dashboard.{org} that fires the
+  // global toast notifications when a run terminates. Key is derived
+  // per-tenant via dashboardKey() — hardcoding "dashboard.default"
+  // silently broke realtime in multi-tenant EE, which is the whole
+  // reason this helper exists. We compare the 24h success/fail
+  // counters between snapshots and notify on any positive delta.
+  // This replaces the old event-stream toast pipeline.
   let wsOpen = false;
   let notifyUnsub: (() => void) | null = null;
   let prevSuccess = -1;
@@ -61,7 +64,7 @@
     if (wsOpen) return;
     wsOpen = true;
     const client = getSodpClient();
-    notifyUnsub = client.watch<any>("dashboard.default", (snap) => {
+    notifyUnsub = client.watch<any>(dashboardKey(), (snap) => {
       if (!snap) return;
       // Skip the very first snapshot — that's the existing state at page
       // load, not a new event we want to toast about.

@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { icons } from "../lib/icons";
   import { api } from "../lib/api";
-  import { authHeaders } from "../lib/auth";
+  import { authHeaders, dashboardKey } from "../lib/auth";
   import { notify } from "../lib/toast";
   import { getSodpClient } from "../lib/sodp";
   import StatusBadge from "../components/StatusBadge.svelte";
@@ -122,7 +122,7 @@
     // also needs refreshing.
     const client = getSodpClient();
     let firstCallback = true;
-    dashboardUnsub = client.watch("dashboard.default", () => {
+    dashboardUnsub = client.watch(dashboardKey(), () => {
       if (firstCallback) { firstCallback = false; return; }
       if (runListReloadTimer) clearTimeout(runListReloadTimer);
       runListReloadTimer = setTimeout(() => {

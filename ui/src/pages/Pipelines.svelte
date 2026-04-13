@@ -3,6 +3,7 @@
   import { api } from "../lib/api";
   import { pipelines } from "../lib/stores";
   import { getSodpClient } from "../lib/sodp";
+  import { dashboardKey } from "../lib/auth";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
   import StatusBadge from "../components/StatusBadge.svelte";
@@ -123,7 +124,7 @@
     // is cheap enough that this is fine for OSS workloads.
     const client = getSodpClient();
     let firstCallback = true;
-    unsubDashboard = client.watch("dashboard.default", () => {
+    unsubDashboard = client.watch(dashboardKey(), () => {
       // Skip the very first callback — that's STATE_INIT, which fires
       // immediately with whatever's currently in the store. We already have
       // the data via loadPipelines() in onMount; refetching for the init
