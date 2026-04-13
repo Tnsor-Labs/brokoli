@@ -7,6 +7,24 @@ and this project loosely follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-04-13
+
+### Fixed
+
+- **SSRF guard no longer blocks worker self-references.** `pkg/fetchers`
+  rejected relative `/api/samples/...` URLs once they were resolved against
+  `BROKOLI_SERVER_URL`, because in k8s/docker deployments the server
+  hostname resolves to a private cluster IP (10.x / 172.16.x / ClusterIP) —
+  which is exactly what `isBlockedHost` rejects. Workers running in a
+  separate pod couldn't fetch sample data from the API they were already
+  authenticated to. The fix tracks whether a URL originated as a relative
+  path (an implicit trusted self-reference to the Brokoli server) and skips
+  the SSRF check in that case only. Absolute URLs with private IPs are
+  still blocked. Also removes a dead `HasPrefix` check that ran after the
+  URL had already been rewritten to `http://...` form.
+
+## [0.7.0]
+
 ### Added
 
 - **SODP realtime stack** — `/api/ws` now speaks the State-Oriented Data
