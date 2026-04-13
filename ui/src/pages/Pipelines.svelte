@@ -397,7 +397,7 @@
       nodes: [
         { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.csv", method: "GET" }, position: { x: 40, y: 120 } },
         { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", check: "not_null", policy: "block" }, { column: "salary", check: "positive", policy: "warn" }] }, position: { x: 360, y: 120 } },
-        { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", old_name: "hire_date", new_name: "start_date" }] }, position: { x: 680, y: 120 } },
+        { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", mapping: { hire_date: "start_date" } }] }, position: { x: 680, y: 120 } },
         { id: "o1", type: "sink_file", name: "Output", config: { path: "/tmp/clean-employees.csv" }, position: { x: 1000, y: 120 } },
       ],
       edges: [{ from: "s1", to: "q1" }, { from: "q1", to: "t1" }, { from: "t1", to: "o1" }],
