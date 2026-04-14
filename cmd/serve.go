@@ -15,6 +15,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
+	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/Tnsor-Labs/brokoli/web"
 	"github.com/spf13/cobra"
@@ -78,6 +79,17 @@ var serveCmd = &cobra.Command{
 		// Initialize extensions (community defaults unless overridden by enterprise binary)
 		if Extensions == nil {
 			Extensions = extensions.DefaultRegistry()
+		}
+		// Wire the plugin manager as a NodeExecutor. Plugins installed in
+		// ~/.brokoli/plugins/ (or wherever BROKOLI_PLUGIN_DIR points) get
+		// registered as node types that the engine's node-resolver loop
+		// picks up alongside built-in types, without any special casing.
+		// A missing plugin dir is not an error — fresh installs have zero
+		// plugins until the user runs `brokoli plugins install`.
+		if pluginMgr, err := plugins.NewManager(plugins.DefaultDir()); err != nil {
+			log.Printf("plugins: %v (continuing without plugin support)", err)
+		} else if len(pluginMgr.NodeTypes()) > 0 {
+			Extensions.Executors = append(Extensions.Executors, pluginMgr)
 		}
 		license, _ := Extensions.License.Validate()
 		log.Printf("Edition: %s", license.Edition)

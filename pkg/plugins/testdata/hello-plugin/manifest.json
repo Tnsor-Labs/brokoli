@@ -1,0 +1,21 @@
+{
+  "protocol_version": 1,
+  "name": "hello",
+  "version": "0.1.0",
+  "description": "Reference plugin used by the protocol integration test",
+  "binary": "./bin",
+  "node_types": [
+    {
+      "type": "source_hello",
+      "kind": "source",
+      "display_name": "Hello Source",
+      "description": "Emits fixed greeting records for protocol verification"
+    },
+    {
+      "type": "sink_hello",
+      "kind": "sink",
+      "display_name": "Hello Sink",
+      "description": "Counts received records and reports via status message"
+    }
+  ]
+}

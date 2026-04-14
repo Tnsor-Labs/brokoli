@@ -1,0 +1,59 @@
+#!/bin/sh
+# hello-plugin — reference plugin for the Brokoli protocol tests.
+#
+# Implements the minimum surface of protocol v1 using only POSIX
+# shell + awk, so the test doesn't depend on Python or any other
+# interpreter being on the machine. Real plugins would almost
+# certainly use the Python SDK and have richer behavior.
+#
+# Subcommands:
+#   spec      → prints this plugin's manifest to stdout
+#   check     → reads config from stdin, emits a status:ok
+#   discover  → lists the "greetings" stream
+#   read      → emits 3 record lines + 1 state line
+#   write     → counts records from stdin, emits status with the count
+
+set -eu
+cmd="${1:-}"
+
+case "$cmd" in
+    spec)
+        cat <<'EOF'
+{"protocol_version":1,"name":"hello","version":"0.1.0","binary":"./bin","node_types":[{"type":"source_hello","kind":"source"},{"type":"sink_hello","kind":"sink"}]}
+EOF
+        ;;
+    check)
+        # Read the config line off stdin (we don't actually use it; the
+        # point is to prove the handshake works).
+        read -r _config
+        printf '{"type":"status","status":"ok","message":"ready"}\n'
+        ;;
+    discover)
+        read -r _config
+        printf '{"type":"stream","stream":{"name":"greetings","mode":"full_refresh","columns":[{"name":"id","type":"int"},{"name":"message","type":"string"}]}}\n'
+        ;;
+    read)
+        read -r _config
+        printf '{"type":"log","level":"info","message":"emitting 3 greetings"}\n'
+        printf '{"type":"record","data":{"id":1,"message":"hello world"}}\n'
+        printf '{"type":"record","data":{"id":2,"message":"hello brokoli"}}\n'
+        printf '{"type":"record","data":{"id":3,"message":"hello plugin"}}\n'
+        printf '{"type":"state","value":{"last_id":3}}\n'
+        ;;
+    write)
+        # First line is the WriteParams header; subsequent lines are
+        # records. Count them.
+        read -r _header
+        count=0
+        while read -r line; do
+            # skip empty
+            [ -z "$line" ] && continue
+            count=$((count + 1))
+        done
+        printf '{"type":"status","status":"ok","message":"wrote %d records"}\n' "$count"
+        ;;
+    *)
+        printf '{"type":"error","message":"unknown command: %s"}\n' "$cmd" >&2
+        exit 1
+        ;;
+esac
