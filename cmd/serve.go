@@ -43,13 +43,37 @@ var UIOverride fs.FS
 
 var rootCmd = &cobra.Command{
 	Use:   "brokoli",
-	Short: "Broked — Data Orchestration Platform",
+	Short: "Brokoli — Data Orchestration Platform",
 	Long:  "A data-aware orchestration engine with a minimalist UI. Built on top of BrokoliSQL.",
+}
+
+// SetVersion wires build-time version info (from main.go's ldflag vars)
+// into the root command, which enables `brokoli --version` / `brokoli -v`.
+// cobra auto-registers the flag when rootCmd.Version is non-empty.
+//
+// The custom template keeps the output parseable for scripts while
+// still showing the commit/date a human would want at a glance:
+//
+//	brokoli v0.7.5 (abc123, 2026-04-13)
+func SetVersion(version, commit, date string) {
+	rootCmd.Version = version
+	rootCmd.SetVersionTemplate(fmt.Sprintf(
+		"brokoli %s (%s, %s)\n", version, shortCommit(commit), date,
+	))
+}
+
+// shortCommit trims a git SHA to 7 characters unless it's a sentinel
+// value like "none" (no commit info at build time).
+func shortCommit(c string) string {
+	if len(c) < 7 || c == "none" {
+		return c
+	}
+	return c[:7]
 }
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Start the Broked server",
+	Short: "Start the Brokoli server",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// Initialize extensions (community defaults unless overridden by enterprise binary)
 		if Extensions == nil {
