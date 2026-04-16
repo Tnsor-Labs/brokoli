@@ -16,6 +16,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/Tnsor-Labs/brokoli/web"
 	"github.com/spf13/cobra"
@@ -175,7 +176,8 @@ var serveCmd = &cobra.Command{
 
 		// Wire variable store and connection resolver into engine
 		eng.VarStore = engine.NewVarStoreAdapter(s, cryptoCfg)
-		eng.ConnResolver = engine.NewConnectionResolver(s, cryptoCfg)
+		secretsChain := secrets.NewDefaultChain(cryptoCfg)
+		eng.ConnResolver = engine.NewConnectionResolver(s, secretsChain)
 		if Extensions != nil && len(Extensions.Executors) > 0 {
 			eng.Executors = Extensions.Executors
 			log.Printf("Enterprise: %d external executor(s) registered", len(Extensions.Executors))

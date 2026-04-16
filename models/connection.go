@@ -28,6 +28,10 @@ const (
 )
 
 // Connection stores credentials and config for an external system.
+// Sensitive fields (password, extra) are stored as credential references
+// pointing to external secret stores (env://, vault://, k8s://, encrypted://).
+// The plaintext Password/Extra fields are only populated in-memory after
+// the secrets resolver resolves the refs at execution time.
 type Connection struct {
 	ID          string         `json:"id"`
 	ConnID      string         `json:"conn_id"` // human-readable slug, e.g. "prod_postgres"
@@ -37,11 +41,18 @@ type Connection struct {
 	Port        int            `json:"port,omitempty"`
 	Schema      string         `json:"schema"` // database name or path
 	Login       string         `json:"login"`
-	Password    string         `json:"password,omitempty"` // plaintext in memory, encrypted at rest
-	Extra       string         `json:"extra,omitempty"`    // JSON blob for type-specific fields
+	Password    string         `json:"password,omitempty"` // resolved plaintext (in-memory only, never persisted)
+	Extra       string         `json:"extra,omitempty"`    // resolved plaintext (in-memory only, never persisted)
+	PasswordRef string         `json:"password_ref,omitempty"` // credential ref: env://VAR, vault://path#key, k8s://ns/secret/key, encrypted://...
+	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
 	WorkspaceID string         `json:"workspace_id,omitempty"`
 	CreatedAt   time.Time      `json:"created_at"`
 	UpdatedAt   time.Time      `json:"updated_at"`
+}
+
+// HasCredentialRefs returns true if the connection uses external secret references.
+func (c *Connection) HasCredentialRefs() bool {
+	return c.PasswordRef != "" || c.ExtraRef != ""
 }
 
 // BuildURI constructs a connection URI from the connection fields.

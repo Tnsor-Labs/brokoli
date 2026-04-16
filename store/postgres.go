@@ -126,6 +126,11 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_org ON connections(org_id)`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default'`)
+	// Credential references — external secret store pointers
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS password_ref TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS extra_ref TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`UPDATE connections SET password_ref = 'encrypted://' || password_enc WHERE password_enc != '' AND password_ref = ''`)
+	s.db.Exec(`UPDATE connections SET extra_ref = 'encrypted://' || extra_enc WHERE extra_enc != '' AND extra_ref = ''`)
 
 	// Variables table
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS variables (
@@ -981,11 +986,21 @@ func (s *PostgresStore) CreateConnection(c *models.Connection) error {
 	if wsID == "" {
 		wsID = "default"
 	}
+	passRef := c.PasswordRef
+	passEnc := c.Password
+	if passRef == "" && passEnc != "" {
+		passRef = "encrypted://" + passEnc
+	}
+	extraRef := c.ExtraRef
+	extraEnc := c.Extra
+	if extraRef == "" && extraEnc != "" {
+		extraRef = "encrypted://" + extraEnc
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, workspace_id, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra, wsID, c.CreatedAt, c.UpdatedAt,
+		passEnc, extraEnc, passRef, extraRef, wsID, c.CreatedAt, c.UpdatedAt,
 	)
 	return err
 }
@@ -993,10 +1008,10 @@ func (s *PostgresStore) CreateConnection(c *models.Connection) error {
 func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error) {
 	var c models.Connection
 	err := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections WHERE conn_id = $1`, connID,
 	).Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt)
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -1005,7 +1020,7 @@ func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error)
 
 func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections ORDER BY conn_id`,
 	)
 	if err != nil {
@@ -1017,7 +1032,7 @@ func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 	for rows.Next() {
 		var c models.Connection
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		conns = append(conns, c)
@@ -1026,11 +1041,21 @@ func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 }
 
 func (s *PostgresStore) UpdateConnection(c *models.Connection) error {
+	passRef := c.PasswordRef
+	passEnc := c.Password
+	if passRef == "" && passEnc != "" {
+		passRef = "encrypted://" + passEnc
+	}
+	extraRef := c.ExtraRef
+	extraEnc := c.Extra
+	if extraRef == "" && extraEnc != "" {
+		extraRef = "encrypted://" + extraEnc
+	}
 	result, err := s.db.Exec(
-		`UPDATE connections SET type=$1, description=$2, host=$3, port=$4, schema_name=$5, login=$6, password_enc=$7, extra_enc=$8, updated_at=$9
-		 WHERE conn_id = $10`,
+		`UPDATE connections SET type=$1, description=$2, host=$3, port=$4, schema_name=$5, login=$6, password_enc=$7, extra_enc=$8, password_ref=$9, extra_ref=$10, updated_at=$11
+		 WHERE conn_id = $12`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra, c.UpdatedAt, c.ConnID,
+		passEnc, extraEnc, passRef, extraRef, c.UpdatedAt, c.ConnID,
 	)
 	if err != nil {
 		return err
@@ -1308,7 +1333,7 @@ func (s *PostgresStore) ListConnectionsByWorkspacePaged(workspaceID string, limi
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM connections WHERE workspace_id = $1`, workspaceID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id LIMIT $2 OFFSET $3`, workspaceID, limit, offset,
 	)
 	if err != nil {
@@ -1318,7 +1343,7 @@ func (s *PostgresStore) ListConnectionsByWorkspacePaged(workspaceID string, limi
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
-		rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login, &c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt)
+		rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login, &c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt)
 		conns = append(conns, c)
 	}
 	return conns, total, rows.Err()
@@ -1345,7 +1370,7 @@ func (s *PostgresStore) ListVariablesByWorkspacePaged(workspaceID string, limit,
 
 func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id`, workspaceID,
 	)
 	if err != nil {
@@ -1356,7 +1381,7 @@ func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models
 	for rows.Next() {
 		var c models.Connection
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.CreatedAt, &c.UpdatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		conns = append(conns, c)

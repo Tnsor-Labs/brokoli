@@ -110,6 +110,8 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	for i := range conns {
 		conns[i].Password = ""
 		conns[i].Extra = ""
+		conns[i].PasswordRef = maskRef(conns[i].PasswordRef)
+		conns[i].ExtraRef = maskRef(conns[i].ExtraRef)
 	}
 
 	writeJSON(w, http.StatusOK, conns)
@@ -127,11 +129,10 @@ func (h *ConnectionHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
-	c.Password = "********"
-	if c.Extra != "" {
-		decrypted, _ := h.crypto.Decrypt(c.Extra)
-		c.Extra = decrypted
-	}
+	c.Password = ""
+	c.Extra = ""
+	c.PasswordRef = maskRef(c.PasswordRef)
+	c.ExtraRef = maskRef(c.ExtraRef)
 	writeJSON(w, http.StatusOK, c)
 }
 
@@ -176,22 +177,30 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Encrypt password and extra
-	if c.Password != "" {
+	// Credential handling: if a password_ref is provided (env://, vault://, k8s://),
+	// store it directly — no encryption needed since we're storing a reference, not the value.
+	// If a bare password is provided (no ref), encrypt it and store as encrypted:// ref.
+	if c.PasswordRef != "" {
+		c.Password = "" // ref takes precedence, don't store bare ciphertext
+	} else if c.Password != "" {
 		enc, err := h.crypto.Encrypt(c.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
 			return
 		}
 		c.Password = enc
+		c.PasswordRef = "encrypted://" + enc
 	}
-	if c.Extra != "" {
+	if c.ExtraRef != "" {
+		c.Extra = ""
+	} else if c.Extra != "" {
 		enc, err := h.crypto.Encrypt(c.Extra)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
 			return
 		}
 		c.Extra = enc
+		c.ExtraRef = "encrypted://" + enc
 	}
 
 	if err := h.store.CreateConnection(&c); err != nil {
@@ -203,12 +212,11 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return with masked password
-	c.Password = "********"
-	if c.Extra != "" {
-		decrypted, _ := h.crypto.Decrypt(c.Extra)
-		c.Extra = decrypted
-	}
+	// Return sanitized — never expose secrets or refs in responses
+	c.Password = ""
+	c.Extra = ""
+	c.PasswordRef = maskRef(c.PasswordRef)
+	c.ExtraRef = maskRef(c.ExtraRef)
 	AuditLog(r, "create", "connection", c.ConnID, nil, map[string]interface{}{"type": string(c.Type), "host": c.Host})
 	writeJSON(w, http.StatusCreated, c)
 }
@@ -237,26 +245,38 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	c.CreatedAt = existing.CreatedAt
 	c.UpdatedAt = time.Now()
 
-	// Handle password: if "********" or empty, keep existing
-	if c.Password == "" || c.Password == "********" {
-		c.Password = existing.Password // already encrypted
-	} else {
+	// Credential handling for updates:
+	// If a new password_ref is provided, use it (replaces any existing ref).
+	// If a bare password is provided, encrypt and store as encrypted:// ref.
+	// If neither, keep existing refs.
+	if c.PasswordRef != "" {
+		c.Password = ""
+	} else if c.Password != "" && c.Password != "********" {
 		enc, err := h.crypto.Encrypt(c.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
 			return
 		}
 		c.Password = enc
+		c.PasswordRef = "encrypted://" + enc
+	} else {
+		c.Password = existing.Password
+		c.PasswordRef = existing.PasswordRef
 	}
 
-	// Encrypt extra
-	if c.Extra != "" {
+	if c.ExtraRef != "" {
+		c.Extra = ""
+	} else if c.Extra != "" {
 		enc, err := h.crypto.Encrypt(c.Extra)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
 			return
 		}
 		c.Extra = enc
+		c.ExtraRef = "encrypted://" + enc
+	} else {
+		c.Extra = existing.Extra
+		c.ExtraRef = existing.ExtraRef
 	}
 
 	if err := h.store.UpdateConnection(&c); err != nil {
@@ -264,11 +284,10 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	c.Password = "********"
-	if c.Extra != "" {
-		decrypted, _ := h.crypto.Decrypt(c.Extra)
-		c.Extra = decrypted
-	}
+	c.Password = ""
+	c.Extra = ""
+	c.PasswordRef = maskRef(c.PasswordRef)
+	c.ExtraRef = maskRef(c.ExtraRef)
 	AuditLog(r, "update", "connection", c.ConnID, nil, map[string]interface{}{"type": string(c.Type), "host": c.Host})
 	writeJSON(w, http.StatusOK, c)
 }
@@ -665,4 +684,19 @@ func validateExternalURL(rawURL string) error {
 		}
 	}
 	return nil
+}
+
+// maskRef returns the credential ref with the sensitive portion masked.
+// "env://MY_VAR" stays as-is (env var name is not a secret).
+// "encrypted://..." becomes "encrypted://********".
+// "vault://secret/data/prod#password" stays as-is (path is not a secret).
+// "k8s://ns/secret/key" stays as-is (reference path is not a secret).
+func maskRef(ref string) string {
+	if ref == "" {
+		return ""
+	}
+	if strings.HasPrefix(ref, "encrypted://") {
+		return "encrypted://********"
+	}
+	return ref
 }

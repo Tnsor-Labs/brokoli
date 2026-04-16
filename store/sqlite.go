@@ -142,6 +142,15 @@ func (s *SQLiteStore) migrate() error {
 		FOREIGN KEY (pipeline_id) REFERENCES pipelines(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_dlq_pipeline ON dead_letter_queue(pipeline_id, resolved, created_at DESC)`)
 
+	// Credential references — store pointers to external secret stores
+	// instead of bare encrypted blobs. See pkg/secrets for resolvers.
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN password_ref TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN extra_ref TEXT NOT NULL DEFAULT ''`)
+	// Migrate legacy encrypted values: copy password_enc → password_ref
+	// with encrypted:// prefix so the resolver chain handles them.
+	s.db.Exec(`UPDATE connections SET password_ref = 'encrypted://' || password_enc WHERE password_enc != '' AND password_ref = ''`)
+	s.db.Exec(`UPDATE connections SET extra_ref = 'encrypted://' || extra_enc WHERE extra_enc != '' AND extra_ref = ''`)
+
 	// Tracing & observability columns
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
@@ -1104,11 +1113,24 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 	if wsID == "" {
 		wsID = "default"
 	}
+	// Write password_ref/extra_ref (new) and password_enc/extra_enc (legacy compat).
+	// If a ref is provided, store it in the ref column and also in the enc column
+	// (so older code that only reads enc still works during rolling upgrades).
+	passRef := c.PasswordRef
+	passEnc := c.Password
+	if passRef == "" && passEnc != "" {
+		passRef = "encrypted://" + passEnc
+	}
+	extraRef := c.ExtraRef
+	extraEnc := c.Extra
+	if extraRef == "" && extraEnc != "" {
+		extraRef = "encrypted://" + extraEnc
+	}
 	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, workspace_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra, wsID,
+		passEnc, extraEnc, passRef, extraRef, wsID,
 		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
@@ -1116,7 +1138,7 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 
 func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 	row := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections WHERE conn_id = ?`, connID,
 	)
 	return scanConnection(row)
@@ -1124,7 +1146,7 @@ func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 
 func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections ORDER BY conn_id`,
 	)
 	if err != nil {
@@ -1137,7 +1159,7 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 		var c models.Connection
 		var createdAt, updatedAt string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &createdAt, &updatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -1149,7 +1171,7 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 
 func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
 		 FROM connections WHERE workspace_id = ? ORDER BY conn_id`, workspaceID,
 	)
 	if err != nil {
@@ -1161,7 +1183,7 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 		var c models.Connection
 		var createdAt, updatedAt string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &createdAt, &updatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -1172,11 +1194,21 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 }
 
 func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
+	passRef := c.PasswordRef
+	passEnc := c.Password
+	if passRef == "" && passEnc != "" {
+		passRef = "encrypted://" + passEnc
+	}
+	extraRef := c.ExtraRef
+	extraEnc := c.Extra
+	if extraRef == "" && extraEnc != "" {
+		extraRef = "encrypted://" + extraEnc
+	}
 	result, err := s.db.Exec(
-		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, updated_at=?
+		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?
 		 WHERE conn_id = ?`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		c.Password, c.Extra,
+		passEnc, extraEnc, passRef, extraRef,
 		c.UpdatedAt.UTC().Format(timeFormat), c.ConnID,
 	)
 	if err != nil {
@@ -1205,7 +1237,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 	var c models.Connection
 	var createdAt, updatedAt string
 	if err := row.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &createdAt, &updatedAt); err != nil {
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
 		return nil, err
 	}
 	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
