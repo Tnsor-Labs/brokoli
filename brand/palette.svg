@@ -1,0 +1,23 @@
+<svg viewBox="0 0 480 160" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="480" height="160" fill="#F7F7FA"/>
+
+  <!-- Swatch 1: Black -->
+  <rect x="24" y="24" width="88" height="72" rx="6" fill="#0C0C14"/>
+  <text x="24" y="116" font-family="'Inter', monospace" font-size="10" font-weight="500" fill="#0C0C14" letter-spacing="0.5">Black</text>
+  <text x="24" y="130" font-family="'Inter', monospace" font-size="10" fill="#72729A" letter-spacing="0.5">#0C0C14</text>
+
+  <!-- Swatch 2: White -->
+  <rect x="136" y="24" width="88" height="72" rx="6" fill="#F2F2FA" stroke="#E0E0EC" stroke-width="1"/>
+  <text x="136" y="116" font-family="'Inter', monospace" font-size="10" font-weight="500" fill="#0C0C14" letter-spacing="0.5">White</text>
+  <text x="136" y="130" font-family="'Inter', monospace" font-size="10" fill="#72729A" letter-spacing="0.5">#F2F2FA</text>
+
+  <!-- Swatch 3: Blue (accent) -->
+  <rect x="248" y="24" width="88" height="72" rx="6" fill="#4B6EFF"/>
+  <text x="248" y="116" font-family="'Inter', monospace" font-size="10" font-weight="500" fill="#0C0C14" letter-spacing="0.5">Blue</text>
+  <text x="248" y="130" font-family="'Inter', monospace" font-size="10" fill="#72729A" letter-spacing="0.5">#4B6EFF</text>
+
+  <!-- Swatch 4: Muted -->
+  <rect x="360" y="24" width="88" height="72" rx="6" fill="#72729A"/>
+  <text x="360" y="116" font-family="'Inter', monospace" font-size="10" font-weight="500" fill="#0C0C14" letter-spacing="0.5">Muted</text>
+  <text x="360" y="130" font-family="'Inter', monospace" font-size="10" fill="#72729A" letter-spacing="0.5">#72729A</text>
+</svg>

@@ -1,0 +1,10 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Crossbar -->
+  <rect x="6" y="10" width="88" height="15" fill="#0C0C14"/>
+  <!-- Stem -->
+  <rect x="43" y="25" width="14" height="65" fill="#0C0C14"/>
+  <!-- Terminal nodes -->
+  <circle cx="6"  cy="17" r="6" fill="#4B6EFF"/>
+  <circle cx="94" cy="17" r="6" fill="#4B6EFF"/>
+  <circle cx="50" cy="90" r="6" fill="#4B6EFF"/>
+</svg>

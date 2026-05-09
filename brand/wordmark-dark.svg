@@ -1,0 +1,36 @@
+<svg viewBox="0 0 280 72" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Background -->
+  <rect width="280" height="72" fill="#0C0C14"/>
+
+  <!-- T mark, scaled to 60×60, centered vertically in 72px -->
+  <g transform="translate(6, 6) scale(0.6)">
+    <rect x="6" y="10" width="88" height="15" fill="#F2F2FA"/>
+    <rect x="43" y="25" width="14" height="65" fill="#F2F2FA"/>
+    <circle cx="6"  cy="17" r="6" fill="#4B6EFF"/>
+    <circle cx="94" cy="17" r="6" fill="#4B6EFF"/>
+    <circle cx="50" cy="90" r="6" fill="#4B6EFF"/>
+  </g>
+
+  <!-- Divider -->
+  <line x1="80" y1="18" x2="80" y2="54" stroke="#F2F2FA" stroke-width="0.5" opacity="0.15"/>
+
+  <!-- TNSOR -->
+  <text
+    x="92" y="33"
+    font-family="'Inter', 'Helvetica Neue', Arial, sans-serif"
+    font-size="20"
+    font-weight="400"
+    letter-spacing="4"
+    fill="#F2F2FA"
+  >TNSOR</text>
+
+  <!-- LABS -->
+  <text
+    x="93" y="51"
+    font-family="'Inter', 'Helvetica Neue', Arial, sans-serif"
+    font-size="10"
+    font-weight="300"
+    letter-spacing="7"
+    fill="#72729A"
+  >LABS</text>
+</svg>
