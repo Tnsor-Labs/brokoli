@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Node, RunStatus } from "../lib/types";
-  import { NODE_WIDTH, NODE_HEIGHT, nodeTypeConfig } from "../lib/dag";
+  import { NODE_WIDTH, NODE_HEIGHT, nodeTypeConfig, nodePortConfig } from "../lib/dag";
   import { icons, nodeTypeIcon } from "../lib/icons";
   import { createEventDispatcher } from "svelte";
 
@@ -12,6 +12,7 @@
   const dispatch = createEventDispatcher();
 
   $: config = nodeTypeConfig[node.type] || { label: node.type, color: "#71717a" };
+  $: portConfig = nodePortConfig[node.type] ?? { hasInput: true, hasOutput: true, maxInputs: 1 };
   $: icon = icons[nodeTypeIcon(node.type)] || icons.file;
 
   let hovered = false;
@@ -188,54 +189,63 @@
   {/if}
 
   <!-- Input port (left) -->
-  <g class="port-group" class:visible={hovered || selected || !readonly}>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <circle
-      class="port port-hit"
-      cx="-1"
-      cy={NODE_HEIGHT / 2}
-      r="12"
-      on:mousedown={(e) => onPortMouseDown(e, "input")}
-      on:mouseup={(e) => onPortMouseUp(e, "input")}
-    />
-    <circle
-      class="port port-visual"
-      cx="-1"
-      cy={NODE_HEIGHT / 2}
-      r="5"
-    />
-    <circle
-      class="port-dot"
-      cx="-1"
-      cy={NODE_HEIGHT / 2}
-      r="2"
-    />
-  </g>
+  {#if portConfig.hasInput}
+    <g class="port-group" class:visible={hovered || selected || !readonly}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <circle
+        class="port port-hit"
+        cx="-1"
+        cy={NODE_HEIGHT / 2}
+        r="12"
+        on:mousedown={(e) => onPortMouseDown(e, "input")}
+        on:mouseup={(e) => onPortMouseUp(e, "input")}
+      />
+      <circle
+        class="port port-visual"
+        cx="-1"
+        cy={NODE_HEIGHT / 2}
+        r="5"
+      />
+      <circle
+        class="port-dot"
+        cx="-1"
+        cy={NODE_HEIGHT / 2}
+        r="2"
+      />
+    </g>
+  {/if}
 
   <!-- Output port (right) -->
-  <g class="port-group" class:visible={hovered || selected || !readonly}>
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <circle
-      class="port port-hit"
-      cx={NODE_WIDTH + 1}
-      cy={NODE_HEIGHT / 2}
-      r="12"
-      on:mousedown={(e) => onPortMouseDown(e, "output")}
-      on:mouseup={(e) => onPortMouseUp(e, "output")}
-    />
-    <circle
-      class="port port-visual"
-      cx={NODE_WIDTH + 1}
-      cy={NODE_HEIGHT / 2}
-      r="5"
-    />
-    <circle
-      class="port-dot"
-      cx={NODE_WIDTH + 1}
-      cy={NODE_HEIGHT / 2}
-      r="2"
-    />
-  </g>
+  {#if portConfig.hasOutput}
+    <g class="port-group" class:visible={hovered || selected || !readonly}>
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <circle
+        class="port port-hit"
+        cx={NODE_WIDTH + 1}
+        cy={NODE_HEIGHT / 2}
+        r="12"
+        on:mousedown={(e) => onPortMouseDown(e, "output")}
+        on:mouseup={(e) => onPortMouseUp(e, "output")}
+      />
+      <circle
+        class="port port-visual"
+        cx={NODE_WIDTH + 1}
+        cy={NODE_HEIGHT / 2}
+        r="5"
+      />
+      <circle
+        class="port-dot"
+        cx={NODE_WIDTH + 1}
+        cy={NODE_HEIGHT / 2}
+        r="2"
+      />
+    </g>
+  {/if}
+
+  <!-- Standalone label for migrate (no ports) -->
+  {#if node.type === "migrate"}
+    <text x={NODE_WIDTH / 2} y={NODE_HEIGHT - 6} text-anchor="middle" class="standalone-label">standalone</text>
+  {/if}
 </g>
 
 <style>
@@ -332,6 +342,14 @@
   }
   .port-hit:hover ~ .port-dot {
     fill: var(--bg-primary);
+  }
+
+  .standalone-label {
+    fill: var(--text-muted);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 8px;
+    letter-spacing: 0.04em;
+    opacity: 0.6;
   }
 
   @keyframes running-glow {

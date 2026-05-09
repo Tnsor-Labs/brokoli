@@ -80,7 +80,9 @@ export type NodeType =
   | "sink_db"
   | "sink_api"
   | "migrate"
-  | "condition";
+  | "condition"
+  | "dbt"
+  | "notify";
 
 export interface Position {
   x: number;

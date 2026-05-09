@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { Node, Edge, RunStatus } from "../lib/types";
-  import { edgePath, outputPort, inputPort, NODE_WIDTH, NODE_HEIGHT } from "../lib/dag";
+  import { edgePath, outputPort, inputPort, NODE_WIDTH, NODE_HEIGHT, canConnect } from "../lib/dag";
   import NodeCard from "./NodeCard.svelte";
   import { createEventDispatcher, onMount, onDestroy } from "svelte";
   import { theme } from "../lib/theme";
@@ -23,6 +23,7 @@
   let drawStart = { x: 0, y: 0 };
   let drawEnd = { x: 0, y: 0 };
   let nearestTarget: { nodeId: string; side: string; pos: { x: number; y: number } } | null = null;
+  let nearestInvalidTarget: { nodeId: string; side: string; pos: { x: number; y: number } } | null = null;
 
   // Pan state
   let panning = false;
@@ -75,6 +76,12 @@
     const SNAP_DISTANCE = 50;
     let best: typeof nearestTarget = null;
     let bestDist = SNAP_DISTANCE;
+    let bestInvalid: typeof nearestTarget = null;
+    let bestInvalidDist = SNAP_DISTANCE;
+
+    const nm = nodeMap();
+    const dragNode = nm.get(excludeNodeId);
+    if (!dragNode) return null;
 
     for (const node of nodes) {
       if (node.id === excludeNodeId) continue;
@@ -91,12 +98,36 @@
         const dy = svgY - port.pos.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < bestDist) {
+        if (dist >= SNAP_DISTANCE) continue;
+
+        let fromType: string;
+        let toType: string;
+        let fromNodeId: string;
+        let toNodeId: string;
+
+        if (dragFromSide === "output" && port.side === "input") {
+          fromType = dragNode.type; toType = node.type;
+          fromNodeId = excludeNodeId; toNodeId = node.id;
+        } else if (dragFromSide === "input" && port.side === "output") {
+          fromType = node.type; toType = dragNode.type;
+          fromNodeId = node.id; toNodeId = excludeNodeId;
+        } else {
+          continue;
+        }
+
+        const valid = canConnect(fromType, toType, edges, fromNodeId, toNodeId);
+
+        if (valid && dist < bestDist) {
           bestDist = dist;
           best = { nodeId: node.id, side: port.side, pos: port.pos };
+        } else if (!valid && dist < bestInvalidDist) {
+          bestInvalidDist = dist;
+          bestInvalid = { nodeId: node.id, side: port.side, pos: port.pos };
         }
       }
     }
+
+    nearestInvalidTarget = best ? null : bestInvalid;
     return best;
   }
 
@@ -150,6 +181,7 @@
       drawFromNodeId = null;
       drawFromSide = null;
       nearestTarget = null;
+      nearestInvalidTarget = null;
     };
 
     window.addEventListener("mousemove", onMove);
@@ -274,6 +306,11 @@
   });
 
   $: edgePaths = (() => { nodes; edges; return getEdgePaths(); })();
+
+  $: joinWarnings = nodes
+    .filter((n) => n.type === "join")
+    .filter((n) => edges.filter((e) => e.to === n.id).length !== 2)
+    .map((n) => n.id);
 </script>
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -385,6 +422,28 @@
         opacity="0.6"
       />
     {/if}
+    {#if nearestInvalidTarget && !nearestTarget}
+      <circle
+        cx={nearestInvalidTarget.pos.x}
+        cy={nearestInvalidTarget.pos.y}
+        r="9"
+        fill="none"
+        stroke="#ef4444"
+        stroke-width="2"
+        stroke-dasharray="3 2"
+        opacity="0.8"
+      />
+      <line
+        x1={nearestInvalidTarget.pos.x - 4} y1={nearestInvalidTarget.pos.y - 4}
+        x2={nearestInvalidTarget.pos.x + 4} y2={nearestInvalidTarget.pos.y + 4}
+        stroke="#ef4444" stroke-width="1.5"
+      />
+      <line
+        x1={nearestInvalidTarget.pos.x + 4} y1={nearestInvalidTarget.pos.y - 4}
+        x2={nearestInvalidTarget.pos.x - 4} y2={nearestInvalidTarget.pos.y + 4}
+        stroke="#ef4444" stroke-width="1.5"
+      />
+    {/if}
   {/if}
 
   <!-- Nodes -->
@@ -400,6 +459,26 @@
         on:portDragEnd={onPortDragEnd}
       />
     </g>
+  {/each}
+
+  <!-- Join input-count warnings -->
+  {#each joinWarnings as warnId}
+    {#each nodes.filter((n) => n.id === warnId) as warnNode}
+      <g class="join-warning">
+        <circle
+          cx={warnNode.position.x + NODE_WIDTH - 4}
+          cy={warnNode.position.y - 4}
+          r="8"
+          fill="#f59e0b"
+        />
+        <text
+          x={warnNode.position.x + NODE_WIDTH - 4}
+          y={warnNode.position.y - 1}
+          text-anchor="middle"
+          class="join-warning-text"
+        >!</text>
+      </g>
+    {/each}
   {/each}
 
   <!-- Empty state -->
@@ -455,5 +534,13 @@
     fill: var(--text-ghost);
     font-family: 'Inter', system-ui, sans-serif;
     font-size: 12px;
+  }
+
+  .join-warning-text {
+    fill: white;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-size: 9px;
+    font-weight: 700;
+    pointer-events: none;
   }
 </style>

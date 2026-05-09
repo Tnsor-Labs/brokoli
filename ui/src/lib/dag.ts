@@ -1,5 +1,47 @@
 import type { Node, Edge, Position } from "./types";
 
+export interface NodePortConfig {
+  hasInput: boolean;
+  hasOutput: boolean;
+  maxInputs: number; // 0=none, 1=single, 2=exactly two, -1=unlimited
+  inputWarning?: string;
+}
+
+export const nodePortConfig: Record<string, NodePortConfig> = {
+  source_file:   { hasInput: false, hasOutput: true,  maxInputs: 0 },
+  source_api:    { hasInput: false, hasOutput: true,  maxInputs: 0 },
+  source_db:     { hasInput: false, hasOutput: true,  maxInputs: 0 },
+  dbt:           { hasInput: false, hasOutput: true,  maxInputs: 0 },
+  migrate:       { hasInput: false, hasOutput: false, maxInputs: 0 },
+  transform:     { hasInput: true,  hasOutput: true,  maxInputs: 1 },
+  code:          { hasInput: true,  hasOutput: true,  maxInputs: 1 },
+  quality_check: { hasInput: true,  hasOutput: true,  maxInputs: 1 },
+  sql_generate:  { hasInput: true,  hasOutput: true,  maxInputs: 1 },
+  condition:     { hasInput: true,  hasOutput: true,  maxInputs: 1 },
+  join:          { hasInput: true,  hasOutput: true,  maxInputs: 2, inputWarning: "Join requires exactly 2 inputs" },
+  sink_file:     { hasInput: true,  hasOutput: false, maxInputs: 1 },
+  sink_db:       { hasInput: true,  hasOutput: false, maxInputs: 1 },
+  sink_api:      { hasInput: true,  hasOutput: false, maxInputs: 1 },
+  notify:        { hasInput: true,  hasOutput: false, maxInputs: 1 },
+};
+
+export function canConnect(
+  fromType: string,
+  toType: string,
+  existingEdges: Edge[],
+  fromNodeId: string,
+  toNodeId: string,
+): boolean {
+  const from = nodePortConfig[fromType];
+  const to   = nodePortConfig[toType];
+  if (!from?.hasOutput || !to?.hasInput) return false;
+  if (to.maxInputs !== -1) {
+    const currentInputs = existingEdges.filter((e) => e.to === toNodeId).length;
+    if (currentInputs >= to.maxInputs) return false;
+  }
+  return true;
+}
+
 /** Compute a cubic bezier path between two points */
 export function edgePath(from: Position, to: Position): string {
   const dx = Math.abs(to.x - from.x) * 0.5;

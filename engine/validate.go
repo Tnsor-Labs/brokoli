@@ -63,21 +63,25 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 		}
 	}
 
+	// Check semantic connection rules
+	validateEdgeSemantics(p.Nodes, p.Edges, ve)
+
 	// Check for cycles
 	if _, err := topoSort(p.Nodes, p.Edges); err != nil {
 		ve.Add("Pipeline contains a cycle")
 	}
 
-	// Check at least one source node
+	// Check at least one source node (dbt and migrate also produce/handle data without pipeline inputs)
 	hasSource := false
 	for _, n := range p.Nodes {
 		switch n.Type {
-		case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB:
+		case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
+			models.NodeTypeDBT, models.NodeTypeMigrate:
 			hasSource = true
 		}
 	}
 	if !hasSource {
-		ve.Add("Pipeline must have at least one source node (source_file, source_api, or source_db)")
+		ve.Add("Pipeline must have at least one source node (source_file, source_api, source_db, dbt, or migrate)")
 	}
 
 	// Check disconnected nodes
@@ -88,6 +92,9 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	}
 	if len(p.Nodes) > 1 {
 		for _, n := range p.Nodes {
+			if n.Type == models.NodeTypeMigrate {
+				continue // migrate is intentionally standalone with no edges
+			}
 			if !connected[n.ID] {
 				ve.Add(fmt.Sprintf("Node %q (%s) is disconnected", n.Name, n.ID))
 			}
@@ -100,6 +107,43 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	}
 
 	return ve
+}
+
+func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *ValidationError) {
+	nodeTypes := make(map[string]models.NodeType, len(nodes))
+	for _, n := range nodes {
+		nodeTypes[n.ID] = n.Type
+	}
+
+	inputDegree := make(map[string]int)
+
+	for _, e := range edges {
+		fromType := nodeTypes[e.From]
+		toType := nodeTypes[e.To]
+
+		switch fromType {
+		case models.NodeTypeSinkFile, models.NodeTypeSinkDB, models.NodeTypeSinkAPI,
+			models.NodeTypeNotify, models.NodeTypeMigrate:
+			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot have outgoing edges", e.From, fromType))
+		}
+
+		switch toType {
+		case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
+			models.NodeTypeDBT, models.NodeTypeMigrate:
+			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toType))
+		}
+
+		inputDegree[e.To]++
+	}
+
+	for _, n := range nodes {
+		if n.Type == models.NodeTypeJoin {
+			count := inputDegree[n.ID]
+			if count != 2 {
+				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
+			}
+		}
+	}
 }
 
 func validateNodeConfig(n models.Node, ve *ValidationError) {
