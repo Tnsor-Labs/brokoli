@@ -28,7 +28,7 @@
   <a href="https://docs.brokoli.orkestri.site">Documentation</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
-  <a href="#enterprise">Enterprise</a>
+  <a href="#brokoli-cloud">Brokoli Cloud</a>
 </p>
 
 ---
@@ -113,11 +113,11 @@ go build -o brokoli . && ./brokoli serve
 
 ---
 
-## Enterprise
+## Brokoli Cloud
 
-Brokoli Enterprise adds governance, compliance, and team features on top of the open-source core — SSO/OIDC, audit logging, workspaces with RBAC, Git Sync, data contracts, column-level lineage, PII detection, OpenLineage export, and Kubernetes execution. Same single binary, just with a license key.
+Brokoli Cloud builds on the open-source core with team and governance features — SSO/OIDC, audit logging, workspaces with RBAC, Git Sync, data contracts, column-level lineage, PII detection, OpenLineage export, and Kubernetes execution. Free tier available.
 
-[Contact us](https://brokoli.orkestri.site) for pricing.
+[Try it now](https://brokoli.orkestri.site)
 
 ---
 
