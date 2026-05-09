@@ -28,8 +28,7 @@
   <a href="https://docs.brokoli.orkestri.site">Documentation</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
-  <a href="#enterprise">Enterprise</a> ·
-  <a href="#api-reference">API Reference</a>
+  <a href="#enterprise">Enterprise</a>
 </p>
 
 ---
@@ -116,78 +115,9 @@ go build -o brokoli . && ./brokoli serve
 
 ## Enterprise
 
-Same single binary, just with a license key.
+Brokoli Enterprise adds governance, compliance, and team features on top of the open-source core — SSO/OIDC, audit logging, workspaces with RBAC, Git Sync, data contracts, column-level lineage, PII detection, OpenLineage export, and Kubernetes execution. Same single binary, just with a license key.
 
-| Feature | Community | Enterprise |
-|---|---|---|
-| Visual pipeline editor | Yes | Yes |
-| 15 node types + data quality | Yes | Yes |
-| Auto-profiling + schema drift | Yes | Yes |
-| Slack alerts + SLA monitoring | Yes | Yes |
-| Webhook triggers + CLI | Yes | Yes |
-| Pipeline versioning + rollback | Yes | Yes |
-| Cross-pipeline dependencies | Yes | Yes |
-| Distributed tracing + Gantt | Yes | Yes |
-| **SSO/OIDC** (Okta, Azure AD, Google) | | Yes |
-| **Audit logging** with before/after diff | | Yes |
-| **Workspaces** with RBAC | | Yes |
-| **Git Sync** — pipeline-as-code with auto-deploy | | Yes |
-| **Data contracts** — schema enforcement between teams | | Yes |
-| **Column-level lineage** | | Yes |
-| **PII detection** — email, phone, SSN, IP, credit card | | Yes |
-| **OpenLineage** export (DataHub/Marquez/Atlan) | | Yes |
-| **Kubernetes executor** — dispatch nodes as K8s Jobs | | Yes |
-| **Work pools** — managed and self-hosted remote workers | | Yes |
-
----
-
-## API Reference
-
-All endpoints require authentication (except `/health` and `/api/auth/setup`).
-Authenticate via httpOnly session cookie or `Authorization: Bearer <token>` header.
-
-```
-POST   /api/auth/login
-GET    /api/auth/me
-
-GET    /api/pipelines
-POST   /api/pipelines
-GET    /api/pipelines/:id
-PUT    /api/pipelines/:id
-DELETE /api/pipelines/:id              ?resolve=abort|cascade|decouple
-POST   /api/pipelines/:id/run
-POST   /api/pipelines/:id/dry-run
-POST   /api/pipelines/:id/clone
-POST   /api/pipelines/:id/backfill
-GET    /api/pipelines/:id/export
-GET    /api/pipelines/:id/versions
-POST   /api/pipelines/:id/rollback
-POST   /api/pipelines/:id/webhook
-POST   /api/pipelines/import
-
-GET    /api/pipelines/:id/runs
-GET    /api/runs/:id
-POST   /api/runs/:id/resume
-POST   /api/runs/:id/cancel
-GET    /api/runs/:id/logs
-GET    /api/runs/:id/nodes/:nid/preview
-GET    /api/runs/:id/nodes/:nid/profile
-GET    /api/runs/calendar
-
-GET    /api/connections
-POST   /api/connections
-POST   /api/connections/:id/test
-
-GET    /api/variables
-POST   /api/variables
-
-GET    /api/pipelines/dependency-graph
-GET    /api/lineage
-GET    /health
-GET    /metrics
-```
-
-Full API documentation at [docs.brokoli.orkestri.site](https://docs.brokoli.orkestri.site).
+[Contact us](https://brokoli.orkestri.site) for pricing.
 
 ---
 
