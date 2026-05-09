@@ -1,10 +1,8 @@
 <svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <!-- Crossbar -->
-  <rect x="6" y="10" width="88" height="15" fill="#0C0C14"/>
-  <!-- Stem -->
-  <rect x="43" y="25" width="14" height="65" fill="#0C0C14"/>
-  <!-- Terminal nodes -->
-  <circle cx="6"  cy="17" r="6" fill="#4B6EFF"/>
-  <circle cx="94" cy="17" r="6" fill="#4B6EFF"/>
-  <circle cx="50" cy="90" r="6" fill="#4B6EFF"/>
+  <!-- T — crossbar top, stem centered -->
+  <rect x="4"  y="8"  width="44" height="14" fill="#0C0C14"/>
+  <rect x="20" y="22" width="12" height="70" fill="#0C0C14"/>
+  <!-- L — vertical left, foot bottom -->
+  <rect x="52" y="8"  width="12" height="70" fill="#0C0C14"/>
+  <rect x="52" y="78" width="44" height="14" fill="#0C0C14"/>
 </svg>
