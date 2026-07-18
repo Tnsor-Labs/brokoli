@@ -26,15 +26,24 @@ export function dashboardKey(): string {
 
 // Auth state is managed via httpOnly session cookie (set by server on login).
 // No tokens in localStorage — prevents XSS token theft.
-export const authToken = writable<string | null>(null);
+const storedToken = localStorage.getItem("brokoli-token");
+export const authToken = writable<string | null>(
+  storedToken === "null" || storedToken === "undefined" ? null : storedToken,
+);
 export const authUser = writable<AuthUser | null>(null);
 export const needsSetup = writable<boolean>(false);
 export const authReady = writable<boolean>(false);
 
 export function setToken(token: string | null) {
+  if (token === "null" || token === "undefined") {
+    token = null;
+  }
   authToken.set(token);
-  // Token is only held in memory for the auth-callback flow (OAuth/signup).
-  // The httpOnly cookie is the real auth credential — set by the server.
+  if (token) {
+    localStorage.setItem("brokoli-token", token);
+  } else {
+    localStorage.removeItem("brokoli-token");
+  }
 }
 
 export function logout() {
@@ -51,7 +60,7 @@ export function authHeaders(): Record<string, string> {
   // httpOnly cookie is sent automatically by the browser on same-origin requests.
   // Only use Authorization header for in-memory tokens (OAuth callback flow).
   const token = get(authToken);
-  if (token) {
+  if (token && token !== "null" && token !== "undefined") {
     return { Authorization: `Bearer ${token}` };
   }
   return {};
@@ -111,15 +120,18 @@ export async function initAuth() {
         // Store onboarding flag for new signups
         const isNew = hashParams.get("new");
         if (isNew === "1") {
-          localStorage.setItem("brokoli-onboarding", JSON.stringify({
-            show_welcome: true,
-            steps: [
-              { id: "create_connection", label: "Add your first data source", completed: false },
-              { id: "create_pipeline", label: "Build your first pipeline", completed: false },
-              { id: "first_run", label: "Run your pipeline", completed: false },
-              { id: "invite_member", label: "Invite a team member", completed: false },
-            ],
-          }));
+          localStorage.setItem(
+            "brokoli-onboarding",
+            JSON.stringify({
+              show_welcome: true,
+              steps: [
+                { id: "create_connection", label: "Add your first data source", completed: false },
+                { id: "create_pipeline", label: "Build your first pipeline", completed: false },
+                { id: "first_run", label: "Run your pipeline", completed: false },
+                { id: "invite_member", label: "Invite a team member", completed: false },
+              ],
+            }),
+          );
         }
         // Clean URL immediately — remove token from browser history
         window.history.replaceState({}, "", window.location.pathname + "#/");
@@ -134,8 +146,8 @@ export async function initAuth() {
       window.history.replaceState({}, "", window.location.pathname + "#/");
     }
 
-    // Validate session via httpOnly cookie (sent automatically by browser)
-    const meRes = await fetch("/api/auth/me");
+    // Validate session via httpOnly cookie or Authorization header
+    const meRes = await fetch("/api/auth/me", { headers: authHeaders() });
     if (meRes.ok) {
       const claims = await meRes.json();
       authUser.set({

@@ -11,9 +11,13 @@ import (
 // every rule type the UI templates produce. The bug that motivated
 // this test: a transform template in ui/src/pages/Pipelines.svelte
 // shipped a rename rule as
-//   { type: "rename", old_name: "hire_date", new_name: "start_date" }
+//
+//	{ type: "rename", old_name: "hire_date", new_name: "start_date" }
+//
 // but the backend TransformRule expects
-//   { type: "rename", mapping: { hire_date: "start_date" } }
+//
+//	{ type: "rename", mapping: { hire_date: "start_date" } }
+//
 // So the deserialization silently produced an empty Mapping and the
 // rule errored at runtime with "rename_columns requires mapping".
 // That template had been broken for however long it had existed

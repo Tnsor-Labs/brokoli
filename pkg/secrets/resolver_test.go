@@ -2,8 +2,8 @@ package secrets
 
 import (
 	"context"
-	"os"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"

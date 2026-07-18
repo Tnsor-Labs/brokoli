@@ -8,7 +8,8 @@ import (
 )
 
 // Version information injected at build time via goreleaser ldflags:
-//   -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+//
+//	-X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 //
 // For `go install`-style builds without ldflags, these stay as their
 // default values and `brokoli --version` prints "dev".

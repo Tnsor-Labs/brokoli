@@ -130,8 +130,8 @@ const (
 // table, an API endpoint, a topic, a file pattern, etc. Emitted during
 // `discover` and referenced by name in `read`/`write`.
 type Stream struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description,omitempty"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 	// Columns is a best-effort schema hint. Order-preserving.
 	Columns []StreamColumn `json:"columns,omitempty"`
 	// Mode describes how incremental reads work for this stream.
