@@ -41,8 +41,8 @@ type Connection struct {
 	Port        int            `json:"port,omitempty"`
 	Schema      string         `json:"schema"` // database name or path
 	Login       string         `json:"login"`
-	Password    string         `json:"password,omitempty"` // resolved plaintext (in-memory only, never persisted)
-	Extra       string         `json:"extra,omitempty"`    // resolved plaintext (in-memory only, never persisted)
+	Password    string         `json:"password,omitempty"`     // resolved plaintext (in-memory only, never persisted)
+	Extra       string         `json:"extra,omitempty"`        // resolved plaintext (in-memory only, never persisted)
 	PasswordRef string         `json:"password_ref,omitempty"` // credential ref: env://VAR, vault://path#key, k8s://ns/secret/key, encrypted://...
 	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
 	WorkspaceID string         `json:"workspace_id,omitempty"`

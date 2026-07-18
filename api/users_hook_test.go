@@ -21,8 +21,8 @@ func TestUserPostCreateHook_Runs(t *testing.T) {
 
 	// Install a hook that records the user it was called with.
 	var (
-		mu       sync.Mutex
-		gotUser  *User
+		mu        sync.Mutex
+		gotUser   *User
 		callCount int
 	)
 	orig := UserPostCreateHook

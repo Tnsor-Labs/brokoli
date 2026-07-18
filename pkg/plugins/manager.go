@@ -39,8 +39,8 @@ type Manager struct {
 	DefaultTimeout time.Duration
 
 	mu        sync.RWMutex
-	manifests map[string]*Manifest       // plugin name -> manifest
-	nodeTypes map[string]*Manifest       // node type -> owning manifest
+	manifests map[string]*Manifest // plugin name -> manifest
+	nodeTypes map[string]*Manifest // node type -> owning manifest
 }
 
 // DefaultDir returns the default plugin directory. In order of
