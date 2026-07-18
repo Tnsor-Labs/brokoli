@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { authHeaders } from "../lib/auth";
   export let runId: string;
   export let nodeId: string;
   export let nodeName: string = "";
@@ -17,7 +18,7 @@
     error = "";
     try {
       const url = `/api/runs/${rid}/nodes/${nid}/preview`;
-      const res = await fetch(url);
+      const res = await fetch(url, { headers: authHeaders() });
       if (!res.ok) throw new Error("No preview available");
       const data = await res.json();
       columns = data.columns || [];
