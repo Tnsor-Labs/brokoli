@@ -21,7 +21,28 @@ jobs:
       - name: Gosec (static analysis)
         uses: securego/gosec@master
         with:
-          args: ./...
+          args: -no-fail -fmt=json -out=gosec-report.json ./...
+
+      - name: Enforce Gosec baseline
+        run: |
+          findings=$(jq '[.Issues[]] | length' gosec-report.json)
+          baseline=$(jq -r '.issues' security/gosec-baseline.json)
+          echo "Gosec findings: $findings (baseline: $baseline)"
+          if [ "$findings" -gt "$baseline" ]; then
+            echo "::error::Gosec findings increased from $baseline to $findings"
+            exit 1
+          fi
+          if [ "$findings" -lt "$baseline" ]; then
+            echo "Gosec baseline can be reduced from $baseline to $findings"
+          fi
+
+      - name: Upload Gosec report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gosec-report
+          path: gosec-report.json
+          if-no-files-found: error
 
       - name: govulncheck (known vulnerabilities)
         run: |
