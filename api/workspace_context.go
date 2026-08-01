@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/golang-jwt/jwt/v5"
@@ -19,6 +20,11 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 			wsID = models.DefaultWorkspaceID
 		}
 		wsID = sanitizeWorkspaceID(wsID)
+		if isWorkspacePublicRoute(r) {
+			ctx := context.WithValue(r.Context(), workspaceKey, wsID)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
 
 		// In multi-tenant mode, resolve the default to an owned workspace and
 		// reject explicit cross-workspace requests instead of silently falling
@@ -51,6 +57,16 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), workspaceKey, wsID)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func isWorkspacePublicRoute(r *http.Request) bool {
+	path := r.URL.Path
+	return !strings.HasPrefix(path, "/api/") ||
+		strings.HasPrefix(path, "/api/auth/") ||
+		strings.HasPrefix(path, "/api/workers/") ||
+		strings.HasPrefix(path, "/api/invites/") ||
+		strings.HasPrefix(path, "/api/samples/") ||
+		(r.Method == http.MethodPost && strings.Contains(path, "/webhook"))
 }
 
 // getUserIDFromRequest extracts the user ID from JWT claims in the request context.

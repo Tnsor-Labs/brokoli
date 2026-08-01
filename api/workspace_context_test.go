@@ -41,4 +41,20 @@ func TestWorkspaceMiddlewareFailsClosedInMultiTenantMode(t *testing.T) {
 	if foreignRec.Code != http.StatusForbidden {
 		t.Fatalf("foreign workspace status = %d, want 403", foreignRec.Code)
 	}
+
+	unauthReq := httptest.NewRequest(http.MethodGet, "/api/pipelines", nil)
+	unauthRec := httptest.NewRecorder()
+	handler.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated tenant route status = %d, want 401", unauthRec.Code)
+	}
+
+	for _, path := range []string{"/health", "/api/auth/login"} {
+		publicReq := httptest.NewRequest(http.MethodGet, path, nil)
+		publicRec := httptest.NewRecorder()
+		handler.ServeHTTP(publicRec, publicReq)
+		if publicRec.Code != http.StatusNoContent {
+			t.Fatalf("public route %s status = %d, want 204", path, publicRec.Code)
+		}
+	}
 }

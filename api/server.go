@@ -43,7 +43,6 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	r.Use(CORS)
 	r.Use(RateLimiter(200))   // 200 req/s per IP
 	r.Use(RequestTimeout(60)) // 60s default timeout for API requests
-	r.Use(WorkspaceMiddleware)
 
 	// Auth layers
 	if auth != nil {
@@ -53,6 +52,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		InitJWTSecret()
 		r.Use(JWTAuth(userStore))
 	}
+	// Workspace ownership depends on the identity populated by JWTAuth.
+	r.Use(WorkspaceMiddleware)
 
 	// Observability endpoints (outside /api, no auth required)
 	r.Get("/health", HealthHandler(s))
