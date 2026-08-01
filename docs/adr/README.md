@@ -29,6 +29,7 @@ auditable.
 | [ADR-006](./006-worker-websocket-protocol.md) | Worker WebSocket protocol — raw, not SODP (deferred migration) | Accepted |
 | [ADR-007](./007-install-ux-one-liner.md) | Install UX — one-liner with interactive admin setup | Accepted |
 | [ADR-008](./008-documentation-framework.md) | Documentation framework — fumadocs over MkDocs | Accepted |
+| [ADR-009](./009-crash-recovery-baseline.md) | Crash-recovery baseline before durable orchestration | Accepted |
 
 ## How to add a new ADR
 

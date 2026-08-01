@@ -76,9 +76,11 @@ func (r *Runner) Execute() (*models.Run, error) {
 		StartedAt:  &now,
 		TraceID:    r.traceID,
 	}
+	crashAt(crashPointBeforeRunCreate, "")
 	if err := r.store.CreateRun(r.run); err != nil {
 		return nil, fmt.Errorf("create run: %w", err)
 	}
+	crashAt(crashPointAfterRunCreate, "")
 	r.emit(models.Event{Type: models.EventRunStarted, RunID: r.run.ID, PipelineID: r.pipe.ID})
 	r.fireHook("on_start", nil)
 
@@ -227,7 +229,9 @@ func (r *Runner) Execute() (*models.Run, error) {
 
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
+	crashAt(crashPointBeforeRunTerminalPersist, "")
 	r.store.UpdateRun(r.run)
+	crashAt(crashPointAfterRunTerminalPersist, "")
 	r.emit(models.Event{Type: models.EventRunCompleted, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusSuccess})
 	r.fireHook("on_success", nil)
 	r.sendNotification("run.completed", "info", fmt.Sprintf("Pipeline \"%s\" completed", r.pipe.Name), "Run finished successfully")
@@ -338,9 +342,11 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			TraceID:   r.traceID,
 			SpanID:    spanID,
 		}
+		crashAt(crashPointBeforeNodeAttemptCreate, node.ID)
 		if !r.dryRun {
 			r.store.CreateNodeRun(nr)
 		}
+		crashAt(crashPointAfterNodeAttemptCreate, node.ID)
 
 		if attempt == 0 {
 			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt,
@@ -354,6 +360,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		// Execute with timeout
 		resultCh := make(chan nodeResult, 1)
 		go func() {
+			crashAt(crashPointBeforeNodeExecution, node.ID)
 			out, e := r.runNodeLogic(node, input, allInputs)
 			resultCh <- nodeResult{out, e}
 		}()
@@ -367,6 +374,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		case <-r.ctx.Done():
 			err = fmt.Errorf("pipeline cancelled")
 		}
+		crashAt(crashPointAfterNodeExecutionBeforePersist, node.ID)
 
 		duration := time.Since(startTime).Milliseconds()
 
@@ -388,6 +396,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			if !r.dryRun {
 				r.store.UpdateNodeRun(nr)
 			}
+			crashAt(crashPointAfterNodeCompletionPersist, node.ID)
 
 			if attempt > 0 {
 				r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt, nil,
