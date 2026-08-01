@@ -33,6 +33,13 @@ type CursorResult struct {
 	Limit   int         `json:"limit"`
 }
 
+// PendingRunClaimer atomically transitions an accepted run into execution.
+// Implementations must return claimed=false when the run is missing, belongs
+// to another pipeline, or is no longer pending.
+type PendingRunClaimer interface {
+	ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (claimed bool, err error)
+}
+
 // NewPageParams creates validated pagination parameters.
 // Defaults: page=1, page_size=25. Max page_size=100.
 func NewPageParams(page, pageSize int) PageParams {

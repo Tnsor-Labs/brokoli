@@ -3,6 +3,7 @@ package cmd
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log"
@@ -219,9 +220,13 @@ var serveCmd = &cobra.Command{
 			}
 
 			log.Println("Worker mode: waiting for jobs...")
+			_, workerCount := eng.GetQueueInfo()
+			workerSlots := make(chan struct{}, workerCount)
 			for {
+				workerSlots <- struct{}{}
 				job, err := Extensions.JobQueue.Dequeue()
 				if err != nil {
+					<-workerSlots
 					if err == extensions.ErrQueueClosed {
 						return nil
 					}
@@ -230,15 +235,47 @@ var serveCmd = &cobra.Command{
 					continue
 				}
 				if job.PipelineID == "" {
-					continue // empty job (timeout)
+					<-workerSlots
+					if job.ID != "" {
+						if settleErr := Extensions.JobQueue.Ack(job.ID); settleErr != nil {
+							log.Printf("Worker: reject invalid job %s: %v", job.ID, settleErr)
+						}
+					}
+					continue // empty job (timeout) or invalid delivery
+				}
+				if job.ID == "" || job.RunID == "" || job.ID != job.RunID {
+					<-workerSlots
+					log.Printf("Worker: rejecting invalid job identity: job=%q run=%q", job.ID, job.RunID)
+					if job.ID != "" {
+						if settleErr := Extensions.JobQueue.Ack(job.ID); settleErr != nil {
+							log.Printf("Worker: reject invalid job %s: %v", job.ID, settleErr)
+						}
+					}
+					continue
 				}
 				log.Printf("Worker: executing pipeline %s (run %s)", job.PipelineID, job.RunID)
 				go func(j extensions.RunJob) {
-					if _, err := eng.RunPipeline(j.PipelineID, j.Params); err != nil {
+					defer func() { <-workerSlots }()
+					run, err := eng.ExecuteQueuedRun(j.RunID, j.PipelineID, j.Params)
+					if err != nil {
 						log.Printf("Worker: run failed: %v", err)
-						Extensions.JobQueue.Fail(j.ID, err)
+						if run == nil {
+							if errors.Is(err, engine.ErrInvalidQueuedRun) {
+								if settleErr := Extensions.JobQueue.Ack(j.ID); settleErr != nil {
+									log.Printf("Worker: discard invalid job %s: %v", j.ID, settleErr)
+								}
+								return
+							}
+							if settleErr := Extensions.JobQueue.Fail(j.ID, err); settleErr != nil {
+								log.Printf("Worker: fail job %s: %v", j.ID, settleErr)
+							}
+							return
+						}
+					}
+					if settleErr := Extensions.JobQueue.Ack(j.ID); settleErr != nil {
+						log.Printf("Worker: ack job %s: %v", j.ID, settleErr)
 					} else {
-						Extensions.JobQueue.Ack(j.ID)
+						log.Printf("Worker: completed run %s with status %s", j.RunID, run.Status)
 					}
 				}(job)
 			}

@@ -32,6 +32,7 @@ type Runner struct {
 	params        map[string]string // runtime params
 	varCtx        *VariableContext
 	preRunID      string                          // pre-generated run ID (for registration before Execute)
+	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
 	orgID         string                          // tenant isolation for WebSocket events
 	traceID       string                          // distributed tracing correlation ID
 	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
@@ -64,23 +65,32 @@ func (r *Runner) Execute() (*models.Run, error) {
 	defer r.cancel()
 
 	now := time.Now().UTC()
-	runID := r.preRunID
-	if runID == "" {
-		runID = common.NewID()
+	if r.acceptedRun != nil {
+		r.run = r.acceptedRun
+		r.traceID = r.run.TraceID
+		if r.run.StartedAt != nil {
+			now = *r.run.StartedAt
+		}
+	} else {
+		runID := r.preRunID
+		if runID == "" {
+			runID = common.NewID()
+		}
+		r.traceID = common.NewID()
+		r.run = &models.Run{
+			ID:         runID,
+			PipelineID: r.pipe.ID,
+			Status:     models.RunStatusRunning,
+			Params:     r.params,
+			StartedAt:  &now,
+			TraceID:    r.traceID,
+		}
+		crashAt(crashPointBeforeRunCreate, "")
+		if err := r.store.CreateRun(r.run); err != nil {
+			return nil, fmt.Errorf("create run: %w", err)
+		}
+		crashAt(crashPointAfterRunCreate, "")
 	}
-	r.traceID = common.NewID()
-	r.run = &models.Run{
-		ID:         runID,
-		PipelineID: r.pipe.ID,
-		Status:     models.RunStatusRunning,
-		StartedAt:  &now,
-		TraceID:    r.traceID,
-	}
-	crashAt(crashPointBeforeRunCreate, "")
-	if err := r.store.CreateRun(r.run); err != nil {
-		return nil, fmt.Errorf("create run: %w", err)
-	}
-	crashAt(crashPointAfterRunCreate, "")
 	r.emit(models.Event{Type: models.EventRunStarted, RunID: r.run.ID, PipelineID: r.pipe.ID})
 	r.fireHook("on_start", nil)
 
@@ -210,7 +220,9 @@ func (r *Runner) Execute() (*models.Run, error) {
 	if r.ctx.Err() != nil {
 		r.run.Status = models.RunStatusCancelled
 		r.run.FinishedAt = &finishTime
-		r.store.UpdateRun(r.run)
+		if err := r.store.UpdateRun(r.run); err != nil {
+			return r.run, fmt.Errorf("persist cancelled run: %w", err)
+		}
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
 		r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
 		return r.run, fmt.Errorf("pipeline cancelled")
@@ -219,7 +231,9 @@ func (r *Runner) Execute() (*models.Run, error) {
 	if runErr != nil {
 		r.run.Status = models.RunStatusFailed
 		r.run.FinishedAt = &finishTime
-		r.store.UpdateRun(r.run)
+		if err := r.store.UpdateRun(r.run); err != nil {
+			return r.run, fmt.Errorf("persist failed run: %w", err)
+		}
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
 		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
 		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
@@ -230,7 +244,9 @@ func (r *Runner) Execute() (*models.Run, error) {
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
 	crashAt(crashPointBeforeRunTerminalPersist, "")
-	r.store.UpdateRun(r.run)
+	if err := r.store.UpdateRun(r.run); err != nil {
+		return r.run, fmt.Errorf("persist successful run: %w", err)
+	}
 	crashAt(crashPointAfterRunTerminalPersist, "")
 	r.emit(models.Event{Type: models.EventRunCompleted, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusSuccess})
 	r.fireHook("on_success", nil)
@@ -558,7 +574,9 @@ func (r *Runner) failRun(err error) error {
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusFailed
 	r.run.FinishedAt = &finishTime
-	r.store.UpdateRun(r.run)
+	if persistErr := r.store.UpdateRun(r.run); persistErr != nil {
+		return fmt.Errorf("run failed: %v; persist failed run: %w", err, persistErr)
+	}
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
 	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), err.Error())
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())

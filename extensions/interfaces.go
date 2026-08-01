@@ -265,17 +265,19 @@ type EventMessage struct {
 // Open source: in-memory (runs in goroutines in the same process).
 // Enterprise: Redis queue (distributed workers).
 type JobQueue interface {
-	// Enqueue adds a pipeline run job to the queue.
+	// Enqueue adds a pipeline run job to the queue. It is idempotent by job ID;
+	// re-enqueuing an identical job must not create another pending delivery.
 	Enqueue(job RunJob) error
 
-	// Dequeue blocks until a job is available, then returns it.
+	// Dequeue atomically claims a job and blocks until one is available.
 	// Returns ErrQueueClosed when the queue is shut down.
 	Dequeue() (RunJob, error)
 
-	// Ack marks a job as completed.
+	// Ack settles exactly the claimed job ID. It must never settle another job.
 	Ack(jobID string) error
 
-	// Fail marks a job as failed.
+	// Fail atomically releases exactly the claimed job back to the pending queue.
+	// Callers must Ack jobs whose execution reached a durably terminal run state.
 	Fail(jobID string, err error) error
 
 	// Len returns the current queue length.
@@ -298,6 +300,12 @@ type RunJob struct {
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.
 var ErrQueueClosed = fmt.Errorf("queue closed")
+
+// ErrJobNotClaimed is returned when settling a job that this queue has not claimed.
+var ErrJobNotClaimed = fmt.Errorf("job not claimed")
+
+// ErrJobConflict is returned when a job ID is reused with different content.
+var ErrJobConflict = fmt.Errorf("job ID already exists with different content")
 
 // ── Column Lineage, Data Contracts, PII Detection, OpenLineage ──
 
