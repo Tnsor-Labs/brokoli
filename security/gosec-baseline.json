@@ -1,0 +1,8 @@
+{
+  "scanner": "gosec",
+  "scanner_image": "ghcr.io/securego/gosec@sha256:4342ad119a7c69f3f4e4ce78d81ba183dc774a70a7a4c6eeb15fe9e511f214f0",
+  "issues": 298,
+  "recorded_at": "2026-08-01",
+  "tracking_issue": 13,
+  "note": "Temporary ceiling for pre-existing findings. CI must not exceed it; reduce it as findings are remediated."
+}
