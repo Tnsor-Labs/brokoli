@@ -110,6 +110,7 @@ func TestRunLifecycle(t *testing.T) {
 		ID:         "run-1",
 		PipelineID: "pipe-1",
 		Status:     models.RunStatusPending,
+		Params:     map[string]string{"date": "2026-08-01"},
 	}
 	if err := s.CreateRun(r); err != nil {
 		t.Fatalf("CreateRun: %v", err)
@@ -119,6 +120,7 @@ func TestRunLifecycle(t *testing.T) {
 	startTime := time.Now().Truncate(time.Millisecond)
 	r.Status = models.RunStatusRunning
 	r.StartedAt = &startTime
+	r.Error = "diagnostic"
 	if err := s.UpdateRun(r); err != nil {
 		t.Fatalf("UpdateRun: %v", err)
 	}
@@ -133,6 +135,9 @@ func TestRunLifecycle(t *testing.T) {
 	if got.StartedAt == nil {
 		t.Error("StartedAt should not be nil")
 	}
+	if got.Error != r.Error || got.Params["date"] != r.Params["date"] {
+		t.Fatalf("run metadata = error %q params %v", got.Error, got.Params)
+	}
 
 	// List runs
 	runs, err := s.ListRunsByPipeline("pipe-1", 10)
@@ -141,6 +146,38 @@ func TestRunLifecycle(t *testing.T) {
 	}
 	if len(runs) != 1 {
 		t.Errorf("len(runs) = %d, want 1", len(runs))
+	}
+}
+
+func TestClaimPendingRunIsAtomic(t *testing.T) {
+	s := newTestStore(t)
+	p := &models.Pipeline{ID: "pipe-claim", Name: "claim", CreatedAt: time.Now(), UpdatedAt: time.Now()}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(&models.Run{ID: "run-claim", PipelineID: p.ID, Status: models.RunStatusPending}); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now().UTC()
+	claimed, err := s.ClaimPendingRun("run-claim", p.ID, started, "trace-1")
+	if err != nil || !claimed {
+		t.Fatalf("first claim = %v, %v; want true, nil", claimed, err)
+	}
+	claimed, err = s.ClaimPendingRun("run-claim", p.ID, started, "trace-2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed {
+		t.Fatal("second claim succeeded")
+	}
+
+	run, err := s.GetRun("run-claim")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != models.RunStatusRunning || run.TraceID != "trace-1" {
+		t.Fatalf("claimed run = %+v", run)
 	}
 }
 

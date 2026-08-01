@@ -1,6 +1,7 @@
 package extensions
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -152,6 +153,62 @@ func TestInMemoryJobQueue_FIFO(t *testing.T) {
 		if got.ID != expected {
 			t.Errorf("expected %s, got %s", expected, got.ID)
 		}
+	}
+}
+
+func TestInMemoryJobQueue_IdempotentEnqueue(t *testing.T) {
+	q := newInMemoryJobQueue()
+	job := RunJob{ID: "same", PipelineID: "pipe", RunID: "run"}
+	if err := q.Enqueue(RunJob{}); err == nil {
+		t.Fatal("empty job ID was accepted")
+	}
+
+	if err := q.Enqueue(job); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Enqueue(job); err != nil {
+		t.Fatalf("duplicate enqueue: %v", err)
+	}
+	if got := q.Len(); got != 1 {
+		t.Fatalf("queue length = %d, want 1", got)
+	}
+	if err := q.Enqueue(RunJob{ID: "same", PipelineID: "other"}); !errors.Is(err, ErrJobConflict) {
+		t.Fatalf("conflicting enqueue error = %v, want ErrJobConflict", err)
+	}
+}
+
+func TestInMemoryJobQueue_ExactSettlement(t *testing.T) {
+	q := newInMemoryJobQueue()
+	if err := q.Enqueue(RunJob{ID: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Enqueue(RunJob{ID: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := q.Dequeue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := q.Dequeue()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := q.Ack(first.ID); err != nil {
+		t.Fatalf("ack first: %v", err)
+	}
+	if err := q.Ack(first.ID); !errors.Is(err, ErrJobNotClaimed) {
+		t.Fatalf("second ack error = %v, want ErrJobNotClaimed", err)
+	}
+	if err := q.Fail(second.ID, errors.New("execution failed")); err != nil {
+		t.Fatalf("fail second: %v", err)
+	}
+	if got := q.Len(); got != 1 {
+		t.Fatalf("queue length after fail = %d, want 1", got)
+	}
+	retried, err := q.Dequeue()
+	if err != nil || retried.ID != second.ID {
+		t.Fatalf("retried job = %+v, %v; want %s", retried, err, second.ID)
 	}
 }
 

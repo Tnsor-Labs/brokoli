@@ -212,6 +212,8 @@ func (s *PostgresStore) migrate() error {
 
 	// Runs table additions
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS params JSONB NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(org_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(run_id, status)`)
@@ -533,10 +535,10 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 
 	query := `
 		SELECT DISTINCT ON (pipeline_id)
-		    id, pipeline_id, status, started_at, finished_at, trace_id
+		    id, pipeline_id, status, started_at, finished_at, trace_id, error, params
 		FROM runs
 		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
-		ORDER BY pipeline_id, started_at DESC
+		ORDER BY pipeline_id, started_at DESC NULLS FIRST, id DESC
 	`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -549,9 +551,13 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 			r                     models.Run
 			status                string
 			startedAt, finishedAt sql.NullTime
+			paramsJSON            []byte
 		)
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
 			return nil, err
+		}
+		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
+			return nil, fmt.Errorf("decode run params: %w", err)
 		}
 		r.Status = models.RunStatus(status)
 		if startedAt.Valid {
@@ -639,23 +645,46 @@ func (s *PostgresStore) DeletePipeline(id string) error {
 // --- Runs ---
 
 func (s *PostgresStore) CreateRun(r *models.Run) error {
-	_, err := s.db.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id) VALUES ($1,$2,$3,$4,$5,$6)`,
-		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID,
+	paramsJSON, err := json.Marshal(r.Params)
+	if err != nil {
+		return fmt.Errorf("marshal run params: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON,
 	)
 	return err
+}
+
+func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1, started_at=$2, trace_id=$3 WHERE id=$4 AND pipeline_id=$5 AND status=$6`,
+		string(models.RunStatusRunning), startedAt, traceID, runID, pipelineID, string(models.RunStatusPending),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 	var r models.Run
 	var status string
+	var paramsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id FROM runs WHERE id = $1`, id,
-	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID)
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params FROM runs WHERE id = $1`, id,
+	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON)
 	if err != nil {
 		return nil, err
 	}
 	r.Status = models.RunStatus(status)
+	if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
+		return nil, fmt.Errorf("decode run params: %w", err)
+	}
 
 	nodeRuns, err := s.ListNodeRunsByRun(id)
 	if err != nil {
@@ -667,8 +696,8 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 
 func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id
-		 FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC LIMIT $2`,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		 FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC NULLS FIRST, id DESC LIMIT $2`,
 		pipelineID, limit,
 	)
 	if err != nil {
@@ -680,21 +709,39 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 	for rows.Next() {
 		var r models.Run
 		var status string
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID); err != nil {
+		var paramsJSON []byte
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
 			return nil, err
 		}
 		r.Status = models.RunStatus(status)
+		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
+			return nil, fmt.Errorf("decode run params: %w", err)
+		}
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
 }
 
 func (s *PostgresStore) UpdateRun(r *models.Run) error {
-	_, err := s.db.Exec(
-		`UPDATE runs SET status=$1, started_at=$2, finished_at=$3, trace_id=$4 WHERE id=$5`,
-		string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.ID,
+	paramsJSON, err := json.Marshal(r.Params)
+	if err != nil {
+		return fmt.Errorf("marshal run params: %w", err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1, started_at=$2, finished_at=$3, trace_id=$4, error=$5, params=$6 WHERE id=$7`,
+		string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON, r.ID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("run not found: %s", r.ID)
+	}
+	return nil
 }
 
 // --- Node Runs ---

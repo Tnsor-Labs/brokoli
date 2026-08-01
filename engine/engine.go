@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +16,10 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
+
+// ErrInvalidQueuedRun identifies a malformed or orphaned queue delivery that
+// cannot become valid through retry.
+var ErrInvalidQueuedRun = errors.New("invalid queued run")
 
 // Engine manages pipeline execution and event broadcasting.
 type Engine struct {
@@ -272,8 +278,20 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 
 	// If job queue is available, enqueue for distributed execution
 	if e.JobQueue != nil {
+		accepted := &models.Run{
+			ID:         runID,
+			PipelineID: pipelineID,
+			Status:     models.RunStatusPending,
+		}
+		if len(params) > 0 && params[0] != nil {
+			accepted.Params = params[0]
+		}
+		if err := e.store.CreateRun(accepted); err != nil {
+			return "", fmt.Errorf("create pending run: %w", err)
+		}
+
 		job := extensions.RunJob{
-			ID:         common.NewID(),
+			ID:         runID,
 			PipelineID: pipelineID,
 			RunID:      runID,
 			OrgID:      pipe.OrgID,
@@ -283,6 +301,13 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			job.Params = params[0]
 		}
 		if err := e.JobQueue.Enqueue(job); err != nil {
+			now := time.Now().UTC()
+			accepted.Status = models.RunStatusFailed
+			accepted.Error = "queue publication failed: " + err.Error()
+			accepted.FinishedAt = &now
+			if updateErr := e.store.UpdateRun(accepted); updateErr != nil {
+				return "", fmt.Errorf("enqueue job: %v; mark run failed: %w", err, updateErr)
+			}
 			return "", fmt.Errorf("enqueue job: %w", err)
 		}
 		return runID, nil
@@ -320,6 +345,118 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	}()
 
 	return runID, nil
+}
+
+// ExecuteQueuedRun executes a previously accepted run using its durable ID.
+// Only the delivery that atomically transitions pending to running executes;
+// duplicate deliveries return the existing run without repeating side effects.
+func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]string) (*models.Run, error) {
+	accepted, err := e.store.GetRun(runID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: accepted run %s does not exist", ErrInvalidQueuedRun, runID)
+		}
+		return nil, fmt.Errorf("get accepted run: %w", err)
+	}
+	if accepted.PipelineID != pipelineID {
+		return nil, fmt.Errorf("%w: run %s belongs to pipeline %s, not %s", ErrInvalidQueuedRun, runID, accepted.PipelineID, pipelineID)
+	}
+	if isTerminalRunStatus(accepted.Status) {
+		return accepted, nil
+	}
+	if accepted.Status != models.RunStatusPending {
+		return nil, fmt.Errorf("run %s is already %s", runID, accepted.Status)
+	}
+
+	pipe, err := e.store.GetPipeline(pipelineID)
+	if err != nil {
+		return e.failAcceptedRun(accepted, fmt.Errorf("get pipeline: %w", err))
+	}
+	if ve := ValidatePipeline(pipe); ve.HasErrors() {
+		return e.failAcceptedRun(accepted, ve)
+	}
+
+	claimer, ok := e.store.(store.PendingRunClaimer)
+	if !ok {
+		return nil, fmt.Errorf("store does not support atomic queued-run claims")
+	}
+	startedAt := time.Now().UTC()
+	traceID := common.NewID()
+	claimed, err := claimer.ClaimPendingRun(runID, pipelineID, startedAt, traceID)
+	if err != nil {
+		return nil, fmt.Errorf("claim pending run: %w", err)
+	}
+	if !claimed {
+		existing, getErr := e.store.GetRun(runID)
+		if getErr != nil {
+			return nil, fmt.Errorf("get concurrently claimed run: %w", getErr)
+		}
+		if isTerminalRunStatus(existing.Status) {
+			return existing, nil
+		}
+		return nil, fmt.Errorf("run %s was concurrently claimed", runID)
+	}
+
+	accepted.Status = models.RunStatusRunning
+	accepted.StartedAt = &startedAt
+	accepted.TraceID = traceID
+	accepted.Params = params
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner.orgID = pipe.OrgID
+	runner.params = params
+	runner.acceptedRun = accepted
+
+	e.runSem <- struct{}{}
+	defer func() { <-e.runSem }()
+	atomic.AddInt64(&e.RunsTotal, 1)
+
+	e.mu.Lock()
+	e.active[runID] = runner
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.active, runID)
+		e.mu.Unlock()
+	}()
+
+	_, executeErr := runner.Execute()
+	if executeErr != nil {
+		atomic.AddInt64(&e.RunsFailed, 1)
+	} else {
+		atomic.AddInt64(&e.RunsSucceeded, 1)
+	}
+	persisted, err := e.store.GetRun(runID)
+	if err != nil {
+		return nil, fmt.Errorf("verify terminal run state: %w", err)
+	}
+	if !isTerminalRunStatus(persisted.Status) {
+		if executeErr != nil {
+			return nil, fmt.Errorf("execute run: %v; durable status is %s", executeErr, persisted.Status)
+		}
+		return nil, fmt.Errorf("run execution returned without durable terminal state: %s", persisted.Status)
+	}
+	go e.fireTriggerModeDependents(persisted)
+	return persisted, executeErr
+}
+
+func (e *Engine) failAcceptedRun(run *models.Run, cause error) (*models.Run, error) {
+	now := time.Now().UTC()
+	run.Status = models.RunStatusFailed
+	run.Error = cause.Error()
+	run.FinishedAt = &now
+	if err := e.store.UpdateRun(run); err != nil {
+		return nil, fmt.Errorf("%v; persist failed run: %w", cause, err)
+	}
+	return run, cause
+}
+
+func isTerminalRunStatus(status models.RunStatus) bool {
+	switch status {
+	case models.RunStatusSuccess, models.RunStatusFailed, models.RunStatusCancelled, models.RunStatusBlocked:
+		return true
+	default:
+		return false
+	}
 }
 
 // DryRun executes a pipeline with only the first N rows and returns node previews.

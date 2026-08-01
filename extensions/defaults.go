@@ -3,6 +3,7 @@ package extensions
 import (
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 )
@@ -163,46 +164,97 @@ func matchPattern(pattern, channel string) bool {
 
 // ── In-memory JobQueue (single-process default) ──
 
-// inMemoryJobQueue implements JobQueue using a Go channel (single process).
+const inMemoryJobQueueCapacity = 1000
+
+// inMemoryJobQueue is the reference implementation of the JobQueue contract.
 type inMemoryJobQueue struct {
-	jobs   chan RunJob
-	closed bool
-	mu     sync.Mutex
+	mu         sync.Mutex
+	ready      *sync.Cond
+	pending    []RunJob
+	known      map[string]RunJob
+	processing map[string]RunJob
+	closed     bool
 }
 
 func newInMemoryJobQueue() *inMemoryJobQueue {
-	return &inMemoryJobQueue{jobs: make(chan RunJob, 1000)}
+	q := &inMemoryJobQueue{
+		known:      make(map[string]RunJob),
+		processing: make(map[string]RunJob),
+	}
+	q.ready = sync.NewCond(&q.mu)
+	return q
 }
 
 func (q *inMemoryJobQueue) Enqueue(job RunJob) error {
 	q.mu.Lock()
+	defer q.mu.Unlock()
 	if q.closed {
-		q.mu.Unlock()
 		return ErrQueueClosed
 	}
-	q.mu.Unlock()
-
-	select {
-	case q.jobs <- job:
-		return nil
-	default:
+	if job.ID == "" {
+		return fmt.Errorf("job ID is required")
+	}
+	if existing, ok := q.known[job.ID]; ok {
+		if reflect.DeepEqual(existing, job) {
+			return nil
+		}
+		return fmt.Errorf("%w: %s", ErrJobConflict, job.ID)
+	}
+	if len(q.pending) >= inMemoryJobQueueCapacity {
 		return fmt.Errorf("job queue full")
 	}
+	q.known[job.ID] = job
+	q.pending = append(q.pending, job)
+	q.ready.Signal()
+	return nil
 }
 
 func (q *inMemoryJobQueue) Dequeue() (RunJob, error) {
-	job, ok := <-q.jobs
-	if !ok {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.pending) == 0 && !q.closed {
+		q.ready.Wait()
+	}
+	if len(q.pending) == 0 {
 		return RunJob{}, ErrQueueClosed
 	}
+	job := q.pending[0]
+	q.pending = q.pending[1:]
+	q.processing[job.ID] = job
 	return job, nil
 }
 
-func (q *inMemoryJobQueue) Ack(jobID string) error             { return nil }
-func (q *inMemoryJobQueue) Fail(jobID string, err error) error { return nil }
+func (q *inMemoryJobQueue) Ack(jobID string) error {
+	return q.settle(jobID)
+}
+
+func (q *inMemoryJobQueue) Fail(jobID string, _ error) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	job, ok := q.processing[jobID]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrJobNotClaimed, jobID)
+	}
+	delete(q.processing, jobID)
+	q.pending = append(q.pending, job)
+	q.ready.Signal()
+	return nil
+}
+
+func (q *inMemoryJobQueue) settle(jobID string) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if _, ok := q.processing[jobID]; !ok {
+		return fmt.Errorf("%w: %s", ErrJobNotClaimed, jobID)
+	}
+	delete(q.processing, jobID)
+	return nil
+}
 
 func (q *inMemoryJobQueue) Len() int {
-	return len(q.jobs)
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return len(q.pending)
 }
 
 func (q *inMemoryJobQueue) Close() error {
@@ -210,7 +262,7 @@ func (q *inMemoryJobQueue) Close() error {
 	defer q.mu.Unlock()
 	if !q.closed {
 		q.closed = true
-		close(q.jobs)
+		q.ready.Broadcast()
 	}
 	return nil
 }

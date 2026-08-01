@@ -153,6 +153,8 @@ func (s *SQLiteStore) migrate() error {
 
 	// Tracing & observability columns
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN ready_at TEXT`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0`)
@@ -579,14 +581,19 @@ func (s *SQLiteStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mode
 		args[i] = id
 	}
 
-	// Per-pipeline latest run via a correlated subquery — avoids loading every run.
+	// Rank pending runs first, then started runs newest-first, consistently with Postgres.
 	query := `
-		SELECT id, pipeline_id, status, started_at, finished_at, trace_id
-		FROM runs r
-		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
-		  AND started_at = (
-		      SELECT MAX(started_at) FROM runs WHERE pipeline_id = r.pipeline_id
-		  )
+		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		FROM (
+			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY pipeline_id
+			           ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC
+			       ) AS rank
+			FROM runs
+			WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
+		)
+		WHERE rank = 1
 	`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
@@ -662,16 +669,35 @@ func (s *SQLiteStore) DeletePipeline(id string) error {
 // --- Runs ---
 
 func (s *SQLiteStore) CreateRun(r *models.Run) error {
-	_, err := s.db.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id) VALUES (?, ?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID,
+	paramsJSON, err := json.Marshal(r.Params)
+	if err != nil {
+		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON),
 	)
 	return wrapStoreErr("CreateRun", r.ID, err)
 }
 
+func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=?, started_at=?, trace_id=? WHERE id=? AND pipeline_id=? AND status=?`,
+		string(models.RunStatusRunning), formatTimePtr(&startedAt), traceID, runID, pipelineID, string(models.RunStatusPending),
+	)
+	if err != nil {
+		return false, wrapStoreErr("ClaimPendingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, wrapStoreErr("ClaimPendingRun", runID, err)
+	}
+	return n == 1, nil
+}
+
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id FROM runs WHERE id = ?`, id,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params FROM runs WHERE id = ?`, id,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -688,8 +714,8 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id
-		 FROM runs WHERE pipeline_id = ? ORDER BY started_at DESC LIMIT ?`,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		 FROM runs WHERE pipeline_id = ? ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC LIMIT ?`,
 		pipelineID, limit,
 	)
 	if err != nil {
@@ -709,9 +735,13 @@ func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models
 }
 
 func (s *SQLiteStore) UpdateRun(r *models.Run) error {
+	paramsJSON, err := json.Marshal(r.Params)
+	if err != nil {
+		return wrapStoreErr("UpdateRun", r.ID, fmt.Errorf("marshal params: %w", err))
+	}
 	result, err := s.db.Exec(
-		`UPDATE runs SET status=?, started_at=?, finished_at=?, trace_id=? WHERE id=?`,
-		string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.ID,
+		`UPDATE runs SET status=?, started_at=?, finished_at=?, trace_id=?, error=?, params=? WHERE id=?`,
+		string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdateRun", r.ID, err)
@@ -1052,9 +1082,13 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	var r models.Run
 	var status string
 	var startedAt, finishedAt sql.NullString
+	var paramsJSON string
 
-	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID); err != nil {
+	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
 		return nil, err
+	}
+	if err := json.Unmarshal([]byte(paramsJSON), &r.Params); err != nil {
+		return nil, fmt.Errorf("decode run params: %w", err)
 	}
 	r.Status = models.RunStatus(status)
 	r.StartedAt = parseTimePtr(startedAt)
