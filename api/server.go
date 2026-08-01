@@ -104,19 +104,20 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		loginLimiter := RateLimiter(3) // 3 req/s for auth — prevents brute force
 		r.With(loginLimiter).Post("/api/auth/login", withSessionCookie(LoginHandler(userStore), r))
 		r.Post("/api/auth/logout", func(w http.ResponseWriter, r *http.Request) {
-			http.SetCookie(w, &http.Cookie{
-				Name:     "brokoli_session",
-				Value:    "",
-				Path:     "/",
-				HttpOnly: true,
-				Secure:   r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https",
-				SameSite: http.SameSiteLaxMode,
-				MaxAge:   -1, // delete cookie
-			})
+			ClearSessionCookie(w, r)
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
 		// Self-service signup is registered by enterprise platform provider
 		r.Get("/api/auth/me", MeHandler())
+		r.Post("/api/auth/session", func(w http.ResponseWriter, req *http.Request) {
+			authHeader := req.Header.Get("Authorization")
+			if !strings.HasPrefix(authHeader, "Bearer ") {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bearer token required"})
+				return
+			}
+			SetSessionCookie(w, req, strings.TrimPrefix(authHeader, "Bearer "))
+			w.WriteHeader(http.StatusNoContent)
+		})
 		r.Get("/api/auth/me/permissions", func(w http.ResponseWriter, req *http.Request) {
 			claims := req.Context().Value("claims")
 			if claims == nil {
@@ -440,16 +441,7 @@ func withSessionCookie(handler http.Handler, router *chi.Mux) http.HandlerFunc {
 			var resp map[string]interface{}
 			if json.Unmarshal(rec.body, &resp) == nil {
 				if token, ok := resp["token"].(string); ok && token != "" {
-					secure := r.TLS != nil || r.Header.Get("X-Forwarded-Proto") == "https"
-					http.SetCookie(w, &http.Cookie{
-						Name:     "brokoli_session",
-						Value:    token,
-						Path:     "/",
-						HttpOnly: true,
-						Secure:   secure,
-						SameSite: http.SameSiteLaxMode,
-						MaxAge:   86400,
-					})
+					SetSessionCookie(w, r, token)
 				}
 			}
 		}

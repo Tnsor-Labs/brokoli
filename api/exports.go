@@ -2,9 +2,41 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/store"
 )
+
+// SetSessionCookie establishes the browser session used by both HTTP and
+// WebSocket authentication.
+func SetSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "brokoli_session",
+		Value:    token,
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   86400,
+	})
+}
+
+// ClearSessionCookie removes the browser session cookie.
+func ClearSessionCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     "brokoli_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
+		MaxAge:   -1,
+	})
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	return r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
 
 // WriteJSONPublic is an exported wrapper for writeJSON, used by enterprise extensions.
 func WriteJSONPublic(w http.ResponseWriter, status int, data interface{}) {

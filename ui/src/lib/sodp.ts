@@ -18,10 +18,36 @@
  */
 import { writable } from "svelte/store";
 import { SodpClient } from "@sodp/client";
+import { authHeaders, invalidateAuth } from "./auth";
 
 export const wsConnected = writable(false);
 
 let client: SodpClient | null = null;
+let validatingSession = false;
+
+async function handleDisconnect(): Promise<void> {
+  wsConnected.set(false);
+  if (validatingSession) return;
+  validatingSession = true;
+  try {
+    const headers = authHeaders();
+    const res = await fetch("/api/auth/me", { headers });
+    if (res.status === 401 || res.status === 403) {
+      const failedClient = client;
+      client = null;
+      failedClient?.close();
+      invalidateAuth();
+      window.location.hash = "#/login";
+    } else if (res.ok && headers.Authorization) {
+      // Repair a missing cookie for a still-valid legacy bearer session.
+      await fetch("/api/auth/session", { method: "POST", headers });
+    }
+  } catch {
+    // A network outage is recoverable; leave exponential reconnect enabled.
+  } finally {
+    validatingSession = false;
+  }
+}
 
 /**
  * Returns the singleton SodpClient, creating it on first call. Subsequent
@@ -39,7 +65,7 @@ export function getSodpClient(): SodpClient {
     reconnectDelay: 1000,
     maxReconnectDelay: 30000,
     onConnect: () => wsConnected.set(true),
-    onDisconnect: () => wsConnected.set(false),
+    onDisconnect: () => void handleDisconnect(),
   });
 
   return client;

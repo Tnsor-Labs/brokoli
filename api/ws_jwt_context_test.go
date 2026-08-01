@@ -88,11 +88,12 @@ func TestJWTAuthWebSocket_PropagatesClaimsToContext(t *testing.T) {
 	// Wrap downstream in the real JWTAuth middleware.
 	handler := JWTAuth(us)(downstream)
 
-	// Fake a WebSocket upgrade request to /api/ws with the JWT in the query
-	// string (matches how browsers + the smoke test pass the token).
-	req := httptest.NewRequest("GET", "/api/ws?token="+token, nil)
+	// API WebSocket clients may authenticate with a Bearer header. Browser
+	// clients use the HTTP-only session cookie covered below.
+	req := httptest.NewRequest("GET", "/api/ws", nil)
 	req.Header.Set("Upgrade", "websocket")
 	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Authorization", "Bearer "+token)
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -138,5 +139,49 @@ func TestJWTAuthWebSocket_RejectsMissingToken(t *testing.T) {
 	}
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status: got %d, want 401", rec.Code)
+	}
+}
+
+func TestJWTAuthWebSocket_AcceptsSessionCookie(t *testing.T) {
+	us := newTestUserStore(t)
+	if _, err := us.CreateUser("carol", "TestPass123", RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token := signTestToken(t, "user-carol", "carol", "admin", "acme-corp")
+
+	reached := false
+	handler := JWTAuth(us)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusSwitchingProtocols)
+	}))
+	req := httptest.NewRequest("GET", "/api/ws", nil)
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Connection", "Upgrade")
+	req.AddCookie(&http.Cookie{Name: "brokoli_session", Value: token})
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if !reached || rec.Code != http.StatusSwitchingProtocols {
+		t.Fatalf("cookie-authenticated upgrade reached=%v status=%d body=%s", reached, rec.Code, rec.Body.String())
+	}
+}
+
+func TestJWTAuthWebSocket_RejectsQueryToken(t *testing.T) {
+	us := newTestUserStore(t)
+	if _, err := us.CreateUser("dave", "TestPass123", RoleAdmin); err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	token := signTestToken(t, "user-dave", "dave", "admin", "acme-corp")
+	reached := false
+	handler := JWTAuth(us)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { reached = true }))
+	req := httptest.NewRequest("GET", "/api/ws?token="+token, nil)
+	req.Header.Set("Upgrade", "websocket")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if reached || rec.Code != http.StatusUnauthorized {
+		t.Fatalf("query token reached=%v status=%d, want rejected with 401", reached, rec.Code)
 	}
 }

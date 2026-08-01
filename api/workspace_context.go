@@ -20,27 +20,30 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 		}
 		wsID = sanitizeWorkspaceID(wsID)
 
-		// In multi-tenant mode, validate that the user owns this workspace.
-		// Skip validation for default workspace (community edition).
-		if wsID != models.DefaultWorkspaceID && UserWorkspaceResolverFunc != nil {
+		// In multi-tenant mode, resolve the default to an owned workspace and
+		// reject explicit cross-workspace requests instead of silently falling
+		// back to another tenant scope.
+		if UserWorkspaceResolverFunc != nil {
 			userID := getUserIDFromRequest(r)
-			if userID != "" {
-				userWorkspaces := UserWorkspaceResolverFunc(userID)
+			if userID == "" {
+				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
+				return
+			}
+			userWorkspaces := UserWorkspaceResolverFunc(userID)
+			if len(userWorkspaces) == 0 {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": "no workspace access"})
+				return
+			}
+			if wsID == models.DefaultWorkspaceID {
+				wsID = userWorkspaces[0]
+			} else {
 				owned := false
 				for _, uw := range userWorkspaces {
-					if uw == wsID {
-						owned = true
-						break
-					}
+					owned = owned || uw == wsID
 				}
 				if !owned {
-					// User doesn't own this workspace — fall back to their first workspace
-					// or default if they have none. Never allow cross-tenant access.
-					if len(userWorkspaces) > 0 {
-						wsID = userWorkspaces[0]
-					} else {
-						wsID = models.DefaultWorkspaceID
-					}
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "workspace access denied"})
+					return
 				}
 			}
 		}
@@ -89,7 +92,7 @@ var UserWorkspaceResolverFunc func(userID string) []string
 // ValidateWorkspaceAccess checks if a resource belongs to the user's current workspace.
 func ValidateWorkspaceAccess(r *http.Request, resourceWorkspaceID string) bool {
 	requestedWS := GetWorkspaceID(r)
-	if requestedWS == models.DefaultWorkspaceID {
+	if requestedWS == models.DefaultWorkspaceID && UserWorkspaceResolverFunc == nil {
 		return true
 	}
 	return requestedWS == resourceWorkspaceID

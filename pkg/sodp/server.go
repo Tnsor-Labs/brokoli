@@ -384,6 +384,10 @@ func (srv *Server) handleCall(sess *Session, f Frame) {
 		srv.sendError(sess, f.StreamID, 403, "access denied")
 		return
 	}
+	if sess.IsAuthenticated() {
+		srv.sendError(sess, f.StreamID, 403, "client state mutations are not allowed")
+		return
+	}
 
 	var delta *DeltaEntry
 
@@ -551,26 +555,24 @@ func (srv *Server) StartEviction(ttl time.Duration, interval time.Duration, done
 
 // --- security helpers ---
 
-// keyAllowedForSession checks tenant isolation on key access.
-// "default" org can access everything (community/single-tenant mode).
-// Other orgs can only access keys prefixed with "runs." where the run's
-// org_id matches, OR keys that have no org scope. We check by looking at
-// the stored state's org_id field, or by prefix for known namespaces.
+// keyAllowedForSession checks tenant isolation on key access. Unauthenticated
+// community mode remains unrestricted; authenticated sessions may only read
+// explicitly recognized server-owned namespaces scoped to their organization.
 func (srv *Server) keyAllowedForSession(sess *Session, key string) bool {
-	if sess.OrgID == "default" {
-		return true // community mode — full access
+	if !sess.IsAuthenticated() && !srv.requireAuth {
+		return true
 	}
-	// Event stream: org-scoped clients can only watch their own stream
-	if strings.HasPrefix(key, "_events") {
-		allowed := "_events." + sess.OrgID
-		return key == allowed
+
+	if key == "dashboard."+sess.OrgID {
+		return true
 	}
-	// For the "runs." namespace, the run key encodes the run ID, and the
-	// run state includes org_id. Check the stored org matches.
+	if key == "_events."+sess.OrgID || (sess.OrgID == "default" && key == "_events") {
+		return true
+	}
 	if strings.HasPrefix(key, "runs.") {
 		return srv.checkRunOrgAccess(sess.OrgID, key)
 	}
-	return true // non-namespaced keys are accessible
+	return false
 }
 
 // checkRunOrgAccess verifies that a run key belongs to the session's org.
@@ -584,14 +586,17 @@ func (srv *Server) checkRunOrgAccess(sessionOrg, key string) bool {
 
 	val, _ := srv.State.Get(runKey)
 	if val == nil {
-		return true // key doesn't exist yet — allow (will be created by engine with correct org)
+		return false
 	}
 	m, ok := val.(map[string]any)
 	if !ok {
-		return true
+		return false
 	}
 	orgID, _ := m["org_id"].(string)
-	return orgID == "" || orgID == sessionOrg
+	if sessionOrg == "default" {
+		return orgID == "" || orgID == "default"
+	}
+	return orgID == sessionOrg
 }
 
 // isValidKey validates a state key.
