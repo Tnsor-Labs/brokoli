@@ -9,6 +9,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -125,7 +126,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Platform services (enterprise: trial checker, SLA checker, etc)
-		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() {
+		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() && shouldStartPlatformServices(RunMode) {
 			Extensions.Platform.StartServices(s)
 			defer Extensions.Platform.StopServices()
 		}
@@ -165,7 +166,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Encryption for connection secrets
-		keyPath := dbPath + ".key"
+		keyPath := encryptionKeyPath(dbPath)
 		encKey, err := crypto.LoadOrCreateKey(keyPath)
 		if err != nil {
 			log.Printf("WARNING: could not load encryption key: %v", err)
@@ -312,11 +313,29 @@ var generateKeyCmd = &cobra.Command{
 
 func init() {
 	serveCmd.Flags().IntVarP(&port, "port", "p", 8080, "HTTP server port")
-	serveCmd.Flags().StringVar(&dbPath, "db", "./brokoli.db", "SQLite database path")
+	serveCmd.Flags().StringVar(&dbPath, "db", defaultDatabasePath(), "Database path or PostgreSQL URL")
 	serveCmd.Flags().StringVar(&apiKey, "api-key", "", "Enable auth with this API key")
 	serveCmd.Flags().StringVar(&RunMode, "mode", "all", "Run mode: all, api, scheduler, worker")
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(generateKeyCmd)
+}
+
+func defaultDatabasePath() string {
+	if value := os.Getenv("BROKOLI_DB_URL"); value != "" {
+		return value
+	}
+	return "./brokoli.db"
+}
+
+func encryptionKeyPath(databasePath string) string {
+	if strings.Contains(databasePath, "://") {
+		return "./brokoli.db.key"
+	}
+	return databasePath + ".key"
+}
+
+func shouldStartPlatformServices(mode string) bool {
+	return mode == "all" || mode == "scheduler"
 }
 
 func Execute() error {
