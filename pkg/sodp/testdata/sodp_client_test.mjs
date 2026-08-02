@@ -2,8 +2,8 @@
  * Cross-language integration test: @sodp/client (TypeScript) ↔ Go SODP server.
  *
  * This script is executed by the Go test TestCrossLanguage_SodpClient.
- * The Go test passes the server URL as the first CLI argument and injects
- * events on a fixed schedule (see crosslang_test.go).
+ * The Go test passes the server URL as the first CLI argument and exposes
+ * test-only HTTP endpoints that inject events after each watch is initialized.
  *
  * Exit 0 = pass, exit 1 = fail (stderr has the reason).
  *
@@ -20,6 +20,7 @@ if (!url) {
   console.error("usage: node sodp_client_test.mjs ws://host:port/api/ws");
   process.exit(1);
 }
+const controlURL = url.replace(/^ws/, "http").replace(/\/api\/ws$/, "/inject");
 
 const errors = [];
 function assert(cond, msg) {
@@ -113,7 +114,7 @@ try {
     console.log(`callback #${rawCallbackCount}: source=${meta.source} value=${JSON.stringify(value)?.slice(0, 80)}`);
   });
 
-  await sleep(200);
+  await waitFor(() => rawCallbackCount >= 1, "initial _events snapshot");
   assert(rawCallbackCount === 1, `expected 1 callback (STATE_INIT), got ${rawCallbackCount}`);
   assert(lastValue === null, `STATE_INIT value should be null, got: ${JSON.stringify(lastValue)}`);
   assert(lastMeta.source === "init", `first callback source should be "init", got: ${lastMeta.source}`);
@@ -123,9 +124,9 @@ try {
   // The server now sends single-element ADD ops at /- (O(1) wire cost).
   // applyOps reconstructs the full array client-side.
   //
-  // Wait window covers the 1500/2000/2500ms injection schedule with margin.
   // =========================================================================
-  await sleep(3000);
+  await inject("events");
+  await waitFor(() => rawCallbackCount >= 4, "three _events deltas");
 
   assert(rawCallbackCount === 4, `expected 4 total callbacks (1 init + 3 deltas), got ${rawCallbackCount}`);
   assert(initSourceCount === 1, `expected 1 init callback, got ${initSourceCount}`);
@@ -143,11 +144,13 @@ try {
   // Test 3: ws.ts baseline pattern using meta.source === "init"
   // =========================================================================
   let baseline = 0;
+  let baselineInitialized = false;
   const forwarded = [];
 
   client.watch("_events2", (events, meta) => {
     if (meta.source === "init") {
       baseline = events?.length ?? 0;
+      baselineInitialized = true;
       console.log(`init: baseline set to ${baseline}`);
       return;
     }
@@ -162,9 +165,9 @@ try {
     }
   });
 
-  // Go test injects 2 events into _events2 at ~2700ms and ~3000ms (relative
-  // to the Go goroutine start). Wait long enough for both to land.
-  await sleep(2000);
+  await waitFor(() => baselineInitialized, "initial _events2 snapshot");
+  await inject("events2");
+  await waitFor(() => forwarded.length >= 2, "two forwarded _events2 deltas");
   assert(forwarded.length === 2, `should have forwarded 2 events, got ${forwarded.length}`);
   assert(forwarded[0]?.type === "test.event.1", `first forwarded: ${forwarded[0]?.type}`);
   assert(forwarded[1]?.type === "test.event.2", `second forwarded: ${forwarded[1]?.type}`);
@@ -207,4 +210,17 @@ try {
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function inject(batch) {
+  const response = await fetch(`${controlURL}/${batch}`, { method: "POST" });
+  if (!response.ok) throw new Error(`inject ${batch} failed: ${response.status}`);
+}
+
+async function waitFor(predicate, description, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${description}`);
+    await sleep(20);
+  }
 }

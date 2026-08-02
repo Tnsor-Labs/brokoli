@@ -637,10 +637,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 					}
 				}
 
-				token := r.URL.Query().Get("token")
-				if token == "" {
-					token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				}
+				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 				// Fall back to httpOnly session cookie for WebSocket auth
 				if token == "" {
 					if cookie, err := r.Cookie("brokoli_session"); err == nil && cookie.Value != "" {
@@ -662,6 +659,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 							}
 						}
 						if orgID != "" {
+							(*claims)["org_id"] = orgID
 							ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
 						}
 						next.ServeHTTP(w, r.WithContext(ctx))
@@ -701,6 +699,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				}
 			}
 			if orgID != "" {
+				(*claims)["org_id"] = orgID
 				ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
 			}
 			next.ServeHTTP(w, r.WithContext(ctx))

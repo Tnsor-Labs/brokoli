@@ -460,6 +460,83 @@ func TestSessionReauthBlocked(t *testing.T) {
 	}
 }
 
+func TestAuthenticatedSessionKeyAccessIsDenyByDefault(t *testing.T) {
+	srv := NewServer()
+	srv.State.Apply("runs.acme-run", map[string]any{"org_id": "acme"})
+	srv.State.Apply("runs.other-run", map[string]any{"org_id": "other"})
+	sess := NewSession("s1", "acme")
+	sess.MarkAuthenticated()
+
+	tests := []struct {
+		key     string
+		allowed bool
+	}{
+		{"dashboard.acme", true},
+		{"dashboard.other", false},
+		{"_events.acme", true},
+		{"_events.other", false},
+		{"runs.acme-run", true},
+		{"runs.acme-run.logs", true},
+		{"runs.other-run", false},
+		{"runs.missing", false},
+		{"custom.shared", false},
+	}
+	for _, tt := range tests {
+		if got := srv.keyAllowedForSession(sess, tt.key); got != tt.allowed {
+			t.Errorf("keyAllowedForSession(%q) = %v, want %v", tt.key, got, tt.allowed)
+		}
+	}
+}
+
+func TestAuthenticatedDefaultOrgDoesNotBypassKeyPolicy(t *testing.T) {
+	srv := NewServer()
+	srv.State.Apply("runs.local", map[string]any{"org_id": ""})
+	srv.State.Apply("runs.other", map[string]any{"org_id": "other"})
+	sess := NewSession("s1", "default")
+	sess.MarkAuthenticated()
+
+	if !srv.keyAllowedForSession(sess, "dashboard.default") || !srv.keyAllowedForSession(sess, "runs.local") {
+		t.Fatal("default org should access its own dashboard and legacy local runs")
+	}
+	if srv.keyAllowedForSession(sess, "dashboard.other") || srv.keyAllowedForSession(sess, "runs.other") || srv.keyAllowedForSession(sess, "arbitrary.key") {
+		t.Fatal("authenticated default org must not receive cross-org or arbitrary state")
+	}
+}
+
+func TestAuthenticatedSessionCannotMutateServerState(t *testing.T) {
+	srv := NewServer()
+	srv.State.Apply("dashboard.acme", map[string]any{"runs_running": 1})
+	sess := NewSession("s1", "acme")
+	sess.MarkAuthenticated()
+
+	srv.dispatch(sess, Frame{
+		Type:     FrameCall,
+		StreamID: 1,
+		Body: map[string]any{
+			"call_id": "overwrite",
+			"method":  "state.set",
+			"args": map[string]any{
+				"state": "dashboard.acme",
+				"value": map[string]any{"runs_running": 999},
+			},
+		},
+	})
+
+	value, _ := srv.State.Get("dashboard.acme")
+	if value.(map[string]any)["runs_running"] != 1 {
+		t.Fatalf("authenticated client mutated server-owned state: %v", value)
+	}
+	select {
+	case encoded := <-sess.Send:
+		frame, err := DecodeFrame(encoded)
+		if err != nil || frame.Type != FrameError {
+			t.Fatalf("response = %#v, err = %v; want access error", frame, err)
+		}
+	default:
+		t.Fatal("expected mutation denial response")
+	}
+}
+
 // --- Key validation ---
 
 func TestIsValidKey(t *testing.T) {

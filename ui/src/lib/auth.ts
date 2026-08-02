@@ -47,18 +47,21 @@ export function setToken(token: string | null) {
 }
 
 export function logout() {
-  authToken.set(null);
-  authUser.set(null);
+  invalidateAuth();
   // Clear the httpOnly cookie via server endpoint
   fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
-  // Also clean up any legacy localStorage tokens
-  localStorage.removeItem("brokoli-token");
   window.location.hash = "#/login";
+}
+
+export function invalidateAuth() {
+  authToken.set(null);
+  authUser.set(null);
+  localStorage.removeItem("brokoli-token");
 }
 
 export function authHeaders(): Record<string, string> {
   // httpOnly cookie is sent automatically by the browser on same-origin requests.
-  // Only use Authorization header for in-memory tokens (OAuth callback flow).
+  // Authorization remains for legacy bearer sessions while they migrate to a cookie.
   const token = get(authToken);
   if (token && token !== "null" && token !== "undefined") {
     return { Authorization: `Bearer ${token}` };
@@ -156,6 +159,12 @@ export async function initAuth() {
         role: claims.role,
         org_id: claims.org_id,
       });
+      // Browsers cannot attach Authorization headers to WebSocket upgrades.
+      // Convert legacy/OAuth bearer sessions into the same HTTP-only cookie
+      // used by password login before the SODP client is created.
+      if (get(authToken)) {
+        await fetch("/api/auth/session", { method: "POST", headers: authHeaders() });
+      }
     }
   } catch {
     // Server might not have auth — open mode
@@ -179,7 +188,15 @@ export async function login(username: string, password: string): Promise<string 
     // Keep token in memory only for the current page load (used by authHeaders
     // until the next request picks up the cookie).
     authToken.set(data.token);
-    authUser.set(data.user);
+    const meRes = await fetch("/api/auth/me", { headers: authHeaders() });
+    if (!meRes.ok) return "Login session could not be established";
+    const claims = await meRes.json();
+    authUser.set({
+      id: claims.sub,
+      username: claims.username,
+      role: claims.role,
+      org_id: claims.org_id,
+    });
     return null;
   } catch {
     return "Connection error";
