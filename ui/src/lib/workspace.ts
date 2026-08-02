@@ -39,8 +39,17 @@ export async function loadWorkspaces() {
       const list = await res.json();
       workspaces.set(list);
       const savedId = localStorage.getItem("brokoli-workspace");
-      const current = list.find((w: Workspace) => w.id === savedId) || list.find((w: Workspace) => w.id === "default") || list[0];
-      if (current) currentWorkspace.set(current);
+      const current =
+        list.find((w: Workspace) => w.id === savedId) ||
+        list.find((w: Workspace) => w.id === "default") ||
+        list[0];
+      if (current) {
+        localStorage.setItem("brokoli-workspace", current.id);
+        currentWorkspace.set(current);
+      } else {
+        localStorage.removeItem("brokoli-workspace");
+        currentWorkspace.set(null);
+      }
     }
   } catch {}
 }
