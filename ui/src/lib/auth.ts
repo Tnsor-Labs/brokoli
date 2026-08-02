@@ -93,6 +93,8 @@ export function userCan(permission: string): boolean {
 /** Check auth status on app load */
 export async function initAuth() {
   try {
+    let tokenFromURL = false;
+
     // Check if setup is needed
     const setupRes = await fetch("/api/auth/setup");
     if (setupRes.ok) {
@@ -117,6 +119,7 @@ export async function initAuth() {
       const wsId = hashParams.get("ws");
       if (urlToken) {
         setToken(urlToken);
+        tokenFromURL = true;
         if (wsId) {
           localStorage.setItem("brokoli-workspace", wsId);
         }
@@ -146,11 +149,19 @@ export async function initAuth() {
     const queryToken = queryParams.get("token");
     if (queryToken) {
       setToken(queryToken);
+      tokenFromURL = true;
       window.history.replaceState({}, "", window.location.pathname + "#/");
     }
 
-    // Validate session via httpOnly cookie or Authorization header
-    const meRes = await fetch("/api/auth/me", { headers: authHeaders() });
+    // Prefer the httpOnly cookie unless this navigation supplied an explicit
+    // bearer token. OAuth callbacks replace the cookie, while localStorage may
+    // still contain a token for a previous password session.
+    let usedBearer = tokenFromURL;
+    let meRes = await fetch("/api/auth/me", tokenFromURL ? { headers: authHeaders() } : undefined);
+    if (!meRes.ok && !tokenFromURL && get(authToken)) {
+      usedBearer = true;
+      meRes = await fetch("/api/auth/me", { headers: authHeaders() });
+    }
     if (meRes.ok) {
       const claims = await meRes.json();
       authUser.set({
@@ -160,10 +171,13 @@ export async function initAuth() {
         org_id: claims.org_id,
       });
       // Browsers cannot attach Authorization headers to WebSocket upgrades.
-      // Convert legacy/OAuth bearer sessions into the same HTTP-only cookie
-      // used by password login before the SODP client is created.
-      if (get(authToken)) {
+      // Convert a bearer-only legacy session into the same HTTP-only cookie
+      // used by password login before the SODP client is created. If cookie
+      // auth succeeded, discard any stale bearer token instead.
+      if (usedBearer) {
         await fetch("/api/auth/session", { method: "POST", headers: authHeaders() });
+      } else if (get(authToken)) {
+        setToken(null);
       }
     }
   } catch {
