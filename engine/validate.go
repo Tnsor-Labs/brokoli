@@ -32,6 +32,10 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 		ve.Add("Pipeline name is required")
 	}
 
+	if !models.IsIRVersionSupported(p.IRVersion) {
+		ve.Add(fmt.Sprintf("Unsupported pipeline IR version %q (supported: %s)", p.IRVersion, strings.Join(models.SupportedIRVersions, ", ")))
+	}
+
 	if len(p.Nodes) == 0 {
 		ve.Add("Pipeline must have at least one node")
 		return ve
@@ -74,10 +78,9 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	// Check at least one source node (dbt and migrate also produce/handle data without pipeline inputs)
 	hasSource := false
 	for _, n := range p.Nodes {
-		switch n.Type {
-		case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-			models.NodeTypeDBT, models.NodeTypeMigrate:
+		if nodeIsSourceCapable(n) {
 			hasSource = true
+			break
 		}
 	}
 	if !hasSource {
@@ -110,27 +113,25 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 }
 
 func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *ValidationError) {
-	nodeTypes := make(map[string]models.NodeType, len(nodes))
+	nodesByID := make(map[string]models.Node, len(nodes))
 	for _, n := range nodes {
-		nodeTypes[n.ID] = n.Type
+		nodesByID[n.ID] = n
 	}
 
 	inputDegree := make(map[string]int)
 
 	for _, e := range edges {
-		fromType := nodeTypes[e.From]
-		toType := nodeTypes[e.To]
+		fromNode := nodesByID[e.From]
+		toNode := nodesByID[e.To]
 
-		switch fromType {
+		switch fromNode.Type {
 		case models.NodeTypeSinkFile, models.NodeTypeSinkDB, models.NodeTypeSinkAPI,
 			models.NodeTypeNotify, models.NodeTypeMigrate:
-			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot have outgoing edges", e.From, fromType))
+			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot have outgoing edges", e.From, fromNode.Type))
 		}
 
-		switch toType {
-		case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-			models.NodeTypeDBT, models.NodeTypeMigrate:
-			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toType))
+		if nodeIsSourceCapable(toNode) {
+			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toNode.Type))
 		}
 
 		inputDegree[e.To]++
@@ -144,6 +145,32 @@ func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *Validat
 			}
 		}
 	}
+}
+
+// nodeIsSourceCapable reports whether a node can act as a pipeline source
+// (i.e. it may have no incoming edges and satisfies the "must have a
+// source" structural rule). IR v2 pipelines declare this explicitly via
+// Node.Capabilities, which lets decorator-based nodes (e.g. Type ==
+// "code" wrapping a user function tagged @source) count as sources even
+// though their Type isn't one of the built-in source types. Nodes with
+// an empty Capabilities slice (old SDK clients, hand-written JSON) fall
+// back to the hardcoded type list so pre-Phase-0 pipelines validate
+// exactly as before.
+func nodeIsSourceCapable(n models.Node) bool {
+	if len(n.Capabilities) > 0 {
+		for _, c := range n.Capabilities {
+			if c == models.CapabilitySource {
+				return true
+			}
+		}
+		return false
+	}
+	switch n.Type {
+	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
+		models.NodeTypeDBT, models.NodeTypeMigrate:
+		return true
+	}
+	return false
 }
 
 func validateNodeConfig(n models.Node, ve *ValidationError) {

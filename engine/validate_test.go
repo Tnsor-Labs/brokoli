@@ -215,3 +215,153 @@ func TestValidateNodes_MultipleIssues(t *testing.T) {
 		t.Errorf("expected 2 nodes with issues, got %d", len(results))
 	}
 }
+
+// ── Phase 0: capability-based source detection (IR v2) ──
+
+// TestValidate_CapabilitySourceNode_CodeType is the core regression test
+// for the Phase 0 SDK protocol change: a decorator-based node whose Type
+// is "code" but which declares capabilities ["source", "dataset-output"]
+// must satisfy the "pipeline must have a source" rule, even though
+// "code" was never in the hardcoded source-type switch.
+func TestValidate_CapabilitySourceNode_CodeType(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{
+				ID:           "c1",
+				Type:         models.NodeTypeCode,
+				Name:         "My Source",
+				Config:       map[string]interface{}{"script": "return [{'a': 1}]"},
+				Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+			},
+			{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "c1", To: "s1"}},
+	}
+	ve := ValidatePipeline(p)
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for capability-declared source node, got: %v", ve.Errors)
+	}
+}
+
+// TestValidate_NoCapabilitySource_Rejected covers both old- and new-style
+// pipelines that have no source-capable node at all: a plain compute-only
+// "code" node explicitly tagged only "compute" (new style) must still be
+// rejected for lacking a source.
+func TestValidate_NoCapabilitySource_Rejected(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{
+				ID:           "c1",
+				Type:         models.NodeTypeCode,
+				Name:         "Compute",
+				Config:       map[string]interface{}{"script": "x"},
+				Capabilities: []string{models.CapabilityCompute},
+			},
+			{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "c1", To: "s1"}},
+	}
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Error("expected error: no source-capable node (new-style, capabilities set but no 'source')")
+	}
+}
+
+// TestValidate_OldStyleSourceTypes_NoCapabilities_Regression pins that
+// pipelines built entirely from the legacy source_api/source_db/etc.
+// types with no "capabilities" field at all (pre-Phase-0 SDK clients,
+// hand-written JSON) validate exactly as before — the capability check
+// must fall back to type-based inference when Capabilities is empty.
+func TestValidate_OldStyleSourceTypes_NoCapabilities_Regression(t *testing.T) {
+	legacySourceTypes := []models.NodeType{
+		models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
+		models.NodeTypeDBT, models.NodeTypeMigrate,
+	}
+	for _, nt := range legacySourceTypes {
+		t.Run(string(nt), func(t *testing.T) {
+			cfg := map[string]interface{}{"path": "/x", "url": "http://x", "uri": "postgres://x", "query": "select 1"}
+			p := &models.Pipeline{
+				Name: "test",
+				Nodes: []models.Node{
+					{ID: "src", Type: nt, Name: "Source", Config: cfg},
+					{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+				},
+				Edges: []models.Edge{{From: "src", To: "s1"}},
+			}
+			if nt == models.NodeTypeMigrate {
+				// migrate is intentionally standalone with no edges.
+				p.Nodes = []models.Node{{ID: "src", Type: nt, Name: "Source", Config: cfg}}
+				p.Edges = nil
+			}
+			ve := ValidatePipeline(p)
+			if ve.HasErrors() {
+				t.Errorf("expected no errors for legacy source type %s (no capabilities), got: %v", nt, ve.Errors)
+			}
+		})
+	}
+
+	// And the negative case: no legacy source type present, no
+	// capabilities anywhere -> still rejected, same as pre-Phase-0.
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{ID: "t1", Type: models.NodeTypeTransform, Name: "T", Config: map[string]interface{}{}},
+			{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "t1", To: "s1"}},
+	}
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Error("expected error: no source-capable node (old-style, no capabilities at all)")
+	}
+}
+
+// TestValidate_EdgeIntoCapabilitySourceNode_Rejected mirrors the
+// type-based "source nodes can't receive incoming edges" rule for
+// capability-declared source nodes.
+func TestValidate_EdgeIntoCapabilitySourceNode_Rejected(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{ID: "c1", Type: models.NodeTypeCode, Name: "Src", Config: map[string]interface{}{"script": "x"}, Capabilities: []string{models.CapabilitySource}},
+			{ID: "c2", Type: models.NodeTypeCode, Name: "Other", Config: map[string]interface{}{"script": "y"}, Capabilities: []string{models.CapabilityCompute}},
+			{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "c2", To: "c1"}, {From: "c1", To: "s1"}},
+	}
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Error("expected error: capability-source node cannot receive incoming edges")
+	}
+}
+
+// ── Phase 0: ir_version validation ──
+
+func TestValidate_UnsupportedIRVersion(t *testing.T) {
+	p := validPipeline()
+	p.IRVersion = "99.0"
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Error("expected error for unsupported ir_version")
+	}
+}
+
+func TestValidate_SupportedIRVersion(t *testing.T) {
+	p := validPipeline()
+	p.IRVersion = "2.0"
+	ve := ValidatePipeline(p)
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for supported ir_version, got: %v", ve.Errors)
+	}
+}
+
+func TestValidate_EmptyIRVersion_BackwardCompatible(t *testing.T) {
+	p := validPipeline()
+	p.IRVersion = ""
+	ve := ValidatePipeline(p)
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for empty ir_version (pre-versioned pipeline), got: %v", ve.Errors)
+	}
+}

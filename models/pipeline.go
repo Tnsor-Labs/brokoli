@@ -9,6 +9,7 @@ import (
 // Pipeline represents a data processing pipeline with its nodes and edges.
 type Pipeline struct {
 	ID               string            `json:"id"`
+	IRVersion        string            `json:"ir_version,omitempty"` // pipeline IR protocol version (e.g. "2.0"); empty means pre-versioned (pre-Phase-0 SDK clients)
 	Name             string            `json:"name"`
 	Description      string            `json:"description"`
 	Nodes            []Node            `json:"nodes"`
@@ -37,6 +38,34 @@ const (
 	PipelineSourceUI  = "ui"
 	PipelineSourceGit = "git"
 )
+
+// CurrentIRVersion is the pipeline intermediate-representation protocol
+// version this host emits/expects by default. Bump when the deployed
+// pipeline JSON shape changes in a way the host needs to be aware of
+// (e.g. Phase 0's addition of node capabilities).
+const CurrentIRVersion = "2.0"
+
+// SupportedIRVersions lists every ir_version this host can accept in a
+// deployed pipeline. Expand when introducing a new version; only remove
+// an old entry when formally deprecating it.
+var SupportedIRVersions = []string{"2.0"}
+
+// IsIRVersionSupported returns true if the host can accept a pipeline
+// carrying the given ir_version. An empty version is always accepted —
+// it means the pipeline predates ir_version being introduced (old SDK
+// clients or hand-written JSON), and is treated as implicitly supported
+// for backward compatibility.
+func IsIRVersionSupported(v string) bool {
+	if v == "" {
+		return true
+	}
+	for _, ok := range SupportedIRVersions {
+		if ok == v {
+			return true
+		}
+	}
+	return false
+}
 
 // NodeType defines the kind of operation a node performs.
 type NodeType string
@@ -67,12 +96,27 @@ type Position struct {
 
 // Node represents a single processing step in a pipeline.
 type Node struct {
-	ID       string                 `json:"id"`
-	Type     NodeType               `json:"type"`
-	Name     string                 `json:"name"`
-	Config   map[string]interface{} `json:"config"`
-	Position Position               `json:"position"`
+	ID           string                 `json:"id"`
+	Type         NodeType               `json:"type"`
+	Name         string                 `json:"name"`
+	Config       map[string]interface{} `json:"config"`
+	Position     Position               `json:"position"`
+	Capabilities []string               `json:"capabilities,omitempty"` // e.g. ["source", "dataset-output"], ["sink"], ["compute"]; see CapabilitySource etc.
 }
+
+// Node capability tags. IR v2 pipelines (ir_version >= "2.0") declare a
+// node's role explicitly via Node.Capabilities, independent of its
+// concrete Type. This lets decorator-based SDK nodes (e.g. Type ==
+// "code" wrapping a user function) participate in structural validation
+// (source/sink detection) without the host special-casing every
+// user-defined node type. Nodes with an empty Capabilities slice (old
+// SDK clients, hand-written JSON) fall back to type-based inference.
+const (
+	CapabilitySource        = "source"
+	CapabilitySink          = "sink"
+	CapabilityCompute       = "compute"
+	CapabilityDatasetOutput = "dataset-output"
+)
 
 // Hook defines a lifecycle callback (webhook, slack, email).
 type Hook struct {
