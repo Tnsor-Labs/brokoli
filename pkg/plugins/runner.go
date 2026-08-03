@@ -80,6 +80,34 @@ type RunResult struct {
 // Additional stdin lines (for write streams) are provided via the
 // writer parameter — the caller can push records after the header.
 // For non-write commands, pass nil.
+//
+// Idempotency / durability contract (Tnsor-Labs/brokoli#7): Run has no
+// durable intent record written before proc.Start() below. If the host
+// process dies between spawning the plugin and this function returning, an
+// external side effect the plugin already performed (e.g. a write-command
+// plugin completing a sink write) can be committed with nothing durable on
+// the host side to reconcile against on restart — the exact gap the new
+// store.ExecutionAttemptStore contract (models.ExecutionAttempt,
+// store.ExecutionAttemptStore.ClaimAttempt/AckAttempt/CompleteAttempt/
+// FailAttempt) exists to close.
+//
+// Wiring this specific call site is deliberately deferred rather than done
+// in this change:
+//   - The caller of Run (the node executor) would need to claim/ack/settle
+//     an ExecutionAttempt around this call — a real behavior change to the
+//     plugin dispatch path, not just an error-handling fix, with its own
+//     failure modes (e.g. what happens to the lease if AckAttempt itself
+//     fails after proc.Start() already ran) that deserve their own
+//     review and tests rather than being folded into this PR's blast
+//     radius.
+//   - Full crash-recovery semantics for an in-flight claim are issue #9's
+//     job; landing half of that contract here without the reconciler that
+//     consumes it would add complexity with no observable benefit yet.
+//
+// Until that follow-up lands, callers that need at-least-once safety for
+// write-command plugins must supply their own idempotency at the
+// destination (e.g. upsert semantics, a dedup key) — Run being retried
+// after a partial/unknown outcome is expected, not a bug.
 func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraStdin io.Reader) (*RunResult, error) {
 	if r.manifest == nil {
 		return nil, errors.New("runner: nil manifest")

@@ -40,6 +40,59 @@ type PendingRunClaimer interface {
 	ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (claimed bool, err error)
 }
 
+// ExecutionAttemptStore provides durable claim/lease operations over
+// models.ExecutionAttempt rows — the outbox/intent record and
+// compare-and-swap claim contract described by Tnsor-Labs/brokoli#7,
+// extending PendingRunClaimer's run-level CAS pattern to
+// (run_id, node_id, attempt) granularity. Implemented by both SQLiteStore
+// and PostgresStore; callers type-assert against it the same way
+// engine.Engine.ExecuteQueuedRun already does for PendingRunClaimer, since
+// it is a capability of the concrete store rather than a requirement every
+// Store implementation must satisfy.
+type ExecutionAttemptStore interface {
+	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
+	// an attempt inside an existing transaction (via WithTx), so it commits
+	// atomically alongside CreateRunTx/AppendEventTx. Must be idempotent:
+	// re-creating a row that already exists at (run_id, node_id, attempt) is
+	// a no-op, not an error — duplicate outbox writes from a redelivered
+	// dispatch must be safe.
+	CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error
+
+	// ClaimAttempt atomically transitions an attempt into claimed by
+	// claimedBy, incrementing FencingGeneration, and returns the new
+	// generation. It only succeeds (ok=true) if the attempt is currently
+	// queued or its previous lease has expired; claiming an already
+	// in-flight (live-leased) or already-terminal (completed/failed)
+	// attempt returns ok=false with no error and no state change — the
+	// documented no-op duplicate-delivery contract.
+	ClaimAttempt(runID, nodeID string, attempt int, claimedBy string, leaseDuration time.Duration) (fencingGeneration int64, ok bool, err error)
+
+	// RenewLease extends the lease of an attempt the caller currently holds,
+	// verified by fencingGeneration. Returns ok=false (no error) if the
+	// caller's fencing generation is stale, meaning another worker already
+	// reclaimed the attempt after the lease lapsed.
+	RenewLease(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (ok bool, err error)
+
+	// AckAttempt marks a claimed attempt as started, fencing-checked.
+	// Re-acknowledging an attempt already in the started state under the
+	// same fencing generation is a no-op success.
+	AckAttempt(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64) error
+
+	// CompleteAttempt marks an attempt completed, fencing-checked. Settling
+	// an attempt that is already completed is a no-op success (safe
+	// duplicate delivery); a fencing-generation mismatch against a
+	// non-terminal attempt returns an error.
+	CompleteAttempt(runID, nodeID string, attempt int, fencingGeneration int64) error
+
+	// FailAttempt marks an attempt failed, fencing-checked, with the same
+	// no-op-on-duplicate and error-on-fencing-mismatch semantics as
+	// CompleteAttempt.
+	FailAttempt(runID, nodeID string, attempt int, fencingGeneration int64, errMsg string) error
+
+	// GetExecutionAttempt returns the current durable state of one attempt.
+	GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error)
+}
+
 // NewPageParams creates validated pagination parameters.
 // Defaults: page=1, page_size=25. Max page_size=100.
 func NewPageParams(page, pageSize int) PageParams {
@@ -142,6 +195,11 @@ type Store interface {
 
 	// Runs
 	CreateRun(r *models.Run) error
+	// CreateRunTx runs inside an existing transaction; used by
+	// RunPipelineAsync's dispatch outbox (Tnsor-Labs/brokoli#7) to commit the
+	// run row, its run.created event, and its execution-attempt outbox
+	// record atomically. See store.ExecutionAttemptStore.
+	CreateRunTx(tx *sql.Tx, r *models.Run) error
 	GetRun(id string) (*models.Run, error)
 	ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error)
 	UpdateRun(r *models.Run) error

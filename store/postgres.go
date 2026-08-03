@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -256,6 +257,27 @@ func (s *PostgresStore) migrate() error {
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run_node ON run_events(run_id, node_id)`)
+
+	// Execution attempts — durable outbox/intent + claim/lease record for one
+	// (run_id, node_id, attempt) unit of dispatchable work (issue #7). See
+	// the matching table in store/sqlite.go for the full doc comment; kept
+	// in sync column-for-column between backends.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS execution_attempts (
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL DEFAULT '',
+		attempt INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'queued',
+		claimed_by TEXT NOT NULL DEFAULT '',
+		lease_expires_at TIMESTAMPTZ,
+		fencing_generation BIGINT NOT NULL DEFAULT 0,
+		idempotency_key TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (run_id, node_id, attempt),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_lease ON execution_attempts(status, lease_expires_at)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_idempotency ON execution_attempts(idempotency_key)`)
 
 	return nil
 }
@@ -662,15 +684,34 @@ func (s *PostgresStore) DeletePipeline(id string) error {
 // --- Runs ---
 
 func (s *PostgresStore) CreateRun(r *models.Run) error {
+	return pgCreateRun(s.db, r)
+}
+
+// CreateRunTx creates a run inside an existing transaction, so it can commit
+// atomically alongside AppendEventTx and CreateExecutionAttemptTx — see
+// Engine.RunPipelineAsync's dispatch outbox (Tnsor-Labs/brokoli#7).
+func (s *PostgresStore) CreateRunTx(tx *sql.Tx, r *models.Run) error {
+	return pgCreateRun(tx, r)
+}
+
+func pgCreateRun(x sqlExecerPg, r *models.Run) error {
 	paramsJSON, err := json.Marshal(r.Params)
 	if err != nil {
 		return fmt.Errorf("marshal run params: %w", err)
 	}
-	_, err = s.db.Exec(
+	_, err = x.Exec(
 		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
 		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON,
 	)
 	return err
+}
+
+// sqlExecerPg is satisfied by both *sql.DB and *sql.Tx, letting CreateRun
+// and CreateRunTx share one implementation. Named distinctly from
+// store/sqlite.go's identical sqlExecer since this file otherwise defines
+// its own helpers rather than sharing them with sqlite.go.
+type sqlExecerPg interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
 }
 
 func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {
@@ -887,6 +928,165 @@ func (s *PostgresStore) ListEventsByRun(runID string) ([]models.RunEvent, error)
 		events = append(events, ev)
 	}
 	return events, rows.Err()
+}
+
+// --- Execution Attempts ---
+//
+// See store.ExecutionAttemptStore and models.ExecutionAttempt for the
+// contract these implement: a durable outbox/intent record plus a
+// compare-and-swap claim/lease, extending PendingRunClaimer's run-level CAS
+// (ClaimPendingRun above) to (run_id, node_id, attempt) granularity.
+
+func (s *PostgresStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error {
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	a.UpdatedAt = now
+	status := a.Status
+	if status == "" {
+		status = models.AttemptStatusQueued
+	}
+	_, err := tx.Exec(
+		`INSERT INTO execution_attempts (run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+		 ON CONFLICT (run_id, node_id, attempt) DO NOTHING`,
+		a.RunID, a.NodeID, a.Attempt, string(status), a.ClaimedBy, a.LeaseExpiresAt,
+		a.FencingGeneration, a.IdempotencyKey, a.Error, a.CreatedAt, a.UpdatedAt,
+	)
+	return err
+}
+
+func (s *PostgresStore) ClaimAttempt(runID, nodeID string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
+	now := time.Now().UTC()
+	leaseExpires := now.Add(leaseDuration)
+	var fencingGeneration int64
+	err := s.db.QueryRow(
+		`UPDATE execution_attempts
+		 SET status=$1, claimed_by=$2, lease_expires_at=$3, fencing_generation=fencing_generation+1, updated_at=$4
+		 WHERE run_id=$5 AND node_id=$6 AND attempt=$7
+		   AND status NOT IN ($8, $9)
+		   AND (status=$10 OR lease_expires_at IS NULL OR lease_expires_at<$4)
+		 RETURNING fencing_generation`,
+		string(models.AttemptStatusClaimed), claimedBy, leaseExpires, now,
+		runID, nodeID, attempt,
+		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
+		string(models.AttemptStatusQueued),
+	).Scan(&fencingGeneration)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("claim attempt: %w", err)
+	}
+	return fencingGeneration, true, nil
+}
+
+func (s *PostgresStore) RenewLease(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	leaseExpires := now.Add(leaseDuration)
+	result, err := s.db.Exec(
+		`UPDATE execution_attempts SET lease_expires_at=$1, updated_at=$2
+		 WHERE run_id=$3 AND node_id=$4 AND attempt=$5 AND claimed_by=$6 AND fencing_generation=$7 AND status IN ($8, $9)`,
+		leaseExpires, now, runID, nodeID, attempt, claimedBy, fencingGeneration,
+		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
+	)
+	if err != nil {
+		return false, fmt.Errorf("renew lease: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("renew lease: %w", err)
+	}
+	return n == 1, nil
+}
+
+func (s *PostgresStore) AckAttempt(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64) error {
+	now := time.Now().UTC()
+	result, err := s.db.Exec(
+		`UPDATE execution_attempts SET status=$1, updated_at=$2
+		 WHERE run_id=$3 AND node_id=$4 AND attempt=$5 AND claimed_by=$6 AND fencing_generation=$7 AND status IN ($8, $9)`,
+		string(models.AttemptStatusStarted), now, runID, nodeID, attempt, claimedBy, fencingGeneration,
+		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
+	)
+	if err != nil {
+		return fmt.Errorf("ack attempt: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("ack attempt: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	existing, getErr := pgGetExecutionAttempt(s.db, runID, nodeID, attempt)
+	if getErr != nil {
+		return fmt.Errorf("ack attempt: %w", getErr)
+	}
+	if existing.Status == models.AttemptStatusStarted && existing.ClaimedBy == claimedBy && existing.FencingGeneration == fencingGeneration {
+		return nil // idempotent re-ack
+	}
+	return fmt.Errorf("ack attempt: fencing generation mismatch or attempt not claimed by %q (have generation %d, status %s)", claimedBy, existing.FencingGeneration, existing.Status)
+}
+
+func (s *PostgresStore) CompleteAttempt(runID, nodeID string, attempt int, fencingGeneration int64) error {
+	return pgSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusCompleted, "")
+}
+
+func (s *PostgresStore) FailAttempt(runID, nodeID string, attempt int, fencingGeneration int64, errMsg string) error {
+	return pgSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusFailed, errMsg)
+}
+
+// pgSettleAttempt performs the fencing-checked transition into a terminal
+// status (completed/failed). Settling an attempt already in that same
+// terminal status is a no-op success — the documented duplicate-delivery
+// contract; any other mismatch (wrong fencing generation, or already
+// terminal in the *other* status) is an error.
+func pgSettleAttempt(db *sql.DB, runID, nodeID string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
+	now := time.Now().UTC()
+	result, err := db.Exec(
+		`UPDATE execution_attempts SET status=$1, error=$2, updated_at=$3
+		 WHERE run_id=$4 AND node_id=$5 AND attempt=$6 AND fencing_generation=$7 AND status NOT IN ($8, $9)`,
+		string(toStatus), errMsg, now, runID, nodeID, attempt, fencingGeneration,
+		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
+	)
+	if err != nil {
+		return fmt.Errorf("settle attempt: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("settle attempt: %w", err)
+	}
+	if n == 1 {
+		return nil
+	}
+	existing, getErr := pgGetExecutionAttempt(db, runID, nodeID, attempt)
+	if getErr != nil {
+		return fmt.Errorf("settle attempt: %w", getErr)
+	}
+	if existing.Status == toStatus {
+		return nil // idempotent duplicate settle
+	}
+	return fmt.Errorf("settle attempt: fencing generation mismatch settling attempt to %s (have generation %d, status %s)", toStatus, existing.FencingGeneration, existing.Status)
+}
+
+func (s *PostgresStore) GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
+	return pgGetExecutionAttempt(s.db, runID, nodeID, attempt)
+}
+
+func pgGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
+	var a models.ExecutionAttempt
+	var status string
+	err := db.QueryRow(
+		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id=$1 AND node_id=$2 AND attempt=$3`,
+		runID, nodeID, attempt,
+	).Scan(&a.RunID, &a.NodeID, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get execution attempt: %w", err)
+	}
+	a.Status = models.AttemptStatus(status)
+	return &a, nil
 }
 
 // --- Logs ---

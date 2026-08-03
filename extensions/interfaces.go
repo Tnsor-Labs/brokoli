@@ -288,6 +288,19 @@ type JobQueue interface {
 }
 
 // RunJob represents a pipeline execution request in the job queue.
+//
+// NodeID/Attempt/IdempotencyKey/FencingGeneration (Tnsor-Labs/brokoli#7)
+// address the node/attempt-level durable claim record — a
+// models.ExecutionAttempt, store.ExecutionAttemptStore — that a JobQueue
+// delivery should be claimed against once dispatch moves from
+// pipeline-level (today's RunPipelineAsync, one job per run) to node-level.
+// Today's only producer, Engine.RunPipelineAsync, populates IdempotencyKey
+// (set to RunID: a queued run's own ID is already a globally unique,
+// stable dispatch identity) and leaves NodeID/Attempt/FencingGeneration at
+// their zero values, since the outbox record it writes atomically
+// alongside this job is itself pipeline-level — see
+// models.ExecutionAttempt's doc comment. A future node-level dispatch path
+// populates all four from the models.ExecutionAttempt it claims.
 type RunJob struct {
 	ID         string            `json:"id"`
 	PipelineID string            `json:"pipeline_id"`
@@ -296,6 +309,18 @@ type RunJob struct {
 	Params     map[string]string `json:"params,omitempty"`
 	Priority   int               `json:"priority"`
 	EnqueuedAt time.Time         `json:"enqueued_at"`
+
+	// NodeID is empty for pipeline-level jobs (today's only kind).
+	NodeID string `json:"node_id,omitempty"`
+	// Attempt mirrors models.NodeRun.Attempt / models.ExecutionAttempt.Attempt.
+	Attempt int `json:"attempt,omitempty"`
+	// IdempotencyKey lets a redelivered job recognize it is re-processing
+	// the same logical attempt rather than starting a new one.
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	// FencingGeneration is the generation this job's claim was issued
+	// under (models.ExecutionAttempt.FencingGeneration), used to detect a
+	// stale claim after a lease was reassigned.
+	FencingGeneration int64 `json:"fencing_generation,omitempty"`
 }
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.

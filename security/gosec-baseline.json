@@ -1,8 +1,8 @@
 {
   "scanner": "gosec",
   "scanner_image": "ghcr.io/securego/gosec@sha256:4342ad119a7c69f3f4e4ce78d81ba183dc774a70a7a4c6eeb15fe9e511f214f0",
-  "issues": 304,
+  "issues": 302,
   "recorded_at": "2026-08-04",
   "tracking_issue": 13,
-  "note": "Temporary ceiling for pre-existing findings. CI must not exceed it; reduce it as findings are remediated. +6 from Tnsor-Labs/brokoli#6: unhandled-error (G104) findings on the three s.db.Exec(...) DDL calls (CREATE TABLE run_events + 2 CREATE INDEX) added to SQLiteStore.migrate()/PostgresStore.migrate() in store/sqlite.go and store/postgres.go. These follow the exact unguarded-error pattern already used by every other idempotent schema-setup statement in those same functions (accepted risk: 'already exists' errors on re-run are expected and benign); no new call sites or risk category were introduced."
+  "note": "Temporary ceiling for pre-existing findings. CI must not exceed it; reduce it as findings are remediated. Re-measured for Tnsor-Labs/brokoli#7: net -2 from the prior 304. +6 new unhandled-error (G104) findings on the three s.db.Exec(...) DDL calls (CREATE TABLE execution_attempts + 2 CREATE INDEX) added to SQLiteStore.migrate()/PostgresStore.migrate() in store/sqlite.go and store/postgres.go, following the exact unguarded-error pattern already used by every other idempotent schema-setup statement in those functions (accepted risk: 'already exists' errors on re-run are expected and benign; same category as the run_events DDL accepted in #6). Those 6 are offset by removing more G104 findings than they added: engine/runner.go's previously-bare CreateNodeRun/UpdateNodeRun(x2)/SaveNodePreview/AddToDLQ/AppendLog calls (the fire-and-forget bugs #7 fixes) are now error-checked, so gosec no longer flags them. Net change: -2 (304 -> 302)."
 }
