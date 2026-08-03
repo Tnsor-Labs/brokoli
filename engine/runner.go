@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -412,7 +413,14 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		}
 		crashAt(crashPointBeforeNodeAttemptCreate, node.ID)
 		if !r.dryRun {
-			r.store.CreateNodeRun(nr)
+			// CreateNodeRun is the durable attempt record: no external
+			// side effect (runNodeLogic below) is permitted to start until
+			// it is persisted. Matches the already-correct run-level
+			// pattern (CreateRun above checks and propagates); previously
+			// this error was discarded entirely.
+			if err := r.store.CreateNodeRun(nr); err != nil {
+				return fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+			}
 			attemptNum := attempt
 			r.appendEvent(models.RunEvent{
 				RunID:     r.run.ID,
@@ -478,7 +486,12 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			nr.RowCount = rowCount
 			nr.RowsPerSec = rowsPerSec
 			if !r.dryRun {
-				r.store.UpdateNodeRun(nr)
+				// If the success can't be durably recorded, the node is not
+				// considered done — same "storage failures are explicit"
+				// contract as CreateNodeRun above and run-level UpdateRun.
+				if err := r.store.UpdateNodeRun(nr); err != nil {
+					return fmt.Errorf("persist successful node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+				}
 				attemptNum := attempt
 				r.appendEvent(models.RunEvent{
 					RunID:     r.run.ID,
@@ -522,8 +535,8 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 						NodeID: node.ID, Name: node.Name, Status: "success",
 						Columns: output.Columns, Rows: previewRows,
 					}
-				} else {
-					r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows)
+				} else if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
+					return fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
 				}
 			}
 
@@ -560,7 +573,13 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		nr.DurationMs = duration
 		nr.Error = err.Error()
 		if !r.dryRun {
-			r.store.UpdateNodeRun(nr)
+			// If we can't durably record that this attempt failed, don't
+			// keep retrying against a store we can no longer trust to
+			// track attempt state — surface both errors and stop, rather
+			// than silently continuing (previous behavior).
+			if persistErr := r.store.UpdateNodeRun(nr); persistErr != nil {
+				return fmt.Errorf("node %s (%s) failed: %v; persist failed node attempt (attempt %d): %w", node.Name, node.ID, err, attempt, persistErr)
+			}
 			attemptNum := attempt
 			r.appendEvent(models.RunEvent{
 				RunID:     r.run.ID,
@@ -686,7 +705,9 @@ func (r *Runner) failRun(err error) error {
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())
 	// Add to dead letter queue
 	if r.store != nil {
-		r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", err.Error(), "")
+		if dlqErr := r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", err.Error(), ""); dlqErr != nil {
+			return fmt.Errorf("run failed: %v; persist dlq entry: %w", err, dlqErr)
+		}
 	}
 	return err
 }
@@ -718,7 +739,18 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 
 func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID string, attempt int, metadata map[string]string, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	r.store.AppendLog(&models.LogEntry{
+	// AppendLog is called from ~70 sites across engine/*.go for routine
+	// informational logging (source/transform/sink node bodies, retries,
+	// hooks, etc.). Unlike CreateNodeRun/UpdateNodeRun/SaveNodePreview/
+	// AddToDLQ above — each a single call site guarding a specific
+	// durability-critical transition — making every one of those ~70 sites
+	// check and propagate a log-write failure would mean a transient log
+	// persistence error aborts an otherwise-successful pipeline node, a much
+	// larger behavior change than this fix warrants. Surface the failure
+	// loudly via the process log instead of silently discarding it (the
+	// previous behavior) without changing this function's signature or
+	// making log persistence load-bearing for node success.
+	if err := r.store.AppendLog(&models.LogEntry{
 		RunID:     r.run.ID,
 		NodeID:    nodeID,
 		Level:     level,
@@ -728,7 +760,9 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 		SpanID:    spanID,
 		Attempt:   attempt,
 		Metadata:  metadata,
-	})
+	}); err != nil {
+		log.Printf("append log entry (run=%s node=%s): %v", r.run.ID, nodeID, err)
+	}
 	r.emit(models.Event{
 		Type:    models.EventLog,
 		RunID:   r.run.ID,

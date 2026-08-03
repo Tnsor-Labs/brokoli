@@ -186,6 +186,29 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run_node ON run_events(run_id, node_id)`)
 
+	// Execution attempts — durable outbox/intent + claim/lease record for one
+	// (run_id, node_id, attempt) unit of dispatchable work (issue #7).
+	// node_id/attempt default to ''/0 for pipeline-level (not yet node-level)
+	// outbox rows, mirroring run_events' nullable node_id. Applied as
+	// idempotent inline DDL here, consistent with run_events above and every
+	// other addition in this function, rather than a tracked migration file.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS execution_attempts (
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL DEFAULT '',
+		attempt INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT 'queued',
+		claimed_by TEXT NOT NULL DEFAULT '',
+		lease_expires_at TEXT,
+		fencing_generation INTEGER NOT NULL DEFAULT 0,
+		idempotency_key TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		PRIMARY KEY (run_id, node_id, attempt),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_lease ON execution_attempts(status, lease_expires_at)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_idempotency ON execution_attempts(idempotency_key)`)
+
 	return nil
 }
 
@@ -688,11 +711,22 @@ func (s *SQLiteStore) DeletePipeline(id string) error {
 // --- Runs ---
 
 func (s *SQLiteStore) CreateRun(r *models.Run) error {
+	return sqliteCreateRun(s.db, r)
+}
+
+// CreateRunTx creates a run inside an existing transaction, so it can commit
+// atomically alongside AppendEventTx and CreateExecutionAttemptTx — see
+// Engine.RunPipelineAsync's dispatch outbox (Tnsor-Labs/brokoli#7).
+func (s *SQLiteStore) CreateRunTx(tx *sql.Tx, r *models.Run) error {
+	return sqliteCreateRun(tx, r)
+}
+
+func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 	paramsJSON, err := json.Marshal(r.Params)
 	if err != nil {
 		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
 	}
-	_, err = s.db.Exec(
+	_, err = x.Exec(
 		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON),
 	)
@@ -916,6 +950,195 @@ func scanRunEvent(rows *sql.Rows) (*models.RunEvent, error) {
 	}
 	ev.CreatedAt = createdAtTime
 	return &ev, nil
+}
+
+// --- Execution Attempts ---
+//
+// See store.ExecutionAttemptStore and models.ExecutionAttempt for the
+// contract these implement: a durable outbox/intent record plus a
+// compare-and-swap claim/lease, extending PendingRunClaimer's run-level CAS
+// (ClaimPendingRun above) to (run_id, node_id, attempt) granularity.
+
+func (s *SQLiteStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error {
+	now := time.Now().UTC()
+	if a.CreatedAt.IsZero() {
+		a.CreatedAt = now
+	}
+	a.UpdatedAt = now
+	status := a.Status
+	if status == "" {
+		status = models.AttemptStatusQueued
+	}
+	_, err := tx.Exec(
+		`INSERT INTO execution_attempts (run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(run_id, node_id, attempt) DO NOTHING`,
+		a.RunID, a.NodeID, a.Attempt, string(status), a.ClaimedBy, formatTimePtr(a.LeaseExpiresAt),
+		a.FencingGeneration, a.IdempotencyKey, a.Error, a.CreatedAt.Format(timeFormat), a.UpdatedAt.Format(timeFormat),
+	)
+	return wrapStoreErr("CreateExecutionAttempt", a.RunID, err)
+}
+
+func (s *SQLiteStore) ClaimAttempt(runID, nodeID string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
+	now := time.Now().UTC()
+	leaseExpires := now.Add(leaseDuration)
+	result, err := s.db.Exec(
+		`UPDATE execution_attempts
+		 SET status=?, claimed_by=?, lease_expires_at=?, fencing_generation=fencing_generation+1, updated_at=?
+		 WHERE run_id=? AND node_id=? AND attempt=?
+		   AND status NOT IN (?, ?)
+		   AND (status=? OR lease_expires_at IS NULL OR lease_expires_at<?)`,
+		string(models.AttemptStatusClaimed), claimedBy, formatTimePtr(&leaseExpires), now.Format(timeFormat),
+		runID, nodeID, attempt,
+		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
+		string(models.AttemptStatusQueued), now.Format(timeFormat),
+	)
+	if err != nil {
+		return 0, false, wrapStoreErr("ClaimAttempt", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return 0, false, wrapStoreErr("ClaimAttempt", runID, err)
+	}
+	if n != 1 {
+		return 0, false, nil
+	}
+	existing, err := sqliteGetExecutionAttempt(s.db, runID, nodeID, attempt)
+	if err != nil {
+		return 0, false, wrapStoreErr("ClaimAttempt", runID, err)
+	}
+	return existing.FencingGeneration, true, nil
+}
+
+func (s *SQLiteStore) RenewLease(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (bool, error) {
+	now := time.Now().UTC()
+	leaseExpires := now.Add(leaseDuration)
+	result, err := s.db.Exec(
+		`UPDATE execution_attempts SET lease_expires_at=?, updated_at=?
+		 WHERE run_id=? AND node_id=? AND attempt=? AND claimed_by=? AND fencing_generation=? AND status IN (?, ?)`,
+		formatTimePtr(&leaseExpires), now.Format(timeFormat),
+		runID, nodeID, attempt, claimedBy, fencingGeneration,
+		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
+	)
+	if err != nil {
+		return false, wrapStoreErr("RenewLease", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, wrapStoreErr("RenewLease", runID, err)
+	}
+	return n == 1, nil
+}
+
+func (s *SQLiteStore) AckAttempt(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64) error {
+	now := time.Now().UTC()
+	result, err := s.db.Exec(
+		`UPDATE execution_attempts SET status=?, updated_at=?
+		 WHERE run_id=? AND node_id=? AND attempt=? AND claimed_by=? AND fencing_generation=? AND status IN (?, ?)`,
+		string(models.AttemptStatusStarted), now.Format(timeFormat),
+		runID, nodeID, attempt, claimedBy, fencingGeneration,
+		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
+	)
+	if err != nil {
+		return wrapStoreErr("AckAttempt", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return wrapStoreErr("AckAttempt", runID, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	existing, getErr := sqliteGetExecutionAttempt(s.db, runID, nodeID, attempt)
+	if getErr != nil {
+		return wrapStoreErr("AckAttempt", runID, getErr)
+	}
+	if existing.Status == models.AttemptStatusStarted && existing.ClaimedBy == claimedBy && existing.FencingGeneration == fencingGeneration {
+		return nil // idempotent re-ack
+	}
+	return wrapStoreErr("AckAttempt", runID, fmt.Errorf("fencing generation mismatch or attempt not claimed by %q (have generation %d, status %s)", claimedBy, existing.FencingGeneration, existing.Status))
+}
+
+func (s *SQLiteStore) CompleteAttempt(runID, nodeID string, attempt int, fencingGeneration int64) error {
+	return sqliteSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusCompleted, "")
+}
+
+func (s *SQLiteStore) FailAttempt(runID, nodeID string, attempt int, fencingGeneration int64, errMsg string) error {
+	return sqliteSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusFailed, errMsg)
+}
+
+// sqliteSettleAttempt performs the fencing-checked transition into a
+// terminal status (completed/failed). Settling an attempt already in that
+// same terminal status is a no-op success — the documented duplicate-
+// delivery contract; any other mismatch (wrong fencing generation, or
+// already terminal in the *other* status) is an error.
+func sqliteSettleAttempt(db *sql.DB, runID, nodeID string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
+	now := time.Now().UTC()
+	result, err := db.Exec(
+		`UPDATE execution_attempts SET status=?, error=?, updated_at=?
+		 WHERE run_id=? AND node_id=? AND attempt=? AND fencing_generation=? AND status NOT IN (?, ?)`,
+		string(toStatus), errMsg, now.Format(timeFormat),
+		runID, nodeID, attempt, fencingGeneration,
+		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
+	)
+	if err != nil {
+		return wrapStoreErr("SettleAttempt", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return wrapStoreErr("SettleAttempt", runID, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	existing, getErr := sqliteGetExecutionAttempt(db, runID, nodeID, attempt)
+	if getErr != nil {
+		return wrapStoreErr("SettleAttempt", runID, getErr)
+	}
+	if existing.Status == toStatus {
+		return nil // idempotent duplicate settle
+	}
+	return wrapStoreErr("SettleAttempt", runID, fmt.Errorf("fencing generation mismatch settling attempt to %s (have generation %d, status %s)", toStatus, existing.FencingGeneration, existing.Status))
+}
+
+func (s *SQLiteStore) GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
+	a, err := sqliteGetExecutionAttempt(s.db, runID, nodeID, attempt)
+	if err != nil {
+		return nil, wrapStoreErr("GetExecutionAttempt", runID, err)
+	}
+	return a, nil
+}
+
+func sqliteGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
+	row := db.QueryRow(
+		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id=? AND node_id=? AND attempt=?`,
+		runID, nodeID, attempt,
+	)
+	return scanExecutionAttempt(row)
+}
+
+func scanExecutionAttempt(row *sql.Row) (*models.ExecutionAttempt, error) {
+	var a models.ExecutionAttempt
+	var status string
+	var leaseExpiresAt sql.NullString
+	var createdAt, updatedAt string
+	if err := row.Scan(&a.RunID, &a.NodeID, &a.Attempt, &status, &a.ClaimedBy, &leaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	a.Status = models.AttemptStatus(status)
+	a.LeaseExpiresAt = parseTimePtr(leaseExpiresAt)
+	createdAtTime, err := time.Parse(timeFormat, createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("decode created_at: %w", err)
+	}
+	a.CreatedAt = createdAtTime
+	updatedAtTime, err := time.Parse(timeFormat, updatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("decode updated_at: %w", err)
+	}
+	a.UpdatedAt = updatedAtTime
+	return &a, nil
 }
 
 // --- Logs ---

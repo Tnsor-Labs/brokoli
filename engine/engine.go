@@ -319,10 +319,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		if len(params) > 0 && params[0] != nil {
 			accepted.Params = params[0]
 		}
-		if err := e.store.CreateRun(accepted); err != nil {
-			return "", fmt.Errorf("create pending run: %w", err)
-		}
-		e.appendEvent(&models.RunEvent{
+		createdEvent := &models.RunEvent{
 			RunID:     accepted.ID,
 			EventType: models.RunEventCreated,
 			Payload: models.RunEventPayload{
@@ -330,14 +327,54 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 				PipelineID: accepted.PipelineID,
 				Params:     accepted.Params,
 			},
-		})
+		}
+		// The durable dispatch-intent/outbox record (Tnsor-Labs/brokoli#7).
+		// NodeID/Attempt stay at their zero values — this is a pipeline-level
+		// outbox row, not a per-node one; see models.ExecutionAttempt's doc
+		// comment. IdempotencyKey is the run ID itself: already a globally
+		// unique, stable identity for this dispatch.
+		outboxAttempt := &models.ExecutionAttempt{
+			RunID:          accepted.ID,
+			Status:         models.AttemptStatusQueued,
+			IdempotencyKey: accepted.ID,
+		}
+
+		// Outbox pattern: the pending-run row, its run.created event, and its
+		// durable execution-attempt record commit in one transaction.
+		// Previously CreateRun and JobQueue.Enqueue below were two
+		// independent, non-transactional calls — a crash between them left a
+		// `pending` run in the store with nothing ever enqueued to execute
+		// it, and no durable trace that dispatch was ever intended. Wrapping
+		// the DB-side writes in one transaction closes that specific gap:
+		// JobQueue.Enqueue can still fail (handled below) or the process can
+		// still die before or during that call, but by the time this
+		// transaction commits, a durable execution_attempts row already
+		// exists recording the dispatch intent, making the run reconcilable
+		// on restart (Tnsor-Labs/brokoli#9) instead of silently orphaned.
+		if err := e.store.WithTx(func(tx *sql.Tx) error {
+			if err := e.store.CreateRunTx(tx, accepted); err != nil {
+				return fmt.Errorf("create pending run: %w", err)
+			}
+			if err := e.store.AppendEventTx(tx, createdEvent); err != nil {
+				return fmt.Errorf("append run created event: %w", err)
+			}
+			if attemptStore, ok := e.store.(store.ExecutionAttemptStore); ok {
+				if err := attemptStore.CreateExecutionAttemptTx(tx, outboxAttempt); err != nil {
+					return fmt.Errorf("create execution attempt outbox record: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return "", err
+		}
 
 		job := extensions.RunJob{
-			ID:         runID,
-			PipelineID: pipelineID,
-			RunID:      runID,
-			OrgID:      pipe.OrgID,
-			EnqueuedAt: time.Now().UTC(),
+			ID:             runID,
+			PipelineID:     pipelineID,
+			RunID:          runID,
+			OrgID:          pipe.OrgID,
+			EnqueuedAt:     time.Now().UTC(),
+			IdempotencyKey: runID,
 		}
 		if len(params) > 0 && params[0] != nil {
 			job.Params = params[0]
