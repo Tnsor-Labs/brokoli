@@ -151,6 +151,17 @@ type Store interface {
 	UpdateNodeRun(nr *models.NodeRun) error
 	ListNodeRunsByRun(runID string) ([]models.NodeRun, error)
 
+	// Run Events — immutable, append-only log of run/node-attempt lifecycle
+	// transitions (Tnsor-Labs/brokoli#6). Dual-written today alongside the
+	// CreateRun/UpdateRun/CreateNodeRun/UpdateNodeRun calls above; see
+	// engine/projection.go for how the event stream is folded back into the
+	// equivalent runs/node_runs row shape.
+	AppendEvent(e *models.RunEvent) error
+	// AppendEventTx runs inside an existing transaction, so an event can be
+	// appended atomically alongside other writes via WithTx.
+	AppendEventTx(tx *sql.Tx, e *models.RunEvent) error
+	ListEventsByRun(runID string) ([]models.RunEvent, error)
+
 	// Logs
 	AppendLog(entry *models.LogEntry) error
 	GetLogs(runID string) ([]models.LogEntry, error)

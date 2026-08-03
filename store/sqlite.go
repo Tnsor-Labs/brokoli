@@ -167,6 +167,25 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
 
+	// Run event log — immutable append-only log of run/node-attempt lifecycle
+	// transitions (issue #6). See store/migrations/009_run_events.sql for the
+	// documented schema; like 004/006/007/008 it is not in the hardcoded list
+	// of files migrate() executes above, so the table is created here instead
+	// via idempotent DDL, consistent with how every other addition in this
+	// function works.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS run_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		run_id TEXT NOT NULL,
+		node_id TEXT,
+		attempt INTEGER,
+		event_type TEXT NOT NULL,
+		payload TEXT NOT NULL DEFAULT '{}',
+		created_at TEXT NOT NULL,
+		schema_version INTEGER NOT NULL DEFAULT 1,
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run_node ON run_events(run_id, node_id)`)
+
 	return nil
 }
 
@@ -799,6 +818,104 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 		nodeRuns = append(nodeRuns, nr)
 	}
 	return nodeRuns, rows.Err()
+}
+
+// --- Run Events ---
+
+// sqlExecer is satisfied by both *sql.DB and *sql.Tx, letting AppendEvent
+// and AppendEventTx share one implementation.
+type sqlExecer interface {
+	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+func (s *SQLiteStore) AppendEvent(e *models.RunEvent) error {
+	return sqliteAppendEvent(s.db, e)
+}
+
+// AppendEventTx appends an event using an existing transaction, so it can be
+// committed atomically alongside other writes via WithTx.
+func (s *SQLiteStore) AppendEventTx(tx *sql.Tx, e *models.RunEvent) error {
+	return sqliteAppendEvent(tx, e)
+}
+
+func sqliteAppendEvent(x sqlExecer, e *models.RunEvent) error {
+	payloadJSON, err := json.Marshal(e.Payload)
+	if err != nil {
+		return wrapStoreErr("AppendEvent", e.RunID, fmt.Errorf("marshal payload: %w", err))
+	}
+	schemaVersion := e.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = 1
+	}
+	e.CreatedAt = time.Now().UTC()
+
+	var nodeID interface{}
+	if e.NodeID != "" {
+		nodeID = e.NodeID
+	}
+	var attempt interface{}
+	if e.Attempt != nil {
+		attempt = *e.Attempt
+	}
+
+	result, err := x.Exec(
+		`INSERT INTO run_events (run_id, node_id, attempt, event_type, payload, created_at, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		e.RunID, nodeID, attempt, string(e.EventType), string(payloadJSON), e.CreatedAt.Format(timeFormat), schemaVersion,
+	)
+	if err != nil {
+		return wrapStoreErr("AppendEvent", e.RunID, err)
+	}
+	e.SchemaVersion = schemaVersion
+	if id, idErr := result.LastInsertId(); idErr == nil {
+		e.ID = id
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListEventsByRun(runID string) ([]models.RunEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT id, run_id, node_id, attempt, event_type, payload, created_at, schema_version
+		 FROM run_events WHERE run_id = ? ORDER BY id ASC`, runID,
+	)
+	if err != nil {
+		return nil, wrapStoreErr("ListEventsByRun", runID, err)
+	}
+	defer rows.Close()
+
+	var events []models.RunEvent
+	for rows.Next() {
+		ev, err := scanRunEvent(rows)
+		if err != nil {
+			return nil, wrapStoreErr("ListEventsByRun", runID, err)
+		}
+		events = append(events, *ev)
+	}
+	return events, rows.Err()
+}
+
+func scanRunEvent(rows *sql.Rows) (*models.RunEvent, error) {
+	var ev models.RunEvent
+	var nodeID sql.NullString
+	var attempt sql.NullInt64
+	var eventType, payloadJSON, createdAt string
+	if err := rows.Scan(&ev.ID, &ev.RunID, &nodeID, &attempt, &eventType, &payloadJSON, &createdAt, &ev.SchemaVersion); err != nil {
+		return nil, err
+	}
+	ev.NodeID = nodeID.String
+	if attempt.Valid {
+		a := int(attempt.Int64)
+		ev.Attempt = &a
+	}
+	ev.EventType = models.RunEventType(eventType)
+	if err := json.Unmarshal([]byte(payloadJSON), &ev.Payload); err != nil {
+		return nil, fmt.Errorf("decode event payload: %w", err)
+	}
+	createdAtTime, err := time.Parse(timeFormat, createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("decode event created_at: %w", err)
+	}
+	ev.CreatedAt = createdAtTime
+	return &ev, nil
 }
 
 // --- Logs ---
