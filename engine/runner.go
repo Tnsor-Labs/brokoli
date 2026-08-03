@@ -89,6 +89,17 @@ func (r *Runner) Execute() (*models.Run, error) {
 		if err := r.store.CreateRun(r.run); err != nil {
 			return nil, fmt.Errorf("create run: %w", err)
 		}
+		r.appendEvent(models.RunEvent{
+			RunID:     r.run.ID,
+			EventType: models.RunEventCreated,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusRunning,
+				PipelineID: r.run.PipelineID,
+				StartedAt:  r.run.StartedAt,
+				TraceID:    r.run.TraceID,
+				Params:     r.run.Params,
+			},
+		})
 		crashAt(crashPointAfterRunCreate, "")
 	}
 	r.emit(models.Event{Type: models.EventRunStarted, RunID: r.run.ID, PipelineID: r.pipe.ID})
@@ -223,6 +234,15 @@ func (r *Runner) Execute() (*models.Run, error) {
 		if err := r.store.UpdateRun(r.run); err != nil {
 			return r.run, fmt.Errorf("persist cancelled run: %w", err)
 		}
+		r.appendEvent(models.RunEvent{
+			RunID:     r.run.ID,
+			EventType: models.RunEventCancelled,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusCancelled,
+				FinishedAt: r.run.FinishedAt,
+				Error:      "cancelled",
+			},
+		})
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
 		r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
 		return r.run, fmt.Errorf("pipeline cancelled")
@@ -234,6 +254,15 @@ func (r *Runner) Execute() (*models.Run, error) {
 		if err := r.store.UpdateRun(r.run); err != nil {
 			return r.run, fmt.Errorf("persist failed run: %w", err)
 		}
+		r.appendEvent(models.RunEvent{
+			RunID:     r.run.ID,
+			EventType: models.RunEventTerminal,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusFailed,
+				FinishedAt: r.run.FinishedAt,
+				Error:      runErr.Error(),
+			},
+		})
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
 		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
 		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
@@ -247,6 +276,14 @@ func (r *Runner) Execute() (*models.Run, error) {
 	if err := r.store.UpdateRun(r.run); err != nil {
 		return r.run, fmt.Errorf("persist successful run: %w", err)
 	}
+	r.appendEvent(models.RunEvent{
+		RunID:     r.run.ID,
+		EventType: models.RunEventTerminal,
+		Payload: models.RunEventPayload{
+			Status:     models.RunStatusSuccess,
+			FinishedAt: r.run.FinishedAt,
+		},
+	})
 	crashAt(crashPointAfterRunTerminalPersist, "")
 	r.emit(models.Event{Type: models.EventRunCompleted, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusSuccess})
 	r.fireHook("on_success", nil)
@@ -331,6 +368,21 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 				Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID,
 				Status: "retrying", Error: fmt.Sprintf("retry %d/%d", attempt, maxRetries),
 			})
+			// Persist the retry decision — previously this only reached the
+			// ephemeral WebSocket event above, with no durable counterpart.
+			if !r.dryRun {
+				retryAttempt := attempt
+				r.appendEvent(models.RunEvent{
+					RunID:     r.run.ID,
+					NodeID:    node.ID,
+					Attempt:   &retryAttempt,
+					EventType: models.RetryScheduled,
+					Payload: models.RunEventPayload{
+						Error:     lastErr.Error(),
+						BackoffMs: delay.Milliseconds(),
+					},
+				})
+			}
 			select {
 			case <-time.After(delay):
 			case <-r.ctx.Done():
@@ -361,6 +413,22 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		crashAt(crashPointBeforeNodeAttemptCreate, node.ID)
 		if !r.dryRun {
 			r.store.CreateNodeRun(nr)
+			attemptNum := attempt
+			r.appendEvent(models.RunEvent{
+				RunID:     r.run.ID,
+				NodeID:    node.ID,
+				Attempt:   &attemptNum,
+				EventType: models.AttemptStarted,
+				Payload: models.RunEventPayload{
+					Status:    models.RunStatusRunning,
+					NodeRunID: nr.ID,
+					StartedAt: nr.StartedAt,
+					ReadyAt:   nr.ReadyAt,
+					QueueMs:   nr.QueueMs,
+					TraceID:   nr.TraceID,
+					SpanID:    nr.SpanID,
+				},
+			})
 		}
 		crashAt(crashPointAfterNodeAttemptCreate, node.ID)
 
@@ -411,6 +479,20 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			nr.RowsPerSec = rowsPerSec
 			if !r.dryRun {
 				r.store.UpdateNodeRun(nr)
+				attemptNum := attempt
+				r.appendEvent(models.RunEvent{
+					RunID:     r.run.ID,
+					NodeID:    node.ID,
+					Attempt:   &attemptNum,
+					EventType: models.AttemptCompleted,
+					Payload: models.RunEventPayload{
+						Status:     models.RunStatusSuccess,
+						NodeRunID:  nr.ID,
+						RowCount:   nr.RowCount,
+						DurationMs: nr.DurationMs,
+						RowsPerSec: nr.RowsPerSec,
+					},
+				})
 			}
 			crashAt(crashPointAfterNodeCompletionPersist, node.ID)
 
@@ -479,6 +561,19 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		nr.Error = err.Error()
 		if !r.dryRun {
 			r.store.UpdateNodeRun(nr)
+			attemptNum := attempt
+			r.appendEvent(models.RunEvent{
+				RunID:     r.run.ID,
+				NodeID:    node.ID,
+				Attempt:   &attemptNum,
+				EventType: models.AttemptFailed,
+				Payload: models.RunEventPayload{
+					Status:     models.RunStatusFailed,
+					NodeRunID:  nr.ID,
+					DurationMs: nr.DurationMs,
+					Error:      nr.Error,
+				},
+			})
 		}
 		lastErr = err
 
@@ -577,6 +672,15 @@ func (r *Runner) failRun(err error) error {
 	if persistErr := r.store.UpdateRun(r.run); persistErr != nil {
 		return fmt.Errorf("run failed: %v; persist failed run: %w", err, persistErr)
 	}
+	r.appendEvent(models.RunEvent{
+		RunID:     r.run.ID,
+		EventType: models.RunEventTerminal,
+		Payload: models.RunEventPayload{
+			Status:     models.RunStatusFailed,
+			FinishedAt: r.run.FinishedAt,
+			Error:      err.Error(),
+		},
+	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
 	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), err.Error())
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())
@@ -593,6 +697,18 @@ func (r *Runner) emit(e models.Event) {
 	select {
 	case r.eventCh <- e:
 	default:
+	}
+}
+
+// appendEvent persists a run/node-attempt lifecycle event to the durable
+// run_events log, dual-written alongside the CreateRun/UpdateRun/
+// CreateNodeRun/UpdateNodeRun calls above. Like AppendLog just below,
+// failures are logged rather than propagated — making this write
+// transactionally required (e.g. via an outbox) is tracked separately
+// (Tnsor-Labs/brokoli#7).
+func (r *Runner) appendEvent(ev models.RunEvent) {
+	if err := r.store.AppendEvent(&ev); err != nil {
+		r.log(ev.NodeID, models.LogLevelWarning, "append run event %s: %v", ev.EventType, err)
 	}
 }
 

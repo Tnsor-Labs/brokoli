@@ -240,6 +240,23 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
 
+	// Run event log — immutable append-only log of run/node-attempt lifecycle
+	// transitions (issue #6). See store/migrations/009_run_events_pg.sql for
+	// the documented schema; like the rest of this function's DDL it is
+	// applied idempotently here rather than through a tracked migration file.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS run_events (
+		id BIGSERIAL PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		node_id TEXT,
+		attempt INTEGER,
+		event_type TEXT NOT NULL,
+		payload JSONB NOT NULL DEFAULT '{}',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		schema_version INTEGER NOT NULL DEFAULT 1,
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run ON run_events(run_id)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run_node ON run_events(run_id, node_id)`)
+
 	return nil
 }
 
@@ -787,6 +804,89 @@ func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error
 		nodeRuns = append(nodeRuns, nr)
 	}
 	return nodeRuns, rows.Err()
+}
+
+// --- Run Events ---
+
+// pgQueryRower is satisfied by both *sql.DB and *sql.Tx, letting AppendEvent
+// and AppendEventTx share one implementation.
+type pgQueryRower interface {
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
+func (s *PostgresStore) AppendEvent(e *models.RunEvent) error {
+	return pgAppendEvent(s.db, e)
+}
+
+// AppendEventTx appends an event using an existing transaction, so it can be
+// committed atomically alongside other writes via WithTx.
+func (s *PostgresStore) AppendEventTx(tx *sql.Tx, e *models.RunEvent) error {
+	return pgAppendEvent(tx, e)
+}
+
+func pgAppendEvent(x pgQueryRower, e *models.RunEvent) error {
+	payloadJSON, err := json.Marshal(e.Payload)
+	if err != nil {
+		return fmt.Errorf("marshal event payload: %w", err)
+	}
+	schemaVersion := e.SchemaVersion
+	if schemaVersion == 0 {
+		schemaVersion = 1
+	}
+	e.CreatedAt = time.Now().UTC()
+
+	var nodeID interface{}
+	if e.NodeID != "" {
+		nodeID = e.NodeID
+	}
+	var attempt interface{}
+	if e.Attempt != nil {
+		attempt = *e.Attempt
+	}
+
+	err = x.QueryRow(
+		`INSERT INTO run_events (run_id, node_id, attempt, event_type, payload, created_at, schema_version) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+		e.RunID, nodeID, attempt, string(e.EventType), payloadJSON, e.CreatedAt, schemaVersion,
+	).Scan(&e.ID)
+	if err != nil {
+		return fmt.Errorf("append event: %w", err)
+	}
+	e.SchemaVersion = schemaVersion
+	return nil
+}
+
+func (s *PostgresStore) ListEventsByRun(runID string) ([]models.RunEvent, error) {
+	rows, err := s.db.Query(
+		`SELECT id, run_id, node_id, attempt, event_type, payload, created_at, schema_version
+		 FROM run_events WHERE run_id = $1 ORDER BY id ASC`, runID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []models.RunEvent
+	for rows.Next() {
+		var ev models.RunEvent
+		var nodeID sql.NullString
+		var attempt sql.NullInt64
+		var eventType string
+		var payloadJSON []byte
+		if err := rows.Scan(&ev.ID, &ev.RunID, &nodeID, &attempt, &eventType, &payloadJSON, &ev.CreatedAt, &ev.SchemaVersion); err != nil {
+			return nil, err
+		}
+		ev.NodeID = nodeID.String
+		if attempt.Valid {
+			a := int(attempt.Int64)
+			ev.Attempt = &a
+		}
+		ev.EventType = models.RunEventType(eventType)
+		if err := json.Unmarshal(payloadJSON, &ev.Payload); err != nil {
+			return nil, fmt.Errorf("decode event payload: %w", err)
+		}
+		events = append(events, ev)
+	}
+	return events, rows.Err()
 }
 
 // --- Logs ---

@@ -101,6 +101,15 @@ func (e *Engine) CancelRun(runID string) error {
 		run.Status = models.RunStatusCancelled
 		run.FinishedAt = &now
 		e.store.UpdateRun(run)
+		e.appendEvent(&models.RunEvent{
+			RunID:     runID,
+			EventType: models.RunEventCancelled,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusCancelled,
+				FinishedAt: run.FinishedAt,
+				Error:      "cancelled by user",
+			},
+		})
 	}
 	e.eventCh <- models.Event{
 		Type:       models.EventRunFailed,
@@ -141,6 +150,18 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		if err := e.store.CreateRun(blocked); err != nil {
 			return nil, fmt.Errorf("create blocked run: %w", err)
 		}
+		e.appendEvent(&models.RunEvent{
+			RunID:     blocked.ID,
+			EventType: models.RunEventCreated,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusBlocked,
+				PipelineID: blocked.PipelineID,
+				StartedAt:  blocked.StartedAt,
+				FinishedAt: blocked.FinishedAt,
+				Error:      blocked.Error,
+				Params:     blocked.Params,
+			},
+		})
 		return blocked, nil
 	}
 
@@ -271,6 +292,18 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		if err := e.store.CreateRun(blocked); err != nil {
 			return "", fmt.Errorf("create blocked run: %w", err)
 		}
+		e.appendEvent(&models.RunEvent{
+			RunID:     blocked.ID,
+			EventType: models.RunEventCreated,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusBlocked,
+				PipelineID: blocked.PipelineID,
+				StartedAt:  blocked.StartedAt,
+				FinishedAt: blocked.FinishedAt,
+				Error:      blocked.Error,
+				Params:     blocked.Params,
+			},
+		})
 		return blocked.ID, nil
 	}
 
@@ -289,6 +322,15 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		if err := e.store.CreateRun(accepted); err != nil {
 			return "", fmt.Errorf("create pending run: %w", err)
 		}
+		e.appendEvent(&models.RunEvent{
+			RunID:     accepted.ID,
+			EventType: models.RunEventCreated,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusPending,
+				PipelineID: accepted.PipelineID,
+				Params:     accepted.Params,
+			},
+		})
 
 		job := extensions.RunJob{
 			ID:         runID,
@@ -308,8 +350,24 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			if updateErr := e.store.UpdateRun(accepted); updateErr != nil {
 				return "", fmt.Errorf("enqueue job: %v; mark run failed: %w", err, updateErr)
 			}
+			e.appendEvent(&models.RunEvent{
+				RunID:     accepted.ID,
+				EventType: models.RunEventTerminal,
+				Payload: models.RunEventPayload{
+					Status:     models.RunStatusFailed,
+					FinishedAt: accepted.FinishedAt,
+					Error:      accepted.Error,
+				},
+			})
 			return "", fmt.Errorf("enqueue job: %w", err)
 		}
+		e.appendEvent(&models.RunEvent{
+			RunID:     accepted.ID,
+			EventType: models.RunEventQueued,
+			Payload: models.RunEventPayload{
+				Status: models.RunStatusPending,
+			},
+		})
 		return runID, nil
 	}
 
@@ -401,6 +459,16 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	accepted.StartedAt = &startedAt
 	accepted.TraceID = traceID
 	accepted.Params = params
+	e.appendEvent(&models.RunEvent{
+		RunID:     runID,
+		EventType: models.RunEventClaimed,
+		Payload: models.RunEventPayload{
+			Status:    models.RunStatusRunning,
+			StartedAt: &startedAt,
+			TraceID:   traceID,
+			Params:    params,
+		},
+	})
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
 	runner.orgID = pipe.OrgID
 	runner.params = params
@@ -447,7 +515,27 @@ func (e *Engine) failAcceptedRun(run *models.Run, cause error) (*models.Run, err
 	if err := e.store.UpdateRun(run); err != nil {
 		return nil, fmt.Errorf("%v; persist failed run: %w", cause, err)
 	}
+	e.appendEvent(&models.RunEvent{
+		RunID:     run.ID,
+		EventType: models.RunEventTerminal,
+		Payload: models.RunEventPayload{
+			Status:     models.RunStatusFailed,
+			FinishedAt: run.FinishedAt,
+			Error:      run.Error,
+		},
+	})
 	return run, cause
+}
+
+// appendEvent persists a run/node-attempt lifecycle event. Failures are
+// logged, not propagated — the events table is a dual-written, advisory
+// projection source alongside runs/node_runs for this PR; making event
+// persistence transactionally required is tracked as follow-up work
+// (Tnsor-Labs/brokoli#7).
+func (e *Engine) appendEvent(ev *models.RunEvent) {
+	if err := e.store.AppendEvent(ev); err != nil {
+		log.Printf("append run event %s for run %s: %v", ev.EventType, ev.RunID, err)
+	}
 }
 
 func isTerminalRunStatus(status models.RunStatus) bool {

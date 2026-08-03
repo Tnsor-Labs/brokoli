@@ -23,16 +23,32 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 		runStatus      models.RunStatus
 		nodeStatuses   map[string]models.RunStatus
 		outputExpected bool
+		// wantEvents is the exact, ordered sequence of run_events.event_type
+		// values that must be durably persisted by the time the process
+		// crashes at this point. It is a direct consequence of the dual
+		// writes added alongside CreateRun/UpdateRun/CreateNodeRun/
+		// UpdateNodeRun in engine/runner.go — issue #6 requires that every
+		// transition already exercised by this harness also produces a
+		// persisted event, not just a mutated runs/node_runs row.
+		wantEvents []models.RunEventType
 	}{
 		{name: "before run creation", point: crashPointBeforeRunCreate},
-		{name: "after run creation", point: crashPointAfterRunCreate, runStatus: models.RunStatusRunning},
-		{name: "before node attempt creation", point: crashPointBeforeNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning},
-		{name: "after node attempt creation", point: crashPointAfterNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning}},
-		{name: "before node execution", point: crashPointBeforeNodeExecution + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning}},
-		{name: "after sink side effect before persistence", point: crashPointAfterNodeExecutionBeforePersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusRunning}, outputExpected: true},
-		{name: "after sink completion persistence", point: crashPointAfterNodeCompletionPersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true},
-		{name: "before terminal persistence", point: crashPointBeforeRunTerminalPersist, runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true},
-		{name: "after terminal persistence", point: crashPointAfterRunTerminalPersist, runStatus: models.RunStatusSuccess, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true},
+		{name: "after run creation", point: crashPointAfterRunCreate, runStatus: models.RunStatusRunning,
+			wantEvents: []models.RunEventType{models.RunEventCreated}},
+		{name: "before node attempt creation", point: crashPointBeforeNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning,
+			wantEvents: []models.RunEventType{models.RunEventCreated}},
+		{name: "after node attempt creation", point: crashPointAfterNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning},
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted}},
+		{name: "before node execution", point: crashPointBeforeNodeExecution + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning},
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted}},
+		{name: "after sink side effect before persistence", point: crashPointAfterNodeExecutionBeforePersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusRunning}, outputExpected: true,
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted}},
+		{name: "after sink completion persistence", point: crashPointAfterNodeCompletionPersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted}},
+		{name: "before terminal persistence", point: crashPointBeforeRunTerminalPersist, runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted}},
+		{name: "after terminal persistence", point: crashPointAfterRunTerminalPersist, runStatus: models.RunStatusSuccess, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
+			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.RunEventTerminal}},
 	}
 
 	for _, tc := range cases {
@@ -59,7 +75,7 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 				t.Fatalf("crash subprocess error = %v, want exit code %d", err, testCrashExitCode)
 			}
 
-			assertCrashBaseline(t, dbPath, tc.runStatus, tc.nodeStatuses, outputPath, tc.outputExpected)
+			assertCrashBaseline(t, dbPath, tc.runStatus, tc.nodeStatuses, outputPath, tc.outputExpected, tc.wantEvents)
 		})
 	}
 }
@@ -103,7 +119,7 @@ func TestCrashRecoveryBaselineProcess(t *testing.T) {
 	t.Fatal("crash point was not reached")
 }
 
-func assertCrashBaseline(t *testing.T, dbPath string, expectedRun models.RunStatus, expectedNodes map[string]models.RunStatus, outputPath string, outputExpected bool) {
+func assertCrashBaseline(t *testing.T, dbPath string, expectedRun models.RunStatus, expectedNodes map[string]models.RunStatus, outputPath string, outputExpected bool, wantEvents []models.RunEventType) {
 	t.Helper()
 
 	s, err := store.NewSQLiteStore(dbPath)
@@ -142,6 +158,8 @@ func assertCrashBaseline(t *testing.T, dbPath string, expectedRun models.RunStat
 		if !reflect.DeepEqual(got, expectedNodes) {
 			t.Errorf("node states = %v, want %v", got, expectedNodes)
 		}
+
+		assertCrashEvents(t, s, runs[0].ID, wantEvents)
 	}
 
 	_, err = os.Stat(outputPath)
@@ -150,5 +168,29 @@ func assertCrashBaseline(t *testing.T, dbPath string, expectedRun models.RunStat
 	}
 	if !outputExpected && !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("output exists before sink side effect")
+	}
+}
+
+// assertCrashEvents checks that exactly the run_events the harness expects
+// to have been durably appended before this crash point survived the crash
+// — the same "what transitions happened before the crash point" question
+// assertCrashBaseline already asks of runs/node_runs, now asked of the
+// event log dual-written alongside it (issue #6).
+func assertCrashEvents(t *testing.T, s *store.SQLiteStore, runID string, wantEvents []models.RunEventType) {
+	t.Helper()
+
+	events, err := s.ListEventsByRun(runID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	gotTypes := make([]models.RunEventType, len(events))
+	for i, e := range events {
+		gotTypes[i] = e.EventType
+		if e.RunID != runID {
+			t.Errorf("event[%d].RunID = %q, want %q", i, e.RunID, runID)
+		}
+	}
+	if !reflect.DeepEqual(gotTypes, wantEvents) {
+		t.Errorf("run_events types = %v, want %v", gotTypes, wantEvents)
 	}
 }
