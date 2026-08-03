@@ -156,6 +156,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// Utilities
 		r.Post("/test-connection", rh.TestConnection)
 		r.Get("/system/info", systemInfo(s, e))
+		r.Get("/capabilities", CapabilitiesHandler)
 		r.With(requirePerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s))
 
 		// WebSocket (SODP binary protocol)

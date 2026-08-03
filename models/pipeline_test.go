@@ -1,6 +1,8 @@
 package models
 
 import (
+	"encoding/json"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -62,5 +64,91 @@ func TestPipeline_Validate_WithPipelineIDAndSource(t *testing.T) {
 	}
 	if err := p.Validate(); err != nil {
 		t.Errorf("valid pipeline with pipeline_id and source should not error: %v", err)
+	}
+}
+
+func TestIsIRVersionSupported(t *testing.T) {
+	cases := []struct {
+		v    string
+		want bool
+	}{
+		{"", true},    // pre-versioned pipelines are always accepted
+		{"2.0", true}, // current IR version
+		{"1.0", false},
+		{"99.0", false},
+	}
+	for _, c := range cases {
+		if got := IsIRVersionSupported(c.v); got != c.want {
+			t.Errorf("IsIRVersionSupported(%q) = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+// TestNode_CapabilitiesRoundTrip pins the JSON shape of the "capabilities"
+// field added in Phase 0 protocol alignment so this host correctly
+// accepts pipelines deployed by the upgraded SDK, which now tags every
+// node with a capabilities list (e.g. ["source", "dataset-output"]).
+func TestNode_CapabilitiesRoundTrip(t *testing.T) {
+	n := Node{
+		ID:           "n1",
+		Type:         NodeTypeCode,
+		Name:         "My Source",
+		Capabilities: []string{CapabilitySource, CapabilityDatasetOutput},
+	}
+	buf, err := json.Marshal(n)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(buf), `"capabilities":["source","dataset-output"]`) {
+		t.Errorf("expected capabilities field in JSON, got: %s", buf)
+	}
+
+	var got Node
+	if err := json.Unmarshal(buf, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(got.Capabilities, n.Capabilities) {
+		t.Errorf("Capabilities round-trip = %v, want %v", got.Capabilities, n.Capabilities)
+	}
+
+	// Nodes with no capabilities field at all (old SDK clients) must
+	// decode to a nil/empty slice, not error.
+	var old Node
+	if err := json.Unmarshal([]byte(`{"id":"n2","type":"source_file"}`), &old); err != nil {
+		t.Fatalf("unmarshal old-style node: %v", err)
+	}
+	if len(old.Capabilities) != 0 {
+		t.Errorf("expected empty Capabilities for old-style node, got: %v", old.Capabilities)
+	}
+}
+
+// TestPipeline_IRVersionRoundTrip pins the JSON shape of the top-level
+// "ir_version" field added in Phase 0 protocol alignment.
+func TestPipeline_IRVersionRoundTrip(t *testing.T) {
+	p := Pipeline{Name: "x", IRVersion: "2.0", Nodes: []Node{}, Edges: []Edge{}}
+	buf, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(buf), `"ir_version":"2.0"`) {
+		t.Errorf("expected ir_version field in JSON, got: %s", buf)
+	}
+
+	var got Pipeline
+	if err := json.Unmarshal(buf, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.IRVersion != "2.0" {
+		t.Errorf("IRVersion round-trip = %q, want %q", got.IRVersion, "2.0")
+	}
+
+	// Old pipeline JSON with no ir_version field must decode to empty
+	// string, not error, and Validate() must still accept it.
+	var old Pipeline
+	if err := json.Unmarshal([]byte(`{"name":"legacy"}`), &old); err != nil {
+		t.Fatalf("unmarshal old-style pipeline: %v", err)
+	}
+	if old.IRVersion != "" {
+		t.Errorf("expected empty IRVersion for old-style pipeline, got: %q", old.IRVersion)
 	}
 }
