@@ -4,6 +4,7 @@
 package extensions
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"time"
@@ -82,6 +83,17 @@ type NodeExecutor interface {
 }
 
 // ExecutionContext passed to a NodeExecutor.
+//
+// Attempt/IdempotencyKey/FencingGeneration mirror the identical fields on
+// RunJob and models.ExecutionAttempt (Tnsor-Labs/brokoli#7) — see RunJob's
+// doc comment for the shared (run, node, attempt) identity these describe.
+// They were added, along with Context, to close a gap found while building
+// Tnsor-Labs/brokoli-ee#12's Kubernetes execution adapter: an external
+// executor (a K8s Job, a Docker container, a remote worker) had no attempt
+// number to name its dispatch deterministically, no idempotency key to
+// recognize a redispatch of the same attempt, and — despite this struct's
+// Execute doc comment claiming otherwise — no actual context.Context to
+// observe cancellation or a deadline through.
 type ExecutionContext struct {
 	RunID      string
 	NodeID     string
@@ -90,6 +102,35 @@ type ExecutionContext struct {
 	Config     map[string]interface{}
 	InputData  interface{} // *common.DataSet
 	PipelineID string
+
+	// Attempt mirrors models.NodeRun.Attempt / models.ExecutionAttempt.Attempt:
+	// 0 for the first try, 1+ for retries of this node within the run.
+	Attempt int
+
+	// IdempotencyKey lets an external executor (e.g. a Kubernetes Job name,
+	// which must be deterministic and stable across redispatch to avoid
+	// creating a duplicate Job) recognize a redispatch of the same logical
+	// (run, node, attempt) as the same unit of work rather than starting a
+	// new one. See engine/runner.go's nodeAttemptIdempotencyKey.
+	IdempotencyKey string
+
+	// FencingGeneration is the generation this attempt's claim was issued
+	// under (models.ExecutionAttempt.FencingGeneration), used to detect a
+	// stale dispatch after a lease was reassigned to another worker. It is
+	// zero until engine/runner.go's per-node execution loop is wired
+	// through claim/lease (Tnsor-Labs/brokoli#7 follow-up work, same as
+	// RunJob.FencingGeneration, which is zero for the same reason today).
+	FencingGeneration int64
+
+	// Context carries cancellation and a deadline for this attempt. It is
+	// derived from the pipeline run's own cancellable context combined
+	// with the node's configured (or default) timeout, so Done() closes
+	// when the run is cancelled OR the attempt's timeout elapses,
+	// whichever happens first. Always non-nil when populated by
+	// engine/runner.go; a NodeExecutor should still guard against a nil
+	// Context defensively (e.g. via context.Background() fallback) since
+	// nothing in this package enforces it at construction time.
+	Context context.Context
 }
 
 // ExecutionResult from a NodeExecutor.

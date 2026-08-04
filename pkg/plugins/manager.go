@@ -262,7 +262,14 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 	}
 
 	start := time.Now()
-	bgCtx := context.Background() // TODO: thread the real run context through ExecutionContext
+	// Use the real run/attempt context now threaded through ExecutionContext
+	// (Tnsor-Labs/brokoli-ee#12) so a plugin invocation is cancelled along
+	// with the pipeline run or the node's own timeout, instead of running
+	// on an unrelated background context that never observes either.
+	bgCtx := ctx.Context
+	if bgCtx == nil {
+		bgCtx = context.Background()
+	}
 	switch kind {
 	case KindSource:
 		if stream == "" {
@@ -378,13 +385,16 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return out
 }
 
-// deadline extracts a deadline from an ExecutionContext. The current
-// extensions.ExecutionContext struct doesn't carry a context.Context
-// directly, so there's nothing to extract in Phase 1 — this helper
-// exists as the single site to update when we thread a real context
-// through. Returns ok=false for now.
-func deadline(_ extensions.ExecutionContext) (time.Time, bool) {
-	return time.Time{}, false
+// deadline extracts a deadline from an ExecutionContext's real
+// context.Context (Tnsor-Labs/brokoli-ee#12 threaded one through), so a
+// plugin invocation's timeout tracks the attempt's actual deadline
+// (pipeline cancellation or the node's configured timeout, whichever is
+// sooner) instead of only ever falling back to DefaultTimeout.
+func deadline(ctx extensions.ExecutionContext) (time.Time, bool) {
+	if ctx.Context == nil {
+		return time.Time{}, false
+	}
+	return ctx.Context.Deadline()
 }
 
 // sortManifestsByName sorts in place.
