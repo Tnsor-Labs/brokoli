@@ -233,6 +233,26 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 
+	// Expansion instances — durable per-item execution record for a
+	// dynamic-expansion `code` node (issue #31). See
+	// models.ExpansionInstance's doc comment for why this is a standalone
+	// table instead of reusing node_runs/execution_attempts' (node_id,
+	// attempt) keying.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS expansion_instances (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		node_attempt INTEGER NOT NULL DEFAULT 0,
+		instance_index INTEGER NOT NULL,
+		instance_key TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'running',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		started_at TEXT,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_expansion_instances_run_node ON expansion_instances(run_id, node_id, node_attempt)`)
+
 	return nil
 }
 
@@ -921,6 +941,60 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 		nodeRuns = append(nodeRuns, nr)
 	}
 	return nodeRuns, rows.Err()
+}
+
+// --- Expansion Instances ---
+//
+// See store.ExpansionInstanceStore and models.ExpansionInstance for the
+// contract these implement — the durable per-item execution record for a
+// dynamic-expansion `code` node (issue #31).
+
+func (s *SQLiteStore) CreateExpansionInstance(ei *models.ExpansionInstance) error {
+	_, err := s.db.Exec(
+		`INSERT INTO expansion_instances (id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		ei.ID, ei.RunID, ei.NodeID, ei.NodeAttempt, ei.InstanceIndex, ei.InstanceKey,
+		string(ei.Status), ei.RowCount, formatTimePtr(ei.StartedAt), ei.DurationMs, ei.Error,
+	)
+	return wrapStoreErr("CreateExpansionInstance", ei.RunID, err)
+}
+
+func (s *SQLiteStore) UpdateExpansionInstance(ei *models.ExpansionInstance) error {
+	result, err := s.db.Exec(
+		`UPDATE expansion_instances SET status=?, row_count=?, started_at=?, duration_ms=?, error=? WHERE id=?`,
+		string(ei.Status), ei.RowCount, formatTimePtr(ei.StartedAt), ei.DurationMs, ei.Error, ei.ID,
+	)
+	if err != nil {
+		return wrapStoreErr("UpdateExpansionInstance", ei.RunID, err)
+	}
+	return wrapStoreErr("UpdateExpansionInstance", ei.RunID, checkRowsAffected(result, "expansion_instance", ei.ID))
+}
+
+func (s *SQLiteStore) ListExpansionInstancesByRun(runID string) ([]models.ExpansionInstance, error) {
+	rows, err := s.db.Query(
+		`SELECT id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error
+		 FROM expansion_instances WHERE run_id = ? ORDER BY node_id ASC, node_attempt ASC, instance_index ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, wrapStoreErr("ListExpansionInstancesByRun", runID, err)
+	}
+	defer rows.Close()
+
+	var instances []models.ExpansionInstance
+	for rows.Next() {
+		var ei models.ExpansionInstance
+		var status string
+		var startedAt sql.NullString
+		if err := rows.Scan(&ei.ID, &ei.RunID, &ei.NodeID, &ei.NodeAttempt, &ei.InstanceIndex, &ei.InstanceKey,
+			&status, &ei.RowCount, &startedAt, &ei.DurationMs, &ei.Error); err != nil {
+			return nil, wrapStoreErr("ListExpansionInstancesByRun", runID, err)
+		}
+		ei.Status = models.RunStatus(status)
+		ei.StartedAt = parseTimePtr(startedAt)
+		instances = append(instances, ei)
+	}
+	return instances, rows.Err()
 }
 
 // --- Run Events ---

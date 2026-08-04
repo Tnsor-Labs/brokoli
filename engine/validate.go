@@ -151,12 +151,42 @@ func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *Validat
 			// union of fewer than 2 inputs isn't a union at all — fail
 			// loudly at deploy time instead of the previous silent
 			// pass-through of whatever single input happened to exist.
+			//
+			// Exception (#31): exactly 1 incoming edge is allowed when
+			// that sole upstream node is a dynamic-expansion `code` node
+			// (carries an `expansion` config block). This is the exact
+			// compiled shape of `CollectionRef.collect(mode="union")` on
+			// a `.expand()` node — brokoli-sdk's _build_union_node always
+			// emits one edge per ref, and .expand() only ever produces
+			// one CollectionRef — so a single edge here is a legitimate
+			// "identity union" this issue introduces, not a gap in this
+			// check. See runUnion (engine/node_handlers.go) for the
+			// matching runtime pass-through.
 			count := inputDegree[n.ID]
-			if count < 2 {
+			if count < 2 && !(count == 1 && unionFedBySingleExpansion(n.ID, edges, nodesByID)) {
 				ve.Add(fmt.Sprintf("Node %q (union) requires at least 2 incoming edges, got %d", n.Name, count))
 			}
 		}
 	}
+}
+
+// unionFedBySingleExpansion reports whether unionNodeID has exactly one
+// incoming edge and that edge's source is a dynamic-expansion `code` node
+// (see nodeHasExpansion) — the one case validateEdgeSemantics allows a
+// union node to have fewer than 2 incoming edges.
+func unionFedBySingleExpansion(unionNodeID string, edges []models.Edge, nodesByID map[string]models.Node) bool {
+	var from string
+	count := 0
+	for _, e := range edges {
+		if e.To == unionNodeID {
+			count++
+			from = e.From
+		}
+	}
+	if count != 1 {
+		return false
+	}
+	return nodeHasExpansion(nodesByID[from])
 }
 
 // functionRefConfigError checks that cfg carries a well-formed function
@@ -255,6 +285,15 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if msg := functionRefConfigError(n.Config, "dataset_filter"); msg != "" {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
+	case models.NodeTypeCode:
+		if nodeHasExpansion(n) {
+			// parseExpansionConfig's errors already name the node
+			// (Name/ID) themselves — see engine/expansion.go — so append
+			// as-is rather than re-wrapping with another "Node %q:" prefix.
+			if _, err := parseExpansionConfig(n); err != nil {
+				ve.Add(err.Error())
+			}
+		}
 	}
 }
 
@@ -324,6 +363,11 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 	case models.NodeTypeCode:
 		if getStr(n.Config, "script") == "" {
 			r.Errors = append(r.Errors, "'script' is required")
+		}
+		if nodeHasExpansion(n) {
+			if _, err := parseExpansionConfig(n); err != nil {
+				r.Errors = append(r.Errors, err.Error())
+			}
 		}
 	case models.NodeTypeTransform:
 		// Check if rules exist

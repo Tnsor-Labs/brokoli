@@ -111,6 +111,35 @@ type ExecutionAttemptStore interface {
 	ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error)
 }
 
+// ExpansionInstanceStore provides durable per-item execution tracking for
+// dynamic-expansion `code` nodes (Tnsor-Labs/brokoli#31 — the `expansion`
+// config block compiled by brokoli-sdk's `_TaskWrapper.expand()`). See
+// models.ExpansionInstance's doc comment for why this is a separate table
+// rather than reusing NodeRun's or ExecutionAttempt's (node_id, attempt)
+// keying: both already use "attempt" as the node-level retry counter, and
+// overloading it with per-item identity would corrupt engine.ProjectRun's
+// replay and engine/recovery.go's outcome determination for every OTHER
+// node type. Implemented by both SQLiteStore and PostgresStore; callers
+// type-assert against it (same pattern as ExecutionAttemptStore/
+// PendingRunClaimer) since it's a capability of the concrete store, not a
+// requirement every Store implementation must satisfy — a store that
+// doesn't implement it simply doesn't get per-item durability, without
+// blocking expansion execution itself.
+type ExpansionInstanceStore interface {
+	// CreateExpansionInstance inserts the row for one item's execution
+	// attempt, before that item's script runs.
+	CreateExpansionInstance(ei *models.ExpansionInstance) error
+
+	// UpdateExpansionInstance persists the outcome (status/row count/
+	// duration/error) of an item's execution attempt, keyed by ei.ID.
+	UpdateExpansionInstance(ei *models.ExpansionInstance) error
+
+	// ListExpansionInstancesByRun returns every expansion_instances row for
+	// a run, across every expansion node and every item, ordered by
+	// (node_id, node_attempt, instance_index).
+	ListExpansionInstancesByRun(runID string) ([]models.ExpansionInstance, error)
+}
+
 // NewPageParams creates validated pagination parameters.
 // Defaults: page=1, page_size=25. Max page_size=100.
 func NewPageParams(page, pageSize int) PageParams {

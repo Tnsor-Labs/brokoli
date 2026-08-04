@@ -132,6 +132,17 @@ const (
 	CapabilitySink          = "sink"
 	CapabilityCompute       = "compute"
 	CapabilityDatasetOutput = "dataset-output"
+	// CapabilityDynamicExpansion and CapabilityCollectionOutput are emitted
+	// by brokoli-sdk's _TaskWrapper.expand() (Tnsor-Labs/brokoli#31) on the
+	// `code` node it builds: ["compute", "dynamic-expansion",
+	// "collection-output"]. The engine does not currently gate expansion
+	// recognition on these tags (it keys off the `expansion` config block
+	// itself, which is authoritative and present regardless of whether a
+	// given SDK/client version also sets capabilities) — they're recorded
+	// here for documentation and for any future code that wants to detect
+	// expansion nodes without inspecting Config.
+	CapabilityDynamicExpansion = "dynamic-expansion"
+	CapabilityCollectionOutput = "collection-output"
 )
 
 // Hook defines a lifecycle callback (webhook, slack, email).

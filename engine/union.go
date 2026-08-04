@@ -13,11 +13,15 @@ import (
 // to node-output resume persistence, not a general dataset/artifact
 // manifest system this could build on instead, and the engine has no such
 // manifest system yet. The output stays a plain *common.DataSet, matching
-// every other node today — this is deliberate: a follow-up issue
-// (Tnsor-Labs/brokoli#31) will need CollectionRef.collect(mode="union")'s
-// dynamic-instance output to be consumable by this same union node type
-// later, and a plain DataSet is the simplest concrete shape for that
-// future work to target, without speculatively over-designing for it now.
+// every other node today — this was deliberate groundwork for
+// Tnsor-Labs/brokoli#31 (implemented): CollectionRef.collect(mode="union")'s
+// dynamic-instance output needed to be consumable by this same union node
+// type, and a plain DataSet turned out to be exactly the right shape —
+// engine/expansion.go's runCodeExpansion already combines an expansion
+// node's per-item results into one plain DataSet (reusing UnionDatasets
+// internally for 2+ results) before this union node ever sees it, so a
+// downstream union node fed by a single expansion node just needs to pass
+// that single input through — see runUnion's identity-union exception.
 //
 // Schema-mismatch decision: the output's column set is the UNION of every
 // input's columns, in first-seen order across inputs (so the result is

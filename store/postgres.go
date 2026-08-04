@@ -307,6 +307,25 @@ func (s *PostgresStore) migrate() error {
 		acquired_at TIMESTAMPTZ,
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 
+	// Expansion instances — durable per-item execution record for a
+	// dynamic-expansion `code` node (issue #31). See the matching table in
+	// store/sqlite.go for the full doc comment; kept in sync column-for-
+	// column between backends.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS expansion_instances (
+		id TEXT PRIMARY KEY,
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		node_attempt INTEGER NOT NULL DEFAULT 0,
+		instance_index INTEGER NOT NULL,
+		instance_key TEXT NOT NULL DEFAULT '',
+		status TEXT NOT NULL DEFAULT 'running',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		started_at TIMESTAMPTZ,
+		duration_ms BIGINT NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_expansion_instances_run_node ON expansion_instances(run_id, node_id, node_attempt)`)
+
 	return nil
 }
 
@@ -923,6 +942,64 @@ func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error
 		nodeRuns = append(nodeRuns, nr)
 	}
 	return nodeRuns, rows.Err()
+}
+
+// --- Expansion Instances ---
+//
+// See store.ExpansionInstanceStore and models.ExpansionInstance for the
+// contract these implement — the durable per-item execution record for a
+// dynamic-expansion `code` node (issue #31).
+
+func (s *PostgresStore) CreateExpansionInstance(ei *models.ExpansionInstance) error {
+	_, err := s.db.Exec(
+		`INSERT INTO expansion_instances (id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+		ei.ID, ei.RunID, ei.NodeID, ei.NodeAttempt, ei.InstanceIndex, ei.InstanceKey,
+		string(ei.Status), ei.RowCount, ei.StartedAt, ei.DurationMs, ei.Error,
+	)
+	if err != nil {
+		return fmt.Errorf("create expansion instance: %w", err)
+	}
+	return nil
+}
+
+func (s *PostgresStore) UpdateExpansionInstance(ei *models.ExpansionInstance) error {
+	result, err := s.db.Exec(
+		`UPDATE expansion_instances SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5 WHERE id=$6`,
+		string(ei.Status), ei.RowCount, ei.StartedAt, ei.DurationMs, ei.Error, ei.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update expansion instance: %w", err)
+	}
+	return checkRowsAffected(result, "expansion_instance", ei.ID)
+}
+
+func (s *PostgresStore) ListExpansionInstancesByRun(runID string) ([]models.ExpansionInstance, error) {
+	rows, err := s.db.Query(
+		`SELECT id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error
+		 FROM expansion_instances WHERE run_id = $1 ORDER BY node_id ASC, node_attempt ASC, instance_index ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list expansion instances: %w", err)
+	}
+	defer rows.Close()
+
+	var instances []models.ExpansionInstance
+	for rows.Next() {
+		var ei models.ExpansionInstance
+		var status string
+		if err := rows.Scan(&ei.ID, &ei.RunID, &ei.NodeID, &ei.NodeAttempt, &ei.InstanceIndex, &ei.InstanceKey,
+			&status, &ei.RowCount, &ei.StartedAt, &ei.DurationMs, &ei.Error); err != nil {
+			return nil, fmt.Errorf("list expansion instances: %w", err)
+		}
+		ei.Status = models.RunStatus(status)
+		instances = append(instances, ei)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list expansion instances: %w", err)
+	}
+	return instances, nil
 }
 
 // --- Run Events ---

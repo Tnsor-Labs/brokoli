@@ -407,6 +407,11 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	outputsMu.Lock()
 	var input *common.DataSet
 	var allInputs []*common.DataSet
+	// edgeInputsByFrom indexes the same upstream outputs by upstream node
+	// ID, alongside input/allInputs above — needed by dynamic-expansion
+	// nodes (#31) to resolve expansion.over[param], which names upstream
+	// nodes by ID rather than relying on edge order the way allInputs does.
+	edgeInputsByFrom := make(map[string]*common.DataSet)
 	for _, edge := range r.pipe.Edges {
 		if edge.To == node.ID {
 			if ds, ok := outputs[edge.From]; ok {
@@ -414,6 +419,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 					input = ds
 				}
 				allInputs = append(allInputs, ds)
+				edgeInputsByFrom[edge.From] = ds
 			}
 		}
 	}
@@ -576,7 +582,7 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			crashAt(crashPointBeforeNodeExecution, node.ID)
-			out, e := r.runNodeLogic(node, input, allInputs, attempt, idempotencyKey, attemptCtx)
+			out, e := r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
 			resultCh <- nodeResult{out, e}
 		}()
 
@@ -850,7 +856,7 @@ func nodeAttemptIdempotencyKey(runID, nodeID string, attempt int) string {
 	return fmt.Sprintf("%s:%s:%d", runID, nodeID, attempt)
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (*common.DataSet, error) {
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (*common.DataSet, error) {
 	// Check if an external executor handles this node type (enterprise: K8s, Docker)
 	for _, exec := range r.executors {
 		if exec != nil && exec.CanHandle(string(node.Type)) {
@@ -906,6 +912,14 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	case models.NodeTypeQualityCheck:
 		return r.runQualityCheck(node, input)
 	case models.NodeTypeCode:
+		// Dynamic node expansion (#31): a `code` node carrying an
+		// `expansion` config block (brokoli-sdk's _TaskWrapper.expand())
+		// fans out into one execution per item instead of running once —
+		// see engine/expansion.go's top-of-file doc comment for the full
+		// architectural resolution.
+		if nodeHasExpansion(node) {
+			return r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+		}
 		return r.runCode(node, input)
 	case models.NodeTypeJoin:
 		return r.runJoin(node, allInputs)
