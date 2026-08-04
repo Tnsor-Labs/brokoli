@@ -32,6 +32,8 @@ auditable.
 | [ADR-009](./009-crash-recovery-baseline.md) | Crash-recovery baseline before durable orchestration | Accepted |
 | [ADR-010](./010-run-artifact-and-resume-semantics.md) | Run definition snapshots and durable artifact/resume semantics | Accepted |
 | [ADR-011](./011-postgres-scheduler-leader-election.md) | Postgres scheduler leader election via leased row + fencing generation | Accepted |
+| [ADR-012](./012-artifact-and-dataset-plane.md) | Artifact and dataset plane — start local-disk, reference-based, opt-in | Proposed |
+| [ADR-013](./013-connector-protocol-partition-progress-cancellation.md) | Extend the plugin protocol with work-unit planning, structured progress, and cancellation | Proposed |
 
 ## How to add a new ADR
 
