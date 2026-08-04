@@ -31,6 +31,7 @@ auditable.
 | [ADR-008](./008-documentation-framework.md) | Documentation framework — fumadocs over MkDocs | Accepted |
 | [ADR-009](./009-crash-recovery-baseline.md) | Crash-recovery baseline before durable orchestration | Accepted |
 | [ADR-010](./010-run-artifact-and-resume-semantics.md) | Run definition snapshots and durable artifact/resume semantics | Accepted |
+| [ADR-011](./011-postgres-scheduler-leader-election.md) | Postgres scheduler leader election via leased row + fencing generation | Accepted |
 
 ## How to add a new ADR
 

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -106,6 +107,7 @@ var serveCmd = &cobra.Command{
 		}
 		defer s.Close()
 		log.Printf("Database: %s", store.Describe(dbPath))
+		warnIfSQLiteMultiInstanceRisk(dbPath, RunMode)
 
 		eng := engine.NewEngine(s)
 
@@ -128,7 +130,9 @@ var serveCmd = &cobra.Command{
 		// Only start scheduler if mode is "all" or "scheduler"
 		var sched *engine.Scheduler
 		if RunMode == "all" || RunMode == "scheduler" {
-			sched = engine.NewScheduler(eng, s)
+			leaderForSched, cleanupLeader := newLeaderElector(s)
+			defer cleanupLeader()
+			sched = engine.NewScheduler(eng, s, leaderForSched)
 			if err := sched.Start(); err != nil {
 				log.Printf("WARNING: scheduler failed to start: %v", err)
 			}
@@ -346,6 +350,96 @@ func encryptionKeyPath(databasePath string) string {
 
 func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
+}
+
+// newLeaderElector builds the LeaderElector this instance's Scheduler
+// should use (Tnsor-Labs/brokoli#10): a real Postgres-backed election for
+// PostgresStore, or the always-leader NoopLeaderElector for anything else
+// (SQLite — see warnIfSQLiteMultiInstanceRisk below for why SQLite never
+// gets real coordination). The returned cleanup func must be deferred by
+// the caller; it stops the background election loop and, for the Postgres
+// case, releases held leadership so a replacement doesn't have to wait out
+// the full lease duration on a clean shutdown.
+func newLeaderElector(s store.Store) (leader store.LeaderElector, cleanup func()) {
+	pg, ok := s.(*store.PostgresStore)
+	if !ok {
+		return store.NewNoopLeaderElector(), func() {}
+	}
+	db, ok := pg.RawDB().(*sql.DB)
+	if !ok {
+		log.Printf("WARNING: PostgresStore.RawDB() was not *sql.DB; leader election disabled, running as always-leader")
+		return store.NewNoopLeaderElector(), func() {}
+	}
+
+	holderID := store.DefaultHolderID()
+	elector := store.NewPostgresLeaderElector(db, holderID, store.DefaultLeaseDuration, store.DefaultRenewInterval)
+	electCtx, cancel := context.WithCancel(context.Background())
+
+	// Block on one synchronous election attempt, bounded so a degraded
+	// Postgres can't stall this instance's entire startup — including its
+	// HTTP server and read-only endpoints in "all" mode — before the
+	// scheduler's Start() decides whether to run missed-run catch-up, so a
+	// cold-booting instance never runs catch-up before it actually knows
+	// its own leadership status (see engine.Scheduler.catchUpMissedRuns).
+	// A timeout here just means this instance starts as a standby and
+	// retries in the background on the next tick (at most
+	// DefaultRenewInterval later); it is not a fatal error.
+	acquireCtx, acquireCancel := context.WithTimeout(electCtx, 5*time.Second)
+	if err := elector.Acquire(acquireCtx); err != nil {
+		log.Printf("WARNING: initial leader election attempt failed (holder=%s), starting as standby — will keep retrying in the background: %v", holderID, err)
+	}
+	acquireCancel()
+
+	// runDone lets the returned cleanup func actually wait for Run's
+	// shutdown-release path to finish, rather than merely cancelling the
+	// context and returning immediately. cancel() alone does not block on
+	// the background goroutine's release() UPDATE completing, so without
+	// this a graceful shutdown could still race the process exiting before
+	// the lease was ever cleared — silently defeating the "a standby
+	// doesn't have to wait out the full lease on a clean shutdown"
+	// guarantee documented on PostgresLeaderElector.Run.
+	runDone := make(chan struct{})
+	go func() {
+		defer close(runDone)
+		elector.Run(electCtx)
+	}()
+	log.Printf("Leader election enabled (Postgres, holder=%s, leader=%v)", holderID, elector.IsLeader())
+
+	return elector, func() {
+		cancel()
+		<-runDone
+	}
+}
+
+// warnIfSQLiteMultiInstanceRisk logs a loud warning when this instance is
+// about to dispatch scheduled work against a SQLite backend in a run mode
+// meant for multi-replica deployments. SQLite has no leader election
+// (Tnsor-Labs/brokoli#10 implements real coordination for Postgres only —
+// see store/postgres_leader.go's design note) and no distributed locking of
+// any kind: running more than one "scheduler"/"all"-mode replica against
+// the same SQLite file means every replica independently believes it's the
+// only scheduler and will duplicate-dispatch every cron tick and catch-up
+// pass, on top of SQLite's well-known intolerance of concurrent writers
+// from separate processes (especially over a network filesystem).
+//
+// This binary has no way to know how many *other* replicas are configured
+// — there is no --replica-count flag or equivalent anywhere in this repo
+// today — so the practical version of guarding against this is a loud,
+// hard-to-miss log line plus documentation, not a hard runtime reject that
+// would need information we don't have. True enforcement belongs at the
+// deployment/orchestration layer (see brokoli-ee#9, HA deployment topology
+// — out of scope here).
+func warnIfSQLiteMultiInstanceRisk(dbURI, mode string) {
+	if store.DriverName(dbURI) != "sqlite" {
+		return
+	}
+	if mode != "all" && mode != "scheduler" {
+		return
+	}
+	log.Printf("WARNING: SQLite backend has no multi-instance leader election or locking. "+
+		"Running more than one replica of `brokoli serve --mode %s` against this same database file "+
+		"WILL duplicate-dispatch scheduled pipeline runs and can corrupt the database under concurrent writers. "+
+		"SQLite deployments must run exactly one instance — use a postgres:// database URL for multi-instance/HA deployments.", mode)
 }
 
 func Execute() error {

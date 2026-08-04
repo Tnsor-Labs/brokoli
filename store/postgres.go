@@ -290,6 +290,23 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 
+	// Scheduler leadership — single-row lease + fencing-generation table
+	// backing PostgresLeaderElector (Tnsor-Labs/brokoli#10). See the design
+	// note atop store/postgres_leader.go for why this is a leased row
+	// rather than a session-scoped pg_advisory_lock. Postgres-only: SQLite
+	// is documented as single-instance-only (cmd/serve.go warns at
+	// startup), so SQLiteStore never creates or touches this table. See
+	// store/migrations/010_scheduler_leader_pg.sql for the documented
+	// schema (not itself read at runtime, matching the run_events/
+	// execution_attempts precedent above).
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS scheduler_leader (
+		id TEXT PRIMARY KEY,
+		holder TEXT NOT NULL DEFAULT '',
+		fencing_generation BIGINT NOT NULL DEFAULT 0,
+		lease_expires_at TIMESTAMPTZ NOT NULL DEFAULT 'epoch',
+		acquired_at TIMESTAMPTZ,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+
 	return nil
 }
 
