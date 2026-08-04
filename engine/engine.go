@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -15,7 +16,11 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrInvalidQueuedRun identifies a malformed or orphaned queue delivery that
@@ -63,6 +68,107 @@ type Engine struct {
 	RunsRecovered      int64
 	RunsRecoveryFailed int64
 	AttemptsReclaimed  int64
+
+	// The counters below fill the remaining metrics gaps named by
+	// Tnsor-Labs/brokoli#11: event append/replay (Tnsor-Labs/brokoli#6) and
+	// node-attempt/queue-depth (Tnsor-Labs/brokoli#7). They extend the same
+	// atomic.AddInt64-updated-int64-field pattern already used above by
+	// RunsTotal/RunsSucceeded/RunsFailed and the recovery counters — see
+	// api.PrometheusHandler, which reads all of these directly at scrape
+	// time exactly like it already does for RunsRecovered etc.
+	//
+	// EventsAppended/EventsAppendFailed count calls to AppendEvent from
+	// Engine.appendEvent and Runner.appendEvent (the run/node lifecycle
+	// event log write path). EventsReplayed counts individual events
+	// consumed by ProjectRun's replay/projection logic (currently only
+	// invoked by startup recovery — see recoverRun in recovery.go).
+	EventsAppended     int64
+	EventsAppendFailed int64
+	EventsReplayed     int64
+
+	// AttemptsStarted/AttemptsSucceeded/AttemptsFailed/AttemptsRetried
+	// count node-level execution attempts — the CreateNodeRun/UpdateNodeRun
+	// lifecycle in Runner.executeNode — mirroring RunsTotal/RunsSucceeded/
+	// RunsFailed above but at node-attempt granularity. Updated via the
+	// *runnerMetrics pointers handed to each Runner (see runnerMetrics
+	// below); nil-safe, so a Runner constructed without one (e.g. DryRun)
+	// simply skips these increments.
+	AttemptsStarted   int64
+	AttemptsSucceeded int64
+	AttemptsFailed    int64
+	AttemptsRetried   int64
+
+	// RunsQueueWaiting is a gauge: the number of RunPipeline/
+	// RunPipelineAsync/ExecuteQueuedRun callers currently blocked acquiring
+	// a concurrency slot from runSem — i.e. dispatch backlog depth, not
+	// currently exposed anywhere (brokoli_active_runs only reports runs
+	// that already acquired a slot and are executing). Incremented
+	// immediately before, decremented immediately after, each `e.runSem <-
+	// struct{}{}` send.
+	RunsQueueWaiting int64
+}
+
+// runnerMetrics carries pointers to the Engine-owned counters a Runner
+// needs to update directly (Tnsor-Labs/brokoli#11's event-append and
+// node-attempt metrics) without holding a reference to the whole Engine.
+// Assigned at every NewRunner call site exactly like runner.artifactStore =
+// e.ArtifactStore already is; nil-safe throughout (see incrMetric in
+// runner.go) so a Runner built without one — DryRun, or a test constructing
+// a Runner directly via NewRunner — simply skips these increments, the same
+// way a nil artifactStore already skips artifact writes.
+type runnerMetrics struct {
+	attemptsStarted    *int64
+	attemptsSucceeded  *int64
+	attemptsFailed     *int64
+	attemptsRetried    *int64
+	eventsAppended     *int64
+	eventsAppendFailed *int64
+}
+
+func (e *Engine) newRunnerMetrics() *runnerMetrics {
+	return &runnerMetrics{
+		attemptsStarted:    &e.AttemptsStarted,
+		attemptsSucceeded:  &e.AttemptsSucceeded,
+		attemptsFailed:     &e.AttemptsFailed,
+		attemptsRetried:    &e.AttemptsRetried,
+		eventsAppended:     &e.EventsAppended,
+		eventsAppendFailed: &e.EventsAppendFailed,
+	}
+}
+
+// The incr* methods below are safe to call on a nil *runnerMetrics receiver
+// (a Runner built without one, e.g. DryRun, or a test constructing Runner
+// directly) — each checks m != nil before touching any field, so call sites
+// in runner.go never need their own nil check.
+func (m *runnerMetrics) incrAttemptsStarted() {
+	if m != nil {
+		atomic.AddInt64(m.attemptsStarted, 1)
+	}
+}
+func (m *runnerMetrics) incrAttemptsSucceeded() {
+	if m != nil {
+		atomic.AddInt64(m.attemptsSucceeded, 1)
+	}
+}
+func (m *runnerMetrics) incrAttemptsFailed() {
+	if m != nil {
+		atomic.AddInt64(m.attemptsFailed, 1)
+	}
+}
+func (m *runnerMetrics) incrAttemptsRetried() {
+	if m != nil {
+		atomic.AddInt64(m.attemptsRetried, 1)
+	}
+}
+func (m *runnerMetrics) incrEventsAppended() {
+	if m != nil {
+		atomic.AddInt64(m.eventsAppended, 1)
+	}
+}
+func (m *runnerMetrics) incrEventsAppendFailed() {
+	if m != nil {
+		atomic.AddInt64(m.eventsAppendFailed, 1)
+	}
 }
 
 // NewEngine creates a new pipeline execution engine.
@@ -264,12 +370,15 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
 
 	// Acquire concurrency slot (blocks if at max)
+	atomic.AddInt64(&e.RunsQueueWaiting, 1)
 	e.runSem <- struct{}{}
+	atomic.AddInt64(&e.RunsQueueWaiting, -1)
 
 	atomic.AddInt64(&e.RunsTotal, 1)
 
@@ -519,6 +628,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
@@ -529,7 +639,9 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	e.mu.Unlock()
 
 	// Acquire concurrency slot
+	atomic.AddInt64(&e.RunsQueueWaiting, 1)
 	e.runSem <- struct{}{}
+	atomic.AddInt64(&e.RunsQueueWaiting, -1)
 	atomic.AddInt64(&e.RunsTotal, 1)
 
 	go func() {
@@ -585,11 +697,29 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	}
 	startedAt := time.Now().UTC()
 	traceID := common.NewID()
+
+	// claimCtx carries the OpenTelemetry trace context for this run from
+	// the claim attempt onward (Tnsor-Labs/brokoli#11): handed to the
+	// Runner below as parentCtx so the run's execution span is a child of
+	// (i.e. the same trace as) this claim span, rather than starting an
+	// unrelated new trace once execution begins. claimSpan itself ends
+	// here — only its trace/span-context metadata is propagated forward,
+	// which remains valid for creating child spans even after End().
+	claimCtx, claimSpan := tracing.Tracer().Start(context.Background(), "brokoli.run.claim",
+		trace.WithAttributes(
+			attribute.String("run_id", runID),
+			attribute.String("pipeline_id", pipelineID),
+		))
 	claimed, err := claimer.ClaimPendingRun(runID, pipelineID, startedAt, traceID)
 	if err != nil {
+		claimSpan.RecordError(err)
+		claimSpan.SetStatus(codes.Error, err.Error())
+		claimSpan.End()
 		return nil, fmt.Errorf("claim pending run: %w", err)
 	}
+	claimSpan.SetAttributes(attribute.Bool("claimed", claimed))
 	if !claimed {
+		claimSpan.End()
 		existing, getErr := e.store.GetRun(runID)
 		if getErr != nil {
 			return nil, fmt.Errorf("get concurrently claimed run: %w", getErr)
@@ -599,6 +729,9 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 		}
 		return nil, fmt.Errorf("run %s was concurrently claimed", runID)
 	}
+	claimSpan.SetStatus(codes.Ok, "")
+	claimSpan.End()
+	common.SLog().Info("run claimed", common.RunAttr(runID), common.PipelineAttr(pipelineID), common.TraceAttr(traceID))
 
 	accepted.Status = models.RunStatusRunning
 	accepted.StartedAt = &startedAt
@@ -619,8 +752,12 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.params = params
 	runner.acceptedRun = accepted
 	runner.artifactStore = e.ArtifactStore
+	runner.metrics = e.newRunnerMetrics()
+	runner.parentCtx = claimCtx
 
+	atomic.AddInt64(&e.RunsQueueWaiting, 1)
 	e.runSem <- struct{}{}
+	atomic.AddInt64(&e.RunsQueueWaiting, -1)
 	defer func() { <-e.runSem }()
 	atomic.AddInt64(&e.RunsTotal, 1)
 
@@ -680,8 +817,13 @@ func (e *Engine) failAcceptedRun(run *models.Run, cause error) (*models.Run, err
 // (Tnsor-Labs/brokoli#7).
 func (e *Engine) appendEvent(ev *models.RunEvent) {
 	if err := e.store.AppendEvent(ev); err != nil {
-		log.Printf("append run event %s for run %s: %v", ev.EventType, ev.RunID, err)
+		atomic.AddInt64(&e.EventsAppendFailed, 1)
+		common.SLog().Warn("append run event failed",
+			common.RunAttr(ev.RunID), common.NodeAttr(ev.NodeID),
+			"event_type", ev.EventType, "error", err)
+		return
 	}
+	atomic.AddInt64(&e.EventsAppended, 1)
 }
 
 func isTerminalRunStatus(status models.RunStatus) bool {
@@ -809,6 +951,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.artifactStore = e.ArtifactStore
 	runner.resumedFromRunID = oldRun.ID
 	runner.pipelineVersion = newRunVersion
+	runner.metrics = e.newRunnerMetrics()
 
 	run, err := runner.Execute()
 	return run, err

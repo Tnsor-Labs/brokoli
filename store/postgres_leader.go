@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -83,7 +82,7 @@ type PostgresLeaderElector struct {
 	// OnAcquire/OnRelease/OnLoss are optional observability hooks invoked
 	// synchronously from the election loop. cmd/serve.go does not wire
 	// these today — every acquire/release/loss is already unconditionally
-	// logged via log.Printf inside attempt()/release() below, which is
+	// logged via common.SLog() inside attempt()/release() below, which is
 	// sufficient for this PR's structured-log-lines requirement — but they
 	// exist as an extension point for a future external metrics/alerting
 	// integration without needing to touch the election logic itself. Left
@@ -156,12 +155,12 @@ func (e *PostgresLeaderElector) Run(ctx context.Context) {
 			releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			if err := e.release(releaseCtx); err != nil {
-				log.Printf("leader: release on shutdown failed (holder=%s): %v", e.holderID, err)
+				common.SLog().Warn("leader: release on shutdown failed", common.HolderAttr(e.holderID), "error", err)
 			}
 			return
 		case <-ticker.C:
 			if err := e.attempt(ctx); err != nil {
-				log.Printf("leader: election attempt failed (holder=%s): %v", e.holderID, err)
+				common.SLog().Warn("leader: election attempt failed", common.HolderAttr(e.holderID), "error", err)
 			}
 		}
 	}
@@ -195,7 +194,7 @@ func (e *PostgresLeaderElector) attempt(ctx context.Context) error {
 		lostGen := e.fencingGeneration
 		e.fencingGeneration = 0
 		e.mu.Unlock()
-		log.Printf("leader: lost leadership — lease not renewed in time, reclaimed by another instance (holder=%s, last generation=%d)", e.holderID, lostGen)
+		common.SLog().Warn("leader: lost leadership — lease not renewed in time, reclaimed by another instance", common.HolderAttr(e.holderID), common.GenerationAttr(lostGen))
 		if e.OnLoss != nil {
 			e.OnLoss(lostGen)
 		}
@@ -215,7 +214,7 @@ func (e *PostgresLeaderElector) attempt(ctx context.Context) error {
 	e.fencingGeneration = gen
 	e.mu.Unlock()
 	e.acquisitions.Add(1)
-	log.Printf("leader: acquired leadership (holder=%s, generation=%d)", e.holderID, gen)
+	common.SLog().Info("leader: acquired leadership", common.HolderAttr(e.holderID), common.GenerationAttr(gen))
 	if e.OnAcquire != nil {
 		e.OnAcquire(gen)
 	}
@@ -308,7 +307,7 @@ func (e *PostgresLeaderElector) release(ctx context.Context) error {
 	e.mu.Unlock()
 	if n == 1 {
 		e.releases.Add(1)
-		log.Printf("leader: released leadership (holder=%s, generation=%d)", e.holderID, currentGen)
+		common.SLog().Info("leader: released leadership", common.HolderAttr(e.holderID), common.GenerationAttr(currentGen))
 		if e.OnRelease != nil {
 			e.OnRelease(currentGen)
 		}

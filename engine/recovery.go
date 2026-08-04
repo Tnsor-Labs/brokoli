@@ -1,13 +1,18 @@
 package engine
 
 import (
+	"context"
 	"fmt"
-	"log"
 	"sync/atomic"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // recoveryBatchSize bounds how many non-terminal runs RecoverNonTerminalRuns
@@ -67,15 +72,27 @@ type RecoverySummary struct {
 // whatever is still genuinely non-terminal (freshly created runs, or runs
 // recovery previously and correctly deferred because a lease still looked
 // live at the time).
-func (e *Engine) RecoverNonTerminalRuns() (*RecoverySummary, error) {
-	summary := &RecoverySummary{}
+func (e *Engine) RecoverNonTerminalRuns() (summary *RecoverySummary, err error) {
+	summary = &RecoverySummary{}
 	attemptStore, _ := e.store.(store.ExecutionAttemptStore)
+
+	_, span := tracing.Tracer().Start(context.Background(), "brokoli.recovery")
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
 
 	afterID := ""
 	for {
-		runs, hasNext, err := e.store.ListNonTerminalRuns(afterID, recoveryBatchSize)
-		if err != nil {
-			return summary, fmt.Errorf("list non-terminal runs: %w", err)
+		runs, hasNext, listErr := e.store.ListNonTerminalRuns(afterID, recoveryBatchSize)
+		if listErr != nil {
+			err = fmt.Errorf("list non-terminal runs: %w", listErr)
+			return summary, err
 		}
 		if len(runs) == 0 {
 			break
@@ -83,13 +100,13 @@ func (e *Engine) RecoverNonTerminalRuns() (*RecoverySummary, error) {
 		for i := range runs {
 			run := &runs[i]
 			summary.RunsScanned++
-			outcome, reclaimed, err := e.recoverRun(run, attemptStore)
+			outcome, reclaimed, runErr := e.recoverRun(run, attemptStore)
 			summary.AttemptsReclaimed += reclaimed
 			if reclaimed > 0 {
 				atomic.AddInt64(&e.AttemptsReclaimed, int64(reclaimed))
 			}
-			if err != nil {
-				log.Printf("recovery: run %s: %v", run.ID, err)
+			if runErr != nil {
+				common.SLog().Warn("recovery: run reconciliation error", common.RunAttr(run.ID), "error", runErr)
 			}
 			switch outcome {
 			case recoveryOutcomeReconciled:
@@ -106,8 +123,17 @@ func (e *Engine) RecoverNonTerminalRuns() (*RecoverySummary, error) {
 		}
 	}
 
-	log.Printf("recovery: found %d non-terminal run(s) at startup, reconciled %d, failed %d, deferred %d (%d expired attempt lease(s) reclaimed)",
-		summary.RunsScanned, summary.RunsReconciled, summary.RunsFailed, summary.RunsDeferred, summary.AttemptsReclaimed)
+	span.SetAttributes(
+		attribute.Int("runs_scanned", summary.RunsScanned),
+		attribute.Int("runs_reconciled", summary.RunsReconciled),
+		attribute.Int("runs_failed", summary.RunsFailed),
+		attribute.Int("runs_deferred", summary.RunsDeferred),
+		attribute.Int("attempts_reclaimed", summary.AttemptsReclaimed),
+	)
+	common.SLog().Info("recovery: startup pass complete",
+		"runs_scanned", summary.RunsScanned, "runs_reconciled", summary.RunsReconciled,
+		"runs_failed", summary.RunsFailed, "runs_deferred", summary.RunsDeferred,
+		"attempts_reclaimed", summary.AttemptsReclaimed)
 	return summary, nil
 }
 
@@ -116,27 +142,44 @@ func (e *Engine) RecoverNonTerminalRuns() (*RecoverySummary, error) {
 // along the way (reclaiming happens independently of the run-level
 // decision — even a deferred run may have had other, already-expired
 // attempts settled).
-func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttemptStore) (recoveryOutcome, int, error) {
+func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttemptStore) (outcome recoveryOutcome, reclaimed int, err error) {
+	runCtx, span := tracing.Tracer().Start(context.Background(), "brokoli.recovery.run",
+		trace.WithAttributes(attribute.String("run_id", run.ID)))
+	defer func() {
+		span.SetAttributes(attribute.Int("outcome", int(outcome)))
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+	_ = runCtx // no further nested spans in this pass; kept for future propagation
+
 	e.appendEvent(&models.RunEvent{RunID: run.ID, EventType: models.RunEventRecoveryStarted})
 
-	reclaimed := 0
 	if attemptStore != nil {
-		liveLease, n, err := reconcileExecutionAttempts(attemptStore, run.ID)
+		liveLease, n, aErr := reconcileExecutionAttempts(attemptStore, run.ID)
 		reclaimed = n
-		if err != nil {
-			return recoveryOutcomeDeferred, reclaimed, fmt.Errorf("reconcile execution attempts: %w", err)
+		if aErr != nil {
+			err = fmt.Errorf("reconcile execution attempts: %w", aErr)
+			return recoveryOutcomeDeferred, reclaimed, err
 		}
 		if liveLease {
-			log.Printf("recovery: deferring run %s — an execution attempt still holds a live lease, may still be owned by another process", run.ID)
+			common.SLog().Info("recovery: deferring run — live lease held, may still be owned by another process",
+				common.RunAttr(run.ID))
 			return recoveryOutcomeDeferred, reclaimed, nil
 		}
 	}
 
-	events, err := e.store.ListEventsByRun(run.ID)
-	if err != nil {
-		return recoveryOutcomeDeferred, reclaimed, fmt.Errorf("list events: %w", err)
+	events, eErr := e.store.ListEventsByRun(run.ID)
+	if eErr != nil {
+		err = fmt.Errorf("list events: %w", eErr)
+		return recoveryOutcomeDeferred, reclaimed, err
 	}
 	projected := ProjectRun(run.ID, events)
+	atomic.AddInt64(&e.EventsReplayed, int64(len(events)))
 
 	if isTerminalRunStatus(projected.Status) {
 		// Defensive: current write paths always persist the runs/node_runs
@@ -148,12 +191,14 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		// happen, just sync the stale snapshot to the already-terminal
 		// projection; don't re-append a RunEventTerminal that logically
 		// already exists.
-		if err := e.store.UpdateRun(projected); err != nil {
-			return recoveryOutcomeDeferred, reclaimed, fmt.Errorf("sync stale snapshot to already-terminal projection: %w", err)
+		if uErr := e.store.UpdateRun(projected); uErr != nil {
+			err = fmt.Errorf("sync stale snapshot to already-terminal projection: %w", uErr)
+			return recoveryOutcomeDeferred, reclaimed, err
 		}
 		e.appendEvent(&models.RunEvent{RunID: run.ID, EventType: models.RunEventRecoveryCompleted})
 		atomic.AddInt64(&e.RunsRecovered, 1)
-		log.Printf("recovery: run %s snapshot was stale (already %s in its event log) — resynced", run.ID, projected.Status)
+		common.SLog().Info("recovery: run snapshot was stale — resynced from event log",
+			common.RunAttr(run.ID), "status", projected.Status)
 		return recoveryOutcomeReconciled, reclaimed, nil
 	}
 
@@ -167,7 +212,8 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		// — treating "no node has started yet" as "no recoverable path"
 		// would wrongly fail every queued-but-not-yet-claimed run on every
 		// restart. Leave it exactly as found.
-		log.Printf("recovery: leaving run %s pending — never claimed, awaiting job-queue redelivery", run.ID)
+		common.SLog().Info("recovery: leaving run pending — never claimed, awaiting job-queue redelivery",
+			common.RunAttr(run.ID))
 		return recoveryOutcomeDeferred, reclaimed, nil
 	}
 
@@ -281,7 +327,8 @@ func reconcileExecutionAttempts(attemptStore store.ExecutionAttemptStore, runID 
 	for _, a := range expired {
 		reason := "startup recovery: lease expired, reclaiming"
 		if err := attemptStore.FailAttempt(a.RunID, a.NodeID, a.Attempt, a.FencingGeneration, reason); err != nil {
-			log.Printf("recovery: reclaim expired lease for run %s node %q attempt %d: %v", a.RunID, a.NodeID, a.Attempt, err)
+			common.SLog().Warn("recovery: reclaim expired lease failed",
+				common.RunAttr(a.RunID), common.NodeAttr(a.NodeID), common.AttemptAttr(a.Attempt), "error", err)
 			continue
 		}
 		reclaimed++
@@ -319,7 +366,7 @@ func (e *Engine) finalizeRecoveredRun(run *models.Run, status models.RunStatus, 
 	} else {
 		atomic.AddInt64(&e.RunsSucceeded, 1)
 	}
-	log.Printf("recovery: run %s reconciled from event log to %s", run.ID, status)
+	common.SLog().Info("recovery: run reconciled from event log", common.RunAttr(run.ID), "status", status)
 	return recoveryOutcomeReconciled, nil
 }
 
@@ -350,7 +397,7 @@ func (e *Engine) markRecoveryFailed(run *models.Run, reason string) (recoveryOut
 	})
 	atomic.AddInt64(&e.RunsRecoveryFailed, 1)
 	atomic.AddInt64(&e.RunsFailed, 1)
-	log.Printf("recovery: run %s has no recoverable path (%s) — marked failed", run.ID, reason)
+	common.SLog().Error("recovery: run has no recoverable path — marked failed", common.RunAttr(run.ID), "reason", reason)
 	return recoveryOutcomeFailed, nil
 }
 

@@ -85,6 +85,24 @@ func (srv *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Protocol version negotiation (Tnsor-Labs/brokoli#11): reject an
+	// incompatible client loudly, before the WebSocket upgrade even
+	// completes, instead of silently proceeding regardless of declared
+	// version as before this check existed. See SODPVersionParam's doc
+	// comment on why this validates a query parameter rather than a frame.
+	if declared := r.URL.Query().Get(SODPVersionParam); declared != "" && !IsSODPVersionSupported(declared) {
+		// Strip CR/LF before logging the client-controlled declared version —
+		// same sanitization api/middleware.go's Logger already applies to
+		// r.URL.Path, closing a log-injection (CWE-117) path a crafted
+		// sodp_version value could otherwise use to forge fake log lines.
+		safeDeclared := strings.ReplaceAll(strings.ReplaceAll(declared, "\n", ""), "\r", "")
+		log.Printf("sodp: rejecting client — unsupported protocol version %q (server speaks %v)", safeDeclared, SupportedSODPVersions)
+		http.Error(w,
+			fmt.Sprintf("unsupported sodp protocol version %q (server speaks %v)", safeDeclared, SupportedSODPVersions),
+			http.StatusUpgradeRequired)
+		return
+	}
+
 	conn, err := srv.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("sodp: websocket upgrade error: %v", err)
@@ -130,7 +148,7 @@ func (srv *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		Type: FrameHello,
 		Body: HelloBody{
 			Protocol: "sodp",
-			Version:  "0.1",
+			Version:  ProtocolVersion,
 			ServerID: srv.serverID,
 			Auth:     srv.requireAuth && !preAuthed,
 		},
