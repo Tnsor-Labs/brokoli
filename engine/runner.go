@@ -563,11 +563,20 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 				"Retry attempt %d for node: %s", attempt, node.Name)
 		}
 
-		// Execute with timeout
+		// Execute with timeout. attemptCtx is derived from r.ctx (the
+		// pipeline run's own cancellable context) with this attempt's
+		// timeout applied — its Done() channel closes on EITHER pipeline
+		// cancellation or the attempt timing out, whichever comes first.
+		// It is handed to external NodeExecutors (extensions.ExecutionContext.Context)
+		// below via runNodeLogic so they can observe cancellation/deadline
+		// instead of being silently abandoned when this select moves on.
+		attemptCtx, attemptCancel := context.WithTimeout(r.ctx, nodeTimeout)
+		idempotencyKey := nodeAttemptIdempotencyKey(r.run.ID, node.ID, attempt)
+
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			crashAt(crashPointBeforeNodeExecution, node.ID)
-			out, e := r.runNodeLogic(node, input, allInputs)
+			out, e := r.runNodeLogic(node, input, allInputs, attempt, idempotencyKey, attemptCtx)
 			resultCh <- nodeResult{out, e}
 		}()
 
@@ -575,11 +584,14 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		select {
 		case result := <-resultCh:
 			output, err = result.output, result.err
-		case <-time.After(nodeTimeout):
-			err = fmt.Errorf("node timed out after %s", nodeTimeout)
-		case <-r.ctx.Done():
-			err = fmt.Errorf("pipeline cancelled")
+		case <-attemptCtx.Done():
+			if r.ctx.Err() != nil {
+				err = fmt.Errorf("pipeline cancelled")
+			} else {
+				err = fmt.Errorf("node timed out after %s", nodeTimeout)
+			}
 		}
+		attemptCancel()
 		crashAt(crashPointAfterNodeExecutionBeforePersist, node.ID)
 
 		duration := time.Since(startTime).Milliseconds()
@@ -825,7 +837,20 @@ func (r *Runner) restoreSkippedNodeOutput(node models.Node) (ds *common.DataSet,
 	return ds, true, nil
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet) (*common.DataSet, error) {
+// nodeAttemptIdempotencyKey derives a stable identifier for one (run, node,
+// attempt) unit of dispatchable work, for external NodeExecutors that need
+// to recognize a redispatch of the same attempt rather than starting a new
+// one — e.g. a Kubernetes executor naming its Job deterministically so a
+// crash-and-redispatch doesn't create a duplicate Job. It mirrors the
+// (run_id, node_id, attempt) identity models.ExecutionAttempt will use once
+// node-level claim/lease (Tnsor-Labs/brokoli#7) is wired into this loop;
+// until then, the retry loop's own attempt counter below is the actual
+// source of truth for "which attempt is this", so it's what we derive from.
+func nodeAttemptIdempotencyKey(runID, nodeID string, attempt int) string {
+	return fmt.Sprintf("%s:%s:%d", runID, nodeID, attempt)
+}
+
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (*common.DataSet, error) {
 	// Check if an external executor handles this node type (enterprise: K8s, Docker)
 	for _, exec := range r.executors {
 		if exec != nil && exec.CanHandle(string(node.Type)) {
@@ -838,6 +863,12 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 				Config:     node.Config,
 				InputData:  input,
 				PipelineID: r.pipe.ID,
+
+				Attempt:        attempt,
+				IdempotencyKey: idempotencyKey,
+				// FencingGeneration left at its zero value — see
+				// extensions.ExecutionContext's doc comment.
+				Context: ctx,
 			})
 			if err != nil {
 				return nil, err
