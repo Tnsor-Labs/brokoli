@@ -9,6 +9,14 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
+// nonTerminalRunStatusFilter is the SQL fragment (valid in both the SQLite
+// and PostgreSQL dialects this package targets) selecting only non-terminal
+// runs, shared verbatim by SQLiteStore.ListNonTerminalRuns and
+// PostgresStore.ListNonTerminalRuns so the terminal-status set only needs
+// keeping in sync with engine's private isTerminalRunStatus (which store
+// cannot import) in one place.
+const nonTerminalRunStatusFilter = `status NOT IN ('success','failed','cancelled','blocked')`
+
 // PageParams holds pagination parameters.
 type PageParams struct {
 	Page     int // 1-based
@@ -91,6 +99,16 @@ type ExecutionAttemptStore interface {
 
 	// GetExecutionAttempt returns the current durable state of one attempt.
 	GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error)
+
+	// ListExecutionAttemptsByRun returns every execution_attempts row for a
+	// run — across every node_id (including the pipeline-level row, where
+	// node_id is empty) and every status — ordered by (node_id, attempt).
+	// Unlike GetExecutionAttempt, which requires already knowing the exact
+	// key to look up, this is the enumeration startup recovery
+	// (Tnsor-Labs/brokoli#9) needs to find every attempt belonging to a run
+	// so it can check each one's lease state without guessing which node
+	// IDs and attempt numbers exist.
+	ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error)
 }
 
 // NewPageParams creates validated pagination parameters.
@@ -203,6 +221,25 @@ type Store interface {
 	GetRun(id string) (*models.Run, error)
 	ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error)
 	UpdateRun(r *models.Run) error
+
+	// ListNonTerminalRuns returns a keyset-paginated page of runs whose
+	// status is not yet terminal (i.e. not success/failed/cancelled/blocked
+	// — the same set engine's private isTerminalRunStatus treats as never
+	// transitioning further; kept in sync manually since store cannot
+	// import engine). This is the startup-recovery entry point
+	// (Tnsor-Labs/brokoli#9): a process that died mid-run leaves exactly
+	// these rows behind, and nothing before #9 ever queried for them.
+	//
+	// Pagination is keyset (afterID), not offset-based, deliberately: a
+	// caller processing a page typically reconciles some of those runs to a
+	// terminal status before requesting the next page, which would shift
+	// an offset-based page boundary and skip or repeat rows. afterID="" or
+	// "" starts from the beginning; pass the ID of the last run from the
+	// previous page (ascending by id, which — like
+	// ListPipelinesByOrgCursor's cursor — is a sortable UUIDv7, so this is
+	// a plain indexed range scan) to continue. hasNext reports whether
+	// another page remains.
+	ListNonTerminalRuns(afterID string, limit int) (runs []models.Run, hasNext bool, err error)
 
 	// Node Runs
 	CreateNodeRun(nr *models.NodeRun) error

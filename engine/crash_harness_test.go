@@ -14,8 +14,11 @@ import (
 )
 
 // TestCrashRecoveryBaseline records the persisted state after the scheduler
-// process dies at important execution boundaries. These are baseline assertions:
-// recovery is deliberately left to the follow-up durability work.
+// process dies at important execution boundaries, then — unlike before
+// issue #9 — reopens the store and runs engine.RecoverNonTerminalRuns
+// against it exactly as cmd/serve.go does on the next boot, asserting the
+// run reaches a terminal state instead of staying stuck non-terminal
+// forever. See assertCrashRecovery.
 func TestCrashRecoveryBaseline(t *testing.T) {
 	cases := []struct {
 		name           string
@@ -31,24 +34,64 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 		// transition already exercised by this harness also produces a
 		// persisted event, not just a mutated runs/node_runs row.
 		wantEvents []models.RunEventType
+
+		// wantRecoveredStatus is the run's terminal status after
+		// RecoverNonTerminalRuns runs against the post-crash database.
+		// Left "" for the one case with no run at all (nothing to recover).
+		wantRecoveredStatus models.RunStatus
+		// wantRecoveryEventType is the event type recovery must append to
+		// explain how it reached wantRecoveredStatus: RunEventTerminal when
+		// the event log could reconstruct the same outcome the live runner
+		// would have persisted, RunEventRecoveryFailed when it had no
+		// recoverable path, or "" when the run was already terminal before
+		// recovery even ran (so recovery does nothing new at all).
+		wantRecoveryEventType models.RunEventType
+		// wantRecoveryScanned is how many non-terminal runs
+		// RecoverNonTerminalRuns should find — 0 only for the
+		// already-terminal case.
+		wantRecoveryScanned int
 	}{
 		{name: "before run creation", point: crashPointBeforeRunCreate},
 		{name: "after run creation", point: crashPointAfterRunCreate, runStatus: models.RunStatusRunning,
-			wantEvents: []models.RunEventType{models.RunEventCreated}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated},
+			wantRecoveredStatus:   models.RunStatusFailed,
+			wantRecoveryEventType: models.RunEventRecoveryFailed,
+			wantRecoveryScanned:   1},
 		{name: "before node attempt creation", point: crashPointBeforeNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning,
-			wantEvents: []models.RunEventType{models.RunEventCreated}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated},
+			wantRecoveredStatus:   models.RunStatusFailed,
+			wantRecoveryEventType: models.RunEventRecoveryFailed,
+			wantRecoveryScanned:   1},
 		{name: "after node attempt creation", point: crashPointAfterNodeAttemptCreate + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning},
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted},
+			wantRecoveredStatus:   models.RunStatusFailed,
+			wantRecoveryEventType: models.RunEventRecoveryFailed,
+			wantRecoveryScanned:   1},
 		{name: "before node execution", point: crashPointBeforeNodeExecution + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning},
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted},
+			wantRecoveredStatus:   models.RunStatusFailed,
+			wantRecoveryEventType: models.RunEventRecoveryFailed,
+			wantRecoveryScanned:   1},
 		{name: "after sink side effect before persistence", point: crashPointAfterNodeExecutionBeforePersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusRunning}, outputExpected: true,
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted},
+			wantRecoveredStatus:   models.RunStatusFailed,
+			wantRecoveryEventType: models.RunEventRecoveryFailed,
+			wantRecoveryScanned:   1},
 		{name: "after sink completion persistence", point: crashPointAfterNodeCompletionPersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted},
+			wantRecoveredStatus:   models.RunStatusSuccess,
+			wantRecoveryEventType: models.RunEventTerminal,
+			wantRecoveryScanned:   1},
 		{name: "before terminal persistence", point: crashPointBeforeRunTerminalPersist, runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted},
+			wantRecoveredStatus:   models.RunStatusSuccess,
+			wantRecoveryEventType: models.RunEventTerminal,
+			wantRecoveryScanned:   1},
 		{name: "after terminal persistence", point: crashPointAfterRunTerminalPersist, runStatus: models.RunStatusSuccess, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
-			wantEvents: []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.RunEventTerminal}},
+			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.RunEventTerminal},
+			wantRecoveredStatus:   models.RunStatusSuccess,
+			wantRecoveryEventType: "", // already terminal before recovery ran — nothing new to append
+			wantRecoveryScanned:   0},
 	}
 
 	for _, tc := range cases {
@@ -76,6 +119,10 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 			}
 
 			assertCrashBaseline(t, dbPath, tc.runStatus, tc.nodeStatuses, outputPath, tc.outputExpected, tc.wantEvents)
+
+			if tc.runStatus != "" {
+				assertCrashRecovery(t, dbPath, tc.wantRecoveredStatus, tc.wantRecoveryEventType, tc.wantRecoveryScanned)
+			}
 		})
 	}
 }
@@ -192,5 +239,89 @@ func assertCrashEvents(t *testing.T, s *store.SQLiteStore, runID string, wantEve
 	}
 	if !reflect.DeepEqual(gotTypes, wantEvents) {
 		t.Errorf("run_events types = %v, want %v", gotTypes, wantEvents)
+	}
+}
+
+// assertCrashRecovery is the phase assertCrashBaseline explicitly deferred
+// (per its original doc comment): reopen the post-crash database exactly as
+// cmd/serve.go does on the next boot, run engine.RecoverNonTerminalRuns
+// against it, and assert the run this failpoint left behind reaches a
+// terminal state — issue #9's core acceptance criterion, "no run remains
+// permanently running merely because its process died" — rather than
+// remaining stuck non-terminal forever as it did before this PR (there was
+// previously no code path that ever touched it again).
+//
+// It also proves the idempotency acceptance criterion directly: running
+// recovery a second time against the now-terminal run must be a no-op.
+func assertCrashRecovery(t *testing.T, dbPath string, wantStatus models.RunStatus, wantEventType models.RunEventType, wantScanned int) {
+	t.Helper()
+
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store for recovery: %v", err)
+	}
+	defer s.Close()
+
+	eng := NewEngine(s)
+	summary, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns: %v", err)
+	}
+	if summary.RunsScanned != wantScanned {
+		t.Errorf("RecoverNonTerminalRuns scanned %d non-terminal run(s), want %d: %+v", summary.RunsScanned, wantScanned, summary)
+	}
+
+	runs, err := s.ListRunsByPipeline("crash-harness", 10)
+	if err != nil {
+		t.Fatalf("list runs after recovery: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs after recovery = %d, want 1", len(runs))
+	}
+	got := runs[0]
+	if got.Status != wantStatus {
+		t.Errorf("run status after recovery = %q, want %q", got.Status, wantStatus)
+	}
+	if got.Status != models.RunStatusSuccess && got.Status != models.RunStatusFailed && got.Status != models.RunStatusCancelled && got.Status != models.RunStatusBlocked {
+		t.Errorf("run status after recovery = %q, want a terminal status — a run must never remain permanently non-terminal merely because its process died", got.Status)
+	}
+
+	if wantEventType != "" {
+		events, err := s.ListEventsByRun(got.ID)
+		if err != nil {
+			t.Fatalf("list events after recovery: %v", err)
+		}
+		found := false
+		for _, e := range events {
+			if e.EventType == wantEventType {
+				found = true
+				break
+			}
+		}
+		if !found {
+			gotTypes := make([]models.RunEventType, len(events))
+			for i, e := range events {
+				gotTypes[i] = e.EventType
+			}
+			t.Errorf("events after recovery = %v, want to include %q", gotTypes, wantEventType)
+		}
+	}
+
+	// Idempotency (issue #9's third acceptance criterion): a second
+	// recovery pass against the now-terminal run must find nothing left to
+	// do — ListNonTerminalRuns excludes it once it's terminal.
+	second, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("second RecoverNonTerminalRuns: %v", err)
+	}
+	if second.RunsScanned != 0 {
+		t.Errorf("second RecoverNonTerminalRuns scanned %d run(s), want 0 (recovery is not idempotent)", second.RunsScanned)
+	}
+	again, err := s.GetRun(got.ID)
+	if err != nil {
+		t.Fatalf("GetRun after second recovery pass: %v", err)
+	}
+	if again.Status != got.Status {
+		t.Errorf("run status changed from %q to %q across a second recovery pass — recovery is not idempotent", got.Status, again.Status)
 	}
 }

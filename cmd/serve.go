@@ -109,6 +109,16 @@ var serveCmd = &cobra.Command{
 
 		eng := engine.NewEngine(s)
 
+		// Recover runs a prior process left in a non-terminal status
+		// (Tnsor-Labs/brokoli#9) — e.g. "running" because it was kill -9'd
+		// mid-execution. Must happen before the scheduler starts firing new
+		// runs and before any worker loop below begins pulling jobs, so
+		// recovery never races a freshly dispatched run into being observed
+		// mid-creation and misdiagnosed as orphaned.
+		if _, err := eng.RecoverNonTerminalRuns(); err != nil {
+			log.Printf("WARNING: startup recovery failed: %v", err)
+		}
+
 		// Wire job queue from extensions (enterprise distributed mode)
 		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
 			eng.JobQueue = Extensions.JobQueue

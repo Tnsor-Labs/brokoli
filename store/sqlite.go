@@ -811,6 +811,51 @@ func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models
 	return runs, rows.Err()
 }
 
+// ListNonTerminalRuns returns a keyset-paginated page of runs left in a
+// non-terminal status — see store.Store.ListNonTerminalRuns and
+// Tnsor-Labs/brokoli#9. Ordered ascending by id (a sortable UUIDv7, see
+// pkg/common.NewID), consistent with ListPipelinesByOrgCursor's cursor
+// convention elsewhere in this file.
+func (s *SQLiteStore) ListNonTerminalRuns(afterID string, limit int) ([]models.Run, bool, error) {
+	fetchN := limit + 1
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			 FROM runs WHERE `+nonTerminalRunStatusFilter+` ORDER BY id ASC LIMIT ?`,
+			fetchN,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			 FROM runs WHERE `+nonTerminalRunStatusFilter+` AND id > ? ORDER BY id ASC LIMIT ?`,
+			afterID, fetchN,
+		)
+	}
+	if err != nil {
+		return nil, false, wrapStoreErr("ListNonTerminalRuns", afterID, err)
+	}
+	defer rows.Close()
+
+	var runs []models.Run
+	for rows.Next() {
+		r, err := scanRunRows(rows)
+		if err != nil {
+			return nil, false, wrapStoreErr("ListNonTerminalRuns", afterID, err)
+		}
+		runs = append(runs, *r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, wrapStoreErr("ListNonTerminalRuns", afterID, err)
+	}
+	hasNext := len(runs) > limit
+	if hasNext {
+		runs = runs[:limit]
+	}
+	return runs, hasNext, nil
+}
+
 func (s *SQLiteStore) UpdateRun(r *models.Run) error {
 	paramsJSON, err := json.Marshal(r.Params)
 	if err != nil {
@@ -1142,7 +1187,40 @@ func sqliteGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*
 	return scanExecutionAttempt(row)
 }
 
-func scanExecutionAttempt(row *sql.Row) (*models.ExecutionAttempt, error) {
+// ListExecutionAttemptsByRun returns every execution_attempts row for a run
+// — see store.ExecutionAttemptStore.ListExecutionAttemptsByRun and
+// Tnsor-Labs/brokoli#9, which needs this enumeration to check every
+// attempt's lease state during startup recovery.
+func (s *SQLiteStore) ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error) {
+	rows, err := s.db.Query(
+		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id = ? ORDER BY node_id ASC, attempt ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, wrapStoreErr("ListExecutionAttemptsByRun", runID, err)
+	}
+	defer rows.Close()
+
+	var attempts []models.ExecutionAttempt
+	for rows.Next() {
+		a, err := scanExecutionAttempt(rows)
+		if err != nil {
+			return nil, wrapStoreErr("ListExecutionAttemptsByRun", runID, err)
+		}
+		attempts = append(attempts, *a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, wrapStoreErr("ListExecutionAttemptsByRun", runID, err)
+	}
+	return attempts, nil
+}
+
+// scanExecutionAttempt scans one execution_attempts row from either a
+// *sql.Row (GetExecutionAttempt) or *sql.Rows (ListExecutionAttemptsByRun) —
+// both satisfy the shared scanner interface (see scanRunFromScanner above
+// for the same pattern applied to runs).
+func scanExecutionAttempt(row scanner) (*models.ExecutionAttempt, error) {
 	var a models.ExecutionAttempt
 	var status string
 	var leaseExpiresAt sql.NullString

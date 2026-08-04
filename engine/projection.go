@@ -77,10 +77,23 @@ func ProjectRun(runID string, events []models.RunEvent) *models.Run {
 				run.Params = p.Params
 			}
 
-		case models.RunEventCancelled, models.RunEventTerminal:
+		case models.RunEventCancelled, models.RunEventTerminal, models.RunEventRecoveryFailed:
+			// RunEventRecoveryFailed (Tnsor-Labs/brokoli#9) carries its own
+			// terminal transition — unlike RunEventRecoveryStarted/Completed
+			// below, it is not purely informational: startup recovery uses
+			// it as the terminal event itself when a run has no recoverable
+			// path (as opposed to pairing RunEventRecoveryCompleted with a
+			// normal RunEventTerminal, which is what happens when recovery
+			// CAN determine the run's true outcome from its event log).
 			run.Status = p.Status
 			run.FinishedAt = p.FinishedAt
 			run.Error = p.Error
+
+		case models.RunEventRecoveryStarted, models.RunEventRecoveryCompleted:
+			// Informational only — the audit trail of a startup recovery
+			// pass. Any state change is carried by the RunEventTerminal (or
+			// RunEventRecoveryFailed, above) event recovery pairs these
+			// with, not by these events themselves.
 
 		case models.AttemptStarted:
 			if e.NodeID == "" {

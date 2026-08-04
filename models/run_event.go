@@ -72,6 +72,42 @@ const (
 	// WebSocket-only "retrying" status literal (engine/runner.go). Equivalent
 	// to the issue's canonical "retry scheduled" type.
 	RetryScheduled RunEventType = "retry.scheduled"
+
+	// RunEventRecoveryStarted marks the moment startup recovery
+	// (Tnsor-Labs/brokoli#9) begins examining a run it found left in a
+	// non-terminal status by a prior process death. Informational only —
+	// does not change runs.status. Appended exactly once per recovery pass
+	// that looks at a given run; a run that is still non-terminal because
+	// recovery deferred to a possibly-live owner (see
+	// store.ExecutionAttemptStore's lease contract) will show a
+	// RunEventRecoveryStarted with no matching Completed/Failed until a
+	// later boot resolves it — that gap is itself the audit trail of the
+	// deferral.
+	RunEventRecoveryStarted RunEventType = "run.recovery_started"
+
+	// RunEventRecoveryCompleted marks startup recovery successfully
+	// determining a non-terminal run's true outcome from its event log and
+	// reconciling the runs/node_runs snapshot to match — either because the
+	// snapshot had simply gone stale (fixed by re-syncing it) or because the
+	// run's node-attempt history showed a definite success or failure that
+	// the live process never got to persist before it died (fixed by
+	// appending the RunEventTerminal that process would have appended).
+	// Informational only; the state change itself is carried by the
+	// RunEventTerminal event this is paired with, not by this event's own
+	// payload.
+	RunEventRecoveryCompleted RunEventType = "run.recovery_completed"
+
+	// RunEventRecoveryFailed marks startup recovery concluding a
+	// non-terminal run has no recoverable path — its node-attempt history
+	// is incomplete or ambiguous (e.g. a node's last recorded attempt was
+	// still "running" when the process died, or no node ever started) so
+	// there is no way to tell what the live process would have persisted.
+	// Unlike RunEventRecoveryCompleted, this event itself carries the
+	// terminal state transition (Payload.Status is always
+	// RunStatusFailed) — recovery marks the run failed with a specific
+	// reason (Payload.Error) rather than leaving it stuck non-terminal
+	// forever.
+	RunEventRecoveryFailed RunEventType = "run.recovery_failed"
 )
 
 // RunEvent is a single immutable, append-only fact about a run or a node
