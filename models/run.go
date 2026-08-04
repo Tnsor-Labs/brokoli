@@ -25,6 +25,25 @@ type Run struct {
 	FinishedAt *time.Time        `json:"finished_at"`
 	TraceID    string            `json:"trace_id,omitempty"` // unique correlation ID for distributed tracing
 	NodeRuns   []NodeRun         `json:"node_runs"`
+
+	// PipelineVersion pins this run to the exact store.PipelineVersion
+	// snapshot (store.Store.GetPipelineVersion) of the pipeline definition
+	// it executes against, resolved once at run-creation time from the
+	// pipeline's current version. This is what makes a run — and especially
+	// a resumed run — immune to edits made to the live pipeline afterward
+	// (Tnsor-Labs/brokoli#8): engine.Engine no longer re-fetches the live,
+	// mutable pipeline row when resolving what DAG to execute or resume.
+	// Zero means no version was recorded (a run created before this field
+	// existed) — callers fall back to the live pipeline definition, the
+	// previous behavior, rather than treating 0 as a real version number.
+	PipelineVersion int `json:"pipeline_version,omitempty"`
+
+	// ResumedFromRunID is the ID of the run this run was resumed from, set
+	// by Engine.ResumeRun. Empty for a run that was not created via resume.
+	// This is the lineage pointer the issue asks for — it also identifies
+	// which run's artifact store entries a skipped node's durable output
+	// should be restored from.
+	ResumedFromRunID string `json:"resumed_from_run_id,omitempty"`
 }
 
 // PopulateError sets the Error field from the final failed NodeRun.

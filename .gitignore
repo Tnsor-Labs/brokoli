@@ -52,5 +52,12 @@ brok.log
 # with this file untracked because it dirties the working tree.
 .brokoli-jwt-secret
 
+# Default local-disk artifact store (engine.NewLocalDiskArtifactStore),
+# same "lands wherever CWD happens to be" situation as the JWT secret above
+# — repo root in dev, engine/ in `go test ./engine/...` for any test that
+# builds an Engine without overriding ArtifactStore. Override via
+# BROKOLI_ARTIFACT_DIR or Engine.ArtifactStore; never commit its contents.
+brokoli-artifacts/
+
 # Node modules
 node_modules/

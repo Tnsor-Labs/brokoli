@@ -38,6 +38,29 @@ type Runner struct {
 	traceID       string                          // distributed tracing correlation ID
 	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
 	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+
+	// pipelineVersion pins a freshly created run (acceptedRun == nil) to the
+	// store.PipelineVersion snapshot it was resolved against — see
+	// Engine.resolveRunPipelineVersion and models.Run.PipelineVersion.
+	// Ignored when acceptedRun != nil; that run's PipelineVersion was
+	// already set (and persisted) when it was accepted.
+	pipelineVersion int
+
+	// resumedFromRunID is set by Engine.ResumeRun to the run ID being
+	// resumed. It serves two purposes: it becomes models.Run.ResumedFromRunID
+	// on the new run (lineage), and it is the run ID Runner reads durable
+	// artifacts from when restoring a skipped node's output — a skipped
+	// node's artifact was written under the ORIGINAL run's ID, not this new
+	// run's ID. Empty for a run that is not a resume.
+	resumedFromRunID string
+
+	// artifactStore persists/restores durable node-output artifacts. See
+	// ArtifactStore and Runner.restoreSkippedNodeOutput. Nil disables both
+	// writing artifacts on node success and restoring them on resume (any
+	// resume attempt against a nil artifactStore that needs to restore a
+	// node with downstream consumers fails loudly rather than silently
+	// substituting empty data).
+	artifactStore ArtifactStore
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -79,12 +102,14 @@ func (r *Runner) Execute() (*models.Run, error) {
 		}
 		r.traceID = common.NewID()
 		r.run = &models.Run{
-			ID:         runID,
-			PipelineID: r.pipe.ID,
-			Status:     models.RunStatusRunning,
-			Params:     r.params,
-			StartedAt:  &now,
-			TraceID:    r.traceID,
+			ID:               runID,
+			PipelineID:       r.pipe.ID,
+			Status:           models.RunStatusRunning,
+			Params:           r.params,
+			StartedAt:        &now,
+			TraceID:          r.traceID,
+			PipelineVersion:  r.pipelineVersion,
+			ResumedFromRunID: r.resumedFromRunID,
 		}
 		crashAt(crashPointBeforeRunCreate, "")
 		if err := r.store.CreateRun(r.run); err != nil {
@@ -94,11 +119,13 @@ func (r *Runner) Execute() (*models.Run, error) {
 			RunID:     r.run.ID,
 			EventType: models.RunEventCreated,
 			Payload: models.RunEventPayload{
-				Status:     models.RunStatusRunning,
-				PipelineID: r.run.PipelineID,
-				StartedAt:  r.run.StartedAt,
-				TraceID:    r.run.TraceID,
-				Params:     r.run.Params,
+				Status:           models.RunStatusRunning,
+				PipelineID:       r.run.PipelineID,
+				StartedAt:        r.run.StartedAt,
+				TraceID:          r.run.TraceID,
+				Params:           r.run.Params,
+				PipelineVersion:  r.run.PipelineVersion,
+				ResumedFromRunID: r.run.ResumedFromRunID,
 			},
 		})
 		crashAt(crashPointAfterRunCreate, "")
@@ -294,9 +321,28 @@ func (r *Runner) Execute() (*models.Run, error) {
 }
 
 func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSet, outputsMu *sync.Mutex, readyAt time.Time) error {
-	// Skip nodes that already succeeded (resume mode)
+	// Skip nodes that already succeeded (resume mode). Restore the node's
+	// real durable output into the outputs map so downstream nodes see the
+	// original data — never leave it unpopulated, which previously caused
+	// executeNode's nil-input fallback further down to silently substitute
+	// an empty dataset (Tnsor-Labs/brokoli#8).
 	if r.skipNodes != nil && r.skipNodes[node.ID] {
-		r.log(node.ID, models.LogLevelInfo, "Skipping node %s (already succeeded)", node.Name)
+		ds, restored, err := r.restoreSkippedNodeOutput(node)
+		if err != nil {
+			return err
+		}
+		if restored {
+			outputsMu.Lock()
+			outputs[node.ID] = ds
+			outputsMu.Unlock()
+			rowCount := 0
+			if ds != nil {
+				rowCount = len(ds.Rows)
+			}
+			r.log(node.ID, models.LogLevelInfo, "Resumed node %s (already succeeded) — restored %d row(s) from durable artifact", node.Name, rowCount)
+		} else {
+			r.log(node.ID, models.LogLevelInfo, "Skipping node %s (already succeeded, no downstream consumers of its output)", node.Name)
+		}
 		return nil
 	}
 
@@ -535,8 +581,28 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 						NodeID: node.ID, Name: node.Name, Status: "success",
 						Columns: output.Columns, Rows: previewRows,
 					}
-				} else if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
-					return fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
+				} else {
+					if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
+						return fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
+					}
+					// Durable full-output artifact — distinct from
+					// SaveNodePreview above, which truncates to 50 rows for
+					// UI display and is not sufficient to correctly resume
+					// a downstream node. See ArtifactStore and
+					// docs/adr/010-run-artifact-and-resume-semantics.md.
+					// Node types in nonResumableNodeTypes never get an
+					// artifact even on success — see that var's doc comment.
+					if r.artifactStore != nil && !nonResumableNodeTypes[node.Type] {
+						if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, output); err != nil {
+							// Not fatal to this node's success — mirrors
+							// AppendLog's "log, don't abort" policy below —
+							// but it does mean a future resume that needs
+							// this node's output will fail loudly instead
+							// of silently substituting empty data, which is
+							// the correct failure mode either way.
+							r.log(node.ID, models.LogLevelWarning, "Failed to persist durable artifact for node %s (a future resume needing its output will fail loudly): %v", node.Name, err)
+						}
+					}
 				}
 			}
 
@@ -608,6 +674,57 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		return fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return nil
+}
+
+// restoreSkippedNodeOutput recovers the durable output artifact for a node
+// being skipped during resume (Tnsor-Labs/brokoli#8). It never falls back to
+// synthesizing empty data for a node that matters to the rest of the DAG:
+//
+//   - restored=true: ds is the node's real prior output, read from the
+//     source run's artifact store — restore it into the outputs map.
+//   - restored=false, err=nil: no artifact exists, but nothing in the
+//     CURRENT pipeline reads this node's output (no outgoing edges), so an
+//     absent artifact cannot produce wrong data further along the DAG. This
+//     is the normal case for a sink node, or for a non-resumable node type
+//     (see nonResumableNodeTypes) with no downstream consumers.
+//   - err != nil: this node's output is unavailable AND at least one node
+//     downstream of it depends on that data. Resuming would otherwise feed
+//     that downstream node an empty/synthesized dataset exactly like the
+//     bug this fixes — fail the whole resume attempt loudly instead,
+//     naming the node, rather than proceed with corrupted data.
+func (r *Runner) restoreSkippedNodeOutput(node models.Node) (ds *common.DataSet, restored bool, err error) {
+	hasDownstream := false
+	for _, edge := range r.pipe.Edges {
+		if edge.From == node.ID {
+			hasDownstream = true
+			break
+		}
+	}
+
+	sourceRunID := r.resumedFromRunID
+	if sourceRunID == "" {
+		// Not a resume (skipNodes set some other way, e.g. a future
+		// caller) — fall back to this run's own ID so ReadArtifact still
+		// has a well-defined key to look up, even though nothing will have
+		// been written under it for a node that hasn't executed yet.
+		sourceRunID = r.run.ID
+	}
+
+	if r.artifactStore == nil {
+		if hasDownstream {
+			return nil, false, fmt.Errorf("cannot resume: node %s (%s) has downstream consumers but no artifact store is configured to restore its output", node.Name, node.ID)
+		}
+		return nil, false, nil
+	}
+
+	ds, readErr := r.artifactStore.ReadArtifact(sourceRunID, node.ID)
+	if readErr != nil {
+		if !hasDownstream {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("resume: node %s (%s) is non-resumable — no durable output artifact from run %s (%v); refusing to feed downstream nodes an empty or synthesized dataset", node.Name, node.ID, sourceRunID, readErr)
+	}
+	return ds, true, nil
 }
 
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet) (*common.DataSet, error) {

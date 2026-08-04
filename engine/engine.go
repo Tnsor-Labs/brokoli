@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -34,6 +35,12 @@ type Engine struct {
 	Executors     []extensions.NodeExecutor       // enterprise: K8s, Docker, etc.
 	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 	JobQueue      extensions.JobQueue             // nil = run in-process (default)
+	// ArtifactStore persists durable node-output artifacts so ResumeRun can
+	// restore a skipped node's real prior output (Tnsor-Labs/brokoli#8).
+	// Defaults to a LocalDiskArtifactStore rooted at BROKOLI_ARTIFACT_DIR
+	// (or ./brokoli-artifacts); assign a different implementation the same
+	// way VarStore/ConnResolver are overridden after NewEngine.
+	ArtifactStore ArtifactStore
 	RunsTotal     int64
 	RunsSucceeded int64
 	RunsFailed    int64
@@ -53,12 +60,17 @@ func NewEngine(s store.Store) *Engine {
 			eventBuf = n
 		}
 	}
+	artifactDir := os.Getenv("BROKOLI_ARTIFACT_DIR")
+	if artifactDir == "" {
+		artifactDir = "./brokoli-artifacts"
+	}
 	return &Engine{
 		store:         s,
 		eventCh:       make(chan models.Event, eventBuf),
 		active:        make(map[string]*Runner),
 		maxConcurrent: maxC,
 		runSem:        make(chan struct{}, maxC),
+		ArtifactStore: NewLocalDiskArtifactStore(artifactDir),
 	}
 }
 
@@ -121,6 +133,63 @@ func (e *Engine) CancelRun(runID string) error {
 	return nil
 }
 
+// resolveRunPipelineVersion returns the store.PipelineVersion number that
+// represents pipe's current live definition, auto-saving a snapshot if none
+// exists yet — e.g. a pipeline that was created but never edited since (the
+// UI's Update handler is what normally calls SavePipelineVersion), or one
+// seeded outside that path (CLI, git-sync, a pre-existing database from
+// before this field existed). This guarantees every run created after this
+// point can record a concrete PipelineVersion that GetPipelineVersion can
+// resolve later, even after further edits — the core fix for
+// Tnsor-Labs/brokoli#8: a run (and especially a resumed run) executing the
+// live pipeline definition instead of a pinned snapshot of what it started
+// with. ListPipelineVersions orders by version DESC, so the first result is
+// always the current maximum regardless of how many versions exist.
+func resolveRunPipelineVersion(s store.Store, pipe *models.Pipeline) (int, error) {
+	versions, err := s.ListPipelineVersions(pipe.ID)
+	if err != nil {
+		return 0, fmt.Errorf("list pipeline versions: %w", err)
+	}
+	if len(versions) > 0 {
+		return versions[0].Version, nil
+	}
+	snapshot, err := json.Marshal(pipe)
+	if err != nil {
+		return 0, fmt.Errorf("snapshot pipeline: %w", err)
+	}
+	v, err := s.SavePipelineVersion(pipe.ID, string(snapshot), "auto-snapshot at first run")
+	if err != nil {
+		return 0, fmt.Errorf("save initial pipeline version: %w", err)
+	}
+	return v, nil
+}
+
+// resolvePipelineForRun returns the pipeline definition a run should
+// execute against. When version is a real, previously recorded
+// PipelineVersion, this returns the exact snapshot pinned at run-creation
+// time — immune to edits made to the live pipeline afterward, which is what
+// makes ResumeRun safe to call after the pipeline has since changed.
+//
+// version <= 0 means no snapshot was ever recorded for this run — a run
+// created before models.Run.PipelineVersion existed. Falling back to the
+// live pipeline reproduces the previous (pre-#8) behavior for those legacy
+// rows instead of failing them outright.
+func (e *Engine) resolvePipelineForRun(pipelineID string, version int) (*models.Pipeline, error) {
+	if version <= 0 {
+		log.Printf("run for pipeline %s has no recorded pipeline_version; resolving the live pipeline definition instead (legacy run predating Tnsor-Labs/brokoli#8)", pipelineID)
+		return e.store.GetPipeline(pipelineID)
+	}
+	snapshot, err := e.store.GetPipelineVersion(pipelineID, version)
+	if err != nil {
+		return nil, fmt.Errorf("get pipeline version %d for %s: %w", version, pipelineID, err)
+	}
+	var pipe models.Pipeline
+	if err := json.Unmarshal([]byte(snapshot), &pipe); err != nil {
+		return nil, fmt.Errorf("decode pipeline version %d snapshot for %s: %w", version, pipelineID, err)
+	}
+	return &pipe, nil
+}
+
 // RunPipeline triggers execution of a pipeline by ID with optional params.
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
 	pipe, err := e.store.GetPipeline(pipelineID)
@@ -133,16 +202,22 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		return nil, ve
 	}
 
+	pipelineVersion, err := resolveRunPipelineVersion(e.store, pipe)
+	if err != nil {
+		return nil, fmt.Errorf("resolve pipeline version: %w", err)
+	}
+
 	// Check cross-pipeline dependencies; persist a blocked run if unsatisfied.
 	if ok, _, reason := CheckDependencies(e.store, pipe, time.Now().UTC()); !ok {
 		now := time.Now().UTC()
 		blocked := &models.Run{
-			ID:         common.NewID(),
-			PipelineID: pipe.ID,
-			Status:     models.RunStatusBlocked,
-			Error:      reason,
-			StartedAt:  &now,
-			FinishedAt: &now,
+			ID:              common.NewID(),
+			PipelineID:      pipe.ID,
+			Status:          models.RunStatusBlocked,
+			Error:           reason,
+			StartedAt:       &now,
+			FinishedAt:      &now,
+			PipelineVersion: pipelineVersion,
 		}
 		if len(params) > 0 && params[0] != nil {
 			blocked.Params = params[0]
@@ -154,12 +229,13 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
 			Payload: models.RunEventPayload{
-				Status:     models.RunStatusBlocked,
-				PipelineID: blocked.PipelineID,
-				StartedAt:  blocked.StartedAt,
-				FinishedAt: blocked.FinishedAt,
-				Error:      blocked.Error,
-				Params:     blocked.Params,
+				Status:          models.RunStatusBlocked,
+				PipelineID:      blocked.PipelineID,
+				StartedAt:       blocked.StartedAt,
+				FinishedAt:      blocked.FinishedAt,
+				Error:           blocked.Error,
+				Params:          blocked.Params,
+				PipelineVersion: blocked.PipelineVersion,
 			},
 		})
 		return blocked, nil
@@ -167,6 +243,8 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
 	runner.orgID = pipe.OrgID
+	runner.pipelineVersion = pipelineVersion
+	runner.artifactStore = e.ArtifactStore
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
@@ -275,16 +353,22 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 		return "", ve
 	}
 
+	pipelineVersion, err := resolveRunPipelineVersion(e.store, pipe)
+	if err != nil {
+		return "", fmt.Errorf("resolve pipeline version: %w", err)
+	}
+
 	// Check cross-pipeline dependencies; persist a blocked run if unsatisfied.
 	if ok, _, reason := CheckDependencies(e.store, pipe, time.Now().UTC()); !ok {
 		now := time.Now().UTC()
 		blocked := &models.Run{
-			ID:         common.NewID(),
-			PipelineID: pipe.ID,
-			Status:     models.RunStatusBlocked,
-			Error:      reason,
-			StartedAt:  &now,
-			FinishedAt: &now,
+			ID:              common.NewID(),
+			PipelineID:      pipe.ID,
+			Status:          models.RunStatusBlocked,
+			Error:           reason,
+			StartedAt:       &now,
+			FinishedAt:      &now,
+			PipelineVersion: pipelineVersion,
 		}
 		if len(params) > 0 && params[0] != nil {
 			blocked.Params = params[0]
@@ -296,12 +380,13 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
 			Payload: models.RunEventPayload{
-				Status:     models.RunStatusBlocked,
-				PipelineID: blocked.PipelineID,
-				StartedAt:  blocked.StartedAt,
-				FinishedAt: blocked.FinishedAt,
-				Error:      blocked.Error,
-				Params:     blocked.Params,
+				Status:          models.RunStatusBlocked,
+				PipelineID:      blocked.PipelineID,
+				StartedAt:       blocked.StartedAt,
+				FinishedAt:      blocked.FinishedAt,
+				Error:           blocked.Error,
+				Params:          blocked.Params,
+				PipelineVersion: blocked.PipelineVersion,
 			},
 		})
 		return blocked.ID, nil
@@ -312,9 +397,10 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	// If job queue is available, enqueue for distributed execution
 	if e.JobQueue != nil {
 		accepted := &models.Run{
-			ID:         runID,
-			PipelineID: pipelineID,
-			Status:     models.RunStatusPending,
+			ID:              runID,
+			PipelineID:      pipelineID,
+			Status:          models.RunStatusPending,
+			PipelineVersion: pipelineVersion,
 		}
 		if len(params) > 0 && params[0] != nil {
 			accepted.Params = params[0]
@@ -323,9 +409,10 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			RunID:     accepted.ID,
 			EventType: models.RunEventCreated,
 			Payload: models.RunEventPayload{
-				Status:     models.RunStatusPending,
-				PipelineID: accepted.PipelineID,
-				Params:     accepted.Params,
+				Status:          models.RunStatusPending,
+				PipelineID:      accepted.PipelineID,
+				Params:          accepted.Params,
+				PipelineVersion: accepted.PipelineVersion,
 			},
 		}
 		// The durable dispatch-intent/outbox record (Tnsor-Labs/brokoli#7).
@@ -411,6 +498,8 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	// Default: run in-process (current behavior)
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
 	runner.orgID = pipe.OrgID
+	runner.pipelineVersion = pipelineVersion
+	runner.artifactStore = e.ArtifactStore
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
@@ -510,6 +599,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.orgID = pipe.OrgID
 	runner.params = params
 	runner.acceptedRun = accepted
+	runner.artifactStore = e.ArtifactStore
 
 	e.runSem <- struct{}{}
 	defer func() { <-e.runSem }()
@@ -639,6 +729,26 @@ func (e *Engine) Backfill(pipelineID, startDate, endDate string) ([]string, erro
 }
 
 // ResumeRun re-runs a failed run from the first failed node.
+//
+// Two correctness properties matter here, both fixed by Tnsor-Labs/brokoli#8:
+//
+//  1. It resumes the DAG the original run actually executed, not whatever
+//     the live pipeline looks like now — resolved via
+//     resolvePipelineForRun(oldRun.PipelineID, oldRun.PipelineVersion)
+//     instead of e.store.GetPipeline, which always returns the current,
+//     possibly-since-edited row.
+//  2. Skipped nodes (those that already succeeded) get their REAL prior
+//     output restored from the durable artifact store — see
+//     Runner.restoreSkippedNodeOutput — instead of the previous behavior,
+//     where a skipped node's entry in the in-memory outputs map was simply
+//     never populated and its downstream consumer silently received an
+//     empty dataset.
+//
+// The new run records its lineage back to oldRun via
+// models.Run.ResumedFromRunID, and pins itself to the SAME PipelineVersion
+// oldRun used — a resume-of-a-resume stays pinned to the original DAG
+// snapshot, not whatever version happened to be live if oldRun itself had
+// no recorded version.
 func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	oldRun, err := e.store.GetRun(runID)
 	if err != nil {
@@ -648,9 +758,22 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		return nil, fmt.Errorf("can only resume failed runs (current: %s)", oldRun.Status)
 	}
 
-	pipe, err := e.store.GetPipeline(oldRun.PipelineID)
+	pipe, err := e.resolvePipelineForRun(oldRun.PipelineID, oldRun.PipelineVersion)
 	if err != nil {
-		return nil, fmt.Errorf("get pipeline: %w", err)
+		return nil, fmt.Errorf("resolve pipeline definition for resume: %w", err)
+	}
+
+	// Prefer the exact version oldRun was pinned to. For a legacy run with
+	// no recorded version (resolvePipelineForRun fell back to the live
+	// pipeline above), pin the NEW resumed run to a freshly resolved
+	// version instead of propagating the same "unknown" state forward —
+	// this progressively closes the gap so a resume-of-this-resume is
+	// pinned even though oldRun itself wasn't.
+	newRunVersion := oldRun.PipelineVersion
+	if newRunVersion <= 0 {
+		if v, verr := resolveRunPipelineVersion(e.store, pipe); verr == nil {
+			newRunVersion = v
+		}
 	}
 
 	// Find which nodes succeeded — they can be skipped
@@ -662,7 +785,11 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	}
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
+	runner.artifactStore = e.ArtifactStore
+	runner.resumedFromRunID = oldRun.ID
+	runner.pipelineVersion = newRunVersion
 
 	run, err := runner.Execute()
 	return run, err

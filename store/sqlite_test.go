@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -146,6 +147,148 @@ func TestRunLifecycle(t *testing.T) {
 	}
 	if len(runs) != 1 {
 		t.Errorf("len(runs) = %d, want 1", len(runs))
+	}
+}
+
+// TestRunPipelineVersionAndResumeLineageRoundTrip covers the two new
+// models.Run fields added for Tnsor-Labs/brokoli#8: PipelineVersion (which
+// store.PipelineVersion snapshot a run is pinned to) and ResumedFromRunID
+// (resume lineage). Both are set once at creation and must survive
+// CreateRun -> GetRun and CreateRun -> ListRunsByPipeline round trips.
+func TestRunPipelineVersionAndResumeLineageRoundTrip(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+
+	p := &models.Pipeline{
+		ID: "pipe-version", Name: "P", Nodes: []models.Node{}, Edges: []models.Edge{},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+
+	original := &models.Run{
+		ID:              "run-original",
+		PipelineID:      p.ID,
+		Status:          models.RunStatusFailed,
+		PipelineVersion: 3,
+	}
+	if err := s.CreateRun(original); err != nil {
+		t.Fatalf("CreateRun original: %v", err)
+	}
+
+	resumed := &models.Run{
+		ID:               "run-resumed",
+		PipelineID:       p.ID,
+		Status:           models.RunStatusRunning,
+		PipelineVersion:  3,
+		ResumedFromRunID: original.ID,
+	}
+	if err := s.CreateRun(resumed); err != nil {
+		t.Fatalf("CreateRun resumed: %v", err)
+	}
+
+	gotOriginal, err := s.GetRun(original.ID)
+	if err != nil {
+		t.Fatalf("GetRun original: %v", err)
+	}
+	if gotOriginal.PipelineVersion != 3 {
+		t.Errorf("original.PipelineVersion = %d, want 3", gotOriginal.PipelineVersion)
+	}
+	if gotOriginal.ResumedFromRunID != "" {
+		t.Errorf("original.ResumedFromRunID = %q, want empty", gotOriginal.ResumedFromRunID)
+	}
+
+	gotResumed, err := s.GetRun(resumed.ID)
+	if err != nil {
+		t.Fatalf("GetRun resumed: %v", err)
+	}
+	if gotResumed.PipelineVersion != 3 {
+		t.Errorf("resumed.PipelineVersion = %d, want 3", gotResumed.PipelineVersion)
+	}
+	if gotResumed.ResumedFromRunID != original.ID {
+		t.Errorf("resumed.ResumedFromRunID = %q, want %q", gotResumed.ResumedFromRunID, original.ID)
+	}
+
+	// ListRunsByPipeline must round-trip the same two fields — a separate
+	// code path (scanRunRows) from GetRun's (scanRun), both funneling
+	// through scanRunFromScanner.
+	listed, err := s.ListRunsByPipeline(p.ID, 10)
+	if err != nil {
+		t.Fatalf("ListRunsByPipeline: %v", err)
+	}
+	byID := make(map[string]models.Run, len(listed))
+	for _, r := range listed {
+		byID[r.ID] = r
+	}
+	if byID[resumed.ID].ResumedFromRunID != original.ID {
+		t.Errorf("listed resumed run ResumedFromRunID = %q, want %q", byID[resumed.ID].ResumedFromRunID, original.ID)
+	}
+	if byID[resumed.ID].PipelineVersion != 3 {
+		t.Errorf("listed resumed run PipelineVersion = %d, want 3", byID[resumed.ID].PipelineVersion)
+	}
+
+	// A run created without either field defaults to zero/empty — the
+	// "legacy run predating this field" case Engine.resolvePipelineForRun
+	// falls back to the live pipeline for.
+	legacy := &models.Run{ID: "run-legacy", PipelineID: p.ID, Status: models.RunStatusSuccess}
+	if err := s.CreateRun(legacy); err != nil {
+		t.Fatalf("CreateRun legacy: %v", err)
+	}
+	gotLegacy, err := s.GetRun(legacy.ID)
+	if err != nil {
+		t.Fatalf("GetRun legacy: %v", err)
+	}
+	if gotLegacy.PipelineVersion != 0 || gotLegacy.ResumedFromRunID != "" {
+		t.Errorf("legacy run = PipelineVersion %d ResumedFromRunID %q, want 0 and empty", gotLegacy.PipelineVersion, gotLegacy.ResumedFromRunID)
+	}
+}
+
+// TestSavePipelineVersionConcurrentCallsGetDistinctVersions guards the race
+// flagged in SavePipelineVersion's doc comment: engine.resolveRunPipelineVersion
+// (Tnsor-Labs/brokoli#8) now calls SavePipelineVersion on every run trigger
+// for a pipeline with no saved version yet, not just manual pipeline
+// edits/rollbacks — turning a previously rare compute-then-insert race into
+// a realistic one. Without the unique (pipeline_id, version) index and
+// retry-on-conflict added alongside this test, concurrent callers can both
+// read the same MAX(version) and insert duplicate version numbers, making
+// GetPipelineVersion(id, v) ambiguous — which breaks the whole
+// resume-pinning invariant this PR is built on.
+func TestSavePipelineVersionConcurrentCallsGetDistinctVersions(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+	p := &models.Pipeline{ID: "pipe-race", Name: "P", CreatedAt: now, UpdatedAt: now}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+
+	const n = 20
+	var wg sync.WaitGroup
+	versions := make([]int, n)
+	errs := make([]error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			v, err := s.SavePipelineVersion(p.ID, fmt.Sprintf(`{"n":%d}`, i), "")
+			versions[i] = v
+			errs[i] = err
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[int]bool, n)
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("SavePipelineVersion call %d: %v", i, err)
+		}
+		if seen[versions[i]] {
+			t.Fatalf("REGRESSION: version %d was assigned to more than one concurrent SavePipelineVersion call — GetPipelineVersion(id, %d) is now ambiguous", versions[i], versions[i])
+		}
+		seen[versions[i]] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("got %d distinct versions from %d concurrent calls, want %d", len(seen), n, n)
 	}
 }
 

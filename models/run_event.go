@@ -118,4 +118,11 @@ type RunEventPayload struct {
 	// BackoffMs is the computed retry delay (RetryScheduled only).
 	BackoffMs int64             `json:"backoff_ms,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
+	// PipelineVersion and ResumedFromRunID mirror models.Run's fields of the
+	// same name (Tnsor-Labs/brokoli#8) — set on RunEventCreated only, so a
+	// full event-log replay (engine.ProjectRun) reconstructs the same
+	// pinned-version/lineage identity the live runs row has, not just the
+	// fields #6 originally covered.
+	PipelineVersion  int    `json:"pipeline_version,omitempty"`
+	ResumedFromRunID string `json:"resumed_from_run_id,omitempty"`
 }

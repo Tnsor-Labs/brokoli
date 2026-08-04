@@ -209,6 +209,30 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_lease ON execution_attempts(status, lease_expires_at)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_idempotency ON execution_attempts(idempotency_key)`)
 
+	// pipeline_versions gets a unique (pipeline_id, version) index so
+	// SavePipelineVersion's read-then-insert next-version computation can
+	// detect (and retry past) a concurrent writer racing it for the same
+	// pipeline — issue #8's resolveRunPipelineVersion made this path far
+	// hotter than before (every run trigger for a pipeline with no saved
+	// version yet, not just manual edits/rollbacks), so a race that was
+	// previously rare enough to ignore now needs a real guard. Best-effort
+	// on an existing database that already has duplicate rows from before
+	// this index existed: like every other CREATE INDEX in this function,
+	// a failure here (with pre-existing duplicates) is silently ignored,
+	// consistent with this migration style, rather than blocking startup.
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_versions_unique ON pipeline_versions(pipeline_id, version)`)
+
+	// Run definition snapshot + resume lineage (issue #8). pipeline_version
+	// pins a run to a store.PipelineVersion snapshot (see SavePipelineVersion
+	// / GetPipelineVersion above) instead of the live, mutable pipeline row;
+	// 0 means unset (a run created before this column existed). Set once at
+	// creation, never updated — deliberately absent from UpdateRun's SET
+	// list below, matching trace_id/params being creation-time-only in
+	// practice even though they're technically updatable columns.
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
+
 	return nil
 }
 
@@ -625,9 +649,9 @@ func (s *SQLiteStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mode
 
 	// Rank pending runs first, then started runs newest-first, consistently with Postgres.
 	query := `
-		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
 		FROM (
-			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params,
+			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id,
 			       ROW_NUMBER() OVER (
 			           PARTITION BY pipeline_id
 			           ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC
@@ -727,8 +751,8 @@ func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
 	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON),
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID,
 	)
 	return wrapStoreErr("CreateRun", r.ID, err)
 }
@@ -750,7 +774,7 @@ func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.T
 
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params FROM runs WHERE id = ?`, id,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id FROM runs WHERE id = ?`, id,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -767,7 +791,7 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
 		 FROM runs WHERE pipeline_id = ? ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC LIMIT ?`,
 		pipelineID, limit,
 	)
@@ -1230,20 +1254,37 @@ func (s *SQLiteStore) GetNodePreview(runID, nodeID string) ([]string, []common.D
 
 // --- Versioning ---
 
+// SavePipelineVersion computes the next version number and inserts a
+// snapshot row. The compute-then-insert is not atomic, so two concurrent
+// callers for the same pipeline_id (a real possibility now that
+// engine.resolveRunPipelineVersion calls this on every run trigger for a
+// pipeline with no saved version yet, not just manual edits/rollbacks) can
+// both read the same MAX(version) and race to insert it. The unique
+// (pipeline_id, version) index added in migrate() turns that race into a
+// constraint-violation error instead of two silently-ambiguous rows sharing
+// one version number, and this retries past it with a fresh read — the
+// loser of the race simply becomes the next version instead.
 func (s *SQLiteStore) SavePipelineVersion(pipelineID string, snapshot string, message string) (int, error) {
-	// Get next version number
-	var maxVer sql.NullInt64
-	s.db.QueryRow(`SELECT MAX(version) FROM pipeline_versions WHERE pipeline_id = ?`, pipelineID).Scan(&maxVer)
-	nextVer := 1
-	if maxVer.Valid {
-		nextVer = int(maxVer.Int64) + 1
-	}
+	const maxAttempts = 100
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var maxVer sql.NullInt64
+		s.db.QueryRow(`SELECT MAX(version) FROM pipeline_versions WHERE pipeline_id = ?`, pipelineID).Scan(&maxVer)
+		nextVer := 1
+		if maxVer.Valid {
+			nextVer = int(maxVer.Int64) + 1
+		}
 
-	_, err := s.db.Exec(
-		`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES (?, ?, ?, ?, ?)`,
-		pipelineID, nextVer, snapshot, message, time.Now().UTC().Format(timeFormat),
-	)
-	return nextVer, err
+		_, err := s.db.Exec(
+			`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES (?, ?, ?, ?, ?)`,
+			pipelineID, nextVer, snapshot, message, time.Now().UTC().Format(timeFormat),
+		)
+		if err == nil {
+			return nextVer, nil
+		}
+		lastErr = err
+	}
+	return 0, wrapStoreErr("SavePipelineVersion", pipelineID, fmt.Errorf("after %d attempts (likely concurrent version creation): %w", maxAttempts, lastErr))
 }
 
 func (s *SQLiteStore) ListPipelineVersions(pipelineID string) ([]PipelineVersion, error) {
@@ -1424,7 +1465,7 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	var startedAt, finishedAt sql.NullString
 	var paramsJSON string
 
-	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
+	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(paramsJSON), &r.Params); err != nil {
