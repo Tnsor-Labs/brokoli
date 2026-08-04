@@ -59,8 +59,8 @@ func HealthHandler(s store.Store) http.HandlerFunc {
 // periodically) — it exists so a Kubernetes readiness probe's `httpGet` can
 // target a single well-known path and get a real leader-aware pass/fail
 // straight from the HTTP status code, instead of having to exec into the
-// container or grep /metrics (see Tnsor-Labs/brokoli-ee#9's HA deployment
-// topology work, which this unblocks).
+// container or grep /metrics — useful for any HA-aware deployment of
+// the scheduler that runs multiple replicas.
 //
 // sched is required (non-nil): callers must only register this route when a
 // Scheduler actually exists — mirrors PrometheusHandler's sched==nil

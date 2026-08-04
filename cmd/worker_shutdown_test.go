@@ -6,7 +6,7 @@ import (
 )
 
 // TestDrainWorkerSlotsWaitsForInFlightJobs covers the common graceful-
-// shutdown case for --mode worker (Tnsor-Labs/brokoli-ee#9): jobs that are
+// shutdown case for --mode worker: jobs that are
 // still running when SIGTERM arrives get a chance to finish before the
 // dequeue loop returns, rather than being hard-killed mid-execution.
 //

@@ -252,8 +252,8 @@ var serveCmd = &cobra.Command{
 				}()
 			}
 
-			// Minimal HTTP server for Kubernetes liveness probing (Tnsor-Labs/
-			// brokoli-ee#9). Worker mode has no leader concept (workers don't
+			// Minimal HTTP server for Kubernetes liveness probing. Worker
+			// mode has no leader concept (workers don't
 			// run leader election — only scheduler/all do, see newLeaderElector
 			// above), so sched is nil here and NewMinimalServer omits
 			// /health/leader, registering only /health and /metrics. Runs in
@@ -270,7 +270,7 @@ var serveCmd = &cobra.Command{
 			_, workerCount := eng.GetQueueInfo()
 			workerSlots := make(chan struct{}, workerCount)
 
-			// Graceful shutdown (Tnsor-Labs/brokoli-ee#9): on SIGINT/SIGTERM,
+			// Graceful shutdown: on SIGINT/SIGTERM,
 			// stop claiming new jobs and give in-flight jobs a bounded window
 			// to finish via drainWorkerSlots before returning, so
 			// terminationGracePeriodSeconds in Kubernetes actually buys
@@ -381,7 +381,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Scheduler-only mode: minimal HTTP server (health/metrics/leader),
-		// no UI/auth/API routes (Tnsor-Labs/brokoli-ee#9). /health/leader
+		// no UI/auth/API routes. /health/leader
 		// gives Kubernetes a real leader-aware readiness probe target instead
 		// of falling back to bare process liveness. SIGINT/SIGTERM handling
 		// (including the graceful cleanupLeader()/sched.Stop() shutdown
@@ -555,8 +555,7 @@ func newLeaderElector(s store.Store) (leader store.LeaderElector, cleanup func()
 // today — so the practical version of guarding against this is a loud,
 // hard-to-miss log line plus documentation, not a hard runtime reject that
 // would need information we don't have. True enforcement belongs at the
-// deployment/orchestration layer (see brokoli-ee#9, HA deployment topology
-// — out of scope here).
+// deployment/orchestration layer — out of scope here.
 func warnIfSQLiteMultiInstanceRisk(dbURI, mode string) {
 	if store.DriverName(dbURI) != "sqlite" {
 		return
