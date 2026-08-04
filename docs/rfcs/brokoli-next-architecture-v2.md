@@ -17,7 +17,7 @@
 > - **§8, §20, Phase 3 connector-protocol pieces** — the core decision (a language-neutral subprocess protocol) already shipped as `ADR-002`–`ADR-005`, predating this RFC. What's still open (work-unit planning, structured progress, cancellation) is proposed in [ADR-013](../adr/013-connector-protocol-partition-progress-cancellation.md).
 > - **§12, §13, §15, §16, §17, §18.2–§18.5, §21 (partition planner, external compute adapters, sensors, checkpointing beyond pagination, structured progress protocol, physical planner as a general concept, UI redesign)** — not started.
 >
-> If you're picking up a piece of this RFC, check whether an issue or ADR already exists before starting — search closed and open issues across `brokoli`, `brokoli-sdk`, and `brokoli-ee` first.
+> If you're picking up a piece of this RFC, check whether an issue or ADR already exists before starting — search closed and open issues across this repo and `brokoli-sdk` first.
 
 ---
 

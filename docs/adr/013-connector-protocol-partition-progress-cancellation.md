@@ -50,4 +50,4 @@ Extend the existing protocol rather than design a new one:
 ## Follow-ups
 
 - Tracked in [Polyglot connector protocol: work-unit planning, progress, and cancellation](https://github.com/Tnsor-Labs/brokoli/issues) (see the companion issue opened alongside this ADR).
-- Whoever picks up a milestone from that issue should come back and update this ADR — resolve the `plan`/`discover` relationship question explicitly once decided, and add a dated "Update" section (see ADR-006 in `brokoli-ee` for the pattern) once the additions have shipped.
+- Whoever picks up a milestone from that issue should come back and update this ADR — resolve the `plan`/`discover` relationship question explicitly once decided, and add a dated "Update" section once the additions have shipped.

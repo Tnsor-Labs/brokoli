@@ -53,4 +53,4 @@ Start small and reference-based, building on what `LocalDiskArtifactStore` alrea
 ## Follow-ups
 
 - Tracked in [Phase 2: artifact and dataset plane](https://github.com/Tnsor-Labs/brokoli/issues) (see the companion issue opened alongside this ADR).
-- Whoever picks up a milestone from that issue should come back and update this ADR — either fill in the "Deferred" items as they're resolved, or add a dated "Update" section (see ADR-006 in `brokoli-ee` for the pattern) recording what was actually decided once real backend/format choices are made.
+- Whoever picks up a milestone from that issue should come back and update this ADR — either fill in the "Deferred" items as they're resolved, or add a dated "Update" section recording what was actually decided once real backend/format choices are made.
