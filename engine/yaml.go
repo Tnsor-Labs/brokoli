@@ -206,7 +206,8 @@ func isKnownNodeType(t string) bool {
 		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
-		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify:
+		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
+		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter:
 		return true
 	}
 	return false
@@ -248,6 +249,19 @@ func validateNodeConfigImport(n models.Node) error {
 		if _, ok := cfg["expression"]; !ok {
 			return fmt.Errorf("condition requires 'expression' in config")
 		}
+	case models.NodeTypeDatasetMap:
+		if msg := functionRefConfigError(cfg, "dataset_map"); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+	case models.NodeTypeDatasetFilter:
+		if msg := functionRefConfigError(cfg, "dataset_filter"); msg != "" {
+			return fmt.Errorf("%s", msg)
+		}
+		// NodeTypeUnion isn't checked here: its only requirement (>=2
+		// incoming edges) isn't knowable from a single node's config in
+		// this per-node import check — see validateEdgeSemantics in
+		// engine/validate.go, which runs at deploy time with the full
+		// edge list available.
 	}
 	return nil
 }

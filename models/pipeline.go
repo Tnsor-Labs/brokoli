@@ -86,6 +86,22 @@ const (
 	NodeTypeCondition    NodeType = "condition" // if/else branching
 	NodeTypeDBT          NodeType = "dbt"       // dbt run/test/build
 	NodeTypeNotify       NodeType = "notify"    // send Slack/email/webhook notification
+
+	// NodeTypeUnion concatenates two or more upstream datasets into one.
+	// Emitted by brokoli-sdk's union(name, *refs) and
+	// CollectionRef.collect(mode="union") (both compile to this same node
+	// type — see brokoli-sdk pipeline.py _build_union_node).
+	NodeTypeUnion NodeType = "union"
+	// NodeTypeDatasetMap applies a referenced function to every row of the
+	// WHOLE upstream dataset (no per-partition execution yet — see
+	// engine.runPartitionTransform). Emitted by brokoli-sdk's
+	// DatasetRef.map(fn).
+	NodeTypeDatasetMap NodeType = "dataset_map"
+	// NodeTypeDatasetFilter applies a referenced predicate to the WHOLE
+	// upstream dataset (no per-partition execution yet — see
+	// engine.runPartitionTransform). Emitted by brokoli-sdk's
+	// DatasetRef.filter(fn).
+	NodeTypeDatasetFilter NodeType = "dataset_filter"
 )
 
 // Position represents a node's position on the visual canvas.
