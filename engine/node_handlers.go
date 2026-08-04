@@ -293,6 +293,68 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 	return result, nil
 }
 
+// runUnion concatenates all of a union node's upstream datasets into one.
+// See UnionDatasets (engine/union.go) for the schema-mismatch and
+// output-shape design decisions.
+func (r *Runner) runUnion(node models.Node, inputs []*common.DataSet) (*common.DataSet, error) {
+	result, err := UnionDatasets(inputs)
+	if err != nil {
+		return nil, fmt.Errorf("union node: %w", err)
+	}
+	r.log(node.ID, models.LogLevelInfo, "union: combined %d input dataset(s) into %d rows (%d columns)",
+		len(inputs), len(result.Rows), len(result.Columns))
+	return result, nil
+}
+
+// runDatasetMap applies a dataset_map node's referenced function to every
+// row of the WHOLE upstream dataset. See ExecutePartitionTransform
+// (engine/partition_transform.go) for the exact config shape, the current
+// brokoli-sdk gap it works around, and why this is whole-dataset (not
+// per-partition) execution.
+func (r *Runner) runDatasetMap(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+	return r.runPartitionTransform(node, input, "dataset_map")
+}
+
+// runDatasetFilter applies a dataset_filter node's referenced predicate to
+// the WHOLE upstream dataset. See ExecutePartitionTransform
+// (engine/partition_transform.go) for the exact config shape, the current
+// brokoli-sdk gap it works around, and why this is whole-dataset (not
+// per-partition) execution.
+func (r *Runner) runDatasetFilter(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+	return r.runPartitionTransform(node, input, "dataset_filter")
+}
+
+func (r *Runner) runPartitionTransform(node models.Node, input *common.DataSet, kind string) (*common.DataSet, error) {
+	var runParams map[string]string
+	if r.varCtx != nil {
+		runParams = r.varCtx.Params
+	}
+
+	result, fnName, stderr, err := ExecutePartitionTransform(node.Config, input, runParams, kind)
+	if stderr != "" {
+		for _, line := range splitLines(stderr) {
+			if line != "" {
+				r.log(node.ID, models.LogLevelWarning, "python: %s", line)
+			}
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	inRows := 0
+	if input != nil {
+		inRows = len(input.Rows)
+	}
+	outRows := 0
+	if result != nil {
+		outRows = len(result.Rows)
+	}
+	r.log(node.ID, models.LogLevelInfo, "%s: applied function %q to whole dataset (no partitioning yet): %d rows in -> %d rows out",
+		kind, fnName, inRows, outRows)
+	return result, nil
+}
+
 func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("transform node requires input data")

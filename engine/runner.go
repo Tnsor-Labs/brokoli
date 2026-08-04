@@ -925,6 +925,12 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		return r.runDBT(node)
 	case models.NodeTypeNotify:
 		return r.runNotify(node, input)
+	case models.NodeTypeUnion:
+		return r.runUnion(node, allInputs)
+	case models.NodeTypeDatasetMap:
+		return r.runDatasetMap(node, input)
+	case models.NodeTypeDatasetFilter:
+		return r.runDatasetFilter(node, input)
 	default:
 		return input, nil
 	}

@@ -138,13 +138,54 @@ func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *Validat
 	}
 
 	for _, n := range nodes {
-		if n.Type == models.NodeTypeJoin {
+		switch n.Type {
+		case models.NodeTypeJoin:
 			count := inputDegree[n.ID]
 			if count != 2 {
 				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
 			}
+		case models.NodeTypeUnion:
+			// Matches brokoli-sdk's own union()/collect() requirement
+			// (_build_union_node: "union()/collect() requires at least
+			// one upstream ref") plus the semantic requirement that
+			// union of fewer than 2 inputs isn't a union at all — fail
+			// loudly at deploy time instead of the previous silent
+			// pass-through of whatever single input happened to exist.
+			count := inputDegree[n.ID]
+			if count < 2 {
+				ve.Add(fmt.Sprintf("Node %q (union) requires at least 2 incoming edges, got %d", n.Name, count))
+			}
 		}
 	}
+}
+
+// functionRefConfigError checks that cfg carries a well-formed function
+// reference for a dataset_map/dataset_filter node — i.e. the shape
+// brokoli-sdk's DatasetRef.map()/.filter() actually emit:
+// {"function": {"name": "..."}}. Returns "" when valid, or a
+// human-readable message describing what's wrong/missing.
+//
+// This deliberately does NOT require config.function.script — today's
+// real brokoli-sdk payloads never include it (see functionRefScript in
+// engine/partition_transform.go for why), so requiring it here would
+// reject every pipeline using this real, merged SDK feature outright.
+// Its absence is instead a clear, specific *execution-time* error
+// (ExecutePartitionTransform), not a deploy-time validation failure —
+// the config is well-formed per the SDK's own contract even though the
+// engine can't yet execute it.
+func functionRefConfigError(cfg map[string]interface{}, kind string) string {
+	raw, ok := cfg["function"]
+	if !ok {
+		return fmt.Sprintf("'function' reference is required for %s (e.g. {\"function\": {\"name\": \"my_func\"}})", kind)
+	}
+	fnRef, ok := raw.(map[string]interface{})
+	if !ok {
+		return fmt.Sprintf("'function' must be an object with a 'name' for %s", kind)
+	}
+	if getStr(fnRef, "name") == "" {
+		return fmt.Sprintf("'function.name' is required for %s", kind)
+	}
+	return ""
 }
 
 // nodeIsSourceCapable reports whether a node can act as a pipeline source
@@ -201,6 +242,18 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeSinkDB:
 		if getStr(n.Config, "uri") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'uri' is required for sink_db", n.Name))
+		}
+	case models.NodeTypeUnion:
+		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
+			ve.Add(fmt.Sprintf("Node %q: union only supports mode=\"union\" (got %q)", n.Name, mode))
+		}
+	case models.NodeTypeDatasetMap:
+		if msg := functionRefConfigError(n.Config, "dataset_map"); msg != "" {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
+	case models.NodeTypeDatasetFilter:
+		if msg := functionRefConfigError(n.Config, "dataset_filter"); msg != "" {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
 	}
 }
@@ -284,6 +337,18 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 	case models.NodeTypeJoin:
 		if getStr(n.Config, "join_type") == "" {
 			r.Warnings = append(r.Warnings, "'join_type' not set, defaults to inner")
+		}
+	case models.NodeTypeUnion:
+		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
+			r.Errors = append(r.Errors, fmt.Sprintf("union only supports mode=\"union\" (got %q)", mode))
+		}
+	case models.NodeTypeDatasetMap:
+		if msg := functionRefConfigError(n.Config, "dataset_map"); msg != "" {
+			r.Errors = append(r.Errors, msg)
+		}
+	case models.NodeTypeDatasetFilter:
+		if msg := functionRefConfigError(n.Config, "dataset_filter"); msg != "" {
+			r.Errors = append(r.Errors, msg)
 		}
 	}
 }

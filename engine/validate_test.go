@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -363,5 +365,136 @@ func TestValidate_EmptyIRVersion_BackwardCompatible(t *testing.T) {
 	ve := ValidatePipeline(p)
 	if ve.HasErrors() {
 		t.Errorf("expected no errors for empty ir_version (pre-versioned pipeline), got: %v", ve.Errors)
+	}
+}
+
+// ── union / dataset_map / dataset_filter validation (Tnsor-Labs/brokoli#32) ──
+
+func unionPipeline(edgesToUnion int) *models.Pipeline {
+	p := &models.Pipeline{
+		Name: "union test",
+		Nodes: []models.Node{
+			{ID: "u1", Type: models.NodeTypeUnion, Name: "Combine", Config: map[string]interface{}{"mode": "union"}},
+			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "u1", To: "sink"}},
+	}
+	for i := 0; i < edgesToUnion; i++ {
+		id := fmt.Sprintf("src%d", i)
+		p.Nodes = append(p.Nodes, models.Node{
+			ID: id, Type: models.NodeTypeSourceFile, Name: id, Config: map[string]interface{}{"path": "/" + id + ".csv"},
+		})
+		p.Edges = append(p.Edges, models.Edge{From: id, To: "u1"})
+	}
+	return p
+}
+
+func TestValidate_Union_TwoOrMoreInputsOK(t *testing.T) {
+	ve := ValidatePipeline(unionPipeline(2))
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for union with 2 inputs, got: %v", ve.Errors)
+	}
+
+	ve = ValidatePipeline(unionPipeline(3))
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for union with 3 inputs, got: %v", ve.Errors)
+	}
+}
+
+// TestValidate_Union_FewerThanTwoInputsFails is the direct acceptance-
+// criteria test: "union with fewer than 2 incoming edges fails validation
+// with a clear error, not silent pass-through."
+func TestValidate_Union_FewerThanTwoInputsFails(t *testing.T) {
+	ve := ValidatePipeline(unionPipeline(1))
+	if !ve.HasErrors() {
+		t.Fatal("expected error for union with only 1 incoming edge")
+	}
+	found := false
+	for _, e := range ve.Errors {
+		if strings.Contains(e, "union") && strings.Contains(e, "2") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected a clear union-input-count error, got: %v", ve.Errors)
+	}
+}
+
+func TestValidate_Union_ZeroInputsFails(t *testing.T) {
+	ve := ValidatePipeline(unionPipeline(0))
+	if !ve.HasErrors() {
+		t.Fatal("expected error for union with 0 incoming edges")
+	}
+}
+
+func TestValidate_Union_UnsupportedModeRejected(t *testing.T) {
+	p := unionPipeline(2)
+	p.Nodes[0].Config["mode"] = "intersect"
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Fatal("expected error for unsupported union mode")
+	}
+}
+
+func TestValidate_DatasetMap_MissingFunctionFails(t *testing.T) {
+	nodes := []models.Node{
+		{ID: "m1", Type: models.NodeTypeDatasetMap, Name: "Map", Config: map[string]interface{}{}},
+	}
+	results := ValidateNodes(nodes)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(results))
+	}
+	if len(results[0].Errors) == 0 {
+		t.Error("expected error for missing function reference on dataset_map")
+	}
+}
+
+func TestValidate_DatasetFilter_MissingFunctionNameFails(t *testing.T) {
+	nodes := []models.Node{
+		{
+			ID: "f1", Type: models.NodeTypeDatasetFilter, Name: "Filter",
+			Config: map[string]interface{}{"function": map[string]interface{}{"doc": "no name here"}},
+		},
+	}
+	results := ValidateNodes(nodes)
+	if len(results) != 1 {
+		t.Fatalf("expected 1 issue, got %d", len(results))
+	}
+	if len(results[0].Errors) == 0 {
+		t.Error("expected error for function reference missing 'name'")
+	}
+}
+
+func TestValidate_DatasetMap_ValidFunctionReferencePasses(t *testing.T) {
+	// Matches exactly what brokoli-sdk's DatasetRef.map()/.filter() emit
+	// today (name + doc, no script) — this must pass deploy-time
+	// validation even though it will fail loudly at *execution* time
+	// (see TestExecutePartitionTransform_NameOnlyReference) until the SDK
+	// serializes runnable source. See functionRefConfigError's doc
+	// comment for why that split is intentional.
+	nodes := []models.Node{
+		{
+			ID: "m1", Type: models.NodeTypeDatasetMap, Name: "Map",
+			Config: map[string]interface{}{"function": map[string]interface{}{"name": "normalize", "doc": "Normalizes a row."}},
+		},
+	}
+	results := ValidateNodes(nodes)
+	if len(results) != 0 {
+		t.Errorf("expected no validation issues for a well-formed (SDK-shaped) function reference, got: %+v", results)
+	}
+}
+
+func TestValidatePipeline_MalformedDatasetMapFailsAtDeployTime(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{ID: "n1", Type: models.NodeTypeSourceFile, Name: "Load", Config: map[string]interface{}{"path": "/data/test.csv"}},
+			{ID: "n2", Type: models.NodeTypeDatasetMap, Name: "Map", Config: map[string]interface{}{}},
+		},
+		Edges: []models.Edge{{From: "n1", To: "n2"}},
+	}
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Fatal("expected pipeline-level validation error for dataset_map with no function reference")
 	}
 }
