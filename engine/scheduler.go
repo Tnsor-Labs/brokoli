@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/robfig/cron/v3"
 )
@@ -96,7 +97,7 @@ func (s *Scheduler) Start() error {
 	s.catchUpMissedRuns(pipelines)
 
 	s.cron.Start()
-	log.Printf("Scheduler started: %d pipelines scheduled", registered)
+	common.SLog().Info("scheduler started", "pipelines_scheduled", registered)
 
 	return nil
 }
@@ -112,7 +113,7 @@ func (s *Scheduler) Start() error {
 // principle take long enough for this instance's lease to lapse mid-pass.
 func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 	if !s.leader.IsLeader() {
-		log.Printf("Catch-up skipped: not leader")
+		common.SLog().Debug("catch-up skipped: not leader")
 		return
 	}
 	for _, p := range pipelines {
@@ -126,7 +127,7 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 		// racing the new leader's own catch-up pass over the same
 		// pipelines still left in this loop.
 		if !s.leader.IsLeader() {
-			log.Printf("Catch-up stopped mid-pass: leadership lost")
+			common.SLog().Info("catch-up stopped mid-pass: leadership lost")
 			return
 		}
 
@@ -166,11 +167,11 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 
 		// If the expected fire time is in the past (we missed it), and it's been less than 24h
 		if nextExpected.Before(now) && now.Sub(nextExpected) < 24*time.Hour {
-			log.Printf("Catch-up: pipeline %q missed scheduled run at %s, triggering now",
-				p.Name, nextExpected.Format(time.RFC3339))
+			common.SLog().Info("catch-up: pipeline missed scheduled run, triggering now",
+				common.PipelineAttr(p.ID), "pipeline_name", p.Name, "expected_at", nextExpected)
 			go func(pid string) {
 				if _, err := s.engine.RunPipeline(pid); err != nil {
-					log.Printf("ERROR: catch-up run failed for %s: %v", pid, err)
+					common.SLog().Error("catch-up run failed", common.PipelineAttr(pid), "error", err)
 				}
 			}(p.ID)
 		}
@@ -229,17 +230,19 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 		// skip on every tick they're not leader, which is a normal,
 		// expected, non-error condition — not logged as a warning.
 		if !s.leader.IsLeader() {
-			log.Printf("Scheduled fire for pipeline %s skipped: not leader", pid)
+			common.SLog().Debug("scheduled fire skipped: not leader", common.PipelineAttr(pid))
 			return
 		}
-		log.Printf("Scheduled run triggered for pipeline %s", pid)
+		common.SLog().Info("scheduled run triggered", common.PipelineAttr(pid))
 		run, err := s.engine.RunPipeline(pid)
 		if err != nil {
-			log.Printf("ERROR: scheduled run failed for pipeline %s: %v", pid, err)
+			common.SLog().Error("scheduled run failed", common.PipelineAttr(pid), "error", err)
 			return
 		}
 		if run != nil && run.Status == models.RunStatusBlocked {
-			log.Printf("Scheduled run for %s blocked: %s", pid, run.Error)
+			common.SLog().Warn("scheduled run blocked", common.PipelineAttr(pid), common.RunAttr(run.ID), "reason", run.Error)
+		} else if run != nil {
+			common.SLog().Info("scheduled run dispatched", common.PipelineAttr(pid), common.RunAttr(run.ID))
 		}
 	}))
 

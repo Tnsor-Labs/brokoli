@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -13,7 +12,11 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Runner executes a single pipeline run.
@@ -61,6 +64,20 @@ type Runner struct {
 	// node with downstream consumers fails loudly rather than silently
 	// substituting empty data).
 	artifactStore ArtifactStore
+
+	// parentCtx, when set, is the context Execute derives r.ctx from instead
+	// of context.Background() — used to propagate an OpenTelemetry trace
+	// context into the run so a run claimed via Engine.ExecuteQueuedRun
+	// stays in the same trace as the claim span that preceded it
+	// (Tnsor-Labs/brokoli#11). Nil for runs that start their own trace (the
+	// common RunPipeline/RunPipelineAsync in-process case).
+	parentCtx context.Context
+
+	// metrics carries pointers to Engine's node-attempt/event-append
+	// counters (Tnsor-Labs/brokoli#11). Nil-safe throughout — see
+	// incrMetric — so a Runner without one (DryRun, or a test constructing
+	// Runner directly) simply skips these increments.
+	metrics *runnerMetrics
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -84,8 +101,28 @@ func (r *Runner) Cancel() {
 }
 
 // Execute runs the pipeline end-to-end.
-func (r *Runner) Execute() (*models.Run, error) {
-	r.ctx, r.cancel = context.WithCancel(context.Background())
+func (r *Runner) Execute() (run *models.Run, err error) {
+	base := context.Background()
+	if r.parentCtx != nil {
+		// Propagates the trace context from whatever preceded this Execute
+		// call (e.g. Engine.ExecuteQueuedRun's claim span) so the whole run
+		// lifecycle — claim through completion — is one OpenTelemetry trace
+		// (Tnsor-Labs/brokoli#11) instead of an isolated one starting here.
+		base = r.parentCtx
+	}
+	spanCtx, span := tracing.Tracer().Start(base, "brokoli.run.execute",
+		trace.WithAttributes(attribute.String("pipeline_id", r.pipe.ID)))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else {
+			span.SetStatus(codes.Ok, "")
+		}
+		span.End()
+	}()
+
+	r.ctx, r.cancel = context.WithCancel(spanCtx)
 	defer r.cancel()
 
 	now := time.Now().UTC()
@@ -130,6 +167,10 @@ func (r *Runner) Execute() (*models.Run, error) {
 		})
 		crashAt(crashPointAfterRunCreate, "")
 	}
+	span.SetAttributes(attribute.String("run_id", r.run.ID), attribute.String("trace_id", r.traceID))
+	common.SLog().Info("run started",
+		common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID), common.TraceAttr(r.traceID))
+
 	r.emit(models.Event{Type: models.EventRunStarted, RunID: r.run.ID, PipelineID: r.pipe.ID})
 	r.fireHook("on_start", nil)
 
@@ -273,6 +314,8 @@ func (r *Runner) Execute() (*models.Run, error) {
 		})
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
 		r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
+		common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+			"status", models.RunStatusCancelled)
 		return r.run, fmt.Errorf("pipeline cancelled")
 	}
 
@@ -295,6 +338,8 @@ func (r *Runner) Execute() (*models.Run, error) {
 		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
 		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
 		NotifyPipelineEvent(r.pipe, r.run, "run.failed", runErr.Error())
+		common.SLog().Warn("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+			"status", models.RunStatusFailed, "error", runErr)
 		return r.run, runErr
 	}
 
@@ -317,6 +362,8 @@ func (r *Runner) Execute() (*models.Run, error) {
 	r.fireHook("on_success", nil)
 	r.sendNotification("run.completed", "info", fmt.Sprintf("Pipeline \"%s\" completed", r.pipe.Name), "Run finished successfully")
 	NotifyPipelineEvent(r.pipe, r.run, "run.completed", "")
+	common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+		"status", models.RunStatusSuccess)
 	return r.run, nil
 }
 
@@ -486,6 +533,27 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		}
 		crashAt(crashPointAfterNodeAttemptCreate, node.ID)
 
+		// Span/metrics for this attempt only apply to real (non-dry-run)
+		// execution — a dry run never persists a NodeRun record either (see
+		// the `if !r.dryRun` block above), so it has no durable attempt
+		// identity to attach a span to. attemptSpan stays a nil-safe no-op
+		// trace.Span (the zero value returned by an unstarted span variable
+		// is never dereferenced below since every use is gated on
+		// !r.dryRun too) when this is a dry run.
+		var attemptSpan trace.Span
+		if !r.dryRun {
+			_, attemptSpan = tracing.Tracer().Start(r.ctx, "brokoli.node.attempt",
+				trace.WithAttributes(
+					attribute.String("run_id", r.run.ID),
+					attribute.String("node_id", node.ID),
+					attribute.Int("attempt", attempt),
+				))
+			r.metrics.incrAttemptsStarted()
+			if attempt > 0 {
+				r.metrics.incrAttemptsRetried()
+			}
+		}
+
 		if attempt == 0 {
 			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt,
 				map[string]string{"queue_ms": fmt.Sprintf("%d", queueMs)},
@@ -536,6 +604,9 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 				// considered done — same "storage failures are explicit"
 				// contract as CreateNodeRun above and run-level UpdateRun.
 				if err := r.store.UpdateNodeRun(nr); err != nil {
+					attemptSpan.RecordError(err)
+					attemptSpan.SetStatus(codes.Error, err.Error())
+					attemptSpan.End()
 					return fmt.Errorf("persist successful node attempt for %s (attempt %d): %w", node.Name, attempt, err)
 				}
 				attemptNum := attempt
@@ -583,6 +654,9 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 					}
 				} else {
 					if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
+						attemptSpan.RecordError(err)
+						attemptSpan.SetStatus(codes.Error, err.Error())
+						attemptSpan.End()
 						return fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
 					}
 					// Durable full-output artifact — distinct from
@@ -630,6 +704,18 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 				},
 				"Node completed: %d rows in %s%s%s", rowCount, durStr, tpStr, colInfo)
 			r.emit(models.Event{Type: models.EventNodeCompleted, RunID: r.run.ID, NodeID: node.ID, RowCount: rowCount, DurationMs: duration})
+			if !r.dryRun {
+				attemptSpan.SetAttributes(
+					attribute.Int("row_count", rowCount),
+					attribute.Int64("duration_ms", duration),
+				)
+				attemptSpan.SetStatus(codes.Ok, "")
+				attemptSpan.End()
+				r.metrics.incrAttemptsSucceeded()
+				common.SLog().Info("node attempt succeeded",
+					common.RunAttr(r.run.ID), common.NodeAttr(node.ID), common.AttemptAttr(attempt),
+					"row_count", rowCount, "duration_ms", duration)
+			}
 			lastErr = nil
 			break
 		}
@@ -644,6 +730,9 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			// track attempt state — surface both errors and stop, rather
 			// than silently continuing (previous behavior).
 			if persistErr := r.store.UpdateNodeRun(nr); persistErr != nil {
+				attemptSpan.RecordError(persistErr)
+				attemptSpan.SetStatus(codes.Error, persistErr.Error())
+				attemptSpan.End()
 				return fmt.Errorf("node %s (%s) failed: %v; persist failed node attempt (attempt %d): %w", node.Name, node.ID, err, attempt, persistErr)
 			}
 			attemptNum := attempt
@@ -659,6 +748,13 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 					Error:      nr.Error,
 				},
 			})
+			attemptSpan.RecordError(err)
+			attemptSpan.SetStatus(codes.Error, err.Error())
+			attemptSpan.End()
+			r.metrics.incrAttemptsFailed()
+			common.SLog().Warn("node attempt failed",
+				common.RunAttr(r.run.ID), common.NodeAttr(node.ID), common.AttemptAttr(attempt),
+				"error", err, "duration_ms", duration)
 		}
 		lastErr = err
 
@@ -671,6 +767,8 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		r.logWithTrace(node.ID, models.LogLevelError, "", maxRetries, nil,
 			"Node %s failed after %d attempt(s): %v", node.Name, maxRetries+1, lastErr)
 		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
+		common.SLog().Error("node failed",
+			common.RunAttr(r.run.ID), common.NodeAttr(node.ID), "attempts", maxRetries+1, "error", lastErr)
 		return fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return nil
@@ -846,8 +944,11 @@ func (r *Runner) emit(e models.Event) {
 // (Tnsor-Labs/brokoli#7).
 func (r *Runner) appendEvent(ev models.RunEvent) {
 	if err := r.store.AppendEvent(&ev); err != nil {
+		r.metrics.incrEventsAppendFailed()
 		r.log(ev.NodeID, models.LogLevelWarning, "append run event %s: %v", ev.EventType, err)
+		return
 	}
+	r.metrics.incrEventsAppended()
 }
 
 func (r *Runner) log(nodeID string, level models.LogLevel, format string, args ...interface{}) {
@@ -878,7 +979,8 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 		Attempt:   attempt,
 		Metadata:  metadata,
 	}); err != nil {
-		log.Printf("append log entry (run=%s node=%s): %v", r.run.ID, nodeID, err)
+		common.SLog().Warn("append log entry failed",
+			common.RunAttr(r.run.ID), common.NodeAttr(nodeID), "error", err)
 	}
 	r.emit(models.Event{
 		Type:    models.EventLog,

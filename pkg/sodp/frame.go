@@ -93,6 +93,56 @@ type HelloBody struct {
 	Auth     bool   `msgpack:"auth" json:"auth"` // true = AUTH frame required
 }
 
+// ProtocolVersion is the current SODP protocol version this server speaks
+// and announces in HelloBody.Version.
+//
+// SupportedSODPVersions/IsSODPVersionSupported below mirror the shape of
+// pkg/plugins/protocol.go's ProtocolVersion/SupportedProtocolVersions/
+// IsProtocolVersionSupported — an existing, working version-negotiation
+// pattern in this codebase for an unrelated protocol (see that file's
+// package doc comment, and docs/adr/001-sodp-realtime-transport.md for why
+// SODP and the plugin-invocation protocol are two different things despite
+// both sometimes being called "the protocol" informally).
+//
+// The wire mechanism necessarily differs from plugins/protocol.go, though:
+// a plugin declares its ProtocolVersion once, statically, in an on-disk
+// manifest the host reads before ever launching the plugin process. SODP is
+// a live WebSocket handshake with no client-side manifest to read up front
+// — the server sends HELLO immediately on connect, before the client has
+// said anything at all. So a SODP client instead declares the version it
+// speaks via the SODPVersionParam query parameter on the WebSocket upgrade
+// request (see Server.HandleWS), which the server can validate before
+// upgrading the connection at all.
+const ProtocolVersion = "0.1"
+
+// SupportedSODPVersions lists every SODP protocol version this server can
+// speak. Expand when supporting additional client versions; see
+// Server.HandleWS for how an unsupported declared version is rejected.
+var SupportedSODPVersions = []string{"0.1"}
+
+// SODPVersionParam is the WebSocket upgrade query parameter a client uses
+// to declare the SODP protocol version it speaks, e.g.
+// "GET /api/ws?sodp_version=0.1". Optional: a client that omits it (every
+// @sodp/client release to date has no way to set it) is treated as
+// speaking the only version that has ever existed, ProtocolVersion — this
+// keeps every existing client working unchanged. A client that DOES declare
+// a version gets it validated against SupportedSODPVersions and the
+// connection is rejected outright (before the WebSocket upgrade completes)
+// if it isn't supported, rather than silently proceeding regardless of
+// version as before this change.
+const SODPVersionParam = "sodp_version"
+
+// IsSODPVersionSupported reports whether this server can speak the given
+// client-declared SODP protocol version.
+func IsSODPVersionSupported(v string) bool {
+	for _, ok := range SupportedSODPVersions {
+		if ok == v {
+			return true
+		}
+	}
+	return false
+}
+
 // WatchBody is the client's subscription request.
 // @sodp/client uses "state" (not "key") and "since_version" for RESUME.
 type WatchBody struct {

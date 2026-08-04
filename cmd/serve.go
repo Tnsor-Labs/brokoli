@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
+	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/Tnsor-Labs/brokoli/web"
 	"github.com/spf13/cobra"
@@ -80,6 +81,23 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the Brokoli server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// OpenTelemetry tracing (Tnsor-Labs/brokoli#11): a no-op unless an
+		// operator explicitly sets BROKOLI_OTEL_EXPORTER=otlp, so this is a
+		// no-behavior-change default for every existing deployment — see
+		// pkg/tracing's package doc comment.
+		tracingShutdown, err := tracing.Init(cmd.Context())
+		if err != nil {
+			log.Printf("WARNING: tracing init failed, continuing without export: %v", err)
+			tracingShutdown = func(context.Context) error { return nil }
+		}
+		defer func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := tracingShutdown(shutdownCtx); err != nil {
+				log.Printf("WARNING: tracing shutdown: %v", err)
+			}
+		}()
+
 		// Initialize extensions (community defaults unless overridden by enterprise binary)
 		if Extensions == nil {
 			Extensions = extensions.DefaultRegistry()

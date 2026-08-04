@@ -96,6 +96,37 @@ func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine, sched *engin
 		fmt.Fprintf(w, "# HELP brokoli_execution_attempts_reclaimed_total Execution attempts whose expired lease was reclaimed by startup recovery.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_execution_attempts_reclaimed_total counter\n")
 		fmt.Fprintf(w, "brokoli_execution_attempts_reclaimed_total %d\n", e.AttemptsReclaimed)
+
+		// Event append/replay (Tnsor-Labs/brokoli#6) and node-attempt/
+		// queue-depth (Tnsor-Labs/brokoli#7) metrics gaps, filling the same
+		// pattern as the recovery/leader counters above — pulled directly
+		// from Engine fields updated via atomic.AddInt64 exactly like
+		// RunsTotal/RunsSucceeded/RunsFailed already are.
+		fmt.Fprintf(w, "# HELP brokoli_run_events_appended_total Run/node-attempt lifecycle events successfully appended to the durable event log.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_run_events_appended_total counter\n")
+		fmt.Fprintf(w, "brokoli_run_events_appended_total %d\n", e.EventsAppended)
+		fmt.Fprintf(w, "# HELP brokoli_run_events_append_failed_total Run/node-attempt lifecycle event appends that failed (logged, not fatal to the run).\n")
+		fmt.Fprintf(w, "# TYPE brokoli_run_events_append_failed_total counter\n")
+		fmt.Fprintf(w, "brokoli_run_events_append_failed_total %d\n", e.EventsAppendFailed)
+		fmt.Fprintf(w, "# HELP brokoli_run_events_replayed_total Individual run events consumed by event-log replay/projection (currently: startup recovery).\n")
+		fmt.Fprintf(w, "# TYPE brokoli_run_events_replayed_total counter\n")
+		fmt.Fprintf(w, "brokoli_run_events_replayed_total %d\n", e.EventsReplayed)
+		fmt.Fprintf(w, "# HELP brokoli_node_attempts_started_total Node-level execution attempts started.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_node_attempts_started_total counter\n")
+		fmt.Fprintf(w, "brokoli_node_attempts_started_total %d\n", e.AttemptsStarted)
+		fmt.Fprintf(w, "# HELP brokoli_node_attempts_succeeded_total Node-level execution attempts that succeeded.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_node_attempts_succeeded_total counter\n")
+		fmt.Fprintf(w, "brokoli_node_attempts_succeeded_total %d\n", e.AttemptsSucceeded)
+		fmt.Fprintf(w, "# HELP brokoli_node_attempts_failed_total Node-level execution attempts that failed.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_node_attempts_failed_total counter\n")
+		fmt.Fprintf(w, "brokoli_node_attempts_failed_total %d\n", e.AttemptsFailed)
+		fmt.Fprintf(w, "# HELP brokoli_node_attempts_retried_total Node-level execution attempts that were retries (attempt > 0).\n")
+		fmt.Fprintf(w, "# TYPE brokoli_node_attempts_retried_total counter\n")
+		fmt.Fprintf(w, "brokoli_node_attempts_retried_total %d\n", e.AttemptsRetried)
+		fmt.Fprintf(w, "# HELP brokoli_runs_queue_waiting Current number of run dispatches blocked waiting for a concurrency slot (dispatch backlog depth).\n")
+		fmt.Fprintf(w, "# TYPE brokoli_runs_queue_waiting gauge\n")
+		fmt.Fprintf(w, "brokoli_runs_queue_waiting %d\n", e.RunsQueueWaiting)
+
 		fmt.Fprintf(w, "# HELP brokoli_active_runs Current number of active runs.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_active_runs gauge\n")
 		fmt.Fprintf(w, "brokoli_active_runs %d\n", active)
