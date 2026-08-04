@@ -52,6 +52,31 @@ func HealthHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
+// LeaderHealthHandler returns a dedicated leader-aware readiness signal:
+// HTTP 200 while this instance currently holds scheduler leadership, HTTP
+// 503 while it's a standby. This is distinct from brokoli_leader_status in
+// PrometheusHandler (a gauge meant for dashboards/alerting scraped
+// periodically) — it exists so a Kubernetes readiness probe's `httpGet` can
+// target a single well-known path and get a real leader-aware pass/fail
+// straight from the HTTP status code, instead of having to exec into the
+// container or grep /metrics (see Tnsor-Labs/brokoli-ee#9's HA deployment
+// topology work, which this unblocks).
+//
+// sched is required (non-nil): callers must only register this route when a
+// Scheduler actually exists — mirrors PrometheusHandler's sched==nil
+// handling, except here there is no sensible "omit" behavior for a
+// dedicated single-purpose endpoint, so registration itself is the guard
+// (see api.NewMinimalServer, which only wires this route when sched != nil).
+func LeaderHealthHandler(sched *engine.Scheduler) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if sched.IsLeader() {
+			writeJSON(w, http.StatusOK, map[string]string{"status": "leader"})
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "standby"})
+	}
+}
+
 // PrometheusHandler returns metrics in Prometheus text exposition format.
 // sched may be nil (API-only/worker-only instances that don't run a
 // scheduler component don't participate in leader election at all — see

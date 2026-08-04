@@ -254,6 +254,42 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	return &Server{router: r, port: port, sodp: sodpSrv, ext: ext, evictDone: evictDone}
 }
 
+// NewMinimalServer creates a lightweight HTTP server exposing only the
+// observability surface — /health, /metrics, and (when sched != nil)
+// /health/leader — with none of NewServer's UI/auth/user-account/route
+// machinery. It exists for --mode scheduler and --mode worker
+// (cmd/serve.go): those run modes have no UI to serve and no end-user API
+// surface, but still need a bare HTTP endpoint for Kubernetes liveness
+// (/health) and, for scheduler replicas, leader-aware readiness
+// (/health/leader) — see Tnsor-Labs/brokoli-ee#9's HA deployment topology
+// work, which this unblocks. Reuses HealthHandler/PrometheusHandler/
+// LeaderHealthHandler verbatim so all three run modes report identical
+// semantics for the same paths.
+//
+// sched may be nil (--mode worker never constructs a Scheduler — see
+// cmd/serve.go): when nil, /health/leader is not registered at all, since
+// "leader" is meaningless without a scheduler component. This mirrors
+// PrometheusHandler's existing sched==nil handling, which omits the leader
+// gauges entirely rather than fabricating a value.
+func NewMinimalServer(port int, s store.Store, e *engine.Engine, sched *engine.Scheduler) *Server {
+	r := chi.NewRouter()
+	metrics := NewMetrics()
+	r.Use(MetricsMiddleware(metrics))
+	r.Use(Logger)
+
+	r.Get("/health", HealthHandler(s))
+	r.Get("/metrics", PrometheusHandler(metrics, s, e, sched))
+	if sched != nil {
+		r.Get("/health/leader", LeaderHealthHandler(sched))
+	}
+
+	// evictDone has no eviction goroutine behind it here (that's only
+	// started by NewServer's SODP wiring) but Start()'s shutdown path
+	// unconditionally closes it, so it must be a real channel rather than
+	// nil — closing a nil channel panics.
+	return &Server{router: r, port: port, evictDone: make(chan struct{})}
+}
+
 // Start begins listening for HTTP requests with graceful shutdown.
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
