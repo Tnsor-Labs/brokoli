@@ -10,8 +10,8 @@ import (
 )
 
 // TestLeaderHealthHandlerReflectsLeadership exercises the dedicated
-// readiness endpoint added for Tnsor-Labs/brokoli-ee#9: a Kubernetes
-// readiness probe's `httpGet` should be able to target /health/leader
+// readiness endpoint: a Kubernetes readiness probe's `httpGet` should
+// be able to target /health/leader
 // directly and get 200 while this instance holds scheduler leadership, 503
 // while it's a standby — instead of having to exec into the container or
 // grep /metrics for brokoli_leader_status.

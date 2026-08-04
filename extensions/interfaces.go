@@ -88,7 +88,7 @@ type NodeExecutor interface {
 // RunJob and models.ExecutionAttempt (Tnsor-Labs/brokoli#7) — see RunJob's
 // doc comment for the shared (run, node, attempt) identity these describe.
 // They were added, along with Context, to close a gap found while building
-// Tnsor-Labs/brokoli-ee#12's Kubernetes execution adapter: an external
+// support for external Kubernetes-based execution: an external
 // executor (a K8s Job, a Docker container, a remote worker) had no attempt
 // number to name its dispatch deterministically, no idempotency key to
 // recognize a redispatch of the same attempt, and — despite this struct's

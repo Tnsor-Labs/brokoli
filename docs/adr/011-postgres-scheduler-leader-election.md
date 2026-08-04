@@ -74,8 +74,8 @@ SQLite is guarded by a startup warning
 binary cannot know how many *other* replicas are configured (there is no
 `--replica-count` flag or equivalent anywhere in this repo), so a runtime
 reject would need information we don't have. True enforcement belongs at
-the deployment/orchestration layer (brokoli-ee#9, HA deployment topology —
-out of scope here).
+the deployment/orchestration layer — out of scope here. (Brokoli Enterprise's
+managed deployment tooling handles this today.)
 
 ## Consequences
 
@@ -110,7 +110,8 @@ out of scope here).
 ### Deferred
 
 - True enforcement of SQLite single-instance-ness (a real replica-count
-  signal, or infrastructure-level guarantee) — brokoli-ee#9.
+  signal, or infrastructure-level guarantee) — belongs at the deployment/
+  orchestration layer, not this OSS core.
 - A full multi-process failover test (kill an actual second `brokoli
   --mode scheduler` OS process against a real Postgres cluster and assert
   exactly one replacement leader with zero duplicate dispatch) — this PR's
@@ -140,10 +141,11 @@ out of scope here).
 
 ## Follow-ups
 
-- brokoli-ee#9: HA deployment topology / enterprise Helm chart — the
-  natural home for real replica-count enforcement and multi-process
-  failover test infrastructure (docker-compose/testcontainers or
-  equivalent) that this OSS-core PR doesn't add.
+- HA deployment topology / production Helm chart tooling — the natural
+  home for real replica-count enforcement and multi-process failover
+  test infrastructure (docker-compose/testcontainers or equivalent)
+  that this OSS-core PR doesn't add. Brokoli Enterprise ships this as
+  part of its managed deployment tooling.
 - A CI-integrated live-Postgres test service (docker-compose or a
   `services:` block in `.github/workflows/ci.yml`) so
   `store/postgres_leader_test.go`'s live-database tests run in CI instead

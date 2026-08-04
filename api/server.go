@@ -261,8 +261,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 // (cmd/serve.go): those run modes have no UI to serve and no end-user API
 // surface, but still need a bare HTTP endpoint for Kubernetes liveness
 // (/health) and, for scheduler replicas, leader-aware readiness
-// (/health/leader) — see Tnsor-Labs/brokoli-ee#9's HA deployment topology
-// work, which this unblocks. Reuses HealthHandler/PrometheusHandler/
+// (/health/leader) for HA deployments running multiple scheduler
+// replicas. Reuses HealthHandler/PrometheusHandler/
 // LeaderHealthHandler verbatim so all three run modes report identical
 // semantics for the same paths.
 //

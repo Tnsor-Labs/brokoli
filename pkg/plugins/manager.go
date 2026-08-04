@@ -263,7 +263,7 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 
 	start := time.Now()
 	// Use the real run/attempt context now threaded through ExecutionContext
-	// (Tnsor-Labs/brokoli-ee#12) so a plugin invocation is cancelled along
+	// so a plugin invocation is cancelled along
 	// with the pipeline run or the node's own timeout, instead of running
 	// on an unrelated background context that never observes either.
 	bgCtx := ctx.Context
@@ -386,7 +386,7 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 }
 
 // deadline extracts a deadline from an ExecutionContext's real
-// context.Context (Tnsor-Labs/brokoli-ee#12 threaded one through), so a
+// context.Context, so a
 // plugin invocation's timeout tracks the attempt's actual deadline
 // (pipeline cancellation or the node's configured timeout, whichever is
 // sooner) instead of only ever falling back to DefaultTimeout.
