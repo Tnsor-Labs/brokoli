@@ -156,6 +156,12 @@ func assertRunsEqual(t *testing.T, real, projected *models.Run) {
 	if real.TraceID != projected.TraceID {
 		t.Errorf("TraceID: real=%q projected=%q", real.TraceID, projected.TraceID)
 	}
+	if real.PipelineVersion != projected.PipelineVersion {
+		t.Errorf("PipelineVersion: real=%d projected=%d", real.PipelineVersion, projected.PipelineVersion)
+	}
+	if real.ResumedFromRunID != projected.ResumedFromRunID {
+		t.Errorf("ResumedFromRunID: real=%q projected=%q", real.ResumedFromRunID, projected.ResumedFromRunID)
+	}
 	if !timeEqual(real.StartedAt, projected.StartedAt) {
 		t.Errorf("StartedAt: real=%v projected=%v", real.StartedAt, projected.StartedAt)
 	}

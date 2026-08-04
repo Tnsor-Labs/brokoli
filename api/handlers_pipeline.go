@@ -226,6 +226,16 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Save the initial version snapshot (version 1) at creation time, same
+	// as Update does on every subsequent edit. Without this, a pipeline
+	// that is run before it is ever edited has zero rows in
+	// pipeline_versions — engine.Engine falls back to auto-snapshotting on
+	// first run in that case (see resolveRunPipelineVersion), but doing it
+	// here up front means the pipeline's version history starts at
+	// creation, as a user browsing version history would expect.
+	snapshot, _ := json.Marshal(p)
+	h.store.SavePipelineVersion(p.ID, string(snapshot), "initial version")
+
 	AuditLog(r, "create", "pipeline", p.ID, nil, map[string]interface{}{"name": p.Name, "nodes": len(p.Nodes)})
 
 	// Sync scheduler if created with a schedule

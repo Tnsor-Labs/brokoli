@@ -56,6 +56,8 @@ func ProjectRun(runID string, events []models.RunEvent) *models.Run {
 			run.FinishedAt = p.FinishedAt
 			run.TraceID = p.TraceID
 			run.Error = p.Error
+			run.PipelineVersion = p.PipelineVersion
+			run.ResumedFromRunID = p.ResumedFromRunID
 			if p.Params != nil {
 				run.Params = p.Params
 			}

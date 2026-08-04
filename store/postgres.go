@@ -279,6 +279,17 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_lease ON execution_attempts(status, lease_expires_at)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_idempotency ON execution_attempts(idempotency_key)`)
 
+	// pipeline_versions unique index — see the matching comment in
+	// store/sqlite.go for why issue #8 makes this race worth guarding now.
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_versions_unique ON pipeline_versions(pipeline_id, version)`)
+
+	// Run definition snapshot + resume lineage (issue #8). See the matching
+	// columns in store/sqlite.go for the full doc comment; kept in sync
+	// column-for-column between backends.
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS pipeline_version INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
+
 	return nil
 }
 
@@ -574,7 +585,7 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 
 	query := `
 		SELECT DISTINCT ON (pipeline_id)
-		    id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		    id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
 		FROM runs
 		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
 		ORDER BY pipeline_id, started_at DESC NULLS FIRST, id DESC
@@ -592,7 +603,7 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 			startedAt, finishedAt sql.NullTime
 			paramsJSON            []byte
 		)
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
@@ -700,8 +711,8 @@ func pgCreateRun(x sqlExecerPg, r *models.Run) error {
 		return fmt.Errorf("marshal run params: %w", err)
 	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON,
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON, r.PipelineVersion, r.ResumedFromRunID,
 	)
 	return err
 }
@@ -734,8 +745,8 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 	var status string
 	var paramsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params FROM runs WHERE id = $1`, id,
-	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON)
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id FROM runs WHERE id = $1`, id,
+	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID)
 	if err != nil {
 		return nil, err
 	}
@@ -754,7 +765,7 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 
 func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
 		 FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC NULLS FIRST, id DESC LIMIT $2`,
 		pipelineID, limit,
 	)
@@ -768,7 +779,7 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 		var r models.Run
 		var status string
 		var paramsJSON []byte
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID); err != nil {
 			return nil, err
 		}
 		r.Status = models.RunStatus(status)
@@ -1164,18 +1175,30 @@ func (s *PostgresStore) GetNodePreview(runID, nodeID string) ([]string, []common
 
 // --- Versioning ---
 
+// SavePipelineVersion — see the doc comment on SQLiteStore.SavePipelineVersion
+// (store/sqlite.go) for why the retry loop exists: the compute-then-insert
+// isn't atomic, and issue #8 made concurrent callers for a pipeline with no
+// saved version yet a real possibility, not just a manual-edit edge case.
 func (s *PostgresStore) SavePipelineVersion(pipelineID string, snapshot string, message string) (int, error) {
-	var maxVer sql.NullInt64
-	s.db.QueryRow(`SELECT MAX(version) FROM pipeline_versions WHERE pipeline_id = $1`, pipelineID).Scan(&maxVer)
-	nextVer := 1
-	if maxVer.Valid {
-		nextVer = int(maxVer.Int64) + 1
+	const maxAttempts = 100
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var maxVer sql.NullInt64
+		s.db.QueryRow(`SELECT MAX(version) FROM pipeline_versions WHERE pipeline_id = $1`, pipelineID).Scan(&maxVer)
+		nextVer := 1
+		if maxVer.Valid {
+			nextVer = int(maxVer.Int64) + 1
+		}
+		_, err := s.db.Exec(
+			`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES ($1,$2,$3,$4,$5)`,
+			pipelineID, nextVer, snapshot, message, time.Now(),
+		)
+		if err == nil {
+			return nextVer, nil
+		}
+		lastErr = err
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES ($1,$2,$3,$4,$5)`,
-		pipelineID, nextVer, snapshot, message, time.Now(),
-	)
-	return nextVer, err
+	return 0, fmt.Errorf("save pipeline version for %s after %d attempts (likely concurrent version creation): %w", pipelineID, maxAttempts, lastErr)
 }
 
 func (s *PostgresStore) ListPipelineVersions(pipelineID string) ([]PipelineVersion, error) {

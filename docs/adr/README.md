@@ -30,6 +30,7 @@ auditable.
 | [ADR-007](./007-install-ux-one-liner.md) | Install UX — one-liner with interactive admin setup | Accepted |
 | [ADR-008](./008-documentation-framework.md) | Documentation framework — fumadocs over MkDocs | Accepted |
 | [ADR-009](./009-crash-recovery-baseline.md) | Crash-recovery baseline before durable orchestration | Accepted |
+| [ADR-010](./010-run-artifact-and-resume-semantics.md) | Run definition snapshots and durable artifact/resume semantics | Accepted |
 
 ## How to add a new ADR
 
