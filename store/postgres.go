@@ -791,6 +791,56 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 	return runs, rows.Err()
 }
 
+// ListNonTerminalRuns returns a keyset-paginated page of runs left in a
+// non-terminal status — see store.Store.ListNonTerminalRuns and
+// Tnsor-Labs/brokoli#9. Ordered ascending by id (a sortable UUIDv7, see
+// pkg/common.NewID).
+func (s *PostgresStore) ListNonTerminalRuns(afterID string, limit int) ([]models.Run, bool, error) {
+	fetchN := limit + 1
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			 FROM runs WHERE `+nonTerminalRunStatusFilter+` ORDER BY id ASC LIMIT $1`,
+			fetchN,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			 FROM runs WHERE `+nonTerminalRunStatusFilter+` AND id > $1 ORDER BY id ASC LIMIT $2`,
+			afterID, fetchN,
+		)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var runs []models.Run
+	for rows.Next() {
+		var r models.Run
+		var status string
+		var paramsJSON []byte
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID); err != nil {
+			return nil, false, err
+		}
+		r.Status = models.RunStatus(status)
+		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
+			return nil, false, fmt.Errorf("decode run params: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasNext := len(runs) > limit
+	if hasNext {
+		runs = runs[:limit]
+	}
+	return runs, hasNext, nil
+}
+
 func (s *PostgresStore) UpdateRun(r *models.Run) error {
 	paramsJSON, err := json.Marshal(r.Params)
 	if err != nil {
@@ -1098,6 +1148,37 @@ func pgGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*mode
 	}
 	a.Status = models.AttemptStatus(status)
 	return &a, nil
+}
+
+// ListExecutionAttemptsByRun returns every execution_attempts row for a run
+// — see store.ExecutionAttemptStore.ListExecutionAttemptsByRun and
+// Tnsor-Labs/brokoli#9, which needs this enumeration to check every
+// attempt's lease state during startup recovery.
+func (s *PostgresStore) ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error) {
+	rows, err := s.db.Query(
+		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id = $1 ORDER BY node_id ASC, attempt ASC`,
+		runID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list execution attempts: %w", err)
+	}
+	defer rows.Close()
+
+	var attempts []models.ExecutionAttempt
+	for rows.Next() {
+		var a models.ExecutionAttempt
+		var status string
+		if err := rows.Scan(&a.RunID, &a.NodeID, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("list execution attempts: %w", err)
+		}
+		a.Status = models.AttemptStatus(status)
+		attempts = append(attempts, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list execution attempts: %w", err)
+	}
+	return attempts, nil
 }
 
 // --- Logs ---

@@ -44,6 +44,25 @@ type Engine struct {
 	RunsTotal     int64
 	RunsSucceeded int64
 	RunsFailed    int64
+
+	// Startup-recovery counters (Tnsor-Labs/brokoli#9), incremented by
+	// RecoverNonTerminalRuns via atomic.AddInt64 exactly like RunsTotal/
+	// RunsSucceeded/RunsFailed above, and surfaced by
+	// api.PrometheusHandler the same way those already are — recovery does
+	// not get its own metrics type, it extends this engine-level counter
+	// set, which is what the Prometheus handler already reads directly.
+	//
+	// RunsRecovered counts runs recovery determined a definite outcome for
+	// (success or failed) from the event log, whether or not it also had to
+	// reclaim an expired attempt lease along the way; RunsRecoveryFailed
+	// counts only the subset with no recoverable path at all, forced to
+	// models.RunStatusFailed for lack of any way to tell what the live
+	// process would have persisted; AttemptsReclaimed counts
+	// execution_attempts rows whose expired lease was settled via
+	// FailAttempt.
+	RunsRecovered      int64
+	RunsRecoveryFailed int64
+	AttemptsReclaimed  int64
 }
 
 // NewEngine creates a new pipeline execution engine.
