@@ -141,6 +141,18 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		return nil, fmt.Errorf("get fetcher: %w", err)
 	}
 
+	// max_concurrency/checkpoint_every from the SDK's execution() policy are
+	// not implemented by the in-process sequential pagination executor —
+	// warn rather than silently ignoring them, per issue #30's scope note.
+	if execCfg, ok := node.Config["execution"].(map[string]interface{}); ok {
+		if v, ok := execCfg["max_concurrency"]; ok {
+			r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not implemented (pagination runs sequentially, in-process) — ignoring", v)
+		}
+		if v, ok := execCfg["checkpoint_every"]; ok {
+			r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v is not implemented (no mid-pagination checkpointing) — ignoring", v)
+		}
+	}
+
 	ds, err := fetcher.Fetch(source, node.Config)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
