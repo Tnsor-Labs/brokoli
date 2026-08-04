@@ -252,12 +252,78 @@ var serveCmd = &cobra.Command{
 				}()
 			}
 
+			// Minimal HTTP server for Kubernetes liveness probing (Tnsor-Labs/
+			// brokoli-ee#9). Worker mode has no leader concept (workers don't
+			// run leader election — only scheduler/all do, see newLeaderElector
+			// above), so sched is nil here and NewMinimalServer omits
+			// /health/leader, registering only /health and /metrics. Runs in
+			// the background: its own SIGINT/SIGTERM handling (api.Server.Start)
+			// is independent of the dequeue loop's below, and either one
+			// finishing is fine since main() exits once RunE returns.
+			go func() {
+				if err := api.NewMinimalServer(port, s, eng, nil).Start(); err != nil {
+					log.Printf("Worker: health server error: %v", err)
+				}
+			}()
+
 			log.Println("Worker mode: waiting for jobs...")
 			_, workerCount := eng.GetQueueInfo()
 			workerSlots := make(chan struct{}, workerCount)
+
+			// Graceful shutdown (Tnsor-Labs/brokoli-ee#9): on SIGINT/SIGTERM,
+			// stop claiming new jobs and give in-flight jobs a bounded window
+			// to finish via drainWorkerSlots before returning, so
+			// terminationGracePeriodSeconds in Kubernetes actually buys
+			// something for worker pods. A job that doesn't finish in time is
+			// abandoned to the execution-attempt lease/recovery system
+			// (Tnsor-Labs/brokoli#6/#7/#9's RecoverNonTerminalRuns), same as
+			// today's hard-kill case — this just makes the common case clean.
+			quit := make(chan os.Signal, 1)
+			signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
+
 			for {
-				workerSlots <- struct{}{}
-				job, err := Extensions.JobQueue.Dequeue()
+				select {
+				case sig := <-quit:
+					log.Printf("Worker: received %v, draining in-flight jobs (up to %s)...", sig, workerShutdownGracePeriod)
+					if drainWorkerSlots(workerSlots, workerCount, workerShutdownGracePeriod) {
+						log.Println("Worker: all in-flight jobs completed, shutting down cleanly")
+					} else {
+						log.Println("Worker: grace period expired with jobs still in-flight — abandoning to the recovery system")
+					}
+					return nil
+				case workerSlots <- struct{}{}:
+				}
+
+				type dequeueResult struct {
+					job extensions.RunJob
+					err error
+				}
+				resultCh := make(chan dequeueResult, 1)
+				go func() {
+					job, err := Extensions.JobQueue.Dequeue()
+					resultCh <- dequeueResult{job, err}
+				}()
+
+				var job extensions.RunJob
+				var err error
+				select {
+				case sig := <-quit:
+					// A job may still arrive on resultCh later (buffered, so
+					// that goroutine won't leak), but nobody will process it —
+					// same abandon-to-recovery fallback as a job that times
+					// out mid-execution below.
+					<-workerSlots
+					log.Printf("Worker: received %v while waiting for work, draining in-flight jobs (up to %s)...", sig, workerShutdownGracePeriod)
+					if drainWorkerSlots(workerSlots, workerCount, workerShutdownGracePeriod) {
+						log.Println("Worker: all in-flight jobs completed, shutting down cleanly")
+					} else {
+						log.Println("Worker: grace period expired with jobs still in-flight — abandoning to the recovery system")
+					}
+					return nil
+				case res := <-resultCh:
+					job, err = res.job, res.err
+				}
+
 				if err != nil {
 					<-workerSlots
 					if err == extensions.ErrQueueClosed {
@@ -314,14 +380,18 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		// Scheduler-only mode: no HTTP server, just block until signal
+		// Scheduler-only mode: minimal HTTP server (health/metrics/leader),
+		// no UI/auth/API routes (Tnsor-Labs/brokoli-ee#9). /health/leader
+		// gives Kubernetes a real leader-aware readiness probe target instead
+		// of falling back to bare process liveness. SIGINT/SIGTERM handling
+		// (including the graceful cleanupLeader()/sched.Stop() shutdown
+		// registered as defers above, which already correctly blocks on
+		// releasing leadership before this function returns) is unchanged —
+		// Start() traps the same signals api.NewServer's HTTP path always
+		// has and returns once its own graceful HTTP shutdown completes.
 		if RunMode == "scheduler" {
-			log.Println("Scheduler mode: running (no HTTP server)")
-			quit := make(chan os.Signal, 1)
-			signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
-			<-quit
-			log.Println("Scheduler shutting down...")
-			return nil
+			log.Printf("Scheduler mode: starting HTTP server (health/metrics/leader) on port %d", port)
+			return api.NewMinimalServer(port, s, eng, sched).Start()
 		}
 
 		// API or all mode: start HTTP server
@@ -368,6 +438,46 @@ func encryptionKeyPath(databasePath string) string {
 
 func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
+}
+
+// workerShutdownGracePeriod bounds how long --mode worker's dequeue loop
+// waits for in-flight jobs to finish after receiving SIGINT/SIGTERM before
+// giving up and returning anyway. Chosen to comfortably fit inside a
+// Kubernetes pod's typical terminationGracePeriodSeconds (commonly 30s)
+// with headroom for the SIGTERM-to-SIGKILL race: a job still running past
+// this point is abandoned to the execution-attempt lease/recovery system
+// (Tnsor-Labs/brokoli#6/#7/#9) rather than blocking shutdown indefinitely.
+const workerShutdownGracePeriod = 25 * time.Second
+
+// drainWorkerSlots waits for every in-flight worker job to finish, up to
+// timeout, and reports whether it fully drained in time.
+//
+// It works by acquiring every slot in the workerSlots semaphore itself:
+// each in-flight job holds exactly one slot for its duration (the dequeue
+// loop above pushes a token before dispatching a job's goroutine; that
+// goroutine pops it via `defer func() { <-workerSlots }()` when it
+// finishes). Acquiring all `capacity` slots is therefore only possible once
+// every currently in-flight job has released its own — the same trick a
+// sync.WaitGroup.Wait() would give, reusing the semaphore that already
+// exists rather than adding a second tracking mechanism.
+//
+// Extracted as a standalone function (rather than inlined in the dequeue
+// loop) specifically so it's unit-testable without sending real OS signals
+// to a running process.
+func drainWorkerSlots(slots chan struct{}, capacity int, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < capacity; i++ {
+			slots <- struct{}{}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // newLeaderElector builds the LeaderElector this instance's Scheduler
