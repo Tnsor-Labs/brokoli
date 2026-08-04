@@ -296,7 +296,28 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 // runUnion concatenates all of a union node's upstream datasets into one.
 // See UnionDatasets (engine/union.go) for the schema-mismatch and
 // output-shape design decisions.
+//
+// Identity-union exception (#31): a single input is passed through
+// unchanged instead of erroring. This is the compiled shape of
+// `CollectionRef.collect(mode="union")` on a `.expand()` node — brokoli-sdk
+// always emits exactly one static edge into the union node in that case
+// (see engine/expansion.go's top-of-file doc comment for the full trace),
+// and by the time execution reaches here that shape has already been
+// vetted by validate.go's validateEdgeSemantics (which still requires >=2
+// edges into a union node UNLESS the sole upstream is a dynamic-expansion
+// node) — so a single input at runtime is a legitimate "identity union",
+// not a validation gap slipping through.
 func (r *Runner) runUnion(node models.Node, inputs []*common.DataSet) (*common.DataSet, error) {
+	if len(inputs) == 1 {
+		result := inputs[0]
+		if result == nil {
+			result = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
+		}
+		r.log(node.ID, models.LogLevelInfo, "union: single input (identity union — see #31, e.g. .collect(mode=\"union\") over a single .expand() node) — passing through %d rows (%d columns) unchanged",
+			len(result.Rows), len(result.Columns))
+		return result, nil
+	}
+
 	result, err := UnionDatasets(inputs)
 	if err != nil {
 		return nil, fmt.Errorf("union node: %w", err)
