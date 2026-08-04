@@ -17,6 +17,53 @@ auditable.
 - **Alternatives considered** — what we ruled out and why
 - **Follow-ups** — what this decision defers to future work
 
+## Start here
+
+This directory is both a decision log and an onboarding map. If you're
+picking up an issue, find the ADR for the area it touches and read it
+*before* writing code — it'll usually save you from re-deriving a
+tradeoff we already thought through, and it'll tell you what's still
+genuinely open versus already settled.
+
+## How ADRs relate to issues
+
+Substantial issues link the ADR that motivates them near the top, and
+the ADR's Follow-ups section links back to the issue(s) that implement
+it — see `#38`/`#39` and ADR-012/ADR-013 for the current example of this
+pattern. Keep doing this for new substantial issues: it means a reader
+never has to choose between "read the design" and "read the task."
+
+## Proposed vs. accepted
+
+**Proposed** means genuinely open — we picked a direction to unblock
+writing code, not because every call in it is final. If you disagree
+with something a `proposed` ADR says, that's exactly the moment to raise
+it: before code gets written against it, not after.
+
+**Accepted** means settled. Changing it needs a PR against the ADR
+itself, or a new ADR that supersedes it — "the ADR is stale" is a review
+blocker, not a nitpick, so a PR that changes how we reach or maintain a
+decision must update the ADR that covers it.
+
+## How to propose a change or disagree
+
+- **Concrete disagreement** ("I think the decision itself is wrong, and
+  here's what I'd do instead") — open a PR editing the ADR. Same review
+  norm as code: tag a maintainer.
+- **Still exploratory** ("I'm not sure this is right, but I don't have a
+  full alternative yet") — a comment on the ADR's companion issue (or a
+  new issue, if there isn't one) is the lower-friction way to start that
+  conversation before it's PR-shaped.
+
+## Keeping an ADR current after implementation
+
+There's no separate "acceptance ceremony" beyond the PR/issue process
+above. In practice, an ADR earns its `Accepted` status by staying
+current as it's built: fill in a Deferred item once it's no longer
+deferred, or append a dated `## Update (YYYY-MM-DD)` section when
+something in Consequences turns out different in practice than
+predicted. Do this in the same PR as the code change where possible.
+
 ## Index
 
 | # | Title | Status |
