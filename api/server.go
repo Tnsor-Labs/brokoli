@@ -57,7 +57,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 
 	// Observability endpoints (outside /api, no auth required)
 	r.Get("/health", HealthHandler(s))
-	r.Get("/metrics", PrometheusHandler(metrics, s, e))
+	r.Get("/metrics", PrometheusHandler(metrics, s, e, sched))
 
 	// SODP state server replaces the old WebSocket hub.
 	// Engine events are bridged into state mutations with delta fanout.

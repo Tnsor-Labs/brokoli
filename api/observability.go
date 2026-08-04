@@ -53,7 +53,11 @@ func HealthHandler(s store.Store) http.HandlerFunc {
 }
 
 // PrometheusHandler returns metrics in Prometheus text exposition format.
-func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine) http.HandlerFunc {
+// sched may be nil (API-only/worker-only instances that don't run a
+// scheduler component don't participate in leader election at all — see
+// cmd/serve.go, which only constructs a Scheduler for "all"/"scheduler"
+// mode); the leader-status metrics are simply omitted in that case.
+func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine, sched *engine.Scheduler) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		active, maxC := e.GetQueueInfo()
 		uptime := time.Since(m.startTime).Seconds()
@@ -101,5 +105,33 @@ func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine) http.Handler
 		fmt.Fprintf(w, "# HELP brokoli_db_size_bytes SQLite database size in bytes.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_db_size_bytes gauge\n")
 		fmt.Fprintf(w, "brokoli_db_size_bytes %d\n", dbSize)
+
+		// Scheduler leadership (Tnsor-Labs/brokoli#10) — omitted entirely
+		// for instances with no scheduler component (sched == nil), since
+		// they never participate in leader election. Values are pulled
+		// live from the Scheduler/LeaderElector at scrape time, the same
+		// way brokoli_active_runs above is pulled from e.GetQueueInfo()
+		// rather than tracked as a separate atomic counter.
+		if sched != nil {
+			isLeader := 0
+			if sched.IsLeader() {
+				isLeader = 1
+			}
+			fmt.Fprintf(w, "# HELP brokoli_leader_status 1 if this instance currently holds scheduler leadership, 0 otherwise.\n")
+			fmt.Fprintf(w, "# TYPE brokoli_leader_status gauge\n")
+			fmt.Fprintf(w, "brokoli_leader_status %d\n", isLeader)
+			fmt.Fprintf(w, "# HELP brokoli_leader_fencing_generation Fencing generation last observed while holding leadership.\n")
+			fmt.Fprintf(w, "# TYPE brokoli_leader_fencing_generation gauge\n")
+			fmt.Fprintf(w, "brokoli_leader_fencing_generation %d\n", sched.LeaderFencingGeneration())
+			fmt.Fprintf(w, "# HELP brokoli_leader_acquisitions_total Total number of times this instance acquired scheduler leadership.\n")
+			fmt.Fprintf(w, "# TYPE brokoli_leader_acquisitions_total counter\n")
+			fmt.Fprintf(w, "brokoli_leader_acquisitions_total %d\n", sched.LeaderAcquisitions())
+			fmt.Fprintf(w, "# HELP brokoli_leader_releases_total Total number of times this instance voluntarily released scheduler leadership.\n")
+			fmt.Fprintf(w, "# TYPE brokoli_leader_releases_total counter\n")
+			fmt.Fprintf(w, "brokoli_leader_releases_total %d\n", sched.LeaderReleases())
+			fmt.Fprintf(w, "# HELP brokoli_leader_election_failures_total Total number of leader election attempts that failed with a coordination-backend error (not counting normal loss-to-another-instance).\n")
+			fmt.Fprintf(w, "# TYPE brokoli_leader_election_failures_total counter\n")
+			fmt.Fprintf(w, "brokoli_leader_election_failures_total %d\n", sched.LeaderElectionFailures())
+		}
 	}
 }

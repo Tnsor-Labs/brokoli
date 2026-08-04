@@ -29,10 +29,27 @@ type Scheduler struct {
 	schedules map[string]string       // pipelineID -> cron expression
 	names     map[string]string       // pipelineID -> pipeline name
 	mu        sync.Mutex
+
+	// leader gates actual dispatch (Tnsor-Labs/brokoli#10): every instance
+	// still loads pipelines and holds cron entries ready (so Status/NextRun
+	// keep working identically on every instance — see point 5 of the
+	// issue, "read-only endpoints on any instance"), but only the current
+	// leader's cron ticks and catch-up pass are allowed to actually call
+	// engine.RunPipeline. Defaults to store.NewNoopLeaderElector() (always
+	// leader) so single-instance/SQLite deployments and existing callers
+	// that don't know about leader election see zero behavior change.
+	leader store.LeaderElector
 }
 
-// NewScheduler creates a scheduler that uses the given engine to run pipelines.
-func NewScheduler(engine *Engine, s store.Store) *Scheduler {
+// NewScheduler creates a scheduler that uses the given engine to run
+// pipelines. leader gates whether this instance's cron ticks and missed-run
+// catch-up actually dispatch (Tnsor-Labs/brokoli#10); pass nil to always
+// dispatch (single-instance/SQLite behavior, and every prior caller's
+// implicit expectation before leader election existed).
+func NewScheduler(engine *Engine, s store.Store, leader store.LeaderElector) *Scheduler {
+	if leader == nil {
+		leader = store.NewNoopLeaderElector()
+	}
 	return &Scheduler{
 		cron:      cron.New(cron.WithLocation(time.UTC)),
 		engine:    engine,
@@ -40,6 +57,7 @@ func NewScheduler(engine *Engine, s store.Store) *Scheduler {
 		entries:   make(map[string]cron.EntryID),
 		schedules: make(map[string]string),
 		names:     make(map[string]string),
+		leader:    leader,
 	}
 }
 
@@ -85,10 +103,31 @@ func (s *Scheduler) Start() error {
 
 // catchUpMissedRuns checks each scheduled pipeline's last run vs its schedule.
 // If a run was missed during downtime, triggers it now.
+//
+// Gated on leadership (Tnsor-Labs/brokoli#10): a standby instance must not
+// independently fire the same missed-run dispatch a concurrently-booting
+// leader (or the leader that never went down at all) already owns. Checked
+// both up front (cheap early exit for the common non-leader case) and
+// again on every loop iteration below, since a long pipeline list could in
+// principle take long enough for this instance's lease to lapse mid-pass.
 func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
+	if !s.leader.IsLeader() {
+		log.Printf("Catch-up skipped: not leader")
+		return
+	}
 	for _, p := range pipelines {
 		if !p.Enabled || p.Schedule == "" {
 			continue
+		}
+		// Re-check leadership on every iteration, not just once up front:
+		// a long pipeline list could take long enough for this instance's
+		// lease to lapse and a new leader to be elected mid-loop, and we
+		// must stop dispatching the moment that happens rather than
+		// racing the new leader's own catch-up pass over the same
+		// pipelines still left in this loop.
+		if !s.leader.IsLeader() {
+			log.Printf("Catch-up stopped mid-pass: leadership lost")
+			return
 		}
 
 		// Parse the cron schedule
@@ -182,6 +221,17 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 
 	pid := pipelineID // capture for closure
 	entryID := s.cron.Schedule(tzSched, cron.FuncJob(func() {
+		// Leadership gate (Tnsor-Labs/brokoli#10): every instance still
+		// registers this cron entry (so Status()/NextRun() report the same
+		// schedule everywhere — see catchUpMissedRuns' doc comment above
+		// for why standbys still need to hold entries ready), but only the
+		// current leader is allowed to actually dispatch. Standbys log and
+		// skip on every tick they're not leader, which is a normal,
+		// expected, non-error condition — not logged as a warning.
+		if !s.leader.IsLeader() {
+			log.Printf("Scheduled fire for pipeline %s skipped: not leader", pid)
+			return
+		}
 		log.Printf("Scheduled run triggered for pipeline %s", pid)
 		run, err := s.engine.RunPipeline(pid)
 		if err != nil {
@@ -260,3 +310,22 @@ func (s *Scheduler) NextRun(pipelineID string) time.Time {
 	}
 	return time.Time{}
 }
+
+// IsLeader reports whether this instance currently believes it is the
+// scheduler leader — always true for the default NoopLeaderElector
+// (single-instance/SQLite). Read-only callers (e.g. status endpoints) don't
+// need this; it exists for api.PrometheusHandler and diagnostics, mirroring
+// how engine.Engine exposes RunsTotal/RunsSucceeded/RunsFailed directly for
+// that same handler to read at scrape time (Tnsor-Labs/brokoli#10 point 6).
+func (s *Scheduler) IsLeader() bool { return s.leader.IsLeader() }
+
+// LeaderFencingGeneration returns the fencing generation for this
+// instance's current leadership tenure, 0 whenever IsLeader() is false —
+// see store.LeaderElector.FencingGeneration for the full contract.
+func (s *Scheduler) LeaderFencingGeneration() int64 { return s.leader.FencingGeneration() }
+
+// LeaderAcquisitions, LeaderReleases, and LeaderElectionFailures are
+// cumulative counters passed through from the underlying LeaderElector.
+func (s *Scheduler) LeaderAcquisitions() int64     { return s.leader.Acquisitions() }
+func (s *Scheduler) LeaderReleases() int64         { return s.leader.Releases() }
+func (s *Scheduler) LeaderElectionFailures() int64 { return s.leader.ElectionFailures() }

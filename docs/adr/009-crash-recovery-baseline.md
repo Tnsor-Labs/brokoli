@@ -35,6 +35,14 @@ The current baseline is intentionally not recovery-safe:
 ### Negative
 
 - This only establishes SQLite behavior; Postgres coverage is a follow-up.
+  Scheduler-level coordination for multi-instance Postgres deployments
+  (which instance is even allowed to dispatch, independent of this ADR's
+  per-run recovery mechanics) is now addressed by
+  [ADR-011](./011-postgres-scheduler-leader-election.md) — recovery itself
+  still runs unconditionally on every instance regardless of leadership
+  (`RecoverNonTerminalRuns` is idempotent and safe to run redundantly; only
+  new-run *dispatch* is leader-gated), so this line remains accurate for
+  the recovery mechanics specifically.
 - It does not recover, repair, or resume an interrupted run.
 
 ### Deferred
