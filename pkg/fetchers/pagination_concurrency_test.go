@@ -35,15 +35,13 @@ func (c *concurrencyTracker) enter() func() {
 }
 
 // offsetPageServer wraps each page's records in an {"items": [...], "end_flag":
-// bool} envelope rather than returning a bare JSON array. This deliberately
-// sidesteps a separate, pre-existing bug: common.ParseJSONData errors out on
-// a bare empty array ("no data found in JSON content") instead of treating
-// it as zero records, which breaks the default (no `records` config)
-// empty-page stop signal for offset pagination. That bug is real but out of
-// scope for this change — tracked separately — so these tests use an
-// explicit `records`/`end_flag` config (a supported, documented way to
-// configure offset pagination) to test max_concurrency without tripping
-// over it.
+// bool} envelope rather than returning a bare JSON array, using the
+// explicit `records`/`end_flag` config path. This isn't required for
+// correctness (brokoli#44 fixed extractDatasetRecords's default,
+// no-`records`-config path to treat a bare empty array as zero records
+// too), but the envelope lets these tests assert termination explicitly via
+// `end_flag` rather than relying on "ran out of real pages," which keeps
+// the max_concurrency assertions below exact and independent of that fix.
 func offsetPageServer(t *testing.T, totalRecords int, tracker *concurrencyTracker) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

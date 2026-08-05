@@ -331,9 +331,23 @@ func artifactDataSet(responseBody []byte) *common.DataSet {
 // back to ParseJSONData's auto-detection — the same rule parseResponseContract
 // uses for the dataset case. Pagination always requires response=="dataset"
 // (enforced by SDK validation), so scalar/artifact handling doesn't apply here.
+//
+// A bare empty array ("[]") is special-cased to zero records here, ahead of
+// ParseJSONData: unlike a one-shot Fetch (where an empty array response is
+// arguably a sign something's wrong upstream — see TestRESTFetcher_Fetch's
+// "empty response" case, which deliberately keeps treating it as an error),
+// an empty page is a normal, common way for a paginated API to say "no more
+// results" when the pipeline author hasn't configured records/end_flag/
+// total_pages_path — and fetchPaginated's own stop condition already
+// expects to see it as "0 records", not an error (see appendPage's
+// `len(records) == 0` check). Deliberately narrower than changing
+// ParseJSONData itself, which stays as-is for its other two callers.
 func extractDatasetRecords(responseBody []byte, options map[string]interface{}) ([]map[string]interface{}, error) {
 	if recordsPath, ok := options["records"].(string); ok && recordsPath != "" {
 		return common.ExtractRecordsAtPath(responseBody, recordsPath)
+	}
+	if bytes.Equal(bytes.TrimSpace(responseBody), []byte("[]")) {
+		return []map[string]interface{}{}, nil
 	}
 	return common.ParseJSONData(responseBody)
 }
