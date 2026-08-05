@@ -86,8 +86,12 @@ type flakyError struct{}
 func (*flakyError) Error() string { return "flaky node: simulated failure on first attempt" }
 
 // newResumeTestEngine builds a fresh SQLite-backed Engine with its own
-// temp-dir artifact store — every resume test needs both a durable run
-// store and a durable artifact store to exercise the real restore path.
+// temp-dir artifact and pagination-checkpoint stores — every resume test
+// needs a durable run store and a durable artifact store to exercise the
+// real restore path; pagination-checkpoint tests need the latter isolated
+// to a temp dir too, rather than NewEngine's default
+// ./brokoli-pagination-checkpoints (which would otherwise leak into the
+// process's working directory whenever a test exercises checkpoint_every).
 func newResumeTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	t.Helper()
 	dir := t.TempDir()
@@ -99,6 +103,7 @@ func newResumeTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 
 	eng := NewEngine(s)
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.PaginationCheckpointStore = NewLocalDiskPaginationCheckpointStore(filepath.Join(dir, "pagination-checkpoints"))
 	return eng, s
 }
 

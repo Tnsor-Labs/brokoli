@@ -6,6 +6,7 @@ package engine
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -141,38 +142,143 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		return nil, fmt.Errorf("get fetcher: %w", err)
 	}
 
+	paginationCfg, hasPagination := node.Config["pagination"].(map[string]interface{})
+	execCfg, _ := node.Config["execution"].(map[string]interface{})
+
 	// max_concurrency is implemented for the "offset" and "numbered"
 	// pagination strategies (fetchPaginated dispatches a bounded concurrent
 	// batch of pages for those two) but not for "cursor"/"next_link"/
 	// "link_header", which can only compute their next request from the
 	// current response and so stay sequential regardless of this setting.
-	// checkpoint_every is not implemented at all yet (issue #41 M2). Warn
-	// rather than silently ignoring either case where the setting has no
-	// effect.
-	if execCfg, ok := node.Config["execution"].(map[string]interface{}); ok {
-		if v, ok := execCfg["max_concurrency"]; ok {
-			paginationCfg, hasPagination := node.Config["pagination"].(map[string]interface{})
-			if !hasPagination {
-				r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v has no effect without a pagination config — ignoring", v)
-			} else {
-				strategy, _ := paginationCfg["strategy"].(string)
-				switch strategy {
-				case "cursor", "next_link", "link_header":
-					r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not applicable to pagination strategy %q — each page's request depends on the previous page's response, so pages run sequentially regardless of this setting", v, strategy)
-				}
+	// Warn rather than silently ignoring a setting that has no effect.
+	if v, ok := execCfg["max_concurrency"]; ok {
+		if !hasPagination {
+			r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v has no effect without a pagination config — ignoring", v)
+		} else {
+			switch strategy, _ := paginationCfg["strategy"].(string); strategy {
+			case "cursor", "next_link", "link_header":
+				r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not applicable to pagination strategy %q — each page's request depends on the previous page's response, so pages run sequentially regardless of this setting", v, strategy)
 			}
-		}
-		if v, ok := execCfg["checkpoint_every"]; ok {
-			r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v is not implemented (no mid-pagination checkpointing) — ignoring", v)
 		}
 	}
 
-	ds, err := fetcher.Fetch(source, node.Config)
+	ds, err := r.fetchSourceAPI(node, fetcher, source, hasPagination, execCfg)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Fetched %d rows from %s", len(ds.Rows), source)
 	return ds, nil
+}
+
+// fetchSourceAPI performs the actual fetch for a source_api node, adding
+// mid-pagination checkpoint save/resume when the node sets
+// execution().checkpoint_every and the fetcher implements
+// fetchers.CheckpointingFetcher (issue #41 M2). Falls back to a plain
+// fetcher.Fetch — identical to this codebase's behavior before M2 —
+// whenever checkpointing isn't applicable: no checkpoint_every set, no
+// pagination config, no checkpoint store configured, or a fetcher type that
+// doesn't support it. That fallback keeps checkpointing strictly opt-in and
+// zero-overhead for every pipeline that doesn't set checkpoint_every.
+func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, source string, hasPagination bool, execCfg map[string]interface{}) (*common.DataSet, error) {
+	checkpointEvery, hasCheckpointEvery := execConfigInt(execCfg, "checkpoint_every")
+	cf, supportsCheckpointing := fetcher.(fetchers.CheckpointingFetcher)
+
+	if !hasCheckpointEvery || checkpointEvery <= 0 || !hasPagination || !supportsCheckpointing || r.checkpointStore == nil {
+		if hasCheckpointEvery && checkpointEvery > 0 {
+			switch {
+			case !hasPagination:
+				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v has no effect without a pagination config — ignoring", execCfg["checkpoint_every"])
+			case !supportsCheckpointing:
+				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v is not supported by source_type %q — ignoring", execCfg["checkpoint_every"], node.Config["source_type"])
+			case r.checkpointStore == nil:
+				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v set but no checkpoint store is configured — ignoring", execCfg["checkpoint_every"])
+			}
+		}
+		return fetcher.Fetch(source, node.Config)
+	}
+
+	// Look for a checkpoint under this run first (a node-level retry within
+	// the same run), falling back to the original run's checkpoint on a
+	// resume — mirroring restoreSkippedNodeOutput's resumedFromRunID
+	// lineage lookup for durable artifacts.
+	var resume *fetchers.PaginationCheckpoint
+	var resumeRecords []map[string]interface{}
+	sourceRunID := r.run.ID
+
+	if cp, ds, loadErr := r.checkpointStore.LoadCheckpoint(r.run.ID, node.ID); loadErr == nil {
+		resume, resumeRecords = cp, dataSetToRecords(ds)
+	} else if !errors.Is(loadErr, ErrCheckpointNotFound) {
+		r.log(node.ID, models.LogLevelWarning, "Failed to load pagination checkpoint for node %s (starting fresh): %v", node.Name, loadErr)
+	}
+	if resume == nil && r.resumedFromRunID != "" {
+		if cp, ds, loadErr := r.checkpointStore.LoadCheckpoint(r.resumedFromRunID, node.ID); loadErr == nil {
+			resume, resumeRecords = cp, dataSetToRecords(ds)
+			sourceRunID = r.resumedFromRunID
+		} else if !errors.Is(loadErr, ErrCheckpointNotFound) {
+			r.log(node.ID, models.LogLevelWarning, "Failed to load pagination checkpoint for node %s from original run %s (starting fresh): %v", node.Name, r.resumedFromRunID, loadErr)
+		}
+	}
+	if resume != nil {
+		r.log(node.ID, models.LogLevelInfo, "Resuming pagination for node %s from checkpoint: %d pages already fetched (run %s)", node.Name, resume.PagesFetched, sourceRunID)
+	}
+
+	onCheckpoint := func(cp fetchers.PaginationCheckpoint, records []map[string]interface{}) error {
+		if err := r.checkpointStore.SaveCheckpoint(r.run.ID, node.ID, cp, common.ConvertToDataSet(records)); err != nil {
+			r.log(node.ID, models.LogLevelWarning, "Failed to persist pagination checkpoint for node %s (a retry will restart this fetch from the beginning instead of resuming): %v", node.Name, err)
+			return err
+		}
+		return nil
+	}
+
+	ds, err := cf.FetchPaginatedResumable(source, node.Config, resume, resumeRecords, onCheckpoint)
+	if err != nil {
+		return nil, err
+	}
+
+	// The fetch succeeded — any checkpoint is now superseded by the node's
+	// normal durable artifact (written by executeNode after this returns).
+	// Clear it so a later run doesn't see stale interim state; clear under
+	// the original run's key too when this was a resume.
+	if delErr := r.checkpointStore.DeleteCheckpoint(r.run.ID, node.ID); delErr != nil {
+		r.log(node.ID, models.LogLevelWarning, "Failed to clear pagination checkpoint for node %s after successful fetch: %v", node.Name, delErr)
+	}
+	if sourceRunID != r.run.ID {
+		if delErr := r.checkpointStore.DeleteCheckpoint(sourceRunID, node.ID); delErr != nil {
+			r.log(node.ID, models.LogLevelWarning, "Failed to clear pagination checkpoint for node %s under original run %s after successful fetch: %v", node.Name, sourceRunID, delErr)
+		}
+	}
+	return ds, nil
+}
+
+// execConfigInt reads an integer-valued execution() policy field out of a
+// node's execution config, which arrives from JSON as float64 (or
+// json.Number, depending on decode path) rather than int.
+func execConfigInt(execCfg map[string]interface{}, key string) (int, bool) {
+	switch v := execCfg[key].(type) {
+	case float64:
+		return int(v), true
+	case int:
+		return v, true
+	case json.Number:
+		f, err := v.Float64()
+		return int(f), err == nil
+	}
+	return 0, false
+}
+
+// dataSetToRecords converts a DataSet's rows back into the plain
+// []map[string]interface{} shape PaginationCheckpoint's accumulated
+// records are carried as. nil-safe: a nil ds (no records checkpointed yet)
+// yields a nil slice, not a panic.
+func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
+	if ds == nil {
+		return nil
+	}
+	records := make([]map[string]interface{}, len(ds.Rows))
+	for i, row := range ds.Rows {
+		records[i] = map[string]interface{}(row)
+	}
+	return records
 }
 
 func (r *Runner) runSourceDB(node models.Node) (*common.DataSet, error) {

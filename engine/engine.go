@@ -46,9 +46,16 @@ type Engine struct {
 	// (or ./brokoli-artifacts); assign a different implementation the same
 	// way VarStore/ConnResolver are overridden after NewEngine.
 	ArtifactStore ArtifactStore
-	RunsTotal     int64
-	RunsSucceeded int64
-	RunsFailed    int64
+	// PaginationCheckpointStore persists mid-pagination progress for
+	// source_api nodes so a retry or resume can continue a large paginated
+	// fetch instead of restarting it (Tnsor-Labs/brokoli#41 M2). Defaults to
+	// a LocalDiskPaginationCheckpointStore rooted at
+	// BROKOLI_PAGINATION_CHECKPOINT_DIR (or ./brokoli-pagination-checkpoints);
+	// overridden the same way ArtifactStore is.
+	PaginationCheckpointStore PaginationCheckpointStore
+	RunsTotal                 int64
+	RunsSucceeded             int64
+	RunsFailed                int64
 
 	// Startup-recovery counters (Tnsor-Labs/brokoli#9), incremented by
 	// RecoverNonTerminalRuns via atomic.AddInt64 exactly like RunsTotal/
@@ -189,13 +196,18 @@ func NewEngine(s store.Store) *Engine {
 	if artifactDir == "" {
 		artifactDir = "./brokoli-artifacts"
 	}
+	checkpointDir := os.Getenv("BROKOLI_PAGINATION_CHECKPOINT_DIR")
+	if checkpointDir == "" {
+		checkpointDir = "./brokoli-pagination-checkpoints"
+	}
 	return &Engine{
-		store:         s,
-		eventCh:       make(chan models.Event, eventBuf),
-		active:        make(map[string]*Runner),
-		maxConcurrent: maxC,
-		runSem:        make(chan struct{}, maxC),
-		ArtifactStore: NewLocalDiskArtifactStore(artifactDir),
+		store:                     s,
+		eventCh:                   make(chan models.Event, eventBuf),
+		active:                    make(map[string]*Runner),
+		maxConcurrent:             maxC,
+		runSem:                    make(chan struct{}, maxC),
+		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
+		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
 	}
 }
 
@@ -370,6 +382,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
@@ -628,6 +641,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
@@ -752,6 +766,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.params = params
 	runner.acceptedRun = accepted
 	runner.artifactStore = e.ArtifactStore
+	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	runner.parentCtx = claimCtx
 
@@ -949,6 +964,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.artifactStore = e.ArtifactStore
+	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
 	runner.pipelineVersion = newRunVersion
 	runner.metrics = e.newRunnerMetrics()
