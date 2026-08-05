@@ -141,12 +141,26 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		return nil, fmt.Errorf("get fetcher: %w", err)
 	}
 
-	// max_concurrency/checkpoint_every from the SDK's execution() policy are
-	// not implemented by the in-process sequential pagination executor —
-	// warn rather than silently ignoring them, per issue #30's scope note.
+	// max_concurrency is implemented for the "offset" and "numbered"
+	// pagination strategies (fetchPaginated dispatches a bounded concurrent
+	// batch of pages for those two) but not for "cursor"/"next_link"/
+	// "link_header", which can only compute their next request from the
+	// current response and so stay sequential regardless of this setting.
+	// checkpoint_every is not implemented at all yet (issue #41 M2). Warn
+	// rather than silently ignoring either case where the setting has no
+	// effect.
 	if execCfg, ok := node.Config["execution"].(map[string]interface{}); ok {
 		if v, ok := execCfg["max_concurrency"]; ok {
-			r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not implemented (pagination runs sequentially, in-process) — ignoring", v)
+			paginationCfg, hasPagination := node.Config["pagination"].(map[string]interface{})
+			if !hasPagination {
+				r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v has no effect without a pagination config — ignoring", v)
+			} else {
+				strategy, _ := paginationCfg["strategy"].(string)
+				switch strategy {
+				case "cursor", "next_link", "link_header":
+					r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not applicable to pagination strategy %q — each page's request depends on the previous page's response, so pages run sequentially regardless of this setting", v, strategy)
+				}
+			}
 		}
 		if v, ok := execCfg["checkpoint_every"]; ok {
 			r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v is not implemented (no mid-pagination checkpointing) — ignoring", v)

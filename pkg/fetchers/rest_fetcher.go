@@ -12,6 +12,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -330,43 +331,76 @@ func extractDatasetRecords(responseBody []byte, options map[string]interface{}) 
 	return common.ParseJSONData(responseBody)
 }
 
-// fetchPaginated drives the in-process, sequential page loop for a
-// source_api node's `pagination` config. It supports the five strategies
-// brokoli-sdk's brokoli/pagination.py compiles config for: offset, cursor,
-// numbered, next_link, and link_header.
+// fetchPaginated drives the in-process page loop for a source_api node's
+// `pagination` config. It supports the five strategies brokoli-sdk's
+// brokoli/pagination.py compiles config for: offset, cursor, numbered,
+// next_link, and link_header.
 //
-// Scope note: this runs entirely in-process and sequentially — pages are
-// fetched one at a time, in order, by this single goroutine. `max_concurrency`
-// and `checkpoint_every` from the SDK's execution() policy are NOT
-// implemented (see runSourceAPI, which logs a warning when they're set) —
-// they require distributed/concurrent page dispatch and crash-recoverable
-// checkpointing, which is out of scope for this first version.
+// Concurrency: `max_concurrency` from the SDK's execution() policy bounds
+// how many pages are in flight at once, but only for the "offset" and
+// "numbered" strategies — those are the only two where a page's request
+// can be computed without seeing the previous page's response, so a batch
+// of upcoming pages can be dispatched together. "cursor", "next_link", and
+// "link_header" each derive the next request from the current response
+// (a cursor token, a next-page URL) and stay strictly sequential regardless
+// of max_concurrency — see runSourceAPI in engine/node_handlers.go, which
+// warns when max_concurrency is set on one of those strategies. Within a
+// batch, pages are appended in request order (not completion order), and a
+// stop signal (end_flag/total_pages/empty page/max_records) found anywhere
+// in the batch halts further dispatch — identical semantics to the
+// sequential loop, just with the batch's HTTP round-trips overlapped.
+// max_concurrency unset (or <= 1) reproduces the exact sequential loop this
+// function always used.
+//
+// `checkpoint_every` from the SDK's execution() policy is NOT implemented
+// yet (see runSourceAPI, which logs a warning when it's set) — mid-pagination,
+// crash-recoverable checkpointing is a separate follow-up (issue #41 M2).
 // `requests_per_second` (simple inter-request delay) and page-level retry
 // (retry a single failed page a few times, using max_retries/retry_backoff)
-// ARE implemented below.
+// ARE implemented below, and are safe to combine with max_concurrency > 1:
+// the rate limiter serializes *when* a request is allowed to start, while
+// the actual request/response work for concurrently-started pages proceeds
+// in parallel.
 func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}) (*common.DataSet, error) {
 	strategy, _ := paginationCfg["strategy"].(string)
 
 	execCfg, _ := asStringMap(fullOptions["execution"])
 	minInterval := requestInterval(execCfg)
 
+	maxConcurrency := intOpt(execCfg, "max_concurrency", 1)
+	if maxConcurrency < 1 {
+		maxConcurrency = 1
+	}
+
 	maxRetries := intOpt(fullOptions, "max_retries", defaultPageRetries)
 	retryBackoff := stringOpt(fullOptions, "retry_backoff", "exponential")
 
 	var lastRequestAt time.Time
-	fetchPage := func(pageURL string, opts RequestOptions) ([]byte, http.Header, error) {
-		if minInterval > 0 && !lastRequestAt.IsZero() {
+	var rateMu sync.Mutex
+	waitForRateSlot := func() {
+		if minInterval <= 0 {
+			return
+		}
+		rateMu.Lock()
+		defer rateMu.Unlock()
+		if !lastRequestAt.IsZero() {
 			if elapsed := time.Since(lastRequestAt); elapsed < minInterval {
 				time.Sleep(minInterval - elapsed)
 			}
 		}
+		lastRequestAt = time.Now()
+	}
 
+	// fetchPage is safe to call concurrently from multiple goroutines: the
+	// only shared mutable state (the rate limiter's lastRequestAt) is
+	// guarded by rateMu above.
+	fetchPage := func(pageURL string, opts RequestOptions) ([]byte, http.Header, error) {
 		var body []byte
 		var headers http.Header
 		var err error
 		for attempt := 0; attempt <= maxRetries; attempt++ {
+			waitForRateSlot()
 			body, headers, err = f.executeRequest(pageURL, opts)
-			lastRequestAt = time.Now()
 			if err == nil {
 				return body, headers, nil
 			}
@@ -395,7 +429,7 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 
 	switch strategy {
 	case "offset":
-		if err := f.paginateOffset(source, baseOptions, paginationCfg, fetchPage, appendPage); err != nil {
+		if err := f.paginateOffset(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency); err != nil {
 			return nil, err
 		}
 	case "cursor":
@@ -403,7 +437,7 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 			return nil, err
 		}
 	case "numbered":
-		if err := f.paginateNumbered(source, baseOptions, paginationCfg, fetchPage, appendPage); err != nil {
+		if err := f.paginateNumbered(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency); err != nil {
 			return nil, err
 		}
 	case "next_link":
@@ -421,10 +455,43 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 	return common.ConvertToDataSet(allRecords), nil
 }
 
+// pageFetchResult holds the outcome of one page fetch within a concurrent
+// batch, keyed by its position so results can be processed in request
+// order regardless of which goroutine finished first.
+type pageFetchResult struct {
+	body []byte
+	err  error
+}
+
+// fetchBatch dispatches fetchPage for each of the given page URLs. With
+// batch size 1 it calls fetchPage directly (no goroutine overhead — this is
+// the max_concurrency-unset path and must behave identically to a plain
+// sequential call). With a larger batch it runs them concurrently and waits
+// for all to finish, preserving each result's index.
+func fetchBatch(fetchPage fetchPageFunc, source string, opts []RequestOptions) []pageFetchResult {
+	results := make([]pageFetchResult, len(opts))
+	if len(opts) == 1 {
+		body, _, err := fetchPage(source, opts[0])
+		results[0] = pageFetchResult{body, err}
+		return results
+	}
+	var wg sync.WaitGroup
+	for i := range opts {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body, _, err := fetchPage(source, opts[i])
+			results[i] = pageFetchResult{body, err}
+		}(i)
+	}
+	wg.Wait()
+	return results
+}
+
 type fetchPageFunc func(pageURL string, opts RequestOptions) ([]byte, http.Header, error)
 type appendPageFunc func(body []byte) (stop bool, err error)
 
-func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc) error {
+func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int) error {
 	pageSize := intOpt(cfg, "page_size", 0)
 	if pageSize <= 0 {
 		return fmt.Errorf("pagination strategy \"offset\" requires a positive page_size")
@@ -433,85 +500,117 @@ func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, 
 	limitParam := stringOpt(cfg, "limit_param", "limit")
 	endFlagPath, _ := cfg["end_flag"].(string)
 
-	offset := 0
-	for i := 0; i < maxPaginationPages; i++ {
+	buildOpts := func(offset int) RequestOptions {
 		opts := baseOptions
 		opts.Params = mergeParams(baseOptions.Params, map[string]string{
 			offsetParam: strconv.Itoa(offset),
 			limitParam:  strconv.Itoa(pageSize),
 		})
+		return opts
+	}
 
-		body, _, err := fetchPage(source, opts)
-		if err != nil {
-			return fmt.Errorf("pagination page at offset %d: %w", offset, err)
+	hasEndFlag := func(body []byte) bool {
+		if endFlagPath == "" {
+			return false
 		}
-
-		stop, err := appendPage(body)
-		if err != nil {
-			return fmt.Errorf("pagination page at offset %d: %w", offset, err)
-		}
-
-		endFlag := false
-		if endFlagPath != "" {
-			var root interface{}
-			if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
-				if v, ok := common.ExtractPath(root, endFlagPath); ok {
-					endFlag, _ = v.(bool)
-				}
+		var root interface{}
+		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+			if v, ok := common.ExtractPath(root, endFlagPath); ok {
+				endFlag, _ := v.(bool)
+				return endFlag
 			}
 		}
+		return false
+	}
 
-		if stop || endFlag {
-			return nil
+	offset := 0
+	pagesFetched := 0
+	for pagesFetched < maxPaginationPages {
+		batch := min(maxConcurrency, maxPaginationPages-pagesFetched)
+
+		offsets := make([]int, batch)
+		opts := make([]RequestOptions, batch)
+		for i := 0; i < batch; i++ {
+			offsets[i] = offset + i*pageSize
+			opts[i] = buildOpts(offsets[i])
 		}
-		offset += pageSize
+
+		results := fetchBatch(fetchPage, source, opts)
+		for i, res := range results {
+			if res.err != nil {
+				return fmt.Errorf("pagination page at offset %d: %w", offsets[i], res.err)
+			}
+			stop, err := appendPage(res.body)
+			if err != nil {
+				return fmt.Errorf("pagination page at offset %d: %w", offsets[i], err)
+			}
+			pagesFetched++
+			if stop || hasEndFlag(res.body) {
+				return nil
+			}
+		}
+		offset += batch * pageSize
 	}
 	return nil
 }
 
-func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc) error {
+func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int) error {
 	pageParam := stringOpt(cfg, "page_param", "page")
 	start := intOpt(cfg, "start", 1)
 	totalPagesPath, _ := cfg["total_pages_path"].(string)
 
-	page := start
-	pagesFetched := 0
-	for i := 0; i < maxPaginationPages; i++ {
+	buildOpts := func(page int) RequestOptions {
 		opts := baseOptions
 		opts.Params = mergeParams(baseOptions.Params, map[string]string{pageParam: strconv.Itoa(page)})
+		return opts
+	}
 
-		body, _, err := fetchPage(source, opts)
-		if err != nil {
-			return fmt.Errorf("pagination page %d: %w", page, err)
+	readTotalPages := func(body []byte) int {
+		if totalPagesPath == "" {
+			return -1
 		}
-
-		stop, err := appendPage(body)
-		if err != nil {
-			return fmt.Errorf("pagination page %d: %w", page, err)
-		}
-		pagesFetched++
-
-		totalPages := -1
-		if totalPagesPath != "" {
-			var root interface{}
-			if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
-				if v, ok := common.ExtractPath(root, totalPagesPath); ok {
-					if n, ok := toFloat(v); ok {
-						totalPages = int(n)
-					}
+		var root interface{}
+		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+			if v, ok := common.ExtractPath(root, totalPagesPath); ok {
+				if n, ok := toFloat(v); ok {
+					return int(n)
 				}
 			}
 		}
+		return -1
+	}
 
-		if stop {
-			return nil
+	page := start
+	pagesFetched := 0
+	for pagesFetched < maxPaginationPages {
+		batch := min(maxConcurrency, maxPaginationPages-pagesFetched)
+
+		pages := make([]int, batch)
+		opts := make([]RequestOptions, batch)
+		for i := 0; i < batch; i++ {
+			pages[i] = page + i
+			opts[i] = buildOpts(pages[i])
 		}
-		if totalPages >= 0 {
-			if pagesFetched >= totalPages {
+
+		results := fetchBatch(fetchPage, source, opts)
+		for i, res := range results {
+			if res.err != nil {
+				return fmt.Errorf("pagination page %d: %w", pages[i], res.err)
+			}
+			stop, err := appendPage(res.body)
+			if err != nil {
+				return fmt.Errorf("pagination page %d: %w", pages[i], err)
+			}
+			pagesFetched++
+
+			if stop {
+				return nil
+			}
+			if totalPages := readTotalPages(res.body); totalPages >= 0 && pagesFetched >= totalPages {
 				return nil
 			}
 		}
-		page++
+		page += batch
 	}
 	return nil
 }
