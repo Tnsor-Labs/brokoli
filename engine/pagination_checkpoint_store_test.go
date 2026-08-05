@@ -92,6 +92,44 @@ func TestLocalDiskPaginationCheckpointStore_DeleteMissingIsNotAnError(t *testing
 	}
 }
 
+func TestLocalDiskPaginationCheckpointStore_DeleteRunCheckpoints_RemovesAllNodesForRun(t *testing.T) {
+	store := NewLocalDiskPaginationCheckpointStore(t.TempDir())
+	cp := fetchers.PaginationCheckpoint{Strategy: "offset", Offset: 10, PagesFetched: 5}
+	ds := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": float64(1)}}}
+
+	if err := store.SaveCheckpoint("run-1", "node-a", cp, ds); err != nil {
+		t.Fatalf("save run-1/node-a: %v", err)
+	}
+	if err := store.SaveCheckpoint("run-1", "node-b", cp, ds); err != nil {
+		t.Fatalf("save run-1/node-b: %v", err)
+	}
+	if err := store.SaveCheckpoint("run-2", "node-a", cp, ds); err != nil {
+		t.Fatalf("save run-2/node-a: %v", err)
+	}
+
+	if err := store.DeleteRunCheckpoints("run-1"); err != nil {
+		t.Fatalf("delete run-1 checkpoints: %v", err)
+	}
+
+	if _, _, err := store.LoadCheckpoint("run-1", "node-a"); !errors.Is(err, ErrCheckpointNotFound) {
+		t.Errorf("run-1/node-a: got %v, want ErrCheckpointNotFound", err)
+	}
+	if _, _, err := store.LoadCheckpoint("run-1", "node-b"); !errors.Is(err, ErrCheckpointNotFound) {
+		t.Errorf("run-1/node-b: got %v, want ErrCheckpointNotFound", err)
+	}
+	// A different run's checkpoint must survive untouched.
+	if _, _, err := store.LoadCheckpoint("run-2", "node-a"); err != nil {
+		t.Errorf("run-2/node-a should be unaffected by deleting run-1, got: %v", err)
+	}
+}
+
+func TestLocalDiskPaginationCheckpointStore_DeleteRunCheckpoints_MissingRunIsNotAnError(t *testing.T) {
+	store := NewLocalDiskPaginationCheckpointStore(t.TempDir())
+	if err := store.DeleteRunCheckpoints("run-never-existed"); err != nil {
+		t.Fatalf("deleting checkpoints for a run that never wrote any should be a no-op, got: %v", err)
+	}
+}
+
 func TestLocalDiskPaginationCheckpointStore_DifferentKeysDoNotCollide(t *testing.T) {
 	store := NewLocalDiskPaginationCheckpointStore(t.TempDir())
 	cpA := fetchers.PaginationCheckpoint{Strategy: "offset", Offset: 10, PagesFetched: 5}

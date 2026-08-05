@@ -374,6 +374,14 @@ type Store interface {
 	// Maintenance
 	PurgeRunsOlderThan(days int) (int64, error)
 	PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error)
+	// ListRunIDsOlderThan/ListRunIDsOlderThanByOrg return exactly the run
+	// IDs PurgeRunsOlderThan(By/Org) would delete, without deleting them —
+	// call before the matching Purge call so a caller can clean up
+	// per-run state the DB purge doesn't reach (local-disk artifacts and
+	// pagination checkpoints — see api.systemPurge and
+	// Tnsor-Labs/brokoli#49).
+	ListRunIDsOlderThan(days int) ([]string, error)
+	ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error)
 	GetDBSize() (int64, error)
 
 	// Lifecycle

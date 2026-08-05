@@ -37,6 +37,13 @@ type ArtifactStore interface {
 	// wrapped ErrArtifactNotFound if none was ever written for this
 	// (runID, nodeID) pair.
 	ReadArtifact(runID, nodeID string) (*common.DataSet, error)
+
+	// DeleteRunArtifacts removes every artifact written for runID, across
+	// all of its nodes — the retention/GC counterpart to WriteArtifact, so
+	// purging old runs (see api.systemPurge) doesn't leave their artifacts
+	// behind forever (Tnsor-Labs/brokoli#49). A no-op, not an error, if
+	// nothing was ever written for runID.
+	DeleteRunArtifacts(runID string) error
 }
 
 // ErrArtifactNotFound indicates no durable artifact exists for a given
@@ -96,9 +103,20 @@ func NewLocalDiskArtifactStore(baseDir string) *LocalDiskArtifactStore {
 // the cost of file names no longer being human-readable — an acceptable
 // trade-off for an internal cache keyed by opaque IDs.
 func (l *LocalDiskArtifactStore) artifactPath(runID, nodeID string) string {
-	runHash := sha256.Sum256([]byte(runID))
-	nodeHash := sha256.Sum256([]byte(nodeID))
-	return filepath.Join(l.baseDir, hex.EncodeToString(runHash[:]), hex.EncodeToString(nodeHash[:])+".ndjson")
+	return filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(nodeID))+".ndjson")
+}
+
+// runDir is every artifact belonging to runID's parent directory — every
+// (runID, nodeID) key for the same runID hashes into a file directly under
+// this one directory, which is what makes DeleteRunArtifacts a single
+// os.RemoveAll instead of needing to enumerate node IDs.
+func (l *LocalDiskArtifactStore) runDir(runID string) string {
+	return filepath.Join(l.baseDir, hex.EncodeToString(sha256Sum(runID)))
+}
+
+func sha256Sum(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
 }
 
 // WriteArtifact implements ArtifactStore.
@@ -150,4 +168,17 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID string) (*common.Dat
 		return nil, fmt.Errorf("read artifact: %w", err)
 	}
 	return ds, nil
+}
+
+// DeleteRunArtifacts implements ArtifactStore. Every artifact for runID
+// lives under the same runDir(runID) regardless of node ID, so this is one
+// directory removal rather than needing to know which nodes ran.
+func (l *LocalDiskArtifactStore) DeleteRunArtifacts(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("delete run artifacts: runID is required")
+	}
+	if err := os.RemoveAll(l.runDir(runID)); err != nil {
+		return fmt.Errorf("delete run artifacts: %w", err)
+	}
+	return nil
 }

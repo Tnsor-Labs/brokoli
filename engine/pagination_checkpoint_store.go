@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -44,6 +43,13 @@ type PaginationCheckpointStore interface {
 	// once a paginated fetch completes successfully; a no-op (not an
 	// error) if none exists.
 	DeleteCheckpoint(runID, nodeID string) error
+
+	// DeleteRunCheckpoints removes every checkpoint for runID, across all
+	// of its nodes — the retention/GC counterpart, so purging old runs
+	// (see api.systemPurge) doesn't leave stale interim checkpoint state
+	// behind forever (Tnsor-Labs/brokoli#49). A no-op, not an error, if
+	// nothing was ever checkpointed for runID.
+	DeleteRunCheckpoints(runID string) error
 }
 
 // ErrCheckpointNotFound indicates no pagination checkpoint exists for a
@@ -74,10 +80,15 @@ func NewLocalDiskPaginationCheckpointStore(baseDir string) *LocalDiskPaginationC
 // closes path traversal at the type level rather than relying on
 // validation.
 func (l *LocalDiskPaginationCheckpointStore) checkpointPaths(runID, nodeID string) (posPath, recordsPath string) {
-	runHash := sha256.Sum256([]byte(runID))
-	nodeHash := sha256.Sum256([]byte(nodeID))
-	base := filepath.Join(l.baseDir, hex.EncodeToString(runHash[:]), hex.EncodeToString(nodeHash[:]))
+	base := filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(nodeID)))
 	return base + ".checkpoint.json", base + ".checkpoint.ndjson"
+}
+
+// runDir is every checkpoint belonging to runID's parent directory — same
+// role as LocalDiskArtifactStore.runDir, and what makes DeleteRunCheckpoints
+// a single os.RemoveAll instead of needing to enumerate node IDs.
+func (l *LocalDiskPaginationCheckpointStore) runDir(runID string) string {
+	return filepath.Join(l.baseDir, hex.EncodeToString(sha256Sum(runID)))
 }
 
 // SaveCheckpoint implements PaginationCheckpointStore.
@@ -164,6 +175,20 @@ func (l *LocalDiskPaginationCheckpointStore) DeleteCheckpoint(runID, nodeID stri
 	}
 	if err := os.Remove(recordsPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete checkpoint records: %w", err)
+	}
+	return nil
+}
+
+// DeleteRunCheckpoints implements PaginationCheckpointStore. Every
+// checkpoint for runID lives under the same runDir(runID) regardless of
+// node ID, so this is one directory removal rather than needing to know
+// which nodes were checkpointed.
+func (l *LocalDiskPaginationCheckpointStore) DeleteRunCheckpoints(runID string) error {
+	if runID == "" {
+		return fmt.Errorf("delete run checkpoints: runID is required")
+	}
+	if err := os.RemoveAll(l.runDir(runID)); err != nil {
+		return fmt.Errorf("delete run checkpoints: %w", err)
 	}
 	return nil
 }

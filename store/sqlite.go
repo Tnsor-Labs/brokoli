@@ -253,6 +253,18 @@ func (s *SQLiteStore) migrate() error {
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_expansion_instances_run_node ON expansion_instances(run_id, node_id, node_attempt)`)
 
+	// runs.org_id — multi-tenant scoping for run-level queries
+	// (PurgeRunsOlderThanByOrg, GetRunCalendarByOrg, ListRunIDsOlderThanByOrg).
+	// This was missing entirely from the SQLite schema even though every
+	// query referencing it already assumed it existed (Postgres has had the
+	// equivalent `ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id ...`
+	// since its own org_id migration) — any multi-tenant SQLite deployment
+	// calling one of those methods would hit "no such column: org_id"
+	// (Tnsor-Labs/brokoli#49, found while testing that issue's retention
+	// work, not something that issue's own scope introduced).
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN org_id TEXT NOT NULL DEFAULT 'default'`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(org_id)`)
+
 	return nil
 }
 
@@ -1546,6 +1558,40 @@ func (s *SQLiteStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, er
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// ListRunIDsOlderThan mirrors PurgeRunsOlderThan's WHERE clause exactly —
+// call before it to know which run IDs are about to be purged.
+func (s *SQLiteStore) ListRunIDsOlderThan(days int) ([]string, error) {
+	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < ? AND started_at IS NOT NULL`, cutoff)
+}
+
+// ListRunIDsOlderThanByOrg mirrors PurgeRunsOlderThanByOrg's WHERE clause.
+func (s *SQLiteStore) ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error) {
+	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < ? AND started_at IS NOT NULL AND org_id = ?`, cutoff, orgID)
+}
+
+// queryRunIDs runs a "SELECT id FROM runs WHERE ..." query and collects the
+// results into a slice — shared by both SQLiteStore's and PostgresStore's
+// ListRunIDsOlderThan(By/Org), since both hold a *sql.DB via database/sql.
+func queryRunIDs(db *sql.DB, query string, args ...interface{}) ([]string, error) {
+	rows, err := db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
 func (s *SQLiteStore) GetDBSize() (int64, error) {
