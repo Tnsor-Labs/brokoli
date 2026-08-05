@@ -165,12 +165,34 @@ func (srv *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	// Cleanup
 	sess.Close()
+	srv.cleanupPresence(sess)
 	srv.Fanout.RemoveSession(sess.ID)
 	srv.mu.Lock()
 	delete(srv.sessions, sess.ID)
 	srv.mu.Unlock()
 	srv.sessionCount.Add(-1)
 	conn.Close()
+}
+
+// cleanupPresence removes every state.presence path sess registered and
+// broadcasts the resulting deltas, per SPEC §8.2: "When the session ends
+// (disconnect, timeout, or server shutdown), the server MUST automatically
+// REMOVE the path." Both disconnect and heartbeat-timeout reach here via
+// handleConnection's readPump returning; this codebase has no graceful
+// server-shutdown hook today (a process exit tears down every connection
+// at the OS level without running per-connection cleanup), so the
+// "server shutdown" case in the spec text isn't separately handled — that
+// gap predates this fix and applies to all session cleanup, not just
+// presence.
+func (srv *Server) cleanupPresence(sess *Session) {
+	for _, entry := range sess.PresenceEntries() {
+		current, _ := srv.State.Get(entry.state)
+		updated := removeIn(current, entry.path)
+		delta := srv.State.Apply(entry.state, updated)
+		if delta != nil {
+			srv.Fanout.BroadcastAll(*delta, sess.ID, sess.OrgID)
+		}
+	}
 }
 
 // writePump drains the session's Send channel and writes to the WebSocket.
@@ -428,11 +450,20 @@ func (srv *Server) handleCall(sess *Session, f Frame) {
 	case "state.delete":
 		delta = srv.State.Delete(key)
 	case "state.presence":
-		// TODO: session-scoped presence with auto-cleanup
 		path, _ := body.Args["path"].(string)
+		if path == "" {
+			srv.sendError(sess, f.StreamID, 400, "path required for presence")
+			return
+		}
 		current, _ := srv.State.Get(key)
 		updated := setIn(current, path, body.Args["value"])
 		delta = srv.State.Apply(key, updated)
+		// Register the session as owning this path even if Apply returned
+		// no delta (the value already matched — a no-op diff, e.g. a
+		// client periodically refreshing an unchanged presence value):
+		// this session still asked for lifetime binding on this path, and
+		// registration is idempotent either way.
+		sess.AddPresence(key, path)
 	default:
 		srv.sendError(sess, f.StreamID, 400, "unknown method: "+body.Method)
 		return
@@ -743,6 +774,43 @@ func mergeValues(current, patch any) any {
 		merged[k] = v
 	}
 	return merged
+}
+
+// removeIn deletes a nested field within a map value using the same
+// dot-separated path convention as setIn — the removal counterpart used to
+// clear a state.presence path when the owning session disconnects (SPEC
+// §8.2's session-lifetime binding requirement; see Server.cleanupPresence).
+// A path that doesn't resolve to an existing map at every intermediate
+// segment is a no-op: there's nothing to remove.
+func removeIn(current any, path string) any {
+	cm, ok := toStringMap(current)
+	if !ok {
+		return current
+	}
+	result := make(map[string]any, len(cm))
+	for k, v := range cm {
+		result[k] = v
+	}
+
+	parts := strings.Split(path, ".")
+	target := result
+	for i, p := range parts {
+		if i == len(parts)-1 {
+			delete(target, p)
+			break
+		}
+		next, ok := toStringMap(target[p])
+		if !ok {
+			return result // intermediate segment doesn't exist — nothing to remove
+		}
+		cp := make(map[string]any, len(next))
+		for k, v := range next {
+			cp[k] = v
+		}
+		target[p] = cp
+		target = cp
+	}
+	return result
 }
 
 // setIn sets a nested field within a map value using dot-separated path.

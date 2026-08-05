@@ -28,10 +28,23 @@ type Session struct {
 	authed     bool // true after successful AUTH or if HTTP middleware pre-authenticated
 	maxWatches int
 
+	// presence tracks every (state, path) pair this session has registered
+	// via state.presence, so the server can auto-remove them on disconnect
+	// per SPECIFICATION.md §8.2's session-lifetime binding requirement —
+	// see Server's cleanupPresence.
+	presence map[presenceEntry]struct{}
+
 	// Rate limiting (simple 1-second fixed window)
 	rateCount atomic.Int64
 	rateReset atomic.Int64 // unix timestamp of current window end
 	rateLimit int
+}
+
+// presenceEntry identifies one state.presence registration: a nested path
+// within a specific state key.
+type presenceEntry struct {
+	state string
+	path  string
 }
 
 // NewSession creates a session for a new connection.
@@ -93,6 +106,31 @@ func (s *Session) Watches() map[uint32]string {
 		cp[k] = v
 	}
 	return cp
+}
+
+// AddPresence records a (state, path) pair set via state.presence, so it
+// can be automatically removed when this session disconnects. Idempotent —
+// registering the same pair again (e.g. a client refreshing its presence
+// value) is a no-op on the registration itself.
+func (s *Session) AddPresence(state, path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.presence == nil {
+		s.presence = make(map[presenceEntry]struct{})
+	}
+	s.presence[presenceEntry{state: state, path: path}] = struct{}{}
+}
+
+// PresenceEntries returns a copy of every (state, path) pair this session
+// has registered via state.presence.
+func (s *Session) PresenceEntries() []presenceEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]presenceEntry, 0, len(s.presence))
+	for e := range s.presence {
+		out = append(out, e)
+	}
+	return out
 }
 
 // CheckRate returns true if the mutation is within the rate limit.
