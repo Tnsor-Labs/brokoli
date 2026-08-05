@@ -44,6 +44,19 @@ type Run struct {
 	// which run's artifact store entries a skipped node's durable output
 	// should be restored from.
 	ResumedFromRunID string `json:"resumed_from_run_id,omitempty"`
+
+	// OrgID is the owning pipeline's org at the moment this run was
+	// created (copied from Pipeline.OrgID, not re-resolved later — a
+	// pipeline moved to a different org afterward doesn't retroactively
+	// change which org an already-created run belongs to). Every
+	// engine.Engine run-creation path already resolves this into
+	// Runner.orgID for WebSocket/SODP tenant isolation
+	// (Tnsor-Labs/brokoli#50) — this field is what makes it durable on the
+	// row itself, which store.Store's org-scoped run queries
+	// (PurgeRunsOlderThanByOrg, GetRunCalendarByOrg,
+	// ListRunIDsOlderThanByOrg) depend on to actually match anything
+	// beyond the schema default.
+	OrgID string `json:"org_id,omitempty"`
 }
 
 // PopulateError sets the Error field from the final failed NodeRun.

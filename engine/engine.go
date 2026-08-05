@@ -355,6 +355,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 			StartedAt:       &now,
 			FinishedAt:      &now,
 			PipelineVersion: pipelineVersion,
+			OrgID:           pipe.OrgID,
 		}
 		if len(params) > 0 && params[0] != nil {
 			blocked.Params = params[0]
@@ -510,6 +511,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			StartedAt:       &now,
 			FinishedAt:      &now,
 			PipelineVersion: pipelineVersion,
+			OrgID:           pipe.OrgID,
 		}
 		if len(params) > 0 && params[0] != nil {
 			blocked.Params = params[0]
@@ -542,6 +544,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 			PipelineID:      pipelineID,
 			Status:          models.RunStatusPending,
 			PipelineVersion: pipelineVersion,
+			OrgID:           pipe.OrgID,
 		}
 		if len(params) > 0 && params[0] != nil {
 			accepted.Params = params[0]

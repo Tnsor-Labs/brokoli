@@ -155,6 +155,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			TraceID:          r.traceID,
 			PipelineVersion:  r.pipelineVersion,
 			ResumedFromRunID: r.resumedFromRunID,
+			OrgID:            r.orgID,
 		}
 		crashAt(crashPointBeforeRunCreate, "")
 		if err := r.store.CreateRun(r.run); err != nil {
