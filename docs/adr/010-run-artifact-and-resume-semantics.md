@@ -194,3 +194,22 @@ garbage collection tied to run retention" follow-up (and the equivalent gap
 a run's DB rows, using two new `store.Store` methods
 (`ListRunIDsOlderThan(By Org)`) that mirror `PurgeRunsOlderThan(By Org)`'s
 `WHERE` clause to know which run IDs are about to disappear before they do.
+
+`Tnsor-Labs/brokoli#52` fixed a real cost `#41` M2 flagged at merge time:
+`PaginationCheckpointStore.SaveCheckpoint` used to take the *entire*
+accumulated records list on every call and rewrite the whole records file
+— checkpoint write cost grew with total progress, not with the interval
+between checkpoints. `CheckpointSaver`/`SaveCheckpoint` now take only the
+records added *since the last checkpoint*, and
+`LocalDiskPaginationCheckpointStore` appends them instead of rewriting.
+`PaginationCheckpoint.RecordCount` states the true running total
+independent of how many append calls it took to get there; `LoadCheckpoint`
+trusts only that many rows from the records file, truncating anything
+beyond it (a save's append can legitimately land on disk before its
+position commit does) and refusing to resume from a records file with
+*fewer* rows than a committed position claims (real corruption, not the
+ordinary partial-trailing-line case `ReadArrowJSON`'s decoder already
+tolerates). Checkpoint saves also now target `sourceRunID` (the run whose
+checkpoint was actually resumed from) rather than always the current run's
+ID, so a cross-run resume keeps appending to the original run's existing
+records file instead of needing to copy it forward first.

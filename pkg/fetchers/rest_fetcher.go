@@ -476,10 +476,15 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		return len(records) == 0, nil
 	}
 
-	// checkpoint snapshots allRecords (via closure) every checkpointEvery
-	// pages and hands it to onCheckpoint along with the strategy-specific
-	// position pos supplies. A save failure is the caller's concern, not a
-	// fetch failure — see CheckpointSaver's doc comment.
+	// checkpoint hands onCheckpoint only the records added since the last
+	// checkpoint (or since resume, for the first one) — not a full
+	// allRecords snapshot — so a store can append rather than rewrite its
+	// entire records file on every save (issue #52). lastCheckpointedCount
+	// only advances on a successful save: a failed save's records are
+	// folded into the next checkpoint's (larger) delta instead of being
+	// lost. A save failure is the caller's concern, not a fetch failure —
+	// see CheckpointSaver's doc comment.
+	lastCheckpointedCount := len(resumeRecords)
 	checkpoint := func(pagesFetched int, pos PaginationCheckpoint) {
 		if checkpointEvery <= 0 || onCheckpoint == nil {
 			return
@@ -489,9 +494,12 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		}
 		pos.Strategy = strategy
 		pos.PagesFetched = pagesFetched
-		snapshot := make([]map[string]interface{}, len(allRecords))
-		copy(snapshot, allRecords)
-		_ = onCheckpoint(pos, snapshot)
+		pos.RecordCount = len(allRecords)
+		delta := make([]map[string]interface{}, len(allRecords)-lastCheckpointedCount)
+		copy(delta, allRecords[lastCheckpointedCount:])
+		if err := onCheckpoint(pos, delta); err == nil {
+			lastCheckpointedCount = len(allRecords)
+		}
 	}
 
 	var resumeErr error

@@ -2,6 +2,7 @@ package fetchers
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -71,17 +72,17 @@ func TestFetchPaginatedResumable_Offset_CheckspointsAtCadence(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 checkpoint saves, got %d: %+v", len(calls), calls)
 	}
-	if calls[0].checkpoint.PagesFetched != 2 || calls[0].checkpoint.Offset != 4 {
-		t.Errorf("checkpoint 1: got %+v, want PagesFetched=2 Offset=4", calls[0].checkpoint)
+	if calls[0].checkpoint.PagesFetched != 2 || calls[0].checkpoint.Offset != 4 || calls[0].checkpoint.RecordCount != 4 {
+		t.Errorf("checkpoint 1: got %+v, want PagesFetched=2 Offset=4 RecordCount=4", calls[0].checkpoint)
 	}
 	if len(calls[0].records) != 4 {
-		t.Errorf("checkpoint 1: got %d records, want 4", len(calls[0].records))
+		t.Errorf("checkpoint 1: got %d records, want 4 (all of them — nothing checkpointed yet)", len(calls[0].records))
 	}
-	if calls[1].checkpoint.PagesFetched != 4 || calls[1].checkpoint.Offset != 8 {
-		t.Errorf("checkpoint 2: got %+v, want PagesFetched=4 Offset=8", calls[1].checkpoint)
+	if calls[1].checkpoint.PagesFetched != 4 || calls[1].checkpoint.Offset != 8 || calls[1].checkpoint.RecordCount != 8 {
+		t.Errorf("checkpoint 2: got %+v, want PagesFetched=4 Offset=8 RecordCount=8", calls[1].checkpoint)
 	}
-	if len(calls[1].records) != 8 {
-		t.Errorf("checkpoint 2: got %d records, want 8", len(calls[1].records))
+	if len(calls[1].records) != 4 {
+		t.Errorf("checkpoint 2: got %d records, want 4 (only the delta since checkpoint 1, not all 8 — issue #52)", len(calls[1].records))
 	}
 }
 
@@ -252,4 +253,70 @@ func TestFetchPaginatedResumable_NoCheckpointEvery_NeverCallsSaver(t *testing.T)
 // asserts against.
 func TestRESTFetcherImplementsCheckpointingFetcher(t *testing.T) {
 	var _ CheckpointingFetcher = (*RESTFetcher)(nil)
+}
+
+// TestFetchPaginatedResumable_FailedCheckpointSaveRetriedNextInterval
+// covers issue #52's "don't lose records on a failed save" guarantee: if
+// onCheckpoint returns an error, lastCheckpointedCount must not advance —
+// the next successful checkpoint's delta should include the records from
+// the failed attempt too, not skip past them.
+func TestFetchPaginatedResumable_FailedCheckpointSaveRetriedNextInterval(t *testing.T) {
+	tracker := &concurrencyTracker{}
+	server := offsetPageServer(t, 12, tracker)
+	defer server.Close()
+
+	var callCount int
+	var mu sync.Mutex
+	var calls []recordedCheckpoint
+	saver := func(cp PaginationCheckpoint, records []map[string]interface{}) error {
+		mu.Lock()
+		defer mu.Unlock()
+		callCount++
+		if callCount == 1 {
+			return errors.New("simulated transient save failure")
+		}
+		recordsCopy := make([]map[string]interface{}, len(records))
+		copy(recordsCopy, records)
+		calls = append(calls, recordedCheckpoint{checkpoint: cp, records: recordsCopy})
+		return nil
+	}
+
+	f := &RESTFetcher{}
+	ds, err := f.FetchPaginatedResumable(server.URL, map[string]interface{}{
+		"pagination": map[string]interface{}{
+			"strategy":  "offset",
+			"page_size": 2,
+			"end_flag":  "end_flag",
+		},
+		"execution": map[string]interface{}{
+			"checkpoint_every": 2,
+		},
+		"records": "items",
+	}, nil, nil, saver)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if len(ds.Rows) != 12 {
+		t.Fatalf("got %d records, want 12", len(ds.Rows))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	// 12 records / page_size 2 = 6 real pages; checkpoints are attempted
+	// after pagesFetched=2 and pagesFetched=4 (the 6th and final page
+	// triggers the stop condition and returns before its own checkpoint
+	// call, same as the no-failure cadence test above) — so exactly 2
+	// attempts total: the first fails, the second succeeds.
+	if len(calls) != 1 {
+		t.Fatalf("expected exactly 1 successful save, got %d: %+v", len(calls), calls)
+	}
+	// That one successful save must carry BOTH the failed attempt's delta
+	// and its own — 8 records, not 4 — since the failed delta was never
+	// consumed.
+	if len(calls[0].records) != 8 {
+		t.Errorf("successful save: got %d records, want 8 (the failed attempt's delta + this checkpoint's own delta)", len(calls[0].records))
+	}
+	if calls[0].checkpoint.RecordCount != 8 {
+		t.Errorf("successful save: RecordCount = %d, want 8", calls[0].checkpoint.RecordCount)
+	}
 }

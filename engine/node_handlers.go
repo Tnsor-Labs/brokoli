@@ -232,8 +232,14 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 		r.log(node.ID, models.LogLevelInfo, "Resuming pagination for node %s from checkpoint: %d pages already fetched (run %s)", node.Name, resume.PagesFetched, sourceRunID)
 	}
 
-	onCheckpoint := func(cp fetchers.PaginationCheckpoint, records []map[string]interface{}) error {
-		if err := r.checkpointStore.SaveCheckpoint(r.run.ID, node.ID, cp, common.ConvertToDataSet(records)); err != nil {
+	// Saves target sourceRunID, not always r.run.ID: for a same-run retry
+	// that's identical (sourceRunID == r.run.ID), but for a cross-run
+	// resume it means checkpoint saves keep appending to the *original*
+	// run's existing records file instead of starting a fresh one under
+	// the new run's key — no need to copy resumeRecords forward first
+	// (issue #52).
+	onCheckpoint := func(cp fetchers.PaginationCheckpoint, newRecords []map[string]interface{}) error {
+		if err := r.checkpointStore.SaveCheckpoint(sourceRunID, node.ID, cp, newRecords); err != nil {
 			r.log(node.ID, models.LogLevelWarning, "Failed to persist pagination checkpoint for node %s (a retry will restart this fetch from the beginning instead of resuming): %v", node.Name, err)
 			return err
 		}
@@ -245,17 +251,11 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 		return nil, err
 	}
 
-	// The fetch succeeded — any checkpoint is now superseded by the node's
+	// The fetch succeeded — the checkpoint is now superseded by the node's
 	// normal durable artifact (written by executeNode after this returns).
-	// Clear it so a later run doesn't see stale interim state; clear under
-	// the original run's key too when this was a resume.
-	if delErr := r.checkpointStore.DeleteCheckpoint(r.run.ID, node.ID); delErr != nil {
+	// Clear it so a later run doesn't see stale interim state.
+	if delErr := r.checkpointStore.DeleteCheckpoint(sourceRunID, node.ID); delErr != nil {
 		r.log(node.ID, models.LogLevelWarning, "Failed to clear pagination checkpoint for node %s after successful fetch: %v", node.Name, delErr)
-	}
-	if sourceRunID != r.run.ID {
-		if delErr := r.checkpointStore.DeleteCheckpoint(sourceRunID, node.ID); delErr != nil {
-			r.log(node.ID, models.LogLevelWarning, "Failed to clear pagination checkpoint for node %s under original run %s after successful fetch: %v", node.Name, sourceRunID, delErr)
-		}
 	}
 	return ds, nil
 }
