@@ -9,6 +9,17 @@ type PaginationCheckpoint struct {
 	Strategy     string `json:"strategy"`
 	PagesFetched int    `json:"pages_fetched"`
 
+	// RecordCount is the total number of records this checkpoint
+	// represents — independent of how those records are physically
+	// stored (see CheckpointSaver: the caller receives them incrementally,
+	// not as a full snapshot, so this is the only place the running total
+	// is stated explicitly). A store reading this checkpoint back must
+	// never trust more records than RecordCount says exist (see
+	// engine.PaginationCheckpointStore.LoadCheckpoint's doc comment for
+	// why: appended records can legitimately exist ahead of what the
+	// position has atomically committed to).
+	RecordCount int `json:"record_count"`
+
 	// Offset is the next offset to request — "offset" strategy.
 	Offset int `json:"offset,omitempty"`
 	// Page is the next page number to request — "numbered" strategy.
@@ -22,12 +33,15 @@ type PaginationCheckpoint struct {
 }
 
 // CheckpointSaver is called after every checkpoint_every pages (per the
-// SDK's execution() policy) with the checkpoint position and the records
-// accumulated so far, so the caller can persist both durably. A save
+// SDK's execution() policy) with the checkpoint position and newRecords —
+// only the records added since the *previous* checkpoint (or, for the
+// first checkpoint of a fresh fetch, all records so far), not a full
+// snapshot of everything accumulated. This lets a store append rather than
+// rewrite its entire records file on every save — see issue #52. A save
 // failure should be logged by the caller — it must never be treated as a
 // fetch failure, mirroring this codebase's existing artifact-write-failure
 // policy (see ArtifactStore.WriteArtifact's callers).
-type CheckpointSaver func(checkpoint PaginationCheckpoint, recordsSoFar []map[string]interface{}) error
+type CheckpointSaver func(checkpoint PaginationCheckpoint, newRecords []map[string]interface{}) error
 
 // CheckpointingFetcher is implemented by fetchers that support resuming a
 // paginated fetch from a prior checkpoint. Fetchers that don't implement it

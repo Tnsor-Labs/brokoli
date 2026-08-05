@@ -54,8 +54,8 @@ func TestSystemPurge_DeletesArtifactsAndCheckpointsForPurgedRuns(t *testing.T) {
 	if err := e.ArtifactStore.WriteArtifact("run-recent", "node-a", ds); err != nil {
 		t.Fatalf("write artifact for run-recent: %v", err)
 	}
-	cp := fetchers.PaginationCheckpoint{Strategy: "offset", Offset: 10, PagesFetched: 5}
-	if err := e.PaginationCheckpointStore.SaveCheckpoint("run-old", "node-a", cp, ds); err != nil {
+	cp := fetchers.PaginationCheckpoint{Strategy: "offset", Offset: 10, PagesFetched: 5, RecordCount: 1}
+	if err := e.PaginationCheckpointStore.SaveCheckpoint("run-old", "node-a", cp, []map[string]interface{}{{"v": "x"}}); err != nil {
 		t.Fatalf("save checkpoint for run-old: %v", err)
 	}
 
