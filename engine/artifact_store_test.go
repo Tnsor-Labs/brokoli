@@ -158,3 +158,40 @@ func TestLocalDiskArtifactStore_EmptyKeysRejected(t *testing.T) {
 		t.Fatal("expected error reading with empty runID")
 	}
 }
+
+func TestLocalDiskArtifactStore_DeleteRunArtifacts_RemovesAllNodesForRun(t *testing.T) {
+	store := NewLocalDiskArtifactStore(t.TempDir())
+	ds := &common.DataSet{Columns: []string{"v"}, Rows: []common.DataRow{{"v": "x"}}}
+
+	if err := store.WriteArtifact("run-1", "node-a", ds); err != nil {
+		t.Fatalf("write run-1/node-a: %v", err)
+	}
+	if err := store.WriteArtifact("run-1", "node-b", ds); err != nil {
+		t.Fatalf("write run-1/node-b: %v", err)
+	}
+	if err := store.WriteArtifact("run-2", "node-a", ds); err != nil {
+		t.Fatalf("write run-2/node-a: %v", err)
+	}
+
+	if err := store.DeleteRunArtifacts("run-1"); err != nil {
+		t.Fatalf("delete run-1 artifacts: %v", err)
+	}
+
+	if _, err := store.ReadArtifact("run-1", "node-a"); !errors.Is(err, ErrArtifactNotFound) {
+		t.Errorf("run-1/node-a: got %v, want ErrArtifactNotFound", err)
+	}
+	if _, err := store.ReadArtifact("run-1", "node-b"); !errors.Is(err, ErrArtifactNotFound) {
+		t.Errorf("run-1/node-b: got %v, want ErrArtifactNotFound", err)
+	}
+	// A different run's artifact must survive untouched.
+	if _, err := store.ReadArtifact("run-2", "node-a"); err != nil {
+		t.Errorf("run-2/node-a should be unaffected by deleting run-1, got: %v", err)
+	}
+}
+
+func TestLocalDiskArtifactStore_DeleteRunArtifacts_MissingRunIsNotAnError(t *testing.T) {
+	store := NewLocalDiskArtifactStore(t.TempDir())
+	if err := store.DeleteRunArtifacts("run-never-existed"); err != nil {
+		t.Fatalf("deleting artifacts for a run that never wrote any should be a no-op, got: %v", err)
+	}
+}

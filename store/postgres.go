@@ -1458,6 +1458,17 @@ func (s *PostgresStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, 
 	return result.RowsAffected()
 }
 
+// ListRunIDsOlderThan mirrors PurgeRunsOlderThan's WHERE clause exactly —
+// call before it to know which run IDs are about to be purged.
+func (s *PostgresStore) ListRunIDsOlderThan(days int) ([]string, error) {
+	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < NOW() - $1 * INTERVAL '1 day' AND started_at IS NOT NULL`, days)
+}
+
+// ListRunIDsOlderThanByOrg mirrors PurgeRunsOlderThanByOrg's WHERE clause.
+func (s *PostgresStore) ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error) {
+	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < NOW() - $1 * INTERVAL '1 day' AND started_at IS NOT NULL AND org_id = $2`, days, orgID)
+}
+
 func (s *PostgresStore) GetDBSize() (int64, error) {
 	var size int64
 	err := s.db.QueryRow(`SELECT pg_database_size(current_database())`).Scan(&size)

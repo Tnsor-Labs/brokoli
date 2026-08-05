@@ -183,3 +183,14 @@ already did for every other node. Same lineage pattern as this ADR's
 first, then the original run being resumed), same local-disk/hash-the-key/
 temp-then-rename implementation shape as `LocalDiskArtifactStore`. See that
 issue for the fetcher-side `CheckpointingFetcher` interface this builds on.
+
+`Tnsor-Labs/brokoli#49` closed this ADR's "artifact retention policy /
+garbage collection tied to run retention" follow-up (and the equivalent gap
+`#41`'s checkpoint store shipped with): `ArtifactStore`/
+`PaginationCheckpointStore` both gained a `DeleteRun*(runID)` method —
+`os.RemoveAll` on the run's single hashed directory, since every
+`(runID, nodeID)` key for one run already lives under it — and
+`api.systemPurge` (`POST /api/system/purge`) now calls both after deleting
+a run's DB rows, using two new `store.Store` methods
+(`ListRunIDsOlderThan(By Org)`) that mirror `PurgeRunsOlderThan(By Org)`'s
+`WHERE` clause to know which run IDs are about to disappear before they do.

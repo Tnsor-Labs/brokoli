@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
@@ -157,7 +158,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Post("/test-connection", rh.TestConnection)
 		r.Get("/system/info", systemInfo(s, e))
 		r.Get("/capabilities", CapabilitiesHandler)
-		r.With(requirePerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s))
+		r.With(requirePerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s, e))
 
 		// WebSocket (SODP binary protocol)
 		r.Get("/ws", ws.HandleWS)
@@ -312,7 +313,7 @@ func isWritePermission(perm string) bool {
 	return !readPerms[perm]
 }
 
-func systemPurge(s store.Store) http.HandlerFunc {
+func systemPurge(s store.Store, e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			Days int `json:"days"`
@@ -324,11 +325,17 @@ func systemPurge(s store.Store) http.HandlerFunc {
 		// Scope purge by org if available (multi-tenant isolation)
 		orgID := GetOrgIDFromRequest(r)
 		if orgID != "" && orgID != "default" {
+			runIDs, err := s.ListRunIDsOlderThanByOrg(req.Days, orgID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 			deleted, err := s.PurgeRunsOlderThanByOrg(req.Days, orgID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
 				return
 			}
+			purgeRunFiles(e, runIDs)
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"deleted": deleted,
 				"days":    req.Days,
@@ -338,14 +345,55 @@ func systemPurge(s store.Store) http.HandlerFunc {
 		}
 
 		// Community edition / default org — purge all (single tenant)
+		runIDs, err := s.ListRunIDsOlderThan(req.Days)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		deleted, err := s.PurgeRunsOlderThan(req.Days)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		purgeRunFiles(e, runIDs)
 		writeJSON(w, http.StatusOK, map[string]interface{}{
 			"deleted": deleted,
 			"days":    req.Days,
 		})
+	}
+}
+
+// purgeRunFiles removes each run's local-disk artifacts and pagination
+// checkpoints after its DB rows are gone (Tnsor-Labs/brokoli#49) — neither
+// store keeps track of which runs exist on its own, so system/purge is
+// what tells them a run is gone. A per-run deletion failure is logged, not
+// fatal to the purge: the DB rows are already gone either way, and this
+// only means some disk usage lingers until the next purge retries the same
+// (now already-DB-purged) run ID — same "log, don't fail" policy
+// ArtifactStore.WriteArtifact's callers already use for storage-adjacent
+// side effects. e is nil-safe (both stores default to non-nil in
+// engine.NewEngine, but a test or embedder could still construct an Engine
+// without them).
+func purgeRunFiles(e *engine.Engine, runIDs []string) {
+	if e == nil {
+		return
+	}
+	for _, runID := range runIDs {
+		if e.ArtifactStore != nil {
+			if err := e.ArtifactStore.DeleteRunArtifacts(runID); err != nil {
+				// runID came back from ListRunIDsOlderThan(By/Org) — a
+				// server-generated run ID already in the database, never
+				// raw request input — so this isn't a log-injection sink
+				// despite matching gosec's generic taint pattern.
+				// #nosec G706
+				log.Printf("system/purge: failed to delete artifacts for run %s: %v", runID, err)
+			}
+		}
+		if e.PaginationCheckpointStore != nil {
+			if err := e.PaginationCheckpointStore.DeleteRunCheckpoints(runID); err != nil {
+				// #nosec G706 -- see identical justification above.
+				log.Printf("system/purge: failed to delete pagination checkpoints for run %s: %v", runID, err)
+			}
+		}
 	}
 }
