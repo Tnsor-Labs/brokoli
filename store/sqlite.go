@@ -265,6 +265,22 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN org_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(org_id)`)
 
+	// Backfill: every run created before this fix landed still has the
+	// column's bare 'default' — CreateRun never set it, regardless of
+	// which org the owning pipeline actually belonged to (Tnsor-Labs/
+	// brokoli#50). Every run created going forward carries a real value
+	// from Runner.orgID (== the pipeline's own OrgID at creation time), so
+	// this only ever touches pre-fix rows — a run already correctly
+	// backfilled (or a fresh one) never matches org_id = 'default' again
+	// unless its pipeline's own org_id happens to be the literal string
+	// 'default', which no pipeline-creation path in this codebase ever
+	// sets (pipelines.org_id's own convention is '' for "no org", not
+	// 'default' — see requirePipelineOrg's doc comment). Orphaned runs
+	// (pipeline since deleted) keep their existing value: the subquery
+	// returns NULL and COALESCE falls back rather than clobbering them
+	// with a guess.
+	s.db.Exec(`UPDATE runs SET org_id = COALESCE((SELECT p.org_id FROM pipelines p WHERE p.id = runs.pipeline_id), org_id) WHERE org_id = 'default'`)
+
 	return nil
 }
 
@@ -681,9 +697,9 @@ func (s *SQLiteStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mode
 
 	// Rank pending runs first, then started runs newest-first, consistently with Postgres.
 	query := `
-		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
 		FROM (
-			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id,
+			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id,
 			       ROW_NUMBER() OVER (
 			           PARTITION BY pipeline_id
 			           ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC
@@ -783,8 +799,8 @@ func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
 	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID,
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID, r.OrgID,
 	)
 	return wrapStoreErr("CreateRun", r.ID, err)
 }
@@ -806,7 +822,7 @@ func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.T
 
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id FROM runs WHERE id = ?`, id,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id FROM runs WHERE id = ?`, id,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -823,7 +839,7 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
 		 FROM runs WHERE pipeline_id = ? ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC LIMIT ?`,
 		pipelineID, limit,
 	)
@@ -854,13 +870,13 @@ func (s *SQLiteStore) ListNonTerminalRuns(afterID string, limit int) ([]models.R
 	var err error
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` ORDER BY id ASC LIMIT ?`,
 			fetchN,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` AND id > ? ORDER BY id ASC LIMIT ?`,
 			afterID, fetchN,
 		)
@@ -1663,7 +1679,7 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	var startedAt, finishedAt sql.NullString
 	var paramsJSON string
 
-	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID); err != nil {
+	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
 		return nil, err
 	}
 	if err := json.Unmarshal([]byte(paramsJSON), &r.Params); err != nil {
