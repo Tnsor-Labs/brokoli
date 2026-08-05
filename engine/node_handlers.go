@@ -162,6 +162,16 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		}
 	}
 
+	// retry_scope="page" (the only value documented for pagination — RFC
+	// §14.4) describes what fetchPaginated's page-level retry loop already
+	// does by default, so it needs no behavior change here — just
+	// acknowledgment rather than silent disregard. Anything else is
+	// unrecognized for this node type; warn instead of pretending it did
+	// something.
+	if v, ok := execCfg["retry_scope"].(string); ok && v != "" && v != "page" {
+		r.log(node.ID, models.LogLevelWarning, "source_api execution.retry_scope=%q is not a recognized value for source_api pagination (only \"page\" applies here) — ignoring", v)
+	}
+
 	ds, err := r.fetchSourceAPI(node, fetcher, source, hasPagination, execCfg)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
