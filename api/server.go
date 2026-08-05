@@ -143,6 +143,16 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				"needs_setup": userStore.UserCount() == 0,
 			})
 		})
+		r.Get("/api/auth/methods", func(w http.ResponseWriter, r *http.Request) {
+			oauth := []string{}
+			if AuthMethodsFunc != nil {
+				oauth = AuthMethodsFunc()
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"password": true,
+				"oauth":    oauth,
+			})
+		})
 		r.Post("/api/auth/admin-reset-password", func(w http.ResponseWriter, r *http.Request) {
 			claimsRaw := r.Context().Value("claims")
 			claims, _ := claimsRaw.(*jwt.MapClaims)

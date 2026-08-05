@@ -581,7 +581,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 			}
 
 			// Skip auth endpoints
-			if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/logout" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/signup" {
+			if r.URL.Path == "/api/auth/login" || r.URL.Path == "/api/auth/logout" || r.URL.Path == "/api/auth/setup" || r.URL.Path == "/api/auth/signup" || r.URL.Path == "/api/auth/methods" {
 				next.ServeHTTP(w, r)
 				return
 			}
