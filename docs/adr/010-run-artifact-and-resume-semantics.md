@@ -164,3 +164,22 @@ leaving these two fields as a gap only the direct DB row has).
 - Startup reconciliation (#9) should treat an unrestorable artifact for an
   in-flight run the same way ResumeRun does: loud failure, not silent
   corruption.
+
+## Update (2026-08-05)
+
+`Tnsor-Labs/brokoli#41` M2 added a narrower, parallel mechanism for a
+different granularity of resume: `PaginationCheckpointStore`
+(`engine/pagination_checkpoint_store.go`) persists mid-pagination progress
+for a still-*running* `source_api` node's fetch — position plus records
+accumulated so far — every `execution().checkpoint_every` pages, so a
+node-level retry or a crash-triggered `ResumeRun` can continue a large
+paginated fetch instead of restarting it from page one. It deliberately
+does not reuse `ArtifactStore`: an artifact is a *completed* node's durable
+output, checked once per node per run; a pagination checkpoint is interim
+state written repeatedly during a single fetch and deleted the moment that
+fetch succeeds, at which point `ArtifactStore` takes over exactly as it
+already did for every other node. Same lineage pattern as this ADR's
+`resumedFromRunID` fallback (a checkpoint lookup tries the current run
+first, then the original run being resumed), same local-disk/hash-the-key/
+temp-then-rename implementation shape as `LocalDiskArtifactStore`. See that
+issue for the fetcher-side `CheckpointingFetcher` interface this builds on.

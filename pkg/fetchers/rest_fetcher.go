@@ -96,6 +96,13 @@ type RequestOptions struct {
 }
 
 func (f *RESTFetcher) Fetch(source string, options map[string]interface{}) (*common.DataSet, error) {
+	return f.FetchPaginatedResumable(source, options, nil, nil, nil)
+}
+
+// FetchPaginatedResumable implements CheckpointingFetcher. For a
+// non-paginated source (no "pagination" in options), resume/resumeRecords/
+// onCheckpoint are simply unused — this is exactly Fetch's original body.
+func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
 	if source == "" {
 		return nil, ErrInvalidURL
 	}
@@ -105,7 +112,7 @@ func (f *RESTFetcher) Fetch(source string, options map[string]interface{}) (*com
 	requestOptions := f.extractRequestOptions(options)
 
 	if paginationCfg, ok := asStringMap(options["pagination"]); ok && paginationCfg != nil {
-		return f.fetchPaginated(source, requestOptions, paginationCfg, options)
+		return f.fetchPaginated(source, requestOptions, paginationCfg, options, resume, resumeRecords, onCheckpoint)
 	}
 
 	responseBody, _, err := f.executeRequest(source, requestOptions)
@@ -352,16 +359,22 @@ func extractDatasetRecords(responseBody []byte, options map[string]interface{}) 
 // max_concurrency unset (or <= 1) reproduces the exact sequential loop this
 // function always used.
 //
-// `checkpoint_every` from the SDK's execution() policy is NOT implemented
-// yet (see runSourceAPI, which logs a warning when it's set) — mid-pagination,
-// crash-recoverable checkpointing is a separate follow-up (issue #41 M2).
+// checkpoint_every from the SDK's execution() policy persists progress
+// periodically via onCheckpoint (see checkpointFunc below) and resume/
+// resumeRecords let a later call pick back up from a prior checkpoint
+// instead of re-fetching from page one — see runSourceAPI in
+// engine/node_handlers.go and engine/pagination_checkpoint_store.go for the
+// durable side of this (issue #41 M2). checkpoint_every unset, or
+// onCheckpoint nil, disables all of this — pages are fetched exactly as
+// before with zero extra overhead.
+//
 // `requests_per_second` (simple inter-request delay) and page-level retry
 // (retry a single failed page a few times, using max_retries/retry_backoff)
 // ARE implemented below, and are safe to combine with max_concurrency > 1:
 // the rate limiter serializes *when* a request is allowed to start, while
 // the actual request/response work for concurrently-started pages proceeds
 // in parallel.
-func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}) (*common.DataSet, error) {
+func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
 	strategy, _ := paginationCfg["strategy"].(string)
 
 	execCfg, _ := asStringMap(fullOptions["execution"])
@@ -370,6 +383,16 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 	maxConcurrency := intOpt(execCfg, "max_concurrency", 1)
 	if maxConcurrency < 1 {
 		maxConcurrency = 1
+	}
+
+	checkpointEvery := intOpt(execCfg, "checkpoint_every", 0)
+
+	// A checkpoint from a different strategy (e.g. the pipeline was edited
+	// between attempts) can't be resumed from — treat it as no checkpoint
+	// rather than misinterpreting its position fields.
+	if resume != nil && resume.Strategy != "" && resume.Strategy != strategy {
+		resume = nil
+		resumeRecords = nil
 	}
 
 	maxRetries := intOpt(fullOptions, "max_retries", defaultPageRetries)
@@ -414,6 +437,9 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 	maxRecords := intOpt(paginationCfg, "max_records", 0)
 
 	var allRecords []map[string]interface{}
+	if len(resumeRecords) > 0 {
+		allRecords = append(allRecords, resumeRecords...)
+	}
 	appendPage := func(body []byte) (stop bool, err error) {
 		records, err := extractDatasetRecords(body, fullOptions)
 		if err != nil {
@@ -427,33 +453,51 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		return len(records) == 0, nil
 	}
 
+	// checkpoint snapshots allRecords (via closure) every checkpointEvery
+	// pages and hands it to onCheckpoint along with the strategy-specific
+	// position pos supplies. A save failure is the caller's concern, not a
+	// fetch failure — see CheckpointSaver's doc comment.
+	checkpoint := func(pagesFetched int, pos PaginationCheckpoint) {
+		if checkpointEvery <= 0 || onCheckpoint == nil {
+			return
+		}
+		if pagesFetched == 0 || pagesFetched%checkpointEvery != 0 {
+			return
+		}
+		pos.Strategy = strategy
+		pos.PagesFetched = pagesFetched
+		snapshot := make([]map[string]interface{}, len(allRecords))
+		copy(snapshot, allRecords)
+		_ = onCheckpoint(pos, snapshot)
+	}
+
+	var resumeErr error
 	switch strategy {
 	case "offset":
-		if err := f.paginateOffset(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency); err != nil {
-			return nil, err
-		}
+		resumeErr = f.paginateOffset(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency, resume, checkpoint)
 	case "cursor":
-		if err := f.paginateCursor(source, baseOptions, paginationCfg, fetchPage, appendPage); err != nil {
-			return nil, err
-		}
+		resumeErr = f.paginateCursor(source, baseOptions, paginationCfg, fetchPage, appendPage, resume, checkpoint)
 	case "numbered":
-		if err := f.paginateNumbered(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency); err != nil {
-			return nil, err
-		}
+		resumeErr = f.paginateNumbered(source, baseOptions, paginationCfg, fetchPage, appendPage, maxConcurrency, resume, checkpoint)
 	case "next_link":
-		if err := f.paginateNextLink(source, baseOptions, paginationCfg, fetchPage, appendPage); err != nil {
-			return nil, err
-		}
+		resumeErr = f.paginateNextLink(source, baseOptions, paginationCfg, fetchPage, appendPage, resume, checkpoint)
 	case "link_header":
-		if err := f.paginateLinkHeader(source, baseOptions, paginationCfg, fetchPage, appendPage); err != nil {
-			return nil, err
-		}
+		resumeErr = f.paginateLinkHeader(source, baseOptions, paginationCfg, fetchPage, appendPage, resume, checkpoint)
 	default:
 		return nil, fmt.Errorf("unsupported pagination strategy %q", strategy)
+	}
+	if resumeErr != nil {
+		return nil, resumeErr
 	}
 
 	return common.ConvertToDataSet(allRecords), nil
 }
+
+// checkpointFunc is called after a page is successfully appended, with the
+// running page count and that strategy's current position. It internally
+// no-ops unless checkpoint_every and onCheckpoint are both set — see
+// fetchPaginated's checkpoint closure.
+type checkpointFunc func(pagesFetched int, pos PaginationCheckpoint)
 
 // pageFetchResult holds the outcome of one page fetch within a concurrent
 // batch, keyed by its position so results can be processed in request
@@ -491,7 +535,7 @@ func fetchBatch(fetchPage fetchPageFunc, source string, opts []RequestOptions) [
 type fetchPageFunc func(pageURL string, opts RequestOptions) ([]byte, http.Header, error)
 type appendPageFunc func(body []byte) (stop bool, err error)
 
-func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int) error {
+func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int, resume *PaginationCheckpoint, checkpoint checkpointFunc) error {
 	pageSize := intOpt(cfg, "page_size", 0)
 	if pageSize <= 0 {
 		return fmt.Errorf("pagination strategy \"offset\" requires a positive page_size")
@@ -525,6 +569,10 @@ func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, 
 
 	offset := 0
 	pagesFetched := 0
+	if resume != nil {
+		offset = resume.Offset
+		pagesFetched = resume.PagesFetched
+	}
 	for pagesFetched < maxPaginationPages {
 		batch := min(maxConcurrency, maxPaginationPages-pagesFetched)
 
@@ -548,13 +596,14 @@ func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, 
 			if stop || hasEndFlag(res.body) {
 				return nil
 			}
+			checkpoint(pagesFetched, PaginationCheckpoint{Offset: offsets[i] + pageSize})
 		}
 		offset += batch * pageSize
 	}
 	return nil
 }
 
-func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int) error {
+func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, maxConcurrency int, resume *PaginationCheckpoint, checkpoint checkpointFunc) error {
 	pageParam := stringOpt(cfg, "page_param", "page")
 	start := intOpt(cfg, "start", 1)
 	totalPagesPath, _ := cfg["total_pages_path"].(string)
@@ -582,6 +631,10 @@ func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions
 
 	page := start
 	pagesFetched := 0
+	if resume != nil {
+		page = resume.Page
+		pagesFetched = resume.PagesFetched
+	}
 	for pagesFetched < maxPaginationPages {
 		batch := min(maxConcurrency, maxPaginationPages-pagesFetched)
 
@@ -609,13 +662,14 @@ func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions
 			if totalPages := readTotalPages(res.body); totalPages >= 0 && pagesFetched >= totalPages {
 				return nil
 			}
+			checkpoint(pagesFetched, PaginationCheckpoint{Page: pages[i] + 1})
 		}
 		page += batch
 	}
 	return nil
 }
 
-func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc) error {
+func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, resume *PaginationCheckpoint, checkpoint checkpointFunc) error {
 	cursorPath, _ := cfg["cursor_path"].(string)
 	cursorParam, _ := cfg["cursor_param"].(string)
 	if cursorPath == "" || cursorParam == "" {
@@ -623,7 +677,12 @@ func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, 
 	}
 
 	cursor := ""
-	for i := 0; i < maxPaginationPages; i++ {
+	pagesFetched := 0
+	if resume != nil {
+		cursor = resume.Cursor
+		pagesFetched = resume.PagesFetched
+	}
+	for ; pagesFetched < maxPaginationPages; pagesFetched++ {
 		opts := baseOptions
 		if cursor != "" {
 			opts.Params = mergeParams(baseOptions.Params, map[string]string{cursorParam: cursor})
@@ -653,19 +712,25 @@ func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, 
 			return nil
 		}
 		cursor = nextCursor
+		checkpoint(pagesFetched+1, PaginationCheckpoint{Cursor: cursor})
 	}
 	return nil
 }
 
-func (f *RESTFetcher) paginateNextLink(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc) error {
+func (f *RESTFetcher) paginateNextLink(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, resume *PaginationCheckpoint, checkpoint checkpointFunc) error {
 	nextPath, _ := cfg["next_path"].(string)
 	if nextPath == "" {
 		return fmt.Errorf("pagination strategy \"next_link\" requires next_path")
 	}
 
 	nextURL := source
+	pagesFetched := 0
+	if resume != nil && resume.NextURL != "" {
+		nextURL = resume.NextURL
+		pagesFetched = resume.PagesFetched
+	}
 	opts := baseOptions
-	for i := 0; i < maxPaginationPages; i++ {
+	for ; pagesFetched < maxPaginationPages; pagesFetched++ {
 		body, _, err := fetchPage(nextURL, opts)
 		if err != nil {
 			return fmt.Errorf("pagination next_link page: %w", err)
@@ -694,16 +759,22 @@ func (f *RESTFetcher) paginateNextLink(source string, baseOptions RequestOptions
 		// send no extra query params of their own.
 		nextURL = next
 		opts.Params = nil
+		checkpoint(pagesFetched+1, PaginationCheckpoint{NextURL: nextURL})
 	}
 	return nil
 }
 
-func (f *RESTFetcher) paginateLinkHeader(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc) error {
+func (f *RESTFetcher) paginateLinkHeader(source string, baseOptions RequestOptions, cfg map[string]interface{}, fetchPage fetchPageFunc, appendPage appendPageFunc, resume *PaginationCheckpoint, checkpoint checkpointFunc) error {
 	rel := stringOpt(cfg, "rel", "next")
 
 	nextURL := source
+	pagesFetched := 0
+	if resume != nil && resume.NextURL != "" {
+		nextURL = resume.NextURL
+		pagesFetched = resume.PagesFetched
+	}
 	opts := baseOptions
-	for i := 0; i < maxPaginationPages; i++ {
+	for ; pagesFetched < maxPaginationPages; pagesFetched++ {
 		body, headers, err := fetchPage(nextURL, opts)
 		if err != nil {
 			return fmt.Errorf("pagination link_header page: %w", err)
@@ -723,6 +794,7 @@ func (f *RESTFetcher) paginateLinkHeader(source string, baseOptions RequestOptio
 		}
 		nextURL = next
 		opts.Params = nil
+		checkpoint(pagesFetched+1, PaginationCheckpoint{NextURL: nextURL})
 	}
 	return nil
 }

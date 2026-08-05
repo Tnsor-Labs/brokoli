@@ -65,6 +65,14 @@ type Runner struct {
 	// substituting empty data).
 	artifactStore ArtifactStore
 
+	// checkpointStore persists/restores mid-pagination progress for
+	// source_api nodes using execution().checkpoint_every. See
+	// PaginationCheckpointStore and runSourceAPI in node_handlers.go. Nil
+	// disables checkpointing entirely — a node with checkpoint_every set
+	// against a nil checkpointStore just runs the full paginated fetch
+	// every attempt, exactly like before issue #41 M2 existed.
+	checkpointStore PaginationCheckpointStore
+
 	// parentCtx, when set, is the context Execute derives r.ctx from instead
 	// of context.Background() — used to propagate an OpenTelemetry trace
 	// context into the run so a run claimed via Engine.ExecuteQueuedRun
