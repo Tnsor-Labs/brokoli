@@ -369,11 +369,20 @@ func extractDatasetRecords(responseBody []byte, options map[string]interface{}) 
 // before with zero extra overhead.
 //
 // `requests_per_second` (simple inter-request delay) and page-level retry
-// (retry a single failed page a few times, using max_retries/retry_backoff)
 // ARE implemented below, and are safe to combine with max_concurrency > 1:
 // the rate limiter serializes *when* a request is allowed to start, while
 // the actual request/response work for concurrently-started pages proceeds
 // in parallel.
+//
+// Page-level retry count/backoff prefer execution().page_max_retries /
+// execution().page_retry_backoff, falling back to the node's top-level
+// max_retries/retry_backoff when unset — see issue #47. Those top-level
+// fields are also read by executeNode (engine/runner.go) for *node*-level
+// retry (re-running the whole node, not just one page), which is a
+// different, coarser-grained retry loop; sharing one key between the two
+// meant a pipeline author couldn't configure them independently. Falling
+// back to the shared key keeps existing pipelines' behavior unchanged —
+// this is purely additive.
 func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
 	strategy, _ := paginationCfg["strategy"].(string)
 
@@ -395,8 +404,8 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		resumeRecords = nil
 	}
 
-	maxRetries := intOpt(fullOptions, "max_retries", defaultPageRetries)
-	retryBackoff := stringOpt(fullOptions, "retry_backoff", "exponential")
+	maxRetries := intOpt(execCfg, "page_max_retries", intOpt(fullOptions, "max_retries", defaultPageRetries))
+	retryBackoff := stringOpt(execCfg, "page_retry_backoff", stringOpt(fullOptions, "retry_backoff", "exponential"))
 
 	var lastRequestAt time.Time
 	var rateMu sync.Mutex
