@@ -76,6 +76,12 @@ var OrgResolverFunc func(userID string) string
 // When nil (community edition), all features are allowed.
 var FeatureGateFunc func(r *http.Request, feature string) bool
 
+// AuthMethodsFunc returns the OAuth provider names currently configured
+// (e.g. "github", "google", "keycloak"). Set by enterprise's platform
+// provider based on which credentials are actually present.
+// When nil (community edition), no OAuth providers are available.
+var AuthMethodsFunc func() []string
+
 // RequireFeature middleware blocks access if the user's plan doesn't include the feature.
 // In community edition (FeatureGateFunc nil), all features are allowed.
 func RequireFeature(feature string) func(http.Handler) http.Handler {
