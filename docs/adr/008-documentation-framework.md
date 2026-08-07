@@ -22,7 +22,7 @@ we don't end up with three doc sites.
 
 **Canonical docs are `docs-new/` — Next.js 15 + fumadocs-mdx.**
 The `docs/` MkDocs tree will be deleted. Docs are served at
-`https://docs.brokoli.orkestri.site` via a plain nginx static
+`https://docs-brokoli.orkestri.site` via a plain nginx static
 deployment (certbot-managed TLS).
 
 ## Consequences
@@ -79,7 +79,7 @@ deployment (certbot-managed TLS).
 
 - Delete `docs/` in a follow-up commit once we've grep'd for
   external links to the stale URLs.
-- Move `install.sh` from `docs.brokoli.orkestri.site` to
+- Move `install.sh` from `docs-brokoli.orkestri.site` to
   `brokoli.orkestri.site` when certbot is wired for the landing
   vhost (see ADR-007 follow-ups).
 - Put the ADR series under `docs-new/content/docs/adr/` as well as

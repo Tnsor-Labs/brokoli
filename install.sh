@@ -230,5 +230,5 @@ else
     printf '    %sbrokoli serve%s                # start the server on :8080\n' "$BOLD" "$RESET"
     printf '    open http://localhost:8080      # open the UI\n'
     printf '\n'
-    printf '%sDocs:%s  https://docs.brokoli.orkestri.site\n' "$DIM" "$RESET"
+    printf '%sDocs:%s  https://docs-brokoli.orkestri.site\n' "$DIM" "$RESET"
 fi

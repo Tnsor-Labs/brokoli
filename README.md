@@ -25,7 +25,7 @@
 
 <p align="center">
   <a href="https://brokoli.orkestri.site">Website</a> ·
-  <a href="https://docs.brokoli.orkestri.site">Documentation</a> ·
+  <a href="https://docs-brokoli.orkestri.site">Documentation</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
   <a href="#brokoli-cloud">Brokoli Cloud</a>
