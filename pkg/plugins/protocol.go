@@ -188,7 +188,7 @@ type Progress struct {
 	// plugin - the host does not derive or verify it.
 	Rate float64 `json:"rate,omitempty"`
 
-	// Message is optional human-readable detail ("Fetched offeset 6000")
+	// Message is optional human-readable detail ("Fetched offset 6000")
 	Message string `json:"message,omitempty"`
 
 	// Timestamp is when the plugin observed this state (RFC3339)
@@ -321,7 +321,7 @@ func NewStatus(code, msg string) Message {
 }
 
 // NewProgress constructs a MsgProgress Message, stamping Timestamp with
-// the current time when the caller left is empty. Used by SDK helpers
+// the current time when the caller left it empty. Used by SDK helpers
 // and reference plugins.
 func NewProgress(p Progress) Message {
 	if p.Timestamp == "" {
