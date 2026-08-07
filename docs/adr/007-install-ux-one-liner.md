@@ -20,7 +20,7 @@ steps. Brokoli wasn't doing that.
 
 ## Decision
 
-Ship a one-liner installer at `https://docs.brokoli.orkestri.site/install.sh`
+Ship a one-liner installer at `https://docs-brokoli.orkestri.site/install.sh`
 that:
 
 1. **Detects OS + arch** via `uname -sm`, picks the matching
@@ -46,7 +46,7 @@ that:
 The one-liner is:
 
 ```
-curl -fsSL https://docs.brokoli.orkestri.site/install.sh | sh
+curl -fsSL https://docs-brokoli.orkestri.site/install.sh | sh
 ```
 
 The script is written in POSIX sh (no bashisms), works with either
@@ -66,7 +66,7 @@ repo at `install.sh` for review.
   on the critical path for first-time users.
 - **The script is tracked** in the OSS repo, so users can read it
   before running it, and the hosted copy at
-  `docs.brokoli.orkestri.site/install.sh` is a rebuild away from
+  `docs-brokoli.orkestri.site/install.sh` is a rebuild away from
   being freshly copied.
 - **`/dev/tty` interactive prompt** means the admin password setup
   flow isn't broken by the `curl | sh` pipe — a first-class UX
@@ -79,7 +79,7 @@ repo at `install.sh` for review.
   inspect-before-running alternate in the docs, and the hosted
   script is short (~260 lines, auditable in one sitting).
 - **TLS dependency.** The installer is currently hosted at
-  `docs.brokoli.orkestri.site` (not the more natural
+  `docs-brokoli.orkestri.site` (not the more natural
   `brokoli.orkestri.site`) because the landing vhost doesn't have
   TLS yet. Documented in the ADR's follow-up list.
 - **Environment variable sprawl.** Five `BROKOLI_*` env vars to
@@ -112,7 +112,7 @@ repo at `install.sh` for review.
 
 ## Follow-ups
 
-- Move the install script from `docs.brokoli.orkestri.site/install.sh`
+- Move the install script from `docs-brokoli.orkestri.site/install.sh`
   to `brokoli.orkestri.site/install.sh` once certbot is wired for
   the landing vhost. Update every doc reference in one sweep.
 - Package managers (brew, apt, yum, winget, chocolatey) when
