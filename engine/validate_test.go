@@ -2,10 +2,13 @@ package engine
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
 func validPipeline() *models.Pipeline {
@@ -496,5 +499,62 @@ func TestValidatePipeline_MalformedDatasetMapFailsAtDeployTime(t *testing.T) {
 	ve := ValidatePipeline(p)
 	if !ve.HasErrors() {
 		t.Fatal("expected pipeline-level validation error for dataset_map with no function reference")
+	}
+}
+
+// TestValidate_PluginSourceType_NoManualCapabilities pins the fix for
+// Tnsor-Labs/brokoli#62: a pipeline whose only source is a plugin-
+// registered node type must validate cleanly when the plugin manager is
+// passed as an executor, without the pipeline author hand-setting
+// Node.Capabilities — mirroring how a legacy built-in source type or a
+// capability-tagged "code" node already work. Omitting the executor
+// (the zero-value/no-plugins case) must keep rejecting it, same as any
+// other unrecognized type with no capabilities.
+func TestValidate_PluginSourceType_NoManualCapabilities(t *testing.T) {
+	dir := t.TempDir()
+	pluginDir := filepath.Join(dir, "hello")
+	if err := os.MkdirAll(pluginDir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin dir: %v", err)
+	}
+	manifest := `{
+		"protocol_version": 1,
+		"name": "hello",
+		"version": "0.1.0",
+		"description": "test fixture",
+		"binary": "./bin",
+		"node_types": [
+			{"type": "source_hello", "kind": "source", "display_name": "Hello Source"}
+		]
+	}`
+	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	mgr, err := plugins.NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	p := &models.Pipeline{
+		Name: "test",
+		Nodes: []models.Node{
+			{ID: "src", Type: "source_hello", Name: "Plugin Source", Config: map[string]interface{}{"stream": "greetings"}},
+			{ID: "s1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out.csv"}},
+		},
+		Edges: []models.Edge{{From: "src", To: "s1"}},
+	}
+
+	// With the plugin manager as an executor: recognized, validates clean.
+	ve := ValidatePipeline(p, mgr)
+	if ve.HasErrors() {
+		t.Errorf("expected no errors for plugin-declared source (executor passed), got: %v", ve.Errors)
+	}
+
+	// Without any executors: unrecognized type, no manual capabilities ->
+	// same "must have a source" rejection as before this fix, not a panic
+	// or a false positive.
+	ve = ValidatePipeline(p)
+	if !ve.HasErrors() {
+		t.Error("expected 'must have a source' error when no executors are passed for a plugin-only-source pipeline")
 	}
 }

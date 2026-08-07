@@ -335,7 +335,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	}
 
 	// Validate before running
-	if ve := ValidatePipeline(pipe); ve.HasErrors() {
+	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return nil, ve
 	}
 
@@ -491,7 +491,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	}
 
 	// Validate before running
-	if ve := ValidatePipeline(pipe); ve.HasErrors() {
+	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return "", ve
 	}
 
@@ -704,7 +704,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	if err != nil {
 		return e.failAcceptedRun(accepted, fmt.Errorf("get pipeline: %w", err))
 	}
-	if ve := ValidatePipeline(pipe); ve.HasErrors() {
+	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return e.failAcceptedRun(accepted, ve)
 	}
 

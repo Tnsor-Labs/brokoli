@@ -324,6 +324,30 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 	}
 }
 
+// DeclaredCapabilities implements extensions.NodeKindDeclarer, translating
+// a plugin's manifest-declared Kind into the engine's structural
+// capability tags. Without this, a pipeline whose only source is a
+// plugin-registered node type silently fails the "pipeline must have a
+// source" structural check unless its author manually sets
+// Node.Capabilities — the manifest's Kind: "source" declaration was
+// otherwise never connected to that check (Tnsor-Labs/brokoli#62).
+func (m *Manager) DeclaredCapabilities(nodeType string) ([]string, bool) {
+	man := m.Resolve(nodeType)
+	if man == nil {
+		return nil, false
+	}
+	switch kindOfNodeType(man, nodeType) {
+	case KindSource:
+		return []string{"source"}, true
+	case KindSink:
+		return []string{"sink"}, true
+	case KindTransform:
+		return []string{"compute"}, true
+	default:
+		return nil, false
+	}
+}
+
 // ─── helpers ──────────────────────────────────────────────────────
 
 // kindOfNodeType looks up a manifest's declared kind for the given

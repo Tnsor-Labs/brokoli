@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 )
 
@@ -25,7 +26,15 @@ func (v *ValidationError) HasErrors() bool {
 }
 
 // ValidatePipeline checks a pipeline for structural and config issues.
-func ValidatePipeline(p *models.Pipeline) *ValidationError {
+//
+// executors is optional (variadic so existing callers compile unchanged)
+// and lets structural checks like "must have a source" recognize node
+// types registered by a NodeExecutor that also implements
+// extensions.NodeKindDeclarer — e.g. a plugin-provided source/sink type —
+// without requiring the pipeline author to hand-set Node.Capabilities.
+// Callers that omit it (or run before any executors are loaded) get the
+// same Capabilities-or-hardcoded-type-list behavior as before.
+func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) *ValidationError {
 	ve := &ValidationError{}
 
 	if p.Name == "" {
@@ -68,7 +77,7 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	}
 
 	// Check semantic connection rules
-	validateEdgeSemantics(p.Nodes, p.Edges, ve)
+	validateEdgeSemantics(p.Nodes, p.Edges, ve, executors)
 
 	// Check for cycles
 	if _, err := topoSort(p.Nodes, p.Edges); err != nil {
@@ -78,7 +87,7 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	// Check at least one source node (dbt and migrate also produce/handle data without pipeline inputs)
 	hasSource := false
 	for _, n := range p.Nodes {
-		if nodeIsSourceCapable(n) {
+		if nodeIsSourceCapable(n, executors) {
 			hasSource = true
 			break
 		}
@@ -112,7 +121,7 @@ func ValidatePipeline(p *models.Pipeline) *ValidationError {
 	return ve
 }
 
-func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *ValidationError) {
+func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *ValidationError, executors []extensions.NodeExecutor) {
 	nodesByID := make(map[string]models.Node, len(nodes))
 	for _, n := range nodes {
 		nodesByID[n.ID] = n
@@ -130,7 +139,7 @@ func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *Validat
 			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot have outgoing edges", e.From, fromNode.Type))
 		}
 
-		if nodeIsSourceCapable(toNode) {
+		if nodeIsSourceCapable(toNode, executors) {
 			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toNode.Type))
 		}
 
@@ -224,12 +233,30 @@ func functionRefConfigError(cfg map[string]interface{}, kind string) string {
 // Node.Capabilities, which lets decorator-based nodes (e.g. Type ==
 // "code" wrapping a user function tagged @source) count as sources even
 // though their Type isn't one of the built-in source types. Nodes with
-// an empty Capabilities slice (old SDK clients, hand-written JSON) fall
-// back to the hardcoded type list so pre-Phase-0 pipelines validate
-// exactly as before.
-func nodeIsSourceCapable(n models.Node) bool {
+// an empty Capabilities slice next check executors for a
+// NodeKindDeclarer that recognizes the type (e.g. a plugin manifest's
+// declared Kind — Tnsor-Labs/brokoli#62); failing that, they fall back
+// to the hardcoded type list so pre-Phase-0 pipelines validate exactly
+// as before.
+func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) bool {
 	if len(n.Capabilities) > 0 {
 		for _, c := range n.Capabilities {
+			if c == models.CapabilitySource {
+				return true
+			}
+		}
+		return false
+	}
+	for _, exec := range executors {
+		declarer, ok := exec.(extensions.NodeKindDeclarer)
+		if !ok {
+			continue
+		}
+		caps, found := declarer.DeclaredCapabilities(string(n.Type))
+		if !found {
+			continue
+		}
+		for _, c := range caps {
 			if c == models.CapabilitySource {
 				return true
 			}
