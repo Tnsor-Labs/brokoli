@@ -82,6 +82,26 @@ type NodeExecutor interface {
 	CanHandle(nodeType string) bool
 }
 
+// NodeKindDeclarer is an optional interface a NodeExecutor may also
+// implement to declare a dynamically-registered node type's structural
+// role — the same tags a pipeline's own Node.Capabilities carries (see
+// models.CapabilitySource etc.) — so validation-time structural checks
+// (e.g. "pipeline must have a source") recognize executor-provided node
+// types without requiring the pipeline author to hand-set Capabilities.
+//
+// Only pkg/plugins.Manager implements this today, mapping a plugin
+// manifest's declared Kind ("source"/"sink"/"transform") to capability
+// tags. A NodeExecutor that doesn't implement this interface is simply
+// skipped by callers that consult it — e.g. the enterprise Kubernetes
+// executor, which dispatches existing built-in node types rather than
+// registering new ones, has no need to implement it.
+type NodeKindDeclarer interface {
+	// DeclaredCapabilities returns the capability tags for nodeType, and
+	// whether this declarer recognizes the type at all (ok=false means
+	// "not mine," not "no capabilities").
+	DeclaredCapabilities(nodeType string) (caps []string, ok bool)
+}
+
 // ExecutionContext passed to a NodeExecutor.
 //
 // Attempt/IdempotencyKey/FencingGeneration mirror the identical fields on

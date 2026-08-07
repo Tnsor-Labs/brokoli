@@ -268,6 +268,41 @@ func TestManager_Runner_Discover(t *testing.T) {
 	}
 }
 
+// TestManager_DeclaredCapabilities locks in the extensions.NodeKindDeclarer
+// contract (Tnsor-Labs/brokoli#62): a manifest's declared Kind for
+// source_hello/sink_hello must translate into the matching capability
+// tag, and an unknown node type must report ok=false rather than an
+// empty-but-found result.
+func TestManager_DeclaredCapabilities(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	var _ extensions.NodeKindDeclarer = mgr // compile-time interface check
+
+	caps, ok := mgr.DeclaredCapabilities("source_hello")
+	if !ok {
+		t.Fatal("expected source_hello to be recognized")
+	}
+	if len(caps) != 1 || caps[0] != "source" {
+		t.Errorf("source_hello capabilities: got %v, want [source]", caps)
+	}
+
+	caps, ok = mgr.DeclaredCapabilities("sink_hello")
+	if !ok {
+		t.Fatal("expected sink_hello to be recognized")
+	}
+	if len(caps) != 1 || caps[0] != "sink" {
+		t.Errorf("sink_hello capabilities: got %v, want [sink]", caps)
+	}
+
+	if _, ok := mgr.DeclaredCapabilities("source_nonexistent"); ok {
+		t.Error("expected an unregistered node type to report ok=false")
+	}
+}
+
 // ─── test helpers ──────────────────────────────────────────────────
 
 // copyDir is a tiny recursive copy we use to stage the bundled
