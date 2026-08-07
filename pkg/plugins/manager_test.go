@@ -1,10 +1,13 @@
 package plugins
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -343,4 +346,292 @@ func contains(haystack, needle string) bool {
 		}
 	}
 	return false
+}
+
+// ─── MsgProgress (Tnsor-Labs/brokoli#39 M1) ───────────────────────
+
+// TestManager_Runner_Progress covers the handler path directly on
+// Runner, without the Manager wrapper: every MsgProgress line the
+// plugin emits reaches ProgressHandler with its fields intact, in
+// order, and the last one is retained on RunResult.
+func TestManager_Runner_Progress(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	man := mgr.Get("hello")
+	if man == nil {
+		t.Fatal("hello plugin not loaded")
+	}
+
+	runner := NewRunner(man, 30*time.Second)
+	var got []Progress
+	runner.ProgressHandler = func(p Progress) { got = append(got, p) }
+
+	res, err := runner.Read(context.Background(), Config{}, "greetings", nil)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+
+	if len(got) != 3 {
+		t.Fatalf("expected 3 progress reports, got %d (%+v)", len(got), got)
+	}
+	// Reports must arrive in emission order, not reordered or coalesced.
+	for i, p := range got {
+		if p.Current == nil || *p.Current != int64(i+1) {
+			t.Errorf("progress[%d].Current: got %v, want %d", i, p.Current, i+1)
+		}
+		if p.Total == nil || *p.Total != 3 {
+			t.Errorf("progress[%d].Total: got %v, want 3", i, p.Total)
+		}
+		if p.Unit != "records" {
+			t.Errorf("progress[%d].Unit: got %q, want %q", i, p.Unit, "records")
+		}
+	}
+
+	// RunResult keeps the last report, mirroring State's last-one-wins.
+	if res.LastProgress == nil {
+		t.Fatal("RunResult.LastProgress is nil, want the final progress report")
+	}
+	if res.LastProgress.Current == nil || *res.LastProgress.Current != 3 {
+		t.Errorf("LastProgress.Current: got %v, want 3", res.LastProgress.Current)
+	}
+	if res.LastProgress.RowsOut != 3 {
+		t.Errorf("LastProgress.RowsOut: got %d, want 3", res.LastProgress.RowsOut)
+	}
+
+	// Progress must not disturb the record stream it is interleaved with.
+	if len(res.Records) != 3 {
+		t.Errorf("expected 3 records alongside progress, got %d", len(res.Records))
+	}
+}
+
+// TestManager_Runner_Progress_NilHandlerIsSafe is the compatibility
+// guarantee ADR-013 claims for M1: a host that does not care about
+// progress (nil ProgressHandler — the state every host was in before
+// this change) still receives every record, with no panic. If this ever
+// fails, MsgProgress stopped being purely additive.
+func TestManager_Runner_Progress_NilHandlerIsSafe(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runner := NewRunner(mgr.Get("hello"), 30*time.Second)
+	// ProgressHandler deliberately left nil.
+
+	res, err := runner.Read(context.Background(), Config{}, "greetings", nil)
+	if err != nil {
+		t.Fatalf("Read with nil ProgressHandler: %v", err)
+	}
+	if len(res.Records) != 3 {
+		t.Errorf("expected 3 records, got %d", len(res.Records))
+	}
+	// Still recorded on the result even with no handler wired.
+	if res.LastProgress == nil {
+		t.Error("LastProgress should be populated even when ProgressHandler is nil")
+	}
+}
+
+// TestManager_Execute_ProgressInLogs covers the Manager wrapper: plugin
+// progress is surfaced into ExecutionResult.Logs, which is the path
+// engine/runner.go replays into the run log. Note this is not live —
+// Logs is delivered after the plugin exits (see ADR-013's Update).
+func TestManager_Execute_ProgressInLogs(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	result, err := mgr.Execute(extensions.ExecutionContext{
+		NodeType: "source_hello",
+		NodeName: "Test Hello Source",
+		Config:   map[string]interface{}{"stream": "greetings"},
+	})
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	var progressLines int
+	var sawFinal bool
+	for _, line := range result.Logs {
+		if !contains(line, "[progress]") {
+			continue
+		}
+		progressLines++
+		if contains(line, "3/3 records (100%)") {
+			sawFinal = true
+		}
+	}
+	if progressLines != 3 {
+		t.Errorf("expected 3 progress log lines, got %d (%v)", progressLines, result.Logs)
+	}
+	if !sawFinal {
+		t.Errorf("final progress line missing or misformatted; got %v", result.Logs)
+	}
+
+	// The plugin's ordinary MsgLog output must still come through
+	// alongside progress — regression guard for the two handlers
+	// competing over the same slice.
+	var sawLog bool
+	for _, line := range result.Logs {
+		if contains(line, "emitting 3 greetings") {
+			sawLog = true
+		}
+	}
+	if !sawLog {
+		t.Errorf("MsgLog line lost when progress was added; got %v", result.Logs)
+	}
+}
+
+// TestProgress_RoundTrip locks the wire format: a Progress survives
+// EncodeLine → DecodeStream unchanged, including the nil-Total case
+// that distinguishes "total unknown" from "total is zero".
+func TestProgress_RoundTrip(t *testing.T) {
+	t.Run("all fields", func(t *testing.T) {
+		current, total := int64(21), int64(100)
+		in := Progress{
+			Current: &current, Total: &total, Unit: "pages",
+			RowsIn: 5, RowsOut: 6300,
+			BytesIn: 50200000, BytesOut: 31800000,
+			Rate: 1.7, Message: "Fetched offset 6000",
+		}
+
+		var buf bytes.Buffer
+		if err := EncodeLine(&buf, NewProgress(in)); err != nil {
+			t.Fatalf("EncodeLine: %v", err)
+		}
+
+		var got *Progress
+		if err := DecodeStream(&buf, func(m Message) error {
+			if m.Type == MsgProgress {
+				got = m.Progress
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("DecodeStream: %v", err)
+		}
+		if got == nil {
+			t.Fatal("no MsgProgress decoded")
+		}
+		if got.Current == nil || *got.Current != 21 {
+			t.Errorf("Current: got %v, want 21", got.Current)
+		}
+		if got.Total == nil || *got.Total != 100 {
+			t.Errorf("Total: got %v, want 100", got.Total)
+		}
+		if got.Unit != "pages" || got.RowsOut != 6300 || got.BytesOut != 31800000 {
+			t.Errorf("scalar fields not preserved: %+v", got)
+		}
+		if got.Rate != 1.7 || got.Message != "Fetched offset 6000" {
+			t.Errorf("Rate/Message not preserved: %+v", got)
+		}
+		// NewProgress stamps Timestamp when the caller leaves it empty.
+		if got.Timestamp == "" {
+			t.Error("Timestamp should have been stamped by NewProgress")
+		}
+	})
+
+	t.Run("indeterminate total", func(t *testing.T) {
+		current := int64(7)
+		var buf bytes.Buffer
+		if err := EncodeLine(&buf, NewProgress(Progress{Current: &current, Unit: "pages"})); err != nil {
+			t.Fatalf("EncodeLine: %v", err)
+		}
+		var got *Progress
+		if err := DecodeStream(&buf, func(m Message) error {
+			if m.Type == MsgProgress {
+				got = m.Progress
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("DecodeStream: %v", err)
+		}
+		if got == nil {
+			t.Fatal("no MsgProgress decoded")
+		}
+		if got.Total != nil {
+			t.Errorf("Total should stay nil (unknown), got %v", *got.Total)
+		}
+		if got.Current == nil || *got.Current != 7 {
+			t.Errorf("Current: got %v, want 7", got.Current)
+		}
+	})
+}
+
+// TestDecodeStream_UnknownTypeIgnored guards the compatibility rule
+// MsgProgress relies on: a host must ignore message types it does not
+// know rather than failing the stream. Without this, adding any future
+// message type would break every older host.
+func TestDecodeStream_UnknownTypeIgnored(t *testing.T) {
+	in := `{"type":"future_thing","whatever":1}
+{"type":"record","data":{"id":1}}
+{"type":"progress","progress":{"current":1}}
+`
+	var records int
+	if err := DecodeStream(strings.NewReader(in), func(m Message) error {
+		if m.Type == MsgRecord {
+			records++
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("DecodeStream: %v", err)
+	}
+	if records != 1 {
+		t.Errorf("unknown message type disrupted the stream: got %d records, want 1", records)
+	}
+}
+
+// TestFormatProgress covers the log rendering, including the degraded
+// cases a connector will actually produce: no total (cursor pagination),
+// no counts at all, message-only.
+func TestFormatProgress(t *testing.T) {
+	i64 := func(v int64) *int64 { return &v }
+
+	tests := []struct {
+		name string
+		in   Progress
+		want string
+	}{
+		{
+			name: "current and total",
+			in:   Progress{Current: i64(1), Total: i64(3), Unit: "records"},
+			want: "1/3 records (33%)",
+		},
+		{
+			name: "complete",
+			in:   Progress{Current: i64(3), Total: i64(3), Unit: "records"},
+			want: "3/3 records (100%)",
+		},
+		{
+			name: "indeterminate total",
+			in:   Progress{Current: i64(7), Unit: "pages"},
+			want: "7 pages",
+		},
+		{
+			name: "zero total is treated as unknown, not divided by",
+			in:   Progress{Current: i64(2), Total: i64(0), Unit: "pages"},
+			want: "2 pages",
+		},
+		{
+			name: "no counts at all",
+			in:   Progress{Message: "warming up"},
+			want: "progress · warming up",
+		},
+		{
+			name: "rows and rate appended",
+			in:   Progress{Current: i64(2), Total: i64(4), Unit: "pages", RowsOut: 500, Rate: 1.5},
+			want: "2/4 pages (50%) · 500 rows out · 1.5/s",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatProgress(tc.in); got != tc.want {
+				t.Errorf("formatProgress()\n got: %q\nwant: %q", got, tc.want)
+			}
+		})
+	}
 }
