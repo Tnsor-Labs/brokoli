@@ -253,12 +253,23 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 		}
 	}
 
-	runner := NewRunner(man, timeout)
-	// Capture plugin logs into the caller's ExecutionResult.Logs slice
-	// so they land in the run log UI via the existing executor path.
-	var logs []string
+	runner := NewRunner(man, timeout)	
+
+	// Runner invokes LogHandler from two goroutines - the stderr drain
+	// and the sdtout JSONL decoder - so appends must be synchronized.
+	// Reading logs after Run returns needs no lock: Run joins both
+	// goroutines (stderrWG.Wait, proc.Wait) before returning.
+	var (
+		logsMu	sync.Mutex
+		logs		[]string
+	)
+	appendLog := func(line string) {
+		logsMu.Lock()
+		logs = append(logs, line)
+		logsMu.Unlock()
+	}
 	runner.LogHandler = func(level LogLevel, msg string) {
-		logs = append(logs, fmt.Sprintf("[%s] %s", level, msg))
+		appendLog(fmt.Sprintf("[%s] %s", level, msg))
 	}
 
 	start := time.Now()
