@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -253,15 +254,15 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 		}
 	}
 
-	runner := NewRunner(man, timeout)	
+	runner := NewRunner(man, timeout)
 
 	// Runner invokes LogHandler from two goroutines - the stderr drain
-	// and the sdtout JSONL decoder - so appends must be synchronized.
+	// and the stdout JSONL decoder - so appends must be synchronized.
 	// Reading logs after Run returns needs no lock: Run joins both
 	// goroutines (stderrWG.Wait, proc.Wait) before returning.
 	var (
-		logsMu	sync.Mutex
-		logs		[]string
+		logsMu sync.Mutex
+		logs   []string
 	)
 	appendLog := func(line string) {
 		logsMu.Lock()
@@ -270,6 +271,14 @@ func (m *Manager) Execute(ctx extensions.ExecutionContext) (*extensions.Executio
 	}
 	runner.LogHandler = func(level LogLevel, msg string) {
 		appendLog(fmt.Sprintf("[%s] %s", level, msg))
+	}
+
+	// Surface structured progress in the run log for now. Delivering it
+	// live to the UI needs a progress sink on
+	// extensions.ExecutionContext - deliberately out of scope for this
+	// change; see ADR-013's Update section.
+	runner.ProgressHandler = func(p Progress) {
+		appendLog("[progress] " + formatProgress(p))
 	}
 
 	start := time.Now()
@@ -370,6 +379,40 @@ func kindOfNodeType(m *Manifest, nodeType string) NodeKind {
 		}
 	}
 	return ""
+}
+
+// formatProgress renders a Progress into a single human-readable log
+// line. Every field is optional, so this degrades cleanly: a plugin
+// reporting only a count produces "21 pages", one reporting nothing
+// measurable still produces a stable "progress" prefix rather than an
+// empty line.
+func formatProgress(p Progress) string {
+	var b strings.Builder
+	switch {
+	case p.Current != nil && p.Total != nil && *p.Total > 0:
+		fmt.Fprintf(&b, "%d/%d", *p.Current, *p.Total)
+		if p.Unit != "" {
+			fmt.Fprintf(&b, " %s", p.Unit)
+		}
+		fmt.Fprintf(&b, " (%.0f%%)", float64(*p.Current)/float64(*p.Total)*100)
+	case p.Current != nil:
+		fmt.Fprintf(&b, "%d", *p.Current)
+		if p.Unit != "" {
+			fmt.Fprintf(&b, " %s", p.Unit)
+		}
+	default:
+		b.WriteString("progress")
+	}
+	if p.RowsOut > 0 {
+		fmt.Fprintf(&b, " · %d rows out", p.RowsOut)
+	}
+	if p.Rate > 0 {
+		fmt.Fprintf(&b, " · %.1f/s", p.Rate)
+	}
+	if p.Message != "" {
+		fmt.Fprintf(&b, " · %s", p.Message)
+	}
+	return b.String()
 }
 
 // recordsToDataSet converts a flat record list into a common.DataSet.
