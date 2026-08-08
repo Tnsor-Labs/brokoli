@@ -179,16 +179,17 @@ func NewPageResult(items interface{}, total int, params PageParams) PageResult {
 
 // DLQEntry represents a dead letter queue entry for a failed run.
 type DLQEntry struct {
-	ID         string `json:"id"`
-	PipelineID string `json:"pipeline_id"`
-	RunID      string `json:"run_id"`
-	Error      string `json:"error"`
-	NodeID     string `json:"node_id"`
-	NodeName   string `json:"node_name"`
-	Payload    string `json:"payload"`
-	CreatedAt  string `json:"created_at"`
-	Resolved   bool   `json:"resolved"`
-	ResolvedAt string `json:"resolved_at,omitempty"`
+	ID           string `json:"id"`
+	PipelineID   string `json:"pipeline_id"`
+	PipelineName string `json:"pipeline_name,omitempty"` // resolved by ListDLQByOrg
+	RunID        string `json:"run_id"`
+	Error        string `json:"error"`
+	NodeID       string `json:"node_id"`
+	NodeName     string `json:"node_name"`
+	Payload      string `json:"payload"`
+	CreatedAt    string `json:"created_at"`
+	Resolved     bool   `json:"resolved"`
+	ResolvedAt   string `json:"resolved_at,omitempty"`
 }
 
 // PipelineVersion represents a saved version of a pipeline.
@@ -383,6 +384,21 @@ type Store interface {
 	ListRunIDsOlderThan(days int) ([]string, error)
 	ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error)
 	GetDBSize() (int64, error)
+
+	// Alerts — persisted, readable notifications (run failures and, in
+	// other editions, additional kinds written into this same table).
+	// Every method is org-scoped; an alert must never be readable or
+	// mutable across tenants.
+	CreateAlert(a *models.Alert) error
+	ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error)
+	CountUnreadAlerts(orgID string) (int, error)
+	MarkAlertRead(orgID, id string) error
+	MarkAllAlertsRead(orgID string) error
+	DismissAlert(orgID, id string) error
+
+	// Dead letter queue, across every pipeline in an org rather than one
+	// at a time — the question you actually have while triaging.
+	ListDLQByOrg(orgID string, includeResolved bool, limit int) ([]DLQEntry, error)
 
 	// Pipeline templates — global, admin-curated starter pipelines
 	// offered at pipeline-creation time (GET /api/templates). Seeded

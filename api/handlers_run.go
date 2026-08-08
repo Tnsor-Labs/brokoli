@@ -153,6 +153,29 @@ func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, filterLogs(logs, r))
 }
 
+// GetEvents returns a run's durable lifecycle event log in chronological
+// order. The run_events table has been written since the crash-recovery
+// work but was never readable from outside the process — this is the
+// difference between "the run failed" and "it was retried twice with
+// backoff, reclaimed after a crash, then failed terminally", which is what
+// someone debugging actually needs (Tnsor-Labs/brokoli#74).
+func (h *RunHandler) GetEvents(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if !h.validateRunAccess(r, id) {
+		DenyOrgAccess(w)
+		return
+	}
+	events, err := h.store.ListEventsByRun(id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if events == nil {
+		events = []models.RunEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
 func (h *RunHandler) ExportLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !h.validateRunAccess(r, id) {

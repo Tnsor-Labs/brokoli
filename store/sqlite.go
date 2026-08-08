@@ -282,6 +282,25 @@ func (s *SQLiteStore) migrate() error {
 	// with a guess.
 	s.db.Exec(`UPDATE runs SET org_id = COALESCE((SELECT p.org_id FROM pipelines p WHERE p.id = runs.pipeline_id), org_id) WHERE org_id = 'default'`)
 
+	// Alerts — persisted, readable notifications. Before this table the
+	// only alerting was fire-and-forget outbound (Slack webhooks, the
+	// notify node), so nothing could ever be read back. org_id is
+	// indexed because every query is org-scoped.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS alerts (
+		id TEXT PRIMARY KEY,
+		org_id TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		severity TEXT NOT NULL DEFAULT 'info',
+		title TEXT NOT NULL,
+		body TEXT NOT NULL DEFAULT '',
+		pipeline_id TEXT NOT NULL DEFAULT '',
+		pipeline_name TEXT NOT NULL DEFAULT '',
+		run_id TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		read_at TEXT,
+		dismissed_at TEXT)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+
 	// Pipeline templates — global, admin-curated starter pipelines
 	// (GET /api/templates). Used to be hardcoded JS in the frontend;
 	// moved to the backend (brokoli#71) and now to the database so
@@ -2232,6 +2251,173 @@ func (s *SQLiteStore) DeleteVariable(key string) error {
 		return fmt.Errorf("variable not found: %s", key)
 	}
 	return nil
+}
+
+// --- Alerts ---
+
+func (s *SQLiteStore) CreateAlert(a *models.Alert) error {
+	_, err := s.db.Exec(
+		`INSERT INTO alerts (id, org_id, kind, severity, title, body, pipeline_id, pipeline_name, run_id, created_at, read_at, dismissed_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		a.ID, a.OrgID, a.Kind, a.Severity, a.Title, a.Body,
+		a.PipelineID, a.PipelineName, a.RunID,
+		a.CreatedAt.UTC().Format(timeFormat),
+		nullableTime(a.ReadAt), nullableTime(a.DismissedAt),
+	)
+	return wrapStoreErr("CreateAlert", a.ID, err)
+}
+
+// ListAlerts returns an org's alerts newest-first. Dismissed alerts are
+// always excluded — dismissal is the user saying "stop showing me this" —
+// but the rows are retained rather than deleted so a dismissal remains
+// auditable.
+func (s *SQLiteStore) ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `SELECT id, org_id, kind, severity, title, body, pipeline_id, pipeline_name, run_id, created_at, read_at, dismissed_at
+		FROM alerts WHERE org_id = ? AND dismissed_at IS NULL`
+	if unreadOnly {
+		query += " AND read_at IS NULL"
+	}
+	query += " ORDER BY created_at DESC LIMIT ?"
+
+	rows, err := s.db.Query(query, orgID, limit)
+	if err != nil {
+		return nil, wrapStoreErr("ListAlerts", orgID, err)
+	}
+	defer rows.Close()
+
+	var out []models.Alert
+	for rows.Next() {
+		a, err := scanAlert(rows)
+		if err != nil {
+			return nil, wrapStoreErr("ListAlerts", orgID, err)
+		}
+		out = append(out, *a)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) CountUnreadAlerts(orgID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM alerts WHERE org_id = ? AND read_at IS NULL AND dismissed_at IS NULL`, orgID,
+	).Scan(&n)
+	return n, wrapStoreErr("CountUnreadAlerts", orgID, err)
+}
+
+// MarkAlertRead is a no-op on an already-read alert, but reports an error
+// when the alert doesn't exist *for this org* — the org predicate is what
+// stops one tenant marking another tenant's alerts read.
+func (s *SQLiteStore) MarkAlertRead(orgID, id string) error {
+	result, err := s.db.Exec(
+		`UPDATE alerts SET read_at = ? WHERE id = ? AND org_id = ? AND read_at IS NULL`,
+		time.Now().UTC().Format(timeFormat), id, orgID,
+	)
+	if err != nil {
+		return wrapStoreErr("MarkAlertRead", id, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		// Either already read (benign) or not ours (must not 200). Tell
+		// them apart with an existence check scoped to the same org.
+		var exists int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE id = ? AND org_id = ?`, id, orgID).Scan(&exists); err != nil {
+			return wrapStoreErr("MarkAlertRead", id, err)
+		}
+		if exists == 0 {
+			return wrapStoreErr("MarkAlertRead", id, fmt.Errorf("alert not found"))
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) MarkAllAlertsRead(orgID string) error {
+	_, err := s.db.Exec(
+		`UPDATE alerts SET read_at = ? WHERE org_id = ? AND read_at IS NULL`,
+		time.Now().UTC().Format(timeFormat), orgID,
+	)
+	return wrapStoreErr("MarkAllAlertsRead", orgID, err)
+}
+
+func (s *SQLiteStore) DismissAlert(orgID, id string) error {
+	result, err := s.db.Exec(
+		`UPDATE alerts SET dismissed_at = ? WHERE id = ? AND org_id = ? AND dismissed_at IS NULL`,
+		time.Now().UTC().Format(timeFormat), id, orgID,
+	)
+	if err != nil {
+		return wrapStoreErr("DismissAlert", id, err)
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return wrapStoreErr("DismissAlert", id, fmt.Errorf("alert not found"))
+	}
+	return nil
+}
+
+func scanAlert(sc scanner) (*models.Alert, error) {
+	var a models.Alert
+	var createdAt string
+	var readAt, dismissedAt sql.NullString
+	if err := sc.Scan(&a.ID, &a.OrgID, &a.Kind, &a.Severity, &a.Title, &a.Body,
+		&a.PipelineID, &a.PipelineName, &a.RunID, &createdAt, &readAt, &dismissedAt); err != nil {
+		return nil, err
+	}
+	a.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	if readAt.Valid && readAt.String != "" {
+		if t, err := time.Parse(timeFormat, readAt.String); err == nil {
+			a.ReadAt = &t
+		}
+	}
+	if dismissedAt.Valid && dismissedAt.String != "" {
+		if t, err := time.Parse(timeFormat, dismissedAt.String); err == nil {
+			a.DismissedAt = &t
+		}
+	}
+	return &a, nil
+}
+
+// nullableTime renders an optional timestamp for a nullable TEXT column.
+func nullableTime(t *time.Time) interface{} {
+	if t == nil {
+		return nil
+	}
+	return t.UTC().Format(timeFormat)
+}
+
+// ListDLQByOrg is the org-wide counterpart to ListDLQ. Entries carry no
+// org_id of their own, so scope is derived by joining through the owning
+// pipeline — which also lets us return the pipeline name for display.
+func (s *SQLiteStore) ListDLQByOrg(orgID string, includeResolved bool, limit int) ([]DLQEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `SELECT d.id, d.pipeline_id, d.run_id, d.error, d.node_id, d.node_name, d.payload,
+		d.created_at, d.resolved, COALESCE(d.resolved_at,''), COALESCE(p.name,'')
+		FROM dead_letter_queue d JOIN pipelines p ON p.id = d.pipeline_id
+		WHERE p.org_id = ?`
+	if !includeResolved {
+		query += " AND d.resolved = 0"
+	}
+	query += " ORDER BY d.created_at DESC LIMIT ?"
+
+	rows, err := s.db.Query(query, orgID, limit)
+	if err != nil {
+		return nil, wrapStoreErr("ListDLQByOrg", orgID, err)
+	}
+	defer rows.Close()
+
+	var entries []DLQEntry
+	for rows.Next() {
+		var e DLQEntry
+		var resolved int
+		if err := rows.Scan(&e.ID, &e.PipelineID, &e.RunID, &e.Error, &e.NodeID, &e.NodeName,
+			&e.Payload, &e.CreatedAt, &resolved, &e.ResolvedAt, &e.PipelineName); err != nil {
+			return nil, wrapStoreErr("ListDLQByOrg", orgID, err)
+		}
+		e.Resolved = resolved != 0
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
 
 // --- Pipeline Templates ---

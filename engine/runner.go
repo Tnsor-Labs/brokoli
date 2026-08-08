@@ -38,6 +38,7 @@ type Runner struct {
 	preRunID      string                          // pre-generated run ID (for registration before Execute)
 	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
 	orgID         string                          // tenant isolation for WebSocket events
+	alertRaised   bool                            // guards raiseFailureAlert against double-firing
 	traceID       string                          // distributed tracing correlation ID
 	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
 	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
@@ -344,6 +345,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			},
 		})
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
+		r.raiseFailureAlert(runErr)
 		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
 		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
 		NotifyPipelineEvent(r.pipe, r.run, "run.failed", runErr.Error())
@@ -982,6 +984,7 @@ func (r *Runner) failRun(err error) error {
 		},
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
+	r.raiseFailureAlert(err)
 	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), err.Error())
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())
 	// Add to dead letter queue
@@ -996,9 +999,55 @@ func (r *Runner) failRun(err error) error {
 func (r *Runner) emit(e models.Event) {
 	e.Timestamp = time.Now().UTC()
 	e.OrgID = r.orgID // tenant isolation
+	// Stamp the pipeline's name at emit time so downstream consumers never
+	// have to resolve an ID back to a name. That resolution is impossible
+	// once a pipeline is deleted — the row is gone, but its historical runs
+	// remain and should still say what they ran (Tnsor-Labs/brokoli#75).
+	// r.pipe is nil for Runners built without a pipeline (DryRun, and tests
+	// that construct a Runner directly), and emit is reached from the
+	// logging path in those cases — so this must stay nil-safe.
+	if e.PipelineName == "" && r.pipe != nil {
+		e.PipelineName = r.pipe.Name
+	}
 	select {
 	case r.eventCh <- e:
 	default:
+	}
+}
+
+// raiseFailureAlert records a durable, readable alert for a failed run.
+// Distinct from sendNotification just below: that pushes outbound to Slack
+// and is lost if nobody is watching, this persists so the failure can be
+// read back later from the alerts inbox.
+//
+// Best-effort by design — a storage failure here must never turn a failed
+// run into a *differently* failed run, so it is logged and swallowed,
+// matching how appendEvent and AppendLog treat their own write failures.
+// There are two mutually exclusive terminal-failure paths — the DAG loop's
+// runErr branch and failRun's early exit — and both raise an alert. The
+// guard makes a second call a no-op so a future refactor that lets both run
+// can't produce a duplicate inbox entry for one failure.
+func (r *Runner) raiseFailureAlert(runErr error) {
+	if r.alertRaised {
+		return
+	}
+	r.alertRaised = true
+
+	alert := &models.Alert{
+		ID:           common.NewID(),
+		OrgID:        r.orgID,
+		Kind:         models.AlertKindRunFailure,
+		Severity:     models.AlertSeverityCritical,
+		Title:        fmt.Sprintf("Pipeline %q failed", r.pipe.Name),
+		Body:         runErr.Error(),
+		PipelineID:   r.pipe.ID,
+		PipelineName: r.pipe.Name,
+		RunID:        r.run.ID,
+		CreatedAt:    time.Now().UTC(),
+	}
+	if err := r.store.CreateAlert(alert); err != nil {
+		common.SLog().Warn("create failure alert", common.RunAttr(r.run.ID),
+			common.PipelineAttr(r.pipe.ID), "error", err)
 	}
 }
 
