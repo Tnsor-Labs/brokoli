@@ -479,11 +479,63 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			topFailing = []failEntry{}
 		}
 
+		// Per-pipeline 24h rollup. A UI that collapses consecutive runs of
+		// the same pipeline into one row needs the true count for that
+		// pipeline — counting the entries in `recent_runs` would report the
+		// size of the sample (at most 50) rather than the real number, so a
+		// pipeline run 10,000 times would read "50". These counts come from
+		// the same full per-pipeline window every other aggregate here uses.
+		type pipelineRollup struct {
+			PipelineID    string `json:"pipeline_id"`
+			Name          string `json:"name"`
+			Total         int    `json:"total"`
+			Success       int    `json:"success"`
+			Failed        int    `json:"failed"`
+			Running       int    `json:"running"`
+			LastStatus    string `json:"last_status,omitempty"`
+			LastStartedAt string `json:"last_started_at,omitempty"`
+		}
+		rollupByPipeline := make(map[string]*pipelineRollup)
+		rollupOrder := make([]string, 0, len(pipelines))
+		for _, r := range allRuns {
+			if r.StartedAt == "" {
+				continue
+			}
+			t, err := time.Parse(time.RFC3339, r.StartedAt)
+			if err != nil || t.Before(last24hCutoff) {
+				continue
+			}
+			ru, seen := rollupByPipeline[r.PipelineID]
+			if !seen {
+				ru = &pipelineRollup{PipelineID: r.PipelineID, Name: r.PipelineName}
+				rollupByPipeline[r.PipelineID] = ru
+				rollupOrder = append(rollupOrder, r.PipelineID)
+				// allRuns is sorted newest-first, so the first entry seen for
+				// a pipeline is its most recent run.
+				ru.LastStatus = r.Status
+				ru.LastStartedAt = r.StartedAt
+			}
+			ru.Total++
+			switch r.Status {
+			case "success", "completed":
+				ru.Success++
+			case "failed":
+				ru.Failed++
+			case "running":
+				ru.Running++
+			}
+		}
+		pipelineRollups := make([]pipelineRollup, 0, len(rollupOrder))
+		for _, pid := range rollupOrder {
+			pipelineRollups = append(pipelineRollups, *rollupByPipeline[pid])
+		}
+
 		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"pipelines":   summaries,
-			"recent_runs": recentRuns,
-			"trends":      trends,
-			"top_failing": topFailing,
+			"pipelines":        summaries,
+			"recent_runs":      recentRuns,
+			"trends":           trends,
+			"top_failing":      topFailing,
+			"pipeline_rollups": pipelineRollups,
 			// Real aggregate counts. The frontend should read these directly
 			// instead of deriving stats from `recent_runs` (which is a small
 			// UI sample, not a complete count).

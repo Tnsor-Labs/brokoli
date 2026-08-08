@@ -174,6 +174,33 @@ func dashboardKey(orgID string) string {
 //  2. Cost is O(active runs) which is bounded by maxKeys.
 //  3. The state store's diff machinery (StateStore.Apply) sends only the
 //     changed fields on the wire, so a snapshot rewrite is cheap to broadcast.
+//
+// IMPORTANT — what these aggregates are, and are not.
+//
+// Everything below is derived by scanning live SODP state, and that state is
+// deliberately transient: StartEviction (wired at 30 minutes in
+// api/server.go) drops any completed run once finished_at passes the TTL. So
+// the historical-looking fields — runs_today, runs_yesterday, runs_24h_*,
+// success_rate_24h, trends — can only ever account for runs that completed
+// inside that window, no matter what period their names imply. A seven-day
+// trend computed here cannot show seven days.
+//
+// They are kept because they are cheap, they update instantly, and they are
+// genuinely useful as liveness signals and as deltas (RunIndicator watches
+// runs_24h_success/failed purely to detect that *something just finished*).
+//
+// They are not the source of truth for any number a user reads as history.
+// That is GET /api/dashboard, which computes the same aggregates from the
+// database. Clients should treat a snapshot write as a tripwire to refetch
+// that endpoint — the pattern ui/src/pages/Pipelines.svelte already uses and
+// documents — rather than rendering these counters directly.
+//
+// See Tnsor-Labs/brokoli#78 and pkg/sodp/dashboard_eviction_test.go, which
+// reproduces the decay without waiting for the TTL.
+//
+// runs_running / running_run_ids are the exception: eviction only removes
+// *completed* runs, so live-run state here is accurate and is the reason
+// this snapshot exists.
 func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	if asOf.IsZero() {
 		asOf = time.Now().UTC()
