@@ -1,6 +1,0 @@
-id,name,email,salary,hire_date
-1,Alice Chen,alice.chen@example.com,95000,2021-03-15
-2,Bob Martinez,bob.martinez@example.com,82000,2020-07-22
-3,Carla Singh,carla.singh@example.com,110000,2019-11-01
-4,David Kim,david.kim@example.com,76000,2022-01-10
-5,Elena Petrova,,-5000,2021-09-05

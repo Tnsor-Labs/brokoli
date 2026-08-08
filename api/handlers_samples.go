@@ -7,7 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-// samplesDataFS holds the sample CSVs the built-in pipeline templates
+// samplesDataFS holds the sample data the built-in pipeline templates
 // (ui/src/pages/Pipelines.svelte's "Hello World", "API Fetch", "Join +
 // Aggregate", and "Data Quality" starters) fetch from
 // GET /api/samples/data/{file}. This endpoint is exempt from auth (see
@@ -15,10 +15,16 @@ import (
 // it's static, non-sensitive demo data referenced before a user has
 // created an account.
 //
-//go:embed samples_data/*.csv
+// JSON, not CSV: every template consumes this through a source_api node,
+// and source_api's fetcher (pkg/fetchers/rest_fetcher.go) only ever
+// parses response bodies as JSON (pkg/common.ParseJSONData) — there is no
+// CSV-response support anywhere in that path. Serving CSV here would 404
+// on the URL and then fail to parse even once the URL resolved.
+//
+//go:embed samples_data/*.json
 var samplesDataFS embed.FS
 
-// samplesDataHandler serves one of the embedded sample CSVs by name.
+// samplesDataHandler serves one of the embedded sample files by name.
 // Only exact matches against the embedded file set are served — the
 // embed.FS is closed over a fixed set of files at build time, so an
 // unrecognized name can't reach anything outside samples_data/ (no
@@ -31,8 +37,8 @@ func samplesDataHandler() http.HandlerFunc {
 			http.Error(w, "sample not found", http.StatusNotFound)
 			return
 		}
-		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
-		_, _ = w.Write(data) // #nosec G705 -- data is never attacker-influenced: it's one of a fixed, embedded CSV set selected by exact-match lookup against embed.FS above. The "file" param only picks which embedded file to serve (or fails closed to 404, see the ReadFile error check above); it never reaches the response body or influences its content.
+		_, _ = w.Write(data) // #nosec G705 -- data is never attacker-influenced: it's one of a fixed, embedded JSON set selected by exact-match lookup against embed.FS above. The "file" param only picks which embedded file to serve (or fails closed to 404, see the ReadFile error check above); it never reaches the response body or influences its content.
 	}
 }

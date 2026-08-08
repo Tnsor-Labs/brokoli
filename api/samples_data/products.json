@@ -1,0 +1,5 @@
+[
+  {"name": "Widget", "category": "Hardware", "price": 25.00},
+  {"name": "Gadget", "category": "Electronics", "price": 60.25},
+  {"name": "Gizmo", "category": "Electronics", "price": 150.00}
+]

@@ -1,7 +1,0 @@
-order_id,product,status,total,customer
-1001,Widget,completed,250.00,Alice Chen
-1002,Gadget,completed,120.50,Bob Martinez
-1003,Widget,pending,75.00,Carla Singh
-1004,Gizmo,completed,300.00,David Kim
-1005,Gadget,cancelled,45.00,Elena Petrova
-1006,Widget,completed,180.00,Alice Chen
