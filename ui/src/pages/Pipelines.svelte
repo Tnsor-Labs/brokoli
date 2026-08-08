@@ -360,7 +360,7 @@
       description: "Minimal: fetch, transform, save",
       icon: "file",
       nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.csv", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.json", method: "GET" }, position: { x: 40, y: 120 } },
         { id: "t1", type: "transform", name: "Add Column", config: { rules: [{ type: "add_column", name: "greeting", expression: "'Hello, ' + name" }] }, position: { x: 360, y: 120 } },
         { id: "o1", type: "sink_file", name: "Save Result", config: { path: "/tmp/hello-output.csv" }, position: { x: 680, y: 120 } },
       ],
@@ -371,8 +371,8 @@
       description: "Fetch, filter, save",
       icon: "api",
       nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Orders", config: { url: "/api/samples/data/orders.csv", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", column: "status", operator: "equals", value: "completed" }] }, position: { x: 360, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Orders", config: { url: "/api/samples/data/orders.json", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", condition: "status == 'completed'" }] }, position: { x: 360, y: 120 } },
         { id: "o1", type: "sink_file", name: "Save Orders", config: { path: "/tmp/completed-orders.csv" }, position: { x: 680, y: 120 } },
       ],
       edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
@@ -382,8 +382,8 @@
       description: "Join two sources, aggregate results",
       icon: "merge",
       nodes: [
-        { id: "s1", type: "source_api", name: "Orders", config: { url: "/api/samples/data/orders.csv", method: "GET" }, position: { x: 40, y: 60 } },
-        { id: "s2", type: "source_api", name: "Products", config: { url: "/api/samples/data/products.csv", method: "GET" }, position: { x: 40, y: 220 } },
+        { id: "s1", type: "source_api", name: "Orders", config: { url: "/api/samples/data/orders.json", method: "GET" }, position: { x: 40, y: 60 } },
+        { id: "s2", type: "source_api", name: "Products", config: { url: "/api/samples/data/products.json", method: "GET" }, position: { x: 40, y: 220 } },
         { id: "j1", type: "join", name: "Join", config: { join_type: "inner", left_key: "product", right_key: "name" }, position: { x: 360, y: 140 } },
         { id: "t1", type: "transform", name: "Aggregate", config: { rules: [{ type: "aggregate", group_by: ["product"], agg_fields: [{ column: "total", function: "sum", alias: "total_revenue" }] }] }, position: { x: 680, y: 140 } },
         { id: "o1", type: "sink_file", name: "Summary", config: { path: "/tmp/product-summary.csv" }, position: { x: 1000, y: 140 } },
@@ -395,7 +395,7 @@
       description: "Validate data with quality gates",
       icon: "code",
       nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.csv", method: "GET" }, position: { x: 40, y: 120 } },
+        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.json", method: "GET" }, position: { x: 40, y: 120 } },
         { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", check: "not_null", policy: "block" }, { column: "salary", check: "positive", policy: "warn" }] }, position: { x: 360, y: 120 } },
         { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", mapping: { hire_date: "start_date" } }] }, position: { x: 680, y: 120 } },
         { id: "o1", type: "sink_file", name: "Output", config: { path: "/tmp/clean-employees.csv" }, position: { x: 1000, y: 120 } },

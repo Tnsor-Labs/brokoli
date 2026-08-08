@@ -1,0 +1,8 @@
+[
+  {"order_id": 1001, "product": "Widget", "status": "completed", "total": 250.00, "customer": "Alice Chen"},
+  {"order_id": 1002, "product": "Gadget", "status": "completed", "total": 120.50, "customer": "Bob Martinez"},
+  {"order_id": 1003, "product": "Widget", "status": "pending", "total": 75.00, "customer": "Carla Singh"},
+  {"order_id": 1004, "product": "Gizmo", "status": "completed", "total": 300.00, "customer": "David Kim"},
+  {"order_id": 1005, "product": "Gadget", "status": "cancelled", "total": 45.00, "customer": "Elena Petrova"},
+  {"order_id": 1006, "product": "Widget", "status": "completed", "total": 180.00, "customer": "Alice Chen"}
+]

@@ -64,6 +64,11 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	}
 
 	r.Route("/api", func(r chi.Router) {
+		// Sample data for the built-in pipeline templates (public, no auth
+		// required — see AuthMiddleware/WorkspaceMiddleware's "/api/samples/"
+		// exemption).
+		r.Get("/samples/data/{file}", samplesDataHandler())
+
 		// Pipelines
 		r.Get("/pipelines", ph.List)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines", ph.Create)
