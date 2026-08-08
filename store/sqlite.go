@@ -97,6 +97,10 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
+	// Backs the keyset walk in ListRunsByPipelineCursor. The status index
+	// above cannot serve it: it leads with status, while the walk filters on
+	// pipeline_id and ranges over id. Without this, every page is a scan.
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_id ON runs(pipeline_id, id DESC)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(run_id, status)`)
 
 	// Settings key-value store
@@ -919,6 +923,70 @@ func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models
 		runs = append(runs, *r)
 	}
 	return runs, rows.Err()
+}
+
+const runColumns = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id`
+
+func (s *SQLiteStore) ListRunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error) {
+	// Fetch one more than asked for: if it comes back, there is another
+	// page. That is what lets hasNext be exact without a COUNT.
+	fetchN := limit + 1
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT `+runColumns+` FROM runs WHERE pipeline_id = ? ORDER BY id DESC LIMIT ?`,
+			pipelineID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT `+runColumns+` FROM runs WHERE pipeline_id = ? AND id < ? ORDER BY id DESC LIMIT ?`,
+			pipelineID, afterID, fetchN)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	var runs []models.Run
+	for rows.Next() {
+		r, err := scanRunRows(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		runs = append(runs, *r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasNext := len(runs) > limit
+	if hasNext {
+		runs = runs[:limit]
+	}
+	return runs, hasNext, nil
+}
+
+func (s *SQLiteStore) ListRunsByPipelinePaged(pipelineID string, limit, offset int) ([]models.Run, int, error) {
+	total, err := s.CountRunsByPipeline(pipelineID)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(
+		`SELECT `+runColumns+` FROM runs WHERE pipeline_id = ? ORDER BY id DESC LIMIT ? OFFSET ?`,
+		pipelineID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	var runs []models.Run
+	for rows.Next() {
+		r, err := scanRunRows(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		runs = append(runs, *r)
+	}
+	return runs, total, rows.Err()
 }
 
 // ListNonTerminalRuns returns a keyset-paginated page of runs left in a
