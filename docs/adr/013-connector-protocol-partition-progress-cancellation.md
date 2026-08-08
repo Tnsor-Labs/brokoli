@@ -51,3 +51,17 @@ Extend the existing protocol rather than design a new one:
 
 - Tracked in [Polyglot connector protocol: work-unit planning, progress, and cancellation](https://github.com/Tnsor-Labs/brokoli/issues) (see the companion issue opened alongside this ADR).
 - Whoever picks up a milestone from that issue should come back and update this ADR — resolve the `plan`/`discover` relationship question explicitly once decided, and add a dated "Update" section once the additions have shipped.
+
+## Update — 2026-08-08: M1 (`MsgProgress`) shipped
+
+`MsgProgress` landed as an additive message type (`pkg/plugins/protocol.go`), parsed by the subprocess runner and surfaced through a new optional `Runner.ProgressHandler`. Decisions made while implementing:
+
+- **Nested, not flat.** RFC §17's example puts `current`/`total`/`unit` at the top level of the event. The message is instead nested under a `progress` object, matching how every other typed payload in `Message` is carried (`Stream`, `Data`). The wire format is therefore `{"type":"progress","progress":{...}}`.
+- **`run_id` / `logical_node_id` / `instance_id` omitted.** The host already knows all three from `extensions.ExecutionContext`; having the plugin restate them adds no information and creates a second, possibly disagreeing source of truth. `instance_id` becomes meaningful only with M4's per-work-unit tracking and can be added then.
+- **`Current`/`Total` are pointers.** A nil `Total` distinguishes "total unknown" (cursor pagination) from "total is zero" — a distinction a plain int cannot carry.
+
+### Known limitation: progress is not yet live
+
+`Manager.Execute` accumulates plugin output into a slice returned in `extensions.ExecutionResult.Logs`, which `engine/runner.go` replays into the run log only *after* the plugin process exits. Progress therefore arrives in one burst at node completion rather than in real time — the same behavior `MsgLog` already has, not a regression introduced here.
+
+Real-time delivery needs a progress sink on `extensions.ExecutionContext` (the same shape `Context` was added in [#29](https://github.com/Tnsor-Labs/brokoli/issues/29)) so the engine can emit progress events as they arrive. That is deliberately out of scope for M1, which establishes the wire format and the handler seam it would plug into.

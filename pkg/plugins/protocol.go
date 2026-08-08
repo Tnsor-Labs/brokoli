@@ -98,6 +98,12 @@ const (
 	// exit non-zero; the host treats either signal as failure but
 	// the typed message gives a cleaner log.
 	MsgError MessageType = "error"
+
+	// MsgProgress is a structured progress report - the typed
+	// counterpart to MsgLog's free text, carrying the dimensions RFC
+	// §17 describes (current/total/unit, rows, bytes, rate) so a UI can
+	// render a real progress bar instead of parsing log lines.
+	MsgProgress MessageType = "progress"
 )
 
 // Message is a single JSONL line on a plugin's stdout stream. The
@@ -113,6 +119,7 @@ type Message struct {
 	Level      LogLevel               `json:"level,omitempty"`      // MsgLog: severity
 	Message    string                 `json:"message,omitempty"`    // MsgLog, MsgError, MsgStatus
 	StatusCode string                 `json:"status,omitempty"`     // MsgStatus: "ok" or "error"
+	Progress   *Progress              `json:"progress,omitempty"`   // MsgProgress: the progress report
 }
 
 // LogLevel mirrors Brokoli's run log levels so plugin logs can be
@@ -150,6 +157,43 @@ type Stream struct {
 type StreamColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type,omitempty"` // "string" | "int" | "float" | "bool" | "timestamp" | "json"
+}
+
+// Progress carries a structured progress report from a running plugin
+// (MsgProgress). Every field is optional: a connector reports whichever
+// dimensions it can actually measure, and the host renders what it gets.
+//
+// Current/Total are pointers rather than plain ints because "page 0 of
+// 100" and "no idea which page" are different states that a zero value
+// cannot distinguish — a nil Total specifically means the total is
+// unknown or indeterminate (a cursor-paginated API that can't know how
+// many pages remain), not zero.
+//
+// Deliberately omitted from this struct: run_id, logical_node_id and
+// instance_id, which RFC §17's example includes. The host already knows
+// all three from extensions.ExecutionContext; having the plugin restate
+// them adds no information and invites disagreement about which is
+// authoritative.
+type Progress struct {
+	Current *int64 `json:"current,omitempty"`
+	Total   *int64 `json:"total,omitempty"` // nil = unknown/indeterminate
+	Unit    string `json:"unit,omitempty"`  // "pages", "rows", "files", ...
+
+	RowsIn   int64 `json:"rows_in,omitempty"`
+	RowsOut  int64 `json:"rows_out,omitempty"`
+	BytesIn  int64 `json:"bytes_in,omitempty"`
+	BytesOut int64 `json:"bytes_out,omitempty"`
+
+	// Rate is progress per second in Unit terms, as measured by the
+	// plugin - the host does not derive or verify it.
+	Rate float64 `json:"rate,omitempty"`
+
+	// Message is optional human-readable detail ("Fetched offset 6000")
+	Message string `json:"message,omitempty"`
+
+	// Timestamp is when the plugin observed this state (RFC3339)
+	// NewProgress fills it when empty.
+	Timestamp string `json:"timestamp,omitempty"`
 }
 
 // Config is the opaque configuration a plugin receives on stdin. Its
@@ -274,6 +318,17 @@ func NewError(msg string) Message {
 // NewStatus constructs a MsgStatus Message. code should be "ok" or "error".
 func NewStatus(code, msg string) Message {
 	return Message{Type: MsgStatus, StatusCode: code, Message: msg}
+}
+
+// NewProgress constructs a MsgProgress Message, stamping Timestamp with
+// the current time when the caller left it empty. Used by SDK helpers
+// and reference plugins.
+func NewProgress(p Progress) Message {
+	if p.Timestamp == "" {
+		p.Timestamp = time.Now().UTC().Format(time.RFC3339Nano)
+	}
+
+	return Message{Type: MsgProgress, Progress: &p}
 }
 
 // IsProtocolVersionSupported returns true if the host can speak the

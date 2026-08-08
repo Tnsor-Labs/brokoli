@@ -36,8 +36,11 @@ EOF
         read -r _config
         printf '{"type":"log","level":"info","message":"emitting 3 greetings"}\n'
         printf '{"type":"record","data":{"id":1,"message":"hello world"}}\n'
+        printf '{"type":"progress","progress":{"current":1,"total":3,"unit":"records","rows_out":1,"rate":1.5}}\n'
         printf '{"type":"record","data":{"id":2,"message":"hello brokoli"}}\n'
+        printf '{"type":"progress","progress":{"current":2,"total":3,"unit":"records","rows_out":2,"rate":1.5}}\n'
         printf '{"type":"record","data":{"id":3,"message":"hello plugin"}}\n'
+        printf '{"type":"progress","progress":{"current":3,"total":3,"unit":"records","rows_out":3,"rate":1.5}}\n'
         printf '{"type":"state","value":{"last_id":3}}\n'
         ;;
     write)

@@ -36,6 +36,12 @@ type Runner struct {
 	// are dropped. Runners in production wire this to the run log
 	// infrastructure so plugin logs appear in the UI's run timeline.
 	LogHandler func(level LogLevel, msg string)
+
+	// ProgressHandler is called for every MsgProgress line the plugin
+	// emits. If nil, progress messages are still recorded in
+	// RunResult.LastProgress but otherwise dropped - the same no-op
+	// behavior a host that predates MsgProgress already has.
+	ProgressHandler func(Progress)
 }
 
 // NewRunner constructs a Runner for the given manifest. Timeout is
@@ -57,6 +63,12 @@ func NewRunner(m *Manifest, timeout time.Duration) *Runner {
 type RunResult struct {
 	Records []map[string]interface{}
 	State   map[string]interface{}
+
+	// LastProgress is the most recent MsgProgress the plugin emitted,
+	// overwritten each time - the same last-one-wins semantics State
+	// already uses. Nil if the plugin never reported progress.
+	LastProgress *Progress
+
 	Streams []Stream
 	Status  string // "ok" | "error" | ""
 	Message string // human-readable status detail
@@ -197,6 +209,13 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 		case MsgState:
 			if m.Value != nil {
 				result.State = m.Value
+			}
+		case MsgProgress:
+			if m.Progress != nil {
+				result.LastProgress = m.Progress
+				if r.ProgressHandler != nil {
+					r.ProgressHandler(*m.Progress)
+				}
 			}
 		case MsgStream:
 			if m.Stream != nil {
