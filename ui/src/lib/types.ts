@@ -102,6 +102,78 @@ export interface Edge {
   to: string;
 }
 
+// Matches models.Alert (Go) — served by GET /api/alerts. The persisted,
+// readable counterpart to the product's outbound-only notifications.
+export interface Alert {
+  id: string;
+  org_id: string;
+  kind: string;
+  severity: "info" | "warning" | "critical";
+  title: string;
+  body?: string;
+  pipeline_id?: string;
+  pipeline_name?: string;
+  run_id?: string;
+  created_at: string;
+  read_at?: string | null;
+  dismissed_at?: string | null;
+}
+
+export interface AlertsResponse {
+  alerts: Alert[];
+  unread_count: number;
+}
+
+// Matches store.DLQEntry (Go). pipeline_name is only populated by the
+// org-wide GET /api/dlq, which joins through pipelines; the per-pipeline
+// endpoint leaves it empty because the caller already knows the pipeline.
+export interface DLQEntry {
+  id: string;
+  pipeline_id: string;
+  pipeline_name?: string;
+  run_id: string;
+  error: string;
+  node_id: string;
+  node_name: string;
+  payload: string;
+  created_at: string;
+  resolved: boolean;
+  resolved_at?: string;
+}
+
+// Matches store.CalendarDay (Go) — served by GET /api/runs/calendar?days=N.
+export interface CalendarDay {
+  date: string; // YYYY-MM-DD
+  total: number;
+  success: number;
+  failed: number;
+  running: number;
+}
+
+// Matches models.RunEvent (Go) — served by GET /api/runs/{id}/events.
+export interface RunEvent {
+  id?: number;
+  run_id: string;
+  node_id?: string;
+  attempt?: number;
+  event_type: string;
+  payload?: Record<string, unknown>;
+  created_at: string;
+}
+
+// Per-pipeline 24h rollup from GET /api/dashboard. Counts are DB-backed,
+// so they reflect every run in the window, not the recent_runs sample.
+export interface PipelineRollup {
+  pipeline_id: string;
+  name: string;
+  total: number;
+  success: number;
+  failed: number;
+  running: number;
+  last_status?: string;
+  last_started_at?: string;
+}
+
 // Matches pkg/templates.Template (Go) — served by GET /api/templates.
 export interface PipelineTemplate {
   id: string;
