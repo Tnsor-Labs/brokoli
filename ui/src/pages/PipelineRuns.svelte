@@ -6,7 +6,6 @@
   import { notify } from "../lib/toast";
   import { getSodpClient } from "../lib/sodp";
   import StatusBadge from "../components/StatusBadge.svelte";
-  import RunTimeline from "../components/RunTimeline.svelte";
   import GanttChart from "../components/GanttChart.svelte";
   import LogStream from "../components/LogStream.svelte";
   import Breadcrumb from "../components/Breadcrumb.svelte";
