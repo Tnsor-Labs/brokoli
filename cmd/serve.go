@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -97,6 +98,8 @@ var serveCmd = &cobra.Command{
 				log.Printf("WARNING: tracing shutdown: %v", err)
 			}
 		}()
+
+		syncPortEnvForSelfReferences(port)
 
 		// Initialize extensions (community defaults unless overridden by enterprise binary)
 		if Extensions == nil {
@@ -434,6 +437,24 @@ func encryptionKeyPath(databasePath string) string {
 		return "./brokoli.db.key"
 	}
 	return databasePath + ".key"
+}
+
+// syncPortEnvForSelfReferences keeps pkg/fetchers/rest_fetcher.go's
+// self-reference URL resolution (used by source_api/sink_api nodes
+// configured with a relative "/..." URL — e.g. the built-in example
+// templates' source nodes, which fetch /api/samples/data/*.json) in sync
+// with the port this server actually binds to. That resolution reads
+// BROKOLI_SERVER_URL first, then falls back to "http://127.0.0.1:$PORT"
+// (defaulting to 8080) — but --port/-p only ever set the local `port`
+// variable, never the PORT env var, so a deployment started with any port
+// other than 8080 had every self-referencing fetch silently resolve
+// against the wrong port (or nothing at all) instead of this process.
+// Only sets PORT when the operator hasn't already configured either —
+// never overrides an explicit choice.
+func syncPortEnvForSelfReferences(port int) {
+	if os.Getenv("BROKOLI_SERVER_URL") == "" && os.Getenv("PORT") == "" {
+		_ = os.Setenv("PORT", strconv.Itoa(port))
+	}
 }
 
 func shouldStartPlatformServices(mode string) bool {

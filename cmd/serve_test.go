@@ -1,6 +1,9 @@
 package cmd
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 func TestDefaultDatabasePath(t *testing.T) {
 	t.Setenv("BROKOLI_DB_URL", "postgres://example.invalid/brokoli")
@@ -20,6 +23,33 @@ func TestEncryptionKeyPathDoesNotContainDatabaseCredentials(t *testing.T) {
 	}
 	if got := encryptionKeyPath("/data/brokoli.db"); got != "/data/brokoli.db.key" {
 		t.Fatalf("encryptionKeyPath(SQLite) = %q", got)
+	}
+}
+
+func TestSyncPortEnvForSelfReferences_SetsPortWhenNeitherConfigured(t *testing.T) {
+	t.Setenv("PORT", "")
+	t.Setenv("BROKOLI_SERVER_URL", "")
+	syncPortEnvForSelfReferences(9091)
+	if got := os.Getenv("PORT"); got != "9091" {
+		t.Fatalf("PORT = %q, want 9091", got)
+	}
+}
+
+func TestSyncPortEnvForSelfReferences_DoesNotOverrideExplicitPort(t *testing.T) {
+	t.Setenv("PORT", "7000")
+	t.Setenv("BROKOLI_SERVER_URL", "")
+	syncPortEnvForSelfReferences(9091)
+	if got := os.Getenv("PORT"); got != "7000" {
+		t.Fatalf("PORT = %q, want unchanged 7000", got)
+	}
+}
+
+func TestSyncPortEnvForSelfReferences_DoesNotOverrideExplicitServerURL(t *testing.T) {
+	t.Setenv("PORT", "")
+	t.Setenv("BROKOLI_SERVER_URL", "https://brokoli.example.com")
+	syncPortEnvForSelfReferences(9091)
+	if got := os.Getenv("PORT"); got != "" {
+		t.Fatalf("PORT = %q, want left unset when BROKOLI_SERVER_URL is already configured", got)
 	}
 }
 
