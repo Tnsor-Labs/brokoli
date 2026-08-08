@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "modernc.org/sqlite"
 )
 
@@ -281,6 +282,48 @@ func (s *SQLiteStore) migrate() error {
 	// with a guess.
 	s.db.Exec(`UPDATE runs SET org_id = COALESCE((SELECT p.org_id FROM pipelines p WHERE p.id = runs.pipeline_id), org_id) WHERE org_id = 'default'`)
 
+	// Pipeline templates — global, admin-curated starter pipelines
+	// (GET /api/templates). Used to be hardcoded JS in the frontend;
+	// moved to the backend (brokoli#71) and now to the database so
+	// they're editable without a redeploy. Seeded from
+	// pkg/templates.Builtin on first migrate only — if an admin edits or
+	// deletes a seeded row, that's a real, intentional change and must
+	// not be silently reverted on every subsequent startup.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_templates (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		icon TEXT NOT NULL DEFAULT '',
+		nodes TEXT NOT NULL DEFAULT '[]',
+		edges TEXT NOT NULL DEFAULT '[]',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL)`)
+	if err := s.seedPipelineTemplates(); err != nil {
+		return fmt.Errorf("seed pipeline templates: %w", err)
+	}
+
+	return nil
+}
+
+// seedPipelineTemplates inserts pkg/templates.Builtin's rows only when the
+// table is empty (first run against this database) — never overwrites an
+// existing row, so an admin's edit or deletion of a seeded template
+// persists across restarts instead of being silently reverted.
+func (s *SQLiteStore) seedPipelineTemplates() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipeline_templates`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	for _, t := range templates.Builtin {
+		t.CreatedAt, t.UpdatedAt = now, now
+		if err := s.CreatePipelineTemplate(&t); err != nil {
+			return fmt.Errorf("seed template %q: %w", t.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -2189,6 +2232,109 @@ func (s *SQLiteStore) DeleteVariable(key string) error {
 		return fmt.Errorf("variable not found: %s", key)
 	}
 	return nil
+}
+
+// --- Pipeline Templates ---
+
+func (s *SQLiteStore) CreatePipelineTemplate(t *models.PipelineTemplate) error {
+	nodesJSON, err := json.Marshal(t.Nodes)
+	if err != nil {
+		return wrapStoreErr("CreatePipelineTemplate", t.ID, fmt.Errorf("marshal nodes: %w", err))
+	}
+	edgesJSON, err := json.Marshal(t.Edges)
+	if err != nil {
+		return wrapStoreErr("CreatePipelineTemplate", t.ID, fmt.Errorf("marshal edges: %w", err))
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO pipeline_templates (id, name, description, icon, nodes, edges, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Name, t.Description, t.Icon, string(nodesJSON), string(edgesJSON),
+		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
+	)
+	return wrapStoreErr("CreatePipelineTemplate", t.ID, err)
+}
+
+func (s *SQLiteStore) GetPipelineTemplate(id string) (*models.PipelineTemplate, error) {
+	row := s.db.QueryRow(
+		`SELECT id, name, description, icon, nodes, edges, created_at, updated_at FROM pipeline_templates WHERE id = ?`, id,
+	)
+	t, err := scanPipelineTemplate(row)
+	if err != nil {
+		return nil, wrapStoreErr("GetPipelineTemplate", id, err)
+	}
+	return t, nil
+}
+
+func (s *SQLiteStore) ListPipelineTemplates() ([]models.PipelineTemplate, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, description, icon, nodes, edges, created_at, updated_at FROM pipeline_templates ORDER BY created_at`,
+	)
+	if err != nil {
+		return nil, wrapStoreErr("ListPipelineTemplates", "", err)
+	}
+	defer rows.Close()
+
+	var out []models.PipelineTemplate
+	for rows.Next() {
+		t, err := scanPipelineTemplate(rows)
+		if err != nil {
+			return nil, wrapStoreErr("ListPipelineTemplates", "", err)
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdatePipelineTemplate(t *models.PipelineTemplate) error {
+	nodesJSON, err := json.Marshal(t.Nodes)
+	if err != nil {
+		return wrapStoreErr("UpdatePipelineTemplate", t.ID, fmt.Errorf("marshal nodes: %w", err))
+	}
+	edgesJSON, err := json.Marshal(t.Edges)
+	if err != nil {
+		return wrapStoreErr("UpdatePipelineTemplate", t.ID, fmt.Errorf("marshal edges: %w", err))
+	}
+	result, err := s.db.Exec(
+		`UPDATE pipeline_templates SET name = ?, description = ?, icon = ?, nodes = ?, edges = ?, updated_at = ? WHERE id = ?`,
+		t.Name, t.Description, t.Icon, string(nodesJSON), string(edgesJSON), t.UpdatedAt.UTC().Format(timeFormat), t.ID,
+	)
+	if err != nil {
+		return wrapStoreErr("UpdatePipelineTemplate", t.ID, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return wrapStoreErr("UpdatePipelineTemplate", t.ID, fmt.Errorf("template not found"))
+	}
+	return nil
+}
+
+func (s *SQLiteStore) DeletePipelineTemplate(id string) error {
+	result, err := s.db.Exec(`DELETE FROM pipeline_templates WHERE id = ?`, id)
+	if err != nil {
+		return wrapStoreErr("DeletePipelineTemplate", id, err)
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return wrapStoreErr("DeletePipelineTemplate", id, fmt.Errorf("template not found"))
+	}
+	return nil
+}
+
+func scanPipelineTemplate(sc scanner) (*models.PipelineTemplate, error) {
+	var t models.PipelineTemplate
+	var nodesJSON, edgesJSON, createdAt, updatedAt string
+	if err := sc.Scan(&t.ID, &t.Name, &t.Description, &t.Icon, &nodesJSON, &edgesJSON, &createdAt, &updatedAt); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal([]byte(nodesJSON), &t.Nodes); err != nil {
+		return nil, fmt.Errorf("decode nodes: %w", err)
+	}
+	if err := json.Unmarshal([]byte(edgesJSON), &t.Edges); err != nil {
+		return nil, fmt.Errorf("decode edges: %w", err)
+	}
+	t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	t.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	return &t, nil
 }
 
 // --- Roles ---

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -338,6 +339,43 @@ func (s *PostgresStore) migrate() error {
 	// clobbering them with a guess.
 	s.db.Exec(`UPDATE runs SET org_id = COALESCE((SELECT p.org_id FROM pipelines p WHERE p.id = runs.pipeline_id), org_id) WHERE org_id = 'default'`)
 
+	// Pipeline templates — see the matching table in store/sqlite.go for
+	// the full doc comment; kept in sync column-for-column between
+	// backends (JSONB here instead of TEXT, matching pipelines.nodes/
+	// edges' own dialect split).
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_templates (
+		id TEXT PRIMARY KEY,
+		name TEXT NOT NULL,
+		description TEXT NOT NULL DEFAULT '',
+		icon TEXT NOT NULL DEFAULT '',
+		nodes JSONB NOT NULL DEFAULT '[]',
+		edges JSONB NOT NULL DEFAULT '[]',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
+	if err := s.seedPipelineTemplates(); err != nil {
+		return fmt.Errorf("seed pipeline templates: %w", err)
+	}
+
+	return nil
+}
+
+// seedPipelineTemplates — see the matching SQLite method for why this
+// only ever inserts into an empty table, never overwrites.
+func (s *PostgresStore) seedPipelineTemplates() error {
+	var count int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipeline_templates`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	for _, t := range templates.Builtin {
+		t.CreatedAt, t.UpdatedAt = now, now
+		if err := s.CreatePipelineTemplate(&t); err != nil {
+			return fmt.Errorf("seed template %q: %w", t.ID, err)
+		}
+	}
 	return nil
 }
 
@@ -1701,6 +1739,105 @@ func (s *PostgresStore) DeleteVariable(key string) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("variable not found: %s", key)
+	}
+	return nil
+}
+
+// --- Pipeline Templates ---
+
+func (s *PostgresStore) CreatePipelineTemplate(t *models.PipelineTemplate) error {
+	nodesJSON, err := json.Marshal(t.Nodes)
+	if err != nil {
+		return fmt.Errorf("marshal nodes: %w", err)
+	}
+	edgesJSON, err := json.Marshal(t.Edges)
+	if err != nil {
+		return fmt.Errorf("marshal edges: %w", err)
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO pipeline_templates (id, name, description, icon, nodes, edges, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+		t.ID, t.Name, t.Description, t.Icon, nodesJSON, edgesJSON, t.CreatedAt.UTC(), t.UpdatedAt.UTC(),
+	)
+	return err
+}
+
+func (s *PostgresStore) GetPipelineTemplate(id string) (*models.PipelineTemplate, error) {
+	var t models.PipelineTemplate
+	var nodesJSON, edgesJSON []byte
+	err := s.db.QueryRow(
+		`SELECT id, name, description, icon, nodes, edges, created_at, updated_at FROM pipeline_templates WHERE id = $1`, id,
+	).Scan(&t.ID, &t.Name, &t.Description, &t.Icon, &nodesJSON, &edgesJSON, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(nodesJSON, &t.Nodes); err != nil {
+		return nil, fmt.Errorf("decode nodes: %w", err)
+	}
+	if err := json.Unmarshal(edgesJSON, &t.Edges); err != nil {
+		return nil, fmt.Errorf("decode edges: %w", err)
+	}
+	return &t, nil
+}
+
+func (s *PostgresStore) ListPipelineTemplates() ([]models.PipelineTemplate, error) {
+	rows, err := s.db.Query(
+		`SELECT id, name, description, icon, nodes, edges, created_at, updated_at FROM pipeline_templates ORDER BY created_at`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.PipelineTemplate
+	for rows.Next() {
+		var t models.PipelineTemplate
+		var nodesJSON, edgesJSON []byte
+		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &t.Icon, &nodesJSON, &edgesJSON, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(nodesJSON, &t.Nodes); err != nil {
+			return nil, fmt.Errorf("decode nodes: %w", err)
+		}
+		if err := json.Unmarshal(edgesJSON, &t.Edges); err != nil {
+			return nil, fmt.Errorf("decode edges: %w", err)
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) UpdatePipelineTemplate(t *models.PipelineTemplate) error {
+	nodesJSON, err := json.Marshal(t.Nodes)
+	if err != nil {
+		return fmt.Errorf("marshal nodes: %w", err)
+	}
+	edgesJSON, err := json.Marshal(t.Edges)
+	if err != nil {
+		return fmt.Errorf("marshal edges: %w", err)
+	}
+	result, err := s.db.Exec(
+		`UPDATE pipeline_templates SET name = $1, description = $2, icon = $3, nodes = $4, edges = $5, updated_at = $6 WHERE id = $7`,
+		t.Name, t.Description, t.Icon, nodesJSON, edgesJSON, t.UpdatedAt.UTC(), t.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("template not found: %s", t.ID)
+	}
+	return nil
+}
+
+func (s *PostgresStore) DeletePipelineTemplate(id string) error {
+	result, err := s.db.Exec(`DELETE FROM pipeline_templates WHERE id = $1`, id)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("template not found: %s", id)
 	}
 	return nil
 }

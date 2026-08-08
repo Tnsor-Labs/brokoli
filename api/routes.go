@@ -29,6 +29,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	}
 	ch := NewConnectionHandler(s, cc)
 	vh := NewVariableHandler(s, cc)
+	th := NewTemplateHandler(s)
 
 	// Wire audit logger from extensions
 	if ext != nil && ext.Audit != nil {
@@ -69,9 +70,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// exemption).
 		r.Get("/samples/data/{file}", samplesDataHandler())
 
-		// Built-in pipeline templates offered at pipeline-creation time
-		// (pkg/templates.Builtin) — read-only, no permission required.
-		r.Get("/templates", templatesHandler)
+		// Pipeline templates offered at pipeline-creation time
+		// (store.Store's pipeline_templates table, seeded from
+		// pkg/templates.Builtin). Listing requires no permission; curation
+		// is admin-only (requireAdmin, not requirePerm — see its doc
+		// comment for why) since templates are global, not per-org.
+		r.Get("/templates", th.List)
+		r.With(requireAdmin).Post("/templates", th.Create)
+		r.With(requireAdmin).Put("/templates/{id}", th.Update)
+		r.With(requireAdmin).Delete("/templates/{id}", th.Delete)
 
 		// Pipelines
 		r.Get("/pipelines", ph.List)
@@ -320,6 +327,31 @@ func isWritePermission(perm string) bool {
 		"settings.view":    true,
 	}
 	return !readPerms[perm]
+}
+
+// requireAdmin gates a route to the "admin"/"superadmin" role only,
+// matching /api/auth/admin-reset-password's existing inline check.
+// Needed in addition to requirePerm(models.PermTemplatesManage):
+// requirePerm's open-source fallback only blocks the "viewer" role from
+// write permissions (see isWritePermission above) — it does not enforce
+// true role-exclusivity in community mode, only the enterprise Team
+// extension's real RBAC does that. Template curation is meant to be
+// admin-only in every edition, so it needs its own explicit check
+// rather than relying on requirePerm alone.
+func requireAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claims, _ := r.Context().Value("claims").(*jwt.MapClaims)
+		if claims == nil {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		role, _ := (*claims)["role"].(string)
+		if role != "admin" && role != "superadmin" {
+			writeError(w, http.StatusForbidden, "admin role required")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func systemPurge(s store.Store, e *engine.Engine) http.HandlerFunc {
