@@ -51,17 +51,17 @@
   .toast-success {
     background: var(--success-bg);
     border-color: rgba(34, 197, 94, 0.2);
-    color: #22c55e;
+    color: var(--success);
   }
   .toast-error {
     background: var(--failed-bg);
     border-color: rgba(239, 68, 68, 0.2);
-    color: #ef4444;
+    color: var(--failed);
   }
   .toast-warning {
     background: var(--warning-bg);
     border-color: rgba(245, 158, 11, 0.2);
-    color: #f59e0b;
+    color: var(--warning);
   }
   .toast-info {
     background: var(--accent-glow);

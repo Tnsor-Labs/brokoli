@@ -3,7 +3,11 @@ import type {
   PipelineVersion,
   PipelineTemplate,
   Run,
+  RunEvent,
   LogEntry,
+  AlertsResponse,
+  DLQEntry,
+  CalendarDay,
   DependencyStatus,
   DependencyGraph,
 } from "./types";
@@ -144,8 +148,43 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ start_date: startDate, end_date: endDate }),
       }),
+    // cancel/resume previously existed only as raw fetch calls inside
+    // PipelineRuns.svelte, which is why nothing else in the app could offer
+    // them. Any surface that shows a run can now act on it.
+    cancel: (id: string) =>
+      request<{ status: string }>(`/runs/${id}/cancel`, { method: "POST" }),
+    resume: (id: string) =>
+      request<Run>(`/runs/${id}/resume`, { method: "POST" }),
+    events: (id: string) => request<RunEvent[]>(`/runs/${id}/events`),
+  },
+  alerts: {
+    list: (opts?: { unread?: boolean; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (opts?.unread) qs.set("unread", "true");
+      if (opts?.limit) qs.set("limit", String(opts.limit));
+      const q = qs.toString();
+      return request<AlertsResponse>(`/alerts${q ? `?${q}` : ""}`);
+    },
+    markRead: (id: string) => request<void>(`/alerts/${id}/read`, { method: "POST" }),
+    markAllRead: () => request<void>("/alerts/read-all", { method: "POST" }),
+    dismiss: (id: string) => request<void>(`/alerts/${id}`, { method: "DELETE" }),
+  },
+  // Dead letter queue across every pipeline in the org. The per-pipeline
+  // endpoint has existed for a while; this org-wide one is what makes a
+  // single "records needing intervention" surface possible.
+  dlq: {
+    list: (opts?: { includeResolved?: boolean; limit?: number }) => {
+      const qs = new URLSearchParams();
+      if (opts?.includeResolved) qs.set("include_resolved", "true");
+      if (opts?.limit) qs.set("limit", String(opts.limit));
+      const q = qs.toString();
+      return request<DLQEntry[]>(`/dlq${q ? `?${q}` : ""}`);
+    },
+    resolve: (pipelineId: string, dlqId: string) =>
+      request<void>(`/pipelines/${pipelineId}/dlq/${dlqId}/resolve`, { method: "POST" }),
   },
   templates: {
     list: () => request<PipelineTemplate[]>("/templates"),
   },
+  runsCalendar: (days = 90) => request<CalendarDay[]>(`/runs/calendar?days=${days}`),
 };

@@ -955,7 +955,7 @@
   .btn-sm.btn-run {
     background: var(--success-bg);
     border-color: rgba(34, 197, 94, 0.3);
-    color: #22c55e;
+    color: var(--success);
   }
   .btn-sm.btn-run:hover { background: rgba(34, 197, 94, 0.15); }
   .btn-sm.btn-preview {
@@ -1103,7 +1103,9 @@
     tab-size: 2;
   }
   .code-content {
-    color: #e2e8f0;
+    /* Was a fixed light grey, which assumed a dark code block. --bg-code is
+       light in the light theme, so it rendered near-invisible there. */
+    color: var(--text-primary);
   }
 
   .preview-panel {

@@ -14,6 +14,7 @@
     recent_runs: Array<{
       run_id: string;
       pipeline_id: string;
+      pipeline_name?: string;
       status: string;
       started_at: string;
       finished_at: string | null;
@@ -26,7 +27,7 @@
 
   let runningCount = 0;
   let runningIds: string[] = [];
-  let recentRuns: Array<{ id: string; pipeline_id: string; status: string; started_at: string }> = [];
+  let recentRuns: Array<{ id: string; pipeline_id: string; pipeline_name: string; status: string; started_at: string }> = [];
 
   // Track previous-vs-current to derive the "flash on completion/failure"
   // visual effect without needing an event stream. We compare the 24h
@@ -57,6 +58,7 @@
       recentRuns = (snap.recent_runs ?? []).map(r => ({
         id: r.run_id,
         pipeline_id: r.pipeline_id,
+        pipeline_name: r.pipeline_name ?? "",
         status: r.status,
         started_at: r.started_at,
       }));
@@ -142,7 +144,9 @@
           {@const status = run.status as RunStatus}
           <a href="#/pipelines/{run.pipeline_id}/runs" class="panel-item" on:click={() => expanded = false}>
             <span class="item-dot" class:dot-pulse={status === "running"} style="background: {statusColor(status)}"></span>
-            <span class="item-name">{run.pipeline_id ? run.pipeline_id.slice(0, 8) : run.id.slice(0, 8)}</span>
+            <span class="item-name" title={run.pipeline_name || run.pipeline_id}>
+              {run.pipeline_name || (run.pipeline_id ? `Pipeline ${run.pipeline_id.slice(0, 8)}…` : run.id.slice(0, 8))}
+            </span>
             <span class="item-status" style="color: {statusColor(status)}">{statusLabel(status)}</span>
             <span class="item-time">{timeAgo(run.started_at)}</span>
           </a>

@@ -5,8 +5,16 @@
   import { pipelines } from "../lib/stores";
   import { authHeaders, dashboardKey } from "../lib/auth";
   import { getSodpClient } from "../lib/sodp";
-  import StatusBadge from "../components/StatusBadge.svelte";
   import Skeleton from "../components/Skeleton.svelte";
+  import NeedsAttention from "../components/dashboard/NeedsAttention.svelte";
+  import KpiStrip from "../components/dashboard/KpiStrip.svelte";
+  import RunGroups from "../components/dashboard/RunGroups.svelte";
+  import TrendSparkline from "../components/dashboard/TrendSparkline.svelte";
+  import AlertDrawer from "../components/dashboard/AlertDrawer.svelte";
+  import Panel from "../components/dashboard/Panel.svelte";
+  import PipelineHealth from "../components/dashboard/PipelineHealth.svelte";
+  import ActivityHeatmap from "../components/dashboard/ActivityHeatmap.svelte";
+  import DeadLetterPanel from "../components/dashboard/DeadLetterPanel.svelte";
   import type { Pipeline, Run } from "../lib/types";
 
   // Shape of the dashboard.{org} state key the bridge maintains. Mirrors
@@ -55,7 +63,6 @@
   // Stats — populated reactively from the SODP-watched dashboard snapshot
   let totalPipelines = 0;
   let activePipelines = 0;
-  let pausedPipelines = 0;
   let runsToday = 0;
   let runsYesterday = 0;
   let successRate = 100;
@@ -76,6 +83,24 @@
 
   // Scheduler
   let nextScheduled: { name: string; next: string }[] = [];
+  // Every scheduled pipeline by name, not just the five shown in the rail —
+  // the fleet table needs a next-run for any row, not the soonest handful.
+  let nextRunByName: Record<string, string> = {};
+
+  // Full pipeline list for the fleet table. pipelineMap is keyed for lookup;
+  // this keeps the ordered array the table iterates.
+  let allPipelines: Pipeline[] = [];
+
+  // Child component handles, so a run triggered anywhere on the page
+  // refreshes the panels that fetch independently of /api/dashboard.
+  let heatmap: ActivityHeatmap;
+  let deadLetters: DeadLetterPanel;
+
+  function refreshAll() {
+    loadDashboardStats();
+    heatmap?.reload();
+    deadLetters?.reload();
+  }
 
   // Failed pipelines needing attention
   let failedPipelines: { pipeline: Pipeline; run: Run }[] = [];
@@ -83,8 +108,6 @@
   // Trends (7-day)
   let trends: { date: string; success: number; failed: number; total: number }[] = [];
   let topFailing: { pipeline_id: string; name: string; fail_count: number }[] = [];
-  let hoveredDay: number = -1;
-  $: trendMax = Math.max(...(trends.length ? trends.map(t => t.total) : [1]), 1);
 
   // Map of pipeline_id → Pipeline metadata, populated from REST and used to
   // attach pipeline display info to entries in the SODP snapshot's recent_runs.
@@ -187,19 +210,23 @@
       if (pipesRes.ok) {
         const pipelineList: Pipeline[] = await pipesRes.json();
         pipelines.set(pipelineList);
+        allPipelines = pipelineList;
         pipelineMap = new Map(pipelineList.map(p => [p.id, p]));
         totalPipelines = pipelineList.length;
         activePipelines = pipelineList.filter(p => p.enabled).length;
-        pausedPipelines = totalPipelines - activePipelines;
       }
 
       if (schedRes.ok) {
         const schedData = await schedRes.json();
-        nextScheduled = schedData
+        const scheduled = schedData
           .filter((s: any) => s.next_run)
-          .sort((a: any, b: any) => a.next_run.localeCompare(b.next_run))
-          .slice(0, 5)
+          .sort((a: any, b: any) => a.next_run.localeCompare(b.next_run));
+        nextScheduled = scheduled
+          .slice(0, 50)
           .map((s: any) => ({ name: s.pipeline_name, next: s.next_run }));
+        nextRunByName = Object.fromEntries(
+          scheduled.map((s: any) => [s.pipeline_name, s.next_run]),
+        );
       }
 
       if (connRes.ok) {
@@ -235,7 +262,7 @@
       // and each one lands here. Collapse a burst into one refetch.
       if (statsReloadTimer) clearTimeout(statsReloadTimer);
       statsReloadTimer = setTimeout(() => {
-        loadDashboardStats();
+        refreshAll();
         statsReloadTimer = null;
       }, 200);
     });
@@ -267,18 +294,6 @@
     return `in ${Math.floor(hrs / 24)}d`;
   }
 
-  function successRateColor(rate: number): string {
-    if (rate >= 90) return "#22c55e";
-    if (rate >= 70) return "#f59e0b";
-    return "#ef4444";
-  }
-
-  function trendIcon(today: number, yesterday: number): string {
-    if (today > yesterday) return "+";
-    if (today < yesterday) return "-";
-    return "=";
-  }
-
   // Clock
   let localTime = "";
   let serverTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -296,11 +311,15 @@
   <header class="page-header">
     <div class="header-left">
       <h1>Dashboard</h1>
-      <span class="page-sub">Last 24 hours overview</span>
+      <span class="page-sub">Last 24 hours</span>
     </div>
-    <div class="header-clock">
-      <span class="clock-time">{localTime}</span>
-      <span class="clock-tz">{serverTz}</span>
+    <!-- The clock used to be the largest, brightest element on the page,
+         outcompeting the failure count for attention while carrying no
+         operational value. It stays — it's useful for reading timestamps
+         against — but at the weight of the metadata it is. -->
+    <div class="header-right">
+      <span class="clock" title={serverTz}>{localTime}</span>
+      <AlertDrawer />
     </div>
   </header>
 
@@ -383,451 +402,196 @@
       </div>
     </div>
   {:else}
-    <!-- Stats row -->
-    <div class="stats-grid">
-      <div class="stat-card">
-        <div class="stat-top">
-          <span class="stat-value">{totalPipelines}</span>
-          <span class="stat-detail">{activePipelines} active, {pausedPipelines} paused</span>
-        </div>
-        <span class="stat-label">Pipelines</span>
-      </div>
+    <!-- Triage-first ordering: what is broken, then what is happening,
+         then the detail. The attention band is the hero when it matters and
+         collapses to a single line when it does not. -->
+    <NeedsAttention items={failedPipelines} on:changed={refreshAll} />
 
-      <div class="stat-card">
-        <div class="stat-top">
-          <span class="stat-value">{runsToday}</span>
-          <span class="stat-trend" class:up={runsToday > runsYesterday} class:down={runsToday < runsYesterday}>
-            {trendIcon(runsToday, runsYesterday)} vs yesterday ({runsYesterday})
-          </span>
-        </div>
-        <span class="stat-label">Runs Today</span>
-      </div>
+    <KpiStrip
+      failed={failedLast24h}
+      running={currentlyRunning}
+      successRate={successRate}
+      runsToday={runsToday}
+      runsYesterday={runsYesterday}
+      totalPipelines={totalPipelines}
+      activePipelines={activePipelines}
+    >
+      <TrendSparkline {trends} />
+    </KpiStrip>
 
-      <div class="stat-card">
-        <div class="stat-top">
-          <span class="stat-value" style="color: {successRateColor(successRate)}">{successRate}%</span>
-        </div>
-        <span class="stat-label">Success Rate (24h)</span>
-      </div>
+    <div class="main-grid">
+      <section class="col">
+        <!-- Consecutive runs of one pipeline collapse into a single row with
+             real 24h counts, so running something 500 times doesn't bury the
+             one pipeline that broke. The panel caps and scrolls on top of
+             that, because expanded failure sub-rows have no fixed height. -->
+        <Panel title="Runs" href="#/pipelines" maxHeight="360px" wide fill>
+          <RunGroups
+            runs={recentRuns}
+            rollups={pipelineRollups}
+            on:changed={refreshAll}
+          />
+        </Panel>
+      </section>
 
-      <div class="stat-card">
-        <div class="stat-top">
-          <span class="stat-value" style="color: {currentlyRunning > 0 ? '#3b82f6' : ''}">{currentlyRunning}</span>
-        </div>
-        <span class="stat-label">Running Now</span>
-      </div>
-
-      <div class="stat-card">
-        <div class="stat-top">
-          <span class="stat-value" style="color: {failedLast24h > 0 ? '#ef4444' : ''}">{failedLast24h}</span>
-        </div>
-        <span class="stat-label">Failed (24h)</span>
-      </div>
-    </div>
-
-    <!-- Row 2: 3-column overview -->
-    <div class="overview-grid">
-      <!-- Trend -->
-      {#if trends.length > 0}
-        <div class="overview-card trend-card">
-          <div class="trend-header">
-            <h2 class="section-title">7-Day Trend</h2>
-            <div class="trend-legend">
-              <span class="legend-item"><span class="legend-dot success"></span> success</span>
-              <span class="legend-item"><span class="legend-dot failed"></span> failed</span>
-            </div>
-          </div>
-
-          <!-- Hovered day tooltip -->
-          {#if hoveredDay >= 0 && trends[hoveredDay]}
-            <div class="trend-tooltip">
-              <span class="tt-date">{trends[hoveredDay].date}</span>
-              <span class="tt-stat"><span class="tt-dot success"></span>{trends[hoveredDay].success} succeeded</span>
-              <span class="tt-stat"><span class="tt-dot failed"></span>{trends[hoveredDay].failed} failed</span>
-              <span class="tt-stat tt-total">{trends[hoveredDay].total} total</span>
-            </div>
-          {/if}
-
-          <!-- Interactive bar chart -->
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="trend-chart" on:mouseleave={() => hoveredDay = -1}>
-            {#each trends as day, i}
-              {@const successH = day.total > 0 ? Math.max(6, Math.round((day.success / trendMax) * 120)) : 0}
-              {@const failedH = day.total > 0 ? Math.max(day.failed > 0 ? 6 : 0, Math.round((day.failed / trendMax) * 120)) : 0}
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div
-                class="trend-col"
-                class:hovered={hoveredDay === i}
-                on:mouseenter={() => hoveredDay = i}
-              >
-                <div class="trend-col-bars">
-                  {#if day.total > 0}
-                    <div class="t-bar success" style="height: {successH}px"></div>
-                    {#if day.failed > 0}
-                      <div class="t-bar failed" style="height: {failedH}px"></div>
-                    {/if}
-                  {:else}
-                    <div class="t-bar empty" style="height: 4px"></div>
-                  {/if}
-                </div>
-                <span class="trend-count">{day.total}</span>
-                <span class="trend-date">{day.date.slice(5)}</span>
-              </div>
-            {/each}
-          </div>
-        </div>
-      {/if}
-
-      <!-- Needs Attention -->
-      <div class="overview-card">
-        <h2 class="section-title section-title-red">Needs Attention</h2>
-        {#if failedPipelines.length === 0}
-          <div class="empty-hint">All pipelines healthy</div>
-        {:else}
-          <div class="attention-list">
-            {#each failedPipelines.slice(0, 8) as { pipeline, run }}
-              <a href="#/pipelines/{pipeline.id}/runs" class="attention-item">
-                <span class="attention-dot"></span>
-                <span class="attention-name">{pipeline.name}</span>
-                <span class="attention-time mono">{timeAgo(run.started_at)}</span>
+      <aside class="col col-side">
+        {#if topFailing.length > 0}
+          <Panel title="Top failing (7d)" maxHeight="200px">
+            {#each topFailing as t (t.pipeline_id)}
+              <a class="mini-row" href="#/pipelines/{t.pipeline_id}/runs">
+                <span class="mini-name">{t.name}</span>
+                <span class="mini-count">{t.fail_count}</span>
               </a>
             {/each}
-          </div>
+          </Panel>
         {/if}
-      </div>
 
-      <!-- Upcoming Scheduled -->
-      <div class="overview-card">
-        <h2 class="section-title">Upcoming</h2>
-        {#if nextScheduled.length === 0}
-          <div class="empty-hint">No scheduled pipelines</div>
-        {:else}
-          <div class="schedule-list">
+        {#if nextScheduled.length > 0}
+          <Panel title="Upcoming" maxHeight="200px">
             {#each nextScheduled as s}
-              <div class="schedule-item">
-                <span class="schedule-name">{s.name}</span>
-                <span class="schedule-time mono">{formatNextRun(s.next)}</span>
+              <div class="mini-row">
+                <span class="mini-name">{s.name}</span>
+                <span class="mini-when">{formatNextRun(s.next)}</span>
               </div>
             {/each}
-          </div>
+          </Panel>
         {/if}
-      </div>
+
+        <!-- Records the engine gave up on. These need a human, and until now
+             the org-wide queue had no surface anywhere in the product.
+             Wrapped so it absorbs the rail's leftover height and the rail
+             ends level with the runs list beside it. The wrapper stays even
+             when the queue is empty and the panel renders nothing. -->
+        <div class="rail-fill">
+          <DeadLetterPanel bind:this={deadLetters} fill />
+        </div>
+      </aside>
     </div>
 
-    <!-- Row 3: Recent Runs + Activity Feed -->
-    <div class="bottom-grid">
-    <section class="section">
-      <h2 class="section-title">Recent Runs</h2>
-      {#if recentRuns.length === 0}
-        <div class="empty-state"><p class="hint">No runs yet.</p></div>
-      {:else}
-        <div class="runs-table">
-          <div class="table-header">
-            <span class="col-pipeline">Pipeline</span>
-            <span class="col-status">Status</span>
-            <span class="col-duration">Duration</span>
-            <span class="col-time">Started</span>
-          </div>
-          {#each recentRuns as { pipeline, run }}
-            <a href="#/pipelines/{pipeline.id}/runs" class="table-row" class:row-failed={run.status === "failed"} class:row-running={run.status === "running"}>
-              <span class="col-pipeline">{pipeline.name}</span>
-              <span class="col-status"><StatusBadge status={run.status} size="sm" /></span>
-              <span class="col-duration mono">
-                {#if run.finished_at && run.started_at}
-                  {@const ms = new Date(run.finished_at).getTime() - new Date(run.started_at).getTime()}
-                  {#if ms < 1000}
-                    {ms}ms
-                  {:else if ms < 60000}
-                    {(ms / 1000).toFixed(1)}s
-                  {:else}
-                    {Math.floor(ms / 60000)}m {Math.floor((ms % 60000) / 1000)}s
-                  {/if}
-                {:else if run.status === "running"}
-                  <span class="running-dot"></span>
-                {:else}
-                  -
-                {/if}
-              </span>
-              <span class="col-time mono">{timeAgo(run.started_at)}</span>
-            </a>
-          {/each}
-        </div>
-      {/if}
-    </section>
+    <!-- Fleet state. The panels above answer "what just happened"; this
+         answers "what is the state of everything I own", which the dashboard
+         never did — you had to leave for the pipelines page to find out. -->
+    <div class="stack">
+      <PipelineHealth
+        pipelines={allPipelines}
+        rollups={pipelineRollups}
+        nextRuns={nextRunByName}
+        on:changed={refreshAll}
+      />
 
-    <!-- Activity Feed: derived from the dashboard.{org} recent_runs slice -->
-    <section class="section activity-section">
-      <h2 class="section-title">Activity</h2>
-      {#if recentRuns.length === 0}
-        <div class="empty-hint">Activity will appear here as pipelines run.</div>
-      {:else}
-        <div class="activity-feed">
-          {#each recentRuns as { pipeline, run }}
-            <div class="activity-item">
-              <span class="activity-dot"
-                class:dot-success={run.status === "success" || run.status === "completed"}
-                class:dot-failed={run.status === "failed"}
-                class:dot-running={run.status === "running"}
-              ></span>
-              <span class="activity-text">
-                <strong>{pipeline.name}</strong>
-                {run.status}
-              </span>
-              <span class="activity-time mono">{run.started_at ? timeAgo(run.started_at) : ""}</span>
-            </div>
-          {/each}
-        </div>
-      {/if}
-    </section>
+      <!-- Trend over a window long enough to show a pattern. The KPI strip's
+           sparkline covers 7 days; recurring weekly failures and stretches
+           where nothing ran at all only become visible over months. -->
+      <ActivityHeatmap bind:this={heatmap} />
     </div>
   {/if}
 </div>
 
 <style>
-  .page-header { margin-bottom: var(--space-lg); display: flex; align-items: center; justify-content: space-between; }
+  /* One rhythm for the whole page. The bands used to be positioned by
+     ad-hoc margins on some children and nothing on others, so the attention
+     band, the KPI strip and the runs list ran together into a single slab
+     with no breathing room between them. */
+  .dashboard {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
+    min-width: 0;
+  }
+
+  .page-header { display: flex; align-items: center; justify-content: space-between; }
   .header-left { display: flex; align-items: baseline; gap: 12px; }
   .page-header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
   .page-sub { font-size: 12px; color: var(--text-muted); }
-  .header-clock {
-    display: flex; flex-direction: column; align-items: flex-end; gap: 1px;
-  }
-  .clock-time {
-    font-family: var(--font-mono); font-size: 18px; font-weight: 600;
-    color: var(--text-primary); letter-spacing: 0.02em;
-  }
-  .clock-tz {
-    font-size: 10px; color: var(--text-ghost); font-family: var(--font-mono);
-  }
-
-  /* Stats */
-  .stats-grid {
-    display: grid;
-    grid-template-columns: repeat(5, 1fr);
-    gap: 10px;
-    margin-bottom: var(--space-lg);
-  }
-  .stat-card {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px);
-    padding: 18px 20px;
-    display: flex; flex-direction: column; gap: 4px;
-    box-shadow: var(--shadow-card);
-    transition: border-color 200ms ease, box-shadow 200ms ease;
-  }
-  .stat-card:hover {
-    border-color: var(--border);
-    box-shadow: var(--shadow-card-hover);
-  }
-  .stat-top { display: flex; align-items: baseline; gap: 8px; }
-  .stat-value {
-    font-size: 1.75rem; font-weight: 700;
-    font-family: var(--font-mono); letter-spacing: -0.02em;
-  }
-  .stat-detail { font-size: 11px; color: var(--text-muted); }
-  .stat-trend { font-size: 10px; color: var(--text-dim); font-family: var(--font-mono); }
-  .stat-trend.up { color: #22c55e; }
-  .stat-trend.down { color: #ef4444; }
-  .stat-label {
-    font-size: 10px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600;
-  }
-
-  /* Two column layout */
-  .two-col {
-    display: grid;
-    grid-template-columns: 1fr 320px;
-    gap: var(--space-md);
-    align-items: start;
-  }
-
-  .section { margin-bottom: var(--space-md); }
-  .section-title {
-    font-size: 11px; font-weight: 600; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em;
-    margin-bottom: 8px;
-  }
-  .section-title-red { color: #ef4444; }
-
-  .skeleton-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
-  .skeleton-grid.three { grid-template-columns: repeat(3, 1fr); }
-  .empty-state {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); padding: var(--space-lg);
-    text-align: center; color: var(--text-secondary);
-  }
-  .empty-state.small { padding: var(--space-md); }
-  .hint { color: var(--text-muted); font-size: 12px; }
-
-  /* Recent Runs table */
-  .runs-table {
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); overflow: hidden;
-    box-shadow: var(--shadow-card);
-  }
-  .table-header, .table-row {
-    display: grid;
-    grid-template-columns: 1fr 90px 70px 80px;
-    padding: 8px 14px; align-items: center;
-  }
-  .table-header {
-    background: transparent;
-    font-size: 11px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
-    border-bottom: 2px solid var(--border-subtle);
-  }
-  .table-row {
-    border-bottom: 1px solid var(--border-subtle);
-    font-size: 13px; transition: background 150ms ease;
-    text-decoration: none; color: inherit; display: grid;
-  }
-  .table-row:last-child { border-bottom: none; }
-  .table-row:hover { background: var(--bg-tertiary); }
-  .table-row.row-failed { border-left: 3px solid #ef4444; }
-  .table-row.row-running { border-left: 3px solid #3b82f6; }
-  .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-
-  /* Bottom grid: runs + activity */
-  .bottom-grid { display: grid; grid-template-columns: 1fr 320px; gap: 16px; align-items: start; }
-  .activity-section .section-title { margin-bottom: 8px; }
-  .activity-feed {
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); overflow: hidden; box-shadow: var(--shadow-card);
-  }
-  .activity-item {
-    display: flex; align-items: center; gap: 8px;
-    padding: 9px 14px; border-bottom: 1px solid var(--border-subtle);
-    font-size: 12px;
-  }
-  .activity-item:last-child { border-bottom: none; }
-  .activity-dot {
-    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
-    background: var(--text-dim);
-  }
-  .activity-dot.dot-success { background: var(--success); }
-  .activity-dot.dot-failed { background: var(--failed); }
-  .activity-dot.dot-running { background: var(--running); animation: pulse-run 1s ease-in-out infinite; }
-  .activity-text { flex: 1; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .activity-text strong { font-weight: 600; color: var(--text-primary); }
-  .activity-time { flex-shrink: 0; font-size: 10px; }
-  .running-dot {
-    display: inline-block; width: 6px; height: 6px; border-radius: 50%;
-    background: #3b82f6; animation: pulse-run 1s ease-in-out infinite;
-  }
-  @keyframes pulse-run { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
-
-  /* Needs Attention */
-  .attention-list {
-    background: var(--bg-secondary); border: 1px solid rgba(239,68,68,0.2);
-    border-radius: var(--radius-lg); overflow: hidden;
-  }
-  .attention-item {
-    display: flex; align-items: center; gap: 8px;
-    padding: 10px 14px; border-bottom: 1px solid var(--border-subtle);
-    text-decoration: none; color: inherit; transition: background 150ms ease;
-  }
-  .attention-item:last-child { border-bottom: none; }
-  .attention-item:hover { background: var(--bg-tertiary); }
-  .attention-dot {
-    width: 6px; height: 6px; border-radius: 50%;
-    background: #ef4444; flex-shrink: 0;
-    animation: pulse-dot 2s ease-in-out infinite;
-  }
-  @keyframes pulse-dot {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.4; }
-  }
-  .attention-name { flex: 1; font-size: 13px; font-weight: 500; }
-  .attention-time { font-size: 11px; }
-
-  /* Scheduled */
-  .schedule-list {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); overflow: hidden;
-  }
-  .schedule-item {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 10px 14px; border-bottom: 1px solid var(--border-subtle);
-    font-size: 13px;
-  }
-  .schedule-item:last-child { border-bottom: none; }
-  .schedule-name { font-weight: 500; }
-  .schedule-time { font-size: 11px; color: var(--accent); }
-
-  /* ── Overview Grid ── */
-  .overview-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr 1fr;
-    gap: 10px;
-    margin-bottom: var(--space-lg);
-  }
-  .overview-grid { align-items: stretch; }
-  .overview-card {
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); padding: var(--space-lg);
-    display: flex; flex-direction: column;
-    box-shadow: var(--shadow-card);
-    transition: border-color 200ms ease;
-  }
-  .overview-card:hover { border-color: var(--border); }
-  .overview-card .section-title { margin-bottom: var(--space-sm); }
-  .empty-hint { font-size: 12px; color: var(--text-dim); padding: 12px 0; }
-
-  /* ── 7-Day Trend Chart ── */
-  .trend-card { overflow: hidden; }
-  .trend-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; }
-  .trend-legend { display: flex; gap: 12px; }
-  .legend-item { font-size: 10px; color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
-  .legend-dot { width: 8px; height: 3px; border-radius: 2px; }
-  .legend-dot.success { background: #22c55e; }
-  .legend-dot.failed { background: #ef4444; }
-
-  .trend-tooltip {
-    display: flex; align-items: center; gap: 12px;
-    padding: 6px 10px; margin-bottom: 6px;
-    background: var(--bg-tertiary); border-radius: 6px;
+  .header-right { display: flex; align-items: center; gap: var(--space-sm); }
+  /* Metadata weight, not hero weight — see the markup comment. */
+  .clock {
+    font-family: var(--font-mono);
     font-size: 11px;
+    color: var(--text-dim);
+    letter-spacing: 0.02em;
   }
-  .tt-date { font-weight: 600; color: var(--text-primary); font-family: var(--font-mono); }
-  .tt-stat { color: var(--text-muted); display: flex; align-items: center; gap: 4px; }
-  .tt-total { color: var(--text-dim); margin-left: auto; }
-  .tt-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-  .tt-dot.success { background: #22c55e; }
-  .tt-dot.failed { background: #ef4444; }
 
-  .trend-chart {
-    flex: 1; min-height: 0;
-    display: flex; gap: 3px;
-    align-items: flex-end;
-    padding-top: 8px;
+  /* Layout: runs take the width, the rail carries what isn't a duplicate
+     of them. The old bottom row put Recent Runs beside an Activity feed
+     rendering the same array. */
+  .main-grid {
+    display: grid;
+    /* minmax(0, ...) not 1fr: a bare `1fr` is minmax(auto, 1fr), whose
+       minimum is min-content, so any row that refuses to shrink drags the
+       whole grid wider than the viewport. This is what pushed the panels
+       off-screen on a phone. */
+    grid-template-columns: minmax(0, 1fr) 300px;
+    /* Columns end on the same line because they *stretch to each other*,
+       not because the row is pinned to a number. `align-items: stretch`
+       sizes the row to the taller column's content and stretches the
+       shorter one to match — so with three runs the row is short, and it
+       only grows when there is something to show.
+       A fixed row height here reserved the space whether or not anything
+       filled it, which is the empty-desktop problem.
+       The cap belongs on the container: the row can grow to fill it, never
+       past it, and each panel body scrolls once it does. */
+    grid-template-rows: auto;
+    max-height: 420px;
+    gap: var(--space-md);
+    align-items: stretch;
   }
-  .trend-col {
-    flex: 1; display: flex; flex-direction: column;
-    align-items: center; gap: 4px;
-    cursor: pointer; padding: 6px 2px;
-    border-radius: 6px;
-    transition: background 100ms ease;
+  .col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-sm);
+    min-height: 0;
   }
-  .trend-col:hover, .trend-col.hovered { background: var(--bg-tertiary); }
-  .trend-col-bars {
-    width: 80%;
-    display: flex; flex-direction: column-reverse;
-    align-items: stretch; gap: 2px;
+
+  /* Takes the rail's remaining height below the fixed-size panels above it. */
+  .rail-fill {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
   }
-  .t-bar {
-    border-radius: 4px 4px 1px 1px;
-    transition: height 300ms ease;
+  .col-side { gap: var(--space-md); min-height: 0; }
+  /* Each rail panel caps itself, so the rail can no longer become taller
+     than the runs list it sits next to. */
+
+  /* Full-width sections below the grid, in decreasing urgency. */
+  .stack {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-lg);
   }
-  .t-bar.success { background: #22c55e; }
-  .t-bar.failed { background: #ef4444; }
-  .t-bar.empty { background: var(--border-subtle); }
-  .trend-count {
-    font-size: 10px; font-weight: 600; color: var(--text-muted);
+
+  .mini-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-sm);
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    text-decoration: none;
+    font-size: 0.75rem;
+  }
+  .mini-row:last-child { border-bottom: none; }
+  a.mini-row:hover { background: var(--bg-tertiary); }
+
+  .mini-name {
+    color: var(--text-secondary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .mini-count {
     font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--failed);
+    flex-shrink: 0;
   }
-  .trend-date {
-    font-size: 9px; color: var(--text-ghost);
+  .mini-when {
     font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    color: var(--text-dim);
+    flex-shrink: 0;
   }
 
   /* Welcome Hero */
@@ -933,16 +697,21 @@
   .quick-alt-link:hover { color: var(--accent-hover); }
   .quick-alt-sep { color: var(--text-ghost); }
 
+  /* The rail stacks under the runs column before the columns get too
+     narrow to read — same breakpoints the page used before. */
+  @media (max-width: 1100px) and (min-width: 769px) {
+    .main-grid { grid-template-columns: minmax(0, 1fr) 260px; }
+  }
   @media (max-width: 768px) {
-    .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .overview-grid { grid-template-columns: 1fr; }
-    .bottom-grid { grid-template-columns: 1fr; }
-    .main-grid { grid-template-columns: 1fr; }
-    .run-row { grid-template-columns: 1fr 70px 60px; }
+    /* Stacked, so there is no second column to line up with — let each
+       panel size to its own content again. */
+    .main-grid {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: auto;
+      max-height: none;
+    }
+    .rail-fill { flex: 0 0 auto; }
     .page-header h1 { font-size: 1.2rem; }
     .quick-start-grid { grid-template-columns: 1fr; }
-  }
-  @media (max-width: 1100px) and (min-width: 769px) {
-    .overview-grid { grid-template-columns: 1fr 1fr; }
   }
 </style>
