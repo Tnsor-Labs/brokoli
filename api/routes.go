@@ -30,6 +30,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	ch := NewConnectionHandler(s, cc)
 	vh := NewVariableHandler(s, cc)
 	th := NewTemplateHandler(s)
+	ah := NewAlertHandler(s)
 
 	// Wire audit logger from extensions
 	if ext != nil && ext.Audit != nil {
@@ -105,6 +106,20 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermRunsCancel)).Post("/runs/{id}/cancel", rh.CancelRun)
 		r.Get("/runs/{id}/logs", rh.GetLogs)
 		r.Get("/runs/{id}/logs/export", rh.ExportLogs)
+
+		// Durable run lifecycle event log
+		r.Get("/runs/{id}/events", rh.GetEvents)
+
+		// Alert inbox — persisted, readable notifications. Listing and
+		// mutating are org-scoped inside the handler; no extra permission
+		// is required to read or dismiss your own org's alerts.
+		r.Get("/alerts", ah.List)
+		r.Post("/alerts/{id}/read", ah.MarkRead)
+		r.Post("/alerts/read-all", ah.MarkAllRead)
+		r.Delete("/alerts/{id}", ah.Dismiss)
+
+		// Dead letter queue across every pipeline in the org
+		r.Get("/dlq", ah.ListDLQ)
 
 		// Node profiles
 		r.Get("/runs/{id}/nodes/{nodeId}/profile", rh.GetNodeProfile)

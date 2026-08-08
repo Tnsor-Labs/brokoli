@@ -11,6 +11,14 @@ const (
 	// maxLogEntries caps the number of log entries stored per run in state.
 	maxLogEntries = 200
 	// maxRecentRuns caps the recent_runs list inside dashboard.{org}.
+	//
+	// Deliberately small. This snapshot exists for liveness — what is
+	// happening right now — not for history: completed runs are evicted
+	// from state after a short TTL (see StartEviction), so anything read
+	// from here is a recent sample, never a complete record. Run history
+	// belongs to GET /api/dashboard and the paginated runs endpoints,
+	// which read the database. Raising this number buys a slightly longer
+	// sample and a longer list for consumers to render, not correctness.
 	maxRecentRuns = 12
 	// maxTopFailing caps the top_failing list inside dashboard.{org}.
 	maxTopFailing = 5
@@ -19,18 +27,19 @@ const (
 // BridgeEvent mirrors models.Event without importing the models package,
 // keeping pkg/sodp dependency-free from the rest of the app.
 type BridgeEvent struct {
-	Type       string
-	RunID      string
-	PipelineID string
-	OrgID      string
-	NodeID     string
-	Status     string
-	RowCount   int
-	DurationMs int64
-	Error      string
-	Level      string
-	Message    string
-	Timestamp  time.Time
+	Type         string
+	RunID        string
+	PipelineID   string
+	PipelineName string
+	OrgID        string
+	NodeID       string
+	Status       string
+	RowCount     int
+	DurationMs   int64
+	Error        string
+	Level        string
+	Message      string
+	Timestamp    time.Time
 }
 
 // Bridge converts streaming events from a pipeline engine into SODP state
@@ -64,10 +73,11 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 	switch ev.Type {
 	case "run.started":
 		srv.Mutate(runKey, map[string]any{
-			"status":      "running",
-			"pipeline_id": ev.PipelineID,
-			"org_id":      ev.OrgID,
-			"started_at":  ev.Timestamp.Format(time.RFC3339),
+			"status":        "running",
+			"pipeline_id":   ev.PipelineID,
+			"pipeline_name": ev.PipelineName,
+			"org_id":        ev.OrgID,
+			"started_at":    ev.Timestamp.Format(time.RFC3339),
 		})
 
 	case "run.completed":
@@ -173,12 +183,13 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	last24hCutoff := asOf.Add(-24 * time.Hour)
 
 	type runRow struct {
-		RunID      string
-		PipelineID string
-		Status     string
-		StartedAt  string
-		FinishedAt string
-		Error      string
+		RunID        string
+		PipelineID   string
+		PipelineName string
+		Status       string
+		StartedAt    string
+		FinishedAt   string
+		Error        string
 	}
 
 	// Snapshot all runs.* keys (the snapshot is read-locked, no contention).
@@ -210,6 +221,7 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 		}
 		row := runRow{RunID: rest}
 		row.PipelineID, _ = m["pipeline_id"].(string)
+		row.PipelineName, _ = m["pipeline_name"].(string)
 		row.Status, _ = m["status"].(string)
 		row.StartedAt, _ = m["started_at"].(string)
 		row.FinishedAt, _ = m["finished_at"].(string)
@@ -226,6 +238,7 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	var runsRunning int
 	runningIDs := make([]string, 0, 4)
 	failCounts := make(map[string]int)
+	failNames := make(map[string]string)
 	failPipelineIDs := make([]string, 0)
 
 	// 7-day trend buckets (most recent 7 days inclusive of today).
@@ -277,6 +290,9 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 				failPipelineIDs = append(failPipelineIDs, r.PipelineID)
 			}
 			failCounts[r.PipelineID]++
+			if r.PipelineName != "" {
+				failNames[r.PipelineID] = r.PipelineName
+			}
 		}
 		// Bucket by day for the 7-day trend chart
 		if len(r.StartedAt) >= 10 {
@@ -315,6 +331,7 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	for _, pid := range failPipelineIDs {
 		topFailing = append(topFailing, map[string]any{
 			"pipeline_id": pid,
+			"name":        failNames[pid],
 			"fail_count":  failCounts[pid],
 		})
 	}
@@ -328,11 +345,13 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 	recent := make([]map[string]any, 0, limit)
 	for _, r := range rows[:limit] {
 		recent = append(recent, map[string]any{
-			"run_id":      r.RunID,
-			"pipeline_id": r.PipelineID,
-			"status":      r.Status,
-			"started_at":  r.StartedAt,
-			"finished_at": r.FinishedAt,
+			"run_id":        r.RunID,
+			"pipeline_id":   r.PipelineID,
+			"pipeline_name": r.PipelineName,
+			"status":        r.Status,
+			"started_at":    r.StartedAt,
+			"finished_at":   r.FinishedAt,
+			"error":         r.Error,
 		})
 	}
 

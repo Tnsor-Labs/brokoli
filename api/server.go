@@ -414,18 +414,19 @@ const placeholderHTML = `<!DOCTYPE html>
 // and EventBus-delivered events.
 func modelEventToBridge(ev models.Event) sodp.BridgeEvent {
 	return sodp.BridgeEvent{
-		Type:       string(ev.Type),
-		RunID:      ev.RunID,
-		PipelineID: ev.PipelineID,
-		OrgID:      ev.OrgID,
-		NodeID:     ev.NodeID,
-		Status:     string(ev.Status),
-		RowCount:   ev.RowCount,
-		DurationMs: ev.DurationMs,
-		Error:      ev.Error,
-		Level:      string(ev.Level),
-		Message:    ev.Message,
-		Timestamp:  ev.Timestamp,
+		Type:         string(ev.Type),
+		RunID:        ev.RunID,
+		PipelineID:   ev.PipelineID,
+		PipelineName: ev.PipelineName,
+		OrgID:        ev.OrgID,
+		NodeID:       ev.NodeID,
+		Status:       string(ev.Status),
+		RowCount:     ev.RowCount,
+		DurationMs:   ev.DurationMs,
+		Error:        ev.Error,
+		Level:        string(ev.Level),
+		Message:      ev.Message,
+		Timestamp:    ev.Timestamp,
 	}
 }
 

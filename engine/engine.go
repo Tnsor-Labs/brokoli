@@ -261,11 +261,12 @@ func (e *Engine) CancelRun(runID string) error {
 		})
 	}
 	e.eventCh <- models.Event{
-		Type:       models.EventRunFailed,
-		RunID:      runID,
-		PipelineID: runner.pipe.ID,
-		Status:     models.RunStatusCancelled,
-		Error:      "cancelled by user",
+		Type:         models.EventRunFailed,
+		RunID:        runID,
+		PipelineID:   runner.pipe.ID,
+		PipelineName: runner.pipe.Name,
+		Status:       models.RunStatusCancelled,
+		Error:        "cancelled by user",
 	}
 	return nil
 }

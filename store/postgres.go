@@ -339,6 +339,25 @@ func (s *PostgresStore) migrate() error {
 	// clobbering them with a guess.
 	s.db.Exec(`UPDATE runs SET org_id = COALESCE((SELECT p.org_id FROM pipelines p WHERE p.id = runs.pipeline_id), org_id) WHERE org_id = 'default'`)
 
+	// Alerts — see the matching table in store/sqlite.go for the full doc
+	// comment; kept in sync column-for-column between backends
+	// (TIMESTAMPTZ here instead of TEXT, matching every other table's
+	// dialect split).
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS alerts (
+		id TEXT PRIMARY KEY,
+		org_id TEXT NOT NULL DEFAULT '',
+		kind TEXT NOT NULL,
+		severity TEXT NOT NULL DEFAULT 'info',
+		title TEXT NOT NULL,
+		body TEXT NOT NULL DEFAULT '',
+		pipeline_id TEXT NOT NULL DEFAULT '',
+		pipeline_name TEXT NOT NULL DEFAULT '',
+		run_id TEXT NOT NULL DEFAULT '',
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		read_at TIMESTAMPTZ,
+		dismissed_at TIMESTAMPTZ)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+
 	// Pipeline templates — see the matching table in store/sqlite.go for
 	// the full doc comment; kept in sync column-for-column between
 	// backends (JSONB here instead of TEXT, matching pipelines.nodes/
@@ -1741,6 +1760,134 @@ func (s *PostgresStore) DeleteVariable(key string) error {
 		return fmt.Errorf("variable not found: %s", key)
 	}
 	return nil
+}
+
+// --- Alerts ---
+
+func (s *PostgresStore) CreateAlert(a *models.Alert) error {
+	_, err := s.db.Exec(
+		`INSERT INTO alerts (id, org_id, kind, severity, title, body, pipeline_id, pipeline_name, run_id, created_at, read_at, dismissed_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		a.ID, a.OrgID, a.Kind, a.Severity, a.Title, a.Body,
+		a.PipelineID, a.PipelineName, a.RunID, a.CreatedAt.UTC(), a.ReadAt, a.DismissedAt,
+	)
+	return err
+}
+
+func (s *PostgresStore) ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	query := `SELECT id, org_id, kind, severity, title, body, pipeline_id, pipeline_name, run_id, created_at, read_at, dismissed_at
+		FROM alerts WHERE org_id = $1 AND dismissed_at IS NULL`
+	if unreadOnly {
+		query += " AND read_at IS NULL"
+	}
+	query += " ORDER BY created_at DESC LIMIT $2"
+
+	rows, err := s.db.Query(query, orgID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []models.Alert
+	for rows.Next() {
+		var a models.Alert
+		var readAt, dismissedAt sql.NullTime
+		if err := rows.Scan(&a.ID, &a.OrgID, &a.Kind, &a.Severity, &a.Title, &a.Body,
+			&a.PipelineID, &a.PipelineName, &a.RunID, &a.CreatedAt, &readAt, &dismissedAt); err != nil {
+			return nil, err
+		}
+		if readAt.Valid {
+			t := readAt.Time
+			a.ReadAt = &t
+		}
+		if dismissedAt.Valid {
+			t := dismissedAt.Time
+			a.DismissedAt = &t
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) CountUnreadAlerts(orgID string) (int, error) {
+	var n int
+	err := s.db.QueryRow(
+		`SELECT COUNT(*) FROM alerts WHERE org_id = $1 AND read_at IS NULL AND dismissed_at IS NULL`, orgID,
+	).Scan(&n)
+	return n, err
+}
+
+func (s *PostgresStore) MarkAlertRead(orgID, id string) error {
+	result, err := s.db.Exec(
+		`UPDATE alerts SET read_at = NOW() WHERE id = $1 AND org_id = $2 AND read_at IS NULL`, id, orgID,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		var exists int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM alerts WHERE id = $1 AND org_id = $2`, id, orgID).Scan(&exists); err != nil {
+			return err
+		}
+		if exists == 0 {
+			return fmt.Errorf("alert not found: %s", id)
+		}
+	}
+	return nil
+}
+
+func (s *PostgresStore) MarkAllAlertsRead(orgID string) error {
+	_, err := s.db.Exec(`UPDATE alerts SET read_at = NOW() WHERE org_id = $1 AND read_at IS NULL`, orgID)
+	return err
+}
+
+func (s *PostgresStore) DismissAlert(orgID, id string) error {
+	result, err := s.db.Exec(
+		`UPDATE alerts SET dismissed_at = NOW() WHERE id = $1 AND org_id = $2 AND dismissed_at IS NULL`, id, orgID,
+	)
+	if err != nil {
+		return err
+	}
+	if n, _ := result.RowsAffected(); n == 0 {
+		return fmt.Errorf("alert not found: %s", id)
+	}
+	return nil
+}
+
+// ListDLQByOrg — see the matching SQLite method for why scope is derived by
+// joining through the owning pipeline.
+func (s *PostgresStore) ListDLQByOrg(orgID string, includeResolved bool, limit int) ([]DLQEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	query := `SELECT d.id, d.pipeline_id, d.run_id, d.error, d.node_id, d.node_name, d.payload,
+		d.created_at, d.resolved, COALESCE(d.resolved_at::text,''), COALESCE(p.name,'')
+		FROM dead_letter_queue d JOIN pipelines p ON p.id = d.pipeline_id
+		WHERE p.org_id = $1`
+	if !includeResolved {
+		query += " AND d.resolved = FALSE"
+	}
+	query += " ORDER BY d.created_at DESC LIMIT $2"
+
+	rows, err := s.db.Query(query, orgID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []DLQEntry
+	for rows.Next() {
+		var e DLQEntry
+		if err := rows.Scan(&e.ID, &e.PipelineID, &e.RunID, &e.Error, &e.NodeID, &e.NodeName,
+			&e.Payload, &e.CreatedAt, &e.Resolved, &e.ResolvedAt, &e.PipelineName); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
 
 // --- Pipeline Templates ---
