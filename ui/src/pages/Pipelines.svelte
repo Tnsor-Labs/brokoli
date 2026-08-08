@@ -372,7 +372,7 @@
       icon: "api",
       nodes: [
         { id: "s1", type: "source_api", name: "Fetch Orders", config: { url: "/api/samples/data/orders.json", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", column: "status", operator: "equals", value: "completed" }] }, position: { x: 360, y: 120 } },
+        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", condition: "status == 'completed'" }] }, position: { x: 360, y: 120 } },
         { id: "o1", type: "sink_file", name: "Save Orders", config: { path: "/tmp/completed-orders.csv" }, position: { x: 680, y: 120 } },
       ],
       edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
