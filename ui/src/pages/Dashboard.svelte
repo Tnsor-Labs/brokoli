@@ -35,6 +35,22 @@
   let recentRuns: { pipeline: Pipeline; run: Run }[] = [];
   let loading = true;
   let unsubDashboard: (() => void) | null = null;
+  // Debounce handle for the snapshot-triggered refetch of /api/dashboard.
+  let statsReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Per-pipeline 24h rollup from /api/dashboard. Counts are database-backed,
+  // so a pipeline run 10,000 times reports 10,000 — not the size of the
+  // recent_runs sample. Consumed by the grouped runs list.
+  let pipelineRollups: Array<{
+    pipeline_id: string;
+    name: string;
+    total: number;
+    success: number;
+    failed: number;
+    running: number;
+    last_status?: string;
+    last_started_at?: string;
+  }> = [];
 
   // Stats — populated reactively from the SODP-watched dashboard snapshot
   let totalPipelines = 0;
@@ -74,42 +90,23 @@
   // attach pipeline display info to entries in the SODP snapshot's recent_runs.
   let pipelineMap: Map<string, Pipeline> = new Map();
 
-  // applySnapshot is called every time the bridge writes a new
-  // dashboard.{org} value. It pulls the aggregates and the recent_runs list
-  // from the snapshot and updates the local state. Counters always reflect
-  // the server's current view — there's no client-side derivation.
-  function applySnapshot(snap: DashboardSnapshot | null) {
+  // applyLiveSnapshot takes only what the SODP snapshot is actually
+  // authoritative for: runs in flight. Eviction removes *completed* runs
+  // from state, never running ones, so this figure is accurate and instant.
+  //
+  // Everything historical — today/24h counters, the trend, top failing,
+  // recent runs — deliberately does NOT come from here. Those fields exist
+  // on the snapshot but decay to zero as runs age past the eviction TTL
+  // (Tnsor-Labs/brokoli#78); loadDashboardStats reads them from the
+  // database instead.
+  function applyLiveSnapshot(snap: DashboardSnapshot | null) {
     if (!snap) return;
+    currentlyRunning = snap.runs_running ?? 0;
+  }
 
-    runsToday        = snap.runs_today        ?? 0;
-    runsYesterday    = snap.runs_yesterday    ?? 0;
-    successRate      = snap.success_rate_24h  ?? 100;
-    failedLast24h    = snap.runs_24h_failed   ?? 0;
-    currentlyRunning = snap.runs_running      ?? 0;
-    trends           = snap.trends            ?? [];
-    topFailing       = (snap.top_failing ?? []).map(t => ({
-      pipeline_id: t.pipeline_id,
-      name: pipelineMap.get(t.pipeline_id)?.name ?? t.pipeline_id,
-      fail_count: t.fail_count,
-    }));
-
-    // Stitch the snapshot's recent_runs (which carries IDs) with the
-    // pipeline metadata loaded via REST so the UI gets names and tags.
-    recentRuns = (snap.recent_runs ?? []).map(r => ({
-      pipeline: pipelineMap.get(r.pipeline_id) ?? ({ id: r.pipeline_id, name: r.pipeline_id } as Pipeline),
-      run: {
-        id: r.run_id,
-        pipeline_id: r.pipeline_id,
-        status: r.status as any,
-        started_at: r.started_at,
-        finished_at: r.finished_at,
-      } as Run,
-    }));
-
-    // Onboarding: "you've run a pipeline" only needs to be true once
-    if (recentRuns.length > 0) totalRuns = Math.max(totalRuns, recentRuns.length);
-
-    // Failed pipelines list for the "Needs attention" widget
+  // recomputeFailedPipelines derives the "needs attention" list from the
+  // most recent run per pipeline, one entry per pipeline.
+  function recomputeFailedPipelines() {
     const seenFailed = new Set<string>();
     const failed: { pipeline: Pipeline; run: Run }[] = [];
     for (const r of recentRuns) {
@@ -125,6 +122,58 @@
   // pipeline list (for names/tags/enabled state), scheduler info, and the
   // connection count for the onboarding widget. These don't need realtime
   // updates — pipelines.summary changes are infrequent compared to runs.
+  // loadDashboardStats fetches the database-backed aggregates from
+  // GET /api/dashboard. This — not the SODP snapshot — is the source of
+  // truth for every historical figure on this page.
+  //
+  // The snapshot's counters are computed by scanning live state, and
+  // completed runs are evicted from that state after ~30 minutes, so its
+  // "24h", "today" and "7-day" fields silently decay to zero (and to a
+  // misleading 100% success rate) while the run history they claim to
+  // summarise still exists. See Tnsor-Labs/brokoli#78 and the doc comment
+  // on recomputeDashboard in pkg/sodp/bridge.go.
+  async function loadDashboardStats() {
+    try {
+      const res = await fetch("/api/dashboard", {
+        headers: { ...authHeaders(), "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default" },
+      });
+      if (!res.ok) return;
+      const d = await res.json();
+
+      runsToday     = d.runs_today       ?? 0;
+      runsYesterday = d.runs_yesterday   ?? 0;
+      successRate   = d.success_rate_24h ?? 100;
+      failedLast24h = d.runs_24h_failed  ?? 0;
+      trends        = d.trends           ?? [];
+      topFailing    = (d.top_failing ?? []).map((t: any) => ({
+        pipeline_id: t.pipeline_id,
+        name: t.name || pipelineMap.get(t.pipeline_id)?.name || t.pipeline_id,
+        fail_count: t.fail_count,
+      }));
+      pipelineRollups = d.pipeline_rollups ?? [];
+
+      // recent_runs from REST carries pipeline_name and error directly, so
+      // no stitching against pipelineMap is needed — and unlike the map, it
+      // still names a pipeline that has since been deleted.
+      recentRuns = (d.recent_runs ?? []).map((r: any) => ({
+        pipeline: pipelineMap.get(r.pipeline_id)
+          ?? ({ id: r.pipeline_id, name: r.pipeline_name || r.pipeline_id } as Pipeline),
+        run: {
+          id: r.run_id,
+          pipeline_id: r.pipeline_id,
+          status: r.status,
+          error: r.error,
+          started_at: r.started_at,
+          finished_at: r.finished_at,
+        } as Run,
+      }));
+      if (recentRuns.length > 0) totalRuns = Math.max(totalRuns, recentRuns.length);
+      recomputeFailedPipelines();
+    } catch {
+      // Leave the previous values in place rather than flashing zeros.
+    }
+  }
+
   async function loadStaticData() {
     try {
       const [pipesRes, schedRes, connRes] = await Promise.all([
@@ -164,22 +213,38 @@
 
   onMount(async () => {
     await loadStaticData();
+    await loadDashboardStats();
     loading = false;
 
-    // Subscribe to the SODP-maintained dashboard snapshot. Every change to
-    // any run state triggers a recompute on the server side and a delta on
-    // this watch. No event-stream, no client-side aggregation, no
-    // reconciliation — the value we receive IS the current state.
+    // The snapshot is a tripwire, not a data source. Every run-state change
+    // rewrites dashboard.{org}, which tells us something happened — we then
+    // refetch the database-backed figures. Only the live running count is
+    // read straight off the snapshot, because that is the one thing it is
+    // authoritative for.
     //
-    // The first callback fires with `null` if the key hasn't been written yet
-    // (no runs ever) — applySnapshot handles that case as a no-op.
+    // This mirrors ui/src/pages/Pipelines.svelte, which already uses the
+    // same key the same way for the same reason. Refetching on every change
+    // is more requests than reading the snapshot's counters, but those
+    // counters are wrong for anything older than the eviction TTL
+    // (Tnsor-Labs/brokoli#78) and /api/dashboard is cheap.
     const client = getSodpClient();
     unsubDashboard = client.watch<DashboardSnapshot>(dashboardKey(), (value) => {
-      applySnapshot(value);
+      applyLiveSnapshot(value);
+
+      // Debounce: a single run emits several state writes (run + per-node),
+      // and each one lands here. Collapse a burst into one refetch.
+      if (statsReloadTimer) clearTimeout(statsReloadTimer);
+      statsReloadTimer = setTimeout(() => {
+        loadDashboardStats();
+        statsReloadTimer = null;
+      }, 200);
     });
   });
 
-  onDestroy(() => { unsubDashboard?.(); });
+  onDestroy(() => {
+    unsubDashboard?.();
+    if (statsReloadTimer) clearTimeout(statsReloadTimer);
+  });
 
   function timeAgo(dateStr: string | null): string {
     if (!dateStr) return "";
