@@ -353,7 +353,7 @@
   .timeline-container :global(.gl-name) { font-size:12px; font-weight:500; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex:1; }
   .timeline-container :global(.gl-dur) { font-size:10px; font-family:var(--font-mono); color:var(--text-ghost); flex-shrink:0; }
   .timeline-container :global(.g-badge) { font-size:7px; font-weight:700; padding:1px 4px; border-radius:2px; text-transform:uppercase; flex-shrink:0; }
-  .timeline-container :global(.g-badge.retry) { color:#3b82f6; background:rgba(59,130,246,0.1); }
+  .timeline-container :global(.g-badge.retry) { color:var(--running); background:var(--running-bg); }
 
   /* Row stripes */
   .timeline-container :global(.vis-foreground .vis-group) { border-bottom:1px solid var(--border-subtle); }
@@ -389,8 +389,8 @@
   .timeline-container :global(.bar-stats) { font-weight:500; font-size:9.5px; opacity:0.75; }
 
   /* Arrows */
-  .timeline-container :global(.arrow-line) { stroke:#6b7280; stroke-width:1.5; opacity:0.6; }
-  .timeline-container :global(.arrow-head) { fill:#6b7280; opacity:0.6; }
+  .timeline-container :global(.arrow-line) { stroke:var(--text-muted); stroke-width:1.5; opacity:0.6; }
+  .timeline-container :global(.arrow-head) { fill:var(--text-muted); opacity:0.6; }
 
   /* Tooltip */
   .timeline-container :global(.vis-tooltip) {
@@ -430,5 +430,5 @@
   .log-l { width:36px; flex-shrink:0; font-size:8px; text-transform:uppercase; color:var(--text-ghost); }
   .log-m { color:var(--text-secondary); word-break:break-word; }
   .log-e .log-l,.log-e .log-m { color:var(--failed); }
-  .log-w .log-l { color:#f59e0b; }
+  .log-w .log-l { color:var(--warning); }
 </style>

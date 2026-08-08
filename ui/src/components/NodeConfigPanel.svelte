@@ -907,7 +907,7 @@
     font-size: 12px; font-weight: 500;
     background: rgba(234, 179, 8, 0.06);
     border: 1px solid rgba(234, 179, 8, 0.2);
-    color: #eab308; transition: all 150ms ease;
+    color: var(--node-code); transition: all 150ms ease;
     margin-bottom: 8px;
   }
   .btn-open-editor:hover {
@@ -934,7 +934,7 @@
     font-size: 0.75rem; font-weight: 500;
     background: rgba(6, 182, 212, 0.08);
     border: 1px solid rgba(6, 182, 212, 0.3);
-    color: #06b6d4; transition: all 150ms ease;
+    color: var(--node-source-db); transition: all 150ms ease;
   }
   .btn-test-conn:hover { background: rgba(6, 182, 212, 0.15); }
 

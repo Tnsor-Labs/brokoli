@@ -735,13 +735,13 @@
     font-weight: 500;
     background: var(--warning-bg);
     border: 1px solid rgba(245, 158, 11, 0.3);
-    color: #f59e0b;
+    color: var(--warning);
     transition: all 150ms ease;
   }
   .btn-resume:hover { background: rgba(245, 158, 11, 0.15); }
   .btn-rerun {
     padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
-    background: var(--success-bg); color: #22c55e;
+    background: var(--success-bg); color: var(--success);
     border: 1px solid rgba(34, 197, 94, 0.2);
     transition: background 150ms ease;
   }

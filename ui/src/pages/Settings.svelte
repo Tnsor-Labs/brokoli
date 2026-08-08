@@ -1067,11 +1067,11 @@ assertions:
   /* ── Slack config ── */
   .status-active {
     display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 600; color: #22c55e;
+    font-size: 12px; font-weight: 600; color: var(--success);
   }
   .status-dot-green {
     width: 7px; height: 7px; border-radius: 50%;
-    background: #22c55e; box-shadow: 0 0 6px rgba(34,197,94,0.5);
+    background: var(--success); box-shadow: 0 0 6px var(--success-glow);
   }
   .status-inactive {
     font-size: 12px; color: var(--text-dim);
@@ -1121,7 +1121,7 @@ assertions:
     font-size: 12px; font-weight: 500;
   }
   .test-result.success {
-    background: var(--success-bg); color: #22c55e;
+    background: var(--success-bg); color: var(--success);
     border: 1px solid rgba(34,197,94,0.2);
   }
   .test-result.fail {

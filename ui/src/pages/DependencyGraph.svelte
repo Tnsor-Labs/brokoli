@@ -290,7 +290,7 @@
   .legend { display: flex; gap: 14px; font-size: 12px; color: var(--text-secondary); }
   .legend-item { display: flex; align-items: center; gap: 6px; }
   .line { display: inline-block; width: 22px; height: 2px; }
-  .line.gate { background: #3b82f6; }
+  .line.gate { background: var(--running); }
   .line.trigger { background: #a855f7; border-top: 2px dashed #a855f7; height: 0; }
   .btn {
     padding: 6px 12px;
