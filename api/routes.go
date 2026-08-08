@@ -69,6 +69,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// exemption).
 		r.Get("/samples/data/{file}", samplesDataHandler())
 
+		// Built-in pipeline templates offered at pipeline-creation time
+		// (pkg/templates.Builtin) — read-only, no permission required.
+		r.Get("/templates", templatesHandler)
+
 		// Pipelines
 		r.Get("/pipelines", ph.List)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines", ph.Create)

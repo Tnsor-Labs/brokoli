@@ -11,7 +11,7 @@
   import DeletePipelineDialog from "../components/DeletePipelineDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
   import Skeleton from "../components/Skeleton.svelte";
-  import type { Pipeline, Run } from "../lib/types";
+  import type { Pipeline, PipelineTemplate, Run } from "../lib/types";
 
   let confirmDelete = false;
   let deleteTargetId = "";
@@ -108,7 +108,7 @@
   let summaryReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(async () => {
-    await loadPipelines();
+    await Promise.all([loadPipelines(), loadTemplates()]);
 
     // Subscribe to the dashboard.{org} state key. Every time a run state
     // changes anywhere in this org, the bridge recomputes the snapshot, the
@@ -346,65 +346,22 @@
 
   import { authHeaders } from "../lib/auth";
 
-  // Pipeline templates — use sample data so they work out of the box
-  const templates = [
-    {
-      name: "Blank",
-      description: "Start from scratch",
-      icon: "plus",
-      nodes: [] as any[],
-      edges: [] as any[],
-    },
-    {
-      name: "Hello World",
-      description: "Minimal: fetch, transform, save",
-      icon: "file",
-      nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.json", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Add Column", config: { rules: [{ type: "add_column", name: "greeting", expression: "'Hello, ' + name" }] }, position: { x: 360, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Save Result", config: { path: "/tmp/hello-output.csv" }, position: { x: 680, y: 120 } },
-      ],
-      edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
-    },
-    {
-      name: "API Fetch",
-      description: "Fetch, filter, save",
-      icon: "api",
-      nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Orders", config: { url: "/api/samples/data/orders.json", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "t1", type: "transform", name: "Filter Completed", config: { rules: [{ type: "filter", condition: "status == 'completed'" }] }, position: { x: 360, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Save Orders", config: { path: "/tmp/completed-orders.csv" }, position: { x: 680, y: 120 } },
-      ],
-      edges: [{ from: "s1", to: "t1" }, { from: "t1", to: "o1" }],
-    },
-    {
-      name: "Join + Aggregate",
-      description: "Join two sources, aggregate results",
-      icon: "merge",
-      nodes: [
-        { id: "s1", type: "source_api", name: "Orders", config: { url: "/api/samples/data/orders.json", method: "GET" }, position: { x: 40, y: 60 } },
-        { id: "s2", type: "source_api", name: "Products", config: { url: "/api/samples/data/products.json", method: "GET" }, position: { x: 40, y: 220 } },
-        { id: "j1", type: "join", name: "Join", config: { join_type: "inner", left_key: "product", right_key: "name" }, position: { x: 360, y: 140 } },
-        { id: "t1", type: "transform", name: "Aggregate", config: { rules: [{ type: "aggregate", group_by: ["product"], agg_fields: [{ column: "total", function: "sum", alias: "total_revenue" }] }] }, position: { x: 680, y: 140 } },
-        { id: "o1", type: "sink_file", name: "Summary", config: { path: "/tmp/product-summary.csv" }, position: { x: 1000, y: 140 } },
-      ],
-      edges: [{ from: "s1", to: "j1" }, { from: "s2", to: "j1" }, { from: "j1", to: "t1" }, { from: "t1", to: "o1" }],
-    },
-    {
-      name: "Data Quality",
-      description: "Validate data with quality gates",
-      icon: "code",
-      nodes: [
-        { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.json", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", rule: "not_null", on_failure: "block" }, { column: "salary", rule: "min", params: { min: 0 }, on_failure: "warn" }] }, position: { x: 360, y: 120 } },
-        { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", mapping: { hire_date: "start_date" } }] }, position: { x: 680, y: 120 } },
-        { id: "o1", type: "sink_file", name: "Output", config: { path: "/tmp/clean-employees.csv" }, position: { x: 1000, y: 120 } },
-      ],
-      edges: [{ from: "s1", to: "q1" }, { from: "q1", to: "t1" }, { from: "t1", to: "o1" }],
-    },
-  ];
-
+  // Pipeline templates — fetched from the backend (pkg/templates.Builtin)
+  // rather than hardcoded here. Moved out of the frontend because a
+  // hardcoded template's config could silently drift out of sync with
+  // whatever shape the engine actually expects, with nothing to catch
+  // it — see api/templates_test.go, which runs every one of these
+  // through the real engine and would fail CI if that happened again.
+  let templates: PipelineTemplate[] = [];
   let selectedTemplate = 0;
+
+  async function loadTemplates() {
+    try {
+      templates = await api.templates.list();
+    } catch {
+      notify.error("Failed to load pipeline templates");
+    }
+  }
 
   async function createFromTemplate() {
     if (!newName.trim()) return;

@@ -102,6 +102,16 @@ export interface Edge {
   to: string;
 }
 
+// Matches pkg/templates.Template (Go) — served by GET /api/templates.
+export interface PipelineTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: string;
+  nodes: Node[];
+  edges: Edge[];
+}
+
 export type RunStatus =
   | "pending"
   | "running"

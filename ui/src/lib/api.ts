@@ -1,6 +1,7 @@
 import type {
   Pipeline,
   PipelineVersion,
+  PipelineTemplate,
   Run,
   LogEntry,
   DependencyStatus,
@@ -143,5 +144,8 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ start_date: startDate, end_date: endDate }),
       }),
+  },
+  templates: {
+    list: () => request<PipelineTemplate[]>("/templates"),
   },
 };
