@@ -388,20 +388,23 @@ func kindOfNodeType(m *Manifest, nodeType string) NodeKind {
 // empty line.
 func formatProgress(p Progress) string {
 	var b strings.Builder
+	// hasTotal carries the divide guard (*p.Total > 0) as well as the
+	// nil checks, so the percentage below can never divide by zero and
+	// the condition stays in one place rather than being restated.
+	hasTotal := p.Current != nil && p.Total != nil && *p.Total > 0
 	switch {
-	case p.Current != nil && p.Total != nil && *p.Total > 0:
+	case hasTotal:
 		fmt.Fprintf(&b, "%d/%d", *p.Current, *p.Total)
-		if p.Unit != "" {
-			fmt.Fprintf(&b, " %s", p.Unit)
-		}
-		fmt.Fprintf(&b, " (%.0f%%)", float64(*p.Current)/float64(*p.Total)*100)
 	case p.Current != nil:
 		fmt.Fprintf(&b, "%d", *p.Current)
-		if p.Unit != "" {
-			fmt.Fprintf(&b, " %s", p.Unit)
-		}
 	default:
 		b.WriteString("progress")
+	}
+	if p.Current != nil && p.Unit != "" {
+		fmt.Fprintf(&b, " %s", p.Unit)
+	}
+	if hasTotal {
+		fmt.Fprintf(&b, " (%.0f%%)", float64(*p.Current)/float64(*p.Total)*100)
 	}
 	if p.RowsOut > 0 {
 		fmt.Fprintf(&b, " · %d rows out", p.RowsOut)
