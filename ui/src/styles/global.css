@@ -1,6 +1,21 @@
 /* Brokoli Design System */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+/* No webfont import here on purpose.
+ *
+ * This used to `@import` Inter and JetBrains Mono from fonts.googleapis.com
+ * at the top of the stylesheet, which is render-blocking: the browser will
+ * not paint until that request resolves. For a product whose pitch is a
+ * single self-hosted binary with no infrastructure required, that meant an
+ * air-gapped, firewalled or offline install sat on a blank screen waiting
+ * for Google — and every page load disclosed the viewer's IP and
+ * user-agent to a third party, on a tool that is frequently deployed
+ * inside a network precisely to avoid that.
+ *
+ * The font stacks below fall back to the local copy when the user has one
+ * installed, then to the system UI/monospace faces. Shipping the woff2
+ * files with the binary and declaring @font-face here is the better fix and
+ * keeps the exact typography offline — see Tnsor-Labs/brokoli#82.
+ */
 
 :root {
   /* Background */
@@ -114,79 +129,120 @@
   --sidebar-width: 240px;
 }
 
-/* ============ LIGHT THEME (Airflow-inspired) ============ */
+/* ============ LIGHT THEME ============
+ *
+ * The previous light theme put white cards (#f7f7f8) on a white page
+ * (#ffffff) — 1.07:1 — with borders at 1.16:1. Body text contrast was
+ * actually fine (7:1 and up); what was missing was *structure*. Nothing had
+ * a visible surface or edge, so the eye had no hierarchy to hold on to and
+ * the whole screen read as one flat sheet.
+ *
+ * The fix follows the surface-tone model used by Material 3 and Radix:
+ * separation comes from stepped surface tones and real borders, not from
+ * making text heavier. Concretely:
+ *
+ *   canvas  #e2e7f0   the page — tinted, never pure white
+ *   sidebar #dbe2ed   a touch deeper than the canvas
+ *   card    #ffffff   surfaces are the *lightest* layer, so they lift
+ *
+ * The canvas tint is deliberately deeper than most light themes ship with
+ * (card/canvas is 1.24:1, where GitHub's subtle surface is ~1.05 and
+ * Grafana's ~1.10). A first pass at 1.14:1 still read as one flat sheet on
+ * a large bright display. Going deeper costs contrast for the labels that
+ * sit directly ON the canvas, which is why the text tokens below were
+ * darkened in the same change — the two have to move together.
+ *
+ * That last point also repairs a semantic inversion. In the dark theme
+ * --bg-secondary (cards) is LIGHTER than --bg-primary (page). The old light
+ * theme flipped that relationship, so "secondary" meant "raised" in one
+ * theme and "recessed" in the other, and every component that relied on the
+ * distinction quietly lost it. Now the direction matches in both themes and
+ * recessed regions (--bg-primary, e.g. run sub-rows) read as recessed.
+ *
+ * Status colors were retuned for light backgrounds. The old ones were
+ * picked against dark surfaces and failed badly on white — success was
+ * 2.45:1, effectively unreadable at the 10-11px sizes this UI uses. Every
+ * status color now clears 4.5:1 against all three surface tones (card,
+ * tertiary and canvas), verified rather than eyeballed.
+ *
+ * If a future change makes fills look muddy, the upgrade path is Radix's
+ * split: a separate vivid "solid" token for fills alongside the darker
+ * text-safe one. It isn't needed yet because every fill here is small
+ * (6px dots, 4px bars, 11px heatmap cells), where more contrast helps.
+ */
 :root[data-theme="light"] {
-  /* Layered grays — NOT pure white everywhere */
-  --bg-primary: #ffffff;
-  --bg-secondary: #f7f7f8;
-  --bg-tertiary: #ecedf0;
-  --bg-sidebar: #f7f7f8;         /* subtle warm gray sidebar like Airflow */
-  --bg-canvas: #f2f3f5;          /* slightly tinted canvas */
-  --bg-code: #f5f6f8;
-  --bg-code-line: #ecedf0;
+  /* Surfaces, lightest = most elevated */
+  --bg-primary: #e2e7f0;         /* page canvas, and recessed areas on cards */
+  --bg-secondary: #ffffff;       /* cards/panels — the raised surface */
+  --bg-tertiary: #eef1f6;        /* row hover, table headers */
+  --bg-sidebar: #dbe2ed;
+  --bg-canvas: #e2e7f0;          /* pipeline editor canvas */
+  --bg-code: #f1f4f9;
+  --bg-code-line: #e8ecf2;
   --bg-input: #ffffff;
-  --bg-card-hover: #eef0f2;
-  --bg-overlay: rgba(0, 0, 0, 0.35);
+  --bg-card-hover: #f2f5f9;
+  --bg-overlay: rgba(16, 24, 40, 0.4);
 
-  /* Visible but not heavy borders */
-  --border: #d0d5dd;
-  --border-hover: #98a2b3;
-  --border-subtle: #e4e7ec;
-  --border-sidebar: #d0d5dd;     /* sidebar border visible */
+  /* Borders carry the edges the old theme was missing */
+  --border: #c3ccda;             /* 1.62:1 on card */
+  --border-hover: #8d98a8;
+  --border-subtle: #dde3ec;      /* 1.29:1 on card — dividers inside panels */
+  --border-sidebar: #ccd4e1;
 
-  /* READABLE text — darker secondary/muted */
-  --text-primary: #101828;
-  --text-secondary: #344054;     /* was #4a5568, now darker */
-  --text-muted: #475467;         /* was #718096, now much darker */
-  --text-dim: #667085;           /* was #a0aec0, now readable */
-  --text-ghost: #98a2b3;
+  --text-primary: #0f172a;       /* 17.9:1 on card, 14.4 on canvas */
+  --text-secondary: #2f3b4d;     /* 11.3:1 on card,  9.1 on canvas */
+  --text-muted: #45505f;         /*  8.2:1 on card,  6.6 on canvas */
+  --text-dim: #54606f;           /*  6.4:1 on card,  5.2 on canvas — 10px labels */
+  --text-ghost: #8d98a8;         /*  decorative only, never text */
 
   /* Teal accent */
-  --accent: #0d9488;
-  --accent-hover: #0f766e;
-  --accent-glow: rgba(13, 148, 136, 0.08);
-  --accent-glow-strong: rgba(13, 148, 136, 0.15);
-  --accent-text: #0d9488;
+  --accent: #0e6f68;
+  --accent-hover: #0b5852;
+  --accent-glow: rgba(14, 111, 104, 0.09);
+  --accent-glow-strong: rgba(14, 111, 104, 0.18);
+  --accent-text: #0e6f68;
 
-  /* Status */
-  --success: #12b76a;
-  --success-bg: rgba(18, 183, 106, 0.08);
-  --success-glow: rgba(18, 183, 106, 0.25);
-  --running: #2563eb;
-  --running-bg: rgba(37, 99, 235, 0.08);
-  --failed: #f04438;
-  --failed-bg: rgba(240, 68, 56, 0.08);
-  --warning: #dc6803;
-  --warning-bg: rgba(220, 104, 3, 0.08);
-  --pending: #98a2b3;
-  --pending-bg: rgba(152, 162, 179, 0.1);
+  /* Status — all >= 4.5:1 on card, tertiary and canvas */
+  --success: #046c4e;
+  --success-bg: rgba(4, 108, 78, 0.11);
+  --success-glow: rgba(4, 108, 78, 0.25);
+  --running: #1550c0;
+  --running-bg: rgba(21, 80, 192, 0.11);
+  --failed: #b91c1c;
+  --failed-bg: rgba(185, 28, 28, 0.11);
+  --warning: #a34405;
+  --warning-bg: rgba(163, 68, 5, 0.11);
+  --pending: #54606f;
+  --pending-bg: rgba(84, 96, 111, 0.11);
 
   /* Code — vivid on off-white */
-  --code-comment: #667085;
-  --code-keyword: #7c3aed;
+  --code-comment: #54606f;
+  --code-keyword: #6d28d9;
   --code-function: #1d4ed8;
-  --code-string: #059669;
+  --code-string: #046c4e;
   --code-number: #c2410c;
   --code-operator: #1e293b;
-  --code-punctuation: #667085;
+  --code-punctuation: #54606f;
   --code-class: #0e7490;
   --code-decorator: #be185d;
   --code-caret: #101828;
-  --code-selection: rgba(13, 148, 136, 0.12);
-  --code-accent: #0d9488;
+  --code-selection: rgba(14, 111, 104, 0.13);
+  --code-accent: #0e6f68;
 
   /* Canvas */
-  --canvas-dot: #d0d5dd;
-  --canvas-dot-large: #98a2b3;
-  --canvas-edge: #667085;
-  --canvas-edge-hover: #f04438;
+  --canvas-dot: #c3ccda;
+  --canvas-dot-large: #8d98a8;
+  --canvas-edge: #54606f;
+  --canvas-edge-hover: #b91c1c;
 
-  --shadow-node: rgba(0, 0, 0, 0.06);
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.08);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.04) inset;
-  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
+  /* Light themes get depth from shadow rather than from a lighter fill,
+     so these are stronger than the dark theme's equivalents. */
+  --shadow-node: rgba(16, 24, 40, 0.08);
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.14);
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-card-hover: 0 4px 12px rgba(16, 24, 40, 0.10);
 }
 
 *, *::before, *::after {
