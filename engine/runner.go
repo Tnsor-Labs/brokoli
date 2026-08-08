@@ -866,6 +866,19 @@ func nodeAttemptIdempotencyKey(runID, nodeID string, attempt int) string {
 }
 
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (*common.DataSet, error) {
+	// Check if the org's plan allows this node type. Deliberately checked
+	// before the executor loop below, not after: a NodeExecutor can claim
+	// any node type string (a plugin-registered type, an enterprise K8s-
+	// dispatched type, etc.), and this gate is meant to apply uniformly to
+	// every node type regardless of which mechanism ultimately executes
+	// it — a gate that only fired for the built-in switch further down
+	// would silently never apply to executor-dispatched types at all.
+	if extensions.NodeTypeGateFunc != nil {
+		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
+			return nil, fmt.Errorf("%s", msg)
+		}
+	}
+
 	// Check if an external executor handles this node type (enterprise: K8s, Docker)
 	for _, exec := range r.executors {
 		if exec != nil && exec.CanHandle(string(node.Type)) {
@@ -899,13 +912,6 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 				}
 			}
 			return nil, nil
-		}
-	}
-
-	// Check if the org's plan allows this node type
-	if extensions.NodeTypeGateFunc != nil {
-		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
-			return nil, fmt.Errorf("%s", msg)
 		}
 	}
 
