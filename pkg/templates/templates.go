@@ -1,33 +1,28 @@
-// Package templates defines the built-in pipeline templates offered when
-// creating a new pipeline (ui/src/pages/Pipelines.svelte's "choose a
-// template" screen). These used to be hardcoded as JS object literals in
-// that file — never validated, never executed by anything, and free to
+// Package templates defines the seed content for Brokoli's built-in
+// pipeline templates (ui/src/pages/Pipelines.svelte's "choose a template"
+// screen). These used to be hardcoded as JS object literals in that
+// file — never validated, never executed by anything, and free to
 // silently drift out of sync with whatever config shape the engine
 // actually expects. See TestBuiltinTemplates in api/templates_test.go,
 // which runs every non-blank template here through the real engine
 // against fixture data and asserts it produces the expected outcome —
-// that test is the actual point of this migration, not just the storage
-// location change.
+// that test is the actual point of the first migration (brokoli#71), not
+// just the storage location change.
+//
+// Builtin is seed data only, not the live served source: store.Store's
+// pipeline_templates table is what GET /api/templates actually reads
+// from, seeded from Builtin on first migrate and editable afterward by
+// an admin (models.PermTemplatesManage) without a redeploy. Builtin
+// exists so that seed content is real Go data — covered by
+// TestBuiltinTemplates — rather than a SQL INSERT nothing exercises.
 package templates
 
 import "github.com/Tnsor-Labs/brokoli/models"
 
-// Template is a starter pipeline definition offered at pipeline-creation
-// time. Nodes/Edges are copied as-is into a new models.Pipeline when a
-// user picks one — see api/handlers_templates.go.
-type Template struct {
-	ID          string        `json:"id"`
-	Name        string        `json:"name"`
-	Description string        `json:"description"`
-	Icon        string        `json:"icon"`
-	Nodes       []models.Node `json:"nodes"`
-	Edges       []models.Edge `json:"edges"`
-}
-
-// Builtin is the fixed set of templates shipped with every Brokoli
-// instance. Order matters — it's the order they render in the UI's
-// template picker.
-var Builtin = []Template{
+// Builtin is the fixed set of templates a fresh database is seeded with.
+// Order matters — it's the order they're inserted, and (absent any
+// admin reordering) the order they render in the UI's template picker.
+var Builtin = []models.PipelineTemplate{
 	{
 		ID:          "blank",
 		Name:        "Blank",

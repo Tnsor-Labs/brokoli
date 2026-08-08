@@ -53,6 +53,11 @@ const (
 	PermGitSyncView Permission = "gitsync.view"
 	PermGitSyncPull Permission = "gitsync.pull"
 	PermGitSyncPush Permission = "gitsync.push"
+
+	// Pipeline templates — global, not per-workspace/org. Viewing the
+	// list (GET /api/templates) requires no permission, same as
+	// connection-types; only curation is gated.
+	PermTemplatesManage Permission = "templates.manage"
 )
 
 // AllPermissions returns all available permissions.
@@ -66,6 +71,7 @@ func AllPermissions() []Permission {
 		PermSettingsView, PermSettingsEdit, PermSettingsManageUsers, PermSettingsManageRoles,
 		PermAuditView, PermAuditExport,
 		PermGitSyncView, PermGitSyncPull, PermGitSyncPush,
+		PermTemplatesManage,
 	}
 }
 
@@ -113,6 +119,7 @@ func AllPermissionInfos() []PermissionInfo {
 		{PermGitSyncView, "Git Sync", "View git sync status"},
 		{PermGitSyncPull, "Git Sync", "Pull from git"},
 		{PermGitSyncPush, "Git Sync", "Push to git"},
+		{PermTemplatesManage, "Templates", "Create, edit, and delete pipeline templates"},
 	}
 }
 

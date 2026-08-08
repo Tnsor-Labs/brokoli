@@ -384,6 +384,16 @@ type Store interface {
 	ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error)
 	GetDBSize() (int64, error)
 
+	// Pipeline templates — global, admin-curated starter pipelines
+	// offered at pipeline-creation time (GET /api/templates). Seeded
+	// from pkg/templates.Builtin on first migrate; editable afterward
+	// through these methods, not by redeploying.
+	ListPipelineTemplates() ([]models.PipelineTemplate, error)
+	GetPipelineTemplate(id string) (*models.PipelineTemplate, error)
+	CreatePipelineTemplate(t *models.PipelineTemplate) error
+	UpdatePipelineTemplate(t *models.PipelineTemplate) error
+	DeletePipelineTemplate(id string) error
+
 	// Lifecycle
 	Close() error
 	RawDB() interface{} // returns *sql.DB for extensions

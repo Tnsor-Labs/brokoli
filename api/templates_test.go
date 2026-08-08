@@ -37,7 +37,7 @@ func newTemplateTestEngine(t *testing.T) (*engine.Engine, store.Store) {
 // redirecting any sink_file node's output into sinkDir instead of the
 // template's real /tmp path — keeps the test hermetic without needing to
 // mutate templates.Builtin (a shared package-level value).
-func pipelineFromTemplate(id string, tmpl templates.Template, sinkDir string) *models.Pipeline {
+func pipelineFromTemplate(id string, tmpl models.PipelineTemplate, sinkDir string) *models.Pipeline {
 	nodes := make([]models.Node, len(tmpl.Nodes))
 	for i, n := range tmpl.Nodes {
 		nodes[i] = n
@@ -73,7 +73,7 @@ func newSampleDataTestServer(t *testing.T) *httptest.Server {
 	return server
 }
 
-func templateByID(t *testing.T, id string) templates.Template {
+func templateByID(t *testing.T, id string) models.PipelineTemplate {
 	t.Helper()
 	for _, tmpl := range templates.Builtin {
 		if tmpl.ID == id {
@@ -81,7 +81,7 @@ func templateByID(t *testing.T, id string) templates.Template {
 		}
 	}
 	t.Fatalf("no builtin template with id %q", id)
-	return templates.Template{}
+	return models.PipelineTemplate{}
 }
 
 // TestBuiltinTemplates_RunSuccessfully is the regression guard for the
