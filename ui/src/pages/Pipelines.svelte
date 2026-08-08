@@ -396,7 +396,7 @@
       icon: "code",
       nodes: [
         { id: "s1", type: "source_api", name: "Fetch Employees", config: { url: "/api/samples/data/employees.json", method: "GET" }, position: { x: 40, y: 120 } },
-        { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", check: "not_null", policy: "block" }, { column: "salary", check: "positive", policy: "warn" }] }, position: { x: 360, y: 120 } },
+        { id: "q1", type: "quality_check", name: "Quality Gate", config: { rules: [{ column: "email", rule: "not_null", on_failure: "block" }, { column: "salary", rule: "min", params: { min: 0 }, on_failure: "warn" }] }, position: { x: 360, y: 120 } },
         { id: "t1", type: "transform", name: "Clean Data", config: { rules: [{ type: "rename", mapping: { hire_date: "start_date" } }] }, position: { x: 680, y: 120 } },
         { id: "o1", type: "sink_file", name: "Output", config: { path: "/tmp/clean-employees.csv" }, position: { x: 1000, y: 120 } },
       ],
