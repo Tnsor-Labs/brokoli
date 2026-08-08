@@ -33,6 +33,6 @@ func samplesDataHandler() http.HandlerFunc {
 		}
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 		w.Header().Set("Cache-Control", "public, max-age=3600")
-		_, _ = w.Write(data)
+		_, _ = w.Write(data) // #nosec G705 -- data is never attacker-influenced: it's one of a fixed, embedded CSV set selected by exact-match lookup against embed.FS above. The "file" param only picks which embedded file to serve (or fails closed to 404, see the ReadFile error check above); it never reaches the response body or influences its content.
 	}
 }
