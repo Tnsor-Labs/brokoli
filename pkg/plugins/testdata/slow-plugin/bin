@@ -1,0 +1,84 @@
+#!/bin/sh
+# slow-plugin — protocol v1 source used by the cancellation tests.
+#
+# Declares only a source node type, so its surface is spec, check,
+# discover and read; `write` is not part of this plugin.
+#
+# Its three streams differ only in what `read` does once it starts,
+# which is what the host's cancellation path needs to exercise:
+#
+#   blocking  → emits a record, then blocks as a single process
+#   stubborn  → ignores SIGTERM and keeps holding stdout open
+#   orphan    → leaves a background child holding stdout, then waits
+#   detach    → leaves a background child holding stdout, then exits
+#
+# `orphan` writes its child's PID to the path in config.pidfile so the
+# test can assert the child was cleaned up and not merely abandoned.
+
+set -eu
+cmd="${1:-}"
+
+case "$cmd" in
+    spec)
+        cat <<'EOF'
+{"protocol_version":1,"name":"slow","version":"0.1.0","binary":"./bin","node_types":[{"type":"source_slow","kind":"source"}]}
+EOF
+        ;;
+    check)
+        read -r _params
+        printf '{"type":"status","status":"ok","message":"ready"}\n'
+        ;;
+    discover)
+        read -r _params
+        printf '{"type":"stream","stream":{"name":"blocking","mode":"full_refresh","columns":[{"name":"id","type":"int"}]}}\n'
+        printf '{"type":"stream","stream":{"name":"stubborn","mode":"full_refresh","columns":[{"name":"id","type":"int"}]}}\n'
+        printf '{"type":"stream","stream":{"name":"orphan","mode":"full_refresh","columns":[{"name":"id","type":"int"}]}}\n'
+        ;;
+    read)
+        read -r params
+        # Emitted before blocking so a cancelled read still proves the
+        # host keeps whatever the plugin managed to produce.
+        printf '{"type":"record","data":{"id":1}}\n'
+        case "$params" in
+            *'"stream":"stubborn"'*)
+                # Discard SIGTERM. Only the host escalating to SIGKILL
+                # after its grace period can stop this.
+                trap '' TERM
+                while :; do sleep 1; done
+                ;;
+            *'"stream":"orphan"'*)
+                # The background child inherits stdout. If the host
+                # signals only the direct child, this outlives it and
+                # stdout never reaches EOF.
+                sleep 60 &
+                child=$!
+                pidfile=$(printf '%s' "$params" | sed -n 's/.*"pidfile":"\([^"]*\)".*/\1/p')
+                if [ -n "$pidfile" ]; then
+                    printf '%s\n' "$child" > "$pidfile"
+                fi
+                wait
+                ;;
+            *'"stream":"detach"'*)
+                # Exits immediately, leaving a child holding stdout: the
+                # pipes outlive the process without the context ever
+                # being cancelled, which is the second way a survivor
+                # can be stranded.
+                sleep 60 &
+                child=$!
+                pidfile=$(printf '%s' "$params" | sed -n 's/.*"pidfile":"\([^"]*\)".*/\1/p')
+                if [ -n "$pidfile" ]; then
+                    printf '%s\n' "$child" > "$pidfile"
+                fi
+                ;;
+            *)
+                # exec replaces the shell, so exactly one process exists
+                # and it has default signal handling: nothing to orphan.
+                exec sleep 60
+                ;;
+        esac
+        ;;
+    *)
+        printf '{"type":"error","message":"unknown command: %s"}\n' "$cmd" >&2
+        exit 1
+        ;;
+esac
