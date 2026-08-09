@@ -61,6 +61,7 @@
       success: "var(--success)",
       failed: "var(--failed)",
       cancelled: "var(--pending)",
+      skipped: "var(--text-muted)",
     };
     return map[s] || config.color;
   }
@@ -73,6 +74,7 @@
       success: "OK",
       failed: "FAILED",
       cancelled: "CANCEL",
+      skipped: "SKIP",
     };
     return map[s] || "";
   }
@@ -85,15 +87,16 @@
   class:running={status === "running"}
   transform="translate({node.position.x}, {node.position.y})"
   on:mousedown={onMouseDown}
-  on:mouseenter={() => hovered = true}
-  on:mouseleave={() => hovered = false}
+  on:mouseenter={() => (hovered = true)}
+  on:mouseleave={() => (hovered = false)}
   role="button"
   tabindex="0"
   on:keydown={() => {}}
 >
   <!-- Shadow -->
   <rect
-    x="2" y="2"
+    x="2"
+    y="2"
     width={NODE_WIDTH}
     height={NODE_HEIGHT}
     rx="8"
@@ -102,20 +105,15 @@
   />
 
   <!-- Card body -->
-  <rect
-    class="card-bg"
-    x="0" y="0"
-    width={NODE_WIDTH}
-    height={NODE_HEIGHT}
-    rx="8"
-  />
+  <rect class="card-bg" x="0" y="0" width={NODE_WIDTH} height={NODE_HEIGHT} rx="8" />
 
   <!-- Left accent bar — full height, clipped to card shape -->
   <clipPath id="left-bar-{node.id}">
     <rect x="0" y="0" width="36" height={NODE_HEIGHT} rx="8" />
   </clipPath>
   <rect
-    x="0" y="0"
+    x="0"
+    y="0"
     width="36"
     height={NODE_HEIGHT}
     fill={config.color}
@@ -123,7 +121,8 @@
     clip-path="url(#left-bar-{node.id})"
   />
   <rect
-    x="0" y="0"
+    x="0"
+    y="0"
     width="3"
     height={NODE_HEIGHT}
     fill={statusColor(status)}
@@ -145,8 +144,10 @@
 
   <!-- Separator line -->
   <line
-    x1="36" y1="8"
-    x2="36" y2={NODE_HEIGHT - 8}
+    x1="36"
+    y1="8"
+    x2="36"
+    y2={NODE_HEIGHT - 8}
     stroke={config.color}
     opacity="0.15"
     stroke-width="1"
@@ -156,7 +157,7 @@
   <text x="44" y={NODE_HEIGHT / 2 - 5} class="node-name">
     {(node.name || config.label).length > 18
       ? (node.name || config.label).slice(0, 17) + "…"
-      : (node.name || config.label)}
+      : node.name || config.label}
   </text>
 
   <!-- Type label -->
@@ -200,18 +201,8 @@
         on:mousedown={(e) => onPortMouseDown(e, "input")}
         on:mouseup={(e) => onPortMouseUp(e, "input")}
       />
-      <circle
-        class="port port-visual"
-        cx="-1"
-        cy={NODE_HEIGHT / 2}
-        r="5"
-      />
-      <circle
-        class="port-dot"
-        cx="-1"
-        cy={NODE_HEIGHT / 2}
-        r="2"
-      />
+      <circle class="port port-visual" cx="-1" cy={NODE_HEIGHT / 2} r="5" />
+      <circle class="port-dot" cx="-1" cy={NODE_HEIGHT / 2} r="2" />
     </g>
   {/if}
 
@@ -227,24 +218,16 @@
         on:mousedown={(e) => onPortMouseDown(e, "output")}
         on:mouseup={(e) => onPortMouseUp(e, "output")}
       />
-      <circle
-        class="port port-visual"
-        cx={NODE_WIDTH + 1}
-        cy={NODE_HEIGHT / 2}
-        r="5"
-      />
-      <circle
-        class="port-dot"
-        cx={NODE_WIDTH + 1}
-        cy={NODE_HEIGHT / 2}
-        r="2"
-      />
+      <circle class="port port-visual" cx={NODE_WIDTH + 1} cy={NODE_HEIGHT / 2} r="5" />
+      <circle class="port-dot" cx={NODE_WIDTH + 1} cy={NODE_HEIGHT / 2} r="2" />
     </g>
   {/if}
 
   <!-- Standalone label for migrate (no ports) -->
   {#if node.type === "migrate"}
-    <text x={NODE_WIDTH / 2} y={NODE_HEIGHT - 6} text-anchor="middle" class="standalone-label">standalone</text>
+    <text x={NODE_WIDTH / 2} y={NODE_HEIGHT - 6} text-anchor="middle" class="standalone-label"
+      >standalone</text
+    >
   {/if}
 </g>
 
@@ -269,7 +252,9 @@
     fill: var(--bg-secondary);
     stroke: var(--border);
     stroke-width: 1;
-    transition: stroke 150ms ease, fill 150ms ease;
+    transition:
+      stroke 150ms ease,
+      fill 150ms ease;
   }
   .hovered .card-bg {
     fill: var(--bg-card-hover);
@@ -289,21 +274,21 @@
 
   .node-name {
     fill: var(--text-primary);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     font-size: 12px;
     font-weight: 600;
     letter-spacing: -0.01em;
   }
   .node-type {
     fill: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 9px;
     letter-spacing: 0.04em;
     text-transform: uppercase;
   }
 
   .status-text {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 7.5px;
     font-weight: 600;
     letter-spacing: 0.05em;
@@ -346,14 +331,21 @@
 
   .standalone-label {
     fill: var(--text-muted);
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 8px;
     letter-spacing: 0.04em;
     opacity: 0.6;
   }
 
   @keyframes running-glow {
-    0%, 100% { stroke: var(--running); stroke-opacity: 0.8; }
-    50% { stroke: var(--running); stroke-opacity: 0.3; }
+    0%,
+    100% {
+      stroke: var(--running);
+      stroke-opacity: 0.8;
+    }
+    50% {
+      stroke: var(--running);
+      stroke-opacity: 0.3;
+    }
   }
 </style>

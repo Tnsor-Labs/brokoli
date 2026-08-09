@@ -74,12 +74,32 @@ func TestIsIRVersionSupported(t *testing.T) {
 	}{
 		{"", true},    // pre-versioned pipelines are always accepted
 		{"2.0", true}, // current IR version
+		{"2.1", true}, // conditional-edge routing
 		{"1.0", false},
 		{"99.0", false},
 	}
 	for _, c := range cases {
 		if got := IsIRVersionSupported(c.v); got != c.want {
 			t.Errorf("IsIRVersionSupported(%q) = %v, want %v", c.v, got, c.want)
+		}
+	}
+}
+
+func TestIsConditionExpressionSupported(t *testing.T) {
+	for _, expression := range []string{
+		"always_true",
+		"row_count > 0",
+		`column_exists("id")`,
+		`null_pct("id") < .5`,
+		`max("score") >= 1.`,
+	} {
+		if !IsConditionExpressionSupported(expression) {
+			t.Errorf("expected expression %q to be supported", expression)
+		}
+	}
+	for _, expression := range []string{"", "python()", `null_pct("id") < .`} {
+		if IsConditionExpressionSupported(expression) {
+			t.Errorf("expected expression %q to be unsupported", expression)
 		}
 	}
 }
@@ -189,13 +209,13 @@ func TestEdge_ConditionRoundTrip(t *testing.T) {
 	}
 }
 
-func TestPipelineValidate_ConditionalEdgesFailClosedBeforeIR21Rollout(t *testing.T) {
+func TestPipelineValidate_ConditionalEdgesRequireIR21(t *testing.T) {
 	condition := true
 	p := Pipeline{
 		Name:      "conditional",
 		IRVersion: "2.0",
 		Nodes: []Node{
-			{ID: "check", Type: NodeTypeCondition},
+			{ID: "check", Type: NodeTypeCondition, Config: map[string]interface{}{"expression": "always_true"}},
 			{ID: "yes", Type: NodeTypeNotify},
 		},
 		Edges: []Edge{{From: "check", To: "yes", Condition: &condition}},
@@ -207,8 +227,51 @@ func TestPipelineValidate_ConditionalEdgesFailClosedBeforeIR21Rollout(t *testing
 	}
 
 	p.IRVersion = ConditionalEdgesIRVersion
+	p.Nodes = append([]Node{{ID: "source", Type: NodeTypeSourceFile}}, p.Nodes...)
+	p.Edges = append([]Edge{{From: "source", To: "check"}}, p.Edges...)
 	err = p.Validate()
-	if err == nil || !strings.Contains(err.Error(), "unsupported pipeline IR version") {
-		t.Fatalf("IR 2.1 should remain unsupported until runtime rollout, error = %v", err)
+	if err != nil {
+		t.Fatalf("valid IR 2.1 conditional pipeline error = %v", err)
+	}
+}
+
+func TestPipelineValidate_IR21ConditionGraphFailsClosed(t *testing.T) {
+	selected := false
+	base := Pipeline{
+		Name:      "conditional",
+		IRVersion: ConditionalEdgesIRVersion,
+		Nodes: []Node{
+			{ID: "source", Type: NodeTypeSourceFile},
+			{ID: "check", Type: NodeTypeCondition, Config: map[string]interface{}{"expression": "always_false"}},
+			{ID: "no", Type: NodeTypeNotify},
+		},
+		Edges: []Edge{
+			{From: "source", To: "check"},
+			{From: "check", To: "no", Condition: &selected},
+		},
+	}
+
+	if err := base.Validate(); err != nil {
+		t.Fatalf("explicit false branch should be valid: %v", err)
+	}
+
+	withoutInput := base
+	withoutInput.Edges = withoutInput.Edges[1:]
+	if err := withoutInput.Validate(); err == nil || !strings.Contains(err.Error(), "exactly 1 input") {
+		t.Fatalf("missing condition input error = %v", err)
+	}
+
+	staticBranch := base
+	staticBranch.Edges = append([]Edge(nil), base.Edges...)
+	staticBranch.Edges[1].Condition = nil
+	if err := staticBranch.Validate(); err == nil || !strings.Contains(err.Error(), "explicit true or false branch") {
+		t.Fatalf("unlabeled condition branch error = %v", err)
+	}
+
+	unsupportedExpression := base
+	unsupportedExpression.Nodes = append([]Node(nil), base.Nodes...)
+	unsupportedExpression.Nodes[1].Config = map[string]interface{}{"expression": "python()"}
+	if err := unsupportedExpression.Validate(); err == nil || !strings.Contains(err.Error(), "unsupported expression") {
+		t.Fatalf("unsupported condition expression error = %v", err)
 	}
 }

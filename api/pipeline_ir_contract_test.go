@@ -12,35 +12,36 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-func TestPipelineCreate_RejectsUnsupportedIRBeforePersistence(t *testing.T) {
+func TestPipelineCreate_AcceptsIR21ConditionalPipeline(t *testing.T) {
 	s := newOrgCheckStore(t)
 	h := NewPipelineHandler(s, nil)
 	body := `{
 		"ir_version":"2.1",
 		"name":"conditional",
 		"nodes":[
+			{"id":"source","type":"source_file","name":"Source","config":{}},
 			{"id":"check","type":"condition","name":"Check","config":{"expression":"always_true"}},
 			{"id":"yes","type":"notify","name":"Yes","config":{}}
 		],
-		"edges":[{"from":"check","to":"yes","condition":true}]
+		"edges":[
+			{"from":"source","to":"check"},
+			{"from":"check","to":"yes","condition":true}
+		]
 	}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/pipelines", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	h.Create(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "unsupported pipeline IR version") {
-		t.Fatalf("response should explain unsupported IR: %s", rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
 	pipelines, err := s.ListPipelines()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pipelines) != 0 {
-		t.Fatalf("unsupported pipeline was persisted: %#v", pipelines)
+	if len(pipelines) != 1 || pipelines[0].IRVersion != models.ConditionalEdgesIRVersion {
+		t.Fatalf("IR 2.1 pipeline was not persisted: %#v", pipelines)
 	}
 }
 
@@ -69,7 +70,60 @@ func TestPipelineCreate_RejectsConditionalEdgeInIR20(t *testing.T) {
 	}
 }
 
-func TestPipelineUpdate_RejectsUnsupportedIRWithoutChangingStoredVersion(t *testing.T) {
+func TestPipelineCreate_RejectsMalformedIR21BeforePersistence(t *testing.T) {
+	tests := map[string]string{
+		"missing condition input": `{
+			"ir_version":"2.1","name":"conditional",
+			"nodes":[
+				{"id":"check","type":"condition","name":"Check","config":{"expression":"always_true"}},
+				{"id":"yes","type":"notify","name":"Yes","config":{}}
+			],
+			"edges":[{"from":"check","to":"yes","condition":true}]
+		}`,
+		"unlabeled condition branch": `{
+			"ir_version":"2.1","name":"conditional",
+			"nodes":[
+				{"id":"source","type":"source_file","name":"Source","config":{}},
+				{"id":"check","type":"condition","name":"Check","config":{"expression":"always_true"}},
+				{"id":"yes","type":"notify","name":"Yes","config":{}}
+			],
+			"edges":[{"from":"source","to":"check"},{"from":"check","to":"yes"}]
+		}`,
+		"unsupported condition expression": `{
+			"ir_version":"2.1","name":"conditional",
+			"nodes":[
+				{"id":"source","type":"source_file","name":"Source","config":{}},
+				{"id":"check","type":"condition","name":"Check","config":{"expression":"python()"}},
+				{"id":"yes","type":"notify","name":"Yes","config":{}}
+			],
+			"edges":[{"from":"source","to":"check"},{"from":"check","to":"yes","condition":true}]
+		}`,
+	}
+
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			s := newOrgCheckStore(t)
+			h := NewPipelineHandler(s, nil)
+			req := httptest.NewRequest(http.MethodPost, "/api/pipelines", strings.NewReader(body))
+			rec := httptest.NewRecorder()
+
+			h.Create(rec, req)
+
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+			}
+			pipelines, err := s.ListPipelines()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pipelines) != 0 {
+				t.Fatalf("malformed IR 2.1 pipeline was persisted: %#v", pipelines)
+			}
+		})
+	}
+}
+
+func TestPipelineUpdate_AcceptsIR21(t *testing.T) {
 	s := newOrgCheckStore(t)
 	now := time.Now().UTC()
 	p := &models.Pipeline{
@@ -93,15 +147,15 @@ func TestPipelineUpdate_RejectsUnsupportedIRWithoutChangingStoredVersion(t *test
 	router.Put("/api/pipelines/{id}", h.Update)
 	router.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	stored, err := s.GetPipeline(p.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.IRVersion != "2.0" || stored.Name != "Existing" {
-		t.Fatalf("rejected update changed stored pipeline: %#v", stored)
+	if stored.IRVersion != models.ConditionalEdgesIRVersion || stored.Name != "Changed" {
+		t.Fatalf("IR 2.1 update was not persisted: %#v", stored)
 	}
 }
 
@@ -121,7 +175,7 @@ func TestPipelineImport_RejectsEmptyBody(t *testing.T) {
 	}
 }
 
-func TestPipelineImport_RejectsUnsupportedIRBeforePersistence(t *testing.T) {
+func TestPipelineImport_AcceptsIR21(t *testing.T) {
 	s := newOrgCheckStore(t)
 	h := NewPipelineHandler(s, nil)
 	body := `{"ir_version":"2.1","name":"future","nodes":[],"edges":[]}`
@@ -131,10 +185,14 @@ func TestPipelineImport_RejectsUnsupportedIRBeforePersistence(t *testing.T) {
 
 	h.Import(rec, req)
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201; body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "unsupported pipeline IR version") {
-		t.Fatalf("response should explain unsupported IR: %s", rec.Body.String())
+	pipelines, err := s.ListPipelines()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pipelines) != 1 || pipelines[0].IRVersion != models.ConditionalEdgesIRVersion {
+		t.Fatalf("IR 2.1 import was not persisted: %#v", pipelines)
 	}
 }

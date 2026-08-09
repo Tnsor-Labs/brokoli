@@ -362,6 +362,27 @@ func TestValidate_SupportedIRVersion(t *testing.T) {
 	}
 }
 
+func TestValidate_SupportedConditionalIRVersion(t *testing.T) {
+	selected := true
+	p := &models.Pipeline{
+		Name:      "conditional",
+		IRVersion: models.ConditionalEdgesIRVersion,
+		Nodes: []models.Node{
+			{ID: "src", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": "/input.csv"}},
+			{ID: "check", Type: models.NodeTypeCondition, Name: "Check", Config: map[string]interface{}{"expression": "always_true"}},
+			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": "/output.csv"}},
+		},
+		Edges: []models.Edge{
+			{From: "src", To: "check"},
+			{From: "check", To: "sink", Condition: &selected},
+		},
+	}
+
+	if ve := ValidatePipeline(p); ve.HasErrors() {
+		t.Errorf("expected no errors for supported conditional IR, got: %v", ve.Errors)
+	}
+}
+
 func TestValidate_EmptyIRVersion_BackwardCompatible(t *testing.T) {
 	p := validPipeline()
 	p.IRVersion = ""

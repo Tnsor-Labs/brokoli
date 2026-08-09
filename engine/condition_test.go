@@ -80,6 +80,16 @@ func TestEvaluateCondition_NullPct(t *testing.T) {
 	}
 }
 
+func TestEvaluateCondition_LegacyDecimalForms(t *testing.T) {
+	ds := makeDataSet([]string{"val"}, []common.DataRow{{"val": 1}})
+	if result := EvaluateCondition(`null_pct("val") < .5`, ds); !result.Passed {
+		t.Fatalf("leading-decimal expression should remain supported: %s", result.Reason)
+	}
+	if result := EvaluateCondition(`max("val") <= 1.`, ds); !result.Passed {
+		t.Fatalf("trailing-decimal expression should remain supported: %s", result.Reason)
+	}
+}
+
 func TestEvaluateCondition_MinMax(t *testing.T) {
 	ds := makeDataSet([]string{"score"}, []common.DataRow{
 		{"score": 10},

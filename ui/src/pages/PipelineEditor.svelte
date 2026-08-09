@@ -7,7 +7,14 @@
   import NodePalette from "../components/NodePalette.svelte";
   import NodeConfigPanel from "../components/NodeConfigPanel.svelte";
   import DependencyPicker from "../components/DependencyPicker.svelte";
-  import type { Pipeline, PipelineVersion, Node, Edge, NodeType, DependencyRule } from "../lib/types";
+  import type {
+    Pipeline,
+    PipelineVersion,
+    Node,
+    Edge,
+    NodeType,
+    DependencyRule,
+  } from "../lib/types";
   import { notify } from "../lib/toast";
   import Skeleton from "../components/Skeleton.svelte";
   import Breadcrumb from "../components/Breadcrumb.svelte";
@@ -27,7 +34,10 @@
   let codeText = "";
   let error = "";
   let previewing = false;
-  let previewResults: Record<string, { columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }> = {};
+  let previewResults: Record<
+    string,
+    { columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }
+  > = {};
   let previewNodeId: string | null = null;
 
   // ── Version History ─────────────────────────────────────────
@@ -96,7 +106,9 @@
     // Generate a token client-side (matches engine/webhook.go format)
     const bytes = new Uint8Array(24);
     crypto.getRandomValues(bytes);
-    const hex = Array.from(bytes).map(b => b.toString(16).padStart(2, "0")).join("");
+    const hex = Array.from(bytes)
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
     pipeline.webhook_token = "whk_" + hex;
     generatingToken = false;
   }
@@ -232,7 +244,7 @@
   }
 
   function duplicateNode(nodeId: string) {
-    const source = nodes.find(n => n.id === nodeId);
+    const source = nodes.find((n) => n.id === nodeId);
     if (!source) return;
     pushUndo();
     const clone: Node = {
@@ -291,11 +303,14 @@
     error = "";
     try {
       await save();
-      const res = await fetch(`/api/pipelines/${pipeline.id}/dry-run`, { method: "POST", headers: authHeaders() });
+      const res = await fetch(`/api/pipelines/${pipeline.id}/dry-run`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
       const data = await res.json();
       if (data.results) {
         previewResults = data.results;
-        const firstKey = Object.keys(data.results).find(k => data.results[k].rows?.length > 0);
+        const firstKey = Object.keys(data.results).find((k) => data.results[k].rows?.length > 0);
         if (firstKey) previewNodeId = firstKey;
       }
       if (data.error) error = `Preview partial: ${data.error}`;
@@ -309,7 +324,10 @@
   async function clonePipeline() {
     if (!pipeline) return;
     try {
-      const res = await fetch(`/api/pipelines/${pipeline.id}/clone`, { method: "POST", headers: authHeaders() });
+      const res = await fetch(`/api/pipelines/${pipeline.id}/clone`, {
+        method: "POST",
+        headers: authHeaders(),
+      });
       if (!res.ok) throw new Error();
       const clone = await res.json();
       notify.success(`Cloned as "${clone.name}"`);
@@ -326,14 +344,34 @@
 
   function pipelineData() {
     return {
+      ...(pipeline?.ir_version ? { ir_version: pipeline.ir_version } : {}),
       name: pipeline?.name || "untitled",
       description: pipeline?.description || "",
       schedule: pipeline?.schedule || "",
-      enabled: true,
+      enabled: pipeline?.enabled ?? true,
+      ...(pipeline?.webhook_url ? { webhook_url: pipeline.webhook_url } : {}),
+      ...(pipeline?.params ? { params: pipeline.params } : {}),
+      ...(pipeline?.tags ? { tags: pipeline.tags } : {}),
+      ...(pipeline?.hooks ? { hooks: pipeline.hooks } : {}),
+      ...(pipeline?.schedule_timezone ? { schedule_timezone: pipeline.schedule_timezone } : {}),
+      ...(pipeline?.sla_deadline ? { sla_deadline: pipeline.sla_deadline } : {}),
+      ...(pipeline?.sla_timezone ? { sla_timezone: pipeline.sla_timezone } : {}),
+      ...(pipeline?.depends_on ? { depends_on: pipeline.depends_on } : {}),
+      ...(pipeline?.dependency_rules ? { dependency_rules: pipeline.dependency_rules } : {}),
+      ...(pipeline?.webhook_token ? { webhook_token: pipeline.webhook_token } : {}),
       nodes: nodes.map((n) => ({
-        id: n.id, type: n.type, name: n.name, config: n.config,
+        id: n.id,
+        type: n.type,
+        name: n.name,
+        config: n.config,
+        position: n.position,
+        ...(n.capabilities ? { capabilities: n.capabilities } : {}),
       })),
-      edges: edges.map((e) => ({ from: e.from, to: e.to })),
+      edges: edges.map((e) => ({
+        from: e.from,
+        to: e.to,
+        ...(e.condition === undefined ? {} : { condition: e.condition }),
+      })),
     };
   }
 
@@ -357,6 +395,10 @@
 
   $: void (showCode && codeFormat); // keep reactivity on these
 
+  $: if (pipeline && edges.some((edge) => edge.condition !== undefined)) {
+    pipeline.ir_version = "2.1";
+  }
+
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 
   function handleGlobalKeydown(e: KeyboardEvent) {
@@ -370,7 +412,7 @@
       return;
     }
     // Ctrl+Shift+Z or Ctrl+Y = redo
-    if ((e.ctrlKey || e.metaKey) && (e.shiftKey && e.key === "z" || e.key === "y")) {
+    if ((e.ctrlKey || e.metaKey) && ((e.shiftKey && e.key === "z") || e.key === "y")) {
       e.preventDefault();
       redo();
       return;
@@ -413,11 +455,13 @@
   {:else}
     <div class="toolbar">
       <div class="toolbar-left">
-        <Breadcrumb items={[
-          { label: "Pipelines", href: "#/pipelines" },
-          { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params?.id}/runs` },
-          { label: "Editor" }
-        ]} />
+        <Breadcrumb
+          items={[
+            { label: "Pipelines", href: "#/pipelines" },
+            { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params?.id}/runs` },
+            { label: "Editor" },
+          ]}
+        />
         <span class="separator">|</span>
         <div class="schedule-input">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
@@ -427,7 +471,9 @@
           <input
             class="schedule-field"
             value={pipeline?.schedule || ""}
-            on:input={(e) => { if (pipeline) pipeline.schedule = e.currentTarget.value; }}
+            on:input={(e) => {
+              if (pipeline) pipeline.schedule = e.currentTarget.value;
+            }}
             placeholder="No schedule (manual)"
             title="Cron expression, e.g. 0 2 * * * (daily at 2am)"
           />
@@ -437,14 +483,38 @@
         <!-- Undo/Redo -->
         <button class="btn-icon-sm" on:click={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M3 10h13a4 4 0 0 1 0 8H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M7 6L3 10l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d="M3 10h13a4 4 0 0 1 0 8H9"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M7 6L3 10l4 4"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
         </button>
         <button class="btn-icon-sm" on:click={redo} disabled={!canRedo} title="Redo (Ctrl+Shift+Z)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M21 10H8a4 4 0 0 0 0 8h7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-            <path d="M17 6l4 4-4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d="M21 10H8a4 4 0 0 0 0 8h7"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+            <path
+              d="M17 6l4 4-4 4"
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
         </button>
 
@@ -452,13 +522,25 @@
 
         <button class="btn-sm" on:click={doAutoLayout}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.layout.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.layout.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           Layout
         </button>
         <button class="btn-sm" on:click={toggleCode}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.code.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.code.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           {showCode ? "Canvas" : "YAML"}
         </button>
@@ -468,15 +550,37 @@
         <button class="btn-sm" on:click={clonePipeline} title="Duplicate this pipeline">
           Clone
         </button>
-        <button class="btn-sm" class:active-toggle={showHistory} on:click={toggleHistory} title="Version history">
+        <button
+          class="btn-sm"
+          class:active-toggle={showHistory}
+          on:click={toggleHistory}
+          title="Version history"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.history.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.history.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           History
         </button>
-        <button class="btn-sm" class:active-toggle={showPipelineSettings} on:click={() => showPipelineSettings = !showPipelineSettings} title="Pipeline settings">
+        <button
+          class="btn-sm"
+          class:active-toggle={showPipelineSettings}
+          on:click={() => (showPipelineSettings = !showPipelineSettings)}
+          title="Pipeline settings"
+        >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.settings.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.settings.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           Settings
         </button>
@@ -511,7 +615,7 @@
             class="validation-item"
             class:is-error={issue.errors.length > 0}
             class:is-warning={issue.errors.length === 0}
-            on:click={() => selectedNodeId = issue.node_id}
+            on:click={() => (selectedNodeId = issue.node_id)}
             on:keydown={() => {}}
           >
             <span class="val-dot"></span>
@@ -531,7 +635,9 @@
             <label>Description</label>
             <input
               value={pipeline.description || ""}
-              on:input={(e) => { if (pipeline) pipeline.description = e.currentTarget.value; }}
+              on:input={(e) => {
+                if (pipeline) pipeline.description = e.currentTarget.value;
+              }}
               placeholder="What does this pipeline do?"
             />
           </div>
@@ -543,7 +649,12 @@
               {#each pipeline.tags || [] as tag, i}
                 <span class="tag-chip">
                   {tag}
-                  <button class="tag-remove" on:click={() => { if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i); }}>x</button>
+                  <button
+                    class="tag-remove"
+                    on:click={() => {
+                      if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i);
+                    }}>x</button
+                  >
                 </span>
               {/each}
               <input
@@ -566,18 +677,34 @@
                letting a community install configure a deadline nothing
                watches and discover that during an incident. -->
           <div class="setting-item">
-            <label>SLA Deadline <span class="ee-tag" title="Stored in every edition; breach monitoring and alerts require an enterprise deployment.">Enterprise</span></label>
+            <label
+              >SLA Deadline <span
+                class="ee-tag"
+                title="Stored in every edition; breach monitoring and alerts require an enterprise deployment."
+                >Enterprise</span
+              ></label
+            >
             <input
               type="time"
               value={pipeline.sla_deadline || ""}
-              on:input={(e) => { if (pipeline) pipeline.sla_deadline = e.currentTarget.value; }}
+              on:input={(e) => {
+                if (pipeline) pipeline.sla_deadline = e.currentTarget.value;
+              }}
             />
           </div>
           <div class="setting-item">
-            <label>SLA Timezone <span class="ee-tag" title="Stored in every edition; breach monitoring and alerts require an enterprise deployment.">Enterprise</span></label>
+            <label
+              >SLA Timezone <span
+                class="ee-tag"
+                title="Stored in every edition; breach monitoring and alerts require an enterprise deployment."
+                >Enterprise</span
+              ></label
+            >
             <select
               value={pipeline.sla_timezone || "UTC"}
-              on:change={(e) => { if (pipeline) pipeline.sla_timezone = e.currentTarget.value; }}
+              on:change={(e) => {
+                if (pipeline) pipeline.sla_timezone = e.currentTarget.value;
+              }}
             >
               <option value="UTC">UTC</option>
               <option value="America/New_York">US Eastern</option>
@@ -596,7 +723,12 @@
             <div class="webhook-row">
               {#if pipeline.webhook_token}
                 <code class="webhook-token-display">{pipeline.webhook_token.slice(0, 20)}...</code>
-                <button class="setting-btn danger" on:click={() => { if (pipeline) pipeline.webhook_token = ""; }}>Revoke</button>
+                <button
+                  class="setting-btn danger"
+                  on:click={() => {
+                    if (pipeline) pipeline.webhook_token = "";
+                  }}>Revoke</button
+                >
               {:else}
                 <button class="setting-btn" on:click={generateWebhookToken}>Generate Token</button>
               {/if}
@@ -627,7 +759,13 @@
       <div class="sla-bar">
         <div class="sla-title">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.shield.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.shield.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           SLA Deadline
         </div>
@@ -638,7 +776,9 @@
               type="time"
               class="sla-input"
               value={pipeline.sla_deadline || ""}
-              on:input={(e) => { if (pipeline) pipeline.sla_deadline = e.currentTarget.value; }}
+              on:input={(e) => {
+                if (pipeline) pipeline.sla_deadline = e.currentTarget.value;
+              }}
               placeholder="HH:MM"
             />
           </div>
@@ -647,7 +787,9 @@
             <select
               class="sla-input"
               value={pipeline.sla_timezone || "UTC"}
-              on:change={(e) => { if (pipeline) pipeline.sla_timezone = e.currentTarget.value; }}
+              on:change={(e) => {
+                if (pipeline) pipeline.sla_timezone = e.currentTarget.value;
+              }}
             >
               <option value="UTC">UTC</option>
               <option value="America/New_York">US Eastern</option>
@@ -663,7 +805,15 @@
             </select>
           </div>
           {#if pipeline.sla_deadline}
-            <button class="sla-clear" on:click={() => { if (pipeline) { pipeline.sla_deadline = ""; pipeline.sla_timezone = ""; } }}>
+            <button
+              class="sla-clear"
+              on:click={() => {
+                if (pipeline) {
+                  pipeline.sla_deadline = "";
+                  pipeline.sla_timezone = "";
+                }
+              }}
+            >
               Clear SLA
             </button>
           {/if}
@@ -677,7 +827,13 @@
       <div class="sla-bar">
         <div class="sla-title">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.api.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.api.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           Webhook Trigger
         </div>
@@ -694,7 +850,12 @@
           {/if}
         </div>
         {#if pipeline.webhook_token}
-          <button class="sla-clear" on:click={() => { if (pipeline) pipeline.webhook_token = ""; }}>
+          <button
+            class="sla-clear"
+            on:click={() => {
+              if (pipeline) pipeline.webhook_token = "";
+            }}
+          >
             Revoke
           </button>
         {/if}
@@ -710,11 +871,37 @@
         {#if showCode}
           <div class="code-view">
             <div class="code-tabs">
-              <button class="code-tab" class:active={codeFormat === "yaml"} on:click={() => setCodeFormat("yaml")}>YAML</button>
-              <button class="code-tab" class:active={codeFormat === "json"} on:click={() => setCodeFormat("json")}>JSON</button>
-              <button class="code-copy" on:click={() => { navigator.clipboard.writeText(codeText); notify.success("Copied to clipboard"); }} title="Copy">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                  <rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"/>
+              <button
+                class="code-tab"
+                class:active={codeFormat === "yaml"}
+                on:click={() => setCodeFormat("yaml")}>YAML</button
+              >
+              <button
+                class="code-tab"
+                class:active={codeFormat === "json"}
+                on:click={() => setCodeFormat("json")}>JSON</button
+              >
+              <button
+                class="code-copy"
+                on:click={() => {
+                  navigator.clipboard.writeText(codeText);
+                  notify.success("Copied to clipboard");
+                }}
+                title="Copy"
+              >
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <rect x="9" y="9" width="13" height="13" rx="2" /><path
+                    d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1"
+                  />
                 </svg>
               </button>
             </div>
@@ -739,7 +926,7 @@
           <div class="version-panel">
             <div class="version-header">
               <span class="version-title">Version History</span>
-              <button class="btn-close" on:click={() => showHistory = false}>Close</button>
+              <button class="btn-close" on:click={() => (showHistory = false)}>Close</button>
             </div>
             {#if loadingVersions}
               <div class="version-loading">Loading...</div>
@@ -799,14 +986,20 @@
       <div class="preview-panel">
         <div class="preview-panel-header">
           <span class="preview-panel-title">Preview (first 10 rows)</span>
-          <button class="btn-close" on:click={() => { previewResults = {}; previewNodeId = null; }}>Close</button>
+          <button
+            class="btn-close"
+            on:click={() => {
+              previewResults = {};
+              previewNodeId = null;
+            }}>Close</button
+          >
         </div>
         <div class="preview-tabs">
           {#each Object.entries(previewResults) as [nid, result]}
             <button
               class="preview-tab"
               class:active={previewNodeId === nid}
-              on:click={() => previewNodeId = previewNodeId === nid ? null : nid}
+              on:click={() => (previewNodeId = previewNodeId === nid ? null : nid)}
             >
               {result.name || nid}
               <span class="tab-count">{result.rows?.length || 0}</span>
@@ -879,9 +1072,16 @@
     font-size: 13px;
     color: var(--text-muted);
   }
-  .back-link:hover { color: var(--text-primary); }
-  .separator { color: var(--text-ghost); }
-  .pipeline-name { font-weight: 600; font-size: 14px; }
+  .back-link:hover {
+    color: var(--text-primary);
+  }
+  .separator {
+    color: var(--text-ghost);
+  }
+  .pipeline-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
 
   .schedule-input {
     display: flex;
@@ -890,7 +1090,7 @@
     color: var(--text-muted);
   }
   .schedule-field {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 11px;
     padding: 3px 8px;
     width: 160px;
@@ -899,7 +1099,10 @@
     border-radius: 4px;
     color: var(--text-secondary);
   }
-  .schedule-field:focus { border-color: var(--accent); color: var(--text-primary); }
+  .schedule-field:focus {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
 
   .toolbar-right {
     display: flex;
@@ -918,7 +1121,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 30px; height: 30px;
+    width: 30px;
+    height: 30px;
     border-radius: 6px;
     color: var(--text-muted);
     background: var(--bg-secondary);
@@ -948,25 +1152,35 @@
     color: var(--text-secondary);
     transition: all 150ms ease;
   }
-  .btn-sm:hover { background: var(--border-subtle); color: var(--text-primary); border-color: var(--text-ghost); }
+  .btn-sm:hover {
+    background: var(--border-subtle);
+    color: var(--text-primary);
+    border-color: var(--text-ghost);
+  }
   .btn-sm.btn-save {
     background: var(--accent);
     border-color: var(--accent);
     color: white;
   }
-  .btn-sm.btn-save:hover { background: var(--accent-hover); }
+  .btn-sm.btn-save:hover {
+    background: var(--accent-hover);
+  }
   .btn-sm.btn-run {
     background: var(--success-bg);
     border-color: rgba(34, 197, 94, 0.3);
     color: var(--success);
   }
-  .btn-sm.btn-run:hover { background: rgba(34, 197, 94, 0.15); }
+  .btn-sm.btn-run:hover {
+    background: rgba(34, 197, 94, 0.15);
+  }
   .btn-sm.btn-preview {
     background: var(--accent-glow);
     border-color: rgba(99, 102, 241, 0.3);
     color: var(--accent-text);
   }
-  .btn-sm.btn-preview:hover { background: rgba(99, 102, 241, 0.15); }
+  .btn-sm.btn-preview:hover {
+    background: rgba(99, 102, 241, 0.15);
+  }
 
   .error-bar {
     background: var(--failed-bg);
@@ -998,15 +1212,27 @@
     border-radius: 4px;
     transition: background 150ms ease;
   }
-  .validation-item:hover { background: var(--bg-tertiary); }
-  .validation-item.is-error { color: var(--failed); }
-  .validation-item.is-warning { color: var(--warning); }
+  .validation-item:hover {
+    background: var(--bg-tertiary);
+  }
+  .validation-item.is-error {
+    color: var(--failed);
+  }
+  .validation-item.is-warning {
+    color: var(--warning);
+  }
   .val-dot {
-    width: 6px; height: 6px; border-radius: 50%;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
     flex-shrink: 0;
   }
-  .is-error .val-dot { background: var(--failed); }
-  .is-warning .val-dot { background: var(--warning); }
+  .is-error .val-dot {
+    background: var(--failed);
+  }
+  .is-warning .val-dot {
+    background: var(--warning);
+  }
 
   .editor-body {
     display: flex;
@@ -1048,8 +1274,12 @@
   .issue-row {
     padding: 3px 0;
   }
-  .issue-error { color: var(--failed); }
-  .issue-warning { color: var(--warning); }
+  .issue-error {
+    color: var(--failed);
+  }
+  .issue-warning {
+    color: var(--warning);
+  }
 
   .code-view {
     width: 100%;
@@ -1079,7 +1309,9 @@
     cursor: pointer;
     transition: all 150ms ease;
   }
-  .code-tab:hover { color: var(--text-secondary); }
+  .code-tab:hover {
+    color: var(--text-secondary);
+  }
   .code-tab.active {
     color: var(--accent);
     background: var(--accent-glow);
@@ -1092,11 +1324,14 @@
     cursor: pointer;
     transition: all 150ms ease;
   }
-  .code-copy:hover { color: var(--text-primary); background: var(--bg-secondary); }
+  .code-copy:hover {
+    color: var(--text-primary);
+    background: var(--bg-secondary);
+  }
   .code-content {
     flex: 1;
     padding: 16px;
-    font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+    font-family: "JetBrains Mono", "Fira Code", "SF Mono", monospace;
     font-size: 12.5px;
     line-height: 1.7;
     color: var(--text-secondary);
@@ -1144,7 +1379,10 @@
     border-radius: 4px;
     transition: all 150ms ease;
   }
-  .btn-close:hover { color: var(--text-primary); background: var(--border-subtle); }
+  .btn-close:hover {
+    color: var(--text-primary);
+    background: var(--border-subtle);
+  }
 
   .preview-tabs {
     display: flex;
@@ -1165,10 +1403,17 @@
     color: var(--text-secondary);
     transition: all 150ms ease;
   }
-  .preview-tab:hover { border-color: var(--text-ghost); color: var(--text-primary); }
-  .preview-tab.active { border-color: var(--accent); color: var(--accent-text); background: var(--accent-glow); }
+  .preview-tab:hover {
+    border-color: var(--text-ghost);
+    color: var(--text-primary);
+  }
+  .preview-tab.active {
+    border-color: var(--accent);
+    color: var(--accent-text);
+    background: var(--accent-glow);
+  }
   .tab-count {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 9px;
     color: var(--text-dim);
     background: var(--bg-code);
@@ -1183,7 +1428,7 @@
   .preview-table {
     width: 100%;
     border-collapse: collapse;
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 11px;
   }
   .preview-table th {
@@ -1259,7 +1504,7 @@
     white-space: nowrap;
   }
   .sla-input {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 11px;
     padding: 4px 8px;
     background: var(--bg-sidebar);
@@ -1291,65 +1536,118 @@
 
   /* ── Unified Settings Panel ── */
   .settings-panel {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 8px; padding: 14px 16px; margin-bottom: 8px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 8px;
   }
   .settings-grid {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
   }
-  .setting-item { display: flex; flex-direction: column; gap: 4px; }
-  .setting-item.full { grid-column: 1 / -1; }
+  .setting-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .setting-item.full {
+    grid-column: 1 / -1;
+  }
   .setting-item label {
-    font-size: 10px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
   }
-  .setting-item input, .setting-item select {
-    padding: 6px 10px; font-size: 12px;
-    background: var(--bg-primary); border: 1px solid var(--border-subtle);
-    border-radius: 5px; color: var(--text-primary); font-family: var(--font-ui);
+  .setting-item input,
+  .setting-item select {
+    padding: 6px 10px;
+    font-size: 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
   }
-  .setting-item input:focus, .setting-item select:focus {
-    border-color: var(--accent); outline: none;
+  .setting-item input:focus,
+  .setting-item select:focus {
+    border-color: var(--accent);
+    outline: none;
   }
   .setting-btn {
-    padding: 5px 12px; border-radius: 5px; font-size: 11px; font-weight: 500;
-    background: var(--accent-glow); color: var(--accent-text);
-    border: 1px solid rgba(13,148,136,0.2);
+    padding: 5px 12px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--accent-glow);
+    color: var(--accent-text);
+    border: 1px solid rgba(13, 148, 136, 0.2);
   }
   .setting-btn.danger {
-    background: var(--failed-bg); color: var(--failed);
-    border-color: rgba(239,68,68,0.2);
+    background: var(--failed-bg);
+    color: var(--failed);
+    border-color: rgba(239, 68, 68, 0.2);
   }
-  .webhook-row { display: flex; align-items: center; gap: 8px; }
+  .webhook-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .tag-editor {
-    display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
-    padding: 4px 8px; background: var(--bg-primary);
-    border: 1px solid var(--border-subtle); border-radius: 5px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+    padding: 4px 8px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
     min-height: 32px;
   }
   .tag-chip {
-    display: inline-flex; align-items: center; gap: 3px;
-    font-size: 11px; font-weight: 500; padding: 2px 8px;
-    background: var(--accent-glow); color: var(--accent);
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    background: var(--accent-glow);
+    color: var(--accent);
     border-radius: 4px;
   }
   .tag-remove {
-    font-size: 10px; color: var(--accent); cursor: pointer;
-    line-height: 1; padding: 0 2px; opacity: 0.6;
+    font-size: 10px;
+    color: var(--accent);
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 2px;
+    opacity: 0.6;
   }
-  .tag-remove:hover { opacity: 1; }
+  .tag-remove:hover {
+    opacity: 1;
+  }
   .tag-input {
-    border: none !important; background: none !important;
-    padding: 2px 4px !important; font-size: 11px;
-    min-width: 80px; flex: 1; outline: none;
+    border: none !important;
+    background: none !important;
+    padding: 2px 4px !important;
+    font-size: 11px;
+    min-width: 80px;
+    flex: 1;
+    outline: none;
     color: var(--text-primary);
   }
 
   .webhook-token-display {
-    font-family: 'JetBrains Mono', monospace;
-    font-size: 11px; color: var(--accent);
-    background: var(--bg-code); padding: 4px 8px;
-    border-radius: 4px; border: 1px solid var(--border-subtle);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 11px;
+    color: var(--accent);
+    background: var(--bg-code);
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border-subtle);
   }
 
   /* ── Version History Panel ── */
@@ -1372,7 +1670,8 @@
     letter-spacing: 0.08em;
     color: var(--text-secondary);
   }
-  .version-loading, .version-empty {
+  .version-loading,
+  .version-empty {
     padding: 20px 14px;
     font-size: 12px;
     color: var(--text-dim);
@@ -1404,7 +1703,7 @@
     margin-bottom: 4px;
   }
   .version-num {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 12px;
     font-weight: 600;
     color: var(--text-primary);
@@ -1446,21 +1745,52 @@
   }
 
   @media (max-width: 768px) {
-    .toolbar { flex-wrap: wrap; gap: 6px; }
-    .toolbar-left { flex: 1; min-width: 0; }
-    .toolbar-right { flex-wrap: wrap; }
-    .toolbar-sep { display: none; }
-    .schedule-input { display: none; }
-    .editor-body { flex-direction: column; }
-    .palette-sidebar { width: 100%; height: auto; max-height: 120px; flex-direction: row; overflow-x: auto; }
-    .config-sidebar { width: 100%; max-height: 300px; }
-    .canvas-area { min-height: 300px; }
-    .btn-sm span { display: none; }
+    .toolbar {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .toolbar-left {
+      flex: 1;
+      min-width: 0;
+    }
+    .toolbar-right {
+      flex-wrap: wrap;
+    }
+    .toolbar-sep {
+      display: none;
+    }
+    .schedule-input {
+      display: none;
+    }
+    .editor-body {
+      flex-direction: column;
+    }
+    .palette-sidebar {
+      width: 100%;
+      height: auto;
+      max-height: 120px;
+      flex-direction: row;
+      overflow-x: auto;
+    }
+    .config-sidebar {
+      width: 100%;
+      max-height: 300px;
+    }
+    .canvas-area {
+      min-height: 300px;
+    }
+    .btn-sm span {
+      display: none;
+    }
   }
 
   @media (max-width: 1024px) and (min-width: 769px) {
-    .palette-sidebar { width: 150px; }
-    .config-sidebar { width: 230px; }
+    .palette-sidebar {
+      width: 150px;
+    }
+    .config-sidebar {
+      width: 230px;
+    }
   }
 
   .ee-tag {

@@ -40,11 +40,17 @@
   let loadingProfile = false;
 
   async function loadProfile(runId: string, nodeId: string) {
-    if (profileNodeId === nodeId) { profileNodeId = null; profileData = null; return; }
+    if (profileNodeId === nodeId) {
+      profileNodeId = null;
+      profileData = null;
+      return;
+    }
     profileNodeId = nodeId;
     loadingProfile = true;
     try {
-      const res = await fetch(`/api/runs/${runId}/nodes/${nodeId}/profile`, { headers: authHeaders() });
+      const res = await fetch(`/api/runs/${runId}/nodes/${nodeId}/profile`, {
+        headers: authHeaders(),
+      });
       if (res.ok) {
         profileData = await res.json();
       } else {
@@ -70,11 +76,15 @@
     if (!params.id) return;
     try {
       runs = await api.runs.listByPipeline(params.id);
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     if (expandedRunId) {
       try {
         selectedRun = await api.runs.get(expandedRunId);
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
     }
   }
 
@@ -94,7 +104,7 @@
       }
       // Map the bridge's log entry shape to LogEntry. The bridge writes
       // {node_id, level, message, timestamp}; we need a run_id field too.
-      logs = (value as any[]).map(entry => ({
+      logs = (value as any[]).map((entry) => ({
         run_id: runId,
         node_id: (entry?.node_id ?? "") as string,
         level: (entry?.level ?? "info") as any,
@@ -122,7 +132,10 @@
     const client = getSodpClient();
     let firstCallback = true;
     dashboardUnsub = client.watch(dashboardKey(), () => {
-      if (firstCallback) { firstCallback = false; return; }
+      if (firstCallback) {
+        firstCallback = false;
+        return;
+      }
       if (runListReloadTimer) clearTimeout(runListReloadTimer);
       runListReloadTimer = setTimeout(() => {
         reloadRunList();
@@ -276,8 +289,16 @@
   function formatFullTime(ts: string | null): string {
     if (!ts) return "--";
     const d = new Date(ts);
-    return d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
-           " " + d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZoneName: "short" });
+    return (
+      d.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" }) +
+      " " +
+      d.toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+      })
+    );
   }
 
   interface DayRuns {
@@ -301,10 +322,15 @@
     for (const [date, dayRuns] of map) {
       result.push({
         date,
-        label: new Date(date + "T00:00:00").toLocaleDateString(undefined, { month: "short", day: "numeric" }),
+        label: new Date(date + "T00:00:00").toLocaleDateString(undefined, {
+          month: "short",
+          day: "numeric",
+        }),
         runs: dayRuns.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "")),
-        success: dayRuns.filter(r => r.status === "success" || r.status === "succeeded" || r.status === "completed").length,
-        failed: dayRuns.filter(r => r.status === "failed").length,
+        success: dayRuns.filter(
+          (r) => r.status === "success" || r.status === "succeeded" || r.status === "completed",
+        ).length,
+        failed: dayRuns.filter((r) => r.status === "failed").length,
         total: dayRuns.length,
       });
     }
@@ -317,27 +343,61 @@
 <div class="runs-page animate-in">
   <div class="toolbar">
     <div class="toolbar-left">
-      <Breadcrumb items={[
-        { label: "Pipelines", href: "#/pipelines" },
-        { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params.id}/edit` },
-        { label: "Runs" }
-      ]} />
+      <Breadcrumb
+        items={[
+          { label: "Pipelines", href: "#/pipelines" },
+          { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params.id}/edit` },
+          { label: "Runs" },
+        ]}
+      />
     </div>
     <div class="toolbar-right">
       <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.layout.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+          ><path
+            d={icons.layout.d}
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          /></svg
+        >
         <span class="btn-label">Edit Pipeline</span>
       </a>
-      <button class="btn-sm" on:click={() => showBackfill = !showBackfill} title="Backfill">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.history.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      <button class="btn-sm" on:click={() => (showBackfill = !showBackfill)} title="Backfill">
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+          ><path
+            d={icons.history.d}
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          /></svg
+        >
         <span class="btn-label">Backfill</span>
       </button>
       <button class="btn-sm" on:click={openParamsModal} title="Run with Params">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.settings.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+          ><path
+            d={icons.settings.d}
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          /></svg
+        >
         <span class="btn-label">Run with Params</span>
       </button>
       <button class="btn-sm btn-run" on:click={triggerRun} title="Run Now">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+          ><path
+            d={icons.play.d}
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          /></svg
+        >
         <span class="btn-label">Run Now</span>
       </button>
     </div>
@@ -349,10 +409,14 @@
       <input type="date" bind:value={backfillStart} class="date-input" />
       <span class="backfill-label">to</span>
       <input type="date" bind:value={backfillEnd} class="date-input" />
-      <button class="btn-sm btn-run" on:click={runBackfill} disabled={backfilling || !backfillStart || !backfillEnd}>
+      <button
+        class="btn-sm btn-run"
+        on:click={runBackfill}
+        disabled={backfilling || !backfillStart || !backfillEnd}
+      >
         {backfilling ? "Running..." : "Start Backfill"}
       </button>
-      <button class="btn-sm" on:click={() => showBackfill = false}>Cancel</button>
+      <button class="btn-sm" on:click={() => (showBackfill = false)}>Cancel</button>
     </div>
   {/if}
 
@@ -361,24 +425,43 @@
     <div class="history-section">
       <div class="history-header">
         <h3 class="detail-section-title" style="margin:0">Run History</h3>
-        <button class="history-toggle" on:click={() => historyExpanded = !historyExpanded}>
+        <button class="history-toggle" on:click={() => (historyExpanded = !historyExpanded)}>
           {historyExpanded ? "Collapse" : `Show all ${runsByDate.length} days`}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" style="transform:rotate({historyExpanded ? 180 : 0}deg);transition:transform 150ms ease"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            style="transform:rotate({historyExpanded ? 180 : 0}deg);transition:transform 150ms ease"
+            ><path
+              d="M6 9l6 6 6-6"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
+          >
         </button>
       </div>
       <div class="history-grid">
-        {#each (historyExpanded ? runsByDate : runsByDate.slice(0, 3)) as day}
+        {#each historyExpanded ? runsByDate : runsByDate.slice(0, 3) as day}
           <div class="history-row">
             <span class="history-date mono">{day.label}</span>
             <div class="history-cells">
               {#each day.runs as r}
                 <button
                   class="history-cell"
-                  class:cell-success={r.status === "success" || r.status === "succeeded" || r.status === "completed"}
+                  class:cell-success={r.status === "success" ||
+                    r.status === "succeeded" ||
+                    r.status === "completed"}
                   class:cell-failed={r.status === "failed"}
                   class:cell-running={r.status === "running"}
                   class:cell-pending={r.status === "pending"}
-                  title="{r.id.slice(0,8)} | {r.status} | {formatTime(r.started_at)} | {formatDuration(r)} | {totalRows(r)} rows{r.error ? ' | ' + r.error.slice(0,50) : ''}"
+                  title="{r.id.slice(0, 8)} | {r.status} | {formatTime(
+                    r.started_at,
+                  )} | {formatDuration(r)} | {totalRows(r)} rows{r.error
+                    ? ' | ' + r.error.slice(0, 50)
+                    : ''}"
                   on:click={() => selectRun(r)}
                 ></button>
               {/each}
@@ -405,7 +488,12 @@
     <div class="runs-list">
       {#each runs.slice((runPage - 1) * runPageSize, runPage * runPageSize) as run}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="run-card" class:expanded={expandedRunId === run.id} on:click={() => selectRun(run)} on:keydown={() => {}}>
+        <div
+          class="run-card"
+          class:expanded={expandedRunId === run.id}
+          on:click={() => selectRun(run)}
+          on:keydown={() => {}}
+        >
           <div class="run-header">
             <StatusBadge status={run.status} />
             <span class="run-id mono">{run.id.slice(0, 8)}</span>
@@ -413,16 +501,44 @@
             <span class="run-duration mono">{formatDuration(run)}</span>
             <span class="run-rows mono">{totalRows(run)} rows</span>
             {#if run.status === "running"}
-              <button class="btn-cancel" on:click|stopPropagation={() => cancelRun(run.id)}>Cancel</button>
+              <button class="btn-cancel" on:click|stopPropagation={() => cancelRun(run.id)}
+                >Cancel</button
+              >
             {/if}
             {#if run.status === "failed"}
-              <span class="run-error-hint" title={run.error || "Check logs for details"}>Error</span>
-              <button class="btn-resume" on:click|stopPropagation={() => resumeRun(run.id)}>Resume</button>
-              <button class="btn-rerun" on:click|stopPropagation={() => rerunPipeline()}>Re-run</button>
+              <span class="run-error-hint" title={run.error || "Check logs for details"}>Error</span
+              >
+              <button class="btn-resume" on:click|stopPropagation={() => resumeRun(run.id)}
+                >Resume</button
+              >
+              <button class="btn-rerun" on:click|stopPropagation={() => rerunPipeline()}
+                >Re-run</button
+              >
             {/if}
-            <a href="/api/runs/{run.id}/logs/export" class="btn-export" on:click|stopPropagation title="Download logs" target="_blank">Logs</a>
-            <svg class="expand-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" style="transform: rotate({expandedRunId === run.id ? 90 : 0}deg); transition: transform 150ms ease">
-              <path d={icons.chevronRight.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <a
+              href="/api/runs/{run.id}/logs/export"
+              class="btn-export"
+              on:click|stopPropagation
+              title="Download logs"
+              target="_blank">Logs</a
+            >
+            <svg
+              class="expand-icon"
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              style="transform: rotate({expandedRunId === run.id
+                ? 90
+                : 0}deg); transition: transform 150ms ease"
+            >
+              <path
+                d={icons.chevronRight.d}
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
             </svg>
           </div>
 
@@ -450,8 +566,9 @@
                 <div class="summary-item">
                   <span class="summary-label">Nodes</span>
                   <span class="summary-value mono">
-                    {selectedRun.node_runs?.filter(n => n.status === "success").length || 0} ok,
-                    {selectedRun.node_runs?.filter(n => n.status === "failed").length || 0} failed
+                    {selectedRun.node_runs?.filter((n) => n.status === "success").length || 0} ok,
+                    {selectedRun.node_runs?.filter((n) => n.status === "failed").length || 0} failed,
+                    {selectedRun.node_runs?.filter((n) => n.status === "skipped").length || 0} skipped
                   </span>
                 </div>
                 {#if selectedRun.error}
@@ -490,7 +607,9 @@
                     runStartedAt={selectedRun.started_at}
                     pipelineId={pipeline?.id || params.id || ""}
                     runId={selectedRun.id}
-                    onSelectNode={(nodeId) => { previewNodeId = previewNodeId === nodeId ? null : nodeId; }}
+                    onSelectNode={(nodeId) => {
+                      previewNodeId = previewNodeId === nodeId ? null : nodeId;
+                    }}
                   />
                 </div>
               {/if}
@@ -501,11 +620,12 @@
                   <h3>Data Preview</h3>
                   <div class="preview-tabs">
                     {#each selectedRun.node_runs as nr}
-                      {@const node = (pipeline?.nodes || []).find(n => n.id === nr.node_id)}
+                      {@const node = (pipeline?.nodes || []).find((n) => n.id === nr.node_id)}
                       <button
                         class="preview-tab"
                         class:active={previewNodeId === nr.node_id}
-                        on:click={() => previewNodeId = previewNodeId === nr.node_id ? null : nr.node_id}
+                        on:click={() =>
+                          (previewNodeId = previewNodeId === nr.node_id ? null : nr.node_id)}
                       >
                         {node?.name || nr.node_id}
                         <span class="tab-rows">{nr.row_count}</span>
@@ -517,7 +637,8 @@
                       <DataPreview
                         runId={selectedRun.id}
                         nodeId={previewNodeId}
-                        nodeName={(pipeline?.nodes || []).find(n => n.id === previewNodeId)?.name || ""}
+                        nodeName={(pipeline?.nodes || []).find((n) => n.id === previewNodeId)
+                          ?.name || ""}
                       />
                     {/key}
                   {/if}
@@ -530,7 +651,7 @@
                   <h3>Data Profile</h3>
                   <div class="preview-tabs">
                     {#each selectedRun.node_runs as nr}
-                      {@const node = (pipeline?.nodes || []).find(n => n.id === nr.node_id)}
+                      {@const node = (pipeline?.nodes || []).find((n) => n.id === nr.node_id)}
                       <button
                         class="preview-tab"
                         class:active={profileNodeId === nr.node_id}
@@ -568,11 +689,15 @@
                               <tr>
                                 <td class="col-name">{col.name}</td>
                                 <td><span class="type-badge">{col.type}</span></td>
-                                <td class:high-null={col.null_pct > 20}>{col.null_pct.toFixed(1)}%</td>
+                                <td class:high-null={col.null_pct > 20}
+                                  >{col.null_pct.toFixed(1)}%</td
+                                >
                                 <td>{col.unique_pct.toFixed(1)}%</td>
                                 <td class="mono">{col.min_val || "—"}</td>
                                 <td class="mono">{col.max_val || "—"}</td>
-                                <td class="mono">{col.is_numeric ? col.mean_val?.toFixed(2) : "—"}</td>
+                                <td class="mono"
+                                  >{col.is_numeric ? col.mean_val?.toFixed(2) : "—"}</td
+                                >
                               </tr>
                             {/each}
                           </tbody>
@@ -608,13 +733,21 @@
         </div>
       {/each}
     </div>
-    <Pagination total={runs.length} page={runPage} pageSize={runPageSize}
-      on:page={(e) => runPage = e.detail} on:pagesize={(e) => { runPageSize = e.detail; runPage = 1; }} />
+    <Pagination
+      total={runs.length}
+      page={runPage}
+      pageSize={runPageSize}
+      on:page={(e) => (runPage = e.detail)}
+      on:pagesize={(e) => {
+        runPageSize = e.detail;
+        runPage = 1;
+      }}
+    />
   {/if}
 
   {#if showParamsModal}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="modal-overlay" on:click={() => showParamsModal = false} on:keydown={() => {}}>
+    <div class="modal-overlay" on:click={() => (showParamsModal = false)} on:keydown={() => {}}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="modal-content" on:click|stopPropagation on:keydown={() => {}}>
         <h3>Run with Parameters</h3>
@@ -630,8 +763,11 @@
               <input
                 class="param-input"
                 placeholder="Value"
-                value={value}
-                on:input={(e) => { runParams[key] = e.currentTarget.value; runParams = runParams; }}
+                {value}
+                on:input={(e) => {
+                  runParams[key] = e.currentTarget.value;
+                  runParams = runParams;
+                }}
               />
               <button class="btn-remove-param" on:click={() => removeParam(key)}>x</button>
             </div>
@@ -639,7 +775,7 @@
         </div>
         <button class="btn-sm" on:click={addParam}>+ Add Parameter</button>
         <div class="modal-actions">
-          <button class="btn-sm" on:click={() => showParamsModal = false}>Cancel</button>
+          <button class="btn-sm" on:click={() => (showParamsModal = false)}>Cancel</button>
           <button class="btn-sm btn-run" on:click={triggerRun}>Run</button>
         </div>
       </div>
@@ -659,12 +795,26 @@
     align-items: center;
     gap: var(--space-sm);
   }
-  .back-link { font-size: 0.875rem; color: var(--text-muted); }
-  .back-link:hover { color: var(--text-primary); }
-  .separator { color: var(--border); }
-  .pipeline-name { font-weight: 600; }
-  .page-label { color: var(--text-muted); }
-  .toolbar-right { display: flex; gap: var(--space-sm); }
+  .back-link {
+    font-size: 0.875rem;
+    color: var(--text-muted);
+  }
+  .back-link:hover {
+    color: var(--text-primary);
+  }
+  .separator {
+    color: var(--border);
+  }
+  .pipeline-name {
+    font-weight: 600;
+  }
+  .page-label {
+    color: var(--text-muted);
+  }
+  .toolbar-right {
+    display: flex;
+    gap: var(--space-sm);
+  }
 
   .btn-sm {
     padding: 4px 12px;
@@ -677,7 +827,10 @@
     text-decoration: none;
     transition: all var(--transition-fast);
   }
-  .btn-sm:hover { background: var(--border); color: var(--text-primary); }
+  .btn-sm:hover {
+    background: var(--border);
+    color: var(--text-primary);
+  }
   .btn-sm.btn-run {
     background: var(--success-bg);
     border-color: var(--success);
@@ -715,8 +868,12 @@
     transition: border-color var(--transition-fast);
     overflow: hidden;
   }
-  .run-card:hover { border-color: var(--border-hover); }
-  .run-card.expanded { border-color: var(--accent); }
+  .run-card:hover {
+    border-color: var(--border-hover);
+  }
+  .run-card.expanded {
+    border-color: var(--accent);
+  }
 
   .run-header {
     display: flex;
@@ -724,10 +881,22 @@
     gap: var(--space-md);
     padding: var(--space-md) var(--space-lg);
   }
-  .run-id { font-size: 0.75rem; }
-  .run-time { font-size: 0.8125rem; color: var(--text-secondary); }
-  .run-duration { font-size: 0.75rem; color: var(--text-muted); }
-  .run-rows { font-size: 0.75rem; color: var(--text-muted); margin-left: auto; }
+  .run-id {
+    font-size: 0.75rem;
+  }
+  .run-time {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
+  .run-duration {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .run-rows {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-left: auto;
+  }
   .btn-resume {
     padding: 3px 10px;
     border-radius: 4px;
@@ -738,31 +907,58 @@
     color: var(--warning);
     transition: all 150ms ease;
   }
-  .btn-resume:hover { background: rgba(245, 158, 11, 0.15); }
+  .btn-resume:hover {
+    background: rgba(245, 158, 11, 0.15);
+  }
   .btn-rerun {
-    padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
-    background: var(--success-bg); color: var(--success);
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--success-bg);
+    color: var(--success);
     border: 1px solid rgba(34, 197, 94, 0.2);
     transition: background 150ms ease;
   }
-  .btn-rerun:hover { background: rgba(34, 197, 94, 0.15); }
+  .btn-rerun:hover {
+    background: rgba(34, 197, 94, 0.15);
+  }
   .btn-cancel {
-    padding: 3px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
-    background: var(--failed-bg); border: 1px solid rgba(239,68,68,0.3);
-    color: var(--failed); transition: all 150ms ease;
-  }
-  .btn-cancel:hover { background: rgba(239,68,68,0.15); }
-  .run-error-hint {
-    font-size: 10px; font-weight: 600; color: var(--failed);
-    background: var(--failed-bg); padding: 2px 6px; border-radius: 3px;
-  }
-  .btn-export {
-    font-size: 10px; font-weight: 500; color: var(--text-muted);
-    background: var(--bg-secondary); padding: 2px 8px; border-radius: 3px;
-    border: 1px solid var(--border-subtle); text-decoration: none;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--failed-bg);
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    color: var(--failed);
     transition: all 150ms ease;
   }
-  .btn-export:hover { color: var(--text-primary); border-color: var(--border-hover); }
+  .btn-cancel:hover {
+    background: rgba(239, 68, 68, 0.15);
+  }
+  .run-error-hint {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--failed);
+    background: var(--failed-bg);
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .btn-export {
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--bg-secondary);
+    padding: 2px 8px;
+    border-radius: 3px;
+    border: 1px solid var(--border-subtle);
+    text-decoration: none;
+    transition: all 150ms ease;
+  }
+  .btn-export:hover {
+    color: var(--text-primary);
+    border-color: var(--border-hover);
+  }
   .backfill-panel {
     display: flex;
     align-items: center;
@@ -783,8 +979,13 @@
     padding: 4px 8px;
   }
 
-  .expand-icon { color: var(--text-muted); font-size: 0.75rem; }
-  .mono { font-family: var(--font-mono); }
+  .expand-icon {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .mono {
+    font-family: var(--font-mono);
+  }
 
   .run-detail {
     border-top: 1px solid var(--border);
@@ -795,7 +996,9 @@
   .detail-section {
     margin-bottom: var(--space-lg);
   }
-  .detail-section:last-child { margin-bottom: 0; }
+  .detail-section:last-child {
+    margin-bottom: 0;
+  }
   .detail-section h3 {
     font-size: 0.75rem;
     color: var(--text-muted);
@@ -805,11 +1008,15 @@
   }
 
   .canvas-header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: 8px;
   }
   .canvas-hint {
-    font-size: 10px; color: var(--text-dim); font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
   }
   .canvas-status {
     height: 220px;
@@ -837,14 +1044,17 @@
     color: var(--text-secondary);
     transition: all 150ms ease;
   }
-  .preview-tab:hover { border-color: var(--text-ghost); color: var(--text-primary); }
+  .preview-tab:hover {
+    border-color: var(--text-ghost);
+    color: var(--text-primary);
+  }
   .preview-tab.active {
     border-color: var(--accent);
     background: var(--accent-glow);
     color: var(--accent-text);
   }
   .tab-rows {
-    font-family: 'JetBrains Mono', monospace;
+    font-family: "JetBrains Mono", monospace;
     font-size: 10px;
     color: var(--text-dim);
     background: var(--bg-code);
@@ -913,7 +1123,9 @@
     color: var(--failed);
     cursor: pointer;
   }
-  .btn-remove-param:hover { background: rgba(239, 68, 68, 0.15); }
+  .btn-remove-param:hover {
+    background: rgba(239, 68, 68, 0.15);
+  }
   .modal-actions {
     display: flex;
     justify-content: flex-end;
@@ -923,49 +1135,88 @@
 
   /* ── Profile ── */
   .profile-loading {
-    padding: 12px; font-size: 12px; color: var(--text-muted); text-align: center;
+    padding: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-align: center;
   }
   .profile-summary {
-    display: flex; gap: 16px; padding: 10px 0;
-    border-bottom: 1px solid var(--border-subtle); margin-bottom: 8px;
+    display: flex;
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    margin-bottom: 8px;
   }
   .profile-stat {
-    font-family: var(--font-mono); font-size: 12px; font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-primary);
   }
-  .profile-table-wrap { overflow-x: auto; }
+  .profile-table-wrap {
+    overflow-x: auto;
+  }
   .profile-table {
-    width: 100%; border-collapse: collapse;
-    font-size: 11px; font-family: var(--font-mono);
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    font-family: var(--font-mono);
   }
   .profile-table th {
-    text-align: left; padding: 5px 8px;
-    font-size: 9px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--text-ghost);
+    text-align: left;
+    padding: 5px 8px;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-ghost);
     border-bottom: 1px solid var(--border-subtle);
   }
   .profile-table td {
-    padding: 4px 8px; color: var(--text-secondary);
+    padding: 4px 8px;
+    color: var(--text-secondary);
     border-bottom: 1px solid var(--border-subtle);
   }
-  .profile-table .col-name { font-weight: 600; color: var(--text-primary); }
-  .profile-table .mono { font-family: var(--font-mono); }
-  .type-badge {
-    font-size: 9px; font-weight: 600; padding: 1px 5px;
-    border-radius: 3px; background: var(--bg-tertiary); color: var(--text-muted);
+  .profile-table .col-name {
+    font-weight: 600;
+    color: var(--text-primary);
   }
-  .high-null { color: var(--warning); font-weight: 600; }
+  .profile-table .mono {
+    font-family: var(--font-mono);
+  }
+  .type-badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+  }
+  .high-null {
+    color: var(--warning);
+    font-weight: 600;
+  }
 
   /* ── Drift ── */
-  .drift-section { margin-top: 12px; }
+  .drift-section {
+    margin-top: 12px;
+  }
   .drift-section h4 {
-    font-size: 10px; font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.08em; color: var(--warning); margin-bottom: 6px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--warning);
+    margin-bottom: 6px;
   }
   .drift-alert {
-    display: flex; align-items: center; gap: 8px;
-    padding: 5px 8px; border-radius: 4px;
-    font-size: 11px; margin-bottom: 3px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    margin-bottom: 3px;
     background: rgba(245, 158, 11, 0.08);
     border: 1px solid rgba(245, 158, 11, 0.15);
   }
@@ -974,13 +1225,25 @@
     border-color: rgba(239, 68, 68, 0.2);
   }
   .drift-type {
-    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-    padding: 1px 5px; border-radius: 3px;
-    background: var(--bg-tertiary); color: var(--warning);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--warning);
   }
-  .drift-alert.critical .drift-type { color: var(--failed); }
-  .drift-col { font-weight: 600; color: var(--text-primary); }
-  .drift-detail { color: var(--text-muted); font-size: 10px; }
+  .drift-alert.critical .drift-type {
+    color: var(--failed);
+  }
+  .drift-col {
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .drift-detail {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
 
   /* Toolbar buttons: icon + label on desktop, icon-only on mobile */
   .btn-sm {
@@ -988,7 +1251,9 @@
     align-items: center;
     gap: 5px;
   }
-  .btn-icon { flex-shrink: 0; }
+  .btn-icon {
+    flex-shrink: 0;
+  }
 
   @media (max-width: 768px) {
     .toolbar {
@@ -1022,7 +1287,9 @@
       flex-wrap: wrap;
       gap: var(--space-sm);
     }
-    .run-rows { margin-left: 0; }
+    .run-rows {
+      margin-left: 0;
+    }
   }
 
   /* ── Run History Grid ── */
@@ -1045,7 +1312,9 @@
     border-radius: var(--radius-sm);
     transition: color 150ms ease;
   }
-  .history-toggle:hover { color: var(--text-primary); }
+  .history-toggle:hover {
+    color: var(--text-primary);
+  }
   .history-section {
     margin-bottom: var(--space-lg);
   }
@@ -1069,7 +1338,9 @@
     padding: 4px 0;
     border-bottom: 1px solid var(--border-subtle);
   }
-  .history-row:last-child { border-bottom: none; }
+  .history-row:last-child {
+    border-bottom: none;
+  }
   .history-date {
     width: 55px;
     flex-shrink: 0;
@@ -1088,20 +1359,36 @@
     border-radius: 2px;
     border: none;
     cursor: pointer;
-    transition: transform 100ms ease, box-shadow 100ms ease;
+    transition:
+      transform 100ms ease,
+      box-shadow 100ms ease;
     background: var(--bg-tertiary);
   }
   .history-cell:hover {
     transform: scale(1.3);
-    box-shadow: 0 0 4px rgba(255,255,255,0.1);
+    box-shadow: 0 0 4px rgba(255, 255, 255, 0.1);
   }
-  .cell-success { background: var(--success); }
-  .cell-failed { background: var(--failed); }
-  .cell-running { background: var(--running); animation: pulse-cell 1.5s ease-in-out infinite; }
-  .cell-pending { background: var(--pending); }
+  .cell-success {
+    background: var(--success);
+  }
+  .cell-failed {
+    background: var(--failed);
+  }
+  .cell-running {
+    background: var(--running);
+    animation: pulse-cell 1.5s ease-in-out infinite;
+  }
+  .cell-pending {
+    background: var(--pending);
+  }
   @keyframes pulse-cell {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.5; }
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.5;
+    }
   }
   .history-count {
     width: 30px;
