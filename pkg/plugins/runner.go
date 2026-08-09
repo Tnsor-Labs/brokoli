@@ -298,13 +298,32 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 		_ = killProcessTree(proc.Process)
 	}
 
-	// Error ordering: prefer the plugin-reported MsgError over a bare
-	// exit code, then fall back to a generic non-zero exit message.
-	// Context deadline comes last because it's the runner's own error
-	// and the caller usually wants the plugin's account first.
+	// Error ordering: the plugin's own MsgError first — when it managed
+	// to report one it explains the failure better than anything the
+	// host can infer. Then the context, because once it is done every
+	// rung below describes the host's own shutdown as a plugin fault.
+	// Then stdin, decode, and exit status.
 	if pluginErr != nil {
 		return result, fmt.Errorf("plugin %s %s: %w", r.manifest.Name, cmd, pluginErr)
 	}
+
+	// Once the context is done the runner signals the process and closes
+	// the pipes itself, so the rungs below would report a broken stdin
+	// pipe, a "file already closed" decode failure, or a bare
+	// "signal: killed" exit — all of them blaming the plugin for the
+	// host's own shutdown.
+	//
+	// Gated on an actual failure so a read that happened to complete as
+	// the context was cancelled still returns its result instead of
+	// being relabelled a cancellation.
+	if ctxErr := ctx.Err(); ctxErr != nil && (waitErr != nil || decodeErr != nil) {
+		if errors.Is(ctxErr, context.DeadlineExceeded) {
+			return result, fmt.Errorf("plugin %s %s: timed out after %s",
+				r.manifest.Name, cmd, r.timeout)
+		}
+		return result, fmt.Errorf("plugin %s %s: cancelled", r.manifest.Name, cmd)
+	}
+
 	if stdinErr := <-stdinErrCh; stdinErr != nil {
 		return result, fmt.Errorf("plugin %s %s: %w", r.manifest.Name, cmd, stdinErr)
 	}
@@ -312,10 +331,6 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 		return result, fmt.Errorf("plugin %s %s: decode stdout: %w", r.manifest.Name, cmd, decodeErr)
 	}
 	if waitErr != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return result, fmt.Errorf("plugin %s %s: timed out after %s",
-				r.manifest.Name, cmd, r.timeout)
-		}
 		return result, fmt.Errorf("plugin %s %s: exit: %w", r.manifest.Name, cmd, waitErr)
 	}
 	return result, nil

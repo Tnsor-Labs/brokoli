@@ -146,3 +146,47 @@ func TestRunner_Cancel_KillsOrphanedChild(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 }
+
+// TestRunner_Cancel_ReportsCancellationNotDecodeFailure locks in that
+// the host's own shutdown is not reported as plugin misbehavior. The
+// runner closes the plugin's pipes on cancel, which surfaces as a read
+// error inside DecodeStream — that must not reach the run log as the
+// plugin emitting malformed output.
+func TestRunner_Cancel_ReportsCancellationNotDecodeFailure(t *testing.T) {
+	runner := NewRunner(slowPlugin(t), 30*time.Second)
+	runner.terminationGrace = 300 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	_, err := runner.Read(ctx, Config{}, "stubborn", nil)
+	if err == nil {
+		t.Fatal("cancelled read returned a nil error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "cancelled") {
+		t.Errorf("error %q does not report the cancellation", msg)
+	}
+	for _, leak := range []string{"decode stdout", "file already closed", "signal: killed"} {
+		if strings.Contains(msg, leak) {
+			t.Errorf("error %q leaks host-shutdown detail %q", msg, leak)
+		}
+	}
+}
+
+// TestRunner_Timeout_StillReportsTimeout guards the branch moved in the
+// same change: a plugin that outruns the runner's timeout is still
+// reported as a timeout, not as a cancellation.
+func TestRunner_Timeout_StillReportsTimeout(t *testing.T) {
+	runner := NewRunner(slowPlugin(t), 400*time.Millisecond)
+	runner.terminationGrace = 300 * time.Millisecond
+
+	_, err := runner.Read(context.Background(), Config{}, "blocking", nil)
+	if err == nil {
+		t.Fatal("read past the runner timeout returned a nil error")
+	}
+	if !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("error %q does not report the timeout", err)
+	}
+}
