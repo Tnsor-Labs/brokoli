@@ -563,6 +563,11 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isPublicCapabilitiesRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Open mode: if no users created yet, only allow auth setup and non-API routes
 			if us.UserCount() == 0 {
 				if strings.HasPrefix(r.URL.Path, "/api/auth/") || !strings.HasPrefix(r.URL.Path, "/api/") {

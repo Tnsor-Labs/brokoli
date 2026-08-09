@@ -16,6 +16,27 @@ type AuthConfig struct {
 	mu      sync.RWMutex
 }
 
+func isPublicCapabilitiesRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && r.URL.Path == "/api/capabilities"
+}
+
+func isPublicObservabilityRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/metrics")
+}
+
+func withPublicAuthBypass(middleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		protected := middleware(next)
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isPublicCapabilitiesRequest(r) || isPublicObservabilityRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+			protected.ServeHTTP(w, r)
+		})
+	}
+}
+
 // NewAuthConfig creates an auth config. If no keys provided, auth is disabled.
 func NewAuthConfig() *AuthConfig {
 	return &AuthConfig{
@@ -67,6 +88,11 @@ func GenerateKey() (string, error) {
 func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if isPublicCapabilitiesRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Skip if auth is disabled
 			if !auth.Enabled {
 				next.ServeHTTP(w, r)
