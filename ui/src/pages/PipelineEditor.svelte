@@ -561,9 +561,12 @@
             </div>
           </div>
 
-          <!-- SLA -->
+          <!-- SLA. The deadline is stored by every edition but only
+               monitored by an enterprise deployment — say so, instead of
+               letting a community install configure a deadline nothing
+               watches and discover that during an incident. -->
           <div class="setting-item">
-            <label>SLA Deadline</label>
+            <label>SLA Deadline <span class="ee-tag" title="Stored in every edition; breach monitoring and alerts require an enterprise deployment.">Enterprise</span></label>
             <input
               type="time"
               value={pipeline.sla_deadline || ""}
@@ -571,7 +574,7 @@
             />
           </div>
           <div class="setting-item">
-            <label>SLA Timezone</label>
+            <label>SLA Timezone <span class="ee-tag" title="Stored in every edition; breach monitoring and alerts require an enterprise deployment.">Enterprise</span></label>
             <select
               value={pipeline.sla_timezone || "UTC"}
               on:change={(e) => { if (pipeline) pipeline.sla_timezone = e.currentTarget.value; }}
@@ -1458,5 +1461,19 @@
   @media (max-width: 1024px) and (min-width: 769px) {
     .palette-sidebar { width: 150px; }
     .config-sidebar { width: 230px; }
+  }
+
+  .ee-tag {
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border-radius: var(--radius-sm);
+    padding: 1px 5px;
+    margin-left: 5px;
+    vertical-align: middle;
+    cursor: help;
   }
 </style>
