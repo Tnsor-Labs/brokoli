@@ -218,6 +218,10 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS params JSONB NOT NULL DEFAULT '{}'`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_org ON runs(org_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
+	// Backs the keyset walk in ListRunsByPipelineCursor. The status index
+	// above cannot serve it: it leads with status, while the walk filters on
+	// pipeline_id and ranges over id. Without this, every page is a scan.
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_id ON runs(pipeline_id, id DESC)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_run_status ON node_runs(run_id, status)`)
 
 	// Pipelines tags column
@@ -894,6 +898,80 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 		runs = append(runs, r)
 	}
 	return runs, rows.Err()
+}
+
+// scanRunsPG drains a run query into models.Run values. The three run
+// listings below decode identically; keeping one copy avoids the params
+// JSON handling drifting between them.
+func scanRunsPG(rows *sql.Rows) ([]models.Run, error) {
+	var runs []models.Run
+	for rows.Next() {
+		var r models.Run
+		var status string
+		var paramsJSON []byte
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
+			return nil, err
+		}
+		r.Status = models.RunStatus(status)
+		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
+			return nil, fmt.Errorf("decode run params: %w", err)
+		}
+		runs = append(runs, r)
+	}
+	return runs, rows.Err()
+}
+
+const runColumnsPG = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id`
+
+func (s *PostgresStore) ListRunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error) {
+	// Fetch one more than asked for: if it comes back, there is another
+	// page. That is what lets hasNext be exact without a COUNT.
+	fetchN := limit + 1
+	var rows *sql.Rows
+	var err error
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT `+runColumnsPG+` FROM runs WHERE pipeline_id = $1 ORDER BY id DESC LIMIT $2`,
+			pipelineID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT `+runColumnsPG+` FROM runs WHERE pipeline_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`,
+			pipelineID, afterID, fetchN)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+
+	runs, err := scanRunsPG(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	hasNext := len(runs) > limit
+	if hasNext {
+		runs = runs[:limit]
+	}
+	return runs, hasNext, nil
+}
+
+func (s *PostgresStore) ListRunsByPipelinePaged(pipelineID string, limit, offset int) ([]models.Run, int, error) {
+	total, err := s.CountRunsByPipeline(pipelineID)
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := s.db.Query(
+		`SELECT `+runColumnsPG+` FROM runs WHERE pipeline_id = $1 ORDER BY id DESC LIMIT $2 OFFSET $3`,
+		pipelineID, limit, offset)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	runs, err := scanRunsPG(rows)
+	if err != nil {
+		return nil, 0, err
+	}
+	return runs, total, nil
 }
 
 // ListNonTerminalRuns returns a keyset-paginated page of runs left in a

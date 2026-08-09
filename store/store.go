@@ -250,6 +250,19 @@ type Store interface {
 	CreateRunTx(tx *sql.Tx, r *models.Run) error
 	GetRun(id string) (*models.Run, error)
 	ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error)
+	// ListRunsByPipelineCursor walks run history by keyset, newest first,
+	// using the run ID as the cursor. Pass an empty afterID for the first
+	// page and the last returned ID for each page after that. Returns
+	// hasNext so callers can stop without a COUNT.
+	//
+	// Ordering is by ID alone, unlike ListRunsByPipeline, which orders by
+	// started_at and cannot be walked by an ID cursor: a keyset is only
+	// correct when the sort key and the cursor key are the same column.
+	// Run IDs are UUIDv7, so ID order is creation order.
+	ListRunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error)
+	// ListRunsByPipelinePaged returns one offset page plus the true total,
+	// for callers that need page numbers rather than a cursor.
+	ListRunsByPipelinePaged(pipelineID string, limit, offset int) ([]models.Run, int, error)
 	UpdateRun(r *models.Run) error
 
 	// ListNonTerminalRuns returns a keyset-paginated page of runs whose

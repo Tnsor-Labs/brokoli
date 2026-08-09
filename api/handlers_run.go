@@ -85,37 +85,101 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// defaultRunPageSize is what a caller gets when it asks for a listing
+// without saying how much it wants. It matches the cap this endpoint used
+// to hard-code, so an existing unparameterised caller sees no change.
+const defaultRunPageSize = 50
+
+// maxRunPageSize bounds what a caller can ask for in one request, so a
+// pipeline with a very long history cannot be turned into an unbounded
+// response by a single query parameter.
+const maxRunPageSize = 500
+
+// runPageSize reads ?limit=, falling back to the default and clamping to
+// the maximum.
+func runPageSize(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || n <= 0 {
+		return defaultRunPageSize
+	}
+	if n > maxRunPageSize {
+		return maxRunPageSize
+	}
+	return n
+}
+
+// ListByPipeline returns a page of a pipeline's run history.
+//
+// Three response shapes, chosen by query parameter:
+//
+//	(none)            a plain array, the newest defaultRunPageSize runs
+//	?after= / ?limit= store.CursorResult — keyset, walks the whole history
+//	?page=            the offset-paginated envelope, with a true total
+//
+// The bare form is unchanged so existing callers keep working. The cursor
+// form is the one to use for browsing history: it walks by run ID, which is
+// a UUIDv7 and therefore already in creation order, so paging costs the
+// same whether it is the first page or the ten-thousandth and needs no
+// COUNT (Tnsor-Labs/brokoli#79).
 func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
-	runs, err := h.store.ListRunsByPipeline(pipelineID, 50)
+	q := r.URL.Query()
+	limit := runPageSize(r)
+
+	// Offset pagination, kept for callers that page by number. It used to
+	// slice an already-truncated 50 runs in memory, so its total was capped
+	// at 50 and any page past the second came back empty however many runs
+	// existed. Both the page and the total now come from the database.
+	if q.Get("page") != "" {
+		pp := ParsePageParams(r)
+		runs, total, err := h.store.ListRunsByPipelinePaged(pipelineID, pp.Limit(), pp.Offset())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		runs = populateRunErrors(runs)
+		writeJSON(w, http.StatusOK, PaginateSlice(runs, total, pp))
+		return
+	}
+
+	if q.Get("after") != "" || q.Get("limit") != "" {
+		runs, hasNext, err := h.store.ListRunsByPipelineCursor(pipelineID, q.Get("after"), limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		runs = populateRunErrors(runs)
+		cursor := ""
+		if hasNext && len(runs) > 0 {
+			cursor = runs[len(runs)-1].ID
+		}
+		writeJSON(w, http.StatusOK, store.CursorResult{
+			Items:   runs,
+			HasNext: hasNext,
+			Cursor:  cursor,
+			Limit:   limit,
+		})
+		return
+	}
+
+	runs, err := h.store.ListRunsByPipeline(pipelineID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	writeJSON(w, http.StatusOK, populateRunErrors(runs))
+}
+
+// populateRunErrors normalises a run listing for the wire: never nil, so
+// clients get [] rather than null, and each run's structured error filled in.
+func populateRunErrors(runs []models.Run) []models.Run {
 	if runs == nil {
-		runs = []models.Run{}
+		return []models.Run{}
 	}
 	for i := range runs {
 		runs[i].PopulateError()
 	}
-
-	// Paginated response when ?page= is set
-	if r.URL.Query().Get("page") != "" {
-		pp := ParsePageParams(r)
-		total := len(runs)
-		start := pp.Offset()
-		end := start + pp.Limit()
-		if start > total {
-			start = total
-		}
-		if end > total {
-			end = total
-		}
-		writeJSON(w, http.StatusOK, PaginateSlice(runs[start:end], total, pp))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, runs)
+	return runs
 }
 
 func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
