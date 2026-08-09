@@ -127,12 +127,12 @@ func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]
 		return f.fetchPaginated(source, requestOptions, paginationCfg, options, resume, resumeRecords, onCheckpoint)
 	}
 
-	responseBody, _, err := f.executeRequest(source, requestOptions)
+	responseBody, headers, err := f.executeRequest(source, requestOptions)
 	if err != nil {
 		return nil, err
 	}
 
-	return f.parseResponseContract(responseBody, options)
+	return f.parseResponseContract(responseBody, options, headers.Get("Content-Type"))
 }
 
 func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
@@ -284,7 +284,7 @@ func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]b
 // back to ParseJSONData's auto-detection when none of those fields are set
 // — preserving exact pre-existing behavior for pipelines built before these
 // fields existed (brokoli-sdk#1).
-func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[string]interface{}) (*common.DataSet, error) {
+func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[string]interface{}, contentType string) (*common.DataSet, error) {
 	responseType, hasResponse := options["response"].(string)
 	recordsPath, hasRecords := options["records"].(string)
 	valuePath, hasValuePath := options["value_path"].(string)
@@ -293,7 +293,7 @@ func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[str
 	case hasResponse && responseType == "scalar":
 		return scalarDataSet(responseBody, valuePath)
 	case hasResponse && responseType == "artifact":
-		return f.artifactResult(responseBody)
+		return f.artifactResult(responseBody, contentType)
 	case hasRecords && recordsPath != "":
 		records, err := common.ExtractRecordsAtPath(responseBody, recordsPath)
 		if err != nil {
@@ -344,11 +344,19 @@ func scalarDataSet(responseBody []byte, valuePath string) (*common.DataSet, erro
 // A sink that fails is an error, not a reason to inline. Silently returning
 // a multi-gigabyte body because the store was unavailable would defeat the
 // point of asking for an artifact in the first place.
-func (f *RESTFetcher) artifactResult(responseBody []byte) (*common.DataSet, error) {
+func (f *RESTFetcher) artifactResult(responseBody []byte, contentType string) (*common.DataSet, error) {
 	if f.artifacts == nil {
 		return artifactDataSet(responseBody), nil
 	}
-	ref, err := f.artifacts.PutArtifact(context.Background(), bytes.NewReader(responseBody), artifact.MediaTypeOctetStream)
+	// The upstream server's Content-Type is the best statement available of
+	// what these bytes are, and the reference exists so a reader never has
+	// to guess. Recorded verbatim (parameters like charset included); only
+	// an absent header falls back to the opaque default.
+	mediaType := contentType
+	if mediaType == "" {
+		mediaType = artifact.MediaTypeOctetStream
+	}
+	ref, err := f.artifacts.PutArtifact(context.Background(), bytes.NewReader(responseBody), mediaType)
 	if err != nil {
 		return nil, fmt.Errorf("store artifact response: %w", err)
 	}
