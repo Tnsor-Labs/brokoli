@@ -86,3 +86,23 @@ Still deferred after M1/M2: automatic threshold-based spill (M3), a cloud-storag
 **A store failure fails the node.** Falling back to inlining a body that was explicitly asked to be stored would defeat the reason for asking, and would do it precisely when the body is largest.
 
 The sink a fetcher receives is scoped to the running run, so fetched artifacts share the run's namespace with node outputs and are reclaimed by the same `DeleteRunArtifacts` call.
+
+## Update — 2026-08-09: milestone 3 shipped, and one prediction in this ADR was wrong
+
+Node outputs above a size threshold now spill to the artifact store and are read back on demand, completing the behavioural half of the plane.
+
+**The Negative consequence this ADR records did not materialise, and the design is better for it.** This document says "every node handler that currently returns a `*common.DataSet` directly needs to become aware that its input might now be a reference it has to resolve first". No node handler changed. Between nodes, results live in exactly one place — a single map inside `Runner.executeRun`, with two write sites and one read site — so spilling fits entirely behind that boundary. Outputs go in as `*common.DataSet` and come out as `*common.DataSet`; whether the bytes sat in memory or on disk in between is not observable from a handler. One implementation to get right instead of one per node type, and the node contract is untouched.
+
+That is worth stating plainly because the predicted cost was a real argument against doing this at all.
+
+**Spilling is on by default, with a high threshold** (64 MiB estimated encoded size, `BROKOLI_SPILL_THRESHOLD_BYTES`). The issue asks for existing pipelines to benefit without changing, which argues for on; the problem being solved is memory scaling with the largest result a pipeline touches, which a few megabytes of rows is not. Below the threshold, behaviour is exactly what it was. A negative value disables spilling entirely.
+
+**The size check is an estimate, and named as one.** Up to 32 rows are encoded and averaged out. Encoding everything to decide whether to encode everything would double the serialization cost for the datasets that never spill, which is all of them in an ordinary pipeline. Uneven row sizes will be misjudged; the consequence is holding something that could have spilled or spilling something that need not have, never incorrect data.
+
+**A spill that fails keeps the data in memory and continues.** The dataset is already correct and in hand, and failing a pipeline because an optimisation could not be applied would turn a full disk into a failed run. **A spilled output that cannot be read back is the opposite — a hard failure.** It was the only copy, and substituting an empty dataset is precisely the data-loss shape #8 exists to prevent.
+
+Spilled outputs share the run's namespace with node artifacts, so `DeleteRunArtifacts` reclaims them with everything else.
+
+Deferred after M1–M4: a cloud-storage backend, Parquet, and retention beyond per-run deletion. M5 remains the stretch goal.
+
+**Unrelated finding, recorded because the next person will hit it:** `Engine` has no `Stop`/`Close`, so its background work — dependency trigger mode in particular — keeps running after a test returns and can write into a `t.TempDir()` while cleanup is removing it. The spill tests use a manually-cleaned directory to keep that flakiness out of their assertions. Giving `Engine` a shutdown is the real fix.

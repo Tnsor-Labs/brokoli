@@ -66,6 +66,12 @@ type Runner struct {
 	// substituting empty data).
 	artifactStore ArtifactStore
 
+	// spillThreshold is the estimated encoded size at or above which a
+	// node's output is written to the artifact store instead of being held
+	// in memory for the rest of the run (Tnsor-Labs/brokoli#38). Zero uses
+	// DefaultSpillThresholdBytes; negative disables spilling.
+	spillThreshold int64
+
 	// checkpointStore persists/restores mid-pagination progress for
 	// source_api nodes using execution().checkpoint_every. See
 	// PaginationCheckpointStore and runSourceAPI in node_handlers.go. Nil
@@ -209,8 +215,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	}
 
 	// Outputs map (thread-safe)
-	outputs := make(map[string]*common.DataSet)
-	var outputsMu sync.Mutex
+	// Node results for the rest of the run. Large outputs are written to
+	// the artifact store and read back on demand rather than held for the
+	// whole run — see nodeOutputs and Tnsor-Labs/brokoli#38.
+	outputs := r.newOutputs()
 
 	// Max parallelism semaphore (default 4, configurable later)
 	maxParallel := 4
@@ -273,7 +281,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 					return
 				}
 
-				if err := r.executeNode(n, outputs, &outputsMu, readyAt); err != nil {
+				if err := r.executeNode(n, outputs, readyAt); err != nil {
 					errCh <- err
 					return
 				}
@@ -378,7 +386,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	return r.run, nil
 }
 
-func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSet, outputsMu *sync.Mutex, readyAt time.Time) error {
+func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt time.Time) error {
 	// Skip nodes that already succeeded (resume mode). Restore the node's
 	// real durable output into the outputs map so downstream nodes see the
 	// original data — never leave it unpopulated, which previously caused
@@ -390,9 +398,9 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			return err
 		}
 		if restored {
-			outputsMu.Lock()
-			outputs[node.ID] = ds
-			outputsMu.Unlock()
+			if err := outputs.Put(node.ID, ds); err != nil {
+				r.log(node.ID, models.LogLevelWarning, "Could not spill restored output, keeping it in memory: %v", err)
+			}
 			rowCount := 0
 			if ds != nil {
 				rowCount = len(ds.Rows)
@@ -414,8 +422,8 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 		node.Config = r.connResolver.Resolve(node.Config, node.Type)
 	}
 
-	// Find input data from connected upstream nodes (thread-safe read)
-	outputsMu.Lock()
+	// Find input data from connected upstream nodes. nodeOutputs is
+	// internally synchronized, so no lock is held here.
 	var input *common.DataSet
 	var allInputs []*common.DataSet
 	// edgeInputsByFrom indexes the same upstream outputs by upstream node
@@ -425,7 +433,15 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 	edgeInputsByFrom := make(map[string]*common.DataSet)
 	for _, edge := range r.pipe.Edges {
 		if edge.To == node.ID {
-			if ds, ok := outputs[edge.From]; ok {
+			ds, ok, err := outputs.Get(edge.From)
+			if err != nil {
+				// The upstream output was spilled and cannot be read back.
+				// Continuing would hand this node an empty input, which is
+				// the silent data loss Tnsor-Labs/brokoli#8 fixed; fail
+				// instead.
+				return fmt.Errorf("resolve input from node %s: %w", edge.From, err)
+			}
+			if ok {
 				if input == nil {
 					input = ds
 				}
@@ -434,7 +450,6 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 			}
 		}
 	}
-	outputsMu.Unlock()
 
 	// Ensure input is never nil for non-source nodes (prevents panics)
 	if input == nil && node.Type != models.NodeTypeSourceFile &&
@@ -665,9 +680,9 @@ func (r *Runner) executeNode(node models.Node, outputs map[string]*common.DataSe
 				if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
 					output.Rows = output.Rows[:r.dryRunMaxRows]
 				}
-				outputsMu.Lock()
-				outputs[node.ID] = output
-				outputsMu.Unlock()
+				if err := outputs.Put(node.ID, output); err != nil {
+					r.log(node.ID, models.LogLevelWarning, "Could not spill output, keeping it in memory: %v", err)
+				}
 
 				if r.dryRun {
 					if r.dryRunResults == nil {
