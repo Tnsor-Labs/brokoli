@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
@@ -258,3 +259,25 @@ func (f *failingStore) Open(ctx context.Context, ref *artifact.ArtifactRef) (io.
 	return nil, fmt.Errorf("%w: unavailable", artifact.ErrNotFound)
 }
 func (f *failingStore) DeleteNamespace(ctx context.Context, namespace string) error { return nil }
+
+// A dry run must never spill, even with an artifact store wired. Nothing
+// persists a dry run, so nothing would ever purge its namespace — every
+// spilled preview would be an orphaned blob. Today Engine.DryRun happens
+// not to wire a store; this pins the guarantee rather than the accident.
+func TestNewOutputs_DryRunNeverSpills(t *testing.T) {
+	r := &Runner{
+		dryRun:        true,
+		artifactStore: NewLocalDiskArtifactStore(t.TempDir()),
+		run:           &models.Run{ID: "dry-run-id"},
+	}
+	if out := r.newOutputs(); out.spillEnabled() {
+		t.Fatal("a dry run with a store wired would spill, orphaning blobs nothing purges")
+	}
+
+	// The same runner not in dry-run mode spills, proving the guard is the
+	// dry-run flag and not a broken fixture.
+	r.dryRun = false
+	if out := r.newOutputs(); !out.spillEnabled() {
+		t.Fatal("fixture broken: the non-dry runner should be able to spill")
+	}
+}
