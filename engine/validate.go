@@ -52,6 +52,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 
 	// Check for duplicate node IDs
 	nodeIDs := make(map[string]bool)
+	nodeTypes := make(map[string]models.NodeType)
 	for _, n := range p.Nodes {
 		if n.ID == "" {
 			ve.Add(fmt.Sprintf("Node %q has empty ID", n.Name))
@@ -61,6 +62,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 			ve.Add(fmt.Sprintf("Duplicate node ID: %s", n.ID))
 		}
 		nodeIDs[n.ID] = true
+		nodeTypes[n.ID] = n.Type
 	}
 
 	// Check edges reference valid nodes
@@ -73,6 +75,14 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		}
 		if e.From == e.To {
 			ve.Add(fmt.Sprintf("Self-loop on node: %s", e.From))
+		}
+		if e.Condition != nil {
+			if p.IRVersion != models.ConditionalEdgesIRVersion {
+				ve.Add(fmt.Sprintf("Conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, models.ConditionalEdgesIRVersion))
+			}
+			if nodeTypes[e.From] != models.NodeTypeCondition {
+				ve.Add(fmt.Sprintf("Conditional edge %s -> %s must originate from a condition node", e.From, e.To))
+			}
 		}
 	}
 

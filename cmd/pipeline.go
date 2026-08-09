@@ -23,6 +23,9 @@ var importCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("parse YAML: %w", err)
 		}
+		if err := p.Validate(); err != nil {
+			return fmt.Errorf("validate pipeline: %w", err)
+		}
 
 		s, err := store.NewStore(dbPath)
 		if err != nil {

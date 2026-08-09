@@ -81,6 +81,55 @@ edges:
 	}
 }
 
+func TestYAMLRoundTrip_PreservesIRAndFalseCondition(t *testing.T) {
+	yamlText := `
+version: "1"
+ir_version: "2.1"
+name: conditional
+nodes:
+  - id: check
+    type: condition
+    name: Check
+    config:
+      expression: always_false
+  - id: no
+    type: notify
+    name: No
+edges:
+  - from: check
+    to: no
+    condition: false
+`
+
+	p, err := ImportPipelineYAML([]byte(yamlText))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.IRVersion != "2.1" {
+		t.Fatalf("IRVersion = %q, want 2.1", p.IRVersion)
+	}
+	if len(p.Edges) != 1 || p.Edges[0].Condition == nil || *p.Edges[0].Condition {
+		t.Fatalf("false condition not preserved on import: %#v", p.Edges)
+	}
+
+	exported, err := ExportPipelineYAML(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(exported)
+	if !strings.Contains(text, "ir_version: \"2.1\"") || !strings.Contains(text, "condition: false") {
+		t.Fatalf("IR contract missing from exported YAML:\n%s", text)
+	}
+
+	p2, err := ImportPipelineYAML(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.Edges[0].Condition == nil || *p2.Edges[0].Condition {
+		t.Fatalf("false condition not preserved on re-import: %#v", p2.Edges[0])
+	}
+}
+
 func TestYAMLImport_MinimalValid(t *testing.T) {
 	yaml := `
 name: minimal

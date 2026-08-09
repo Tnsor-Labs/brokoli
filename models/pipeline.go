@@ -45,6 +45,11 @@ const (
 // (e.g. Phase 0's addition of node capabilities).
 const CurrentIRVersion = "2.0"
 
+// ConditionalEdgesIRVersion is the first IR version whose edges may carry
+// branch selection. It is intentionally not advertised until the scheduler
+// implements the complete routing contract.
+const ConditionalEdgesIRVersion = "2.1"
+
 // SupportedIRVersions lists every ir_version this host can accept in a
 // deployed pipeline. Expand when introducing a new version; only remove
 // an old entry when formally deprecating it.
@@ -155,6 +160,9 @@ type Hook struct {
 
 // Validate checks a pipeline for structural errors before persisting.
 func (p *Pipeline) Validate() error {
+	if !IsIRVersionSupported(p.IRVersion) {
+		return fmt.Errorf("unsupported pipeline IR version %q", p.IRVersion)
+	}
 	if p.Name == "" {
 		return fmt.Errorf("pipeline name is required")
 	}
@@ -188,11 +196,13 @@ func (p *Pipeline) Validate() error {
 	}
 	// Check for duplicate node IDs
 	seen := make(map[string]bool)
+	nodeTypes := make(map[string]NodeType)
 	for _, n := range p.Nodes {
 		if seen[n.ID] {
 			return fmt.Errorf("duplicate node ID: %s", n.ID)
 		}
 		seen[n.ID] = true
+		nodeTypes[n.ID] = n.Type
 	}
 	// Validate dependency rules
 	for i := range p.DependencyRules {
@@ -216,6 +226,14 @@ func (p *Pipeline) Validate() error {
 		if !seen[e.To] {
 			return fmt.Errorf("edge references unknown target node: %s", e.To)
 		}
+		if e.Condition != nil {
+			if p.IRVersion != ConditionalEdgesIRVersion {
+				return fmt.Errorf("conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, ConditionalEdgesIRVersion)
+			}
+			if nodeTypes[e.From] != NodeTypeCondition {
+				return fmt.Errorf("conditional edge %s -> %s must originate from a condition node", e.From, e.To)
+			}
+		}
 	}
 	return nil
 }
@@ -229,6 +247,7 @@ func (p *Pipeline) EffectiveDependencies() []DependencyRule {
 
 // Edge represents a directed connection between two nodes.
 type Edge struct {
-	From string `json:"from"`
-	To   string `json:"to"`
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Condition *bool  `json:"condition,omitempty"`
 }

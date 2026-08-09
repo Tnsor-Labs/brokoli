@@ -558,7 +558,8 @@ func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 
 func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if existing, err := h.store.GetPipeline(id); err == nil {
+	existing, err := h.store.GetPipeline(id)
+	if err == nil {
 		if !ValidateOrgAccess(r, existing.OrgID) {
 			DenyOrgAccess(w)
 			return
@@ -587,7 +588,25 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "corrupt snapshot")
 		return
 	}
+	p.ID = existing.ID
+	p.PipelineID = existing.PipelineID
+	p.Source = existing.Source
+	p.WorkspaceID = existing.WorkspaceID
+	p.OrgID = existing.OrgID
+	p.CreatedAt = existing.CreatedAt
 	p.UpdatedAt = time.Now().UTC()
+	if err := p.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := engine.DetectDependencyCycle(h.store, &p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -623,6 +642,10 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "failed to read body")
+		return
+	}
+	if len(data) == 0 {
+		writeError(w, http.StatusBadRequest, "empty import body")
 		return
 	}
 
@@ -662,6 +685,18 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	p.OrgID = orgID
 	if p.WorkspaceID == "" {
 		p.WorkspaceID = GetWorkspaceID(r)
+	}
+	if err := p.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateDependencyOrgScope(h.store, p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := engine.DetectDependencyCycle(h.store, p); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := h.store.CreatePipeline(p); err != nil {
@@ -715,7 +750,9 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 		newFrom, ok1 := idMap[e.From]
 		newTo, ok2 := idMap[e.To]
 		if ok1 && ok2 {
-			newEdges = append(newEdges, models.Edge{From: newFrom, To: newTo})
+			e.From = newFrom
+			e.To = newTo
+			newEdges = append(newEdges, e)
 		}
 	}
 	clone.Edges = newEdges
@@ -729,6 +766,18 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	clone.OrgID = orgID
 	if wsID := GetWorkspaceID(r); wsID != "" {
 		clone.WorkspaceID = wsID
+	}
+	if err := clone.Validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := validateDependencyOrgScope(h.store, &clone); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := engine.DetectDependencyCycle(h.store, &clone); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := h.store.CreatePipeline(&clone); err != nil {
