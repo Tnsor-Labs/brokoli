@@ -110,6 +110,22 @@ func NewLocalDiskArtifactStore(baseDir string) *LocalDiskArtifactStore {
 	}
 }
 
+// BlobStoreProvider is implemented by an ArtifactStore that can also hold
+// arbitrary bytes by reference, not only keyed node output.
+//
+// It is an optional capability, discovered by type assertion, so that
+// ArtifactStore's contract stays the narrow one resume needs and an
+// implementation without a blob store underneath is still valid.
+type BlobStoreProvider interface {
+	Blobs() artifact.Store
+}
+
+// Blobs implements BlobStoreProvider, exposing the content-addressed store
+// beneath this one so callers that need to hold bytes by reference — a
+// source_api node fetching an artifact, for instance — can share the same
+// per-run storage and the same lifetime, including DeleteRunArtifacts.
+func (l *LocalDiskArtifactStore) Blobs() artifact.Store { return l.blobs }
+
 // manifestPath is where the reference describing node nodeID's output lives.
 // It sits beside the blobs in the same per-run directory; the distinct
 // suffix keeps the two apart.
