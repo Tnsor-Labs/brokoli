@@ -81,6 +81,8 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-011](./011-postgres-scheduler-leader-election.md) | Postgres scheduler leader election via leased row + fencing generation | Accepted |
 | [ADR-012](./012-artifact-and-dataset-plane.md) | Artifact and dataset plane — start local-disk, reference-based, opt-in | Proposed |
 | [ADR-013](./013-connector-protocol-partition-progress-cancellation.md) | Extend the plugin protocol with work-unit planning, structured progress, and cancellation | Proposed |
+| [ADR-014](./014-pipeline-ir-ownership-and-compatibility.md) | Core-owned pipeline IR and explicit compatibility negotiation | Proposed |
+| [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Proposed |
 
 ## How to add a new ADR
 
