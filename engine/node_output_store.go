@@ -191,7 +191,6 @@ func (o *nodeOutputs) Get(nodeID string) (*common.DataSet, bool, error) {
 }
 
 // spilledCount reports how many outputs are currently held by reference.
-// Used by tests and by the run summary.
 func (o *nodeOutputs) spilledCount() int {
 	o.mu.Lock()
 	defer o.mu.Unlock()
@@ -247,7 +246,13 @@ func (r *Runner) newOutputs() *nodeOutputs {
 
 	var blobs artifact.Store
 	namespace := ""
-	if provider, ok := r.artifactStore.(BlobStoreProvider); ok && r.run != nil && r.run.ID != "" {
+	// Dry runs never spill, unconditionally. Today they cannot anyway —
+	// Engine.DryRun builds its Runner without an artifact store — but that
+	// is an accident of wiring, not a guarantee. A dry run is not persisted
+	// as a run, so nothing would ever call DeleteRunArtifacts for its
+	// namespace, and every spilled preview would be an orphaned blob on
+	// disk until someone deleted it by hand.
+	if provider, ok := r.artifactStore.(BlobStoreProvider); ok && !r.dryRun && r.run != nil && r.run.ID != "" {
 		blobs = provider.Blobs()
 		namespace = r.run.ID
 	}
