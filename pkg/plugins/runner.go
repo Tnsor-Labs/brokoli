@@ -25,12 +25,10 @@ func osEnviron() []string { return os.Environ() }
 // window, exec.Cmd.WaitDelay kills it and closes the I/O pipes, which is
 // what stops Run from blocking on a stdout that never reaches EOF.
 //
-// Five seconds is enough for a connector to close a source connection,
-// finish an in-flight request, and emit a final MsgState checkpoint,
-// while staying short enough that a cancel feels immediate to whoever
-// asked for it. Deliberately an unexported constant rather than a Runner
-// field: no plugin has needed a different value, and promoting this to
-// configuration later is easier than withdrawing it once published.
+// Carried on Runner as an unexported field defaulted from this
+// constant: no plugin has needed a different value, so it stays off the
+// package's API surface, while the cancellation tests can shrink it
+// rather than paying the full period on every run of the suite.
 const pluginTerminationGrace = 5 * time.Second
 
 // Runner invokes a plugin binary and ferries messages between the
@@ -48,6 +46,8 @@ type Runner struct {
 	// terminationGrace is how long the plugin has between SIGTERM and
 	// being killed. Defaults to pluginTerminationGrace. Unexported so it
 	// stays off the package's API surface while the cancellation tests
+	// can still shrink it rather than paying the full grace period on
+	// every run of the suite.
 	terminationGrace time.Duration
 
 	// LogHandler is called for every MsgLog line the plugin emits
@@ -294,6 +294,14 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 	// process group alive, so a single SIGKILL to the group lands on
 	// exactly those survivors. ESRCH (returned as os.ErrProcessDone)
 	// means the group is already empty, which is the normal case.
+	//
+	// Cancellation is the only condition worth checking here. A plugin
+	// whose own process exits while a child still holds stdout never
+	// reaches this point with the context clean: DecodeStream above is
+	// still blocked on that pipe, and WaitDelay cannot break the
+	// deadlock because its "process exited, pipes still open" branch
+	// runs inside Wait. Such a run blocks until the runner's own timeout
+	// fires, which makes the context done and takes this branch anyway.
 	if ctx.Err() != nil && proc.Process != nil {
 		_ = killProcessTree(proc.Process)
 	}
@@ -316,6 +324,15 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 	// Gated on an actual failure so a read that happened to complete as
 	// the context was cancelled still returns its result instead of
 	// being relabelled a cancellation.
+	//
+	// The gate holds on every real cancellation path: exec.Cmd
+	// propagates a non-ErrProcessDone error from Cancel into Wait's
+	// result, so a signalled plugin yields a non-nil waitErr even when it
+	// exits 0. The exception is deliberate - when Cancel finds the
+	// process already gone it returns os.ErrProcessDone, Wait keeps the
+	// plugin's own exit status, and a read that finished just as the
+	// context was cancelled returns its result instead of being
+	// relabelled a cancellation.
 	if ctxErr := ctx.Err(); ctxErr != nil && (waitErr != nil || decodeErr != nil) {
 		if errors.Is(ctxErr, context.DeadlineExceeded) {
 			return result, fmt.Errorf("plugin %s %s: timed out after %s",

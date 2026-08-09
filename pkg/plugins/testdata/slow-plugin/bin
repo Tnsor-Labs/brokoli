@@ -10,6 +10,7 @@
 #   blocking  → emits a record, then blocks as a single process
 #   stubborn  → ignores SIGTERM and keeps holding stdout open
 #   orphan    → leaves a background child holding stdout, then waits
+#   detach    → leaves a background child holding stdout, then exits
 #
 # `orphan` writes its child's PID to the path in config.pidfile so the
 # test can assert the child was cleaned up and not merely abandoned.
@@ -56,6 +57,18 @@ EOF
                     printf '%s\n' "$child" > "$pidfile"
                 fi
                 wait
+                ;;
+            *'"stream":"detach"'*)
+                # Exits immediately, leaving a child holding stdout: the
+                # pipes outlive the process without the context ever
+                # being cancelled, which is the second way a survivor
+                # can be stranded.
+                sleep 60 &
+                child=$!
+                pidfile=$(printf '%s' "$params" | sed -n 's/.*"pidfile":"\([^"]*\)".*/\1/p')
+                if [ -n "$pidfile" ]; then
+                    printf '%s\n' "$child" > "$pidfile"
+                fi
                 ;;
             *)
                 # exec replaces the shell, so exactly one process exists

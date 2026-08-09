@@ -13,13 +13,13 @@ import (
 // group, so every process it spawns inherits that group and the runner
 // can signal the whole tree at once.
 //
-// Without it, a plugin that is a wrapper - the refence plugins are
+// Without it, a plugin that is a wrapper - the reference plugins are
 // shell scripts, and a Python connector is typically a shim that execs
 // the interpreter - loses only the wrapper when signalled, leaving the
-// process doing the actual work running and still holding the sdtout
+// process doing the actual work running and still holding the stdout
 // pipe the host is reading to EOF.
 //
-// Paired with a signalProcessTree below: the negative PID there is only
+// Paired with signalProcessTree below: the negative PID there is only
 // correct because this ran. Do not separate them.
 func configureProcessGroup(cmd *exec.Cmd) {
 	if cmd.SysProcAttr == nil {
@@ -49,6 +49,7 @@ func signalProcessTree(p *os.Process, sig syscall.Signal) error {
 		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}
+		return err
 	}
 	return nil
 }

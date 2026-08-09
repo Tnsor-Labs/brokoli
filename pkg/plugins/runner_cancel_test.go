@@ -120,8 +120,18 @@ func TestRunner_Cancel_KillsOrphanedChild(t *testing.T) {
 	defer cancel()
 	time.AfterFunc(500*time.Millisecond, cancel)
 
+	start := time.Now()
 	if _, err := runner.Read(ctx, Config{"pidfile": pidfile}, "orphan", nil); err == nil {
 		t.Fatal("cancelled read returned a nil error")
+	}
+	elapsed := time.Since(start)
+
+	// Bound the return before probing the PID. Without a process group
+	// the orphan keeps holding stdout, so Run blocks until that child
+	// exits on its own — by which time the probe below would find it
+	// gone and this test would pass for the wrong reason.
+	if elapsed > 3*time.Second {
+		t.Fatalf("Run took %s to return after cancel — the orphan was still holding stdout", elapsed)
 	}
 
 	pid := readPIDFile(t, pidfile)
@@ -188,5 +198,50 @@ func TestRunner_Timeout_StillReportsTimeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timed out") {
 		t.Errorf("error %q does not report the timeout", err)
+	}
+}
+
+// TestRunner_SweepsOrphanWhenPluginExitsFirst covers the second way a
+// survivor can be stranded, raised in review on Tnsor-Labs/brokoli#100:
+// the plugin's own process exits while a child it spawned still holds
+// stdout, with nothing cancelling the run.
+//
+// WaitDelay does not apply on this path, which is what the review
+// expected it to do. Its "process exited, pipes still open" branch runs
+// inside Wait, and Run reads stdout to EOF before calling Wait — it has
+// to, since StdoutPipe's contract is that Wait closes the pipe. So the
+// read stays blocked until the runner's own timeout fires, at which
+// point the group SIGTERM sweeps the child, stdout reaches EOF, and the
+// read returns as a timeout. Before the process group, the same
+// situation blocked for as long as the orphan lived.
+func TestRunner_SweepsOrphanWhenPluginExitsFirst(t *testing.T) {
+	// Short timeout: on this path it is what eventually unblocks the read.
+	runner := NewRunner(slowPlugin(t), 1*time.Second)
+	runner.terminationGrace = 300 * time.Millisecond
+
+	pidfile := filepath.Join(t.TempDir(), "child.pid")
+
+	start := time.Now()
+	_, err := runner.Read(context.Background(), Config{"pidfile": pidfile}, "detach", nil)
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("want a timeout error, got %v", err)
+	}
+	if elapsed > 3*time.Second {
+		t.Errorf("Run took %s, want roughly the 1s timeout", elapsed)
+	}
+
+	pid := readPIDFile(t, pidfile)
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+			return
+		}
+		if time.Now().After(deadline) {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			t.Fatalf("child %d survived — the group was not signalled on timeout", pid)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
