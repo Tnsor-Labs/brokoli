@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 
@@ -23,17 +24,29 @@ const (
 // WriteArrowJSON writes data as NDJSON (newline-delimited JSON) — 2-3x faster than regular JSON
 // for large datasets because pyarrow/pandas can stream-parse it line by line.
 func WriteArrowJSON(path string, ds *common.DataSet) error {
-	if ds == nil || len(ds.Rows) == 0 {
-		return os.WriteFile(path, []byte("[]"), 0o644)
-	}
-
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	return EncodeArrowJSON(f, ds)
+}
 
-	enc := json.NewEncoder(f)
+// EncodeArrowJSON writes ds to w in the same NDJSON encoding WriteArrowJSON
+// produces on disk, so a stream and a file are byte-identical.
+//
+// Split out so the artifact store can hand rows straight to a store without
+// staging them in a second file first — and so there is one definition of
+// this format rather than two that can drift. The empty-dataset encoding is
+// "[]" rather than zero bytes, which ReadArrowJSON/DecodeArrowJSON both
+// recognize; that distinguishes "this node produced no rows" from "nothing
+// was ever written here", a difference resume depends on.
+func EncodeArrowJSON(w io.Writer, ds *common.DataSet) error {
+	if ds == nil || len(ds.Rows) == 0 {
+		_, err := w.Write([]byte("[]"))
+		return err
+	}
+	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false) // Faster serialization
 	for _, row := range ds.Rows {
 		if err := enc.Encode(row); err != nil {
@@ -41,6 +54,44 @@ func WriteArrowJSON(path string, ds *common.DataSet) error {
 		}
 	}
 	return nil
+}
+
+// DecodeArrowJSON reads the NDJSON encoding EncodeArrowJSON produces.
+//
+// columns, when non-empty, is used verbatim as the dataset's column order.
+// ReadArrowJSON has to recover columns by iterating the first row's map,
+// which loses the original ordering; a caller that recorded the order when
+// writing can pass it here and get the dataset back as it was.
+func DecodeArrowJSON(r io.Reader, columns []string) (*common.DataSet, error) {
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || string(data) == "[]" {
+		cols := columns
+		if cols == nil {
+			cols = []string{}
+		}
+		return &common.DataSet{Columns: cols, Rows: []common.DataRow{}}, nil
+	}
+
+	var rows []common.DataRow
+	dec := json.NewDecoder(bytes.NewReader(data))
+	for dec.More() {
+		var row common.DataRow
+		if err := dec.Decode(&row); err != nil {
+			break
+		}
+		rows = append(rows, row)
+	}
+
+	cols := columns
+	if len(cols) == 0 && len(rows) > 0 {
+		for k := range rows[0] {
+			cols = append(cols, k)
+		}
+	}
+	return &common.DataSet{Columns: cols, Rows: rows}, nil
 }
 
 // ReadArrowJSON reads data from compact NDJSON format.

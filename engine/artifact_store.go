@@ -1,15 +1,18 @@
 package engine
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
@@ -75,22 +78,43 @@ var nonResumableNodeTypes = map[models.NodeType]bool{
 	models.NodeTypeDBT:     true,
 }
 
-// LocalDiskArtifactStore is a minimal, single-host artifact backend: each
-// artifact is one NDJSON file on local disk, reusing the same
-// newline-delimited-JSON format as arrow_transfer.go's WriteArrowJSON /
-// ReadArrowJSON — the closest existing precedent in this codebase for
-// durable inter-node data transfer (used today by the code-node subprocess
-// bridge). A pluggable, object-store-backed implementation is future work;
-// this is enough to make resume correct for a single-process deployment or
-// one sharing a network volume across workers.
+// LocalDiskArtifactStore is a minimal, single-host artifact backend for
+// resume: each node's completed output is stored durably and read back by
+// the same (runID, nodeID) key.
+//
+// The bytes themselves are held by a pkg/artifact.Store — content-addressed,
+// checksummed, and reachable by reference — while this type keeps the small
+// keyed mapping from (runID, nodeID) to the manifest describing them. The
+// two layers answer different questions: "what did node X of run Y produce"
+// is a lookup, "here are some bytes, hold them and give me a reference" is
+// storage, and only the second is what the wider artifact plane needs
+// (Tnsor-Labs/brokoli#38, docs/adr/012-artifact-and-dataset-plane.md).
+//
+// Both layers share one base directory and one per-run subdirectory, so
+// DeleteRunArtifacts stays a single removal that reclaims manifests and
+// blobs together.
+//
+// The dataset encoding is still the newline-delimited JSON of
+// arrow_transfer.go's EncodeArrowJSON/DecodeArrowJSON, unchanged.
 type LocalDiskArtifactStore struct {
 	baseDir string
+	blobs   artifact.Store
 }
 
 // NewLocalDiskArtifactStore creates a store rooted at baseDir. The
 // directory is created lazily on first write, not here.
 func NewLocalDiskArtifactStore(baseDir string) *LocalDiskArtifactStore {
-	return &LocalDiskArtifactStore{baseDir: baseDir}
+	return &LocalDiskArtifactStore{
+		baseDir: baseDir,
+		blobs:   artifact.NewLocalDiskStore(baseDir),
+	}
+}
+
+// manifestPath is where the reference describing node nodeID's output lives.
+// It sits beside the blobs in the same per-run directory; the distinct
+// suffix keeps the two apart.
+func (l *LocalDiskArtifactStore) manifestPath(runID, nodeID string) string {
+	return filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(nodeID))+".manifest.json")
 }
 
 // artifactPath maps (runID, nodeID) to a filesystem path without ever
@@ -120,33 +144,76 @@ func sha256Sum(s string) []byte {
 }
 
 // WriteArtifact implements ArtifactStore.
+//
+// The rows are streamed into the blob store and a manifest recording the
+// resulting reference is written beside them. Streaming rather than staging
+// the encoded bytes in memory or in a second file is the point: the datasets
+// worth persisting are the large ones.
 func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID string, ds *common.DataSet) error {
 	if runID == "" || nodeID == "" {
 		return fmt.Errorf("write artifact: runID and nodeID are required")
 	}
-	path := l.artifactPath(runID, nodeID)
-	// 0o750: artifacts may contain a node's full dataset (potentially
-	// sensitive row data), so the directory is not group/world-readable.
+
+	// io.Pipe so the encoder and the store run concurrently and neither
+	// materializes the encoded form. A pipe write blocks until the store
+	// reads, so this is bounded by the store's read buffer, not by the size
+	// of the dataset.
+	pr, pw := io.Pipe()
+	go func() {
+		// CloseWithError(nil) behaves as Close, so the reader sees a clean
+		// EOF on success and the encoder's error otherwise — which is what
+		// makes a failed encode surface as a failed Put rather than a
+		// silently truncated artifact.
+		pw.CloseWithError(EncodeArrowJSON(pw, ds))
+	}()
+
+	ref, err := l.blobs.Put(context.Background(), runID, pr, artifact.PutOptions{
+		MediaType: artifact.MediaTypeNDJSON,
+	})
+	if err != nil {
+		_ = pr.CloseWithError(err)
+		return fmt.Errorf("write artifact: %w", err)
+	}
+
+	// Columns are recorded here because the NDJSON rows do not preserve
+	// their order — DecodeArrowJSON would otherwise have to recover them by
+	// iterating a map, which returns them in an arbitrary order.
+	cols := []string{}
+	rowCount := 0
+	if ds != nil {
+		if ds.Columns != nil {
+			cols = ds.Columns
+		}
+		rowCount = len(ds.Rows)
+	}
+	manifest := artifact.NewDatasetManifest(&artifact.DatasetRef{
+		ArtifactRef: *ref,
+		Format:      artifact.FormatNDJSON,
+		Columns:     cols,
+		RowCount:    int64(rowCount),
+	})
+	data, err := artifact.MarshalManifest(manifest)
+	if err != nil {
+		return fmt.Errorf("write artifact: %w", err)
+	}
+
+	path := l.manifestPath(runID, nodeID)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
 	}
-	// Write to a temp file and rename into place so a concurrent reader (or
-	// a crash mid-write) never observes a partially written artifact. The
-	// temp name includes a nanosecond suffix (not just path+".tmp") so two
-	// overlapping writers for the same (runID, nodeID) — not expected from
-	// today's single caller in Runner.executeNode, which only writes a
-	// given node's artifact once per run after that node's single
-	// successful attempt, but not guaranteed by this store's contract
-	// either — can't have one's os.Remove(tmp) or os.Rename race the
-	// other's in-flight temp file.
+	// Temp-and-rename so a reader never observes a partial manifest. The
+	// nanosecond suffix keeps two overlapping writers for the same key —
+	// not expected from Runner.executeNode's single write per node per run,
+	// but not excluded by this store's contract either — from racing each
+	// other's cleanup.
 	tmp := fmt.Sprintf("%s.%d.tmp", path, time.Now().UnixNano())
-	if err := WriteArrowJSON(tmp, ds); err != nil {
-		_ = os.Remove(tmp) // best-effort cleanup of the partial temp file
-		return fmt.Errorf("write artifact: %w", err)
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("write artifact manifest: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp) // best-effort cleanup of the partial temp file
-		return fmt.Errorf("finalize artifact: %w", err)
+		_ = os.Remove(tmp)
+		return fmt.Errorf("finalize artifact manifest: %w", err)
 	}
 	return nil
 }
@@ -156,6 +223,55 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID string) (*common.Dat
 	if runID == "" || nodeID == "" {
 		return nil, fmt.Errorf("read artifact: runID and nodeID are required")
 	}
+
+	data, err := os.ReadFile(l.manifestPath(runID, nodeID)) // #nosec G304 -- path is baseDir joined with two sha256 hex digests; no caller string reaches it, see artifactPath.
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No manifest: either nothing was written, or this artifact
+			// predates manifests. Runs already in flight when a binary is
+			// upgraded must still resume, so the older layout is read
+			// rather than reported as missing.
+			return l.readLegacyArtifact(runID, nodeID)
+		}
+		return nil, fmt.Errorf("read artifact manifest: %w", err)
+	}
+
+	manifest, err := artifact.UnmarshalManifest(data)
+	if err != nil {
+		return nil, fmt.Errorf("read artifact: %w", err)
+	}
+	if manifest.Kind != artifact.KindDataset {
+		return nil, fmt.Errorf("read artifact: run=%s node=%s holds a %s, not a dataset", runID, nodeID, manifest.Kind)
+	}
+	ref := manifest.Dataset
+	if ref.Format != artifact.FormatNDJSON {
+		return nil, fmt.Errorf("read artifact: unsupported dataset format %q", ref.Format)
+	}
+
+	rc, err := l.blobs.Open(context.Background(), &ref.ArtifactRef)
+	if err != nil {
+		if errors.Is(err, artifact.ErrNotFound) {
+			return nil, fmt.Errorf("%w: run=%s node=%s", ErrArtifactNotFound, runID, nodeID)
+		}
+		// A checksum mismatch is deliberately not folded into
+		// ErrArtifactNotFound: restoreSkippedNodeOutput treats "not found"
+		// as a recoverable miss, and corrupted output must not take that
+		// path — it has to fail loudly rather than be re-derived as absent.
+		return nil, fmt.Errorf("read artifact: %w", err)
+	}
+	defer rc.Close()
+
+	ds, err := DecodeArrowJSON(rc, ref.Columns)
+	if err != nil {
+		return nil, fmt.Errorf("read artifact: %w", err)
+	}
+	return ds, nil
+}
+
+// readLegacyArtifact reads the pre-manifest layout: the NDJSON rows written
+// directly to a per-node file. Kept so a run that started under an older
+// binary can still be resumed by a newer one.
+func (l *LocalDiskArtifactStore) readLegacyArtifact(runID, nodeID string) (*common.DataSet, error) {
 	path := l.artifactPath(runID, nodeID)
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {

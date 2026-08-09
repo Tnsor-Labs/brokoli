@@ -54,3 +54,23 @@ Start small and reference-based, building on what `LocalDiskArtifactStore` alrea
 
 - Tracked in [Phase 2: artifact and dataset plane](https://github.com/Tnsor-Labs/brokoli/issues) (see the companion issue opened alongside this ADR).
 - Whoever picks up a milestone from that issue should come back and update this ADR — either fill in the "Deferred" items as they're resolved, or add a dated "Update" section recording what was actually decided once real backend/format choices are made.
+
+## Update — 2026-08-09: milestones 1 and 2 shipped
+
+The reference types and the store landed together (Tnsor-Labs/brokoli#38, M1 and M2). What was decided while building them, recorded here so the next milestone does not have to re-derive it:
+
+**The Go reference types are not the SDK's.** This ADR and the companion issue both frame the work as "the SDK has four typed references, Go only has two real ones". That framing is misleading and the code now says so explicitly. The SDK's `ScalarRef`/`ArtifactRef`/`DatasetRef`/`CollectionRef` subclass `NodeRef`, which holds `(node_id, pipeline)` and implements `>>` chaining — they are authoring-time handles naming a node in a DAG being built, and carry nothing about the data. The Go types are runtime pointers to bytes that already exist. Nothing serializes between them and nothing should. The names were kept, because they describe the same two shapes of result from opposite ends of the system, but `pkg/artifact`'s package comment states the distinction so nobody reads one as the wire form of the other.
+
+**`DatasetRef` embeds `ArtifactRef`** rather than duplicating its fields: a dataset is bytes in a store plus what is needed to treat them as rows without reading them (format, column order, row count).
+
+**References are always wrapped in a versioned `Manifest` for storage.** A bare reference on disk has no way to say which schema produced it. The version is checked on every read, and an unrecognized one is refused rather than read optimistically — a reference points at data a pipeline is about to consume as its input.
+
+**Blobs are namespaced per run, not shared globally.** Content addressing would otherwise make deletion require reference counting, and `DeleteRunArtifacts` (the retention counterpart added for #49) has to be able to reclaim every byte a run wrote. Deduplication therefore applies within a run, which is where a pipeline actually repeats itself. Two nodes producing identical output share one blob and keep separate manifests.
+
+**Checksum mismatch is a distinct error from absence.** `restoreSkippedNodeOutput` treats "not found" as a recoverable miss, so corrupted output must not take that path; `artifact.ErrChecksumMismatch` and `ErrArtifactNotFound` stay separate all the way up.
+
+**`LocalDiskArtifactStore` was re-expressed on top of the new store rather than replaced.** It keeps the `(runID, nodeID)` keyed lookup that resume needs and delegates the bytes, sharing one base directory so purging a run still removes manifests and blobs in a single call. Artifacts written in the pre-manifest layout are still read, so a run already in flight when a binary is upgraded can still be resumed. #8's behaviour is unchanged, and its tests pass untouched.
+
+One incidental fix: the manifest records column order, which NDJSON rows do not preserve. The old read path recovered columns by iterating the first row's map and returned them in an arbitrary order; a restored dataset now comes back with the column order it was written with.
+
+Still deferred, unchanged by this work: automatic threshold-based spill (M3), `response="artifact"` producing a real reference (M4), a cloud-storage backend, Parquet, and retention beyond per-run deletion.
