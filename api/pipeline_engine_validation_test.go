@@ -70,6 +70,53 @@ func TestPipelineCreateRejectsEngineInvalidWithoutPersistence(t *testing.T) {
 	}
 }
 
+func TestPipelineUpdateMetadataOnlyExemptsLegacyInvalidGraph(t *testing.T) {
+	s := newOrgCheckStore(t)
+	legacy := engineInvalidPipeline("legacy invalid")
+	legacy.ID = "legacy-metadata"
+	legacy.Enabled = true
+	legacy.CreatedAt = time.Now().UTC()
+	legacy.UpdatedAt = legacy.CreatedAt
+	if err := s.CreatePipeline(legacy); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.GetPipeline(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewPipelineHandler(s, nil)
+
+	// Pause + rename with the graph byte-identical: the operational-metadata
+	// exemption must let this through even though the stored graph cannot
+	// pass executable validation.
+	paused := *stored
+	paused.Enabled = false
+	paused.Name = "legacy invalid (paused)"
+	rec := servePipelineHandler(t, http.MethodPut, "/pipelines/{id}", "/pipelines/legacy-metadata", mustMarshalPipeline(&paused), h.Update)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metadata-only update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	after, err := s.GetPipeline(legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Enabled || after.Name != "legacy invalid (paused)" {
+		t.Fatalf("metadata-only update not persisted: enabled=%v name=%q", after.Enabled, after.Name)
+	}
+
+	// Any graph change on the same pipeline must revalidate in full and
+	// fail closed.
+	changed := *after
+	changed.Nodes = append(append([]models.Node(nil), after.Nodes...), models.Node{
+		ID: "another", Type: "still_unknown", Name: "Another", Config: map[string]interface{}{},
+	})
+	rec = servePipelineHandler(t, http.MethodPut, "/pipelines/{id}", "/pipelines/legacy-metadata", mustMarshalPipeline(&changed), h.Update)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "unsupported type") {
+		t.Fatalf("graph-change update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestPipelineUpdateRejectsEngineInvalidWithoutMutationOrVersion(t *testing.T) {
 	s := newOrgCheckStore(t)
 	now := time.Now().UTC()

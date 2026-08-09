@@ -131,11 +131,12 @@
 
   async function validateNodes() {
     if (!pipeline?.id) return;
+    // Save first so the backend checks the canvas the user is looking at.
+    // If the save is rejected, the stored graph is stale — refreshing the
+    // badges from it would mislabel the current canvas, so surface the
+    // rejection instead (it carries the validation message).
+    if (!(await save())) return;
     try {
-      // Save first so backend has latest nodes
-      pipeline.nodes = nodes;
-      pipeline.edges = edges;
-      await api.pipelines.update(pipeline.id, pipeline);
       const res = await fetch(`/api/pipelines/${pipeline.id}/validate-nodes`, {
         method: "POST",
         headers: authHeaders(),
@@ -146,8 +147,8 @@
         map[issue.node_id] = issue;
       }
       nodeIssues = map;
-    } catch {
-      // silent fail
+    } catch (e: any) {
+      error = "Node check failed: " + (e.message || e);
     }
   }
 
@@ -267,8 +268,12 @@
   }
 
   // ── Save / Run ──────────────────────────────────────────────
-  async function save() {
-    if (!pipeline) return;
+  // Returns true only when the canvas was actually persisted. Callers that
+  // execute the pipeline afterwards (run, preview, node checks) must bail
+  // out on false — otherwise they'd silently operate on the previously
+  // saved graph while the user is looking at the unsaved one.
+  async function save(): Promise<boolean> {
+    if (!pipeline) return false;
     saving = true;
     error = "";
     try {
@@ -276,8 +281,10 @@
       pipeline.edges = edges;
       await api.pipelines.update(pipeline.id, pipeline);
       notify.success("Pipeline saved");
+      return true;
     } catch (e: any) {
       error = "Failed to save: " + (e.message || e);
+      return false;
     } finally {
       saving = false;
     }
@@ -286,7 +293,10 @@
   async function triggerRun() {
     if (!pipeline) return;
     try {
-      await save();
+      if (!(await save())) {
+        notify.error("Run not started — the pipeline could not be saved");
+        return;
+      }
       await api.runs.trigger(pipeline.id);
       window.location.hash = `#/pipelines/${pipeline.id}/runs`;
     } catch (e: any) {
@@ -302,7 +312,10 @@
     previewNodeId = null;
     error = "";
     try {
-      await save();
+      if (!(await save())) {
+        error = "Preview not run — the pipeline could not be saved: " + error.replace(/^Failed to save: /, "");
+        return;
+      }
       const res = await fetch(`/api/pipelines/${pipeline.id}/dry-run`, {
         method: "POST",
         headers: authHeaders(),
