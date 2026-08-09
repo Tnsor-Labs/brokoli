@@ -83,6 +83,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-013](./013-connector-protocol-partition-progress-cancellation.md) | Extend the plugin protocol with work-unit planning, structured progress, and cancellation | Proposed |
 | [ADR-014](./014-pipeline-ir-ownership-and-compatibility.md) | Core-owned pipeline IR and explicit compatibility negotiation | Proposed |
 | [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Proposed |
+| [ADR-016](./016-plugin-packaging-and-distribution.md) | Plugin packaging, runtime resolution, and distribution | Proposed |
 
 ## How to add a new ADR
 
