@@ -73,8 +73,20 @@ func TestDashboardHandler_CountsRunsOlderThanTheEvictionTTL(t *testing.T) {
 	if got := d["runs_24h_total"]; got != float64(3) {
 		t.Errorf("runs_24h_total = %v, want 3 — hour-old runs are well inside 24h", got)
 	}
-	if got := d["runs_today"]; got != float64(3) {
-		t.Errorf("runs_today = %v, want 3", got)
+	// In the first hour after local midnight an hour-old run genuinely
+	// belongs to yesterday, so derive the expected bucket from the seeded
+	// timestamp instead of assuming "today". This is what made the test
+	// flake for anyone running it between 00:00 and 01:00.
+	seeded := time.Now().Add(-time.Hour).Local()
+	wantToday, wantYesterday := float64(3), float64(0)
+	if seeded.Format("2006-01-02") != time.Now().Local().Format("2006-01-02") {
+		wantToday, wantYesterday = 0, 3
+	}
+	if got := d["runs_today"]; got != wantToday {
+		t.Errorf("runs_today = %v, want %v", got, wantToday)
+	}
+	if got := d["runs_yesterday"]; got != wantYesterday {
+		t.Errorf("runs_yesterday = %v, want %v", got, wantYesterday)
 	}
 }
 

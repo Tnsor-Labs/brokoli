@@ -368,22 +368,27 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		// run.completed event during a reconnect window) and should be cleared.
 		runningRunIDs := make([]string, 0, 4)
 		for _, run := range allRuns {
-			if len(run.StartedAt) >= 10 {
-				day := run.StartedAt[:10]
-				if day == todayStr {
-					runsToday++
-				} else if day == yesterdayStr {
-					runsYesterday++
-				}
-			}
 			if run.StartedAt != "" {
-				if t, err := time.Parse("2006-01-02T15:04:05Z07:00", run.StartedAt); err == nil && !t.Before(last24hCutoff) {
-					runs24hTotal++
-					switch run.Status {
-					case "success", "completed":
-						runs24hSuccess++
-					case "failed":
-						runs24hFailed++
+				if t, err := time.Parse("2006-01-02T15:04:05Z07:00", run.StartedAt); err == nil {
+					// Timestamps are persisted in UTC; "today" means the
+					// server's local day. Convert before bucketing — slicing
+					// the UTC string and comparing it against a local date
+					// misbucketed every run for the first hours of each
+					// local day on any server not running in UTC.
+					day := t.Local().Format("2006-01-02")
+					if day == todayStr {
+						runsToday++
+					} else if day == yesterdayStr {
+						runsYesterday++
+					}
+					if !t.Before(last24hCutoff) {
+						runs24hTotal++
+						switch run.Status {
+						case "success", "completed":
+							runs24hSuccess++
+						case "failed":
+							runs24hFailed++
+						}
 					}
 				}
 			}
