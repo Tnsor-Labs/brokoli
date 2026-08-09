@@ -102,7 +102,11 @@ run. Relational joins reject inactive required inputs instead of receiving a
 fabricated empty dataset. IR 2.0 retains its static-edge and false-as-empty
 behavior.
 
-The runtime implementation remains deliberately unavailable at the public IR
-boundary: `CurrentIRVersion` and `SupportedIRVersions` continue to advertise
-only 2.0 until UI round-trip preservation and the coordinated SDK rollout are
-complete.
+## Update: 2026-08-09 — conditional-edge capability enabled
+
+The control plane now accepts and advertises IR 2.1 after runtime, persistence,
+resume, and UI preservation gates completed. `CurrentIRVersion` remains 2.0 so
+ordinary pipelines keep the broadest compatibility, while
+`SupportedIRVersions` includes both 2.0 and 2.1. IR 2.1 condition nodes require
+exactly one payload input and explicit true/false metadata on every outgoing
+edge; malformed graphs fail before persistence.

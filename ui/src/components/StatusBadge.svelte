@@ -11,6 +11,7 @@
     failed: "Failed",
     cancelled: "Cancelled",
     blocked: "Blocked",
+    skipped: "Skipped",
   };
 </script>
 
@@ -36,8 +37,14 @@
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .badge.md { font-size: 0.75rem; padding: 3px 10px; }
-  .badge.sm { font-size: 0.625rem; padding: 1px 6px; }
+  .badge.md {
+    font-size: 0.75rem;
+    padding: 3px 10px;
+  }
+  .badge.sm {
+    font-size: 0.625rem;
+    padding: 1px 6px;
+  }
 
   .dot {
     width: 6px;
@@ -46,32 +53,86 @@
     flex-shrink: 0;
   }
 
-  .pending { color: var(--pending); background: var(--pending-bg); }
-  .pending .dot { background: var(--pending); }
+  .pending {
+    color: var(--pending);
+    background: var(--pending-bg);
+  }
+  .pending .dot {
+    background: var(--pending);
+  }
 
-  .running { color: var(--running); background: var(--running-bg); }
-  .running .dot { background: var(--running); }
-  .running .dot.pulse { animation: pulse-dot 1.5s ease-in-out infinite; }
+  .running {
+    color: var(--running);
+    background: var(--running-bg);
+  }
+  .running .dot {
+    background: var(--running);
+  }
+  .running .dot.pulse {
+    animation: pulse-dot 1.5s ease-in-out infinite;
+  }
 
-  .success { color: var(--success); background: var(--success-bg); }
-  .success .dot { background: var(--success); animation: success-pop 0.4s ease-out; }
+  .success {
+    color: var(--success);
+    background: var(--success-bg);
+  }
+  .success .dot {
+    background: var(--success);
+    animation: success-pop 0.4s ease-out;
+  }
 
-  .failed { color: var(--failed); background: var(--failed-bg); }
-  .failed .dot { background: var(--failed); }
+  .failed {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
+  .failed .dot {
+    background: var(--failed);
+  }
 
-  .cancelled { color: var(--text-muted); background: var(--pending-bg); }
-  .cancelled .dot { background: var(--text-muted); }
+  .cancelled {
+    color: var(--text-muted);
+    background: var(--pending-bg);
+  }
+  .cancelled .dot {
+    background: var(--text-muted);
+  }
 
-  .blocked { color: var(--warning); background: var(--warning-bg); }
-  .blocked .dot { background: var(--warning); }
+  .blocked {
+    color: var(--warning);
+    background: var(--warning-bg);
+  }
+  .blocked .dot {
+    background: var(--warning);
+  }
+
+  .skipped {
+    color: var(--text-muted);
+    background: var(--pending-bg);
+  }
+  .skipped .dot {
+    background: var(--text-muted);
+  }
 
   @keyframes pulse-dot {
-    0%, 100% { opacity: 1; transform: scale(1); }
-    50% { opacity: 0.4; transform: scale(0.8); }
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.4;
+      transform: scale(0.8);
+    }
   }
   @keyframes success-pop {
-    0% { transform: scale(0.4); }
-    60% { transform: scale(1.3); }
-    100% { transform: scale(1); }
+    0% {
+      transform: scale(0.4);
+    }
+    60% {
+      transform: scale(1.3);
+    }
+    100% {
+      transform: scale(1);
+    }
   }
 </style>

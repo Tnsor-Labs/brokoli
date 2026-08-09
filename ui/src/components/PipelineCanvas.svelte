@@ -23,7 +23,8 @@
   let drawStart = { x: 0, y: 0 };
   let drawEnd = { x: 0, y: 0 };
   let nearestTarget: { nodeId: string; side: string; pos: { x: number; y: number } } | null = null;
-  let nearestInvalidTarget: { nodeId: string; side: string; pos: { x: number; y: number } } | null = null;
+  let nearestInvalidTarget: { nodeId: string; side: string; pos: { x: number; y: number } } | null =
+    null;
 
   // Pan state
   let panning = false;
@@ -67,12 +68,18 @@
           path: edgePath(outputPort(from), inputPort(to)),
           fromId: e.from,
           toId: e.to,
+          condition: e.condition,
         };
       })
-      .filter(Boolean) as { path: string; fromId: string; toId: string }[];
+      .filter(Boolean) as { path: string; fromId: string; toId: string; condition?: boolean }[];
   }
 
-  function findNearestPort(svgX: number, svgY: number, excludeNodeId: string, dragFromSide: "input" | "output"): typeof nearestTarget {
+  function findNearestPort(
+    svgX: number,
+    svgY: number,
+    excludeNodeId: string,
+    dragFromSide: "input" | "output",
+  ): typeof nearestTarget {
     const SNAP_DISTANCE = 50;
     let best: typeof nearestTarget = null;
     let bestDist = SNAP_DISTANCE;
@@ -106,11 +113,15 @@
         let toNodeId: string;
 
         if (dragFromSide === "output" && port.side === "input") {
-          fromType = dragNode.type; toType = node.type;
-          fromNodeId = excludeNodeId; toNodeId = node.id;
+          fromType = dragNode.type;
+          toType = node.type;
+          fromNodeId = excludeNodeId;
+          toNodeId = node.id;
         } else if (dragFromSide === "input" && port.side === "output") {
-          fromType = node.type; toType = dragNode.type;
-          fromNodeId = node.id; toNodeId = excludeNodeId;
+          fromType = node.type;
+          toType = dragNode.type;
+          fromNodeId = node.id;
+          toNodeId = excludeNodeId;
         } else {
           continue;
         }
@@ -131,7 +142,9 @@
     return best;
   }
 
-  function onPortDragStart(e: CustomEvent<{ nodeId: string; side: "input" | "output"; x: number; y: number }>) {
+  function onPortDragStart(
+    e: CustomEvent<{ nodeId: string; side: "input" | "output"; x: number; y: number }>,
+  ) {
     if (readonly) return;
     const { nodeId, side } = e.detail;
     drawing = true;
@@ -172,8 +185,11 @@
         }
 
         if (from !== to && !edges.some((e) => e.from === from && e.to === to)) {
-          edges = [...edges, { from, to }];
-          dispatch("edgeAdded", { from, to });
+          const edge = createEdge(from, to);
+          if (edge) {
+            edges = [...edges, edge];
+            dispatch("edgeAdded", edge);
+          }
         }
       }
 
@@ -206,7 +222,8 @@
     }
 
     if (!edges.some((e) => e.from === from && e.to === to)) {
-      edges = [...edges, { from, to }];
+      const edge = createEdge(from, to);
+      if (edge) edges = [...edges, edge];
     }
 
     drawing = false;
@@ -217,6 +234,29 @@
   function selectNode(nodeId: string) {
     selectedNodeId = nodeId;
     dispatch("selectNode", nodeId);
+  }
+
+  function createEdge(from: string, to: string): Edge | null {
+    if (nodeMap().get(from)?.type !== "condition") return { from, to };
+
+    const unlabeled = edges.find(
+      (edge) => nodeMap().get(edge.from)?.type === "condition" && edge.condition === undefined,
+    );
+    if (unlabeled) {
+      window.alert(
+        "Delete and reconnect existing condition edges first so every branch can be labeled true or false.",
+      );
+      return null;
+    }
+
+    const branch = window.prompt("Condition branch for this edge: enter true or false.", "true");
+    if (branch === null) return null;
+    const normalized = branch.trim().toLowerCase();
+    if (normalized !== "true" && normalized !== "false") {
+      window.alert("Condition branch must be true or false.");
+      return null;
+    }
+    return { from, to, condition: normalized === "true" };
   }
 
   function onCanvasClick(e: MouseEvent) {
@@ -286,7 +326,9 @@
     dispatch("addNode", { type: nodeType, x: pt.x - NODE_WIDTH / 2, y: pt.y - NODE_HEIGHT / 2 });
   }
 
-  function onDragOver(e: DragEvent) { e.preventDefault(); }
+  function onDragOver(e: DragEvent) {
+    e.preventDefault();
+  }
 
   function onDeleteEdge(fromId: string, toId: string) {
     edges = edges.filter((e) => !(e.from === fromId && e.to === toId));
@@ -305,7 +347,11 @@
     }
   });
 
-  $: edgePaths = (() => { nodes; edges; return getEdgePaths(); })();
+  $: edgePaths = (() => {
+    nodes;
+    edges;
+    return getEdgePaths();
+  })();
 
   $: joinWarnings = nodes
     .filter((n) => n.type === "join")
@@ -375,9 +421,13 @@
         d={edge.path}
         fill="none"
         stroke={edgeColor}
+        stroke-dasharray={edge.condition === false ? "5 4" : undefined}
         stroke-width="1.5"
         marker-end="url(#arrowhead)"
       />
+      {#if edge.condition !== undefined}
+        <title>{edge.condition ? "True branch" : "False branch"}</title>
+      {/if}
       {#if nodeStatuses[edge.fromId] === "success" && nodeStatuses[edge.toId] === "running"}
         <path
           class="edge-flow"
@@ -434,14 +484,20 @@
         opacity="0.8"
       />
       <line
-        x1={nearestInvalidTarget.pos.x - 4} y1={nearestInvalidTarget.pos.y - 4}
-        x2={nearestInvalidTarget.pos.x + 4} y2={nearestInvalidTarget.pos.y + 4}
-        stroke="#ef4444" stroke-width="1.5"
+        x1={nearestInvalidTarget.pos.x - 4}
+        y1={nearestInvalidTarget.pos.y - 4}
+        x2={nearestInvalidTarget.pos.x + 4}
+        y2={nearestInvalidTarget.pos.y + 4}
+        stroke="#ef4444"
+        stroke-width="1.5"
       />
       <line
-        x1={nearestInvalidTarget.pos.x + 4} y1={nearestInvalidTarget.pos.y - 4}
-        x2={nearestInvalidTarget.pos.x - 4} y2={nearestInvalidTarget.pos.y + 4}
-        stroke="#ef4444" stroke-width="1.5"
+        x1={nearestInvalidTarget.pos.x + 4}
+        y1={nearestInvalidTarget.pos.y - 4}
+        x2={nearestInvalidTarget.pos.x - 4}
+        y2={nearestInvalidTarget.pos.y + 4}
+        stroke="#ef4444"
+        stroke-width="1.5"
       />
     {/if}
   {/if}
@@ -451,7 +507,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <g on:click|stopPropagation={() => selectNode(node.id)} on:keydown={() => {}}>
       <NodeCard
-        bind:node={node}
+        bind:node
         selected={selectedNodeId === node.id}
         status={nodeStatuses[node.id] || null}
         {readonly}
@@ -475,18 +531,28 @@
           x={warnNode.position.x + NODE_WIDTH - 4}
           y={warnNode.position.y - 1}
           text-anchor="middle"
-          class="join-warning-text"
-        >!</text>
+          class="join-warning-text">!</text
+        >
       </g>
     {/each}
   {/each}
 
   <!-- Empty state -->
   {#if nodes.length === 0 && !readonly}
-    <text x={viewBox.x + viewBox.w / 2} y={viewBox.y + viewBox.h / 2} text-anchor="middle" class="empty-text">
+    <text
+      x={viewBox.x + viewBox.w / 2}
+      y={viewBox.y + viewBox.h / 2}
+      text-anchor="middle"
+      class="empty-text"
+    >
       Drag nodes from the palette to build your pipeline
     </text>
-    <text x={viewBox.x + viewBox.w / 2} y={viewBox.y + viewBox.h / 2 + 22} text-anchor="middle" class="empty-hint">
+    <text
+      x={viewBox.x + viewBox.w / 2}
+      y={viewBox.y + viewBox.h / 2 + 22}
+      text-anchor="middle"
+      class="empty-hint"
+    >
       Connect them by dragging from port to port
     </text>
   {/if}
@@ -500,45 +566,74 @@
     border-radius: 8px;
     border: 1px solid var(--border-subtle);
     user-select: none;
-    transition: background 200ms ease, border-color 200ms ease;
+    transition:
+      background 200ms ease,
+      border-color 200ms ease;
   }
 
-  .canvas-bg { cursor: default; }
+  .canvas-bg {
+    cursor: default;
+  }
 
-  .edge-path { transition: stroke 200ms ease; }
-  .edge-hit { cursor: pointer; }
+  .edge-path {
+    transition: stroke 200ms ease;
+  }
+  .edge-hit {
+    cursor: pointer;
+  }
   .edge-hit:hover + .edge-path {
     stroke: var(--canvas-edge-hover);
     stroke-width: 2;
   }
 
-  .edge-flow { animation: flow 0.8s linear infinite; }
-  .edge-drawing { animation: dash 0.6s linear infinite; }
+  .edge-flow {
+    animation: flow 0.8s linear infinite;
+  }
+  .edge-drawing {
+    animation: dash 0.6s linear infinite;
+  }
 
-  .snap-ring { animation: snap-pulse 0.8s ease-in-out infinite; }
+  .snap-ring {
+    animation: snap-pulse 0.8s ease-in-out infinite;
+  }
 
-  @keyframes flow { to { stroke-dashoffset: -12; } }
-  @keyframes dash { to { stroke-dashoffset: -10; } }
+  @keyframes flow {
+    to {
+      stroke-dashoffset: -12;
+    }
+  }
+  @keyframes dash {
+    to {
+      stroke-dashoffset: -10;
+    }
+  }
   @keyframes snap-pulse {
-    0%, 100% { r: 8; opacity: 0.8; }
-    50% { r: 11; opacity: 0.4; }
+    0%,
+    100% {
+      r: 8;
+      opacity: 0.8;
+    }
+    50% {
+      r: 11;
+      opacity: 0.4;
+    }
   }
 
   .empty-text {
     fill: var(--text-dim);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     font-size: 14px;
     font-weight: 500;
   }
   .empty-hint {
     fill: var(--text-ghost);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     font-size: 12px;
   }
 
   .join-warning-text {
     fill: white;
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     font-size: 9px;
     font-weight: 700;
     pointer-events: none;

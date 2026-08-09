@@ -9,7 +9,7 @@
   export let pipelineId: string = "";
   export let runId: string = "";
 
-  $: nodeMap = new Map(nodes.map(n => [n.id, n]));
+  $: nodeMap = new Map(nodes.map((n) => [n.id, n]));
 
   // Group by node_id so retries/resumed-run/expansion re-attempts show as
   // one row per node (labeled with their attempt history) instead of one
@@ -20,7 +20,7 @@
   $: groupedRuns = (() => {
     const byNode = new Map<string, NodeRun[]>();
     for (const nr of nodeRuns) {
-      if (!nr.started_at && nr.duration_ms <= 0) continue;
+      if (!nr.started_at && nr.duration_ms <= 0 && nr.status !== "skipped") continue;
       const attempts = byNode.get(nr.node_id) ?? [];
       attempts.push(nr);
       byNode.set(nr.node_id, attempts);
@@ -41,16 +41,19 @@
   // the footer summary, and bar-width scaling — a failed retry that later
   // succeeded shouldn't count twice toward "rows processed" or stretch the
   // duration axis past what's actually shown.
-  $: primaryRuns = groupedRuns.map(g => g.attempts[g.attempts.length - 1]);
+  $: primaryRuns = groupedRuns.map((g) => g.attempts[g.attempts.length - 1]);
 
-  $: maxDuration = Math.max(...primaryRuns.map(nr => nr.duration_ms), 1);
+  $: maxDuration = Math.max(...primaryRuns.map((nr) => nr.duration_ms), 1);
   $: totalRows = primaryRuns.reduce((sum, nr) => sum + nr.row_count, 0);
-  $: totalDuration = runStartedAt && primaryRuns.length
-    ? Math.max(...primaryRuns.map(nr => {
-        const start = nr.started_at ? new Date(nr.started_at).getTime() : 0;
-        return start - new Date(runStartedAt!).getTime() + nr.duration_ms;
-      }))
-    : maxDuration;
+  $: totalDuration =
+    runStartedAt && primaryRuns.length
+      ? Math.max(
+          ...primaryRuns.map((nr) => {
+            const start = nr.started_at ? new Date(nr.started_at).getTime() : 0;
+            return start - new Date(runStartedAt!).getTime() + nr.duration_ms;
+          }),
+        )
+      : maxDuration;
 
   function barWidth(duration: number): number {
     return Math.max(2, (duration / maxDuration) * 100);
@@ -61,6 +64,7 @@
     if (status === "failed") return "var(--failed)";
     if (status === "running") return "var(--accent)";
     if (status === "cancelled") return "var(--warning)";
+    if (status === "skipped") return "var(--text-muted)";
     return "var(--pending)";
   }
 
@@ -91,8 +95,17 @@
       {#if pipelineId && runId}
         <a href="#/pipelines/{pipelineId}/runs/{runId}/gantt" class="full-link">
           Open Full Timeline
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M7 17l9.2-9.2M17 17V7H7"/>
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path d="M7 17l9.2-9.2M17 17V7H7" />
           </svg>
         </a>
       {/if}
@@ -118,7 +131,9 @@
           <div class="row-label">
             <span class="node-name">{node?.name || g.nodeId}</span>
             {#if g.attempts.length > 1}
-              <span class="retry-badge" title="{g.attempts.length} attempts">×{g.attempts.length}</span>
+              <span class="retry-badge" title="{g.attempts.length} attempts"
+                >×{g.attempts.length}</span
+              >
             {/if}
             <StatusBadge status={nr.status} size="sm" />
           </div>
@@ -155,12 +170,20 @@
     <div class="timeline-footer">
       <span>Total: {formatDuration(totalDuration)}</span>
       <span class="sep">·</span>
-      <span>{primaryRuns.filter(r => r.status === "success").length}/{primaryRuns.length} nodes</span>
+      <span
+        >{primaryRuns.filter((r) => r.status === "success").length}/{primaryRuns.length} nodes</span
+      >
       <span class="sep">·</span>
       <span>{formatRows(totalRows)}</span>
-      {#if primaryRuns.some(r => r.status === "failed")}
+      {#if primaryRuns.some((r) => r.status === "failed")}
         <span class="sep">·</span>
-        <span class="footer-failed">{primaryRuns.filter(r => r.status === "failed").length} failed</span>
+        <span class="footer-failed"
+          >{primaryRuns.filter((r) => r.status === "failed").length} failed</span
+        >
+      {/if}
+      {#if primaryRuns.some((r) => r.status === "skipped")}
+        <span class="sep">·</span>
+        <span>{primaryRuns.filter((r) => r.status === "skipped").length} skipped</span>
       {/if}
     </div>
   </div>
@@ -206,11 +229,17 @@
     gap: 4px;
     transition: opacity 150ms;
   }
-  .full-link:hover { opacity: 0.8; }
+  .full-link:hover {
+    opacity: 0.8;
+  }
 
   /* Rows */
-  .row-group:last-of-type .row { border-bottom: none; }
-  .row-group:last-of-type .attempt-stack { border-bottom: none; }
+  .row-group:last-of-type .row {
+    border-bottom: none;
+  }
+  .row-group:last-of-type .attempt-stack {
+    border-bottom: none;
+  }
 
   .row {
     display: flex;
@@ -221,9 +250,15 @@
     cursor: pointer;
     transition: background 100ms;
   }
-  .row:hover { background: var(--bg-tertiary); }
-  .row.selected { background: var(--accent-glow); }
-  .row.failed { border-left: 2px solid var(--failed); }
+  .row:hover {
+    background: var(--bg-tertiary);
+  }
+  .row.selected {
+    background: var(--accent-glow);
+  }
+  .row.failed {
+    border-left: 2px solid var(--failed);
+  }
 
   .retry-badge {
     font-size: 10px;
@@ -253,7 +288,9 @@
     color: var(--text-muted);
     padding: 2px 0;
   }
-  .attempt-row.failed { color: var(--failed); }
+  .attempt-row.failed {
+    color: var(--failed);
+  }
   .attempt-label {
     font-family: var(--font-mono);
     font-weight: 500;
@@ -300,9 +337,13 @@
     border-radius: 4px;
     min-width: 4px;
     opacity: 0.85;
-    transition: width 300ms ease, opacity 150ms;
+    transition:
+      width 300ms ease,
+      opacity 150ms;
   }
-  .row:hover .bar { opacity: 1; }
+  .row:hover .bar {
+    opacity: 1;
+  }
   .bar.running {
     animation: pulse 1.5s ease-in-out infinite;
   }
@@ -334,16 +375,30 @@
     border-top: 1px solid var(--border-subtle);
     background: var(--bg-tertiary);
   }
-  .sep { opacity: 0.3; }
-  .footer-failed { color: var(--failed); }
+  .sep {
+    opacity: 0.3;
+  }
+  .footer-failed {
+    color: var(--failed);
+  }
 
   @keyframes pulse {
-    0%, 100% { opacity: 0.85; }
-    50% { opacity: 0.4; }
+    0%,
+    100% {
+      opacity: 0.85;
+    }
+    50% {
+      opacity: 0.4;
+    }
   }
 
   @media (max-width: 768px) {
-    .row-label { width: 120px; min-width: 120px; }
-    .node-name { max-width: 80px; }
+    .row-label {
+      width: 120px;
+      min-width: 120px;
+    }
+    .node-name {
+      max-width: 80px;
+    }
   }
 </style>

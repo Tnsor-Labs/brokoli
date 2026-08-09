@@ -2,6 +2,7 @@ package models
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -46,14 +47,35 @@ const (
 const CurrentIRVersion = "2.0"
 
 // ConditionalEdgesIRVersion is the first IR version whose edges may carry
-// branch selection. It is intentionally not advertised until the scheduler
-// implements the complete routing contract.
+// branch selection.
 const ConditionalEdgesIRVersion = "2.1"
 
 // SupportedIRVersions lists every ir_version this host can accept in a
 // deployed pipeline. Expand when introducing a new version; only remove
 // an old entry when formally deprecating it.
-var SupportedIRVersions = []string{"2.0"}
+var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion}
+
+var supportedConditionExpressions = []*regexp.Regexp{
+	regexp.MustCompile(`^row_count\s*(==|!=|>=|<=|>|<)\s*\d+$`),
+	regexp.MustCompile(`^column_exists\(\s*"[^"]+"\s*\)$`),
+	regexp.MustCompile(`^null_pct\(\s*"[^"]+"\s*\)\s*(==|!=|>=|<=|>|<)\s*(?:\d+(?:\.\d*)?|\.\d+)$`),
+	regexp.MustCompile(`^(min|max)\(\s*"[^"]+"\s*\)\s*(==|!=|>=|<=|>|<)\s*(?:\d+(?:\.\d*)?|\.\d+)$`),
+}
+
+// IsConditionExpressionSupported reports whether expr belongs to the
+// condition language implemented by the runtime.
+func IsConditionExpressionSupported(expr string) bool {
+	expr = strings.TrimSpace(expr)
+	if expr == "always_true" || expr == "always_false" {
+		return true
+	}
+	for _, pattern := range supportedConditionExpressions {
+		if pattern.MatchString(expr) {
+			return true
+		}
+	}
+	return false
+}
 
 // IsIRVersionSupported returns true if the host can accept a pipeline
 // carrying the given ir_version. An empty version is always accepted —
@@ -197,6 +219,7 @@ func (p *Pipeline) Validate() error {
 	// Check for duplicate node IDs
 	seen := make(map[string]bool)
 	nodeTypes := make(map[string]NodeType)
+	inputDegree := make(map[string]int)
 	for _, n := range p.Nodes {
 		if seen[n.ID] {
 			return fmt.Errorf("duplicate node ID: %s", n.ID)
@@ -226,12 +249,30 @@ func (p *Pipeline) Validate() error {
 		if !seen[e.To] {
 			return fmt.Errorf("edge references unknown target node: %s", e.To)
 		}
+		inputDegree[e.To]++
 		if e.Condition != nil {
 			if p.IRVersion != ConditionalEdgesIRVersion {
 				return fmt.Errorf("conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, ConditionalEdgesIRVersion)
 			}
 			if nodeTypes[e.From] != NodeTypeCondition {
 				return fmt.Errorf("conditional edge %s -> %s must originate from a condition node", e.From, e.To)
+			}
+		}
+		if p.IRVersion == ConditionalEdgesIRVersion && nodeTypes[e.From] == NodeTypeCondition && e.Condition == nil {
+			return fmt.Errorf("condition node edge %s -> %s requires an explicit true or false branch", e.From, e.To)
+		}
+	}
+	if p.IRVersion == ConditionalEdgesIRVersion {
+		for _, n := range p.Nodes {
+			if n.Type != NodeTypeCondition {
+				continue
+			}
+			if inputDegree[n.ID] != 1 {
+				return fmt.Errorf("condition node %s must have exactly 1 input, got %d", n.ID, inputDegree[n.ID])
+			}
+			expression, ok := n.Config["expression"].(string)
+			if !ok || !IsConditionExpressionSupported(expression) {
+				return fmt.Errorf("condition node %s has an unsupported expression", n.ID)
 			}
 		}
 	}

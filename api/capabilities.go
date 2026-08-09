@@ -36,8 +36,8 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 // plugin protocol versions, and known node/connector capability tags.
 // Unauthenticated and static/derived — SDK clients and the UI use it to
 // discover what a given Brokoli deployment understands before deploying
-// a pipeline (e.g. whether ir_version "2.0" / decorator-based source
-// nodes are supported).
+// a pipeline (e.g. whether IR 2.1 conditional edges or decorator-based
+// source nodes are supported).
 func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ir_version":                         models.CurrentIRVersion,

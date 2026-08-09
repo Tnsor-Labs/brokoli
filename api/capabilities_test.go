@@ -35,14 +35,16 @@ func TestCapabilitiesHandler(t *testing.T) {
 	if !ok || len(supported) == 0 {
 		t.Fatalf("expected non-empty supported_ir_versions, got %v", body["supported_ir_versions"])
 	}
-	found := false
+	found := map[string]bool{"2.0": false, "2.1": false}
 	for _, v := range supported {
-		if v == "2.0" {
-			found = true
+		if version, ok := v.(string); ok {
+			if _, expected := found[version]; expected {
+				found[version] = true
+			}
 		}
 	}
-	if !found {
-		t.Errorf("expected supported_ir_versions to include 2.0, got %v", supported)
+	if !found["2.0"] || !found["2.1"] {
+		t.Errorf("expected supported_ir_versions to include 2.0 and 2.1, got %v", supported)
 	}
 
 	if body["plugin_protocol_version"] == nil {

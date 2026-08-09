@@ -1,4 +1,5 @@
 export interface Pipeline {
+  ir_version?: string;
   id: string;
   name: string;
   description: string;
@@ -95,11 +96,13 @@ export interface Node {
   name: string;
   config: Record<string, unknown>;
   position: Position;
+  capabilities?: string[];
 }
 
 export interface Edge {
   from: string;
   to: string;
+  condition?: boolean;
 }
 
 // Matches models.Alert (Go) — served by GET /api/alerts. The persisted,
@@ -190,7 +193,8 @@ export type RunStatus =
   | "success"
   | "failed"
   | "cancelled"
-  | "blocked";
+  | "blocked"
+  | "skipped";
 
 export interface Run {
   id: string;

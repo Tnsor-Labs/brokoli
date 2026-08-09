@@ -84,10 +84,13 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 				ve.Add(fmt.Sprintf("Conditional edge %s -> %s must originate from a condition node", e.From, e.To))
 			}
 		}
+		if p.IRVersion == models.ConditionalEdgesIRVersion && nodeTypes[e.From] == models.NodeTypeCondition && e.Condition == nil {
+			ve.Add(fmt.Sprintf("Condition node edge %s -> %s requires an explicit true or false branch", e.From, e.To))
+		}
 	}
 
 	// Check semantic connection rules
-	validateEdgeSemantics(p.Nodes, p.Edges, ve, executors)
+	validateEdgeSemantics(p.IRVersion, p.Nodes, p.Edges, ve, executors)
 
 	// Check for cycles
 	if _, err := topoSort(p.Nodes, p.Edges); err != nil {
@@ -131,7 +134,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 	return ve
 }
 
-func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *ValidationError, executors []extensions.NodeExecutor) {
+func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models.Edge, ve *ValidationError, executors []extensions.NodeExecutor) {
 	nodesByID := make(map[string]models.Node, len(nodes))
 	for _, n := range nodes {
 		nodesByID[n.ID] = n
@@ -158,6 +161,16 @@ func validateEdgeSemantics(nodes []models.Node, edges []models.Edge, ve *Validat
 
 	for _, n := range nodes {
 		switch n.Type {
+		case models.NodeTypeCondition:
+			if irVersion == models.ConditionalEdgesIRVersion {
+				if count := inputDegree[n.ID]; count != 1 {
+					ve.Add(fmt.Sprintf("Node %q (condition) must have exactly 1 input, got %d", n.Name, count))
+				}
+				expression, ok := n.Config["expression"].(string)
+				if !ok || !models.IsConditionExpressionSupported(expression) {
+					ve.Add(fmt.Sprintf("Node %q (condition) has an unsupported expression", n.Name))
+				}
+			}
 		case models.NodeTypeJoin:
 			count := inputDegree[n.ID]
 			if count != 2 {

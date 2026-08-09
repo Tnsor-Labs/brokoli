@@ -19,8 +19,8 @@ type ConditionResult struct {
 var (
 	reRowCount  = regexp.MustCompile(`^row_count\s*(==|!=|>=|<=|>|<)\s*(\d+)$`)
 	reColExists = regexp.MustCompile(`^column_exists\(\s*"([^"]+)"\s*\)$`)
-	reNullPct   = regexp.MustCompile(`^null_pct\(\s*"([^"]+)"\s*\)\s*(==|!=|>=|<=|>|<)\s*([\d.]+)$`)
-	reMinMax    = regexp.MustCompile(`^(min|max)\(\s*"([^"]+)"\s*\)\s*(==|!=|>=|<=|>|<)\s*([\d.]+)$`)
+	reNullPct   = regexp.MustCompile(`^null_pct\(\s*"([^"]+)"\s*\)\s*(==|!=|>=|<=|>|<)\s*(\d+(?:\.\d*)?|\.\d+)$`)
+	reMinMax    = regexp.MustCompile(`^(min|max)\(\s*"([^"]+)"\s*\)\s*(==|!=|>=|<=|>|<)\s*(\d+(?:\.\d*)?|\.\d+)$`)
 )
 
 // EvaluateCondition evaluates a condition expression against a dataset.
