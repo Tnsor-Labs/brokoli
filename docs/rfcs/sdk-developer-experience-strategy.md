@@ -142,6 +142,8 @@ Developers need three local test levels:
 
 Level three must invoke the same backend contracts used in production. A separate Python scheduler would make local tests convenient but untrustworthy.
 
+Brokoli holds an advantage here that none of the compared orchestrators has: the entire control plane is one Go binary. The local harness should therefore *be* the production engine — embedded, downloaded, or run as a subprocess — rather than a reimplementation of "supported semantics" in Python. Airflow, Dagster, and Prefect all accumulated drift precisely at the local/production seam; Brokoli is the only one of the four that can make that seam disappear, and the harness design should treat that as a requirement, not an optimization.
+
 ### 4.5 Data moves by contract
 
 The authoring SDK's `DatasetRef` and `ArtifactRef` identify the logical output of a node. Runtime references identify immutable stored values. They are related concepts, not the same serialized object.
@@ -235,7 +237,8 @@ These should become separate ADRs when their milestone reaches implementation sc
 - Fix documentation and examples that do not execute.
 - Add the SDK capability preflight already tracked in `brokoli-sdk#9`.
 - Fail closed on unknown node kinds and unsupported config.
-- Apply full executable validation consistently to create, update, and import.
+- Apply full executable validation consistently to every path that persists a pipeline — create, update, import, programmatic ingestion, and template instantiation. A validation boundary with an unlisted ingress recreates the drift it exists to remove.
+- Document the artifact-response reference row (`uri`, `media_type`, `size_bytes`, `checksum`) that replaced the inlined body when the artifact plane shipped — the first Stage 0 item is drift created the same week this RFC was written.
 - Add cross-repository fixtures proving SDK IR is accepted by the backend.
 - Add SDK CI, lint, typing, and package checks.
 
@@ -251,6 +254,8 @@ These should become separate ADRs when their milestone reaches implementation sc
 
 **Exit condition:** unchanged source produces no semantic diff, and task plus graph tests run without a remote deployment.
 
+Stage 1's stable node identity is a hard prerequisite of Stage 3, not a parallel track: ADR-015 derives physical instance keys from logical node IDs, so freezing key derivation before IDs are deterministic would make every recompile look like a fleet of brand-new instances — destroying cross-run reuse, history continuity, and dedup in one stroke.
+
 ### Stage 2: Canonical IR and deployment contract
 
 - Land ADR-014's schema and conformance fixtures.
@@ -262,18 +267,19 @@ These should become separate ADRs when their milestone reaches implementation sc
 
 ### Stage 3: Physical planning and durable work units
 
+- Land the storage prerequisites ADR-015 records first: composed store capability interfaces, a decided migration policy, and instance retention in the same milestone that creates instances.
 - Land ADR-015's persisted plan model.
 - Convert pagination and `.expand()` into planner-visible instances.
 - Wire node-level claims, leases, heartbeats, fencing, cancellation, and partial retries.
 - Expose physical instances and plan explanations through API and UI.
 
-**Exit condition:** one logical node can create many independently retryable physical instances across workers.
+**Exit condition:** one logical node can create many independently retryable physical instances across workers — including recovery from a worker killed mid-instance, proven with the crash harness already in the repository, not only clean-path retry.
 
 ### Stage 4: Complete the data and connector planes
 
 - Shared/object artifact storage and real dataset manifests.
 - Partition-aware reads and writes without scheduler materialization.
-- Live durable progress, connector work-unit planning, and persisted connector state.
+- Live durable progress, connector work-unit planning, and persisted connector state. Instance-level progress follows the pattern the dashboard already settled: the realtime channel signals that something changed, the database serves the truth — live state is evicted and must never be the source of record at instance scale.
 - Artifact/dataset lineage and UI inspection.
 
 **Exit condition:** large and partitioned workloads move through references, and connector work has the same visibility and retry semantics as native work.
@@ -296,6 +302,8 @@ Use one core issue for each accepted backend capability and one SDK issue for th
 - Cross-repository tests land with the first executable slice, not after both sides drift.
 - UI work gets a separate issue when it has independent acceptance criteria.
 - An ADR update ships in the same PR that changes the recorded decision.
+- Downstream implementations of the store contracts are built against core `main` in a scheduled cross-repository job. Two interface breaks in one week were caught only by ad-hoc builds; the check graduates to CI before the contract surface grows further.
+- The umbrella issues stay tracking-only. Each milestone becomes its own issue when work starts — the pattern that worked for the artifact plane — so acceptance criteria stay reviewable and the umbrellas do not rot.
 
 The umbrella issues for this strategy are [brokoli#90](https://github.com/Tnsor-Labs/brokoli/issues/90) and [brokoli-sdk#15](https://github.com/Tnsor-Labs/brokoli-sdk/issues/15). Existing focused issues remain authoritative for already-scoped bugs and features.
 
@@ -303,6 +311,8 @@ The umbrella issues for this strategy are [brokoli#90](https://github.com/Tnsor-
 
 ### Authoring
 
+- Recompiling unchanged source yields an empty semantic diff — measured as zero, not "small".
+- Time from repository clone to first green local test, tracked as a number in CI.
 - Median time from installation to first successful run.
 - Lines of user code for HTTP ingestion, file fan-out, quality gating, and backfill examples.
 - Percentage of pipelines requiring custom pagination, serialization, or retry loops.

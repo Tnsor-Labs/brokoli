@@ -31,9 +31,9 @@ Compatibility follows these rules:
 3. A minor version is additive. Existing required fields and meanings cannot change within the same major version.
 4. Semantic node capabilities such as `source`, `sink`, and `dataset-output` describe what a node is. Pipeline-level required execution features such as `dynamic-expansion`, `artifact-ref`, or `partition-retry` describe what the target server must support. These are separate fields and are not inferred interchangeably at runtime.
 5. The server capability response lists accepted IR versions, supported execution features, policy limits, and available connector/runtime versions.
-6. The SDK performs capability negotiation before deployment. An unreachable capability endpoint may be bypassed only through an explicit compatibility flag for legacy servers; a reachable server that reports incompatibility is a hard failure.
-7. Create, update, and import run the same full executable validation before persistence. Graph integrity, node kind, connector availability, data-kind compatibility, schema compatibility, and required execution features are checked at this boundary.
-8. Unknown optional fields may be retained or ignored only when no undeclared execution behavior depends on them. Unknown node kinds, required fields, or required execution features fail closed.
+6. The SDK performs capability negotiation before deployment. An unreachable capability endpoint may be bypassed only through an explicit compatibility flag for legacy servers; a reachable server that reports incompatibility is a hard failure. This fail-closed policy applies to every client, not only the SDK — any surface that currently treats a capability-endpoint error as "assume everything is supported" must be brought into line, or two clients will disagree about the same server.
+7. Every path that persists a pipeline runs the same full executable validation before persistence — create, update, import, programmatic ingestion, and template instantiation alike. Graph integrity, node kind, connector availability, data-kind compatibility, schema compatibility, and required execution features are checked at this boundary. The list of ingress paths is maintained beside the validation code, and an ingress that bypasses the boundary is a bug, not a variant: a boundary with one unlisted door recreates exactly the drift this ADR exists to remove.
+8. Unknown fields follow a structural rule, not a judgment call — no validator can decide whether "undeclared execution behavior depends on" a field it does not recognize. The schema designates an explicit extensions namespace whose contents are preserved verbatim and guaranteed inert; unknown fields anywhere else, and unknown node kinds, required fields, or required execution features, fail closed.
 9. Unversioned payload support is a time-bounded migration path. The server emits a deprecation warning and translates only documented legacy node shapes. The removal window must be announced before support ends.
 10. Persisted pipeline versions retain their original IR and code/package digests. Migration produces a new pipeline version rather than mutating historical run definitions.
 
@@ -77,6 +77,6 @@ The schema package and conformance fixtures are introduced incrementally. This A
 
 - Tracked in [brokoli#90](https://github.com/Tnsor-Labs/brokoli/issues/90), milestone M1.
 - The SDK preflight is also tracked in [brokoli-sdk#9](https://github.com/Tnsor-Labs/brokoli-sdk/issues/9).
-- Add the canonical schema package and cross-repository conformance fixtures.
+- Add the canonical schema package and cross-repository conformance fixtures, consumed by each client repository against a pinned fixture version, with a scheduled job additionally building downstream contract implementations against core `main` so interface growth is caught before a release bump.
 - Apply full executable validation to create, update, and import.
 - Define and publish the unversioned-payload deprecation window.
