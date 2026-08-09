@@ -37,6 +37,7 @@ type faultInjectingStore struct {
 	failSaveNodePreview          bool
 	failAddToDLQ                 bool
 	failAppendEventTx            bool
+	failAppendEventType          models.RunEventType
 	failCreateExecutionAttemptTx bool
 }
 
@@ -71,7 +72,7 @@ func (f *faultInjectingStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errM
 }
 
 func (f *faultInjectingStore) AppendEventTx(tx *sql.Tx, e *models.RunEvent) error {
-	if f.failAppendEventTx {
+	if f.failAppendEventTx || (f.failAppendEventType != "" && f.failAppendEventType == e.EventType) {
 		return errInjected
 	}
 	return f.SQLiteStore.AppendEventTx(tx, e)

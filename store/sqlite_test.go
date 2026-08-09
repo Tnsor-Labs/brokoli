@@ -95,6 +95,72 @@ func TestPipelineCRUD(t *testing.T) {
 	}
 }
 
+func TestPipelineIRVersionAndConditionalEdgePersistence(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().Truncate(time.Millisecond)
+	selected := false
+	p := &models.Pipeline{
+		ID:        "conditional-pipeline",
+		IRVersion: models.ConditionalEdgesIRVersion,
+		Name:      "Conditional Pipeline",
+		Nodes: []models.Node{
+			{ID: "check", Type: models.NodeTypeCondition, Name: "Check"},
+			{ID: "no", Type: models.NodeTypeNotify, Name: "No"},
+		},
+		Edges:     []models.Edge{{From: "check", To: "no", Condition: &selected}},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	got, err := s.GetPipeline(p.ID)
+	if err != nil {
+		t.Fatalf("GetPipeline: %v", err)
+	}
+	if got.IRVersion != models.ConditionalEdgesIRVersion {
+		t.Fatalf("IRVersion = %q, want %q", got.IRVersion, models.ConditionalEdgesIRVersion)
+	}
+	if got.Edges[0].Condition == nil || *got.Edges[0].Condition {
+		t.Fatalf("false edge condition was not persisted: %#v", got.Edges[0])
+	}
+
+	selected = true
+	p.Edges[0].Condition = &selected
+	p.UpdatedAt = time.Now().Truncate(time.Millisecond)
+	if err := s.UpdatePipeline(p); err != nil {
+		t.Fatalf("UpdatePipeline: %v", err)
+	}
+	got, err = s.GetPipeline(p.ID)
+	if err != nil {
+		t.Fatalf("GetPipeline after update: %v", err)
+	}
+	if got.Edges[0].Condition == nil || !*got.Edges[0].Condition {
+		t.Fatalf("true edge condition was not persisted on update: %#v", got.Edges[0])
+	}
+}
+
+func TestPipelineIRVersionMigrationDefaultsExistingRowsToLegacy(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Now().UTC().Format(timeFormat)
+	_, err := s.db.Exec(
+		`INSERT INTO pipelines (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
+		"legacy-pipeline", "Legacy Pipeline", now, now,
+	)
+	if err != nil {
+		t.Fatalf("insert legacy pipeline: %v", err)
+	}
+
+	p, err := s.GetPipeline("legacy-pipeline")
+	if err != nil {
+		t.Fatalf("GetPipeline: %v", err)
+	}
+	if p.IRVersion != "" {
+		t.Fatalf("legacy IRVersion = %q, want empty", p.IRVersion)
+	}
+}
+
 func TestRunLifecycle(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Now().Truncate(time.Millisecond)

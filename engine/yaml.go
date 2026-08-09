@@ -15,6 +15,7 @@ const yamlFormatVersion = "1"
 // PipelineYAML is the YAML-serializable pipeline format.
 type PipelineYAML struct {
 	Version     string     `yaml:"version,omitempty"`
+	IRVersion   string     `yaml:"ir_version,omitempty"`
 	Name        string     `yaml:"name"`
 	Description string     `yaml:"description,omitempty"`
 	Schedule    string     `yaml:"schedule,omitempty"`
@@ -41,8 +42,9 @@ type PositionYAML struct {
 
 // EdgeYAML is the YAML format for an edge.
 type EdgeYAML struct {
-	From string `yaml:"from"`
-	To   string `yaml:"to"`
+	From      string `yaml:"from"`
+	To        string `yaml:"to"`
+	Condition *bool  `yaml:"condition,omitempty"`
 }
 
 // internalConfigKeys are implementation-detail keys that should be stripped
@@ -69,6 +71,7 @@ func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
 	now := time.Now()
 	p := &models.Pipeline{
 		ID:          common.NewID(),
+		IRVersion:   py.IRVersion,
 		Name:        py.Name,
 		Description: py.Description,
 		Schedule:    py.Schedule,
@@ -132,7 +135,7 @@ func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
 		if ey.From == ey.To {
 			return nil, fmt.Errorf("self-referencing edge: %s", ey.From)
 		}
-		p.Edges = append(p.Edges, models.Edge{From: ey.From, To: ey.To})
+		p.Edges = append(p.Edges, models.Edge{From: ey.From, To: ey.To, Condition: ey.Condition})
 	}
 
 	if needsLayout {
@@ -147,6 +150,7 @@ func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
 func ExportPipelineYAML(p *models.Pipeline) ([]byte, error) {
 	py := PipelineYAML{
 		Version:     yamlFormatVersion,
+		IRVersion:   p.IRVersion,
 		Name:        p.Name,
 		Description: p.Description,
 		Schedule:    p.Schedule,
@@ -173,7 +177,7 @@ func ExportPipelineYAML(p *models.Pipeline) ([]byte, error) {
 	}
 
 	for _, e := range p.Edges {
-		py.Edges = append(py.Edges, EdgeYAML{From: e.From, To: e.To})
+		py.Edges = append(py.Edges, EdgeYAML{From: e.From, To: e.To, Condition: e.Condition})
 	}
 
 	data, err := yaml.Marshal(&py)

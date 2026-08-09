@@ -152,3 +152,63 @@ func TestPipeline_IRVersionRoundTrip(t *testing.T) {
 		t.Errorf("expected empty IRVersion for old-style pipeline, got: %q", old.IRVersion)
 	}
 }
+
+func TestEdge_ConditionRoundTrip(t *testing.T) {
+	trueValue := true
+	falseValue := false
+	edges := []Edge{
+		{From: "condition", To: "yes", Condition: &trueValue},
+		{From: "condition", To: "no", Condition: &falseValue},
+		{From: "source", To: "condition"},
+	}
+
+	buf, err := json.Marshal(edges)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jsonText := string(buf)
+	if !strings.Contains(jsonText, `"condition":true`) || !strings.Contains(jsonText, `"condition":false`) {
+		t.Fatalf("conditional edge values missing from JSON: %s", jsonText)
+	}
+	if strings.Contains(jsonText, `"to":"condition","condition"`) {
+		t.Fatalf("ordinary edge should omit condition: %s", jsonText)
+	}
+
+	var got []Edge
+	if err := json.Unmarshal(buf, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got[0].Condition == nil || !*got[0].Condition {
+		t.Errorf("true condition was not preserved: %#v", got[0])
+	}
+	if got[1].Condition == nil || *got[1].Condition {
+		t.Errorf("false condition was not preserved: %#v", got[1])
+	}
+	if got[2].Condition != nil {
+		t.Errorf("omitted condition should remain nil: %#v", got[2])
+	}
+}
+
+func TestPipelineValidate_ConditionalEdgesFailClosedBeforeIR21Rollout(t *testing.T) {
+	condition := true
+	p := Pipeline{
+		Name:      "conditional",
+		IRVersion: "2.0",
+		Nodes: []Node{
+			{ID: "check", Type: NodeTypeCondition},
+			{ID: "yes", Type: NodeTypeNotify},
+		},
+		Edges: []Edge{{From: "check", To: "yes", Condition: &condition}},
+	}
+
+	err := p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "requires pipeline IR 2.1") {
+		t.Fatalf("IR 2.0 conditional edge error = %v", err)
+	}
+
+	p.IRVersion = ConditionalEdgesIRVersion
+	err = p.Validate()
+	if err == nil || !strings.Contains(err.Error(), "unsupported pipeline IR version") {
+		t.Fatalf("IR 2.1 should remain unsupported until runtime rollout, error = %v", err)
+	}
+}

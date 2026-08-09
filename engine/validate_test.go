@@ -371,6 +371,22 @@ func TestValidate_EmptyIRVersion_BackwardCompatible(t *testing.T) {
 	}
 }
 
+func TestValidate_ConditionalEdgeRequiresIR21AndConditionSource(t *testing.T) {
+	p := validPipeline()
+	p.IRVersion = "2.0"
+	selected := true
+	p.Edges[0].Condition = &selected
+
+	ve := ValidatePipeline(p)
+	joined := strings.Join(ve.Errors, "; ")
+	if !strings.Contains(joined, "requires pipeline IR 2.1") {
+		t.Errorf("expected IR requirement error, got: %v", ve.Errors)
+	}
+	if !strings.Contains(joined, "must originate from a condition node") {
+		t.Errorf("expected condition-source error, got: %v", ve.Errors)
+	}
+}
+
 // ── union / dataset_map / dataset_filter validation (Tnsor-Labs/brokoli#32) ──
 
 func unionPipeline(edgesToUnion int) *models.Pipeline {

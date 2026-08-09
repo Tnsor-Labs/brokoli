@@ -126,6 +126,15 @@ func ProjectRun(runID string, events []models.RunEvent) *models.Run {
 			nr.DurationMs = p.DurationMs
 			nr.Error = p.Error
 
+		case models.AttemptSkipped:
+			if e.NodeID == "" {
+				continue
+			}
+			nr := getOrCreateNodeRun(e)
+			nr.Status = models.RunStatusSkipped
+			nr.ReadyAt = p.ReadyAt
+			nr.TraceID = p.TraceID
+
 		case models.RetryScheduled:
 			// Informational only — the next attempt's AttemptStarted event
 			// creates its own node_runs-equivalent row.

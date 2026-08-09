@@ -238,7 +238,7 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 			continue
 		}
 		switch nr.Status {
-		case models.RunStatusSuccess:
+		case models.RunStatusSuccess, models.RunStatusSkipped:
 			// fine
 		case models.RunStatusFailed:
 			allSuccess = false

@@ -80,3 +80,29 @@ The schema package and conformance fixtures are introduced incrementally. This A
 - Add the canonical schema package and cross-repository conformance fixtures, consumed by each client repository against a pinned fixture version, with a scheduled job additionally building downstream contract implementations against core `main` so interface growth is caught before a release bump.
 - Apply full executable validation to create, update, and import.
 - Define and publish the unversioned-payload deprecation window.
+
+## Update: 2026-08-09 — conditional-edge rollout groundwork
+
+[brokoli#95](https://github.com/Tnsor-Labs/brokoli/issues/95) introduces
+conditional routing in staged, fail-closed milestones. The first milestone
+persists each pipeline's `ir_version` and preserves the additive IR 2.1 edge
+discriminator across storage and YAML, but the server continues to advertise
+only IR 2.0 until scheduling, skip propagation, resume, recovery, and client
+round-trip behavior are complete. This prevents a structurally upgraded host
+from claiming execution semantics it does not yet implement.
+
+## Update: 2026-08-09 — conditional-edge runtime semantics
+
+The second [brokoli#95](https://github.com/Tnsor-Labs/brokoli/issues/95)
+milestone makes edge activity explicit in the runner. Every incoming edge is
+resolved active or inactive; a node executes only after all inputs resolve and
+at least one is active. A node with no active inputs is durably skipped and
+propagates inactivity, while a convergence node with another active input may
+run. Relational joins reject inactive required inputs instead of receiving a
+fabricated empty dataset. IR 2.0 retains its static-edge and false-as-empty
+behavior.
+
+The runtime implementation remains deliberately unavailable at the public IR
+boundary: `CurrentIRVersion` and `SupportedIRVersions` continue to advertise
+only 2.0 until UI round-trip preservation and the coordinated SDK rollout are
+complete.

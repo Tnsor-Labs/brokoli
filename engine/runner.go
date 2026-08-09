@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,27 +22,33 @@ import (
 
 // Runner executes a single pipeline run.
 type Runner struct {
-	store         store.Store
-	eventCh       chan<- models.Event
-	varStore      VariableStore       // for ${var.key} resolution
-	connResolver  *ConnectionResolver // for conn_id → URI
-	ctx           context.Context
-	cancel        context.CancelFunc
-	run           *models.Run
-	pipe          *models.Pipeline
-	skipNodes     map[string]bool
-	dryRun        bool
-	dryRunMaxRows int
-	dryRunResults map[string]*DryRunNodeResult
-	params        map[string]string // runtime params
-	varCtx        *VariableContext
-	preRunID      string                          // pre-generated run ID (for registration before Execute)
-	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
-	orgID         string                          // tenant isolation for WebSocket events
-	alertRaised   bool                            // guards raiseFailureAlert against double-firing
-	traceID       string                          // distributed tracing correlation ID
-	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
-	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+	store        store.Store
+	eventCh      chan<- models.Event
+	varStore     VariableStore       // for ${var.key} resolution
+	connResolver *ConnectionResolver // for conn_id → URI
+	ctx          context.Context
+	cancel       context.CancelFunc
+	run          *models.Run
+	pipe         *models.Pipeline
+	skipNodes    map[string]bool
+	// conditionResults restores durable IR 2.1 decisions for condition
+	// nodes skipped during resume.
+	conditionResults map[string]bool
+	// artifactSourceRunIDs resolves each resumed node to the ancestor run
+	// that durably owns its output.
+	artifactSourceRunIDs map[string]string
+	dryRun               bool
+	dryRunMaxRows        int
+	dryRunResults        map[string]*DryRunNodeResult
+	params               map[string]string // runtime params
+	varCtx               *VariableContext
+	preRunID             string                          // pre-generated run ID (for registration before Execute)
+	acceptedRun          *models.Run                     // queued run already persisted and atomically claimed
+	orgID                string                          // tenant isolation for WebSocket events
+	alertRaised          bool                            // guards raiseFailureAlert against double-firing
+	traceID              string                          // distributed tracing correlation ID
+	executors            []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
+	notifier             extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 
 	// pipelineVersion pins a freshly created run (acceptedRun == nil) to the
 	// store.PipelineVersion snapshot it was resolved against — see
@@ -93,6 +100,28 @@ type Runner struct {
 	// incrMetric — so a Runner without one (DryRun, or a test constructing
 	// Runner directly) simply skips these increments.
 	metrics *runnerMetrics
+}
+
+type edgeResolution uint8
+
+const (
+	edgeUnresolved edgeResolution = iota
+	edgeInactive
+	edgeActive
+)
+
+type nodeScheduleState uint8
+
+const (
+	nodePending nodeScheduleState = iota
+	nodeQueued
+	nodeExecuted
+	nodeSkipped
+)
+
+type nodeExecutionResult struct {
+	output    *common.DataSet
+	condition *bool
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -201,18 +230,23 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	r.varCtx = NewVariableContext(mergedParams, r.run.ID, now)
 	r.varCtx.Vars = r.varStore // wire stored variables into resolver
 
-	// Build dependency graph
-	nodeMap := make(map[string]models.Node)
-	inDegree := make(map[string]int)
-	dependents := make(map[string][]string) // nodeID -> nodes that depend on it
+	// Build the runtime graph. Edges resolve active or inactive; data
+	// emptiness never stands in for control flow.
+	incoming := make(map[string][]int)
+	outgoing := make(map[string][]int)
+	unresolvedInputs := make(map[string]int)
+	activeInputs := make(map[string]int)
+	nodeStates := make(map[string]nodeScheduleState)
 	for _, n := range r.pipe.Nodes {
-		nodeMap[n.ID] = n
-		inDegree[n.ID] = 0
+		nodeStates[n.ID] = nodePending
 	}
-	for _, e := range r.pipe.Edges {
-		inDegree[e.To]++
-		dependents[e.From] = append(dependents[e.From], e.To)
+	for i, e := range r.pipe.Edges {
+		incoming[e.To] = append(incoming[e.To], i)
+		outgoing[e.From] = append(outgoing[e.From], i)
+		unresolvedInputs[e.To]++
 	}
+	edgeStates := make([]edgeResolution, len(r.pipe.Edges))
+	routingEnabled := r.pipe.IRVersion == models.ConditionalEdgesIRVersion
 
 	// Outputs map (thread-safe)
 	// Node results for the rest of the run. Large outputs are written to
@@ -224,40 +258,106 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	maxParallel := 4
 	sem := make(chan struct{}, maxParallel)
 
-	// Execute in waves using Kahn's algorithm
-	// Start with nodes that have no incoming edges
-	remaining := make(map[string]int)
-	for id, deg := range inDegree {
-		remaining[id] = deg
+	var runErr error
+	terminalNodes := 0
+
+	resolveEdge := func(edgeIndex int, active bool) error {
+		if edgeIndex < 0 || edgeIndex >= len(edgeStates) {
+			return fmt.Errorf("scheduler resolved invalid edge index %d", edgeIndex)
+		}
+		if edgeStates[edgeIndex] != edgeUnresolved {
+			return fmt.Errorf("scheduler resolved edge %d more than once", edgeIndex)
+		}
+		edge := r.pipe.Edges[edgeIndex]
+		if active {
+			edgeStates[edgeIndex] = edgeActive
+			activeInputs[edge.To]++
+		} else {
+			edgeStates[edgeIndex] = edgeInactive
+		}
+		unresolvedInputs[edge.To]--
+		if unresolvedInputs[edge.To] < 0 {
+			return fmt.Errorf("scheduler input count underflow for node %s", edge.To)
+		}
+		return nil
 	}
 
-	var runErr error
-	for {
+	for terminalNodes < len(r.pipe.Nodes) {
 		// Check if cancelled
 		if r.ctx.Err() != nil {
 			runErr = fmt.Errorf("pipeline cancelled")
 			break
 		}
 
-		// Collect ready nodes (in-degree == 0 and not yet processed)
+		// Resolve skip chains before each execution wave. A node runs only
+		// after every incoming edge resolves and at least one is active.
 		var ready []models.Node
-		for id, deg := range remaining {
-			if deg == 0 {
-				ready = append(ready, nodeMap[id])
+		for {
+			madeProgress := false
+			for _, node := range r.pipe.Nodes {
+				if nodeStates[node.ID] != nodePending {
+					continue
+				}
+				inputCount := len(incoming[node.ID])
+				if inputCount == 0 || (unresolvedInputs[node.ID] == 0 && activeInputs[node.ID] > 0) {
+					if node.Type == models.NodeTypeJoin && inputCount > 0 && activeInputs[node.ID] != inputCount {
+						runErr = fmt.Errorf("join node %s (%s) has an inactive required input: %d of %d inputs active", node.Name, node.ID, activeInputs[node.ID], inputCount)
+						break
+					}
+					nodeStates[node.ID] = nodeQueued
+					ready = append(ready, node)
+					madeProgress = true
+					continue
+				}
+				if inputCount > 0 && unresolvedInputs[node.ID] == 0 {
+					readyAt := time.Now().UTC()
+					if err := r.persistSkippedNode(node, readyAt); err != nil {
+						runErr = err
+						break
+					}
+					nodeStates[node.ID] = nodeSkipped
+					terminalNodes++
+					for _, edgeIndex := range outgoing[node.ID] {
+						if err := resolveEdge(edgeIndex, false); err != nil {
+							runErr = err
+							break
+						}
+					}
+					if runErr != nil {
+						break
+					}
+					madeProgress = true
+				}
+			}
+			if runErr != nil || !madeProgress {
+				break
 			}
 		}
-		if len(ready) == 0 {
-			break
+		if runErr != nil {
+			if r.ctx.Err() != nil {
+				break
+			}
+			return r.run, r.failRun(runErr)
 		}
-
-		// Remove ready nodes from remaining
-		for _, n := range ready {
-			delete(remaining, n.ID)
+		if len(ready) == 0 {
+			var unresolved []string
+			for _, node := range r.pipe.Nodes {
+				if nodeStates[node.ID] == nodePending || nodeStates[node.ID] == nodeQueued {
+					unresolved = append(unresolved, fmt.Sprintf("%s(unresolved=%d,active=%d)", node.ID, unresolvedInputs[node.ID], activeInputs[node.ID]))
+				}
+			}
+			runErr = fmt.Errorf("scheduler stalled with unresolved nodes: %s", strings.Join(unresolved, ", "))
+			return r.run, r.failRun(runErr)
 		}
 
 		// Execute ready nodes in parallel
 		var wg sync.WaitGroup
-		errCh := make(chan error, len(ready))
+		type completedNode struct {
+			node      models.Node
+			condition *bool
+			err       error
+		}
+		completedCh := make(chan completedNode, len(ready))
 		readyAt := time.Now().UTC() // all nodes in this wave became ready at this moment
 
 		for _, node := range ready {
@@ -266,35 +366,34 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			go func(n models.Node) {
 				defer wg.Done()
 				defer func() { <-sem }() // release semaphore
-
-				// Recover from panics — never let a node crash the server
+				var decision *bool
+				var nodeErr error
 				defer func() {
 					if rec := recover(); rec != nil {
 						r.log(n.ID, models.LogLevelError, "PANIC in node %s: %v", n.Name, rec)
-						errCh <- fmt.Errorf("node %s panicked: %v", n.Name, rec)
+						nodeErr = fmt.Errorf("node %s panicked: %v", n.Name, rec)
 					}
+					completedCh <- completedNode{node: n, condition: decision, err: nodeErr}
 				}()
 
 				// Check cancellation before starting node
 				if r.ctx.Err() != nil {
-					errCh <- fmt.Errorf("pipeline cancelled")
+					nodeErr = fmt.Errorf("pipeline cancelled")
 					return
 				}
 
-				if err := r.executeNode(n, outputs, readyAt); err != nil {
-					errCh <- err
-					return
-				}
+				decision, nodeErr = r.executeNode(n, outputs, edgeStates, readyAt)
 			}(node)
 		}
 
 		wg.Wait()
-		close(errCh)
+		close(completedCh)
 
-		// Check for errors
-		for err := range errCh {
-			if err != nil {
-				runErr = err
+		var completed []completedNode
+		for result := range completedCh {
+			completed = append(completed, result)
+			if result.err != nil && runErr == nil {
+				runErr = result.err
 				break
 			}
 		}
@@ -302,13 +401,35 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			return r.run, r.failRun(runErr)
 		}
 
-		// Decrement in-degree of dependents
-		for _, n := range ready {
-			for _, depID := range dependents[n.ID] {
-				if _, ok := remaining[depID]; ok {
-					remaining[depID]--
+		// Release outgoing edges only after the whole wave succeeds.
+		for _, result := range completed {
+			nodeStates[result.node.ID] = nodeExecuted
+			terminalNodes++
+			for _, edgeIndex := range outgoing[result.node.ID] {
+				edge := r.pipe.Edges[edgeIndex]
+				active := true
+				if routingEnabled && edge.Condition != nil {
+					if result.node.Type != models.NodeTypeCondition {
+						runErr = fmt.Errorf("conditional edge %s -> %s originates from non-condition node", edge.From, edge.To)
+						break
+					}
+					if result.condition == nil {
+						runErr = fmt.Errorf("condition node %s (%s) completed without a routing decision", result.node.Name, result.node.ID)
+						break
+					}
+					active = *edge.Condition == *result.condition
+				}
+				if err := resolveEdge(edgeIndex, active); err != nil {
+					runErr = err
+					break
 				}
 			}
+			if runErr != nil {
+				break
+			}
+		}
+		if runErr != nil {
+			return r.run, r.failRun(runErr)
 		}
 	}
 
@@ -386,7 +507,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	return r.run, nil
 }
 
-func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt time.Time) error {
+func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates []edgeResolution, readyAt time.Time) (*bool, error) {
 	// Skip nodes that already succeeded (resume mode). Restore the node's
 	// real durable output into the outputs map so downstream nodes see the
 	// original data — never leave it unpopulated, which previously caused
@@ -395,9 +516,16 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 	if r.skipNodes != nil && r.skipNodes[node.ID] {
 		ds, restored, err := r.restoreSkippedNodeOutput(node)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if restored {
+			// Carry the artifact into this run so a resume-of-a-resume can
+			// restore from its immediate parent without losing lineage.
+			if r.artifactStore != nil {
+				if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, ds); err != nil {
+					return nil, fmt.Errorf("carry resumed artifact for node %s: %w", node.Name, err)
+				}
+			}
 			if err := outputs.Put(node.ID, ds); err != nil {
 				r.log(node.ID, models.LogLevelWarning, "Could not spill restored output, keeping it in memory: %v", err)
 			}
@@ -409,7 +537,18 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 		} else {
 			r.log(node.ID, models.LogLevelInfo, "Skipping node %s (already succeeded, no downstream consumers of its output)", node.Name)
 		}
-		return nil
+		var decision *bool
+		if selected, ok := r.conditionResults[node.ID]; ok {
+			decision = &selected
+		}
+		artifactRunID := ""
+		if restored {
+			artifactRunID = r.run.ID
+		}
+		if err := r.persistSkippedOutcome(node, readyAt, true, decision, artifactRunID); err != nil {
+			return nil, err
+		}
+		return decision, nil
 	}
 
 	// Resolve variables in node config
@@ -431,15 +570,15 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 	// nodes (#31) to resolve expansion.over[param], which names upstream
 	// nodes by ID rather than relying on edge order the way allInputs does.
 	edgeInputsByFrom := make(map[string]*common.DataSet)
-	for _, edge := range r.pipe.Edges {
-		if edge.To == node.ID {
+	for edgeIndex, edge := range r.pipe.Edges {
+		if edge.To == node.ID && edgeStates[edgeIndex] == edgeActive {
 			ds, ok, err := outputs.Get(edge.From)
 			if err != nil {
 				// The upstream output was spilled and cannot be read back.
 				// Continuing would hand this node an empty input, which is
 				// the silent data loss Tnsor-Labs/brokoli#8 fixed; fail
 				// instead.
-				return fmt.Errorf("resolve input from node %s: %w", edge.From, err)
+				return nil, fmt.Errorf("resolve input from node %s: %w", edge.From, err)
 			}
 			if ok {
 				if input == nil {
@@ -472,13 +611,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 	}
 
 	type nodeResult struct {
-		output *common.DataSet
+		result nodeExecutionResult
 		err    error
 	}
 
 	r.emit(models.Event{Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID})
 
 	var output *common.DataSet
+	var conditionDecision *bool
 	var lastErr error
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
@@ -512,7 +652,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 			select {
 			case <-time.After(delay):
 			case <-r.ctx.Done():
-				return fmt.Errorf("cancelled during retry wait")
+				return nil, fmt.Errorf("cancelled during retry wait")
 			}
 		}
 
@@ -544,7 +684,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 			// pattern (CreateRun above checks and propagates); previously
 			// this error was discarded entirely.
 			if err := r.store.CreateNodeRun(nr); err != nil {
-				return fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+				return nil, fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
 			}
 			attemptNum := attempt
 			r.appendEvent(models.RunEvent{
@@ -608,14 +748,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			crashAt(crashPointBeforeNodeExecution, node.ID)
-			out, e := r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
-			resultCh <- nodeResult{out, e}
+			result, e := r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+			resultCh <- nodeResult{result, e}
 		}()
 
 		var err error
 		select {
 		case result := <-resultCh:
-			output, err = result.output, result.err
+			output, conditionDecision, err = result.result.output, result.result.condition, result.err
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
 				err = fmt.Errorf("pipeline cancelled")
@@ -627,6 +767,9 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 		crashAt(crashPointAfterNodeExecutionBeforePersist, node.ID)
 
 		duration := time.Since(startTime).Milliseconds()
+		if err == nil && r.pipe.IRVersion == models.ConditionalEdgesIRVersion && node.Type == models.NodeTypeCondition && conditionDecision == nil {
+			err = fmt.Errorf("condition node completed without a routing decision")
+		}
 
 		if err == nil {
 			// ── Success ──
@@ -644,29 +787,45 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 			nr.RowCount = rowCount
 			nr.RowsPerSec = rowsPerSec
 			if !r.dryRun {
-				// If the success can't be durably recorded, the node is not
-				// considered done — same "storage failures are explicit"
-				// contract as CreateNodeRun above and run-level UpdateRun.
-				if err := r.store.UpdateNodeRun(nr); err != nil {
-					attemptSpan.RecordError(err)
-					attemptSpan.SetStatus(codes.Error, err.Error())
-					attemptSpan.End()
-					return fmt.Errorf("persist successful node attempt for %s (attempt %d): %w", node.Name, attempt, err)
-				}
 				attemptNum := attempt
-				r.appendEvent(models.RunEvent{
+				completedEvent := models.RunEvent{
 					RunID:     r.run.ID,
 					NodeID:    node.ID,
 					Attempt:   &attemptNum,
 					EventType: models.AttemptCompleted,
 					Payload: models.RunEventPayload{
-						Status:     models.RunStatusSuccess,
-						NodeRunID:  nr.ID,
-						RowCount:   nr.RowCount,
-						DurationMs: nr.DurationMs,
-						RowsPerSec: nr.RowsPerSec,
+						Status:          models.RunStatusSuccess,
+						NodeRunID:       nr.ID,
+						RowCount:        nr.RowCount,
+						DurationMs:      nr.DurationMs,
+						RowsPerSec:      nr.RowsPerSec,
+						ConditionResult: conditionDecision,
 					},
-				})
+				}
+				if r.pipe.IRVersion == models.ConditionalEdgesIRVersion && node.Type == models.NodeTypeCondition {
+					if err := r.store.WithTx(func(tx *sql.Tx) error {
+						if err := r.store.UpdateNodeRunTx(tx, nr); err != nil {
+							return err
+						}
+						return r.store.AppendEventTx(tx, &completedEvent)
+					}); err != nil {
+						attemptSpan.RecordError(err)
+						attemptSpan.SetStatus(codes.Error, err.Error())
+						attemptSpan.End()
+						return nil, fmt.Errorf("persist successful condition %s with routing decision: %w", node.Name, err)
+					}
+					r.metrics.incrEventsAppended()
+				} else {
+					// If the success can't be durably recorded, the node is not
+					// considered done — same contract as CreateNodeRun above.
+					if err := r.store.UpdateNodeRun(nr); err != nil {
+						attemptSpan.RecordError(err)
+						attemptSpan.SetStatus(codes.Error, err.Error())
+						attemptSpan.End()
+						return nil, fmt.Errorf("persist successful node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+					}
+					r.appendEvent(completedEvent)
+				}
 			}
 			crashAt(crashPointAfterNodeCompletionPersist, node.ID)
 
@@ -701,7 +860,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 						attemptSpan.RecordError(err)
 						attemptSpan.SetStatus(codes.Error, err.Error())
 						attemptSpan.End()
-						return fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
+						return nil, fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
 					}
 					// Durable full-output artifact — distinct from
 					// SaveNodePreview above, which truncates to 50 rows for
@@ -777,7 +936,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 				attemptSpan.RecordError(persistErr)
 				attemptSpan.SetStatus(codes.Error, persistErr.Error())
 				attemptSpan.End()
-				return fmt.Errorf("node %s (%s) failed: %v; persist failed node attempt (attempt %d): %w", node.Name, node.ID, err, attempt, persistErr)
+				return nil, fmt.Errorf("node %s (%s) failed: %v; persist failed node attempt (attempt %d): %w", node.Name, node.ID, err, attempt, persistErr)
 			}
 			attemptNum := attempt
 			r.appendEvent(models.RunEvent{
@@ -813,8 +972,60 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, readyAt tim
 		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
 		common.SLog().Error("node failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(node.ID), "attempts", maxRetries+1, "error", lastErr)
-		return fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
+		return nil, fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
+	return conditionDecision, nil
+}
+
+func (r *Runner) persistSkippedNode(node models.Node, readyAt time.Time) error {
+	r.log(node.ID, models.LogLevelInfo, "Skipping node %s: all incoming edges are inactive", node.Name)
+	return r.persistSkippedOutcome(node, readyAt, false, nil, "")
+}
+
+func (r *Runner) persistSkippedOutcome(node models.Node, readyAt time.Time, reused bool, conditionResult *bool, artifactRunID string) error {
+	if r.dryRun {
+		if r.dryRunResults == nil {
+			r.dryRunResults = make(map[string]*DryRunNodeResult)
+		}
+		r.dryRunResults[node.ID] = &DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusSkipped)}
+		return nil
+	}
+
+	nr := &models.NodeRun{
+		ID:      common.NewID(),
+		RunID:   r.run.ID,
+		NodeID:  node.ID,
+		Status:  models.RunStatusSkipped,
+		Attempt: 0,
+		ReadyAt: &readyAt,
+		TraceID: r.traceID,
+	}
+	attempt := 0
+	event := models.RunEvent{
+		RunID:     r.run.ID,
+		NodeID:    node.ID,
+		Attempt:   &attempt,
+		EventType: models.AttemptSkipped,
+		Payload: models.RunEventPayload{
+			Status:          models.RunStatusSkipped,
+			NodeRunID:       nr.ID,
+			ReadyAt:         nr.ReadyAt,
+			TraceID:         nr.TraceID,
+			ConditionResult: conditionResult,
+			Reused:          reused,
+			ArtifactRunID:   artifactRunID,
+		},
+	}
+	if err := r.store.WithTx(func(tx *sql.Tx) error {
+		if err := r.store.CreateNodeRunTx(tx, nr); err != nil {
+			return err
+		}
+		return r.store.AppendEventTx(tx, &event)
+	}); err != nil {
+		return fmt.Errorf("persist skipped node %s: %w", node.Name, err)
+	}
+	r.metrics.incrEventsAppended()
+	r.emit(models.Event{Type: models.EventNodeCompleted, RunID: r.run.ID, NodeID: node.ID, Status: models.RunStatusSkipped})
 	return nil
 }
 
@@ -843,7 +1054,10 @@ func (r *Runner) restoreSkippedNodeOutput(node models.Node) (ds *common.DataSet,
 		}
 	}
 
-	sourceRunID := r.resumedFromRunID
+	sourceRunID := r.artifactSourceRunIDs[node.ID]
+	if sourceRunID == "" {
+		sourceRunID = r.resumedFromRunID
+	}
 	if sourceRunID == "" {
 		// Not a resume (skipNodes set some other way, e.g. a future
 		// caller) — fall back to this run's own ID so ReadArtifact still
@@ -882,7 +1096,11 @@ func nodeAttemptIdempotencyKey(runID, nodeID string, attempt int) string {
 	return fmt.Sprintf("%s:%s:%d", runID, nodeID, attempt)
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (*common.DataSet, error) {
+func outputExecutionResult(output *common.DataSet, err error) (nodeExecutionResult, error) {
+	return nodeExecutionResult{output: output}, err
+}
+
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
 	// Check if the org's plan allows this node type. Deliberately checked
 	// before the executor loop below, not after: a NodeExecutor can claim
 	// any node type string (a plugin-registered type, an enterprise K8s-
@@ -892,8 +1110,21 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	// would silently never apply to executor-dispatched types at all.
 	if extensions.NodeTypeGateFunc != nil {
 		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
-			return nil, fmt.Errorf("%s", msg)
+			return nodeExecutionResult{}, fmt.Errorf("%s", msg)
 		}
+	}
+
+	// Branch selection is control-plane behavior owned by the Go engine.
+	// External executors return data only and cannot replace this decision.
+	if node.Type == models.NodeTypeCondition {
+		output, selected, err := r.runCondition(node, input)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		if r.pipe.IRVersion != models.ConditionalEdgesIRVersion && !selected {
+			output = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
+		}
+		return nodeExecutionResult{output: output, condition: &selected}, nil
 	}
 
 	// Check if an external executor handles this node type (enterprise: K8s, Docker)
@@ -916,7 +1147,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 				Context: ctx,
 			})
 			if err != nil {
-				return nil, err
+				return nodeExecutionResult{}, err
 			}
 			for _, logLine := range result.Logs {
 				if logLine != "" {
@@ -925,24 +1156,24 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 			}
 			if result.OutputData != nil {
 				if ds, ok := result.OutputData.(*common.DataSet); ok {
-					return ds, nil
+					return nodeExecutionResult{output: ds}, nil
 				}
 			}
-			return nil, nil
+			return nodeExecutionResult{}, nil
 		}
 	}
 
 	switch node.Type {
 	case models.NodeTypeSourceFile:
-		return r.runSourceFile(node)
+		return outputExecutionResult(r.runSourceFile(node))
 	case models.NodeTypeSourceAPI:
-		return r.runSourceAPI(node)
+		return outputExecutionResult(r.runSourceAPI(node))
 	case models.NodeTypeSourceDB:
-		return r.runSourceDB(node)
+		return outputExecutionResult(r.runSourceDB(node))
 	case models.NodeTypeTransform:
-		return r.runTransform(node, input)
+		return outputExecutionResult(r.runTransform(node, input))
 	case models.NodeTypeQualityCheck:
-		return r.runQualityCheck(node, input)
+		return outputExecutionResult(r.runQualityCheck(node, input))
 	case models.NodeTypeCode:
 		// Dynamic node expansion (#31): a `code` node carrying an
 		// `expansion` config block (brokoli-sdk's _TaskWrapper.expand())
@@ -950,35 +1181,33 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		// see engine/expansion.go's top-of-file doc comment for the full
 		// architectural resolution.
 		if nodeHasExpansion(node) {
-			return r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
 		}
-		return r.runCode(node, input)
+		return outputExecutionResult(r.runCode(node, input))
 	case models.NodeTypeJoin:
-		return r.runJoin(node, allInputs)
+		return outputExecutionResult(r.runJoin(node, allInputs))
 	case models.NodeTypeSQLGenerate:
-		return r.runSQLGenerate(node, input)
+		return outputExecutionResult(r.runSQLGenerate(node, input))
 	case models.NodeTypeSinkFile:
-		return r.runSinkFile(node, input)
+		return outputExecutionResult(r.runSinkFile(node, input))
 	case models.NodeTypeSinkDB:
-		return r.runSinkDB(node, input)
+		return outputExecutionResult(r.runSinkDB(node, input))
 	case models.NodeTypeSinkAPI:
-		return r.runSinkAPI(node, input)
+		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:
-		return r.runMigrate(node)
-	case models.NodeTypeCondition:
-		return r.runCondition(node, input)
+		return outputExecutionResult(r.runMigrate(node))
 	case models.NodeTypeDBT:
-		return r.runDBT(node)
+		return outputExecutionResult(r.runDBT(node))
 	case models.NodeTypeNotify:
-		return r.runNotify(node, input)
+		return outputExecutionResult(r.runNotify(node, input))
 	case models.NodeTypeUnion:
-		return r.runUnion(node, allInputs)
+		return outputExecutionResult(r.runUnion(node, allInputs))
 	case models.NodeTypeDatasetMap:
-		return r.runDatasetMap(node, input)
+		return outputExecutionResult(r.runDatasetMap(node, input))
 	case models.NodeTypeDatasetFilter:
-		return r.runDatasetFilter(node, input)
+		return outputExecutionResult(r.runDatasetFilter(node, input))
 	default:
-		return input, nil
+		return nodeExecutionResult{output: input}, nil
 	}
 }
 

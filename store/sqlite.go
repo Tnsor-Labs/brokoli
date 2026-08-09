@@ -79,6 +79,9 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN pipeline_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN source TEXT NOT NULL DEFAULT 'ui'`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN org_id TEXT NOT NULL DEFAULT ''`)
+	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN ir_version TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("add pipelines.ir_version: %w", err)
+	}
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE variables ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
@@ -492,9 +495,9 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 		return wrapStoreErr("CreatePipeline", p.ID, err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO pipelines (id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		p.ID, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		p.ID, p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
 		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID,
 	)
 	return wrapStoreErr("CreatePipeline", p.ID, err)
@@ -502,7 +505,7 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 
 func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE id = ?`, id,
 	)
 	p, err := scanPipeline(row)
@@ -514,7 +517,7 @@ func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -535,7 +538,7 @@ func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID,
 	)
 	if err != nil {
@@ -555,7 +558,7 @@ func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pip
 
 func (s *SQLiteStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC`, orgID,
 	)
 	if err != nil {
@@ -577,7 +580,7 @@ func (s *SQLiteStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) (
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = ?`, orgID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, orgID, limit, offset,
 	)
 	if err != nil {
@@ -601,11 +604,11 @@ func (s *SQLiteStore) ListPipelinesByOrgCursor(orgID string, afterID string, lim
 	var err error
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 			 FROM pipelines WHERE org_id = ? ORDER BY id DESC LIMIT ?`, orgID, fetchN)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 			 FROM pipelines WHERE org_id = ? AND id < ? ORDER BY id DESC LIMIT ?`, orgID, afterID, fetchN)
 	}
 	if err != nil {
@@ -668,9 +671,9 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 	}
 
 	result, err := s.db.Exec(
-		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
+		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
 		 WHERE id=?`,
-		p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
 		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
 	)
 	if err != nil {
@@ -681,7 +684,7 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 
 func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id
 		 FROM pipelines WHERE pipeline_id = ?`, pipelineID,
 	)
 	p, err := scanPipeline(row)
@@ -810,9 +813,9 @@ func (s *SQLiteStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
 		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
 	}
 	result, err := tx.Exec(
-		`UPDATE pipelines SET name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
+		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?
 		 WHERE id=?`,
-		p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
+		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
 		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, p.ID,
 	)
 	if err != nil {
@@ -1062,8 +1065,31 @@ func (s *SQLiteStore) CreateNodeRun(nr *models.NodeRun) error {
 	return err
 }
 
+func (s *SQLiteStore) CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	_, err := tx.Exec(
+		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		nr.ID, nr.RunID, nr.NodeID, string(nr.Status), nr.RowCount,
+		formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID,
+	)
+	return err
+}
+
 func (s *SQLiteStore) UpdateNodeRun(nr *models.NodeRun) error {
 	result, err := s.db.Exec(
+		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=?, attempt=?, ready_at=?, queue_ms=?, rows_per_sec=?, trace_id=?, span_id=? WHERE id=?`,
+		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
+	)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result, "node_run", nr.ID)
+}
+
+func (s *SQLiteStore) UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	result, err := tx.Exec(
 		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=?, attempt=?, ready_at=?, queue_ms=?, rows_per_sec=?, trace_id=?, span_id=? WHERE id=?`,
 		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
 		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
@@ -1758,7 +1784,7 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, createdAt, updatedAt string
 	var enabled int
 
-	if err := sc.Scan(&p.ID, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
+	if err := sc.Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID); err != nil {
 		return nil, err
 	}
 

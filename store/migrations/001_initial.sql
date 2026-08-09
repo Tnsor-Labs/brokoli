@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS pipelines (
     id TEXT PRIMARY KEY,
+    ir_version TEXT NOT NULL DEFAULT '',
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     nodes TEXT NOT NULL DEFAULT '[]',     -- JSON array of nodes

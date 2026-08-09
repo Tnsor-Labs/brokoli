@@ -12,6 +12,9 @@ const (
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCancelled RunStatus = "cancelled"
 	RunStatusBlocked   RunStatus = "blocked" // dependencies not satisfied, trigger skipped
+	// RunStatusSkipped is a node-only terminal state for work made inactive
+	// by conditional routing. A pipeline Run itself is never skipped.
+	RunStatusSkipped RunStatus = "skipped"
 )
 
 // Run represents a single execution of a pipeline.
