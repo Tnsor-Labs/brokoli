@@ -65,3 +65,21 @@ shared across the three repos, the version number is not.
 - [`docs/adr/README.md`](./docs/adr/README.md) — how architecture
   decisions get made and how to weigh in on one.
 - `CHANGELOG.md` — what's actually shipped, release by release.
+
+## Release notes and changelog
+
+GoReleaser publishes a raw commit list; that is a fallback, not the
+release notes. After the workflow completes, edit the release
+(`gh release edit vX.Y.Z --notes-file ...`) with curated notes:
+
+- grouped by area, leading with why a change matters, not what the commit
+  subject said;
+- **every entry names its owner** by GitHub handle;
+- a "Behaviour changes to read before upgrading" section whenever any
+  exist — an empty section is a claim, so state it explicitly;
+- a short orientation paragraph for new contributors when the release
+  warrants one.
+
+Mirror a condensed entry into `CHANGELOG.md` in the same PR window, with
+the same ownership attribution.
+

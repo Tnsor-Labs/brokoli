@@ -5,7 +5,59 @@ All notable changes to Brokoli are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project loosely follows [Semantic Versioning](https://semver.org/).
 
+Every entry names its owner. With more than one contributor in the
+codebase, "who shipped this" is part of the record, not something to
+reconstruct from git archaeology.
+
 ## [Unreleased]
+
+## [0.10.8] - 2026-08-09
+
+Full curated notes with per-change ownership:
+[v0.10.8 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.8).
+
+### Added
+
+- **The artifact plane** (#85, #88, #89) — @hc12r. `pkg/artifact`:
+  `ArtifactRef`/`DatasetRef` with a versioned manifest and a
+  content-addressed local store; `response="artifact"` returns a real
+  reference; node outputs above `BROKOLI_SPILL_THRESHOLD_BYTES` (default
+  64 MiB) spill automatically. ADR-012, updated per milestone.
+- **Persisted alert inbox, run events over HTTP, org-wide DLQ** (#80) —
+  @hc12r.
+- **Connector protocol `MsgProgress`** (#66) — @JefferMarcelino. First
+  milestone of ADR-013, and the author's first shipped change. 🎉
+- **Keyset pagination for run history** (#84) — @hc12r. `?after=`/`?limit=`
+  cursors; `?page=` now returns real rows and a real total.
+- **`union`/`dataset_map`/`dataset_filter` node types, executable
+  `.expand()` fan-out** (#34, #35) — @hc12r.
+- **source_api execution contract**: response contracts and pagination
+  execute (#33); bounded page fan-out (#43); persisted, resumable
+  checkpoints (#45, #53); page-retry config keys (#48) — @hc12r.
+- **Database-backed, admin-editable pipeline templates** (#71, #72) —
+  @hc12r.
+
+### Changed
+
+- **Dashboard rebuilt as a triage console**; light theme rebuilt on
+  surface tones; dashboard figures read from the database instead of
+  evicted live state (#83, #81) — @hc12r.
+- **`response="artifact"` no longer inlines the body** — the output row
+  is `uri`/`media_type`/`size_bytes`/`checksum` (#88) — @hc12r.
+- Plugin node-type gating runs before dispatch (#65); manifest kinds
+  propagate into node capabilities (#63) — @hc12r.
+
+### Fixed
+
+- `runs.org_id` populated at creation, legacy rows backfilled (#54);
+  artifact/checkpoint stores wired into purge (#51); empty JSON array is
+  zero records (#46); sample data 404 (#68); SODP presence cleanup (#56);
+  `PORT` env synced with `--port` (#69); Data Quality template config
+  (#70) — @hc12r.
+
+> Releases 0.7.2 through 0.10.7 predate this file's revival; their
+> histories live in the
+> [GitHub releases](https://github.com/Tnsor-Labs/brokoli/releases).
 
 ## [0.7.1] - 2026-04-13
 
