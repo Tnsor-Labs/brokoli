@@ -46,6 +46,13 @@ type Engine struct {
 	// (or ./brokoli-artifacts); assign a different implementation the same
 	// way VarStore/ConnResolver are overridden after NewEngine.
 	ArtifactStore ArtifactStore
+	// SpillThresholdBytes is the estimated encoded size at or above which a
+	// node's output is written to ArtifactStore instead of being held in
+	// memory for the rest of the run (Tnsor-Labs/brokoli#38). Defaults to
+	// DefaultSpillThresholdBytes, overridable via BROKOLI_SPILL_THRESHOLD_BYTES
+	// or by assigning after NewEngine. A negative value disables spilling
+	// and restores the previous always-in-memory behaviour exactly.
+	SpillThresholdBytes int64
 	// PaginationCheckpointStore persists mid-pagination progress for
 	// source_api nodes so a retry or resume can continue a large paginated
 	// fetch instead of restarting it (Tnsor-Labs/brokoli#41 M2). Defaults to
@@ -196,6 +203,18 @@ func NewEngine(s store.Store) *Engine {
 	if artifactDir == "" {
 		artifactDir = "./brokoli-artifacts"
 	}
+	// Spill threshold: the estimated encoded size at or above which a node's
+	// output is written to the artifact store instead of being held in
+	// memory for the rest of the run (Tnsor-Labs/brokoli#38). Unset uses
+	// DefaultSpillThresholdBytes; a negative value disables spilling, which
+	// restores the previous always-in-memory behaviour exactly.
+	spillThreshold := DefaultSpillThresholdBytes
+	if v := os.Getenv("BROKOLI_SPILL_THRESHOLD_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			spillThreshold = n
+		}
+	}
+
 	checkpointDir := os.Getenv("BROKOLI_PAGINATION_CHECKPOINT_DIR")
 	if checkpointDir == "" {
 		checkpointDir = "./brokoli-pagination-checkpoints"
@@ -207,6 +226,7 @@ func NewEngine(s store.Store) *Engine {
 		maxConcurrent:             maxC,
 		runSem:                    make(chan struct{}, maxC),
 		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
+		SpillThresholdBytes:       spillThreshold,
 		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
 	}
 }
@@ -384,6 +404,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.spillThreshold = e.SpillThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
@@ -645,6 +666,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
+	runner.spillThreshold = e.SpillThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
@@ -770,6 +792,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.params = params
 	runner.acceptedRun = accepted
 	runner.artifactStore = e.ArtifactStore
+	runner.spillThreshold = e.SpillThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	runner.parentCtx = claimCtx
@@ -968,6 +991,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.artifactStore = e.ArtifactStore
+	runner.spillThreshold = e.SpillThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
 	runner.pipelineVersion = newRunVersion
