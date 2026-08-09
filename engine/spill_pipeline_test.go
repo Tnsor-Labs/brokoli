@@ -4,13 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // bigRowServer serves n rows, each padded to roughly cellBytes, so a
@@ -34,38 +31,6 @@ func bigRowServer(t *testing.T, n, cellBytes int) *httptest.Server {
 	return srv
 }
 
-// newSpillTestEngine is newResumeTestEngine with directories that are not
-// t.TempDir().
-//
-// Engine has no Stop/Close, so its background work — dependency trigger
-// mode in particular — keeps running after a test returns and can write
-// into the run's artifact directory while t.TempDir()'s cleanup is removing
-// it, failing the test with "directory not empty" for reasons unrelated to
-// what it asserts. These tests finish runs with downstream edges, which is
-// what makes them reach that path more reliably than the existing ones.
-// Cleaning up manually and ignoring the error keeps the flakiness out of
-// the assertions. Giving Engine a shutdown is the real fix and is not in
-// scope here.
-func newSpillTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
-	t.Helper()
-	dir, err := os.MkdirTemp("", "brokoli-spill-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "spill.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	t.Cleanup(func() { _ = s.Close() })
-
-	eng := NewEngine(s)
-	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
-	eng.PaginationCheckpointStore = NewLocalDiskPaginationCheckpointStore(filepath.Join(dir, "pagination-checkpoints"))
-	return eng, s
-}
-
 // A pipeline whose source output crosses the threshold spills it, and the
 // downstream node still receives every row. This is the property that
 // matters: spilling must be invisible to the data.
@@ -73,7 +38,7 @@ func TestPipeline_LargeOutputSpillsWithoutChangingResults(t *testing.T) {
 	const rows = 400
 	srv := bigRowServer(t, rows, 200)
 
-	eng, s := newSpillTestEngine(t)
+	eng, s := newResumeTestEngine(t)
 	eng.SpillThresholdBytes = 4096 // well below the source's output
 
 	pipeline := &models.Pipeline{
@@ -125,7 +90,7 @@ func TestPipeline_SpillDisabledProducesSameResult(t *testing.T) {
 	const rows = 300
 	srv := bigRowServer(t, rows, 200)
 
-	eng, s := newSpillTestEngine(t)
+	eng, s := newResumeTestEngine(t)
 	eng.SpillThresholdBytes = -1 // disabled: previous always-in-memory behaviour
 
 	pipeline := &models.Pipeline{
@@ -166,7 +131,7 @@ func TestPipeline_SpilledOutputFeedsMultipleConsumers(t *testing.T) {
 	const rows = 250
 	srv := bigRowServer(t, rows, 200)
 
-	eng, s := newSpillTestEngine(t)
+	eng, s := newResumeTestEngine(t)
 	eng.SpillThresholdBytes = 2048
 
 	pipeline := &models.Pipeline{
@@ -212,7 +177,7 @@ func TestPipeline_SpilledOutputFeedsMultipleConsumers(t *testing.T) {
 // them along with everything else it wrote.
 func TestPipeline_SpilledOutputsPurgedWithTheRun(t *testing.T) {
 	srv := bigRowServer(t, 300, 200)
-	eng, s := newSpillTestEngine(t)
+	eng, s := newResumeTestEngine(t)
 	eng.SpillThresholdBytes = 2048
 
 	pipeline := &models.Pipeline{

@@ -131,6 +131,20 @@ var serveCmd = &cobra.Command{
 		warnIfSQLiteMultiInstanceRisk(dbPath, RunMode)
 
 		eng := engine.NewEngine(s)
+		// Registered after s.Close so it runs before it (defers are LIFO):
+		// the engine's background goroutines — trigger-mode dependency
+		// fan-out in particular — write through the store, so they must be
+		// drained before the store closes underneath them. This is the
+		// production half of Tnsor-Labs/brokoli#94; before it, shutdowns
+		// logged "database is closed" from goroutines that outlived
+		// everything.
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := eng.Close(ctx); err != nil {
+				log.Printf("Engine shutdown: %v", err)
+			}
+		}()
 
 		// Recover runs a prior process left in a non-terminal status
 		// (Tnsor-Labs/brokoli#9) — e.g. "running" because it was kill -9'd

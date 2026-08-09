@@ -1,11 +1,13 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -104,6 +106,16 @@ func newResumeTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	eng := NewEngine(s)
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.PaginationCheckpointStore = NewLocalDiskPaginationCheckpointStore(filepath.Join(dir, "pagination-checkpoints"))
+	// Registered after the store's cleanup, so it runs first (LIFO): the
+	// engine drains its background goroutines before the store closes and
+	// before t.TempDir's removal — the test half of Tnsor-Labs/brokoli#94.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("engine close: %v", err)
+		}
+	})
 	return eng, s
 }
 

@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -30,6 +31,11 @@ func TestSystemPurge_DeletesArtifactsAndCheckpointsForPurgedRuns(t *testing.T) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	e := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = e.Close(ctx)
+	})
 	e.ArtifactStore = engine.NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	e.PaginationCheckpointStore = engine.NewLocalDiskPaginationCheckpointStore(filepath.Join(dir, "checkpoints"))
 
