@@ -19,6 +19,20 @@ import (
 // that later, promote it to a package-level variable.
 func osEnviron() []string { return os.Environ() }
 
+// pluginTerminationGrace bounds how long a plugin has to shut down
+// cleanly after the host asks it to stop. On cancellation or timeout the
+// runner sends SIGTERM; if the process has not exited within this
+// window, exec.Cmd.WaitDelay kills it and closes the I/O pipes, which is
+// what stops Run from blocking on a stdout that never reaches EOF.
+//
+// Five seconds is enough for a connector to close a source connection,
+// finish an in-flight request, and emit a final MsgState checkpoint,
+// while staying short enough that a cancel feels immediate to whoever
+// asked for it. Deliberately an unexported constant rather than a Runner
+// field: no plugin has needed a different value, and promoting this to
+// configuration later is easier than withdrawing it once published.
+const pluginTerminationGrace = 5 * time.Second
+
 // Runner invokes a plugin binary and ferries messages between the
 // host and the plugin process. One Runner handles one invocation —
 // it's constructed per-call rather than reused so a cancelled run
@@ -30,6 +44,11 @@ func osEnviron() []string { return os.Environ() }
 type Runner struct {
 	manifest *Manifest
 	timeout  time.Duration
+
+	// terminationGrace is how long the plugin has between SIGTERM and
+	// being killed. Defaults to pluginTerminationGrace. Unexported so it
+	// stays off the package's API surface while the cancellation tests
+	terminationGrace time.Duration
 
 	// LogHandler is called for every MsgLog line the plugin emits
 	// (via stdout) and for every non-empty stderr line. If nil, logs
@@ -49,8 +68,9 @@ type Runner struct {
 // SIGTERM on timeout and SIGKILL after a short grace period.
 func NewRunner(m *Manifest, timeout time.Duration) *Runner {
 	return &Runner{
-		manifest: m,
-		timeout:  timeout,
+		manifest:         m,
+		timeout:          timeout,
+		terminationGrace: pluginTerminationGrace,
 	}
 }
 
@@ -78,9 +98,10 @@ type RunResult struct {
 // streams stdout as JSONL, and collects everything into a RunResult.
 //
 // Cancellation: ctx drives the child process group. If ctx is cancelled
-// before the plugin exits, the runner sends SIGTERM; the plugin has
-// 5 seconds to clean up, after which SIGKILL is sent. This matches the
-// cmd/main.go signal-handler pattern the Brokoli worker uses.
+// or its deadline fires before the plugin exits, the runner sends
+// SIGTERM to the group; plugin has pluginTerminationGrace to clean up,
+// after which it is killed and the I/O pipes are closed. Non-Unix
+// platforms get a reduced version of this - see process_other.go
 //
 // Streaming: stdout is decoded line-by-line rather than buffered in
 // full, so a source plugin yielding millions of rows doesn't blow up
@@ -135,6 +156,26 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 	// Preserve PATH etc. but don't leak the host's entire environment —
 	// we'll need to revisit this once we add secret injection.
 	proc.Env = minimalEnv()
+
+	// Cancellation. exec.CommandContext's default is Process.Kill() - an
+	// immediate SIGKILL the plugin cannot catch, leaving it no chance to
+	// close connections or emit a final checkpoint. Three pieces replace
+	// it:
+	//
+	//	- the child leads its own process group, so signals reach
+	//		everything it spawned rather than just a wrapper script;
+	//	- Cancel sends SIGTERM to that group;
+	//	- WaitDelay bounds the wait, after which the standard library
+	//		kills the process and closes the I/O pipes. That last part is
+	//		what stops Run from blocking forever on a stdout that never
+	//		reaches EOF because a surviving child still holds it open.
+	//
+	// Cancel is a closure because proc.Process is nil until Start
+	// succeeds; the standard library documents that Cancel is never
+	// called if Start returns an error.
+	configureProcessGroup(proc)
+	proc.Cancel = func() error { return terminateProcessTree(proc.Process) }
+	proc.WaitDelay = r.terminationGrace
 
 	stdin, err := proc.StdinPipe()
 	if err != nil {
@@ -247,6 +288,15 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 
 	stderrWG.Wait()
 	waitErr := proc.Wait()
+
+	// WaitDelay's own escalation calls Process.Kill, which reaches only
+	// the direct child. Anything it spawned survives - and keeps the
+	// process group alive, so a single SIGKILL to the group lands on
+	// exactly those survivors. ESRCH (returned as os.ErrProcessDone)
+	// means the group is already empty, which is the normal case.
+	if ctx.Err() != nil && proc.Process != nil {
+		_ = killProcessTree(proc.Process)
+	}
 
 	// Error ordering: prefer the plugin-reported MsgError over a bare
 	// exit code, then fall back to a generic non-zero exit message.
