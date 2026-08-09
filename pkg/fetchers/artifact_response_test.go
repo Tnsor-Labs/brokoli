@@ -175,3 +175,25 @@ func TestRESTFetcher_IsArtifactAware(t *testing.T) {
 		t.Fatal("RESTFetcher no longer implements ArtifactAwareFetcher")
 	}
 }
+
+// The upstream server's declared Content-Type is recorded on the reference,
+// so a later reader knows what the bytes are without sniffing them.
+func TestRESTFetcher_Artifact_RecordsUpstreamContentType(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/pdf")
+		_, _ = w.Write([]byte("%PDF-1.7 pretend"))
+	}))
+	t.Cleanup(srv.Close)
+
+	sink := &recordingSink{store: artifact.NewLocalDiskStore(t.TempDir())}
+	f := &RESTFetcher{}
+	f.SetArtifactSink(sink)
+
+	ds, err := f.Fetch(srv.URL, map[string]interface{}{"response": "artifact"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ds.Rows[0][ArtifactColMediaType]; got != "application/pdf" {
+		t.Errorf("media_type = %v, want the server's application/pdf", got)
+	}
+}
