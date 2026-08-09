@@ -61,7 +61,8 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 
 func isWorkspacePublicRoute(r *http.Request) bool {
 	path := r.URL.Path
-	return !strings.HasPrefix(path, "/api/") ||
+	return isPublicCapabilitiesRequest(r) ||
+		!strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, "/api/auth/") ||
 		strings.HasPrefix(path, "/api/workers/") ||
 		strings.HasPrefix(path, "/api/invites/") ||

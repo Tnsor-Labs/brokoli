@@ -76,3 +76,105 @@ func TestCapabilitiesHandler(t *testing.T) {
 		t.Error("expected node_type_capabilities to be present")
 	}
 }
+
+func TestCapabilitiesRemainPublicThroughAuthMiddleware(t *testing.T) {
+	auth := NewAuthConfig()
+	auth.AddKey("brk_test", "test key")
+	users := newTestUserStore(t)
+
+	previousResolver := UserWorkspaceResolverFunc
+	UserWorkspaceResolverFunc = func(string) []string { return []string{"workspace-1"} }
+	t.Cleanup(func() { UserWorkspaceResolverFunc = previousResolver })
+
+	handler := APIKeyAuth(auth)(JWTAuth(users)(WorkspaceMiddleware(
+		http.HandlerFunc(CapabilitiesHandler),
+	)))
+
+	capabilitiesReq := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	capabilitiesRec := httptest.NewRecorder()
+	handler.ServeHTTP(capabilitiesRec, capabilitiesReq)
+	if capabilitiesRec.Code != http.StatusOK {
+		t.Fatalf("anonymous capabilities status = %d, want 200: %s", capabilitiesRec.Code, capabilitiesRec.Body.String())
+	}
+
+	protectedReq := httptest.NewRequest(http.MethodGet, "/api/pipelines", nil)
+	protectedRec := httptest.NewRecorder()
+	handler.ServeHTTP(protectedRec, protectedReq)
+	if protectedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous protected route status = %d, want 401", protectedRec.Code)
+	}
+}
+
+func TestEachAuthLayerExemptsOnlyCapabilities(t *testing.T) {
+	pass := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	t.Run("api key", func(t *testing.T) {
+		auth := NewAuthConfig()
+		auth.AddKey("brk_test", "test key")
+		assertCapabilitiesBypass(t, APIKeyAuth(auth)(pass), http.StatusUnauthorized)
+	})
+
+	t.Run("JWT open mode", func(t *testing.T) {
+		assertCapabilitiesBypass(t, JWTAuth(newTestUserStore(t))(pass), http.StatusServiceUnavailable)
+	})
+
+	t.Run("JWT configured", func(t *testing.T) {
+		users := newTestUserStore(t)
+		if _, err := users.CreateUser("admin", "ValidPass123", RoleAdmin); err != nil {
+			t.Fatalf("CreateUser: %v", err)
+		}
+		assertCapabilitiesBypass(t, JWTAuth(users)(pass), http.StatusUnauthorized)
+	})
+
+	t.Run("workspace ownership", func(t *testing.T) {
+		previousResolver := UserWorkspaceResolverFunc
+		UserWorkspaceResolverFunc = func(string) []string { return []string{"workspace-1"} }
+		t.Cleanup(func() { UserWorkspaceResolverFunc = previousResolver })
+		assertCapabilitiesBypass(t, WorkspaceMiddleware(pass), http.StatusUnauthorized)
+	})
+
+	t.Run("extension auth", func(t *testing.T) {
+		redirect := func(http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Location", "/login")
+				w.WriteHeader(http.StatusFound)
+			})
+		}
+		handler := withPublicAuthBypass(redirect)(pass)
+		assertCapabilitiesBypass(t, handler, http.StatusFound)
+
+		healthReq := httptest.NewRequest(http.MethodGet, "/health", nil)
+		healthRec := httptest.NewRecorder()
+		handler.ServeHTTP(healthRec, healthReq)
+		if healthRec.Code != http.StatusNoContent {
+			t.Fatalf("health status = %d, want 204", healthRec.Code)
+		}
+
+		uploadReq := httptest.NewRequest(http.MethodGet, "/uploads/report.csv", nil)
+		uploadRec := httptest.NewRecorder()
+		handler.ServeHTTP(uploadRec, uploadReq)
+		if uploadRec.Code != http.StatusFound {
+			t.Fatalf("upload status = %d, want 302", uploadRec.Code)
+		}
+	})
+}
+
+func assertCapabilitiesBypass(t *testing.T, handler http.Handler, protectedStatus int) {
+	t.Helper()
+
+	capabilitiesReq := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	capabilitiesRec := httptest.NewRecorder()
+	handler.ServeHTTP(capabilitiesRec, capabilitiesReq)
+	if capabilitiesRec.Code != http.StatusNoContent {
+		t.Fatalf("capabilities status = %d, want 204", capabilitiesRec.Code)
+	}
+
+	protectedReq := httptest.NewRequest(http.MethodGet, "/api/pipelines", nil)
+	protectedRec := httptest.NewRecorder()
+	handler.ServeHTTP(protectedRec, protectedReq)
+	if protectedRec.Code != protectedStatus {
+		t.Fatalf("protected status = %d, want %d", protectedRec.Code, protectedStatus)
+	}
+}

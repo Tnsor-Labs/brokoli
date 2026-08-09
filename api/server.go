@@ -48,6 +48,10 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	if auth != nil {
 		r.Use(APIKeyAuth(auth))
 	}
+	if ext != nil && ext.Auth != nil && ext.Auth.Enabled() {
+		r.Use(withPublicAuthBypass(ext.Auth.Middleware()))
+		log.Printf("Enterprise: SSO (%s) enabled", ext.Auth.Name())
+	}
 	if userStore != nil {
 		InitJWTSecret()
 		r.Use(JWTAuth(userStore))
@@ -83,12 +87,6 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	// fanout — the API's own engine.Events() is empty because workers run jobs.
 	if ext != nil && ext.EventBus != nil {
 		startEventBusBridge(ext.EventBus, bridgeCh)
-	}
-
-	// Enterprise: SSO middleware
-	if ext != nil && ext.Auth != nil && ext.Auth.Enabled() {
-		r.Use(ext.Auth.Middleware())
-		log.Printf("Enterprise: SSO (%s) enabled", ext.Auth.Name())
 	}
 
 	// Enterprise: Git sync webhook
