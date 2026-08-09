@@ -19,7 +19,7 @@ func TestPipelineCreate_AcceptsIR21ConditionalPipeline(t *testing.T) {
 		"ir_version":"2.1",
 		"name":"conditional",
 		"nodes":[
-			{"id":"source","type":"source_file","name":"Source","config":{}},
+			{"id":"source","type":"source_file","name":"Source","config":{"path":"/tmp/input.csv"}},
 			{"id":"check","type":"condition","name":"Check","config":{"expression":"always_true"}},
 			{"id":"yes","type":"notify","name":"Yes","config":{}}
 		],
@@ -130,7 +130,7 @@ func TestPipelineUpdate_AcceptsIR21(t *testing.T) {
 		ID:        "pipeline-1",
 		IRVersion: "2.0",
 		Name:      "Existing",
-		Nodes:     []models.Node{},
+		Nodes:     []models.Node{{ID: "source", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": "/tmp/input.csv"}}},
 		Edges:     []models.Edge{},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -140,7 +140,7 @@ func TestPipelineUpdate_AcceptsIR21(t *testing.T) {
 	}
 
 	h := NewPipelineHandler(s, nil)
-	body := `{"ir_version":"2.1","name":"Changed","nodes":[],"edges":[]}`
+	body := `{"ir_version":"2.1","name":"Changed","nodes":[{"id":"source","type":"source_file","name":"Source","config":{"path":"/tmp/input.csv"}}],"edges":[]}`
 	req := httptest.NewRequest(http.MethodPut, "/api/pipelines/pipeline-1", strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	router := chi.NewRouter()
@@ -178,7 +178,7 @@ func TestPipelineImport_RejectsEmptyBody(t *testing.T) {
 func TestPipelineImport_AcceptsIR21(t *testing.T) {
 	s := newOrgCheckStore(t)
 	h := NewPipelineHandler(s, nil)
-	body := `{"ir_version":"2.1","name":"future","nodes":[],"edges":[]}`
+	body := `{"ir_version":"2.1","name":"future","nodes":[{"id":"source","type":"source_file","name":"Source","config":{"path":"/tmp/input.csv"}}],"edges":[]}`
 	req := httptest.NewRequest(http.MethodPost, "/api/pipelines/import", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

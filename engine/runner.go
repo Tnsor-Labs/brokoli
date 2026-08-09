@@ -1162,6 +1162,9 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 			return nodeExecutionResult{}, nil
 		}
 	}
+	if !IsBuiltInNodeType(node.Type) {
+		return nodeExecutionResult{}, fmt.Errorf("unsupported node type %q", node.Type)
+	}
 
 	switch node.Type {
 	case models.NodeTypeSourceFile:
@@ -1207,7 +1210,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	case models.NodeTypeDatasetFilter:
 		return outputExecutionResult(r.runDatasetFilter(node, input))
 	default:
-		return nodeExecutionResult{output: input}, nil
+		return nodeExecutionResult{}, fmt.Errorf("built-in node type %q has no runtime handler", node.Type)
 	}
 }
 

@@ -560,7 +560,8 @@ func TestValidate_PluginSourceType_NoManualCapabilities(t *testing.T) {
 		"description": "test fixture",
 		"binary": "./bin",
 		"node_types": [
-			{"type": "source_hello", "kind": "source", "display_name": "Hello Source"}
+			{"type": "source_hello", "kind": "source", "display_name": "Hello Source"},
+			{"type": "transform_hello", "kind": "transform", "display_name": "Hello Transform"}
 		]
 	}`
 	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.json"), []byte(manifest), 0o644); err != nil {
@@ -593,5 +594,18 @@ func TestValidate_PluginSourceType_NoManualCapabilities(t *testing.T) {
 	ve = ValidatePipeline(p)
 	if !ve.HasErrors() {
 		t.Error("expected 'must have a source' error when no executors are passed for a plugin-only-source pipeline")
+	}
+
+	transformPipeline := validPipeline()
+	transformPipeline.Nodes = append(transformPipeline.Nodes, models.Node{
+		ID: "plugin-transform", Type: "transform_hello", Name: "Plugin Transform", Config: map[string]interface{}{},
+	})
+	transformPipeline.Edges = []models.Edge{
+		{From: "n1", To: "plugin-transform"},
+		{From: "plugin-transform", To: "n2"},
+	}
+	ve = ValidatePipeline(transformPipeline, mgr)
+	if !strings.Contains(ve.Error(), "unsupported type") {
+		t.Fatalf("plugin transform errors = %v, want unsupported type", ve.Errors)
 	}
 }

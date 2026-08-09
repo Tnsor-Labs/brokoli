@@ -2,6 +2,7 @@ package plugins
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -301,6 +302,41 @@ func TestManager_DeclaredCapabilities(t *testing.T) {
 
 	if _, ok := mgr.DeclaredCapabilities("source_nonexistent"); ok {
 		t.Error("expected an unregistered node type to report ok=false")
+	}
+}
+
+func TestManager_CanHandleOnlyExecutableKinds(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	manifestPath := filepath.Join(dir, "hello", "manifest.json")
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest Manifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.NodeTypes = append(manifest.NodeTypes, NodeTypeDecl{Type: "transform_hello", Kind: KindTransform})
+	data, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.CanHandle("source_hello") || !mgr.CanHandle("sink_hello") {
+		t.Fatal("manager must execute source and sink plugin kinds")
+	}
+	if mgr.CanHandle("transform_hello") {
+		t.Fatal("manager claimed unsupported transform plugin kind")
+	}
+	if caps, ok := mgr.DeclaredCapabilities("transform_hello"); !ok || len(caps) != 1 || caps[0] != "compute" {
+		t.Fatalf("transform structural declaration = %v, %v; want [compute], true", caps, ok)
 	}
 }
 

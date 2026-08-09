@@ -17,7 +17,11 @@ import (
 
 // RegisterRoutes sets up all API routes on the given router.
 func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Server, sched *engine.Scheduler, ext *extensions.Registry, userStore *UserStore, cryptoCfg ...*crypto.Config) {
-	ph := NewPipelineHandler(s, sched)
+	var executors []extensions.NodeExecutor
+	if e != nil {
+		executors = e.Executors
+	}
+	ph := NewPipelineHandler(s, sched, executors...)
 	rh := NewRunHandler(s, e)
 
 	// Connection handler (crypto config optional for backward compat)

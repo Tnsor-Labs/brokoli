@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/engine"
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
@@ -19,8 +21,9 @@ import (
 )
 
 type PipelineHandler struct {
-	store store.Store
-	sched *engine.Scheduler
+	store     store.Store
+	sched     *engine.Scheduler
+	executors []extensions.NodeExecutor
 }
 
 // requirePipelineOrg returns the caller's org_id for a pipeline create/clone/
@@ -98,8 +101,8 @@ func toPipelineSummary(p models.Pipeline) PipelineSummary {
 	}
 }
 
-func NewPipelineHandler(s store.Store, sched *engine.Scheduler) *PipelineHandler {
-	return &PipelineHandler{store: s, sched: sched}
+func NewPipelineHandler(s store.Store, sched *engine.Scheduler, executors ...extensions.NodeExecutor) *PipelineHandler {
+	return &PipelineHandler{store: s, sched: sched, executors: executors}
 }
 
 func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -220,6 +223,10 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if p.Source == "" {
 		p.Source = models.PipelineSourceUI
 	}
+	if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
+		writeError(w, http.StatusBadRequest, ve.Error())
+		return
+	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -244,6 +251,24 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, p)
+}
+
+// graphUnchanged reports whether an update leaves the executable graph —
+// nodes, edges, and IR version — byte-identical to the stored pipeline.
+// Node/edge JSON encoding is deterministic (Go sorts map keys), so marshal
+// equality is a faithful structural comparison.
+func graphUnchanged(existing, updated *models.Pipeline) bool {
+	if existing.IRVersion != updated.IRVersion {
+		return false
+	}
+	existingNodes, err1 := json.Marshal(existing.Nodes)
+	updatedNodes, err2 := json.Marshal(updated.Nodes)
+	existingEdges, err3 := json.Marshal(existing.Edges)
+	updatedEdges, err4 := json.Marshal(updated.Edges)
+	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
+		return false
+	}
+	return bytes.Equal(existingNodes, updatedNodes) && bytes.Equal(existingEdges, updatedEdges)
 }
 
 func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
@@ -298,6 +323,19 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	if err := engine.DetectDependencyCycle(h.store, &p); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+	// Executable validation gates graph changes, not operational metadata.
+	// A pipeline persisted before validation became fail-closed must remain
+	// pausable/renamable from the UI (the row toggle PUTs the whole
+	// pipeline back), so an update that leaves the graph byte-identical is
+	// exempt — the same contract as the bulk enable/disable path, which
+	// never carries a graph at all. Any change to nodes, edges, or IR
+	// version revalidates in full.
+	if !graphUnchanged(existing, &p) {
+		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
+			writeError(w, http.StatusBadRequest, ve.Error())
+			return
+		}
 	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
@@ -607,6 +645,10 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
+		writeError(w, http.StatusBadRequest, ve.Error())
+		return
+	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -630,7 +672,7 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ve := engine.ValidatePipeline(p)
+	ve := engine.ValidatePipeline(p, h.executors...)
 	if ve.HasErrors() {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"valid": false, "errors": ve.Errors})
 	} else {
@@ -660,7 +702,7 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 	if p == nil {
 		var err error
-		p, err = engine.ImportPipelineYAML(data)
+		p, err = engine.ImportPipelineYAML(data, h.executors...)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -698,6 +740,10 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if ve := engine.ValidatePipeline(p, h.executors...); ve.HasErrors() {
+		writeError(w, http.StatusBadRequest, ve.Error())
+		return
+	}
 
 	if err := h.store.CreatePipeline(p); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
@@ -732,7 +778,7 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	idMap := make(map[string]string, len(orig.Nodes))
 	newNodes := make([]models.Node, len(orig.Nodes))
 	for i, n := range orig.Nodes {
-		newID := common.NewID()[:8]
+		newID := common.NewID()
 		idMap[n.ID] = newID
 		newNodes[i] = n
 		newNodes[i].ID = newID
@@ -777,6 +823,10 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := engine.DetectDependencyCycle(h.store, &clone); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if ve := engine.ValidatePipeline(&clone, h.executors...); ve.HasErrors() {
+		writeError(w, http.StatusBadRequest, ve.Error())
 		return
 	}
 

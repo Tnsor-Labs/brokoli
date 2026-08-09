@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"gopkg.in/yaml.v3"
@@ -27,11 +28,12 @@ type PipelineYAML struct {
 
 // NodeYAML is the YAML format for a pipeline node.
 type NodeYAML struct {
-	ID       string                 `yaml:"id"`
-	Type     string                 `yaml:"type"`
-	Name     string                 `yaml:"name"`
-	Config   map[string]interface{} `yaml:"config,omitempty"`
-	Position *PositionYAML          `yaml:"position,omitempty"`
+	ID           string                 `yaml:"id"`
+	Type         string                 `yaml:"type"`
+	Name         string                 `yaml:"name"`
+	Config       map[string]interface{} `yaml:"config,omitempty"`
+	Capabilities []string               `yaml:"capabilities,omitempty"`
+	Position     *PositionYAML          `yaml:"position,omitempty"`
 }
 
 // PositionYAML is the optional canvas position.
@@ -55,7 +57,7 @@ var internalConfigKeys = map[string]bool{
 
 // ImportPipelineYAML parses YAML bytes into a Pipeline model.
 // Validates edge endpoints, node types, and auto-generates layout positions when missing.
-func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
+func ImportPipelineYAML(data []byte, executors ...extensions.NodeExecutor) (*models.Pipeline, error) {
 	var py PipelineYAML
 	if err := yaml.Unmarshal(data, &py); err != nil {
 		return nil, fmt.Errorf("parse YAML: %w", err)
@@ -98,16 +100,17 @@ func ImportPipelineYAML(data []byte) (*models.Pipeline, error) {
 		if ny.Type == "" {
 			return nil, fmt.Errorf("node %q missing type", ny.ID)
 		}
-		if !isKnownNodeType(ny.Type) {
+		if nodeType := models.NodeType(ny.Type); !IsBuiltInNodeType(nodeType) && !executorCanHandle(nodeType, executors) {
 			return nil, fmt.Errorf("node %q has unknown type %q", ny.ID, ny.Type)
 		}
 		nodeIDs[ny.ID] = true
 
 		node := models.Node{
-			ID:     ny.ID,
-			Type:   models.NodeType(ny.Type),
-			Name:   ny.Name,
-			Config: ny.Config,
+			ID:           ny.ID,
+			Type:         models.NodeType(ny.Type),
+			Name:         ny.Name,
+			Config:       ny.Config,
+			Capabilities: append([]string(nil), ny.Capabilities...),
 		}
 		if ny.Position != nil {
 			node.Position = models.Position{X: ny.Position.X, Y: ny.Position.Y}
@@ -165,10 +168,11 @@ func ExportPipelineYAML(p *models.Pipeline) ([]byte, error) {
 	for _, n := range p.Nodes {
 		cleanConfig := stripInternalKeys(n.Config)
 		ny := NodeYAML{
-			ID:     n.ID,
-			Type:   string(n.Type),
-			Name:   n.Name,
-			Config: cleanConfig,
+			ID:           n.ID,
+			Type:         string(n.Type),
+			Name:         n.Name,
+			Config:       cleanConfig,
+			Capabilities: append([]string(nil), n.Capabilities...),
 		}
 		if n.Position.X != 0 || n.Position.Y != 0 {
 			ny.Position = &PositionYAML{X: n.Position.X, Y: n.Position.Y}
@@ -203,20 +207,6 @@ func stripInternalKeys(cfg map[string]interface{}) map[string]interface{} {
 	return out
 }
 
-// isKnownNodeType reports whether the given type string is a recognized node type.
-func isKnownNodeType(t string) bool {
-	switch models.NodeType(t) {
-	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
-		models.NodeTypeCode, models.NodeTypeJoin, models.NodeTypeSinkFile,
-		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
-		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
-		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter:
-		return true
-	}
-	return false
-}
-
 // validateNodeConfigImport checks required config fields per node type.
 // This is a best-effort check at import time; the engine does a deeper validation at runtime.
 func validateNodeConfigImport(n models.Node) error {
@@ -231,6 +221,9 @@ func validateNodeConfigImport(n models.Node) error {
 			return fmt.Errorf("source_file requires 'path' in config")
 		}
 	case models.NodeTypeSourceDB:
+		if getStr(cfg, "uri") == "" && getStr(cfg, "conn_id") == "" {
+			return fmt.Errorf("source_db requires 'uri' or 'conn_id' in config")
+		}
 		if _, ok := cfg["query"]; !ok {
 			return fmt.Errorf("source_db requires 'query' in config")
 		}
@@ -239,8 +232,8 @@ func validateNodeConfigImport(n models.Node) error {
 			return fmt.Errorf("sink_file requires 'path' in config")
 		}
 	case models.NodeTypeSinkDB:
-		if _, ok := cfg["table"]; !ok {
-			return fmt.Errorf("sink_db requires 'table' in config")
+		if getStr(cfg, "uri") == "" && getStr(cfg, "conn_id") == "" {
+			return fmt.Errorf("sink_db requires 'uri' or 'conn_id' in config")
 		}
 	case models.NodeTypeJoin:
 		if _, ok := cfg["left_key"]; !ok {

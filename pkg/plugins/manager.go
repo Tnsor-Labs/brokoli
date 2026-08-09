@@ -214,13 +214,18 @@ func (m *Manager) Remove(name string) error {
 // Name returns the executor name for log lines.
 func (m *Manager) Name() string { return "plugins" }
 
-// CanHandle reports whether any loaded plugin claims the given node
-// type. Called for every node on every run, so hot; held behind the
-// read lock.
+// CanHandle reports whether a loaded plugin can currently execute the given
+// node type. Transform manifests remain discoverable and structurally
+// declarable, but Manager.Execute does not implement them yet.
 func (m *Manager) CanHandle(nodeType string) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.nodeTypes[nodeType] != nil
+	man := m.nodeTypes[nodeType]
+	if man == nil {
+		return false
+	}
+	kind := kindOfNodeType(man, nodeType)
+	return kind == KindSource || kind == KindSink
 }
 
 // Execute runs a pipeline node through its plugin. The plugin's

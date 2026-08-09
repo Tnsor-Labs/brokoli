@@ -57,8 +57,13 @@ func TestTemplateHandler_List_ReturnsSeededTemplatesWithNoAuth(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(list) != 5 {
-		t.Fatalf("got %d templates, want 5 (blank + 4 seeded)", len(list))
+	if len(list) != 4 {
+		t.Fatalf("got %d templates, want 4 executable seeded templates", len(list))
+	}
+	for _, template := range list {
+		if len(template.Nodes) == 0 {
+			t.Fatalf("listed non-creatable template %q with no nodes", template.Name)
+		}
 	}
 }
 

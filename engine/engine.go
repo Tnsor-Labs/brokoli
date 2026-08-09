@@ -978,10 +978,8 @@ func (e *Engine) DryRun(p *models.Pipeline, maxRows int) (map[string]*DryRunNode
 	runner.dryRunMaxRows = maxRows
 
 	_, err := runner.Execute()
-	// Even if it fails partway, return what we got
-	_ = err
-
-	return runner.dryRunResults, nil
+	// Return partial previews alongside the execution error.
+	return runner.dryRunResults, err
 }
 
 // DryRunNodeResult contains the preview data for one node.
