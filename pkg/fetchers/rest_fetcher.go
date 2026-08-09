@@ -105,6 +105,12 @@ type RequestOptions struct {
 	Body    interface{}
 	Params  map[string]string
 	Timeout time.Duration
+	// AuthUser/AuthPassword carry HTTP Basic Auth resolved from a
+	// connection's login/password fields. Living on RequestOptions means
+	// every request funnelled through executeRequest carries them — the
+	// first page and every paginated page alike.
+	AuthUser     string
+	AuthPassword string
 }
 
 func (f *RESTFetcher) Fetch(source string, options map[string]interface{}) (*common.DataSet, error) {
@@ -184,6 +190,15 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 		requestOptions.Timeout = timeout
 	}
 
+	// Basic Auth injected by the connection resolver (auth_user/auth_password
+	// from a connection's login/password). These were resolved into the node
+	// config but never read here, so reads went out unauthenticated while
+	// writes worked — the far-from-the-cause 401 of Tnsor-Labs/brokoli#58.
+	if user, ok := options["auth_user"].(string); ok && user != "" {
+		requestOptions.AuthUser = user
+		requestOptions.AuthPassword, _ = options["auth_password"].(string)
+	}
+
 	return requestOptions
 }
 
@@ -255,6 +270,15 @@ func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]b
 
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "application/json")
+	}
+
+	// Applied after the headers loop, so connection credentials win over a
+	// handwritten Authorization header — the same precedence runSinkAPI
+	// gives the write path. The connection is the authoritative credential
+	// source; a node that needs a different scheme should not attach a
+	// basic-auth connection.
+	if options.AuthUser != "" {
+		req.SetBasicAuth(options.AuthUser, options.AuthPassword)
 	}
 
 	resp, err := f.client.Do(req)
