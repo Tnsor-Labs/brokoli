@@ -27,13 +27,10 @@ func (v *ValidationError) HasErrors() bool {
 
 // ValidatePipeline checks a pipeline for structural and config issues.
 //
-// executors is optional (variadic so existing callers compile unchanged)
-// and lets structural checks like "must have a source" recognize node
-// types registered by a NodeExecutor that also implements
-// extensions.NodeKindDeclarer — e.g. a plugin-provided source/sink type —
-// without requiring the pipeline author to hand-set Node.Capabilities.
-// Callers that omit it (or run before any executors are loaded) get the
-// same Capabilities-or-hardcoded-type-list behavior as before.
+// executors is optional (variadic so existing callers compile unchanged).
+// An external node type is executable only when a non-nil executor claims it
+// through CanHandle. Node capabilities and NodeKindDeclarer affect structural
+// validation only; they do not authorize execution.
 func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) *ValidationError {
 	ve := &ValidationError{}
 
@@ -56,13 +53,16 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 	for _, n := range p.Nodes {
 		if n.ID == "" {
 			ve.Add(fmt.Sprintf("Node %q has empty ID", n.Name))
-			continue
+		} else {
+			if nodeIDs[n.ID] {
+				ve.Add(fmt.Sprintf("Duplicate node ID: %s", n.ID))
+			}
+			nodeIDs[n.ID] = true
+			nodeTypes[n.ID] = n.Type
 		}
-		if nodeIDs[n.ID] {
-			ve.Add(fmt.Sprintf("Duplicate node ID: %s", n.ID))
+		if !IsBuiltInNodeType(n.Type) && !executorCanHandle(n.Type, executors) {
+			ve.Add(fmt.Sprintf("Node %q (%s) has unsupported type %q", n.Name, n.ID, n.Type))
 		}
-		nodeIDs[n.ID] = true
-		nodeTypes[n.ID] = n.Type
 	}
 
 	// Check edges reference valid nodes
@@ -132,6 +132,31 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 	}
 
 	return ve
+}
+
+// IsBuiltInNodeType reports whether the in-process runner implements nodeType.
+// Keep this list aligned with Runner.runNodeLogic, including condition's
+// control-plane dispatch before the built-in switch.
+func IsBuiltInNodeType(nodeType models.NodeType) bool {
+	switch nodeType {
+	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
+		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
+		models.NodeTypeCode, models.NodeTypeJoin, models.NodeTypeSinkFile,
+		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
+		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
+		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter:
+		return true
+	}
+	return false
+}
+
+func executorCanHandle(nodeType models.NodeType, executors []extensions.NodeExecutor) bool {
+	for _, exec := range executors {
+		if exec != nil && exec.CanHandle(string(nodeType)) {
+			return true
+		}
+	}
+	return false
 }
 
 func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models.Edge, ve *ValidationError, executors []extensions.NodeExecutor) {
@@ -305,8 +330,8 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			ve.Add(fmt.Sprintf("Node %q: 'url' is required for source_api", n.Name))
 		}
 	case models.NodeTypeSourceDB:
-		if getStr(n.Config, "uri") == "" {
-			ve.Add(fmt.Sprintf("Node %q: 'uri' is required for source_db", n.Name))
+		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
+			ve.Add(fmt.Sprintf("Node %q: 'uri' or 'conn_id' is required for source_db", n.Name))
 		}
 		if getStr(n.Config, "query") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'query' is required for source_db", n.Name))
@@ -320,8 +345,8 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			ve.Add(fmt.Sprintf("Node %q: 'path' is required for sink_file", n.Name))
 		}
 	case models.NodeTypeSinkDB:
-		if getStr(n.Config, "uri") == "" {
-			ve.Add(fmt.Sprintf("Node %q: 'uri' is required for sink_db", n.Name))
+		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
+			ve.Add(fmt.Sprintf("Node %q: 'uri' or 'conn_id' is required for sink_db", n.Name))
 		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
@@ -389,8 +414,8 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 			r.Warnings = append(r.Warnings, "'method' not set, defaults to GET")
 		}
 	case models.NodeTypeSourceDB:
-		if getStr(n.Config, "uri") == "" {
-			r.Errors = append(r.Errors, "'uri' is required")
+		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
+			r.Errors = append(r.Errors, "'uri' or 'conn_id' is required")
 		}
 		if getStr(n.Config, "query") == "" {
 			r.Errors = append(r.Errors, "'query' is required")
@@ -407,8 +432,8 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 			r.Errors = append(r.Errors, "'path' is required")
 		}
 	case models.NodeTypeSinkDB:
-		if getStr(n.Config, "uri") == "" {
-			r.Errors = append(r.Errors, "'uri' is required")
+		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
+			r.Errors = append(r.Errors, "'uri' or 'conn_id' is required")
 		}
 	case models.NodeTypeCode:
 		if getStr(n.Config, "script") == "" {

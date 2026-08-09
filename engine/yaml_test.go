@@ -130,6 +130,43 @@ edges:
 	}
 }
 
+func TestYAMLRoundTrip_PreservesIRV2CodeSourceCapabilities(t *testing.T) {
+	p := &models.Pipeline{
+		IRVersion: models.CurrentIRVersion,
+		Name:      "IR v2 code source",
+		Nodes: []models.Node{{
+			ID:   "source",
+			Type: models.NodeTypeCode,
+			Name: "SDK Source",
+			Config: map[string]interface{}{
+				"script": "output_data = {'columns': [], 'rows': []}",
+			},
+			Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+		}},
+		Edges: []models.Edge{},
+	}
+
+	exported, err := ExportPipelineYAML(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(exported), "capabilities:") || !strings.Contains(string(exported), "- source") {
+		t.Fatalf("capabilities missing from exported YAML:\n%s", exported)
+	}
+	imported, err := ImportPipelineYAML(exported)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := p.Nodes[0].Capabilities
+	got := imported.Nodes[0].Capabilities
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("capabilities = %v, want %v", got, want)
+	}
+	if ve := ValidatePipeline(imported); ve.HasErrors() {
+		t.Fatalf("round-tripped capability-declared code source is invalid: %v", ve.Errors)
+	}
+}
+
 func TestYAMLImport_MinimalValid(t *testing.T) {
 	yaml := `
 name: minimal
@@ -290,6 +327,39 @@ edges: []
 	_, err := ImportPipelineYAML([]byte(yaml))
 	if err == nil {
 		t.Error("should reject unknown node type")
+	}
+}
+
+func TestYAMLRoundTrip_CustomExecutorOwnedType(t *testing.T) {
+	executor := &validationExecutor{nodeType: "custom_yaml"}
+	p := &models.Pipeline{
+		Name: "custom round trip",
+		Nodes: []models.Node{
+			{ID: "source", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": "/tmp/input.csv"}},
+			{
+				ID: "custom", Type: "custom_yaml", Name: "Custom",
+				Config:       map[string]interface{}{"setting": "value"},
+				Capabilities: []string{models.CapabilityCompute, models.CapabilityDatasetOutput},
+			},
+		},
+		Edges: []models.Edge{{From: "source", To: "custom"}},
+	}
+	exported, err := ExportPipelineYAML(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	imported, err := ImportPipelineYAML(exported, nil, executor)
+	if err != nil {
+		t.Fatalf("executor-owned custom YAML rejected: %v", err)
+	}
+	if len(imported.Nodes) != 2 || imported.Nodes[1].Type != "custom_yaml" || getStr(imported.Nodes[1].Config, "setting") != "value" {
+		t.Fatalf("custom YAML did not round-trip: %#v", imported.Nodes)
+	}
+	if got := imported.Nodes[1].Capabilities; len(got) != 2 || got[0] != models.CapabilityCompute || got[1] != models.CapabilityDatasetOutput {
+		t.Fatalf("custom executor capabilities did not round-trip: %v", got)
+	}
+	if _, err := ImportPipelineYAML(exported, nil); err == nil || !strings.Contains(err.Error(), "unknown type") {
+		t.Fatalf("unclaimed custom YAML error = %v, want unknown type", err)
 	}
 }
 

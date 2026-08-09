@@ -11,12 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
-// TestPipeline_UnknownNodeType_StillPassesThrough is the regression guard
-// requested by Tnsor-Labs/brokoli#32: adding real handlers for union,
-// dataset_map, and dataset_filter must not remove runNodeLogic's
-// `default: return input, nil` case for genuinely unrecognized node
-// types — only those three specific types get real handlers now.
-func TestPipeline_UnknownNodeType_StillPassesThrough(t *testing.T) {
+func TestPipeline_UnknownNodeType_FailsClosed(t *testing.T) {
 	dir := t.TempDir()
 	real, err := store.NewSQLiteStore(filepath.Join(dir, "unknown-type.db"))
 	if err != nil {
@@ -28,15 +23,13 @@ func TestPipeline_UnknownNodeType_StillPassesThrough(t *testing.T) {
 	if err := os.WriteFile(csvPath, []byte("id,name\n1,brokoli\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	outPath := filepath.Join(dir, "out.csv")
-
 	pipeline := &models.Pipeline{
 		ID:   "unknown-type-pipeline",
 		Name: "Unknown type passthrough",
 		Nodes: []models.Node{
 			{ID: "src", Type: models.NodeTypeSourceFile, Name: "Src", Config: map[string]interface{}{"path": csvPath, "format": "csv"}},
 			{ID: "mystery", Type: models.NodeType("totally_unrecognized_future_type"), Name: "Mystery", Config: map[string]interface{}{}},
-			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": outPath, "format": "csv"}},
+			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": filepath.Join(dir, "out.csv"), "format": "csv"}},
 		},
 		Edges: []models.Edge{
 			{From: "src", To: "mystery"},
@@ -50,20 +43,8 @@ func TestPipeline_UnknownNodeType_StillPassesThrough(t *testing.T) {
 	}
 
 	eng := NewEngine(real)
-	run, err := eng.RunPipeline(pipeline.ID)
-	if err != nil {
-		t.Fatalf("RunPipeline failed: %v", err)
-	}
-	if run.Status != models.RunStatusSuccess {
-		t.Fatalf("run status = %s, want success (unknown type should pass through, not fail)", run.Status)
-	}
-
-	out, err := os.ReadFile(outPath)
-	if err != nil {
-		t.Fatalf("read sink output: %v", err)
-	}
-	if !strings.Contains(string(out), "brokoli") {
-		t.Errorf("expected unknown-type node to pass its input straight through, got:\n%s", out)
+	if _, err := eng.RunPipeline(pipeline.ID); err == nil || !strings.Contains(err.Error(), "unsupported type") {
+		t.Fatalf("RunPipeline error = %v, want unsupported type", err)
 	}
 }
 
