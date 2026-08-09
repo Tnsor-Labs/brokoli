@@ -56,24 +56,18 @@ func validateFilePath(path string) error {
 	return fmt.Errorf("file path %q outside allowed directories (%s); set BROKOLI_DATA_DIRS to allow additional paths", path, strings.Join(allowedDataDirs, ", "))
 }
 
-// runCondition evaluates a condition expression and returns the input unchanged if true.
-// If false, it returns nil output — downstream nodes will get no input and be skipped.
-func (r *Runner) runCondition(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+// runCondition evaluates a condition and returns its decision separately from
+// the unchanged data payload. IR 2.0 compatibility is applied by runNodeLogic.
+func (r *Runner) runCondition(node models.Node, input *common.DataSet) (*common.DataSet, bool, error) {
 	expr, _ := node.Config["expression"].(string)
 	if expr == "" {
 		r.log(node.ID, models.LogLevelWarning, "Condition node has no expression — passing through")
-		return input, nil
+		return input, true, nil
 	}
 
 	result := EvaluateCondition(expr, input)
 	r.log(node.ID, models.LogLevelInfo, "Condition '%s' → %v (%s)", expr, result.Passed, result.Reason)
-
-	if result.Passed {
-		return input, nil
-	}
-	// Return empty dataset (not nil) so downstream nodes run but with 0 rows
-	// This lets the DAG continue — downstream nodes just get no data
-	return &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}, nil
+	return input, result.Passed, nil
 }
 
 func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {

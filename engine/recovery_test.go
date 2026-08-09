@@ -161,6 +161,48 @@ func TestRecoverNonTerminalRunsFinalizesCompletedDAGAsSuccess(t *testing.T) {
 	}
 }
 
+func TestRecoverNonTerminalRunsTreatsSkippedNodesAsComplete(t *testing.T) {
+	eng, s := newRecoveryTestEngine(t)
+	seedRecoveryPipeline(t, s, "pipe-skipped")
+	run := seedOrphanedRun(t, s, "pipe-skipped", "run-skipped", models.RunStatusRunning)
+
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptStarted,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, NodeRunID: "source-nr"},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptCompleted,
+		Payload: models.RunEventPayload{Status: models.RunStatusSuccess, NodeRunID: "source-nr", RowCount: 1},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "sink", Attempt: attemptPtr(0), EventType: models.AttemptSkipped,
+		Payload: models.RunEventPayload{Status: models.RunStatusSkipped, NodeRunID: "sink-nr"},
+	})
+
+	if _, err := eng.RecoverNonTerminalRuns(); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	recovered, err := s.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Status != models.RunStatusSuccess {
+		t.Fatalf("recovered status = %q, want success", recovered.Status)
+	}
+	events, err := s.ListEventsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	latest := latestNodeOutcome(ProjectRun(run.ID, events).NodeRuns)
+	if latest["sink"].Status != models.RunStatusSkipped {
+		t.Fatalf("recovered sink status = %q, want skipped", latest["sink"].Status)
+	}
+}
+
 // TestRecoverNonTerminalRunsFinalizesFailedNodeAsFailed covers a run where
 // one node definitively failed before the process died (e.g. the failure
 // itself persisted, but the run-level UpdateRun(failed) never got to run) —

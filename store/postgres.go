@@ -1061,6 +1061,16 @@ func (s *PostgresStore) CreateNodeRun(nr *models.NodeRun) error {
 	return err
 }
 
+func (s *PostgresStore) CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	_, err := tx.Exec(
+		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		nr.ID, nr.RunID, nr.NodeID, string(nr.Status), nr.RowCount, nr.StartedAt, nr.DurationMs, nr.Error,
+		nr.Attempt, nr.ReadyAt, nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID,
+	)
+	return err
+}
+
 func (s *PostgresStore) UpdateNodeRun(nr *models.NodeRun) error {
 	_, err := s.db.Exec(
 		`UPDATE node_runs SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5, attempt=$6, ready_at=$7, queue_ms=$8, rows_per_sec=$9, trace_id=$10, span_id=$11 WHERE id=$12`,
@@ -1068,6 +1078,25 @@ func (s *PostgresStore) UpdateNodeRun(nr *models.NodeRun) error {
 		nr.Attempt, nr.ReadyAt, nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
 	)
 	return err
+}
+
+func (s *PostgresStore) UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	result, err := tx.Exec(
+		`UPDATE node_runs SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5, attempt=$6, ready_at=$7, queue_ms=$8, rows_per_sec=$9, trace_id=$10, span_id=$11 WHERE id=$12`,
+		string(nr.Status), nr.RowCount, nr.StartedAt, nr.DurationMs, nr.Error,
+		nr.Attempt, nr.ReadyAt, nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
+	)
+	if err != nil {
+		return err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("node run not found: %s", nr.ID)
+	}
+	return nil
 }
 
 func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) {

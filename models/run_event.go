@@ -66,6 +66,10 @@ const (
 	// failed" type.
 	AttemptFailed RunEventType = "attempt.failed"
 
+	// AttemptSkipped records a synthetic node_runs row for a node that did
+	// not execute because every incoming edge resolved inactive.
+	AttemptSkipped RunEventType = "attempt.skipped"
+
 	// RetryScheduled marks the moment a retry is decided and its backoff
 	// delay computed, before the next attempt's node_runs row is created.
 	// This makes durable what was previously only an ephemeral
@@ -151,6 +155,15 @@ type RunEventPayload struct {
 	RowsPerSec float64    `json:"rows_per_sec,omitempty"`
 	TraceID    string     `json:"trace_id,omitempty"`
 	SpanID     string     `json:"span_id,omitempty"`
+	// ConditionResult is the durable routing decision produced by a
+	// successful IR 2.1 condition attempt. Nil for every other attempt.
+	ConditionResult *bool `json:"condition_result,omitempty"`
+	// Reused distinguishes a resume-restored node from a routing-inactive
+	// skipped node. Only reused skips are eligible for another resume.
+	Reused bool `json:"reused,omitempty"`
+	// ArtifactRunID identifies the run namespace containing a reused node's
+	// carried output. Empty when the node has no downstream artifact.
+	ArtifactRunID string `json:"artifact_run_id,omitempty"`
 	// BackoffMs is the computed retry delay (RetryScheduled only).
 	BackoffMs int64             `json:"backoff_ms,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`
