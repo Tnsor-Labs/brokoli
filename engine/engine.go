@@ -979,17 +979,100 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		}
 	}
 
-	// Find which nodes succeeded — they can be skipped
+	// Find which nodes succeeded — they can be skipped. IR 2.1 condition
+	// decisions are restored from durable completion events so resume cannot
+	// select a different branch after variables or run metadata change.
 	succeeded := make(map[string]bool)
-	for _, nr := range oldRun.NodeRuns {
-		if nr.Status == models.RunStatusSuccess {
-			succeeded[nr.NodeID] = true
+	conditionResults := make(map[string]bool)
+	artifactSourceRunIDs := make(map[string]string)
+	conditionNodes := make(map[string]bool)
+	unresolvedNodes := make(map[string]bool)
+	for _, node := range pipe.Nodes {
+		unresolvedNodes[node.ID] = true
+		if node.Type == models.NodeTypeCondition {
+			conditionNodes[node.ID] = true
 		}
+	}
+	lineageRun := oldRun
+	seenRuns := make(map[string]bool)
+	for lineageRun != nil && len(unresolvedNodes) > 0 {
+		if seenRuns[lineageRun.ID] {
+			return nil, fmt.Errorf("cannot resume: cycle in run lineage at %s", lineageRun.ID)
+		}
+		seenRuns[lineageRun.ID] = true
+		latest := latestNodeOutcome(lineageRun.NodeRuns)
+		events, eventErr := e.store.ListEventsByRun(lineageRun.ID)
+		if eventErr != nil {
+			return nil, fmt.Errorf("load reusable node outcomes from run %s: %w", lineageRun.ID, eventErr)
+		}
+		type reuseEvent struct {
+			reused        bool
+			condition     *bool
+			artifactRunID string
+		}
+		reuseEvents := make(map[string]reuseEvent)
+		for _, event := range events {
+			if event.Attempt == nil {
+				continue
+			}
+			nr, ok := latest[event.NodeID]
+			if !ok || nr.Attempt != *event.Attempt {
+				continue
+			}
+			metadata := reuseEvents[event.NodeID]
+			if event.EventType == models.AttemptSkipped && event.Payload.Reused {
+				metadata.reused = true
+				metadata.artifactRunID = event.Payload.ArtifactRunID
+			}
+			if (event.EventType == models.AttemptCompleted || event.EventType == models.AttemptSkipped) && event.Payload.ConditionResult != nil {
+				selected := *event.Payload.ConditionResult
+				metadata.condition = &selected
+			}
+			reuseEvents[event.NodeID] = metadata
+		}
+
+		for nodeID := range unresolvedNodes {
+			nr, ok := latest[nodeID]
+			if !ok {
+				continue // carrying may have failed; inspect the ancestor
+			}
+			metadata := reuseEvents[nodeID]
+			reusable := nr.Status == models.RunStatusSuccess || (nr.Status == models.RunStatusSkipped && metadata.reused)
+			if reusable {
+				if conditionNodes[nodeID] && pipe.IRVersion == models.ConditionalEdgesIRVersion {
+					if metadata.condition == nil {
+						return nil, fmt.Errorf("cannot resume: condition node %s has no durable routing decision", nodeID)
+					}
+					conditionResults[nodeID] = *metadata.condition
+				}
+				succeeded[nodeID] = true
+				if metadata.reused {
+					artifactSourceRunIDs[nodeID] = metadata.artifactRunID
+				} else {
+					artifactSourceRunIDs[nodeID] = lineageRun.ID
+				}
+			}
+			// Any recorded non-reusable outcome belongs to this run and must
+			// execute again; do not search past it for an older success.
+			delete(unresolvedNodes, nodeID)
+		}
+
+		if lineageRun.ResumedFromRunID == "" {
+			break
+		}
+		ancestor, ancestorErr := e.store.GetRun(lineageRun.ResumedFromRunID)
+		if ancestorErr != nil {
+			return nil, fmt.Errorf("load ancestor run %s: %w", lineageRun.ResumedFromRunID, ancestorErr)
+		}
+		lineageRun = ancestor
 	}
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
+	runner.conditionResults = conditionResults
+	runner.artifactSourceRunIDs = artifactSourceRunIDs
+	runner.params = oldRun.Params
 	runner.artifactStore = e.ArtifactStore
 	runner.spillThreshold = e.SpillThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore

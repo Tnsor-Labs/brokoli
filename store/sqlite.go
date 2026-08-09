@@ -1065,8 +1065,31 @@ func (s *SQLiteStore) CreateNodeRun(nr *models.NodeRun) error {
 	return err
 }
 
+func (s *SQLiteStore) CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	_, err := tx.Exec(
+		`INSERT INTO node_runs (id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		nr.ID, nr.RunID, nr.NodeID, string(nr.Status), nr.RowCount,
+		formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID,
+	)
+	return err
+}
+
 func (s *SQLiteStore) UpdateNodeRun(nr *models.NodeRun) error {
 	result, err := s.db.Exec(
+		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=?, attempt=?, ready_at=?, queue_ms=?, rows_per_sec=?, trace_id=?, span_id=? WHERE id=?`,
+		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
+		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,
+	)
+	if err != nil {
+		return err
+	}
+	return checkRowsAffected(result, "node_run", nr.ID)
+}
+
+func (s *SQLiteStore) UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	result, err := tx.Exec(
 		`UPDATE node_runs SET status=?, row_count=?, started_at=?, duration_ms=?, error=?, attempt=?, ready_at=?, queue_ms=?, rows_per_sec=?, trace_id=?, span_id=? WHERE id=?`,
 		string(nr.Status), nr.RowCount, formatTimePtr(nr.StartedAt), nr.DurationMs, nr.Error,
 		nr.Attempt, formatTimePtr(nr.ReadyAt), nr.QueueMs, nr.RowsPerSec, nr.TraceID, nr.SpanID, nr.ID,

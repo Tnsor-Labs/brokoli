@@ -335,4 +335,22 @@ func TestExecutionContext_ObservesRunCancellation(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("executor never observed cancellation through ExecutionContext.Context")
 	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stored, getErr := s.GetRun(runID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if stored.Status == models.RunStatusCancelled {
+			break
+		}
+		if stored.Status == models.RunStatusFailed {
+			t.Fatalf("cancelled in-flight run was overwritten as failed: %s", stored.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run status remained %q after cancellation", stored.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }

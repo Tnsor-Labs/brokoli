@@ -213,3 +213,23 @@ tolerates). Checkpoint saves also now target `sourceRunID` (the run whose
 checkpoint was actually resumed from) rather than always the current run's
 ID, so a cross-run resume keeps appending to the original run's existing
 records file instead of needing to copy it forward first.
+
+## Update (2026-08-09)
+
+IR 2.1 condition attempts persist their selected boolean in the durable
+`attempt.completed` event. Resume restores both the condition's unchanged data
+artifact and that exact decision; it never reevaluates the expression against
+new variables, parameters, run identity, or timestamps, which could execute
+the opposite branch after side effects from the original route already
+committed. A missing decision blocks resume rather than guessing.
+
+Nodes made inactive by routing use the node-only `skipped` status. Their
+`node_runs` row and `attempt.skipped` event are written in one transaction, so
+snapshot reads, event projection, and startup recovery cannot disagree about
+whether inactive work completed without execution.
+
+Resume also records which skipped outcomes were reused and carries their
+artifacts into the child run. If carrying that lineage fails, a later resume
+walks `ResumedFromRunID` per node to the nearest durable successful ancestor;
+it does not reexecute an already-successful side effect merely because an
+intermediate resume failed before writing its reuse marker.

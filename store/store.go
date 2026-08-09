@@ -286,7 +286,11 @@ type Store interface {
 
 	// Node Runs
 	CreateNodeRun(nr *models.NodeRun) error
+	// CreateNodeRunTx inserts a node outcome inside an existing transaction.
+	CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error
 	UpdateNodeRun(nr *models.NodeRun) error
+	// UpdateNodeRunTx updates a node outcome inside an existing transaction.
+	UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error
 	ListNodeRunsByRun(runID string) ([]models.NodeRun, error)
 
 	// Run Events — immutable, append-only log of run/node-attempt lifecycle
