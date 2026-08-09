@@ -60,9 +60,20 @@ type Engine struct {
 	// BROKOLI_PAGINATION_CHECKPOINT_DIR (or ./brokoli-pagination-checkpoints);
 	// overridden the same way ArtifactStore is.
 	PaginationCheckpointStore PaginationCheckpointStore
-	RunsTotal                 int64
-	RunsSucceeded             int64
-	RunsFailed                int64
+
+	// shutdown is closed by Close. Background goroutines the engine starts
+	// after this point are refused, and run dispatch returns
+	// ErrEngineClosed. bg counts every goroutine whose lifetime the engine
+	// owns — run executors and trigger-mode fan-out — so Close can wait
+	// for them instead of leaving them writing into stores and directories
+	// that are being torn down (Tnsor-Labs/brokoli#94).
+	shutdown  chan struct{}
+	closeOnce sync.Once
+	bg        sync.WaitGroup
+
+	RunsTotal     int64
+	RunsSucceeded int64
+	RunsFailed    int64
 
 	// Startup-recovery counters (Tnsor-Labs/brokoli#9), incremented by
 	// RecoverNonTerminalRuns via atomic.AddInt64 exactly like RunsTotal/
@@ -221,6 +232,7 @@ func NewEngine(s store.Store) *Engine {
 	}
 	return &Engine{
 		store:                     s,
+		shutdown:                  make(chan struct{}),
 		eventCh:                   make(chan models.Event, eventBuf),
 		active:                    make(map[string]*Runner),
 		maxConcurrent:             maxC,
@@ -228,6 +240,62 @@ func NewEngine(s store.Store) *Engine {
 		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
 		SpillThresholdBytes:       spillThreshold,
 		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
+	}
+}
+
+// ErrEngineClosed is returned by run dispatch after Close has been called.
+var ErrEngineClosed = errors.New("engine: closed")
+
+// closing reports whether Close has been called.
+func (e *Engine) closing() bool {
+	select {
+	case <-e.shutdown:
+		return true
+	default:
+		return false
+	}
+}
+
+// goBG runs fn on a goroutine whose lifetime the engine owns. After Close
+// it is a silent no-op: the work it carries — trigger-mode fan-out — is
+// best-effort dispatch, and refusing it at shutdown is the point.
+func (e *Engine) goBG(fn func()) {
+	if e.closing() {
+		return
+	}
+	e.bg.Add(1)
+	go func() {
+		defer e.bg.Done()
+		fn()
+	}()
+}
+
+// Close stops the engine: new run dispatch is refused with ErrEngineClosed,
+// no new background work is started, and Close waits — bounded by ctx —
+// for every goroutine the engine owns to finish. In-flight runs are allowed
+// to complete rather than being killed; a caller that wants a hard ceiling
+// expresses it through ctx.
+//
+// Before this existed, goroutines spawned after a run finished (trigger-mode
+// dependency fan-out in particular) simply outlived everything: they wrote
+// into stores that had been closed and directories that were being removed,
+// which surfaced as "database is closed" logs in production shutdowns and
+// as "TempDir RemoveAll: directory not empty" flakes in CI
+// (Tnsor-Labs/brokoli#94).
+//
+// Close is idempotent and safe to call from multiple goroutines.
+func (e *Engine) Close(ctx context.Context) error {
+	e.closeOnce.Do(func() { close(e.shutdown) })
+	done := make(chan struct{})
+	go func() {
+		e.bg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("engine: shutdown wait: %w", ctx.Err())
 	}
 }
 
@@ -350,6 +418,9 @@ func (e *Engine) resolvePipelineForRun(pipelineID string, version int) (*models.
 
 // RunPipeline triggers execution of a pipeline by ID with optional params.
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
+	if e.closing() {
+		return nil, ErrEngineClosed
+	}
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return nil, fmt.Errorf("get pipeline: %w", err)
@@ -426,7 +497,9 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	e.mu.Unlock()
 
 	resultCh := make(chan runResult, 1)
+	e.bg.Add(1)
 	go func() {
+		defer e.bg.Done()
 		defer func() { <-e.runSem }()
 		defer func() {
 			e.mu.Lock()
@@ -444,7 +517,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		// re-enter RunPipeline through their own goroutines.
 		resultCh <- runResult{run: run, err: err}
 		if run != nil {
-			go e.fireTriggerModeDependents(run)
+			e.goBG(func() { e.fireTriggerModeDependents(run) })
 		}
 	}()
 
@@ -460,6 +533,9 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 // This is the last line of defense if save-time validation is bypassed. Traversal uses
 // the lightweight dep adjacency query so we never load nodes/edges JSON blobs.
 func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
+	if e.closing() {
+		return
+	}
 	if finished == nil || finished.PipelineID == "" {
 		return
 	}
@@ -485,11 +561,16 @@ func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 			continue
 		}
 		pid := sum.ID
-		go func() {
+		e.goBG(func() {
 			if _, err := e.RunPipeline(pid); err != nil {
+				// A refusal at shutdown is the mechanism working, not a
+				// failed fire worth a log line per dependent.
+				if errors.Is(err, ErrEngineClosed) {
+					return
+				}
 				log.Printf("trigger-mode: fire failed for %s: %v", pid, err)
 			}
-		}()
+		})
 	}
 }
 
@@ -507,6 +588,9 @@ func hasTriggerOn(sum *models.PipelineDepSummary, upstreamID string) bool {
 // The pipeline runs in a background goroutine. Use WebSocket events or polling to track status.
 // If a JobQueue is configured, the run is enqueued for distributed execution instead.
 func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string) (string, error) {
+	if e.closing() {
+		return "", ErrEngineClosed
+	}
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return "", fmt.Errorf("get pipeline: %w", err)
@@ -684,7 +768,9 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	atomic.AddInt64(&e.RunsQueueWaiting, -1)
 	atomic.AddInt64(&e.RunsTotal, 1)
 
+	e.bg.Add(1)
 	go func() {
+		defer e.bg.Done()
 		defer func() { <-e.runSem }()
 		defer func() {
 			e.mu.Lock()
@@ -706,6 +792,9 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 // Only the delivery that atomically transitions pending to running executes;
 // duplicate deliveries return the existing run without repeating side effects.
 func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]string) (*models.Run, error) {
+	if e.closing() {
+		return nil, ErrEngineClosed
+	}
 	accepted, err := e.store.GetRun(runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -828,7 +917,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 		}
 		return nil, fmt.Errorf("run execution returned without durable terminal state: %s", persisted.Status)
 	}
-	go e.fireTriggerModeDependents(persisted)
+	e.goBG(func() { e.fireTriggerModeDependents(persisted) })
 	return persisted, executeErr
 }
 
@@ -953,6 +1042,9 @@ func (e *Engine) Backfill(pipelineID, startDate, endDate string) ([]string, erro
 // snapshot, not whatever version happened to be live if oldRun itself had
 // no recorded version.
 func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
+	if e.closing() {
+		return nil, ErrEngineClosed
+	}
 	oldRun, err := e.store.GetRun(runID)
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)

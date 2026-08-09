@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/store"
@@ -25,6 +27,11 @@ func TestPrometheusHandlerReportsEventAndAttemptMetrics(t *testing.T) {
 	t.Cleanup(func() { s.Close() })
 
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 	// Directly set the counters PrometheusHandler reads — these are plain
 	// exported int64 fields updated via atomic.AddInt64 by engine/runner.go
 	// and engine/recovery.go call sites (see engine/engine.go's doc

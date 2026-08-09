@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -28,6 +30,11 @@ func newTemplateTestEngine(t *testing.T) (*engine.Engine, store.Store) {
 	t.Cleanup(func() { _ = s.Close() })
 
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 	eng.ArtifactStore = engine.NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.PaginationCheckpointStore = engine.NewLocalDiskPaginationCheckpointStore(filepath.Join(dir, "pagination-checkpoints"))
 	return eng, s

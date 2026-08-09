@@ -1,10 +1,12 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/engine"
 )
@@ -18,6 +20,11 @@ import (
 func TestLeaderHealthHandlerReflectsLeadership(t *testing.T) {
 	s := newLeaderReadOnlyTestStore(t)
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 
 	t.Run("leader returns 200", func(t *testing.T) {
 		sched := engine.NewScheduler(eng, s, &fakeLeaderElector{leader: true})
@@ -50,6 +57,11 @@ func TestLeaderHealthHandlerReflectsLeadership(t *testing.T) {
 func TestNewMinimalServerRoutes(t *testing.T) {
 	s := newLeaderReadOnlyTestStore(t)
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 
 	t.Run("with scheduler: health, metrics, and leader routes all present", func(t *testing.T) {
 		sched := engine.NewScheduler(eng, s, &fakeLeaderElector{leader: true})

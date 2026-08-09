@@ -59,6 +59,11 @@ func TestSchedulerStatusHandlerServesReadsWhenNotLeader(t *testing.T) {
 	}
 
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 	sched := engine.NewScheduler(eng, s, &fakeLeaderElector{leader: false})
 	if err := sched.Register(p.ID, p.Name, p.Schedule, ""); err != nil {
 		t.Fatalf("Register: %v", err)
@@ -105,6 +110,11 @@ func TestRunLogsHandlerServesReadsWhenNotLeaderOrScheduler(t *testing.T) {
 	}
 
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 	rh := NewRunHandler(s, eng)
 
 	r := chi.NewRouter()
@@ -129,6 +139,11 @@ func TestRunLogsHandlerServesReadsWhenNotLeaderOrScheduler(t *testing.T) {
 func TestPrometheusHandlerReportsLeaderStatus(t *testing.T) {
 	s := newLeaderReadOnlyTestStore(t)
 	eng := engine.NewEngine(s)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = eng.Close(ctx)
+	})
 	metrics := NewMetrics()
 
 	t.Run("not leader", func(t *testing.T) {
