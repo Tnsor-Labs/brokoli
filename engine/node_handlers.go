@@ -4,10 +4,12 @@ package engine
 // Extracted from runner.go for maintainability.
 
 import (
+	"context"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
@@ -141,6 +144,7 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get fetcher: %w", err)
 	}
+	r.attachArtifactSink(fetcher)
 
 	paginationCfg, hasPagination := node.Config["pagination"].(map[string]interface{})
 	execCfg, _ := node.Config["execution"].(map[string]interface{})
@@ -1093,4 +1097,40 @@ func (r *Runner) nodeByID(id string) *models.Node {
 		}
 	}
 	return nil
+}
+
+// runArtifactSink stores bytes in one run's namespace, so a fetcher can hold
+// a response by reference without being handed the whole store or the
+// ability to reach another run's data.
+type runArtifactSink struct {
+	store artifact.Store
+	runID string
+}
+
+func (s *runArtifactSink) PutArtifact(ctx context.Context, r io.Reader, mediaType string) (*artifact.ArtifactRef, error) {
+	return s.store.Put(ctx, s.runID, r, artifact.PutOptions{MediaType: mediaType})
+}
+
+// attachArtifactSink gives a fetcher somewhere to store response="artifact"
+// bodies, when this runner has both a blob store and a run to scope them to.
+//
+// Silent when either is missing: a dry run has no run ID, and an
+// ArtifactStore that is not a BlobStoreProvider has nowhere to put bytes.
+// The fetcher then keeps its previous behaviour of inlining the body, which
+// is the correct result when there is nowhere to store it — see
+// RESTFetcher.artifactResult.
+func (r *Runner) attachArtifactSink(fetcher fetchers.Fetcher) {
+	aware, ok := fetcher.(fetchers.ArtifactAwareFetcher)
+	if !ok {
+		return
+	}
+	provider, ok := r.artifactStore.(BlobStoreProvider)
+	if !ok || r.run == nil || r.run.ID == "" {
+		return
+	}
+	blobs := provider.Blobs()
+	if blobs == nil {
+		return
+	}
+	aware.SetArtifactSink(&runArtifactSink{store: blobs, runID: r.run.ID})
 }
