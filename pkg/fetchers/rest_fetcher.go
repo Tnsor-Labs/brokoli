@@ -2,6 +2,7 @@ package fetchers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
@@ -85,7 +87,17 @@ func isBlockedHost(rawURL string) error {
 
 type RESTFetcher struct {
 	client *http.Client
+
+	// artifacts, when set, is where a response="artifact" body is stored so
+	// the node can return a reference to it rather than the bytes
+	// themselves. Nil in validation, dry runs and unit tests, where the
+	// fetcher is constructed without an engine behind it — see
+	// parseResponseContract for what happens then.
+	artifacts ArtifactSink
 }
+
+// SetArtifactSink implements ArtifactAwareFetcher.
+func (f *RESTFetcher) SetArtifactSink(sink ArtifactSink) { f.artifacts = sink }
 
 type RequestOptions struct {
 	Method  string
@@ -120,7 +132,7 @@ func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]
 		return nil, err
 	}
 
-	return parseResponseContract(responseBody, options)
+	return f.parseResponseContract(responseBody, options)
 }
 
 func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
@@ -272,7 +284,7 @@ func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]b
 // back to ParseJSONData's auto-detection when none of those fields are set
 // — preserving exact pre-existing behavior for pipelines built before these
 // fields existed (brokoli-sdk#1).
-func parseResponseContract(responseBody []byte, options map[string]interface{}) (*common.DataSet, error) {
+func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[string]interface{}) (*common.DataSet, error) {
 	responseType, hasResponse := options["response"].(string)
 	recordsPath, hasRecords := options["records"].(string)
 	valuePath, hasValuePath := options["value_path"].(string)
@@ -281,7 +293,7 @@ func parseResponseContract(responseBody []byte, options map[string]interface{}) 
 	case hasResponse && responseType == "scalar":
 		return scalarDataSet(responseBody, valuePath)
 	case hasResponse && responseType == "artifact":
-		return artifactDataSet(responseBody), nil
+		return f.artifactResult(responseBody)
 	case hasRecords && recordsPath != "":
 		records, err := common.ExtractRecordsAtPath(responseBody, recordsPath)
 		if err != nil {
@@ -315,10 +327,37 @@ func scalarDataSet(responseBody []byte, valuePath string) (*common.DataSet, erro
 	}, nil
 }
 
+// artifactResult turns a raw, unparsed response body into this node's
+// output for response="artifact".
+//
+// With an artifact sink wired, the body is stored and the node returns a
+// reference to it: a row naming the URI, media type, size and checksum. That
+// is what response="artifact" was always meant to mean, and what the SDK's
+// ArtifactRef describes on the authoring side.
+//
+// Without a sink the body is inlined as before. That path is not a fallback
+// for convenience — it is what validation, dry runs and any caller
+// constructing a bare RESTFetcher get, and changing it would break them for
+// no gain. Storing by reference needs somewhere to store to; when there is
+// nowhere, the honest result is the body itself.
+//
+// A sink that fails is an error, not a reason to inline. Silently returning
+// a multi-gigabyte body because the store was unavailable would defeat the
+// point of asking for an artifact in the first place.
+func (f *RESTFetcher) artifactResult(responseBody []byte) (*common.DataSet, error) {
+	if f.artifacts == nil {
+		return artifactDataSet(responseBody), nil
+	}
+	ref, err := f.artifacts.PutArtifact(context.Background(), bytes.NewReader(responseBody), artifact.MediaTypeOctetStream)
+	if err != nil {
+		return nil, fmt.Errorf("store artifact response: %w", err)
+	}
+	return artifactRefDataSet(ref), nil
+}
+
 // artifactDataSet wraps a raw, unparsed response body as a single-row,
-// single-column dataset. There is no dedicated artifact/blob type on the Go
-// side (unlike the SDK's ArtifactRef) — this is the minimal representation
-// that fits the engine's existing DataSet-only node output contract.
+// single-column dataset — the representation used when no artifact sink is
+// available to store the body by reference.
 func artifactDataSet(responseBody []byte) *common.DataSet {
 	return &common.DataSet{
 		Columns: []string{"value"},

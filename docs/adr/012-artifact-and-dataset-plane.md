@@ -73,4 +73,16 @@ The reference types and the store landed together (Tnsor-Labs/brokoli#38, M1 and
 
 One incidental fix: the manifest records column order, which NDJSON rows do not preserve. The old read path recovered columns by iterating the first row's map and returned them in an arbitrary order; a restored dataset now comes back with the column order it was written with.
 
-Still deferred, unchanged by this work: automatic threshold-based spill (M3), `response="artifact"` producing a real reference (M4), a cloud-storage backend, Parquet, and retention beyond per-run deletion.
+Still deferred after M1/M2: automatic threshold-based spill (M3), a cloud-storage backend, Parquet, and retention beyond per-run deletion.
+
+## Update — 2026-08-09: milestone 4 shipped
+
+`source_api(..., response="artifact")` now stores its response body and returns a reference to it, replacing the one-row-dataset shim this ADR quoted as the visible symptom of the missing plane.
+
+**The reference still travels inside a `*common.DataSet`.** Making a reference a first-class node output is M3, which has not happened; a node can still only return a dataset. What changed is what the row contains: where the bytes are (URI, media type, size, checksum) rather than the bytes themselves. This is a behaviour change for anyone consuming `response="artifact"` today — the body is no longer inlined under `value`.
+
+**Without an artifact store, the previous inline behaviour is kept exactly.** Validation, dry runs and any caller constructing a bare fetcher have nowhere to store to, and for them the body itself is the honest result. The capability is offered through an optional interface the engine type-asserts, mirroring how `CheckpointingFetcher` already works, so a fetcher that cannot store by reference is still a valid fetcher.
+
+**A store failure fails the node.** Falling back to inlining a body that was explicitly asked to be stored would defeat the reason for asking, and would do it precisely when the body is largest.
+
+The sink a fetcher receives is scoped to the running run, so fetched artifacts share the run's namespace with node outputs and are reclaimed by the same `DeleteRunArtifacts` call.
