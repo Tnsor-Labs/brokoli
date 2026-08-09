@@ -65,3 +65,29 @@ Extend the existing protocol rather than design a new one:
 `Manager.Execute` accumulates plugin output into a slice returned in `extensions.ExecutionResult.Logs`, which `engine/runner.go` replays into the run log only *after* the plugin process exits. Progress therefore arrives in one burst at node completion rather than in real time — the same behavior `MsgLog` already has, not a regression introduced here.
 
 Real-time delivery needs a progress sink on `extensions.ExecutionContext` (the same shape `Context` was added in [#29](https://github.com/Tnsor-Labs/brokoli/issues/29)) so the engine can emit progress events as they arrive. That is deliberately out of scope for M1, which establishes the wire format and the handler seam it would plug into.
+
+## Update — 2026-08-09: M2 (cancellation) shipped
+
+The subprocess runner now uses the `context.Context` #29 threaded into
+it. On cancellation or timeout the plugin's process group is sent
+SIGTERM, and `exec.Cmd.WaitDelay` bounds the grace period before the
+process is killed and the I/O pipes are closed. Decisions made while
+implementing:
+
+- **Process group, not process.** Plugins are usually wrappers — the reference plugins are shell scripts, and a Python connector is typically a shim that execs the interpreter. Signalling only the direct child killed the wrapper and orphaned the process doing the work. The more serious effect was that the orphan kept the stdout pipe open, so `DecodeStream`'s read to EOF never returned and a cancelled run could block indefinitely.
+
+- **`WaitDelay` rather than a hand-rolled escalation timer.** The standard library already kills the process and closes the pipes once the delay elapses, which makes the grace period four lines instead of a goroutine and a timer. Its escalation calls `Process.Kill` and so reaches only the direct child; a group SIGKILL after `Wait` sweeps any survivor.
+
+- **Grace period is an unexported field defaulted from a constant.** No plugin has needed a different value, so it stays off the package's API surface; unexported rather than a bare constant only so the cancellation tests need not pay the full period on every run.
+
+- **Cancellation is reported below the plugin's own error and above everything else.** Closing the pipes makes the lower rungs of the error ladder report the host's shutdown as a plugin fault. A plugin that managed to emit `MsgError` still wins, because it explains more and the caller already knows it cancelled.
+
+- **`Runner.Spec` left alone.** It bypasses the JSONL decoder for a short install-time call with no records to lose; the added indirection would buy nothing today.
+
+### Known limitations
+
+- **Non-Unix platforms get a reduced contract.** `os.Process` supports only `Kill` there, so a plugin gets no graceful signal, and killing a process tree on Windows needs Job Objects — a separate piece of work. `WaitDelay` still applies everywhere, so `Run` cannot block forever on any platform.
+
+- **The engine does not wait for the runner's cleanup.** `engine/runner.go`'s per-attempt `select` returns as soon as the attempt context is done and abandons the goroutine executing the node, so nothing consumes `Run`'s result on the cancel path. That is pre-existing and deliberate — #96 left attempt goroutines as they were — but it means the process cleanup runs unobserved.
+
+- **`DeadlineExceeded` still cannot name which deadline fired.** `Manager.Execute` derives a timeout from the attempt context's deadline and `Runner.Run` applies it again, so the engine's node timeout and the runner's own expire together and report identically. Not fixed here: correcting it means changing which component owns the plugin deadline, which is a behavior change to the dispatch path rather than an error-reporting fix.
