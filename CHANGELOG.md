@@ -11,6 +11,51 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.9] - 2026-08-09
+
+Full curated notes with per-change ownership:
+[v0.10.9 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.9).
+
+### Added
+
+- **Conditional edge routing — IR 2.1** (#97, #101) — @hc12r. Condition
+  nodes route true/false branches as first-class edges: skipped branches
+  propagate transitively, convergence nodes wait for all inputs to
+  resolve, and routing decisions, skipped outcomes, and resume lineage
+  persist atomically across SQLite, PostgreSQL, JSON, YAML, clone, and
+  version snapshots. #101 turned it on: the server now advertises IR 2.1
+  in `supported_ir_versions` (while `CurrentIRVersion` stays 2.0),
+  rejects malformed conditional graphs and unsupported expressions
+  before persistence, and the UI authors branch metadata and renders
+  skipped node states.
+
+### Changed
+
+- **SLA fields are labeled as an enterprise capability** (#98) — @hc12r.
+  The deadline/timezone fields are stored by every edition but only
+  monitored by an enterprise deployment; the editor now says so with a
+  tag and tooltip instead of letting a community install configure a
+  deadline nothing watches.
+
+### Fixed
+
+- **Connection Basic Auth applies on the read path, not only on writes**
+  (#93) — @hc12r. `source_api` reads — the first fetch and every
+  paginated page — now carry connection credentials, which were
+  previously silently dropped on reads while the same connection worked
+  on a sink. Deliberate precedence: connection credentials win over a
+  handwritten `Authorization` header.
+- **The engine can be shut down** (#96) — @hc12r. `Engine.Close(ctx)`
+  refuses new dispatch, stops starting background work, and waits —
+  bounded by the caller's context — for every goroutine the engine owns.
+  Ends `database is closed` logs at shutdown and the `TempDir RemoveAll`
+  CI failures caused by orphaned fan-out goroutines.
+- **`GET /api/capabilities` is public again** (#102) — @hc12r. Exact
+  anonymous capabilities discovery now passes the API-key, JWT/open-mode,
+  workspace, and enterprise SSO auth layers, with per-layer regression
+  coverage; every other API method and path stays protected. Unblocks
+  SDK capability preflight on authenticated deployments.
+
 ## [0.10.8] - 2026-08-09
 
 Full curated notes with per-change ownership:
