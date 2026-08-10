@@ -11,6 +11,45 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.11] - 2026-08-10
+
+Full curated notes with per-change ownership:
+[v0.10.11 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.11).
+
+### Added
+
+- **Stateless validation** (#114) — @hc12r. `POST /api/pipelines/validate`
+  runs full structural + executable validation on a request-body IR
+  document without persisting anything.
+- **`supported_execution_features` on `/api/capabilities`** (#115) —
+  @hc12r. The list of pipeline semantics this host can actually
+  *execute* — `conditional-routing`, `dynamic-expansion`, `union`,
+  `pagination-checkpoints` — with an honesty rule: a feature is listed
+  only when a pipeline using it runs. SDK preflight gates on it, so
+  compile-only features are refused at deploy instead of failing at run
+  time.
+- **Cross-model contract fixtures** (#115) — @hc12r. A real SDK-compiled
+  IR 2.1 payload is validated against the canonical schema on every test
+  run; the SDK repo validates its emissions against a vendored schema
+  copy, so contract drift in either direction fails a suite naming the
+  payload.
+
+### Changed
+
+- **Unknown top-level fields are rejected** (#114) — @hc12r. Create,
+  update, and JSON import decode fail-closed: an unrecognized field
+  returns `400` naming it. Forward-compatible payloads belong under the
+  new `extensions` namespace, which is persisted in both stores and
+  echoed back uninterpreted. **Breaking** for clients that sent junk
+  fields the server used to silently drop.
+- **The JSON→YAML import fallback is gone** (#114) — @hc12r. A JSON type
+  mismatch on `/api/pipelines/import` used to fall through to the YAML
+  parser (YAML parses JSON) and return `201` with a silently mutilated
+  pipeline — missing capabilities, params, hooks, SLA and dependency
+  fields. A JSON body now gets the JSON path, full stop.
+- Prose-only docs changes (Markdown, ADRs, RFCs) skip the Go CI pipeline
+  (#113) — @hc12r; `docs/schema/**` deliberately still runs everything.
+
 ## [0.10.10] - 2026-08-10
 
 Full curated notes with per-change ownership:
