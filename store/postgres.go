@@ -340,6 +340,15 @@ func (s *PostgresStore) migrate() error {
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_expansion_instances_run_node ON expansion_instances(run_id, node_id, node_attempt)`)
 
+	// run_physical_plans — the physical execution plan as decided at run
+	// time (ADR-015, #90 M2), one JSON snapshot per run so recovery and
+	// audit see the plan as-planned. Cascades with the run.
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS run_physical_plans (
+		run_id TEXT PRIMARY KEY,
+		plan TEXT NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL,
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+
 	// Backfill: runs.org_id has existed in Postgres since its own org_id
 	// migration above, but CreateRun never actually set it until this fix
 	// (Tnsor-Labs/brokoli#50) — every run ever created here still has the
@@ -2568,4 +2577,24 @@ func (s *PostgresStore) DeleteRole(id string) error {
 		return fmt.Errorf("role not found: %s", id)
 	}
 	return nil
+}
+
+// --- Physical plans (ADR-015, #90 M2) ---
+
+func (s *PostgresStore) SaveRunPlan(runID, planJSON string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO run_physical_plans (run_id, plan, created_at) VALUES ($1, $2, $3)
+		 ON CONFLICT (run_id) DO UPDATE SET plan = EXCLUDED.plan`,
+		runID, planJSON, time.Now().UTC(),
+	)
+	return err
+}
+
+func (s *PostgresStore) GetRunPlan(runID string) (string, error) {
+	var plan string
+	err := s.db.QueryRow(`SELECT plan FROM run_physical_plans WHERE run_id = $1`, runID).Scan(&plan)
+	if err != nil {
+		return "", err
+	}
+	return plan, nil
 }

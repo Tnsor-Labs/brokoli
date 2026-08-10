@@ -203,6 +203,39 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, run)
 }
 
+// GetPlan returns the physical execution plan that was persisted for a
+// run (ADR-015, #90 M2) — the plan as-decided at run time, for audit and
+// recovery. Distinct from the pipeline-level GET /pipelines/{id}/plan,
+// which recomputes the plan for the current definition.
+func (h *RunHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	run, err := h.store.GetRun(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
+	pp, ok := h.store.(store.PhysicalPlanStore)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "this server does not persist physical plans")
+		return
+	}
+	planJSON, err := pp.GetRunPlan(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "no physical plan recorded for this run")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	// #nosec G705 -- planJSON is the planner's own JSON snapshot read from
+	// the store, not request-controlled input.
+	_, _ = w.Write([]byte(planJSON))
+}
+
 func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !h.validateRunAccess(r, id) {

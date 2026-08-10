@@ -267,6 +267,17 @@ func (s *SQLiteStore) migrate() error {
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_expansion_instances_run_node ON expansion_instances(run_id, node_id, node_attempt)`)
 
+	// run_physical_plans — the physical execution plan as decided at run
+	// time (ADR-015, #90 M2). One row per run, holding the planner's
+	// JSON snapshot so recovery and audit see the plan as-planned, not a
+	// recomputation that could differ after code/policy changes. Cascades
+	// with the run, so retention is automatic.
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS run_physical_plans (
+		run_id TEXT PRIMARY KEY,
+		plan TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+
 	// runs.org_id — multi-tenant scoping for run-level queries
 	// (PurgeRunsOlderThanByOrg, GetRunCalendarByOrg, ListRunIDsOlderThanByOrg).
 	// This was missing entirely from the SQLite schema even though every
@@ -2733,4 +2744,24 @@ func (s *SQLiteStore) DeleteRole(id string) error {
 		return fmt.Errorf("role not found: %s", id)
 	}
 	return nil
+}
+
+// --- Physical plans (ADR-015, #90 M2) ---
+
+func (s *SQLiteStore) SaveRunPlan(runID, planJSON string) error {
+	_, err := s.db.Exec(
+		`INSERT INTO run_physical_plans (run_id, plan, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(run_id) DO UPDATE SET plan = excluded.plan`,
+		runID, planJSON, time.Now().UTC().Format(timeFormat),
+	)
+	return wrapStoreErr("SaveRunPlan", runID, err)
+}
+
+func (s *SQLiteStore) GetRunPlan(runID string) (string, error) {
+	var plan string
+	err := s.db.QueryRow(`SELECT plan FROM run_physical_plans WHERE run_id = ?`, runID).Scan(&plan)
+	if err != nil {
+		return "", wrapStoreErr("GetRunPlan", runID, err)
+	}
+	return plan, nil
 }
