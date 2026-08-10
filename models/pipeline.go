@@ -63,6 +63,29 @@ const ConditionalEdgesIRVersion = "2.1"
 // an old entry when formally deprecating it.
 var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion}
 
+// SupportedExecutionFeatures names the pipeline semantics this host can
+// actually EXECUTE, advertised at /api/capabilities (ADR-014 rule 5) so
+// client preflight can gate features instead of only IR versions. The
+// honesty rule for this list: a feature appears here only when a
+// pipeline using it runs — not when it merely persists. dataset_map and
+// dataset_filter are deliberately absent: they persist and dispatch, but
+// their runtime rejects SDK-emitted configs (no function source), so a
+// client that gates on this list correctly refuses to deploy them.
+var SupportedExecutionFeatures = []string{
+	// Conditional edge routing: true/false branches, skipped
+	// propagation, convergence-after-resolution (IR 2.1, v0.10.9).
+	"conditional-routing",
+	// @task.expand() fan-out. Executes per item — sequentially inside
+	// one node today; parallel work-unit scheduling is #90 M2/M3.
+	"dynamic-expansion",
+	// Multi-input union node (row concatenation).
+	"union",
+	// Declarative source_api pagination with persisted, resumable
+	// checkpoints and per-page retry policy (config.pagination +
+	// config.execution).
+	"pagination-checkpoints",
+}
+
 var supportedConditionExpressions = []*regexp.Regexp{
 	regexp.MustCompile(`^row_count\s*(==|!=|>=|<=|>|<)\s*\d+$`),
 	regexp.MustCompile(`^column_exists\(\s*"[^"]+"\s*\)$`),

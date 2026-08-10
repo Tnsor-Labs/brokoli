@@ -1,0 +1,168 @@
+{
+  "pipeline_id": "golden-fixture",
+  "name": "golden-fixture",
+  "description": "SDK-emitted golden fixture for core contract tests",
+  "schedule": "0 6 * * *",
+  "enabled": true,
+  "ir_version": "2.1",
+  "nodes": [
+    {
+      "id": "fetch-events",
+      "type": "source_api",
+      "name": "Fetch Events",
+      "config": {
+        "url": "https://api.example.com/events",
+        "method": "GET",
+        "response": "dataset",
+        "pagination": {
+          "strategy": "offset",
+          "page_size": 100,
+          "max_records": 500,
+          "offset_param": "offset",
+          "limit_param": "limit"
+        },
+        "execution": {
+          "max_concurrency": 4,
+          "checkpoint_every": 10,
+          "page_max_retries": 3,
+          "page_retry_backoff": "exponential"
+        },
+        "_schema_hint": "api_response"
+      },
+      "capabilities": [
+        "source",
+        "dataset-output"
+      ],
+      "position": {
+        "x": 50,
+        "y": 200
+      }
+    },
+    {
+      "id": "any_rows_1",
+      "type": "condition",
+      "name": "Any Rows?",
+      "config": {
+        "expression": "row_count > 0"
+      },
+      "capabilities": [
+        "compute"
+      ],
+      "position": {
+        "x": 610,
+        "y": 200
+      }
+    },
+    {
+      "id": "clean_1",
+      "type": "code",
+      "name": "Clean",
+      "config": {
+        "language": "python",
+        "script": "API_LIMIT = 500\n\ndef _clean(row):\n    return {k.lower(): v for k, v in row.items()}\n\n\ndef clean(rows):\n    return [_clean(r) for r in rows if len(r) <= API_LIMIT or True]\n\n\n# Auto-generated: call task function and capture output\n_task_result = clean(rows)\nif hasattr(_task_result, 'to_rows'):\n    # TaskResult object\n    _rows = _task_result.to_rows()\n    output_data = {\"columns\": list(_rows[0].keys()) if _rows else [], \"rows\": _rows}\n    # Log warnings/errors via stderr\n    import sys\n    for w in getattr(_task_result, 'warnings', []):\n        print(f\"#WARNING: {w}\", file=sys.stderr)\n    for e in getattr(_task_result, 'errors', []):\n        print(f\"#ERROR: {e}\", file=sys.stderr)\nelif isinstance(_task_result, list):\n    if _task_result and isinstance(_task_result[0], dict):\n        output_data = {\"columns\": list(_task_result[0].keys()), \"rows\": _task_result}\n    else:\n        output_data = {\"columns\": columns, \"rows\": _task_result if isinstance(_task_result, list) else rows}\nelif hasattr(_task_result, 'to_dict'):\n    output_data = {\"columns\": list(_task_result.columns), \"rows\": _task_result.to_dict(\"records\")}\nelif _task_result is None:\n    output_data = {\"columns\": columns, \"rows\": rows}\nelse:\n    output_data = {\"columns\": columns, \"rows\": _task_result if isinstance(_task_result, list) else rows}\n",
+        "package": {
+          "mode": "auto",
+          "included": [
+            "API_LIMIT",
+            "_clean"
+          ],
+          "callable": "_brokoli_golden:clean"
+        }
+      },
+      "capabilities": [
+        "compute"
+      ],
+      "position": {
+        "x": 330,
+        "y": 200
+      }
+    },
+    {
+      "id": "keep_1",
+      "type": "transform",
+      "name": "Keep",
+      "config": {
+        "rules": [
+          {
+            "type": "rename",
+            "mapping": {
+              "ts": "timestamp"
+            }
+          }
+        ]
+      },
+      "capabilities": [
+        "compute"
+      ],
+      "position": {
+        "x": 890,
+        "y": 150
+      }
+    },
+    {
+      "id": "alert_empty_1",
+      "type": "notify",
+      "name": "Alert Empty",
+      "config": {
+        "notify_type": "webhook",
+        "webhook_url": "https://hooks.example.com/e"
+      },
+      "capabilities": [
+        "compute"
+      ],
+      "position": {
+        "x": 890,
+        "y": 250
+      }
+    },
+    {
+      "id": "save_1",
+      "type": "sink_file",
+      "name": "Save",
+      "config": {
+        "path": "/tmp/out.csv",
+        "format": "csv"
+      },
+      "capabilities": [
+        "sink"
+      ],
+      "position": {
+        "x": 1170,
+        "y": 200
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "fetch-events",
+      "to": "clean_1"
+    },
+    {
+      "from": "clean_1",
+      "to": "any_rows_1"
+    },
+    {
+      "from": "any_rows_1",
+      "to": "keep_1",
+      "condition": true
+    },
+    {
+      "from": "any_rows_1",
+      "to": "alert_empty_1",
+      "condition": false
+    },
+    {
+      "from": "keep_1",
+      "to": "save_1"
+    }
+  ],
+  "tags": [
+    "contract",
+    "fixture"
+  ],
+  "depends_on": [
+    "upstream-pipeline"
+  ],
+  "sla_deadline": "07:30",
+  "sla_timezone": "America/New_York"
+}

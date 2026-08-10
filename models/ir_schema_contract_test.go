@@ -115,6 +115,42 @@ func TestFullyPopulatedPipelineMatchesSchema(t *testing.T) {
 	}
 }
 
+// TestGoldenClientFixturesMatchSchema validates real client-emitted
+// payloads checked into docs/schema/fixtures/ — currently an SDK-compiled
+// IR 2.1 pipeline exercising conditional routing, pagination execution
+// policy, module-context packaging, and node_key. Refresh a fixture by
+// recompiling it with the client that owns it (provenance in the fixture
+// README); a failure here means a client and this server disagree about
+// the contract, and one of them is wrong on purpose.
+func TestGoldenClientFixturesMatchSchema(t *testing.T) {
+	sch := compileSchema(t)
+	entries, err := os.ReadDir("../docs/schema/fixtures")
+	if err != nil {
+		t.Fatalf("read fixtures dir: %v", err)
+	}
+	validated := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile("../docs/schema/fixtures/" + e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		inst, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: %v", e.Name(), err)
+		}
+		if err := sch.Validate(inst); err != nil {
+			t.Errorf("fixture %s rejected by canonical schema:\n%v", e.Name(), err)
+		}
+		validated++
+	}
+	if validated == 0 {
+		t.Fatal("no golden fixtures found -- the cross-model contract check is running against nothing")
+	}
+}
+
 func TestEverySeededTemplateMatchesSchema(t *testing.T) {
 	sch := compileSchema(t)
 	for _, tmpl := range templates.Builtin {
