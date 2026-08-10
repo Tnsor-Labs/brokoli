@@ -11,6 +11,42 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.12] - 2026-08-11
+
+Full curated notes with per-change ownership:
+[v0.10.12 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.12).
+
+### Added
+
+- **Plugin package format and management API** (#117, #118) — @hc12r.
+  Plugins ship as a single `.bkg` archive (manifest + per-platform/runtime
+  payloads) that installs on any supported host, or fails at install with
+  a named reason: payload selection by os/arch and runtime (native,
+  python, node, jvm with version checks), mandatory integrity hash, and a
+  `spec` drift check — nothing lands before all three pass.
+  `GET/POST/DELETE /api/plugins` and `GET /api/plugins/{name}/archive`
+  install (from an uploaded archive), list, remove, and serve plugins;
+  install and remove hot-reload the node-type registry without a restart.
+  ADR-016.
+- **Physical execution plans** (#119, #120, #121) — @hc12r. The authored
+  logical pipeline and the per-run physical plan are now distinct: a
+  planner expands the graph into scheduled stages and work units
+  (pagination page-groups, dynamic-expansion fan-out) with deterministic
+  instance keys and honest runtime-resolved counts. `GET
+  /pipelines/{id}/plan` explains the plan before execution; every run
+  persists its plan snapshot (`GET /runs/{id}/plan`) so recovery and
+  audit see the plan as-decided, not a recomputation. Foundation for
+  independently scheduled, retryable physical instances. ADR-015.
+
+### Changed
+
+- **The `Store` interface is composed from focused capability
+  interfaces** (#120) — @hc12r. The 100+-method contract is now
+  `PipelineStore`, `RunStore`, `AlertStore`, and the rest, embedded into
+  `Store`. Pure refactor — no behavior change — but a new capability is
+  added as its own interface instead of force-breaking every
+  implementation, and a consumer can depend on the narrow slice it needs.
+
 ## [0.10.11] - 2026-08-10
 
 Full curated notes with per-change ownership:
