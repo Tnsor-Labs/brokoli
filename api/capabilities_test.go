@@ -75,6 +75,24 @@ func TestCapabilitiesHandler(t *testing.T) {
 	if body["node_type_capabilities"] == nil {
 		t.Error("expected node_type_capabilities to be present")
 	}
+
+	features, ok := body["supported_execution_features"].([]interface{})
+	if !ok || len(features) == 0 {
+		t.Fatalf("expected supported_execution_features, got %v", body["supported_execution_features"])
+	}
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false}
+	for _, f := range features {
+		if s, ok := f.(string); ok {
+			if _, known := want[s]; known {
+				want[s] = true
+			}
+		}
+	}
+	for name, seen := range want {
+		if !seen {
+			t.Errorf("supported_execution_features missing %q", name)
+		}
+	}
 }
 
 func TestCapabilitiesRemainPublicThroughAuthMiddleware(t *testing.T) {

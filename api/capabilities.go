@@ -42,6 +42,7 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"ir_version":                         models.CurrentIRVersion,
 		"supported_ir_versions":              models.SupportedIRVersions,
+		"supported_execution_features":       models.SupportedExecutionFeatures,
 		"plugin_protocol_version":            plugins.ProtocolVersion,
 		"supported_plugin_protocol_versions": plugins.SupportedProtocolVersions,
 		"node_capabilities":                  []string{models.CapabilitySource, models.CapabilitySink, models.CapabilityCompute, models.CapabilityDatasetOutput},
