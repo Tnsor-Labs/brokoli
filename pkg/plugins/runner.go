@@ -156,6 +156,10 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 	// Preserve PATH etc. but don't leak the host's entire environment —
 	// we'll need to revisit this once we add secret injection.
 	proc.Env = minimalEnv()
+	// Run from the plugin's own directory: interpreted payloads reference
+	// their entrypoint and vendored modules relative to it, and nothing
+	// in the protocol ever promised the host's working directory.
+	proc.Dir = r.manifest.dir
 
 	// Cancellation. exec.CommandContext's default is Process.Kill() - an
 	// immediate SIGKILL the plugin cannot catch, leaving it no chance to
@@ -445,6 +449,10 @@ func (r *Runner) Spec(ctx context.Context) ([]byte, error) {
 	args = append(args, string(CmdSpec))
 	proc := exec.CommandContext(ctx, r.manifest.BinaryPath(), args...)
 	proc.Env = minimalEnv()
+	// Run from the plugin's own directory: interpreted payloads reference
+	// their entrypoint and vendored modules relative to it, and nothing
+	// in the protocol ever promised the host's working directory.
+	proc.Dir = r.manifest.dir
 	out, err := proc.Output()
 	if err != nil {
 		return nil, fmt.Errorf("plugin %s spec: %w", r.manifest.Name, err)

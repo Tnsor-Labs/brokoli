@@ -61,15 +61,20 @@ var pluginsListCmd = &cobra.Command{
 
 var pluginsInstallCmd = &cobra.Command{
 	Use:   "install <source>",
-	Short: "Install a plugin from a local directory or tarball",
-	Long: `Install a plugin by copying a local plugin directory (containing a
-manifest.json and executable) into the Brokoli plugin directory.
+	Short: "Install a plugin from a package archive (.bkg) or local directory",
+	Long: `Install a plugin into the Brokoli plugin directory.
 
-Phase 1 supports local directories only. Future releases will add
-installation from:
-  - Python packages (pip install brokoli-connector-<name>)
-  - GitHub releases (brokoli plugins install gh:org/repo@v1.0)
-  - A hosted plugin index (brokoli plugins install snowflake)`,
+Two source shapes are supported:
+  - a package archive (.bkg — see ADR-016): a gzipped tar carrying a
+    manifest with per-platform/runtime payloads. Installation selects
+    the first payload feasible on this host (native os/arch match, or an
+    interpreter satisfying the payload's requirement), verifies its
+    integrity hash, and runs the plugin's own 'spec' as a drift check —
+    all before anything lands in the plugin directory.
+  - a local plugin directory (manifest.json + executable), copied as-is.
+
+Future releases will add installation from a hosted plugin index and
+GitHub releases (see issue #110).`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		src := args[0]
@@ -78,7 +83,13 @@ installation from:
 			return fmt.Errorf("source %q: %w", src, err)
 		}
 		if !srcInfo.IsDir() {
-			return fmt.Errorf("source %q is not a directory (tarball support is a later phase)", src)
+			dir := plugins.DefaultDir()
+			installed, err := plugins.InstallArchive(src, dir)
+			if err != nil {
+				return err
+			}
+			printInstalled(installed)
+			return nil
 		}
 		// Load the source's manifest to learn the plugin name, then
 		// copy the directory into ~/.brokoli/plugins/<name>.
@@ -98,23 +109,33 @@ installation from:
 		if err := copyTree(src, dst); err != nil {
 			return fmt.Errorf("copy plugin: %w", err)
 		}
-		// Verify the freshly-copied manifest loads cleanly.
+		// Verify the freshly-copied manifest loads cleanly, and that the
+		// plugin's own spec agrees with it (the drift check package
+		// installs get; directory installs deserve it too).
 		copied, err := plugins.LoadManifest(dst)
 		if err != nil {
 			_ = os.RemoveAll(dst)
 			return fmt.Errorf("installed plugin failed to load: %w", err)
 		}
-		fmt.Printf("Installed plugin %s %s at %s\n", copied.Name, copied.Version, dst)
-		fmt.Printf("  Registers node types: ")
-		for i, nt := range copied.NodeTypes {
-			if i > 0 {
-				fmt.Print(", ")
-			}
-			fmt.Print(nt.Type)
+		if err := plugins.VerifySpec(copied); err != nil {
+			_ = os.RemoveAll(dst)
+			return err
 		}
-		fmt.Println()
+		printInstalled(copied)
 		return nil
 	},
+}
+
+func printInstalled(m *plugins.Manifest) {
+	fmt.Printf("Installed plugin %s %s at %s\n", m.Name, m.Version, m.Dir())
+	fmt.Printf("  Registers node types: ")
+	for i, nt := range m.NodeTypes {
+		if i > 0 {
+			fmt.Print(", ")
+		}
+		fmt.Print(nt.Type)
+	}
+	fmt.Println()
 }
 
 var pluginsRemoveCmd = &cobra.Command{

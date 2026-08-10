@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 )
 
 // Manifest describes one installed plugin. It's a cached snapshot of
@@ -73,9 +74,66 @@ type Manifest struct {
 	// feature without us having to model it in Go.
 	ConfigSchema json.RawMessage `json:"config_schema,omitempty"`
 
+	// PackagingVersion marks a manifest that ships as a distributable
+	// package (ADR-016). 0 (absent) means a plain installed directory —
+	// every pre-packaging manifest stays valid. Currently only version 1
+	// exists.
+	PackagingVersion int `json:"packaging_version,omitempty"`
+
+	// Payloads lists the per-platform/runtime alternatives inside a
+	// package archive. Installation selects the first feasible entry in
+	// order and resolves Binary/Args from it; installed directories
+	// created by older releases have none.
+	Payloads []Payload `json:"payloads,omitempty"`
+
 	// dir is the absolute path to the directory that contains this
 	// manifest file. Populated by LoadManifest; not marshaled.
 	dir string `json:"-"`
+}
+
+// Runtime classes a payload may declare (ADR-016). The class determines
+// exactly two things: how install-time feasibility is checked and how
+// the launch command is derived. jvm and node are recognized-but-not-
+// yet-resolvable in this release; unknown classes are install-time
+// errors, never runtime surprises.
+const (
+	RuntimeNative = "native"
+	RuntimePython = "python"
+	RuntimeNode   = "node"
+	RuntimeJVM    = "jvm"
+)
+
+var knownRuntimes = map[string]bool{
+	RuntimeNative: true,
+	RuntimePython: true,
+	RuntimeNode:   true,
+	RuntimeJVM:    true,
+}
+
+// Payload is one installable alternative inside a package archive.
+type Payload struct {
+	// Runtime is the runtime class (RuntimeNative etc.).
+	Runtime string `json:"runtime"`
+	// OS/Arch use Go's GOOS/GOARCH vocabulary ("linux"/"amd64"...) or
+	// "any" for platform-independent payloads (interpreted runtimes).
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
+	// Path is the payload's directory inside the archive, relative to
+	// the archive root (e.g. "payloads/linux-amd64").
+	Path string `json:"path"`
+	// Entrypoint is the file to execute (native) or hand to the
+	// resolved interpreter (python), relative to Path.
+	Entrypoint string `json:"entrypoint"`
+	// Args are fixed args between the entrypoint/interpreter and the
+	// protocol command.
+	Args []string `json:"args,omitempty"`
+	// Requires maps a runtime name to a version constraint the host
+	// must satisfy, e.g. {"python": ">=3.9"}. Only ">=MAJOR.MINOR" is
+	// understood in packaging version 1.
+	Requires map[string]string `json:"requires,omitempty"`
+	// SHA256 is the canonical tree hash of the payload directory (see
+	// HashPayloadTree). Mandatory; verified before anything installs.
+	SHA256 string `json:"sha256"`
 }
 
 // NodeTypeDecl is one node type a plugin implements.
@@ -139,8 +197,32 @@ func (m *Manifest) Validate() error {
 	if m.Version == "" {
 		return fmt.Errorf("version is required")
 	}
-	if m.Binary == "" {
+	if m.Binary == "" && len(m.Payloads) == 0 {
+		// A package manifest carries payloads instead; installation
+		// resolves one of them into Binary/Args. An installed directory
+		// must have Binary either way.
 		return fmt.Errorf("binary is required")
+	}
+	if len(m.Payloads) > 0 && m.PackagingVersion != 1 {
+		return fmt.Errorf("payloads require packaging_version 1, got %d", m.PackagingVersion)
+	}
+	for i, p := range m.Payloads {
+		if !knownRuntimes[p.Runtime] {
+			return fmt.Errorf("payloads[%d].runtime %q is not a known runtime class", i, p.Runtime)
+		}
+		if p.Runtime == RuntimeNative && (p.OS == "" || p.OS == "any" || p.Arch == "" || p.Arch == "any") {
+			return fmt.Errorf("payloads[%d]: native payloads need concrete os and arch", i)
+		}
+		if p.Path == "" || p.Path != filepath.ToSlash(filepath.Clean(p.Path)) ||
+			strings.HasPrefix(p.Path, "..") || strings.HasPrefix(p.Path, "/") {
+			return fmt.Errorf("payloads[%d].path %q must be a clean relative path", i, p.Path)
+		}
+		if p.Entrypoint == "" {
+			return fmt.Errorf("payloads[%d].entrypoint is required", i)
+		}
+		if len(p.SHA256) != 64 {
+			return fmt.Errorf("payloads[%d].sha256 must be 64 hex chars", i)
+		}
 	}
 	if len(m.NodeTypes) == 0 {
 		return fmt.Errorf("plugin declares no node types — at least one is required")

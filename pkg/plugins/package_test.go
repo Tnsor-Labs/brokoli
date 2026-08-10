@@ -1,0 +1,255 @@
+package plugins
+
+// Tests for the .bkg package format (ADR-016 M1, #110): selection,
+// integrity, runtime resolution, spec drift, and hostile archives.
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+)
+
+func hasPython3(t *testing.T) bool {
+	t.Helper()
+	_, err := exec.LookPath("python3")
+	return err == nil
+}
+
+// buildArchive packs entries (relpath -> content) into a .bkg.
+func buildArchive(t *testing.T, entries map[string]string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "plugin.bkg")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gz := gzip.NewWriter(f)
+	tw := tar.NewWriter(gz)
+	for name, content := range entries {
+		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// helloPyEntries reads the checked-in sample into archive entries and
+// computes the payload hash the manifest must carry.
+func helloPyEntries(t *testing.T, mutate func(m *Manifest)) map[string]string {
+	t.Helper()
+	payloadSrc := filepath.Join("testdata", "hello-py", "payload")
+	hash, err := HashPayloadTree(payloadSrc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := Manifest{
+		ProtocolVersion:  1,
+		Name:             "hello-py",
+		Version:          "0.1.0",
+		PackagingVersion: 1,
+		NodeTypes: []NodeTypeDecl{
+			{Type: "source_hello_py", Kind: KindSource, DisplayName: "Hello Py Source"},
+		},
+		Payloads: []Payload{{
+			Runtime:    RuntimePython,
+			OS:         "any",
+			Arch:       "any",
+			Path:       "payload",
+			Entrypoint: "main.py",
+			Requires:   map[string]string{"python": ">=3.8"},
+			SHA256:     hash,
+		}},
+	}
+	if mutate != nil {
+		mutate(&m)
+	}
+	manifestJSON, err := json.Marshal(&m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := map[string]string{"manifest.json": string(manifestJSON)}
+	err = filepath.Walk(payloadSrc, func(path string, info os.FileInfo, err error) error {
+		if err != nil || !info.Mode().IsRegular() {
+			return err
+		}
+		rel, _ := filepath.Rel(payloadSrc, path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		entries["payload/"+filepath.ToSlash(rel)] = string(data)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return entries
+}
+
+func TestInstallArchivePythonEndToEnd(t *testing.T) {
+	if !hasPython3(t) {
+		t.Skip("python3 not on PATH")
+	}
+	dest := t.TempDir()
+	archive := buildArchive(t, helloPyEntries(t, nil))
+
+	m, err := InstallArchive(archive, dest)
+	if err != nil {
+		t.Fatalf("install: %v", err)
+	}
+	if !filepath.IsAbs(m.Binary) || !strings.Contains(m.Binary, "python") {
+		t.Fatalf("binary not resolved to an interpreter: %q", m.Binary)
+	}
+	if len(m.Args) == 0 || m.Args[0] != "main.py" {
+		t.Fatalf("entrypoint not in args: %v", m.Args)
+	}
+
+	// The installed plugin must actually execute -- including its
+	// vendored dependency -- through the normal manager path.
+	mgr, err := NewManager(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !mgr.CanHandle("source_hello_py") {
+		t.Fatal("installed plugin's node type not registered")
+	}
+	runner := NewRunner(m, 30*time.Second)
+	out, err := runner.Spec(context.Background())
+	if err != nil {
+		t.Fatalf("spec after install: %v", err)
+	}
+	if !strings.Contains(string(out), "hello-py") {
+		t.Fatalf("unexpected spec output: %s", out)
+	}
+}
+
+func TestInstallArchiveRejectsTamperedPayload(t *testing.T) {
+	entries := helloPyEntries(t, nil)
+	entries["payload/vendored/greeting.py"] += "\n# tampered after hashing\n"
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "integrity") {
+		t.Fatalf("tampered payload installed: %v", err)
+	}
+}
+
+func TestInstallArchiveRejectsSpecDrift(t *testing.T) {
+	if !hasPython3(t) {
+		t.Skip("python3 not on PATH")
+	}
+	entries := helloPyEntries(t, func(m *Manifest) {
+		m.Name = "hello-py-imposter"
+		// Name must still pass manifest validation; the plugin's own
+		// spec says "hello-py", so install must refuse.
+	})
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "spec drift") {
+		t.Fatalf("drifted package installed: %v", err)
+	}
+}
+
+func TestInstallArchiveNativeWrongPlatformNamesIt(t *testing.T) {
+	entries := helloPyEntries(t, func(m *Manifest) {
+		m.Payloads = []Payload{{
+			Runtime: RuntimeNative, OS: "plan9", Arch: "mips",
+			Path: "payload", Entrypoint: "main.py",
+			SHA256: m.Payloads[0].SHA256,
+		}}
+	})
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil ||
+		!strings.Contains(err.Error(), "plan9/mips") ||
+		!strings.Contains(err.Error(), fmt.Sprintf("%s/%s", runtime.GOOS, runtime.GOARCH)) {
+		t.Fatalf("want platform-naming error, got: %v", err)
+	}
+}
+
+func TestInstallArchivePythonTooOldNamesVersions(t *testing.T) {
+	orig := pythonVersionFn
+	pythonVersionFn = func() (string, int, int, error) { return "/usr/bin/python3", 3, 6, nil }
+	t.Cleanup(func() { pythonVersionFn = orig })
+
+	entries := helloPyEntries(t, nil) // requires >=3.8
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "3.6") || !strings.Contains(err.Error(), ">=3.8") {
+		t.Fatalf("want versions in error, got: %v", err)
+	}
+}
+
+func TestInstallArchiveJVMNotYetResolvable(t *testing.T) {
+	entries := helloPyEntries(t, func(m *Manifest) {
+		m.Payloads[0].Runtime = RuntimeJVM
+		m.Payloads[0].Entrypoint = "plugin.jar"
+	})
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "jvm") {
+		t.Fatalf("want jvm-unresolvable error, got: %v", err)
+	}
+}
+
+func TestExtractRejectsTraversal(t *testing.T) {
+	entries := map[string]string{
+		"manifest.json":    "{}",
+		"../../escape.txt": "gotcha",
+	}
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("traversal archive accepted: %v", err)
+	}
+}
+
+func TestHashPayloadTreeIsOrderAndModeInsensitive(t *testing.T) {
+	a := t.TempDir()
+	if err := os.WriteFile(filepath.Join(a, "z.txt"), []byte("zz"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(a, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(a, "sub", "a.txt"), []byte("aa"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h1, err := HashPayloadTree(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Same content, different modes elsewhere -> same hash.
+	if err := os.Chmod(filepath.Join(a, "z.txt"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h2, err := HashPayloadTree(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h1 != h2 {
+		t.Fatal("hash depends on file modes")
+	}
+	// Content change -> different hash.
+	if err := os.WriteFile(filepath.Join(a, "sub", "a.txt"), []byte("ab"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h3, _ := HashPayloadTree(a)
+	if h3 == h1 {
+		t.Fatal("hash missed a content change")
+	}
+}
