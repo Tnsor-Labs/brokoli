@@ -487,6 +487,7 @@ func StashSourceArchive(pluginDir, archivePath string) error {
 		return err
 	}
 	defer src.Close()
+	// #nosec G304 -- pluginDir is manager-owned, filename is a fixed constant
 	dst, err := os.OpenFile(filepath.Join(pluginDir, packageArchiveName), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err

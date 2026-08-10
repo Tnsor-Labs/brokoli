@@ -100,13 +100,20 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 	defer os.Remove(tmpPath)
 
 	body := archiveReader(r)
-	if _, err := io.Copy(tmp, io.LimitReader(body, maxPluginUploadBytes+1)); err != nil {
-		tmp.Close()
+	_, copyErr := io.Copy(tmp, io.LimitReader(body, maxPluginUploadBytes+1))
+	if closeErr := tmp.Close(); closeErr != nil && copyErr == nil {
+		copyErr = closeErr
+	}
+	if copyErr != nil {
 		writeError(w, http.StatusBadRequest, "failed to read uploaded archive")
 		return
 	}
-	tmp.Close()
-	if info, _ := os.Stat(tmpPath); info != nil && info.Size() > maxPluginUploadBytes {
+	info, statErr := os.Stat(tmpPath)
+	if statErr != nil {
+		writeError(w, http.StatusInternalServerError, statErr.Error())
+		return
+	}
+	if info.Size() > maxPluginUploadBytes {
 		writeError(w, http.StatusRequestEntityTooLarge, fmt.Sprintf("archive exceeds the %d-byte upload limit", int64(maxPluginUploadBytes)))
 		return
 	}
@@ -171,7 +178,8 @@ func (h *PluginHandler) Archive(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, fmt.Sprintf("plugin %q was installed from a directory, not a package archive, and has no archive to serve", name))
 		return
 	}
-	f, err := os.Open(path) // #nosec G304 -- path from the manager's own plugin dir
+	// #nosec G304,G703 -- path is the manager's own plugin dir plus a fixed filename, not request-controlled
+	f, err := os.Open(path)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
