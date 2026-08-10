@@ -389,3 +389,34 @@ func TestRegisterRoutesWiresEngineExecutorsToPipelineHandler(t *testing.T) {
 		t.Fatalf("route-wired custom create status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestPipelinePlanEndpoint(t *testing.T) {
+	s := newOrgCheckStore(t)
+	h := NewPipelineHandler(s, nil)
+	p := &models.Pipeline{
+		ID: "plan-pipe", Name: "plan",
+		Nodes: []models.Node{
+			{ID: "src", Type: models.NodeTypeSourceFile, Name: "Src", Config: map[string]interface{}{"path": "/a.csv"}},
+			{ID: "fan", Type: models.NodeTypeCode, Name: "Fan", Config: map[string]interface{}{
+				"script":    "x",
+				"expansion": map[string]interface{}{"over": map[string]interface{}{"item": "src"}},
+			}},
+		},
+		Edges:     []models.Edge{{From: "src", To: "fan"}},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	rec := servePipelineHandler(t, http.MethodGet, "/pipelines/{id}/plan", "/pipelines/plan-pipe/plan", nil, h.Plan)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `"kind":"expansion"`) || !strings.Contains(body, `"runtime_resolved":true`) {
+		t.Fatalf("plan missing expansion shape: %s", body)
+	}
+	if !strings.Contains(body, `"static_instance_count":1`) {
+		t.Fatalf("plan static count wrong: %s", body)
+	}
+}

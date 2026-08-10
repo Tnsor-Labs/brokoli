@@ -115,6 +115,8 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
 		r.Post("/pipelines/{id}/validate-nodes", ph.ValidateNodes)
+		// Physical plan explanation, before execution (#90 M2).
+		r.Get("/pipelines/{id}/plan", ph.Plan)
 
 		// Plugin management (#110 M2). Install runs plugin code on the
 		// host, so create/remove need settings.edit; list and archive
