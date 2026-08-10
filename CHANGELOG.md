@@ -11,6 +11,58 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.10] - 2026-08-10
+
+Full curated notes with per-change ownership:
+[v0.10.10 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.10).
+
+### Added
+
+- **Plugin subprocess cancellation** (#100) — @JefferMarcelino. Cancelling
+  a run or hitting a node timeout now terminates the running plugin
+  process: `SIGTERM`, then `SIGKILL` after the grace window (killed
+  directly on non-Unix). Plugin-backed nodes no longer run to completion
+  after a cancel. ADR-013 M2.
+- **Canonical pipeline IR schema** (#111) — @hc12r.
+  `docs/schema/pipeline-ir-2.1.json` is the machine-readable statement of
+  the wire contract (ADR-014), bound to `models.Pipeline` by two-way
+  contract tests: model/schema drift now fails CI naming the exact
+  property. Adds `github.com/santhosh-tekuri/jsonschema/v6` (Apache-2.0).
+
+### Changed
+
+- **Persistence is fail-closed** (#106) — @hc12r. Create, update, import,
+  clone, and rollback run full executable validation before anything is
+  written: unknown node types are rejected with `400 … has unsupported
+  type` instead of executing as silent successful no-ops, cycles and
+  missing required config are caught at save time, and rolling back to a
+  no-longer-valid snapshot is refused. Updates that leave the graph
+  byte-identical (pause, rename, schedule) skip executable validation so
+  legacy rows stay operable. The editor's Run/Preview/Check flows now
+  bail out loudly when a save is rejected instead of silently executing
+  the previously persisted graph, and the zero-node Blank template is no
+  longer listed as creatable. Dry-run responses carry an `error` field
+  alongside partial results.
+
+### Fixed
+
+- **Pipeline hooks persist** (#111) — @hc12r. `hooks` was decoded, echoed
+  on the create response, and silently dropped by the store — gone on the
+  next read. Both SQLite and Postgres now persist it through create,
+  update, and every read path.
+- **Dashboard day counts bucket in one timezone** (#108) — @hc12r.
+  `runs_today` compared a local date against UTC-stored timestamps, so
+  non-UTC servers miscounted for the first hours of every local day (and
+  the corresponding test flaked after midnight).
+
+### Roadmap
+
+- **ADR-016 proposed: plugin packaging, runtime resolution, and
+  distribution** (#105) — @hc12r. One published archive with per-payload
+  runtime classes, install-time feasibility resolution, an install
+  API/UI, worker fetch-by-digest, and a curated index. Discussion: #104;
+  implementation tracker: #110.
+
 ## [0.10.9] - 2026-08-09
 
 Full curated notes with per-change ownership:
