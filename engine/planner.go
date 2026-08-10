@@ -13,6 +13,7 @@ import (
 	"fmt"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // PlanPipeline computes the physical plan for a pipeline. It returns an
@@ -96,6 +97,77 @@ func planNode(n models.Node) models.PhysicalWorkUnit {
 	}
 
 	return u
+}
+
+// ProjectRunInstances returns the physical instances that executed in a
+// run, projected from the records the run already keeps (ADR-015 §8, #90:
+// "physical stages/instances on demand"). Plain nodes contribute one
+// `single` instance each; a dynamic-expansion node contributes one
+// `expansion` instance per resolved item — the node's own NodeRun stays
+// the aggregate summary and is not itself emitted as an instance.
+//
+// It reads through the optional ExpansionInstanceStore capability; a
+// store without it still projects the single-node instances. Pages of a
+// paginated source are not individually recorded yet, so such a node
+// projects as one single instance — honest about what's persisted.
+func ProjectRunInstances(s store.Store, runID string) ([]models.PhysicalInstance, error) {
+	nodeRuns, err := s.ListNodeRunsByRun(runID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Which nodes fanned out — those have expansion_instances rows and
+	// their per-item instances replace the single-node projection.
+	expansionByNode := map[string][]models.ExpansionInstance{}
+	if es, ok := s.(store.ExpansionInstanceStore); ok {
+		items, err := es.ListExpansionInstancesByRun(runID)
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range items {
+			expansionByNode[it.NodeID] = append(expansionByNode[it.NodeID], it)
+		}
+	}
+
+	var out []models.PhysicalInstance
+	for _, nr := range nodeRuns {
+		if _, fanned := expansionByNode[nr.NodeID]; fanned {
+			continue // fan-out node: its instances come from the expansion rows
+		}
+		out = append(out, models.PhysicalInstance{
+			LogicalNodeID: nr.NodeID,
+			Kind:          models.WorkUnitSingle,
+			InstanceKey:   nr.NodeID,
+			Index:         0,
+			Status:        nr.Status,
+			RowCount:      nr.RowCount,
+			StartedAt:     nr.StartedAt,
+			DurationMs:    nr.DurationMs,
+			Error:         nr.Error,
+			Attempt:       nr.Attempt,
+		})
+	}
+	for nodeID, items := range expansionByNode {
+		for _, it := range items {
+			key := it.InstanceKey
+			if key == "" {
+				key = fmt.Sprintf("%s[%d]", nodeID, it.InstanceIndex)
+			}
+			out = append(out, models.PhysicalInstance{
+				LogicalNodeID: nodeID,
+				Kind:          models.WorkUnitExpansion,
+				InstanceKey:   key,
+				Index:         it.InstanceIndex,
+				Status:        it.Status,
+				RowCount:      it.RowCount,
+				StartedAt:     it.StartedAt,
+				DurationMs:    it.DurationMs,
+				Error:         it.Error,
+				Attempt:       it.NodeAttempt,
+			})
+		}
+	}
+	return out, nil
 }
 
 // topoWaves groups nodes into dependency waves (Kahn by level): every

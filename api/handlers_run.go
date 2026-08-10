@@ -236,6 +236,31 @@ func (h *RunHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(planJSON))
 }
 
+// GetInstances returns the physical instances that executed in a run —
+// the runtime counterpart to the pipeline's planned work units (ADR-015
+// §8, #90). Projected from the run's existing records: one instance per
+// plain node, one per resolved expansion item.
+func (h *RunHandler) GetInstances(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	run, err := h.store.GetRun(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "run not found")
+		return
+	}
+	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
+	instances, err := engine.ProjectRunInstances(h.store, id)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, instances)
+}
+
 func (h *RunHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	if !h.validateRunAccess(r, id) {

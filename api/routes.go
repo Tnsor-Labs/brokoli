@@ -140,6 +140,8 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/runs/{id}/logs", rh.GetLogs)
 		// Physical plan as persisted for this run (#90 M2, ADR-015).
 		r.Get("/runs/{id}/plan", rh.GetPlan)
+		// Physical instances that executed in this run (#90 M2, ADR-015).
+		r.Get("/runs/{id}/instances", rh.GetInstances)
 		r.Get("/runs/{id}/logs/export", rh.ExportLogs)
 
 		// Durable run lifecycle event log
