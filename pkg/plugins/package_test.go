@@ -196,14 +196,59 @@ func TestInstallArchivePythonTooOldNamesVersions(t *testing.T) {
 	}
 }
 
-func TestInstallArchiveJVMNotYetResolvable(t *testing.T) {
+func TestInstallArchiveJVMMissingRuntimeNamesIt(t *testing.T) {
+	orig := runtimeVersionFns["java"]
+	runtimeVersionFns["java"] = func() (string, int, int, error) {
+		return "", 0, 0, fmt.Errorf("java not found on PATH")
+	}
+	t.Cleanup(func() { runtimeVersionFns["java"] = orig })
+
 	entries := helloPyEntries(t, func(m *Manifest) {
 		m.Payloads[0].Runtime = RuntimeJVM
 		m.Payloads[0].Entrypoint = "plugin.jar"
+		m.Payloads[0].Requires = map[string]string{"java": ">=17"}
 	})
 	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), "jvm") {
-		t.Fatalf("want jvm-unresolvable error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "java not found") {
+		t.Fatalf("want java-not-found error, got: %v", err)
+	}
+}
+
+func TestInstallArchiveNodeTooOldNamesVersions(t *testing.T) {
+	orig := runtimeVersionFns["node"]
+	runtimeVersionFns["node"] = func() (string, int, int, error) {
+		return "/usr/bin/node", 16, 4, nil
+	}
+	t.Cleanup(func() { runtimeVersionFns["node"] = orig })
+
+	entries := helloPyEntries(t, func(m *Manifest) {
+		m.Payloads[0].Runtime = RuntimeNode
+		m.Payloads[0].Entrypoint = "index.js"
+		m.Payloads[0].Requires = map[string]string{"node": ">=20.0"}
+	})
+	_, err := InstallArchive(buildArchive(t, entries), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "16.4") || !strings.Contains(err.Error(), ">=20.0") {
+		t.Fatalf("want node version error, got: %v", err)
+	}
+}
+
+func TestFirstDottedVersion(t *testing.T) {
+	cases := []struct {
+		in       string
+		maj, min int
+		ok       bool
+	}{
+		{"v20.11.1\n", 20, 11, true},
+		{`openjdk version "17.0.2"`, 17, 0, true},
+		{"Python 3.12.3", 3, 12, true},
+		{"v20", 0, 0, false}, // single number, no dotted major.minor
+		{"no version here", 0, 0, false},
+	}
+	for _, c := range cases {
+		maj, min, ok := firstDottedVersion(c.in)
+		if ok != c.ok || (ok && (maj != c.maj || min != c.min)) {
+			t.Errorf("%q: got %d.%d ok=%v, want %d.%d ok=%v", c.in, maj, min, ok, c.maj, c.min, c.ok)
+		}
 	}
 }
 

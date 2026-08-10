@@ -113,8 +113,15 @@ var serveCmd = &cobra.Command{
 		// plugins until the user runs `brokoli plugins install`.
 		if pluginMgr, err := plugins.NewManager(plugins.DefaultDir()); err != nil {
 			log.Printf("plugins: %v (continuing without plugin support)", err)
-		} else if len(pluginMgr.NodeTypes()) > 0 {
+		} else {
+			// Always register the manager, even with zero plugins at boot:
+			// a zero-type executor never matches CanHandle, and keeping the
+			// same instance wired means a plugin installed later via the
+			// API hot-reloads into the running engine without a restart.
 			Extensions.Executors = append(Extensions.Executors, pluginMgr)
+			if n := len(pluginMgr.NodeTypes()); n > 0 {
+				log.Printf("plugins: %d node type(s) registered", n)
+			}
 		}
 		license, _ := Extensions.License.Validate()
 		log.Printf("Edition: %s", license.Edition)
