@@ -210,8 +210,46 @@ type CalendarDay struct {
 
 // Store defines the persistence interface for Broked.
 // Implementations must be safe for concurrent use.
+// Store is the full persistence contract. It is a composition of the
+// focused capability interfaces below (ADR-015): a new capability — the
+// physical execution plan next — is added as its own interface and
+// embedded here, instead of appending to a single hundred-method
+// declaration that force-breaks every hand-written implementation on
+// each change. Callers that need only one capability should accept the
+// narrow interface (e.g. take a store.AlertStore, not a store.Store).
+//
+// Every concrete implementation (SQLiteStore, PostgresStore, the EE
+// APIStore) satisfies the whole set, so composing changes nothing for
+// them; it only gives narrow consumers a smaller surface to depend on.
 type Store interface {
-	// Pipelines
+	PipelineStore
+	RunStore
+	NodeRunStore
+	RunEventStore
+	LogStore
+	PreviewStore
+	VersionStore
+	ConnectionStore
+	VariableStore
+	WorkspaceStore
+	APITokenStore
+	NodeProfileStore
+	CalendarStore
+	SettingsStore
+	RoleStore
+	LoginAttemptStore
+	TxStore
+	DLQStore
+	CountStore
+	MaintenanceStore
+	AlertStore
+	TemplateStore
+	LifecycleStore
+}
+
+// PipelineStore persists authored pipelines and answers dependency-graph
+// queries over them.
+type PipelineStore interface {
 	CreatePipeline(p *models.Pipeline) error
 	GetPipeline(id string) (*models.Pipeline, error)
 	ListPipelines() ([]models.Pipeline, error)
@@ -236,12 +274,15 @@ type Store interface {
 	// detection, save-time validation, reverse-lookup, and the /dependency-graph endpoint —
 	// it's a single query and skips loading multi-KB nodes/edges JSON blobs.
 	ListPipelineDepsByOrg(orgID string) ([]models.PipelineDepSummary, error)
+}
 
+// RunStore persists pipeline runs and the queries recovery and the
+// dependency gate need over them.
+type RunStore interface {
 	// GetLatestRunsByPipelineIDs returns the most recent run per pipeline ID in a single query.
 	// Used by the dependency gate check to fold an O(N) loop of ListRunsByPipeline calls into O(1).
 	GetLatestRunsByPipelineIDs(ids []string) (map[string]*models.Run, error)
 
-	// Runs
 	CreateRun(r *models.Run) error
 	// CreateRunTx runs inside an existing transaction; used by
 	// RunPipelineAsync's dispatch outbox (Tnsor-Labs/brokoli#7) to commit the
@@ -283,8 +324,10 @@ type Store interface {
 	// a plain indexed range scan) to continue. hasNext reports whether
 	// another page remains.
 	ListNonTerminalRuns(afterID string, limit int) (runs []models.Run, hasNext bool, err error)
+}
 
-	// Node Runs
+// NodeRunStore persists per-node outcomes within a run.
+type NodeRunStore interface {
 	CreateNodeRun(nr *models.NodeRun) error
 	// CreateNodeRunTx inserts a node outcome inside an existing transaction.
 	CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error
@@ -292,32 +335,42 @@ type Store interface {
 	// UpdateNodeRunTx updates a node outcome inside an existing transaction.
 	UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error
 	ListNodeRunsByRun(runID string) ([]models.NodeRun, error)
+}
 
-	// Run Events — immutable, append-only log of run/node-attempt lifecycle
-	// transitions (Tnsor-Labs/brokoli#6). Dual-written today alongside the
-	// CreateRun/UpdateRun/CreateNodeRun/UpdateNodeRun calls above; see
-	// engine/projection.go for how the event stream is folded back into the
-	// equivalent runs/node_runs row shape.
+// RunEventStore is the immutable, append-only log of run/node-attempt
+// lifecycle transitions (Tnsor-Labs/brokoli#6). Dual-written today
+// alongside the CreateRun/UpdateRun/CreateNodeRun/UpdateNodeRun calls;
+// see engine/projection.go for how the event stream is folded back into
+// the equivalent runs/node_runs row shape.
+type RunEventStore interface {
 	AppendEvent(e *models.RunEvent) error
 	// AppendEventTx runs inside an existing transaction, so an event can be
 	// appended atomically alongside other writes via WithTx.
 	AppendEventTx(tx *sql.Tx, e *models.RunEvent) error
 	ListEventsByRun(runID string) ([]models.RunEvent, error)
+}
 
-	// Logs
+// LogStore persists per-run log lines.
+type LogStore interface {
 	AppendLog(entry *models.LogEntry) error
 	GetLogs(runID string) ([]models.LogEntry, error)
+}
 
-	// Data Preview
+// PreviewStore persists per-node data previews for the editor.
+type PreviewStore interface {
 	SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error
 	GetNodePreview(runID, nodeID string) (columns []string, rows []common.DataRow, err error)
+}
 
-	// Versioning
+// VersionStore persists pipeline version snapshots.
+type VersionStore interface {
 	SavePipelineVersion(pipelineID string, snapshot string, message string) (int, error)
 	ListPipelineVersions(pipelineID string) ([]PipelineVersion, error)
 	GetPipelineVersion(pipelineID string, version int) (string, error) // returns snapshot JSON
+}
 
-	// Connections
+// ConnectionStore persists saved connections.
+type ConnectionStore interface {
 	CreateConnection(c *models.Connection) error
 	GetConnection(connID string) (*models.Connection, error)
 	ListConnections() ([]models.Connection, error)
@@ -325,16 +378,20 @@ type Store interface {
 	ListConnectionsByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Connection, int, error)
 	UpdateConnection(c *models.Connection) error
 	DeleteConnection(connID string) error
+}
 
-	// Variables
+// VariableStore persists pipeline variables.
+type VariableStore interface {
 	SetVariable(v *models.Variable) error
 	GetVariable(key string) (*models.Variable, error)
 	ListVariables() ([]models.Variable, error)
 	ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error)
 	ListVariablesByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Variable, int, error)
 	DeleteVariable(key string) error
+}
 
-	// Workspaces
+// WorkspaceStore persists workspaces and their memberships.
+type WorkspaceStore interface {
 	CreateWorkspace(w *models.Workspace) error
 	GetWorkspace(id string) (*models.Workspace, error)
 	ListWorkspaces() ([]models.Workspace, error)
@@ -343,53 +400,79 @@ type Store interface {
 	RemoveWorkspaceMember(workspaceID, userID string) error
 	ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error)
 	GetUserWorkspaces(userID string) ([]models.Workspace, error)
+}
 
-	// API Tokens
+// APITokenStore persists API tokens.
+type APITokenStore interface {
 	CreateAPIToken(t *models.APIToken) error
 	GetAPITokenByHash(hash string) (*models.APIToken, error)
 	ListAPITokens(workspaceID string) ([]models.APIToken, error)
 	DeleteAPIToken(id string) error
+}
 
-	// Node Profiles
+// NodeProfileStore persists per-node data profiles and schema/drift.
+type NodeProfileStore interface {
 	SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, driftJSON string) error
 	GetNodeProfile(runID, nodeID string) (profileJSON, schemaJSON, driftJSON string, err error)
 	GetLatestNodeProfile(pipelineID, nodeID string) (profileJSON, schemaJSON string, err error)
+}
 
-	// Calendar / Aggregation
+// CalendarStore answers run-activity aggregation queries.
+type CalendarStore interface {
 	GetRunCalendar(days int) ([]CalendarDay, error)
 	GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error)
+}
 
-	// Settings (key-value)
+// SettingsStore is a key-value settings table.
+type SettingsStore interface {
 	GetSetting(key string) (string, error)
 	SetSetting(key, value string) error
+}
 
-	// Roles
+// RoleStore persists RBAC roles.
+type RoleStore interface {
 	CreateRole(r *models.Role) error
 	GetRole(id string) (*models.Role, error)
 	ListRoles() ([]models.Role, error)
 	UpdateRole(r *models.Role) error
 	DeleteRole(id string) error
+}
 
-	// Login attempt tracking
+// LoginAttemptStore tracks failed-login lockout state.
+type LoginAttemptStore interface {
 	RecordLoginAttempt(username, ip string, success bool) error
 	GetRecentFailedAttempts(username string, since time.Time) (int, error)
 	ClearLoginAttempts(username string) error
+}
 
-	// Transactions
+// TxStore runs a function inside a single database transaction.
+type TxStore interface {
 	WithTx(fn func(*sql.Tx) error) error
+}
 
-	// Dead Letter Queue
+// DLQStore persists dead-letter entries, per pipeline and across an org.
+type DLQStore interface {
 	AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error
 	ListDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error)
 	ResolveDLQ(id string) error
+	// ListDLQByOrg lists dead-letter entries across every pipeline in an
+	// org rather than one at a time — the question you actually have while
+	// triaging.
+	ListDLQByOrg(orgID string, includeResolved bool, limit int) ([]DLQEntry, error)
+}
 
-	// Pagination counts
+// CountStore answers the COUNT queries the paginated list endpoints need.
+type CountStore interface {
 	CountPipelines(workspaceID string) (int, error)
 	CountConnections(workspaceID string) (int, error)
 	CountVariables(workspaceID string) (int, error)
 	CountRunsByPipeline(pipelineID string) (int, error)
+}
 
-	// Maintenance
+// MaintenanceStore owns retention and size introspection. ADR-015 makes
+// this the home for instance retention when physical plans land, since
+// instances multiply row counts by orders of magnitude.
+type MaintenanceStore interface {
 	PurgeRunsOlderThan(days int) (int64, error)
 	PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error)
 	// ListRunIDsOlderThan/ListRunIDsOlderThanByOrg return exactly the run
@@ -401,33 +484,33 @@ type Store interface {
 	ListRunIDsOlderThan(days int) ([]string, error)
 	ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error)
 	GetDBSize() (int64, error)
+}
 
-	// Alerts — persisted, readable notifications (run failures and, in
-	// other editions, additional kinds written into this same table).
-	// Every method is org-scoped; an alert must never be readable or
-	// mutable across tenants.
+// AlertStore persists readable notifications. Every method is org-scoped;
+// an alert must never be readable or mutable across tenants.
+type AlertStore interface {
 	CreateAlert(a *models.Alert) error
 	ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error)
 	CountUnreadAlerts(orgID string) (int, error)
 	MarkAlertRead(orgID, id string) error
 	MarkAllAlertsRead(orgID string) error
 	DismissAlert(orgID, id string) error
+}
 
-	// Dead letter queue, across every pipeline in an org rather than one
-	// at a time — the question you actually have while triaging.
-	ListDLQByOrg(orgID string, includeResolved bool, limit int) ([]DLQEntry, error)
-
-	// Pipeline templates — global, admin-curated starter pipelines
-	// offered at pipeline-creation time (GET /api/templates). Seeded
-	// from pkg/templates.Builtin on first migrate; editable afterward
-	// through these methods, not by redeploying.
+// TemplateStore persists global, admin-curated starter pipelines offered
+// at pipeline-creation time (GET /api/templates). Seeded from
+// pkg/templates.Builtin on first migrate; editable afterward through
+// these methods, not by redeploying.
+type TemplateStore interface {
 	ListPipelineTemplates() ([]models.PipelineTemplate, error)
 	GetPipelineTemplate(id string) (*models.PipelineTemplate, error)
 	CreatePipelineTemplate(t *models.PipelineTemplate) error
 	UpdatePipelineTemplate(t *models.PipelineTemplate) error
 	DeletePipelineTemplate(id string) error
+}
 
-	// Lifecycle
+// LifecycleStore is process-level store lifecycle.
+type LifecycleStore interface {
 	Close() error
 	RawDB() interface{} // returns *sql.DB for extensions
 }
