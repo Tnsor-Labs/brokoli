@@ -728,6 +728,29 @@ func (h *PipelineHandler) ValidateDocument(w http.ResponseWriter, r *http.Reques
 	})
 }
 
+// Plan returns the physical execution plan for a stored pipeline —
+// planner explanations before execution (ADR-015 §8, #90 M2). It shows
+// how the logical graph expands into scheduled stages and work units
+// (pagination, dynamic expansion) without running anything.
+func (h *PipelineHandler) Plan(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	p, err := h.store.GetPipeline(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	if !ValidateOrgAccess(r, p.OrgID) {
+		DenyOrgAccess(w)
+		return
+	}
+	plan, err := engine.PlanPipeline(p)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, plan)
+}
+
 func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
 	if err != nil {
