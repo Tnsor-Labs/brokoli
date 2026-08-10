@@ -9,6 +9,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
@@ -23,6 +24,19 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	}
 	ph := NewPipelineHandler(s, sched, executors...)
 	rh := NewRunHandler(s, e)
+
+	// The plugin manager is one of the engine's executors; find the
+	// concrete type so the plugin API can install/remove/serve against
+	// the same instance the engine resolves node types through (that
+	// shared instance is what makes hot reload work).
+	var pluginMgr *plugins.Manager
+	for _, ex := range executors {
+		if pm, ok := ex.(*plugins.Manager); ok {
+			pluginMgr = pm
+			break
+		}
+	}
+	plugh := NewPluginHandler(pluginMgr)
 
 	// Connection handler (crypto config optional for backward compat)
 	var cc *crypto.Config
@@ -101,6 +115,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
 		r.Post("/pipelines/{id}/validate-nodes", ph.ValidateNodes)
+
+		// Plugin management (#110 M2). Install runs plugin code on the
+		// host, so create/remove need settings.edit; list and archive
+		// fetch are read-only (archive fetch is how workers pull by
+		// digest). Node types hot-reload on install/remove.
+		r.Get("/plugins", plugh.List)
+		r.With(requirePerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
+		r.With(requirePerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
+		r.Get("/plugins/{name}/archive", plugh.Archive)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
 
 		// Runs

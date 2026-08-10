@@ -193,11 +193,117 @@ func resolvePayload(p *Payload) (*ResolvedRuntime, string) {
 		}
 		args := append([]string{p.Entrypoint}, p.Args...)
 		return &ResolvedRuntime{Binary: interp, Args: args}, ""
-	case RuntimeNode, RuntimeJVM:
-		return nil, fmt.Sprintf("runtime class %q is not resolvable in this release (planned: #110 M2)", p.Runtime)
+	case RuntimeNode:
+		if !platformMatches(p.OS, p.Arch) {
+			return nil, fmt.Sprintf("declared for %s/%s", p.OS, p.Arch)
+		}
+		interp, reason := resolveRuntimeBinary("node", p.Requires["node"])
+		if reason != "" {
+			return nil, reason
+		}
+		args := append([]string{p.Entrypoint}, p.Args...)
+		return &ResolvedRuntime{Binary: interp, Args: args}, ""
+	case RuntimeJVM:
+		if !platformMatches(p.OS, p.Arch) {
+			return nil, fmt.Sprintf("declared for %s/%s", p.OS, p.Arch)
+		}
+		interp, reason := resolveRuntimeBinary("java", p.Requires["java"])
+		if reason != "" {
+			return nil, reason
+		}
+		// `java -jar <entrypoint> [args] <command>` — the entrypoint is a jar.
+		args := append([]string{"-jar", p.Entrypoint}, p.Args...)
+		return &ResolvedRuntime{Binary: interp, Args: args}, ""
 	default:
 		return nil, fmt.Sprintf("unknown runtime class %q", p.Runtime)
 	}
+}
+
+// runtimeVersionFns lets tests simulate hosts. Each returns the binary
+// path and its major.minor, or an error naming why it's unavailable.
+var runtimeVersionFns = map[string]func() (string, int, int, error){
+	"node": func() (string, int, int, error) { return probeVersion("node", "--version") },
+	"java": func() (string, int, int, error) { return probeVersion("java", "-version") },
+}
+
+// resolveRuntimeBinary resolves node/java the same way python is:
+// probe the host binary, and check a ">=MAJOR.MINOR" constraint. Empty
+// constraint means "any version present".
+func resolveRuntimeBinary(name, constraint string) (path string, reason string) {
+	fn := runtimeVersionFns[name]
+	if fn == nil {
+		return "", fmt.Sprintf("no resolver for runtime %q", name)
+	}
+	bin, major, minor, err := fn()
+	if err != nil {
+		return "", err.Error()
+	}
+	constraint = strings.TrimSpace(constraint)
+	if constraint == "" {
+		return bin, ""
+	}
+	wantMajor, wantMinor, ok := parseMinVersion(constraint)
+	if !ok {
+		return "", fmt.Sprintf("unsupported %s constraint %q (packaging version 1 understands \">=MAJOR.MINOR\")", name, constraint)
+	}
+	if major > wantMajor || (major == wantMajor && minor >= wantMinor) {
+		return bin, ""
+	}
+	return "", fmt.Sprintf("host %s is %d.%d, payload requires %s", name, major, minor, constraint)
+}
+
+func parseMinVersion(constraint string) (major, minor int, ok bool) {
+	if !strings.HasPrefix(constraint, ">=") {
+		return 0, 0, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(constraint, ">="), ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err1 := strconv.Atoi(strings.TrimSpace(parts[0]))
+	minor, err2 := strconv.Atoi(strings.TrimSpace(parts[1]))
+	if err1 != nil || err2 != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
+}
+
+// probeVersion runs "<bin> <versionArg>" and extracts a major.minor from
+// the first dotted numeric token in the output. node prints "v20.11.1";
+// java prints 'openjdk version "17.0.2"' (to stderr, hence combined).
+func probeVersion(bin, versionArg string) (string, int, int, error) {
+	path, err := exec.LookPath(bin)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("%s not found on PATH", bin)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, versionArg).CombinedOutput() // #nosec G204 -- path from LookPath, fixed version arg
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("%s %s failed: %v", path, versionArg, err)
+	}
+	major, minor, ok := firstDottedVersion(string(out))
+	if !ok {
+		return "", 0, 0, fmt.Errorf("unrecognized %s version output %q", bin, strings.TrimSpace(string(out)))
+	}
+	return path, major, minor, nil
+}
+
+func firstDottedVersion(s string) (major, minor int, ok bool) {
+	for _, tok := range strings.FieldsFunc(s, func(r rune) bool {
+		return r != '.' && (r < '0' || r > '9')
+	}) {
+		parts := strings.SplitN(tok, ".", 3)
+		if len(parts) < 2 {
+			continue
+		}
+		a, e1 := strconv.Atoi(parts[0])
+		b, e2 := strconv.Atoi(parts[1])
+		if e1 == nil && e2 == nil {
+			return a, b, true
+		}
+	}
+	return 0, 0, false
 }
 
 func platformMatches(osName, arch string) bool {
@@ -363,6 +469,50 @@ func InstallArchive(archivePath, destRoot string) (*Manifest, error) {
 		}
 	}
 	return LoadManifest(dst)
+}
+
+// packageArchiveName is the file an API/upload install stashes inside the
+// plugin directory so the archive can be re-served (worker fetch-by-
+// digest, #110 M2). It sits at the plugin-dir root, outside every
+// payload subtree, so it never affects payload hashing.
+const packageArchiveName = ".package.bkg"
+
+// StashSourceArchive records the installing archive's bytes alongside an
+// installed plugin so ServeArchivePath can hand them back. Best-effort:
+// a plugin installed from a directory (no archive) simply has none, and
+// the archive endpoint reports that.
+func StashSourceArchive(pluginDir, archivePath string) error {
+	src, err := os.Open(archivePath) // #nosec G304 -- the operator-supplied archive just installed
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+	dst, err := os.OpenFile(filepath.Join(pluginDir, packageArchiveName), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(dst, src)
+	if closeErr := dst.Close(); closeErr != nil && copyErr == nil {
+		copyErr = closeErr
+	}
+	return copyErr
+}
+
+// SourceArchivePath returns the stashed archive path and its sha256 for
+// an installed plugin, or ok=false when the plugin wasn't installed from
+// an archive.
+func SourceArchivePath(pluginDir string) (path, sha string, ok bool) {
+	p := filepath.Join(pluginDir, packageArchiveName)
+	f, err := os.Open(p) // #nosec G304 -- fixed name inside a plugin dir we own
+	if err != nil {
+		return "", "", false
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", "", false
+	}
+	return p, hex.EncodeToString(h.Sum(nil)), true
 }
 
 // VerifySpec runs the plugin's own `spec` command and requires it to
