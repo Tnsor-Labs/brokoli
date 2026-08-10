@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -26,13 +27,20 @@ type Pipeline struct {
 	DependsOn        []string          `json:"depends_on,omitempty"`        // legacy: pipeline IDs that must succeed before this runs
 	DependencyRules  []DependencyRule  `json:"dependency_rules,omitempty"`  // rich cross-pipeline dependency rules
 	WebhookToken     string            `json:"webhook_token,omitempty"`     // token for triggering via webhook
-	Enabled          bool              `json:"enabled"`
-	PipelineID       string            `json:"pipeline_id"`            // stable slug for git-sync matching
-	Source           string            `json:"source"`                 // "ui" or "git"
-	WorkspaceID      string            `json:"workspace_id,omitempty"` // workspace isolation
-	OrgID            string            `json:"org_id,omitempty"`       // tenant isolation
-	CreatedAt        time.Time         `json:"created_at"`
-	UpdatedAt        time.Time         `json:"updated_at"`
+	// Extensions is the one open namespace in an otherwise fail-closed
+	// payload (ADR-014 rules 8/9): newer clients park fields this server
+	// doesn't understand here, and the server persists and echoes them back
+	// without interpreting them (whitespace-normalized, semantically
+	// intact). Everything outside it that the
+	// server doesn't recognize is a 400 at decode time.
+	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
+	Enabled     bool                       `json:"enabled"`
+	PipelineID  string                     `json:"pipeline_id"`            // stable slug for git-sync matching
+	Source      string                     `json:"source"`                 // "ui" or "git"
+	WorkspaceID string                     `json:"workspace_id,omitempty"` // workspace isolation
+	OrgID       string                     `json:"org_id,omitempty"`       // tenant isolation
+	CreatedAt   time.Time                  `json:"created_at"`
+	UpdatedAt   time.Time                  `json:"updated_at"`
 }
 
 const (

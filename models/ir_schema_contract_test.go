@@ -95,13 +95,16 @@ func fullyPopulatedPipeline() *models.Pipeline {
 			{PipelineID: "upstream", State: models.DepStateSucceeded, WithinSec: 3600, Mode: models.DepModeGate},
 		},
 		WebhookToken: "whk_x",
-		Enabled:      true,
-		PipelineID:   "everything",
-		Source:       models.PipelineSourceUI,
-		WorkspaceID:  "ws-1",
-		OrgID:        "org-1",
-		CreatedAt:    now,
-		UpdatedAt:    now,
+		Extensions: map[string]json.RawMessage{
+			"x_future_feature": json.RawMessage(`{"anything": true}`),
+		},
+		Enabled:     true,
+		PipelineID:  "everything",
+		Source:      models.PipelineSourceUI,
+		WorkspaceID: "ws-1",
+		OrgID:       "org-1",
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 }
 

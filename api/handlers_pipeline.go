@@ -170,11 +170,12 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
-	var p models.Pipeline
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	decoded, err := decodePipelineStrict(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	p := *decoded
 
 	if err := p.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -253,6 +254,29 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, p)
 }
 
+// decodePipelineStrict decodes a pipeline payload refusing unknown
+// top-level fields (ADR-014 rule 8). Forward-compatible payloads belong
+// under the one open namespace, "extensions", which is persisted and
+// echoed verbatim without interpretation. Before this, unknown fields
+// vanished at decode — the client believed it sent them, the server never
+// saw them, and nothing said so.
+func decodePipelineStrict(r io.Reader) (*models.Pipeline, error) {
+	dec := json.NewDecoder(r)
+	dec.DisallowUnknownFields()
+	var p models.Pipeline
+	if err := dec.Decode(&p); err != nil {
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			field := strings.TrimPrefix(err.Error(), "json: unknown field ")
+			return nil, fmt.Errorf(
+				"unknown field %s: this server's IR contract is fail-closed; put forward-compatible data under \"extensions\"",
+				field,
+			)
+		}
+		return nil, fmt.Errorf("invalid JSON: %w", err)
+	}
+	return &p, nil
+}
+
 // graphUnchanged reports whether an update leaves the executable graph —
 // nodes, edges, and IR version — byte-identical to the stored pipeline.
 // Node/edge JSON encoding is deterministic (Go sorts map keys), so marshal
@@ -290,11 +314,12 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var p models.Pipeline
-	if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON")
+	decoded, err := decodePipelineStrict(r.Body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	p := *decoded
 
 	p.ID = existing.ID
 	p.PipelineID = existing.PipelineID
@@ -680,6 +705,29 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ValidateDocument is the stateless validator (issue #109 M2): full
+// structural + executable validation of a request-body IR document,
+// persisting nothing. Until now the only way to learn whether a pipeline
+// was valid was to persist it first.
+func (h *PipelineHandler) ValidateDocument(w http.ResponseWriter, r *http.Request) {
+	p, err := decodePipelineStrict(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	errs := []string{}
+	if err := p.Validate(); err != nil {
+		errs = append(errs, err.Error())
+	}
+	if ve := engine.ValidatePipeline(p, h.executors...); ve.HasErrors() {
+		errs = append(errs, ve.Errors...)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"valid":  len(errs) == 0,
+		"errors": errs,
+	})
+}
+
 func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB max
 	if err != nil {
@@ -691,16 +739,21 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Try JSON first, then YAML
+	// A JSON body gets the JSON path, full stop. The old on-any-error
+	// fallback to YAML was lossy in the worst way: YAML 1.2 parses JSON,
+	// so a mere type mismatch fell through to the YAML struct — which
+	// lacks capabilities, params, hooks, SLA and dependency fields — and
+	// returned 201 with a silently mutilated pipeline.
 	var p *models.Pipeline
 	contentType := r.Header.Get("Content-Type")
-	if contentType == "application/json" || data[0] == '{' || data[0] == '[' {
-		var pipeline models.Pipeline
-		if jsonErr := json.Unmarshal(data, &pipeline); jsonErr == nil {
-			p = &pipeline
+	if strings.HasPrefix(contentType, "application/json") || data[0] == '{' || data[0] == '[' {
+		pipeline, jsonErr := decodePipelineStrict(bytes.NewReader(data))
+		if jsonErr != nil {
+			writeError(w, http.StatusBadRequest, jsonErr.Error())
+			return
 		}
-	}
-	if p == nil {
+		p = pipeline
+	} else {
 		var err error
 		p, err = engine.ImportPipelineYAML(data, h.executors...)
 		if err != nil {
