@@ -1,0 +1,159 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/pipeline-ir-2.1.json",
+  "title": "Brokoli pipeline IR 2.1",
+  "description": "Canonical machine-readable contract for the pipeline intermediate representation the server accepts at create/update/import (ADR-014 rule 1; issue #109 M1). Transcribed from models.Pipeline -- a change to either without the other is a contract break, enforced by models/ir_schema_contract_test.go. IR 2.0 documents are valid 2.1 documents whose edges carry no condition labels; the conditional-edge co-constraints (2.1-only labels, condition-node rules) are enforced semantically by models.Pipeline.Validate and engine.ValidatePipeline, not structurally here.",
+  "type": "object",
+  "required": ["name", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Server-assigned identity. Ignored on create (regenerated); immutable on update."
+    },
+    "ir_version": {
+      "type": "string",
+      "enum": ["", "2.0", "2.1"],
+      "description": "Empty means a pre-versioned legacy client; accepted with 2.0 semantics."
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "description": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "schedule": {
+      "type": "string",
+      "description": "Cron expression; empty for manual-only."
+    },
+    "schedule_timezone": { "type": "string" },
+    "webhook_url": { "type": "string" },
+    "params": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string" }
+    },
+    "tags": {
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    },
+    "hooks": {
+      "type": "object",
+      "description": "Lifecycle hooks keyed by event name.",
+      "propertyNames": {
+        "enum": ["on_start", "on_success", "on_failure", "on_node_failure"]
+      },
+      "additionalProperties": { "$ref": "#/$defs/hook" }
+    },
+    "sla_deadline": {
+      "type": "string",
+      "description": "HH:MM daily completion deadline. Stored by every edition; monitored only by enterprise deployments."
+    },
+    "sla_timezone": { "type": "string" },
+    "depends_on": {
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    },
+    "dependency_rules": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/dependency_rule" }
+    },
+    "webhook_token": { "type": "string" },
+    "enabled": { "type": "boolean" },
+    "pipeline_id": {
+      "type": "string",
+      "description": "Stable logical slug -- deploy tooling and git-sync match on this."
+    },
+    "source": { "type": "string", "enum": ["", "ui", "git"] },
+    "workspace_id": { "type": "string" },
+    "org_id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Node type string. Deliberately NOT an enum: executors (plugins) may claim types beyond the built-in set. Whether a type is executable on a given server is decided by executable validation at save time, not by this schema."
+        },
+        "name": { "type": "string" },
+        "config": {
+          "type": ["object", "null"],
+          "description": "Free-form node configuration, interpreted per type. Unknown keys inside config are tolerated (and today, silently ignored) -- narrowing this is #109 M2 territory."
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        },
+        "capabilities": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string",
+            "enum": [
+              "source",
+              "sink",
+              "compute",
+              "dataset-output",
+              "dynamic-expansion",
+              "collection-output"
+            ]
+          }
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "condition": {
+          "type": "boolean",
+          "description": "Branch label for edges leaving a condition node. Requires ir_version 2.1; under 2.1, every edge leaving a condition node must carry one. Omitted entirely (never null) on ordinary edges."
+        }
+      }
+    },
+    "hook": {
+      "type": "object",
+      "required": ["type", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["webhook", "slack", "email"] },
+        "url": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "extra": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "dependency_rule": {
+      "type": "object",
+      "required": ["pipeline_id"],
+      "additionalProperties": false,
+      "properties": {
+        "pipeline_id": { "type": "string", "minLength": 1 },
+        "state": {
+          "type": "string",
+          "enum": ["", "succeeded", "completed", "failed"]
+        },
+        "within_seconds": { "type": "integer", "minimum": 0 },
+        "mode": { "type": "string", "enum": ["", "gate", "trigger"] }
+      }
+    }
+  }
+}
