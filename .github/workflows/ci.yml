@@ -3,8 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    paths-ignore:
+      # Prose-only changes don't need the Go pipeline. Deliberately NOT
+      # ignored: docs/schema/** -- the canonical IR schema is read by
+      # contract tests, so schema changes must run them. (GitHub Actions
+      # doesn't support YAML anchors; keep both lists and security.yml
+      # in sync by hand.)
+      - "**.md"
+      - "docs/adr/**"
+      - "docs/rfcs/**"
   pull_request:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/adr/**"
+      - "docs/rfcs/**"
 
 jobs:
   lint:
