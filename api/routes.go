@@ -138,6 +138,8 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermRunsResume)).Post("/runs/{id}/resume", rh.ResumeRun)
 		r.With(requirePerm(models.PermRunsCancel)).Post("/runs/{id}/cancel", rh.CancelRun)
 		r.Get("/runs/{id}/logs", rh.GetLogs)
+		// Physical plan as persisted for this run (#90 M2, ADR-015).
+		r.Get("/runs/{id}/plan", rh.GetPlan)
 		r.Get("/runs/{id}/logs/export", rh.ExportLogs)
 
 		// Durable run lifecycle event log

@@ -25,4 +25,9 @@ var (
 	_ RunStore         = (*PostgresStore)(nil)
 	_ AlertStore       = (*PostgresStore)(nil)
 	_ MaintenanceStore = (*PostgresStore)(nil)
+
+	// Optional capabilities (not embedded in Store): core backends
+	// implement them, callers reach them by type assertion.
+	_ PhysicalPlanStore = (*SQLiteStore)(nil)
+	_ PhysicalPlanStore = (*PostgresStore)(nil)
 )

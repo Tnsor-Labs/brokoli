@@ -212,6 +212,13 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		})
 		crashAt(crashPointAfterRunCreate, "")
 	}
+	// Persist the physical plan as-decided for this run (ADR-015, #90 M2),
+	// once the run row exists so the FK parent is present. Best-effort and
+	// optional-capability: a store that doesn't implement PhysicalPlanStore
+	// (e.g. a hand-written one that hasn't opted in yet) simply skips it,
+	// and a save failure must never fail the run — the plan is for audit
+	// and recovery, not execution.
+	r.savePhysicalPlan()
 	span.SetAttributes(attribute.String("run_id", r.run.ID), attribute.String("trace_id", r.traceID))
 	common.SLog().Info("run started",
 		common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID), common.TraceAttr(r.traceID))
@@ -1354,6 +1361,29 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 }
 
 // topoSort performs Kahn's algorithm for topological ordering.
+// savePhysicalPlan computes and persists the run's physical plan, best
+// effort. Skips silently if the store doesn't implement the optional
+// PhysicalPlanStore capability, if planning fails (the executable
+// validator already rejects unplannable graphs at save time), or if the
+// write fails — none of which should abort a run.
+func (r *Runner) savePhysicalPlan() {
+	pp, ok := r.store.(store.PhysicalPlanStore)
+	if !ok {
+		return
+	}
+	plan, err := PlanPipeline(r.pipe)
+	if err != nil {
+		return
+	}
+	planJSON, err := json.Marshal(plan)
+	if err != nil {
+		return
+	}
+	if err := pp.SaveRunPlan(r.run.ID, string(planJSON)); err != nil {
+		r.log("", models.LogLevelWarning, "could not persist physical plan: %v", err)
+	}
+}
+
 func topoSort(nodes []models.Node, edges []models.Edge) ([]models.Node, error) {
 	nodeMap := make(map[string]models.Node)
 	inDegree := make(map[string]int)

@@ -247,6 +247,25 @@ type Store interface {
 	LifecycleStore
 }
 
+// PhysicalPlanStore persists the physical execution plan decided for a
+// run (ADR-015, #90 M2): the planner's snapshot as-of-run-time, so
+// recovery and audit read the plan that was actually used rather than
+// recomputing one that could differ after code, connector, or policy
+// changes.
+//
+// It is an OPTIONAL capability, deliberately not embedded in Store — the
+// same shape as ExecutionAttemptStore. Core's SQLite/Postgres backends
+// implement it; callers reach it by type-asserting the Store they hold
+// (`if pp, ok := s.(store.PhysicalPlanStore); ok`). This lets a
+// hand-written implementation that doesn't persist plans yet (the EE
+// APIStore) keep satisfying Store, and opt into the capability when it's
+// ready rather than being force-broken the moment the method lands.
+// Rows cascade with their run, so retention is automatic via run-purge.
+type PhysicalPlanStore interface {
+	SaveRunPlan(runID, planJSON string) error
+	GetRunPlan(runID string) (string, error)
+}
+
 // PipelineStore persists authored pipelines and answers dependency-graph
 // queries over them.
 type PipelineStore interface {
