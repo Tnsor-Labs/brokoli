@@ -71,11 +71,13 @@ func HashPayloadTree(root string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if _, err := io.Copy(h, f); err != nil {
-			f.Close()
-			return "", err
+		_, copyErr := io.Copy(h, f)
+		if closeErr := f.Close(); closeErr != nil && copyErr == nil {
+			copyErr = closeErr
 		}
-		f.Close()
+		if copyErr != nil {
+			return "", copyErr
+		}
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
@@ -111,7 +113,7 @@ func extractArchive(archivePath, destRoot string) error {
 		target := filepath.Join(destRoot, name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
+			if err := os.MkdirAll(target, 0o750); err != nil {
 				return err
 			}
 		case tar.TypeReg:
@@ -122,19 +124,21 @@ func extractArchive(archivePath, destRoot string) error {
 			if total > maxArchiveTotalBytes {
 				return fmt.Errorf("archive exceeds the %d-byte total limit", int64(maxArchiveTotalBytes))
 			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return err
 			}
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644) // #nosec G304 -- target is traversal-checked above
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target is traversal-checked above
 			if err != nil {
 				return err
 			}
 			// LimitReader as defense in depth against a lying header.
-			if _, err := io.Copy(out, io.LimitReader(tr, maxArchiveFileBytes+1)); err != nil { // #nosec G110 -- bounded by the per-file and total caps
-				out.Close()
-				return err
+			_, copyErr := io.Copy(out, io.LimitReader(tr, maxArchiveFileBytes+1)) // #nosec G110 -- bounded by the per-file and total caps
+			if closeErr := out.Close(); closeErr != nil && copyErr == nil {
+				copyErr = closeErr
 			}
-			out.Close()
+			if copyErr != nil {
+				return copyErr
+			}
 		default:
 			// Symlinks, devices, fifos: nothing a plugin payload needs,
 			// everything an attacker wants.
@@ -325,8 +329,11 @@ func InstallArchive(archivePath, destRoot string) (*Manifest, error) {
 	installed.Args = resolved.Args
 	if payload.Runtime == RuntimeNative {
 		// Archives don't carry mode bits portably; the entrypoint's
-		// executability comes from the runtime class.
-		if err := os.Chmod(filepath.Join(stage, filepath.FromSlash(payload.Entrypoint)), 0o755); err != nil { // #nosec G302 -- plugin entrypoints must be executable
+		// executability comes from the runtime class. A native plugin
+		// binary must be executable — 0o755 is intentional here.
+		entry := filepath.Join(stage, filepath.FromSlash(payload.Entrypoint))
+		// #nosec G302 -- a native plugin entrypoint must be executable
+		if err := os.Chmod(entry, 0o755); err != nil {
 			return nil, fmt.Errorf("mark entrypoint executable: %w", err)
 		}
 	}
@@ -346,7 +353,7 @@ func InstallArchive(archivePath, destRoot string) (*Manifest, error) {
 	if _, err := os.Stat(dst); err == nil {
 		return nil, fmt.Errorf("plugin %q is already installed at %s -- remove it first with 'brokoli plugins remove %s'", m.Name, dst, m.Name)
 	}
-	if err := os.MkdirAll(destRoot, 0o755); err != nil {
+	if err := os.MkdirAll(destRoot, 0o750); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(stage, dst); err != nil {
@@ -397,7 +404,7 @@ func copyTreeInternal(src, dst string) error {
 		}
 		target := filepath.Join(dst, rel)
 		if info.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			return os.MkdirAll(target, 0o750)
 		}
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("unsupported file type at %s", path)
@@ -407,10 +414,10 @@ func copyTreeInternal(src, dst string) error {
 			return err
 		}
 		defer in.Close()
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 			return err
 		}
-		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode().Perm()) // #nosec G304 -- target derived from checked rel path
+		out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target derived from checked rel path
 		if err != nil {
 			return err
 		}
