@@ -3,6 +3,12 @@ name: Security
 on:
   pull_request:
     branches: [main]
+    paths-ignore:
+      # Keep in sync with ci.yml: prose docs skip the pipeline;
+      # docs/schema/** deliberately still runs it.
+      - "**.md"
+      - "docs/adr/**"
+      - "docs/rfcs/**"
   schedule:
     - cron: "0 0 * * 0" # Weekly on Sunday
 
