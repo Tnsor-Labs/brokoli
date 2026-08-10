@@ -529,7 +529,9 @@ func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
 	json.Unmarshal(depsJSON, &p.DependsOn)
 	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if len(hooksJSON) > 0 && string(hooksJSON) != "null" && string(hooksJSON) != "{}" {
-		json.Unmarshal(hooksJSON, &p.Hooks)
+		if err := json.Unmarshal(hooksJSON, &p.Hooks); err != nil {
+			return nil, fmt.Errorf("unmarshal hooks: %w", err)
+		}
 	}
 	if p.Tags == nil {
 		p.Tags = []string{}
@@ -575,7 +577,9 @@ func (s *PostgresStore) scanPipelineRow(sc interface{ Scan(...interface{}) error
 	json.Unmarshal(depsJSON, &p.DependsOn)
 	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if len(hooksJSON) > 0 && string(hooksJSON) != "null" && string(hooksJSON) != "{}" {
-		json.Unmarshal(hooksJSON, &p.Hooks)
+		if err := json.Unmarshal(hooksJSON, &p.Hooks); err != nil {
+			return nil, fmt.Errorf("unmarshal hooks: %w", err)
+		}
 	}
 	if p.Tags == nil {
 		p.Tags = []string{}
@@ -634,7 +638,9 @@ func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipe
 	json.Unmarshal(depsJSON, &p.DependsOn)
 	json.Unmarshal(depRulesJSON, &p.DependencyRules)
 	if len(hooksJSON) > 0 && string(hooksJSON) != "null" && string(hooksJSON) != "{}" {
-		json.Unmarshal(hooksJSON, &p.Hooks)
+		if err := json.Unmarshal(hooksJSON, &p.Hooks); err != nil {
+			return nil, fmt.Errorf("unmarshal hooks: %w", err)
+		}
 	}
 	if p.Tags == nil {
 		p.Tags = []string{}

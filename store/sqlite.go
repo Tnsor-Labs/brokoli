@@ -1814,7 +1814,9 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 		json.Unmarshal([]byte(depRulesJSON), &p.DependencyRules)
 	}
 	if hooksJSON != "" && hooksJSON != "null" && hooksJSON != "{}" {
-		json.Unmarshal([]byte(hooksJSON), &p.Hooks)
+		if err := json.Unmarshal([]byte(hooksJSON), &p.Hooks); err != nil {
+			return nil, fmt.Errorf("unmarshal hooks: %w", err)
+		}
 	}
 	if p.Tags == nil {
 		p.Tags = []string{}
