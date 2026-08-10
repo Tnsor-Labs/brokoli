@@ -62,6 +62,10 @@
       "items": { "$ref": "#/$defs/dependency_rule" }
     },
     "webhook_token": { "type": "string" },
+    "extensions": {
+      "type": "object",
+      "description": "The one open namespace in an otherwise fail-closed payload (ADR-014 rules 8/9): newer clients park fields this server doesn't understand here; the server persists and echoes them verbatim without interpreting them."
+    },
     "enabled": { "type": "boolean" },
     "pipeline_id": {
       "type": "string",

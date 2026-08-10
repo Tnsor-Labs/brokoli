@@ -93,6 +93,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermPipelinesDelete)).Delete("/pipelines/{id}", ph.Delete)
 		r.With(requirePerm(models.PermPipelinesExport)).Get("/pipelines/{id}/export", ph.Export)
 		r.Get("/pipelines/{id}/validate", ph.Validate)
+		// Stateless: validates a request-body IR document without
+		// persisting anything (#109 M2). Auth-only, like its by-id
+		// sibling — validation reads no tenant data.
+		r.Post("/pipelines/validate", ph.ValidateDocument)
 		r.Get("/pipelines/{id}/versions", ph.ListVersions)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
