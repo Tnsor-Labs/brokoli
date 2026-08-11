@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sort"
@@ -46,7 +47,12 @@ func TestProjectionMatchesReality(t *testing.T) {
 		t.Fatalf("create pipeline: %v", err)
 	}
 
-	run, err := NewEngine(s).RunPipeline(pipeline.ID)
+	// Drain the engine's background event goroutines before t.TempDir()
+	// cleanup, so a late event write doesn't recreate the SQLite WAL files
+	// mid-RemoveAll ("directory not empty" flake).
+	eng := NewEngine(s)
+	defer eng.Close(context.Background())
+	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("run pipeline: %v", err)
 	}
