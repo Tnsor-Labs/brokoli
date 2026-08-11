@@ -2,11 +2,15 @@ package plugins
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -33,6 +37,15 @@ const maxIndexBytes = 8 << 20 // 8 MiB
 // indexFetchTimeout bounds a single index fetch.
 const indexFetchTimeout = 15 * time.Second
 
+// archiveDownloadTimeout bounds a single archive download — larger than an
+// index fetch because it moves the actual payload bytes.
+const archiveDownloadTimeout = 60 * time.Second
+
+// ErrDigestMismatch is returned when a downloaded archive's sha256 does
+// not match the digest the index declared. No bytes from a mismatched
+// archive are installed.
+var ErrDigestMismatch = errors.New("archive sha256 does not match the index digest")
+
 // IndexEntry is one plugin available in a curated index.
 type IndexEntry struct {
 	Name        string `json:"name"`
@@ -46,6 +59,63 @@ type IndexEntry struct {
 type Index struct {
 	Version int          `json:"version"`
 	Plugins []IndexEntry `json:"plugins"`
+}
+
+// FindEntry returns the index entry with the given name, or nil.
+func (idx *Index) FindEntry(name string) *IndexEntry {
+	for i := range idx.Plugins {
+		if idx.Plugins[i].Name == name {
+			return &idx.Plugins[i]
+		}
+	}
+	return nil
+}
+
+// DownloadArchive fetches the archive at url into destPath, verifying its
+// sha256 against expectedSHA256 (hex). It refuses an empty expected digest
+// — an unverifiable entry is not installable — and returns ErrDigestMismatch
+// on a mismatch, so no bytes from an archive the index did not vouch for
+// are ever handed to the installer.
+func DownloadArchive(ctx context.Context, url, expectedSHA256, destPath string, maxBytes int64) error {
+	if strings.TrimSpace(expectedSHA256) == "" {
+		return errors.New("index entry has no sha256; refusing to install an unverifiable archive")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("build archive request: %w", err)
+	}
+	client := &http.Client{Timeout: archiveDownloadTimeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("download archive: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("download archive: HTTP %d from %s", resp.StatusCode, url)
+	}
+	// #nosec G304 -- destPath is a caller-provided server temp file, not
+	// request-controlled.
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create temp archive: %w", err)
+	}
+	h := sha256.New()
+	n, copyErr := io.Copy(io.MultiWriter(f, h), io.LimitReader(resp.Body, maxBytes+1))
+	closeErr := f.Close()
+	if copyErr != nil {
+		return fmt.Errorf("download archive: %w", copyErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("write archive: %w", closeErr)
+	}
+	if n > maxBytes {
+		return fmt.Errorf("archive exceeds the %d-byte limit", maxBytes)
+	}
+	got := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(got, strings.TrimSpace(expectedSHA256)) {
+		return fmt.Errorf("%w: index=%s downloaded=%s", ErrDigestMismatch, expectedSHA256, got)
+	}
+	return nil
 }
 
 // IndexURL returns the configured index URL: BROKOLI_PLUGIN_INDEX if set,

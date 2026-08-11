@@ -10,6 +10,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -239,5 +241,74 @@ func TestPluginIndex_NilManagerIs503(t *testing.T) {
 	h.Index(rec, httptest.NewRequest(http.MethodGet, "/api/plugins/index", nil))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status=%d, want 503", rec.Code)
+	}
+}
+
+// serveIndexAndArchive stands up one test server that serves the plugin
+// index at /index.json and the archive bytes at /a.bkg, and points
+// BROKOLI_PLUGIN_INDEX at it. The index entry's sha256 is `digest` so
+// tests can drive both the match and mismatch paths.
+func serveIndexAndArchive(t *testing.T, name string, archive []byte, digest string) {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/a.bkg", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(archive)
+	})
+	var base string
+	mux.HandleFunc("/index.json", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"plugins":[{"name":"` + name +
+			`","version":"0.1.0","archive_url":"` + base + `/a.bkg","sha256":"` + digest + `"}]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	base = srv.URL
+	t.Setenv(plugins.IndexEnvVar, srv.URL+"/index.json")
+}
+
+func TestPluginInstallByName_InstallsVerifiedArchive(t *testing.T) {
+	if !pythonAvailable() {
+		t.Skip("python3 not on PATH")
+	}
+	archive := helloPyArchive(t)
+	sum := sha256.Sum256(archive)
+	serveIndexAndArchive(t, "hello-py", archive, hex.EncodeToString(sum[:]))
+
+	h, mgr := newPluginHandler(t)
+	rec := httptest.NewRecorder()
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/plugins/index/hello-py", nil), "name", "hello-py")
+	h.InstallByName(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d, want 201: %s", rec.Code, rec.Body.String())
+	}
+	if mgr.Get("hello-py") == nil {
+		t.Error("plugin was not installed into the manager")
+	}
+}
+
+func TestPluginInstallByName_DigestMismatchIs422(t *testing.T) {
+	archive := helloPyArchive(t)
+	serveIndexAndArchive(t, "hello-py", archive, "not-the-real-digest")
+
+	h, _ := newPluginHandler(t)
+	rec := httptest.NewRecorder()
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/plugins/index/hello-py", nil), "name", "hello-py")
+	h.InstallByName(rec, req)
+
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d, want 422 for a digest mismatch: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPluginInstallByName_UnknownNameIs404(t *testing.T) {
+	serveIndexAndArchive(t, "hello-py", []byte("x"), "abc")
+
+	h, _ := newPluginHandler(t)
+	rec := httptest.NewRecorder()
+	req := withURLParam(httptest.NewRequest(http.MethodPost, "/api/plugins/index/ghost", nil), "name", "ghost")
+	h.InstallByName(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want 404 for a name not in the index", rec.Code)
 	}
 }
