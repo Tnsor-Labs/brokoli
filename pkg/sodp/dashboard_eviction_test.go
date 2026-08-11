@@ -37,8 +37,20 @@ func TestRecomputeDashboard_AggregatesDecayAfterEviction(t *testing.T) {
 	if before["runs_24h_total"] != 2 {
 		t.Fatalf("precondition: runs_24h_total = %v, want 2", before["runs_24h_total"])
 	}
-	if before["runs_today"] != 2 {
-		t.Fatalf("precondition: runs_today = %v, want 2", before["runs_today"])
+	// "An hour ago" is normally still today, but in the first hour after
+	// UTC midnight it crosses into yesterday's calendar day. Derive the
+	// expected split from the seeded timestamp rather than assuming
+	// "today", so the eviction assertions below aren't held hostage to
+	// the wall clock. (The 24h window above is unaffected either way.)
+	wantToday, wantYesterday := 2, 0
+	if finished.Format("2006-01-02") != now.Format("2006-01-02") {
+		wantToday, wantYesterday = 0, 2
+	}
+	if before["runs_today"] != wantToday {
+		t.Fatalf("precondition: runs_today = %v, want %v", before["runs_today"], wantToday)
+	}
+	if before["runs_yesterday"] != wantYesterday {
+		t.Fatalf("precondition: runs_yesterday = %v, want %v", before["runs_yesterday"], wantYesterday)
 	}
 
 	// Evict on the same 30-minute TTL production uses. These runs finished
