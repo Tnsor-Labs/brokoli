@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -451,5 +452,70 @@ func TestTransformAliases(t *testing.T) {
 	}
 	if ds5.Rows[0]["name"] != "ALICE" {
 		t.Errorf("function alias: expected ALICE, got %v", ds5.Rows[0]["name"])
+	}
+}
+
+// brokoli-sdk#14: comparison operators work, and an unrecognized condition
+// fails loudly instead of silently keeping every row.
+
+func TestFilterRows_GreaterThan_Numeric(t *testing.T) {
+	ds := sampleDS()
+	// amount > 100 keeps 150.00 and 250.50 (2 rows). The pre-fix matcher
+	// didn't know ">" and kept all 4; a lexicographic ">" would wrongly
+	// keep "75.25" too. Asserting 2 proves numeric comparison.
+	if err := ApplyTransforms([]TransformRule{
+		{Type: "filter_rows", Condition: "amount > 100"},
+	}, ds); err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Errorf("amount > 100 should keep 2 rows, got %d", len(ds.Rows))
+	}
+}
+
+func TestFilterRows_LessEqual_And_GreaterEqual(t *testing.T) {
+	ds := sampleDS()
+	if err := ApplyTransforms([]TransformRule{
+		{Type: "filter_rows", Condition: "amount <= 75.25"},
+	}, ds); err != nil {
+		t.Fatal(err)
+	}
+	// 75.25 and -10.00
+	if len(ds.Rows) != 2 {
+		t.Fatalf("amount <= 75.25 should keep 2 rows, got %d", len(ds.Rows))
+	}
+
+	ds = sampleDS()
+	if err := ApplyTransforms([]TransformRule{
+		{Type: "filter_rows", Condition: "id >= 3"},
+	}, ds); err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Rows) != 2 { // ids 3 and 4
+		t.Errorf("id >= 3 should keep 2 rows, got %d", len(ds.Rows))
+	}
+}
+
+func TestFilterRows_UnrecognizedConditionFailsLoudly(t *testing.T) {
+	ds := sampleDS()
+	err := ApplyTransforms([]TransformRule{
+		{Type: "filter_rows", Condition: "amount ~ 100"},
+	}, ds)
+	if err == nil {
+		t.Fatal("an unrecognized condition must error, not silently keep every row")
+	}
+	if !strings.Contains(err.Error(), "unrecognized condition") {
+		t.Errorf("error %q should name the unrecognized condition", err)
+	}
+}
+
+func TestFilterRows_BadConditionErrorsOnEmptyDataset(t *testing.T) {
+	// The up-front validation must fire even when there are no rows to loop.
+	ds := &common.DataSet{Columns: []string{"id"}, Rows: nil}
+	err := ApplyTransforms([]TransformRule{
+		{Type: "filter_rows", Condition: "no operator here"},
+	}, ds)
+	if err == nil {
+		t.Fatal("a bad condition on an empty dataset must still error")
 	}
 }

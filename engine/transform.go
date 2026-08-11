@@ -120,9 +120,21 @@ func filterRows(r TransformRule, ds *common.DataSet) error {
 		return fmt.Errorf("filter_rows requires condition")
 	}
 
+	// Validate the condition once, up front, so an unrecognized form fails
+	// loudly — even for an empty dataset — instead of silently keeping
+	// every row (brokoli-sdk#14). The parse is row-independent, so an empty
+	// row exercises exactly the form check.
+	if _, err := matchesCondition(r.Condition, common.DataRow{}); err != nil {
+		return fmt.Errorf("filter_rows: %w", err)
+	}
+
 	var kept []common.DataRow
 	for _, row := range ds.Rows {
-		if matchesCondition(r.Condition, row) {
+		match, err := matchesCondition(r.Condition, row)
+		if err != nil {
+			return fmt.Errorf("filter_rows: %w", err)
+		}
+		if match {
 			kept = append(kept, row)
 		}
 	}
@@ -130,8 +142,26 @@ func filterRows(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
-func matchesCondition(cond string, row common.DataRow) bool {
-	// Handle "column in [val1, val2, ...]"
+// comparisonOps are the operators matchesCondition understands beyond the
+// “in“ set membership form. Order does not matter here — detection is by
+// leftmost position with the longest operator winning at a tie, so ">="
+// beats ">" and "!=" beats "=" (below).
+var comparisonOps = []string{">=", "<=", "!=", "==", "=", ">", "<"}
+
+// matchesCondition reports whether row satisfies cond. cond is one of:
+//
+//	column in [a, b, c]           set membership
+//	column = value / == value     string equality
+//	column != value               string inequality
+//	column > / < / >= / <= value  ordered comparison (numeric when both
+//	                              sides parse as numbers, else lexicographic)
+//
+// An unrecognized form is an error, not a silent "keep the row" — the
+// silent pass-through was a data-quality footgun (brokoli-sdk#14): a
+// condition like "id > 100" against a matcher that didn't know ">" kept
+// every row with no error.
+func matchesCondition(cond string, row common.DataRow) (bool, error) {
+	// Set membership: "column in [val1, val2, ...]"
 	if strings.Contains(cond, " in ") {
 		parts := strings.SplitN(cond, " in ", 2)
 		col := strings.TrimSpace(parts[0])
@@ -140,36 +170,65 @@ func matchesCondition(cond string, row common.DataRow) bool {
 		colVal := fmt.Sprintf("%v", row[col])
 		for _, v := range values {
 			if strings.Trim(v, " '\"") == colVal {
-				return true
+				return true, nil
 			}
 		}
-		return false
+		return false, nil
 	}
 
-	// Handle "column != value"
-	if strings.Contains(cond, "!=") {
-		parts := strings.SplitN(cond, "!=", 2)
-		col := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-		return fmt.Sprintf("%v", row[col]) != val
+	// Find the leftmost operator; at a tie, the longest wins so a two-char
+	// operator isn't shadowed by the single-char one it contains.
+	bestIdx, bestOp := -1, ""
+	for _, op := range comparisonOps {
+		if idx := strings.Index(cond, op); idx >= 0 {
+			if bestIdx == -1 || idx < bestIdx || (idx == bestIdx && len(op) > len(bestOp)) {
+				bestIdx, bestOp = idx, op
+			}
+		}
+	}
+	if bestIdx == -1 {
+		return false, fmt.Errorf(
+			"unrecognized condition %q: expected \"column <op> value\" with op one of "+
+				"in, =, ==, !=, >, <, >=, <=", cond)
 	}
 
-	// Handle "column == value" or "column = value"
-	if strings.Contains(cond, "==") {
-		parts := strings.SplitN(cond, "==", 2)
-		col := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-		return fmt.Sprintf("%v", row[col]) == val
-	}
-	if strings.Contains(cond, "=") {
-		parts := strings.SplitN(cond, "=", 2)
-		col := strings.TrimSpace(parts[0])
-		val := strings.Trim(strings.TrimSpace(parts[1]), "'\"")
-		return fmt.Sprintf("%v", row[col]) == val
+	col := strings.TrimSpace(cond[:bestIdx])
+	target := strings.Trim(strings.TrimSpace(cond[bestIdx+len(bestOp):]), "'\"")
+	left := fmt.Sprintf("%v", row[col])
+
+	switch bestOp {
+	case "=", "==":
+		return left == target, nil
+	case "!=":
+		return left != target, nil
 	}
 
-	// No match = keep row
-	return true
+	// Ordered comparison: numeric when both sides parse as numbers,
+	// otherwise lexicographic (so dates/strings still order sensibly).
+	cmp := strings.Compare(left, target)
+	if lf, lerr := strconv.ParseFloat(left, 64); lerr == nil {
+		if rf, rerr := strconv.ParseFloat(target, 64); rerr == nil {
+			switch {
+			case lf < rf:
+				cmp = -1
+			case lf > rf:
+				cmp = 1
+			default:
+				cmp = 0
+			}
+		}
+	}
+	switch bestOp {
+	case ">":
+		return cmp > 0, nil
+	case "<":
+		return cmp < 0, nil
+	case ">=":
+		return cmp >= 0, nil
+	case "<=":
+		return cmp <= 0, nil
+	}
+	return false, fmt.Errorf("unrecognized operator %q", bestOp) // unreachable
 }
 
 func applyFunction(r TransformRule, ds *common.DataSet) error {
