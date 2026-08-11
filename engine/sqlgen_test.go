@@ -201,3 +201,101 @@ func TestSplitStatements(t *testing.T) {
 		t.Error("should preserve semicolons inside quotes")
 	}
 }
+
+// brokoli-sdk#12: write modes for standalone sink_db.
+
+func TestGenerateSQL_Overwrite(t *testing.T) {
+	sql, err := GenerateSQL(SQLGenConfig{
+		Dialect: "postgres", Table: "users", Mode: "overwrite",
+	}, sqlDS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `DELETE FROM "users";`) {
+		t.Errorf("overwrite should clear the table first:\n%s", sql)
+	}
+	if !strings.Contains(sql, `INSERT INTO "users"`) {
+		t.Errorf("overwrite should still insert:\n%s", sql)
+	}
+	if strings.Index(sql, "DELETE FROM") > strings.Index(sql, "INSERT INTO") {
+		t.Error("DELETE must come before INSERT")
+	}
+}
+
+func TestGenerateSQL_UpsertPostgres(t *testing.T) {
+	sql, err := GenerateSQL(SQLGenConfig{
+		Dialect: "postgres", Table: "users", Mode: "upsert", KeyColumns: []string{"id"},
+	}, sqlDS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, `ON CONFLICT ("id") DO UPDATE SET`) {
+		t.Errorf("postgres upsert should use ON CONFLICT DO UPDATE:\n%s", sql)
+	}
+	if !strings.Contains(sql, `"name" = EXCLUDED."name"`) {
+		t.Errorf("should set non-key columns from EXCLUDED:\n%s", sql)
+	}
+	if strings.Contains(sql, `"id" = EXCLUDED."id"`) {
+		t.Error("must not update the key column itself")
+	}
+}
+
+func TestGenerateSQL_UpsertMySQL(t *testing.T) {
+	sql, err := GenerateSQL(SQLGenConfig{
+		Dialect: "mysql", Table: "users", Mode: "upsert", KeyColumns: []string{"id"},
+	}, sqlDS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(sql, "ON DUPLICATE KEY UPDATE") {
+		t.Errorf("mysql upsert should use ON DUPLICATE KEY UPDATE:\n%s", sql)
+	}
+	if !strings.Contains(sql, "`name` = VALUES(`name`)") {
+		t.Errorf("should set columns from VALUES():\n%s", sql)
+	}
+}
+
+func TestGenerateSQL_UpsertRequiresKeyColumns(t *testing.T) {
+	_, err := GenerateSQL(SQLGenConfig{
+		Dialect: "postgres", Table: "users", Mode: "upsert",
+	}, sqlDS())
+	if err == nil {
+		t.Fatal("postgres upsert without key_columns must error")
+	}
+	if !strings.Contains(err.Error(), "key_columns") {
+		t.Errorf("error should name key_columns: %v", err)
+	}
+}
+
+func TestGenerateSQL_UpsertUnsupportedDialect(t *testing.T) {
+	_, err := GenerateSQL(SQLGenConfig{
+		Dialect: "sqlserver", Table: "users", Mode: "upsert", KeyColumns: []string{"id"},
+	}, sqlDS())
+	if err == nil {
+		t.Fatal("upsert on an unsupported dialect must error, not silently insert")
+	}
+}
+
+func TestGenerateSQL_UnknownModeErrors(t *testing.T) {
+	_, err := GenerateSQL(SQLGenConfig{
+		Dialect: "postgres", Table: "users", Mode: "merge",
+	}, sqlDS())
+	if err == nil {
+		t.Fatal("an unknown write mode must error")
+	}
+}
+
+func TestDialectForURI(t *testing.T) {
+	cases := map[string]string{
+		"postgres://x":  "postgres",
+		"mysql://x":     "mysql",
+		"/tmp/a.db":     "sqlite",
+		"sqlserver://x": "sqlserver",
+		"snowflake://x": "generic",
+	}
+	for uri, want := range cases {
+		if got := dialectForURI(uri); got != want {
+			t.Errorf("dialectForURI(%q) = %q, want %q", uri, got, want)
+		}
+	}
+}

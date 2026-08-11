@@ -16,6 +16,29 @@ import (
 )
 
 // DetectDriver returns the Go sql driver name for a connection URI.
+// dialectForURI maps a connection URI to the SQL dialect name GenerateSQL
+// understands, via the same scheme detection DetectDriver uses. Snowflake
+// and anything unrecognized fall back to "generic" — append/overwrite work
+// there, and upsert (which has no portable form) errors with a name.
+func dialectForURI(uri string) string {
+	driver, _, err := DetectDriver(uri)
+	if err != nil {
+		return "generic"
+	}
+	switch driver {
+	case "pgx":
+		return "postgres"
+	case "mysql":
+		return "mysql"
+	case "sqlite":
+		return "sqlite"
+	case "sqlserver":
+		return "sqlserver"
+	default:
+		return "generic"
+	}
+}
+
 func DetectDriver(uri string) (string, string, error) {
 	switch {
 	case strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://"):
