@@ -13,6 +13,7 @@
     { path: "/dependencies", label: "Dependencies", icon: icons.dependency },
     { path: "/variables", label: "Variables", icon: icons.variable },
     { path: "/connections", label: "Connections", icon: icons.connection },
+    { path: "/plugins", label: "Plugins", icon: icons.plugin },
     { path: "/settings", label: "Settings", icon: icons.settings },
   ];
 

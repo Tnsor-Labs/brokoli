@@ -11,6 +11,7 @@
   import Login from "./pages/Login.svelte";
   import Lineage from "./pages/Lineage.svelte";
   import Connections from "./pages/Connections.svelte";
+  import Plugins from "./pages/Plugins.svelte";
   import Variables from "./pages/Variables.svelte";
   import Calendar from "./pages/Calendar.svelte";
   import APIIntegrations from "./pages/APIIntegrations.svelte";
@@ -36,6 +37,7 @@
     "/dependencies": DependencyGraph,
     "/variables": Variables,
     "/connections": Connections,
+    "/plugins": Plugins,
     "/settings": Settings,
     "/api": APIIntegrations,
     "/login": Login,

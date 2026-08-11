@@ -266,3 +266,19 @@ export interface WSEvent {
   message?: string;
   timestamp: string;
 }
+
+// ── Plugins (brokoli#110) ──────────────────────────────────────────
+export interface PluginNodeType {
+  type: string;
+  kind: string;
+  display_name?: string;
+}
+
+export interface Plugin {
+  name: string;
+  version: string;
+  description?: string;
+  node_types: PluginNodeType[];
+  packaged: boolean;
+  archive_sha256?: string;
+}
