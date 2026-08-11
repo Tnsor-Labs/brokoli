@@ -10,6 +10,7 @@ import type {
   CalendarDay,
   DependencyStatus,
   DependencyGraph,
+  Plugin,
 } from "./types";
 import { authHeaders, logout } from "./auth";
 
@@ -185,6 +186,34 @@ export const api = {
   },
   templates: {
     list: () => request<PipelineTemplate[]>("/templates"),
+  },
+  plugins: {
+    list: () => request<Plugin[]>("/plugins"),
+    remove: (name: string) =>
+      request<void>(`/plugins/${encodeURIComponent(name)}`, { method: "DELETE" }),
+    // Install uploads a .bkg archive as the raw request body. The JSON
+    // `request` helper can't carry a binary body, so this posts directly;
+    // the server reads the raw body (or a multipart "file" field).
+    install: async (file: File): Promise<Plugin> => {
+      const res = await fetch(`${BASE}/plugins`, {
+        method: "POST",
+        headers: { ...authHeaders(), "X-Workspace-ID": getWorkspaceId() },
+        body: file,
+      });
+      if (res.status === 401) {
+        logout();
+        throw new Error("Session expired");
+      }
+      if (!res.ok) {
+        let msg = `HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          msg = body.error || msg;
+        } catch {}
+        throw new Error(msg);
+      }
+      return res.json();
+    },
   },
   runsCalendar: (days = 90) => request<CalendarDay[]>(`/runs/calendar?days=${days}`),
 };

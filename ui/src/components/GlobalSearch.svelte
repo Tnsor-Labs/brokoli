@@ -29,6 +29,7 @@
     { type: "page", id: "lin", name: "Lineage", description: "Data lineage graph", icon: icons.lineage.d, href: "#/lineage" },
     { type: "page", id: "var", name: "Variables", description: "Manage variables", icon: icons.variable.d, href: "#/variables" },
     { type: "page", id: "conn", name: "Connections", description: "Manage connections", icon: icons.connection.d, href: "#/connections" },
+    { type: "page", id: "plug", name: "Plugins", description: "Install and manage plugins", icon: icons.plugin.d, href: "#/plugins" },
     { type: "page", id: "set", name: "Settings", description: "System configuration", icon: icons.settings.d, href: "#/settings" },
   ];
 
