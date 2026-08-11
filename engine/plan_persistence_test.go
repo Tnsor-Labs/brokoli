@@ -5,6 +5,7 @@ package engine
 // — the on-demand planner is the oracle.
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -41,7 +42,13 @@ func TestRunPersistsPhysicalPlanMatchingPlanner(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, err := NewEngine(s).RunPipeline(pipeline.ID)
+	// Close the engine before the test returns so its background event
+	// goroutines are drained before t.TempDir() cleanup — otherwise a late
+	// event write recreates the SQLite WAL files mid-RemoveAll and cleanup
+	// fails with "directory not empty" (the source of this test's flake).
+	eng := NewEngine(s)
+	defer eng.Close(context.Background())
+	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline: %v", err)
 	}
@@ -94,7 +101,9 @@ func TestRunPersistsDurablePhysicalInstances(t *testing.T) {
 	if err := s.CreatePipeline(pipeline); err != nil {
 		t.Fatal(err)
 	}
-	run, err := NewEngine(s).RunPipeline(pipeline.ID)
+	eng := NewEngine(s)
+	defer eng.Close(context.Background())
+	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline: %v", err)
 	}
