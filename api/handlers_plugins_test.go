@@ -192,3 +192,52 @@ func withURLParam(r *http.Request, key, val string) *http.Request {
 	rctx.URLParams.Add(key, val)
 	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rctx))
 }
+
+func TestPluginIndex_BrowsesCatalog(t *testing.T) {
+	idxSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"plugins":[` +
+			`{"name":"hello","version":"1.0.0","archive_url":"https://ex/hello.bkg","sha256":"abc"}]}`))
+	}))
+	defer idxSrv.Close()
+	t.Setenv(plugins.IndexEnvVar, idxSrv.URL)
+
+	h, _ := newPluginHandler(t)
+	rec := httptest.NewRecorder()
+	h.Index(rec, httptest.NewRequest(http.MethodGet, "/api/plugins/index", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var idx plugins.Index
+	if err := json.Unmarshal(rec.Body.Bytes(), &idx); err != nil {
+		t.Fatalf("decode index: %v", err)
+	}
+	if len(idx.Plugins) != 1 || idx.Plugins[0].Name != "hello" {
+		t.Errorf("index = %+v, want the one hello entry", idx.Plugins)
+	}
+}
+
+func TestPluginIndex_FetchFailureIs502(t *testing.T) {
+	// Point the override at a closed server so the fetch fails.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := dead.URL
+	dead.Close()
+	t.Setenv(plugins.IndexEnvVar, url)
+
+	h, _ := newPluginHandler(t)
+	rec := httptest.NewRecorder()
+	h.Index(rec, httptest.NewRequest(http.MethodGet, "/api/plugins/index", nil))
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d, want 502", rec.Code)
+	}
+}
+
+func TestPluginIndex_NilManagerIs503(t *testing.T) {
+	h := NewPluginHandler(nil)
+	rec := httptest.NewRecorder()
+	h.Index(rec, httptest.NewRequest(http.MethodGet, "/api/plugins/index", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503", rec.Code)
+	}
+}

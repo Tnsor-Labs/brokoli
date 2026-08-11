@@ -11,10 +11,12 @@ package api
 // server settings.
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/go-chi/chi/v5"
@@ -23,6 +25,9 @@ import (
 // maxPluginUploadBytes caps an uploaded archive before the package
 // layer's own per-file/total extraction limits apply.
 const maxPluginUploadBytes = 128 << 20 // 128 MiB
+
+// pluginIndexTimeout bounds a single browse-the-index request end to end.
+const pluginIndexTimeout = 20 * time.Second
 
 // PluginHandler serves the plugin management endpoints against a shared
 // *plugins.Manager. Nil manager means the host has no plugin support
@@ -144,6 +149,26 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 }
 
 // Remove uninstalls a plugin and hot-reloads.
+// Index fetches the curated static plugin index (ADR-016 §5) and returns
+// it for browsing. The URL is DefaultIndexURL unless BROKOLI_PLUGIN_INDEX
+// overrides it. Feasibility is deliberately not resolved here — that's an
+// install-time question against the archive's own payloads.
+func (h *PluginHandler) Index(w http.ResponseWriter, r *http.Request) {
+	if h.unavailable(w) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), pluginIndexTimeout)
+	defer cancel()
+	idx, err := plugins.FetchIndex(ctx, plugins.IndexURL())
+	if err != nil {
+		// The index is a remote dependency; a fetch/parse failure is an
+		// upstream problem, not a client error.
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, idx)
+}
+
 func (h *PluginHandler) Remove(w http.ResponseWriter, r *http.Request) {
 	if h.unavailable(w) {
 		return
