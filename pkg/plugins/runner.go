@@ -453,6 +453,15 @@ func (r *Runner) Spec(ctx context.Context) ([]byte, error) {
 	// their entrypoint and vendored modules relative to it, and nothing
 	// in the protocol ever promised the host's working directory.
 	proc.Dir = r.manifest.dir
+	// Same graceful stop as Run: on timeout/cancel, SIGTERM the process
+	// group and give it terminationGrace before WaitDelay escalates to
+	// SIGKILL. Without this, exec.CommandContext's default is an immediate
+	// Process.Kill() — the SIGKILL-with-no-grace this fixes (#110). A spec
+	// probe is usually quick, but a hung plugin still deserves the same
+	// clean-shutdown window the protocol documents.
+	configureProcessGroup(proc)
+	proc.Cancel = func() error { return terminateProcessTree(proc.Process) }
+	proc.WaitDelay = r.terminationGrace
 	out, err := proc.Output()
 	if err != nil {
 		return nil, fmt.Errorf("plugin %s spec: %w", r.manifest.Name, err)

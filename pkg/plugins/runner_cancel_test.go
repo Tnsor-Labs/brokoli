@@ -106,6 +106,41 @@ func TestRunner_Cancel_KillsPluginThatIgnoresSIGTERM(t *testing.T) {
 	}
 }
 
+// TestRunner_Spec_KillsPluginThatIgnoresSIGTERM proves the Spec path —
+// the install-time drift probe — applies the same SIGTERM-then-SIGKILL
+// grace as Run. Before the fix Spec used exec.CommandContext's default
+// (immediate Process.Kill), so a plugin that ignored SIGTERM was killed
+// with no grace; the documented window did not apply here (#110).
+// Without the fix this test cannot distinguish that, and with a plugin
+// that ignores SIGTERM it would hang to the runner's timeout.
+func TestRunner_Spec_KillsPluginThatIgnoresSIGTERM(t *testing.T) {
+	const grace = 300 * time.Millisecond
+	t.Setenv("SLOW_SPEC_HANG", "1") // make `spec` ignore SIGTERM and hold
+
+	runner := NewRunner(slowPlugin(t), 30*time.Second)
+	runner.terminationGrace = grace
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(200*time.Millisecond, cancel)
+
+	start := time.Now()
+	if _, err := runner.Spec(ctx); err == nil {
+		t.Fatal("cancelled spec returned a nil error")
+	}
+	elapsed := time.Since(start)
+
+	// Must outlast SIGTERM (ignored) — a faster return would mean the
+	// grace was never applied and the test proves nothing.
+	if elapsed < grace {
+		t.Errorf("returned in %s, before the %s grace period elapsed", elapsed, grace)
+	}
+	// Must not have waited out the 30s runner timeout.
+	if elapsed > grace+3*time.Second {
+		t.Errorf("Spec took %s, want roughly cancel + the %s grace", elapsed, grace)
+	}
+}
+
 // TestRunner_Cancel_KillsOrphanedChild is the process-group test: the
 // plugin leaves a background child holding stdout, and cancellation has
 // to reach it. Without a process group the child survives and, because

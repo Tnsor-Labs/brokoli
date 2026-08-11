@@ -20,6 +20,18 @@ cmd="${1:-}"
 
 case "$cmd" in
     spec)
+        # When SLOW_SPEC_HANG is set, ignore SIGTERM and hold stdout open
+        # instead of printing the manifest. spec takes no params, so this
+        # env var is how the Spec-path grace test drives a stubborn probe;
+        # unset (the normal case) it prints and exits immediately.
+        if [ -n "${SLOW_SPEC_HANG:-}" ]; then
+            # Ignore SIGTERM and hold stdout in the shell itself — a busy
+            # loop with no child, so nothing can orphan a stdout-holder and
+            # blur the timing. Only SIGKILL (after the host's grace) ends
+            # this; a no-grace SIGKILL-immediately returns before the grace.
+            trap '' TERM
+            while :; do :; done
+        fi
         cat <<'EOF'
 {"protocol_version":1,"name":"slow","version":"0.1.0","binary":"./bin","node_types":[{"type":"source_slow","kind":"source"}]}
 EOF
