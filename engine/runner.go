@@ -219,6 +219,12 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	// and a save failure must never fail the run — the plan is for audit
 	// and recovery, not execution.
 	r.savePhysicalPlan()
+	// Persist the run's physical instances once execution finishes, by
+	// every exit path (success, failure, cancellation). Best-effort and
+	// optional-capability, like the plan save: the durable per-instance
+	// record (ADR-015 point 3, #90 M3) that GET /runs/{id}/instances
+	// reads authoritatively and that dispatch will later lease against.
+	defer r.savePhysicalInstances()
 	span.SetAttributes(attribute.String("run_id", r.run.ID), attribute.String("trace_id", r.traceID))
 	common.SLog().Info("run started",
 		common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID), common.TraceAttr(r.traceID))
@@ -1381,6 +1387,25 @@ func (r *Runner) savePhysicalPlan() {
 	}
 	if err := pp.SaveRunPlan(r.run.ID, string(planJSON)); err != nil {
 		r.log("", models.LogLevelWarning, "could not persist physical plan: %v", err)
+	}
+}
+
+// savePhysicalInstances persists the run's physical instances, best
+// effort. Runs at Execute exit (deferred), by which point node_runs and
+// any expansion_instances are written, so the projection is complete.
+// Skips silently if the store lacks the optional capability or the run
+// row never got created.
+func (r *Runner) savePhysicalInstances() {
+	pi, ok := r.store.(store.PhysicalInstanceStore)
+	if !ok || r.run == nil {
+		return
+	}
+	instances, err := ProjectRunInstances(r.store, r.run.ID)
+	if err != nil || len(instances) == 0 {
+		return
+	}
+	if err := pi.SavePhysicalInstances(r.run.ID, instances); err != nil {
+		r.log("", models.LogLevelWarning, "could not persist physical instances: %v", err)
 	}
 }
 

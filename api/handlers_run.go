@@ -253,6 +253,15 @@ func (h *RunHandler) GetInstances(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Prefer the durable per-instance record (#90 M3); fall back to
+	// projecting from node_runs for runs that predate it or stores
+	// without the capability.
+	if pi, ok := h.store.(store.PhysicalInstanceStore); ok {
+		if durable, err := pi.ListPhysicalInstances(id); err == nil && len(durable) > 0 {
+			writeJSON(w, http.StatusOK, durable)
+			return
+		}
+	}
 	instances, err := engine.ProjectRunInstances(h.store, id)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())

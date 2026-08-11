@@ -278,6 +278,25 @@ func (s *SQLiteStore) migrate() error {
 		created_at TEXT NOT NULL,
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 
+	// physical_instances — the authoritative per-instance record (ADR-015
+	// point 3, #90 M3), one row per physical unit a run executed, keyed by
+	// (run_id, instance_key). Cascades with the run.
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS physical_instances (
+		run_id TEXT NOT NULL,
+		instance_key TEXT NOT NULL,
+		logical_node_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		idx INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT '',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		started_at TEXT,
+		duration_ms INTEGER NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		attempt INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (run_id, instance_key),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_physical_instances_run ON physical_instances(run_id)`)
+
 	// runs.org_id — multi-tenant scoping for run-level queries
 	// (PurgeRunsOlderThanByOrg, GetRunCalendarByOrg, ListRunIDsOlderThanByOrg).
 	// This was missing entirely from the SQLite schema even though every
@@ -2764,4 +2783,58 @@ func (s *SQLiteStore) GetRunPlan(runID string) (string, error) {
 		return "", wrapStoreErr("GetRunPlan", runID, err)
 	}
 	return plan, nil
+}
+
+func (s *SQLiteStore) SavePhysicalInstances(runID string, instances []models.PhysicalInstance) error {
+	if len(instances) == 0 {
+		return nil
+	}
+	return s.WithTx(func(tx *sql.Tx) error {
+		for _, in := range instances {
+			var startedAt interface{}
+			if in.StartedAt != nil {
+				startedAt = in.StartedAt.UTC().Format(timeFormat)
+			}
+			_, err := tx.Exec(
+				`INSERT INTO physical_instances
+				 (run_id, instance_key, logical_node_id, kind, idx, status, row_count, started_at, duration_ms, error, attempt)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(run_id, instance_key) DO UPDATE SET
+				   logical_node_id=excluded.logical_node_id, kind=excluded.kind, idx=excluded.idx,
+				   status=excluded.status, row_count=excluded.row_count, started_at=excluded.started_at,
+				   duration_ms=excluded.duration_ms, error=excluded.error, attempt=excluded.attempt`,
+				runID, in.InstanceKey, in.LogicalNodeID, string(in.Kind), in.Index, string(in.Status),
+				in.RowCount, startedAt, in.DurationMs, in.Error, in.Attempt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *SQLiteStore) ListPhysicalInstances(runID string) ([]models.PhysicalInstance, error) {
+	rows, err := s.db.Query(
+		`SELECT logical_node_id, kind, instance_key, idx, status, row_count, started_at, duration_ms, error, attempt
+		 FROM physical_instances WHERE run_id = ? ORDER BY logical_node_id, idx`, runID)
+	if err != nil {
+		return nil, wrapStoreErr("ListPhysicalInstances", runID, err)
+	}
+	defer rows.Close()
+	var out []models.PhysicalInstance
+	for rows.Next() {
+		var in models.PhysicalInstance
+		var kind, status string
+		var startedAt sql.NullString
+		if err := rows.Scan(&in.LogicalNodeID, &kind, &in.InstanceKey, &in.Index, &status,
+			&in.RowCount, &startedAt, &in.DurationMs, &in.Error, &in.Attempt); err != nil {
+			return nil, wrapStoreErr("ListPhysicalInstances", runID, err)
+		}
+		in.Kind = models.WorkUnitKind(kind)
+		in.Status = models.RunStatus(status)
+		in.StartedAt = parseTimePtr(startedAt)
+		out = append(out, in)
+	}
+	return out, nil
 }
