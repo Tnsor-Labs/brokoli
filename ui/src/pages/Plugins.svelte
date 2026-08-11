@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "../lib/api";
-  import type { Plugin } from "../lib/types";
+  import type { Plugin, PluginIndexEntry } from "../lib/types";
   import { notify } from "../lib/toast";
   import { icons } from "../lib/icons";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
@@ -13,11 +13,53 @@
   let installing = false;
   let fileInput: HTMLInputElement;
 
+  // Curated index (browse + install-by-name)
+  let indexEntries: PluginIndexEntry[] = [];
+  let indexLoading = true;
+  let indexAvailable = false;
+  let installingName = "";
+
   // Delete
   let confirmDelete = false;
   let deleteTarget = "";
 
-  onMount(load);
+  $: installedNames = new Set(plugins.map((p) => p.name));
+
+  onMount(async () => {
+    await load();
+    await loadIndex();
+  });
+
+  async function loadIndex() {
+    indexLoading = true;
+    try {
+      const idx = await api.plugins.index();
+      indexEntries = idx.plugins || [];
+      indexAvailable = true;
+    } catch {
+      // 502 (index unreachable/unconfigured) or 503 (no plugin support):
+      // there's simply no catalog to browse. Not an error the user acts on.
+      indexEntries = [];
+      indexAvailable = false;
+    } finally {
+      indexLoading = false;
+    }
+  }
+
+  async function installFromIndex(name: string) {
+    installingName = name;
+    try {
+      const installed = await api.plugins.installByName(name);
+      notify.success(`Installed ${installed.name} ${installed.version}`);
+      await load();
+    } catch (e: any) {
+      // Named reason from the server: digest mismatch, wrong platform,
+      // missing runtime.
+      notify.error(e?.message || "Install failed");
+    } finally {
+      installingName = "";
+    }
+  }
 
   async function load() {
     loading = true;
@@ -141,6 +183,40 @@
       {/each}
     </div>
   {/if}
+
+  {#if !indexLoading && indexAvailable && indexEntries.length > 0}
+    <section class="index-section">
+      <h2 class="section-title">Available in the index</h2>
+      <div class="table index-table">
+        <div class="table-header">
+          <span class="col-name">Name</span>
+          <span class="col-version">Version</span>
+          <span class="col-idx-desc">Description</span>
+          <span class="col-actions">Actions</span>
+        </div>
+        {#each indexEntries as entry}
+          <div class="table-row">
+            <span class="col-name"><code class="plugin-name-badge">{entry.name}</code></span>
+            <span class="col-version mono">{entry.version || "—"}</span>
+            <span class="col-idx-desc">{entry.description || "—"}</span>
+            <span class="col-actions">
+              {#if installedNames.has(entry.name)}
+                <span class="type-badge muted">installed</span>
+              {:else}
+                <button
+                  class="btn-secondary"
+                  disabled={installingName === entry.name}
+                  on:click={() => installFromIndex(entry.name)}
+                >
+                  {installingName === entry.name ? "Installing…" : "Install"}
+                </button>
+              {/if}
+            </span>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 </div>
 
 <ConfirmDialog
@@ -233,5 +309,43 @@
   .col-actions {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+  }
+
+  /* Index browse section: its own 4-column grid. */
+  .index-section {
+    margin-top: 2rem;
+  }
+  .section-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    margin-bottom: 0.75rem;
+  }
+  .index-table .table-header,
+  .index-table .table-row {
+    grid-template-columns: 2fr 1fr 3fr 100px;
+  }
+  .col-idx-desc {
+    color: var(--text-muted, #888);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .btn-secondary {
+    padding: 0.3rem 0.8rem;
+    border-radius: 6px;
+    border: 1px solid var(--border, #2a2a2a);
+    background: var(--surface-2, rgba(255, 255, 255, 0.06));
+    color: var(--text, inherit);
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--accent-subtle, rgba(34, 197, 94, 0.15));
+    border-color: var(--accent, #22c55e);
+  }
+  .btn-secondary:disabled {
+    opacity: 0.6;
+    cursor: default;
   }
 </style>

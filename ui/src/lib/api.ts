@@ -11,6 +11,7 @@ import type {
   DependencyStatus,
   DependencyGraph,
   Plugin,
+  PluginIndex,
 } from "./types";
 import { authHeaders, logout } from "./auth";
 
@@ -214,6 +215,15 @@ export const api = {
       }
       return res.json();
     },
+    // Browse the curated static index (#110 M3). Returns 502 if the index
+    // is unreachable — the caller treats that as "no catalog available".
+    index: () => request<PluginIndex>("/plugins/index"),
+    // Install by name from the index: the server downloads and verifies the
+    // archive's sha256 against the index digest before installing.
+    installByName: (name: string) =>
+      request<Plugin>(`/plugins/index/${encodeURIComponent(name)}`, {
+        method: "POST",
+      }),
   },
   runsCalendar: (days = 90) => request<CalendarDay[]>(`/runs/calendar?days=${days}`),
 };
