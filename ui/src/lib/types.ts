@@ -282,3 +282,16 @@ export interface Plugin {
   packaged: boolean;
   archive_sha256?: string;
 }
+
+export interface PluginIndexEntry {
+  name: string;
+  version: string;
+  description?: string;
+  archive_url: string;
+  sha256: string;
+}
+
+export interface PluginIndex {
+  version: number;
+  plugins: PluginIndexEntry[];
+}
