@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 // Physical execution plan (ADR-015, issue #90 M2). The authored pipeline
 // is a compact *logical* graph; a physical plan is what the engine would
 // actually schedule for one run — stages of independently-placeable work
@@ -91,4 +93,28 @@ type PhysicalPlan struct {
 	// say "at least N instances, plus fan-out at M nodes".
 	StaticInstanceCount int `json:"static_instance_count"`
 	DynamicNodes        int `json:"dynamic_nodes"`
+}
+
+// PhysicalInstance is one physical unit that actually executed within a
+// run — the runtime counterpart to a PhysicalWorkUnit (ADR-015 §8:
+// "physical stages/instances on demand"). It is a projection over data
+// the run already records: a plain node contributes one `single`
+// instance keyed by its node ID; a dynamic-expansion node contributes
+// one `expansion` instance per resolved upstream item, each with its own
+// deterministic key. The logical NodeRun remains the aggregate summary
+// (ADR-015 point 3); these are the finer-grained records beneath it.
+type PhysicalInstance struct {
+	LogicalNodeID string       `json:"logical_node_id"`
+	Kind          WorkUnitKind `json:"kind"`
+	// InstanceKey is the resolved deterministic identity (the work unit's
+	// template with runtime values filled in): the node ID for a single
+	// instance, or the item's key for an expansion instance.
+	InstanceKey string     `json:"instance_key"`
+	Index       int        `json:"index"`
+	Status      RunStatus  `json:"status"`
+	RowCount    int        `json:"row_count"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	DurationMs  int64      `json:"duration_ms"`
+	Error       string     `json:"error,omitempty"`
+	Attempt     int        `json:"attempt"`
 }
