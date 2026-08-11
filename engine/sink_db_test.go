@@ -140,3 +140,93 @@ func TestSinkDB_Upsert(t *testing.T) {
 		t.Fatalf("id=1 should have been updated to Alicia, got %d", n)
 	}
 }
+
+// runMigratePipeline runs a single migrate node (source_uri -> dest_uri)
+// end to end and returns the run.
+func runMigratePipeline(t *testing.T, srcURI, query, dstURI, table, mode string, keyCols []string, tag string) *models.Run {
+	t.Helper()
+	dir := t.TempDir()
+	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	cfg := map[string]interface{}{
+		"source_uri": srcURI, "source_query": query,
+		"dest_uri": dstURI, "dest_table": table,
+	}
+	if mode != "" {
+		cfg["mode"] = mode
+	}
+	if len(keyCols) > 0 {
+		ks := make([]interface{}, len(keyCols))
+		for i, k := range keyCols {
+			ks[i] = k
+		}
+		cfg["key_columns"] = ks
+	}
+	pipeline := &models.Pipeline{
+		ID: "mig-" + tag, Name: "mig " + tag,
+		Nodes:     []models.Node{{ID: "mig", Type: models.NodeTypeMigrate, Name: "Mig", Config: cfg}},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	eng := NewEngine(s)
+	defer eng.Close(context.Background())
+	run, err := eng.RunPipeline(pipeline.ID)
+	if err != nil {
+		t.Fatalf("RunPipeline(migrate %s): %v", tag, err)
+	}
+	return run
+}
+
+func TestMigrate_OverwriteAndUpsert(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.db")
+	dst := filepath.Join(dir, "dst.db")
+	if _, err := ExecuteSQL(src, `CREATE TABLE src (id INTEGER, name TEXT); INSERT INTO src (id, name) VALUES (1, 'Alice'), (2, 'Bob');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteSQL(dst, `CREATE TABLE dst (id INTEGER PRIMARY KEY, name TEXT);`); err != nil {
+		t.Fatal(err)
+	}
+
+	q := "SELECT id, name FROM src"
+
+	// Upsert: first copy writes both rows.
+	if run := runMigratePipeline(t, src, q, dst, "dst", "upsert", []string{"id"}, "up1"); run.Status != models.RunStatusSuccess {
+		t.Fatalf("upsert migrate status = %s (error: %s)", run.Status, run.Error)
+	}
+	if n := querySinkCount(t, dst, "SELECT COUNT(*) FROM dst"); n != 2 {
+		t.Fatalf("after upsert migrate: %d rows, want 2", n)
+	}
+
+	// Change the source and upsert again: id=1 updates, id=3 is added.
+	if _, err := ExecuteSQL(src, `UPDATE src SET name='Alicia' WHERE id=1; INSERT INTO src (id, name) VALUES (3, 'Carol');`); err != nil {
+		t.Fatal(err)
+	}
+	runMigratePipeline(t, src, q, dst, "dst", "upsert", []string{"id"}, "up2")
+	if n := querySinkCount(t, dst, "SELECT COUNT(*) FROM dst"); n != 3 {
+		t.Fatalf("after 2nd upsert migrate: %d rows, want 3", n)
+	}
+	if n := querySinkCount(t, dst, "SELECT COUNT(*) FROM dst WHERE id=1 AND name='Alicia'"); n != 1 {
+		t.Fatal("id=1 should have been updated to Alicia")
+	}
+
+	// Overwrite: dest currently has 3 rows; overwrite-migrating the 3 source
+	// rows replaces them (still 3, but cleared first — prove by pre-adding a
+	// row that must not survive).
+	if _, err := ExecuteSQL(dst, `INSERT INTO dst (id, name) VALUES (99, 'Ghost');`); err != nil {
+		t.Fatal(err)
+	}
+	runMigratePipeline(t, src, q, dst, "dst", "overwrite", nil, "ow1")
+	if n := querySinkCount(t, dst, "SELECT COUNT(*) FROM dst WHERE id=99"); n != 0 {
+		t.Fatal("overwrite should have cleared the pre-existing id=99 row")
+	}
+	if n := querySinkCount(t, dst, "SELECT COUNT(*) FROM dst"); n != 3 {
+		t.Fatalf("after overwrite migrate: %d rows, want the 3 source rows", n)
+	}
+}
