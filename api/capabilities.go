@@ -33,7 +33,8 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 }
 
 // CapabilitiesHandler returns the host's supported pipeline IR versions,
-// plugin protocol versions, and known node/connector capability tags.
+// plugin protocol versions, plugin packaging versions and runtime classes,
+// and known node/connector capability tags.
 // Unauthenticated and static/derived — SDK clients and the UI use it to
 // discover what a given Brokoli deployment understands before deploying
 // a pipeline (e.g. whether IR 2.1 conditional edges or decorator-based
@@ -45,6 +46,8 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		"supported_execution_features":       models.SupportedExecutionFeatures,
 		"plugin_protocol_version":            plugins.ProtocolVersion,
 		"supported_plugin_protocol_versions": plugins.SupportedProtocolVersions,
+		"supported_packaging_versions":       plugins.SupportedPackagingVersions,
+		"supported_runtime_classes":          plugins.SupportedRuntimeClasses,
 		"node_capabilities":                  []string{models.CapabilitySource, models.CapabilitySink, models.CapabilityCompute, models.CapabilityDatasetOutput},
 		"node_type_capabilities":             nodeTypeCapabilities,
 	})

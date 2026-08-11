@@ -54,6 +54,38 @@ func TestCapabilitiesHandler(t *testing.T) {
 		t.Error("expected supported_plugin_protocol_versions to be present")
 	}
 
+	pkgVersions, ok := body["supported_packaging_versions"].([]interface{})
+	if !ok || len(pkgVersions) == 0 {
+		t.Fatalf("expected non-empty supported_packaging_versions, got %v", body["supported_packaging_versions"])
+	}
+	hasV1 := false
+	for _, v := range pkgVersions {
+		if n, ok := v.(float64); ok && n == 1 {
+			hasV1 = true
+		}
+	}
+	if !hasV1 {
+		t.Errorf("expected supported_packaging_versions to include 1, got %v", pkgVersions)
+	}
+
+	runtimeClasses, ok := body["supported_runtime_classes"].([]interface{})
+	if !ok || len(runtimeClasses) == 0 {
+		t.Fatalf("expected non-empty supported_runtime_classes, got %v", body["supported_runtime_classes"])
+	}
+	wantClasses := map[string]bool{"native": false, "python": false, "node": false, "jvm": false}
+	for _, v := range runtimeClasses {
+		if s, ok := v.(string); ok {
+			if _, expected := wantClasses[s]; expected {
+				wantClasses[s] = true
+			}
+		}
+	}
+	for cls, present := range wantClasses {
+		if !present {
+			t.Errorf("expected supported_runtime_classes to include %q, got %v", cls, runtimeClasses)
+		}
+	}
+
 	nodeCaps, ok := body["node_capabilities"].([]interface{})
 	if !ok || len(nodeCaps) == 0 {
 		t.Fatalf("expected non-empty node_capabilities, got %v", body["node_capabilities"])
