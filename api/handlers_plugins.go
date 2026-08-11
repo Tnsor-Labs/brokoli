@@ -12,6 +12,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -28,6 +29,11 @@ const maxPluginUploadBytes = 128 << 20 // 128 MiB
 
 // pluginIndexTimeout bounds a single browse-the-index request end to end.
 const pluginIndexTimeout = 20 * time.Second
+
+// pluginInstallByNameTimeout bounds an install-from-index request: it
+// fetches the index and then downloads the archive, so it is more generous
+// than a browse.
+const pluginInstallByNameTimeout = 90 * time.Second
 
 // PluginHandler serves the plugin management endpoints against a shared
 // *plugins.Manager. Nil manager means the host has no plugin support
@@ -123,6 +129,13 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	h.installFromPath(w, tmpPath)
+}
+
+// installFromPath installs the .bkg at tmpPath (already read/verified),
+// stashes it for worker fetch, hot-reloads the manager, and writes the
+// response. Shared by upload Install and index InstallByName.
+func (h *PluginHandler) installFromPath(w http.ResponseWriter, tmpPath string) {
 	installed, err := plugins.InstallArchive(tmpPath, h.mgr.Dir())
 	if err != nil {
 		// Feasibility/integrity/drift failures are the client's problem
@@ -146,6 +159,53 @@ func (h *PluginHandler) Install(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, toPluginDTO(installed))
+}
+
+// InstallByName installs a plugin from the curated index by name: look up
+// the entry, download its archive, verify the sha256 against the index
+// digest, then install through the same pipeline as an upload. No bytes are
+// handed to the installer unless the digest matches — the "no plugin bytes
+// execute without a digest match" guarantee for the browse-and-install path.
+func (h *PluginHandler) InstallByName(w http.ResponseWriter, r *http.Request) {
+	if h.unavailable(w) {
+		return
+	}
+	name := chi.URLParam(r, "name")
+	ctx, cancel := context.WithTimeout(r.Context(), pluginInstallByNameTimeout)
+	defer cancel()
+
+	idx, err := plugins.FetchIndex(ctx, plugins.IndexURL())
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	entry := idx.FindEntry(name)
+	if entry == nil {
+		writeError(w, http.StatusNotFound, fmt.Sprintf("no plugin named %q in the index", name))
+		return
+	}
+
+	tmp, err := os.CreateTemp("", "brokoli-index-*.bkg")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer func() { _ = os.Remove(tmpPath) }()
+
+	if err := plugins.DownloadArchive(ctx, entry.ArchiveURL, entry.SHA256, tmpPath, maxPluginUploadBytes); err != nil {
+		if errors.Is(err, plugins.ErrDigestMismatch) {
+			// The archive is not what the index vouched for: a well-formed
+			// request whose resource failed verification.
+			writeError(w, http.StatusUnprocessableEntity, err.Error())
+			return
+		}
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+
+	h.installFromPath(w, tmpPath)
 }
 
 // Remove uninstalls a plugin and hot-reloads.
