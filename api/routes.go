@@ -123,6 +123,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// fetch are read-only (archive fetch is how workers pull by
 		// digest). Node types hot-reload on install/remove.
 		r.Get("/plugins", plugh.List)
+		r.Get("/plugins/index", plugh.Index)
 		r.With(requirePerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
 		r.With(requirePerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
 		r.Get("/plugins/{name}/archive", plugh.Archive)
