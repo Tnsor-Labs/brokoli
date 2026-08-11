@@ -92,10 +92,10 @@ type Manifest struct {
 }
 
 // Runtime classes a payload may declare (ADR-016). The class determines
-// exactly two things: how install-time feasibility is checked and how
-// the launch command is derived. jvm and node are recognized-but-not-
-// yet-resolvable in this release; unknown classes are install-time
-// errors, never runtime surprises.
+// exactly two things: how install-time feasibility is checked and how the
+// launch command is derived. All four are resolvable — native/python by
+// probing the host, node/jvm by locating node/java. Unknown classes are
+// install-time errors, never runtime surprises.
 const (
 	RuntimeNative = "native"
 	RuntimePython = "python"
@@ -108,6 +108,25 @@ var knownRuntimes = map[string]bool{
 	RuntimePython: true,
 	RuntimeNode:   true,
 	RuntimeJVM:    true,
+}
+
+// CurrentPackagingVersion is the packaging_version this build writes, and
+// the highest it can install. Additive changes bump it; older manifests
+// stay valid (see Manifest.Validate).
+const CurrentPackagingVersion = 1
+
+// SupportedPackagingVersions lists every packaging_version this build can
+// install. Advertised via /api/capabilities so a client can tell, before
+// uploading, whether a package's format is understood here.
+var SupportedPackagingVersions = []int{CurrentPackagingVersion}
+
+// SupportedRuntimeClasses lists the runtime classes this build knows how
+// to resolve and launch. Advertised via /api/capabilities. Whether a
+// class is actually available on a given host (e.g. python3 present) is a
+// separate, install-time check that fails with a named reason — this list
+// is what the installer *understands*, not what happens to be installed.
+var SupportedRuntimeClasses = []string{
+	RuntimeNative, RuntimePython, RuntimeNode, RuntimeJVM,
 }
 
 // Payload is one installable alternative inside a package archive.
@@ -203,8 +222,8 @@ func (m *Manifest) Validate() error {
 		// must have Binary either way.
 		return fmt.Errorf("binary is required")
 	}
-	if len(m.Payloads) > 0 && m.PackagingVersion != 1 {
-		return fmt.Errorf("payloads require packaging_version 1, got %d", m.PackagingVersion)
+	if len(m.Payloads) > 0 && m.PackagingVersion != CurrentPackagingVersion {
+		return fmt.Errorf("payloads require packaging_version %d, got %d", CurrentPackagingVersion, m.PackagingVersion)
 	}
 	for i, p := range m.Payloads {
 		if !knownRuntimes[p.Runtime] {
