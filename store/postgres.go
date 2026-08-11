@@ -349,6 +349,24 @@ func (s *PostgresStore) migrate() error {
 		created_at TIMESTAMPTZ NOT NULL,
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 
+	// physical_instances — authoritative per-instance record (ADR-015
+	// point 3, #90 M3), keyed by (run_id, instance_key), cascades with run.
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS physical_instances (
+		run_id TEXT NOT NULL,
+		instance_key TEXT NOT NULL,
+		logical_node_id TEXT NOT NULL,
+		kind TEXT NOT NULL,
+		idx INTEGER NOT NULL DEFAULT 0,
+		status TEXT NOT NULL DEFAULT '',
+		row_count INTEGER NOT NULL DEFAULT 0,
+		started_at TIMESTAMPTZ,
+		duration_ms BIGINT NOT NULL DEFAULT 0,
+		error TEXT NOT NULL DEFAULT '',
+		attempt INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (run_id, instance_key),
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_physical_instances_run ON physical_instances(run_id)`)
+
 	// Backfill: runs.org_id has existed in Postgres since its own org_id
 	// migration above, but CreateRun never actually set it until this fix
 	// (Tnsor-Labs/brokoli#50) — every run ever created here still has the
@@ -2597,4 +2615,61 @@ func (s *PostgresStore) GetRunPlan(runID string) (string, error) {
 		return "", err
 	}
 	return plan, nil
+}
+
+func (s *PostgresStore) SavePhysicalInstances(runID string, instances []models.PhysicalInstance) error {
+	if len(instances) == 0 {
+		return nil
+	}
+	return s.WithTx(func(tx *sql.Tx) error {
+		for _, in := range instances {
+			var startedAt interface{}
+			if in.StartedAt != nil {
+				startedAt = in.StartedAt.UTC()
+			}
+			_, err := tx.Exec(
+				`INSERT INTO physical_instances
+				 (run_id, instance_key, logical_node_id, kind, idx, status, row_count, started_at, duration_ms, error, attempt)
+				 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+				 ON CONFLICT (run_id, instance_key) DO UPDATE SET
+				   logical_node_id=EXCLUDED.logical_node_id, kind=EXCLUDED.kind, idx=EXCLUDED.idx,
+				   status=EXCLUDED.status, row_count=EXCLUDED.row_count, started_at=EXCLUDED.started_at,
+				   duration_ms=EXCLUDED.duration_ms, error=EXCLUDED.error, attempt=EXCLUDED.attempt`,
+				runID, in.InstanceKey, in.LogicalNodeID, string(in.Kind), in.Index, string(in.Status),
+				in.RowCount, startedAt, in.DurationMs, in.Error, in.Attempt,
+			)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (s *PostgresStore) ListPhysicalInstances(runID string) ([]models.PhysicalInstance, error) {
+	rows, err := s.db.Query(
+		`SELECT logical_node_id, kind, instance_key, idx, status, row_count, started_at, duration_ms, error, attempt
+		 FROM physical_instances WHERE run_id = $1 ORDER BY logical_node_id, idx`, runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.PhysicalInstance
+	for rows.Next() {
+		var in models.PhysicalInstance
+		var kind, status string
+		var startedAt sql.NullTime
+		if err := rows.Scan(&in.LogicalNodeID, &kind, &in.InstanceKey, &in.Index, &status,
+			&in.RowCount, &startedAt, &in.DurationMs, &in.Error, &in.Attempt); err != nil {
+			return nil, err
+		}
+		in.Kind = models.WorkUnitKind(kind)
+		in.Status = models.RunStatus(status)
+		if startedAt.Valid {
+			t := startedAt.Time.UTC()
+			in.StartedAt = &t
+		}
+		out = append(out, in)
+	}
+	return out, nil
 }

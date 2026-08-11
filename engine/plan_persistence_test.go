@@ -68,3 +68,61 @@ func TestRunPersistsPhysicalPlanMatchingPlanner(t *testing.T) {
 		t.Fatalf("unexpected persisted plan shape: static=%d stages=%d", plan.StaticInstanceCount, len(plan.Stages))
 	}
 }
+
+func TestRunPersistsDurablePhysicalInstances(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.NewSQLiteStore(filepath.Join(dir, "inst-e2e.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	csv := filepath.Join(dir, "in.csv")
+	if err := os.WriteFile(csv, []byte("id\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "out.csv")
+	pipeline := &models.Pipeline{
+		ID: "inst-e2e", Name: "inst e2e",
+		Nodes: []models.Node{
+			{ID: "src", Type: models.NodeTypeSourceFile, Name: "Src", Config: map[string]interface{}{"path": csv, "format": "csv"}},
+			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": out, "format": "csv"}},
+		},
+		Edges:     []models.Edge{{From: "src", To: "sink"}},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	run, err := NewEngine(s).RunPipeline(pipeline.ID)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+
+	durable, err := s.ListPhysicalInstances(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(durable) != 2 {
+		t.Fatalf("durable instances = %d, want 2", len(durable))
+	}
+	// Durable rows equal the projection for the same run.
+	projected, err := ProjectRunInstances(s, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byKey := func(xs []models.PhysicalInstance) map[string]models.PhysicalInstance {
+		m := map[string]models.PhysicalInstance{}
+		for _, x := range xs {
+			m[x.InstanceKey] = x
+		}
+		return m
+	}
+	dm, pm := byKey(durable), byKey(projected)
+	for k, p := range pm {
+		d, ok := dm[k]
+		if !ok || d.LogicalNodeID != p.LogicalNodeID || d.Kind != p.Kind || d.Status != p.Status {
+			t.Fatalf("durable[%q]=%+v != projected %+v", k, d, p)
+		}
+	}
+}

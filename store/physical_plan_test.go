@@ -86,3 +86,49 @@ func TestRunPlanCascadesWithPurge(t *testing.T) {
 		t.Fatal("plan survived its run's purge — ON DELETE CASCADE not effective")
 	}
 }
+
+func TestPhysicalInstancesRoundTripAndCascade(t *testing.T) {
+	s := planStore(t)
+	old := time.Now().AddDate(0, 0, -40).UTC()
+	seedRunForPlan(t, s, "inst-run", old)
+
+	start := time.Now().UTC()
+	insts := []models.PhysicalInstance{
+		{LogicalNodeID: "src", Kind: models.WorkUnitSingle, InstanceKey: "src", Status: models.RunStatusSuccess, RowCount: 5, StartedAt: &start, DurationMs: 12, Attempt: 0},
+		{LogicalNodeID: "fan", Kind: models.WorkUnitExpansion, InstanceKey: "fan[0]", Index: 0, Status: models.RunStatusSuccess, RowCount: 3},
+	}
+	if err := s.SavePhysicalInstances("inst-run", insts); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.ListPhysicalInstances("inst-run")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d instances, want 2", len(got))
+	}
+	// Upsert: re-saving with a changed status refreshes, not duplicates.
+	insts[0].Status = models.RunStatusFailed
+	if err := s.SavePhysicalInstances("inst-run", insts); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = s.ListPhysicalInstances("inst-run")
+	if len(got) != 2 {
+		t.Fatalf("upsert duplicated rows: got %d", len(got))
+	}
+	// Cascade: purging the run removes its instances.
+	if _, err := s.PurgeRunsOlderThan(30); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := s.ListPhysicalInstances("inst-run")
+	if len(after) != 0 {
+		t.Fatalf("instances survived run purge: %d", len(after))
+	}
+}
+
+func TestSavePhysicalInstancesEmptyIsNoop(t *testing.T) {
+	s := planStore(t)
+	if err := s.SavePhysicalInstances("nope", nil); err != nil {
+		t.Fatalf("empty save should be a no-op, got %v", err)
+	}
+}

@@ -266,6 +266,24 @@ type PhysicalPlanStore interface {
 	GetRunPlan(runID string) (string, error)
 }
 
+// PhysicalInstanceStore persists the physical instances a run executed
+// (ADR-015 point 3, #90 M3): the authoritative per-instance record, with
+// its own durable identity keyed by (run_id, instance_key), rather than
+// a projection recomputed from node_runs each read. This is the record
+// dispatch will later lease and fence against.
+//
+// Optional capability, not embedded in Store (same shape as
+// ExecutionAttemptStore / PhysicalPlanStore): core backends implement
+// it, callers reach it by type assertion, and a hand-written store that
+// hasn't adopted it keeps satisfying Store. Rows cascade with their run.
+type PhysicalInstanceStore interface {
+	// SavePhysicalInstances upserts a run's instances by (run_id,
+	// instance_key), so re-saving a run (a resume) refreshes rather than
+	// duplicates.
+	SavePhysicalInstances(runID string, instances []models.PhysicalInstance) error
+	ListPhysicalInstances(runID string) ([]models.PhysicalInstance, error)
+}
+
 // PipelineStore persists authored pipelines and answers dependency-graph
 // queries over them.
 type PipelineStore interface {
