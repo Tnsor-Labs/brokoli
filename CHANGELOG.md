@@ -11,6 +11,45 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.13] - 2026-08-11
+
+Full curated notes with per-change ownership:
+[v0.10.13 release](https://github.com/Tnsor-Labs/brokoli/releases/tag/v0.10.13).
+
+### Added
+
+- **Plugin distribution UI and curated index** (#126, #129, #130, #131) —
+  @hc12r. Plugins are now installable without the CLI: a Plugins page lists
+  installed plugins, uploads a `.bkg`, and removes; a curated static index
+  (`GET /api/plugins/index`, `BROKOLI_PLUGIN_INDEX` override, ADR-016 §5)
+  is browsable and installable by name (`POST /api/plugins/index/{name}`),
+  with the archive's sha256 verified against the index digest before any
+  bytes reach the installer — no plugin executes without a digest match.
+  Install/remove errors are surfaced verbatim, so a wrong-platform or
+  tampered package shows the server's named reason.
+- **Capability advertising for plugin packaging** (#127) — @hc12r.
+  `GET /api/capabilities` now reports `supported_packaging_versions` and
+  `supported_runtime_classes` (native, python, node, jvm), so clients can
+  tell what a deployment understands before uploading — the same
+  negotiate-before-you-act contract as `supported_ir_versions`.
+- **Durable physical run instances** (#123, #125, ADR-015 §8, #90) —
+  @hc12r. A run's physical instances (one per plain node, one per resolved
+  expansion item) are projected at `GET /api/runs/{id}/instances` and, once
+  a run records them, persisted in a durable `physical_instances` table
+  (read durable-first with a projection fallback for older runs). A run now
+  answers both what it *planned* (`/plan`) and what it *ran* (`/instances`)
+  in the physical model.
+
+### Fixed
+
+- **Plugin runner SIGTERM grace on the spec path** (#128) — @hc12r. The
+  install-time `spec` probe now applies the same SIGTERM-then-SIGKILL grace
+  as the main run path (`Cancel` + `WaitDelay`) instead of killing a hung
+  plugin immediately with no chance to shut down cleanly.
+- **SODP dashboard eviction test no longer flakes after midnight** (#124) —
+  @hc12r. The test derives its expected day buckets from the seeded
+  timestamp rather than the wall clock.
+
 ## [0.10.12] - 2026-08-11
 
 Full curated notes with per-change ownership:
