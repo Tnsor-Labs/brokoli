@@ -1049,6 +1049,11 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	sourceQuery, _ := node.Config["source_query"].(string)
 	destTable, _ := node.Config["dest_table"].(string)
 	dialect, _ := node.Config["dialect"].(string)
+	mode, _ := node.Config["mode"].(string)
+	keyColumns := configStringSlice(node.Config["key_columns"])
+	if dialect == "" && destURI != "" {
+		dialect = dialectForURI(destURI)
+	}
 
 	if sourceURI == "" || sourceQuery == "" {
 		return nil, fmt.Errorf("migrate node requires source connection (source_conn_id or source_uri) and 'source_query'")
@@ -1097,11 +1102,20 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 		}
 
 		chunkNum := (i / chunkSize) + 1
+		// Overwrite clears the table exactly once — the first chunk does the
+		// DELETE; later chunks append, or they would wipe the rows the
+		// earlier chunks just wrote. Upsert and append apply to every chunk.
+		chunkMode := mode
+		if i > 0 && (strings.EqualFold(mode, ModeOverwrite) || strings.EqualFold(mode, "replace")) {
+			chunkMode = ModeAppend
+		}
 		cfg := SQLGenConfig{
 			Dialect:     dialect,
 			Table:       destTable,
 			BatchSize:   chunkSize,
 			CreateTable: createTable && !tableCreated,
+			Mode:        chunkMode,
+			KeyColumns:  keyColumns,
 		}
 
 		sql, err := GenerateSQL(cfg, chunk)
