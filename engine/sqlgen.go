@@ -9,15 +9,26 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
+// Write modes for GenerateSQL.
+const (
+	ModeAppend    = "append"    // add rows to whatever is already in the table
+	ModeOverwrite = "overwrite" // clear the table first, then add the rows
+	ModeUpsert    = "upsert"    // insert, updating rows that collide on KeyColumns
+)
+
 // SQLGenConfig holds settings for SQL generation.
 type SQLGenConfig struct {
-	Dialect     string `json:"dialect"`
-	Table       string `json:"table"`
-	BatchSize   int    `json:"batch_size"`
-	CreateTable bool   `json:"create_table"`
+	Dialect     string   `json:"dialect"`
+	Table       string   `json:"table"`
+	BatchSize   int      `json:"batch_size"`
+	CreateTable bool     `json:"create_table"`
+	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
+	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
 }
 
-// GenerateSQL produces SQL statements from a DataSet.
+// GenerateSQL produces SQL statements from a DataSet. The statements are
+// meant to run as one transaction (ExecuteSQL splits on ";"), so overwrite's
+// clear-then-insert is atomic.
 func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 	if len(ds.Columns) == 0 {
 		return "", fmt.Errorf("no columns in dataset")
@@ -33,6 +44,13 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 		cfg.Dialect = "generic"
 	}
 
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	switch mode {
+	case "", ModeAppend, "replace", ModeOverwrite, ModeUpsert:
+	default:
+		return "", fmt.Errorf("unsupported write mode %q: expected append, overwrite, or upsert", cfg.Mode)
+	}
+
 	d := getDialect(cfg.Dialect)
 	var sb strings.Builder
 
@@ -42,14 +60,27 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 		sb.WriteString("\n\n")
 	}
 
-	// Generate INSERT statements in batches
+	// Overwrite clears the table before the inserts, in the same transaction.
+	if mode == ModeOverwrite || mode == "replace" {
+		sb.WriteString("DELETE FROM " + d.quoteIdent(cfg.Table) + d.terminator + "\n")
+	}
+
+	// Generate INSERT (or upsert) statements in batches.
 	for i := 0; i < len(ds.Rows); i += cfg.BatchSize {
 		end := i + cfg.BatchSize
 		if end > len(ds.Rows) {
 			end = len(ds.Rows)
 		}
 		batch := ds.Rows[i:end]
-		sb.WriteString(d.insertBatch(cfg.Table, ds.Columns, batch))
+		if mode == ModeUpsert {
+			stmt, err := d.upsertBatch(cfg.Table, ds.Columns, cfg.KeyColumns, batch)
+			if err != nil {
+				return "", err
+			}
+			sb.WriteString(stmt)
+		} else {
+			sb.WriteString(d.insertBatch(cfg.Table, ds.Columns, batch))
+		}
 		sb.WriteString("\n")
 	}
 
@@ -259,4 +290,58 @@ func (d dialect) insertBatch(table string, columns []string, rows []common.DataR
 	}
 	sb.WriteString(d.terminator)
 	return sb.String()
+}
+
+// upsertBatch builds an INSERT that updates rows colliding on keyCols. The
+// conflict clause hangs off a normal multi-row INSERT, so all rows in the
+// batch share it. Postgres and SQLite need the explicit key columns
+// (ON CONFLICT); MySQL keys off the table's own unique indexes
+// (ON DUPLICATE KEY). Other dialects have no portable form and error, so an
+// unsupported upsert fails with a name instead of silently inserting.
+func (d dialect) upsertBatch(table string, columns, keyCols []string, rows []common.DataRow) (string, error) {
+	insert := strings.TrimSuffix(d.insertBatch(table, columns, rows), d.terminator)
+
+	inKeys := make(map[string]bool, len(keyCols))
+	for _, k := range keyCols {
+		inKeys[k] = true
+	}
+
+	switch d.name {
+	case "postgres", "sqlite":
+		if len(keyCols) == 0 {
+			return "", fmt.Errorf("upsert requires key_columns for %s (the conflict target)", d.name)
+		}
+		quotedKeys := make([]string, len(keyCols))
+		for i, k := range keyCols {
+			quotedKeys[i] = d.quoteIdent(k)
+		}
+		var sets []string
+		for _, col := range columns {
+			if inKeys[col] {
+				continue
+			}
+			sets = append(sets, d.quoteIdent(col)+" = EXCLUDED."+d.quoteIdent(col))
+		}
+		if len(sets) == 0 {
+			// Every column is part of the key — nothing to update.
+			return insert + " ON CONFLICT (" + strings.Join(quotedKeys, ", ") + ") DO NOTHING" + d.terminator, nil
+		}
+		return insert + " ON CONFLICT (" + strings.Join(quotedKeys, ", ") + ") DO UPDATE SET " + strings.Join(sets, ", ") + d.terminator, nil
+	case "mysql":
+		var sets []string
+		for _, col := range columns {
+			if inKeys[col] {
+				continue
+			}
+			sets = append(sets, d.quoteIdent(col)+" = VALUES("+d.quoteIdent(col)+")")
+		}
+		if len(sets) == 0 {
+			for _, col := range columns {
+				sets = append(sets, d.quoteIdent(col)+" = VALUES("+d.quoteIdent(col)+")")
+			}
+		}
+		return insert + " ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ") + d.terminator, nil
+	default:
+		return "", fmt.Errorf("upsert is not supported for dialect %q", d.name)
+	}
 }

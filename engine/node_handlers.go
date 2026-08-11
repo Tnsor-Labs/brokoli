@@ -871,24 +871,71 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		return nil, fmt.Errorf("sink_db node requires 'uri' config")
 	}
 
-	// Input should have sql_output from a sql_generate node
-	var sqlContent string
+	// Path 1 (kept for back-compat): an upstream sql_generate node already
+	// produced ready-to-run SQL in a single sql_output row.
 	if len(input.Rows) == 1 {
-		if s, ok := input.Rows[0]["sql_output"].(string); ok {
-			sqlContent = s
+		if s, ok := input.Rows[0]["sql_output"].(string); ok && s != "" {
+			return r.execSinkSQL(node, uri, s)
 		}
 	}
-	if sqlContent == "" {
-		return nil, fmt.Errorf("sink_db expects input from sql_generate node (sql_output column)")
-	}
 
-	affected, err := ExecuteSQL(uri, sqlContent)
+	// Path 2: generate INSERT/UPSERT/overwrite SQL from table + mode + the
+	// input rows, so sink_db writes a dataset on its own — no sql_generate
+	// node required (brokoli-sdk#12).
+	table, _ := node.Config["table"].(string)
+	if table == "" {
+		return nil, fmt.Errorf("sink_db requires a 'table' (or input from a sql_generate node providing sql_output)")
+	}
+	if len(input.Rows) == 0 {
+		r.log(node.ID, models.LogLevelInfo, "sink_db: no rows to write to %q", table)
+		return nil, nil
+	}
+	mode, _ := node.Config["mode"].(string)
+	cfg := SQLGenConfig{
+		Dialect:     dialectForURI(uri),
+		Table:       table,
+		Mode:        mode,
+		KeyColumns:  configStringSlice(node.Config["key_columns"]),
+		CreateTable: configBool(node.Config["create_table"]),
+	}
+	sql, err := GenerateSQL(cfg, input)
+	if err != nil {
+		return nil, fmt.Errorf("sink_db: %w", err)
+	}
+	return r.execSinkSQL(node, uri, sql)
+}
+
+func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
+	affected, err := ExecuteSQL(uri, sql)
 	if err != nil {
 		return nil, fmt.Errorf("execute SQL: %w", err)
 	}
-
 	r.log(node.ID, models.LogLevelInfo, "Executed SQL against database: %d rows affected", affected)
 	return nil, nil
+}
+
+// configStringSlice reads a config value that may be []string or the
+// []interface{} JSON decoding produces, into []string.
+func configStringSlice(v interface{}) []string {
+	switch xs := v.(type) {
+	case []string:
+		return xs
+	case []interface{}:
+		out := make([]string, 0, len(xs))
+		for _, x := range xs {
+			if s, ok := x.(string); ok && s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func configBool(v interface{}) bool {
+	b, _ := v.(bool)
+	return b
 }
 
 // ── Sink API ────────────────────────────────────────────────
