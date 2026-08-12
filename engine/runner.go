@@ -54,6 +54,19 @@ type Runner struct {
 	// ClaimAttempt/AckAttempt when the node dispatch loop wires through it.
 	instanceID string
 
+	// expansionResults caches a dynamic-expansion item's successful output
+	// across that same expansion node's own retry attempts within this run
+	// (Tnsor-Labs/brokoli#90 M3, ADR-015 §6's "retry without rerunning
+	// successful siblings" guarantee) — keyed nodeID -> instanceKey. Scoped
+	// to this Runner's lifetime (one run): it survives a node-level retry
+	// within the same process, not a process crash, since the actual item
+	// output isn't durably persisted anywhere per-instance today (only
+	// models.ExpansionInstance's status/row-count metadata is) — true
+	// crash-survivable per-item retry needs durable per-instance output
+	// storage, deferred to #90 M3's larger per-instance dispatch work, same
+	// as #143's paginated-source case.
+	expansionResults map[string]map[string]*common.DataSet
+
 	// pipelineVersion pins a freshly created run (acceptedRun == nil) to the
 	// store.PipelineVersion snapshot it was resolved against — see
 	// Engine.resolveRunPipelineVersion and models.Run.PipelineVersion.
