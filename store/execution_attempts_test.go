@@ -55,7 +55,7 @@ func TestCreateExecutionAttemptTxIsIdempotent(t *testing.T) {
 	// dispatch must be safe.
 	createAttempt(t, s, "run-outbox", "node-a", 0)
 
-	got, err := s.GetExecutionAttempt("run-outbox", "node-a", 0)
+	got, err := s.GetExecutionAttempt("run-outbox", "node-a", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestClaimAttemptCASOnlyOneWinnerAmongConcurrentClaims(t *testing.T) {
 		wg.Add(1)
 		go func(worker int) {
 			defer wg.Done()
-			gen, ok, err := s.ClaimAttempt("run-claim", "node-a", 0, fmt.Sprintf("worker-%d", worker), time.Minute)
+			gen, ok, err := s.ClaimAttempt("run-claim", "node-a", "", 0, fmt.Sprintf("worker-%d", worker), time.Minute)
 			if err != nil {
 				t.Errorf("ClaimAttempt(worker %d): %v", worker, err)
 				return
@@ -104,7 +104,7 @@ func TestClaimAttemptCASOnlyOneWinnerAmongConcurrentClaims(t *testing.T) {
 		t.Fatalf("winning fencing generation = %v, want {1: 1}", generations)
 	}
 
-	got, err := s.GetExecutionAttempt("run-claim", "node-a", 0)
+	got, err := s.GetExecutionAttempt("run-claim", "node-a", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestClaimAttemptRejectsAlreadyClaimedLiveLease(t *testing.T) {
 	seedRunForAttempts(t, s, "pipe-live", "run-live")
 	createAttempt(t, s, "run-live", "node-a", 0)
 
-	gen1, ok, err := s.ClaimAttempt("run-live", "node-a", 0, "worker-1", time.Hour)
+	gen1, ok, err := s.ClaimAttempt("run-live", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v", ok, err)
 	}
@@ -134,7 +134,7 @@ func TestClaimAttemptRejectsAlreadyClaimedLiveLease(t *testing.T) {
 
 	// A second worker attempting to claim the same, still-live-leased
 	// attempt must lose (no-op, not an error).
-	gen2, ok2, err := s.ClaimAttempt("run-live", "node-a", 0, "worker-2", time.Hour)
+	gen2, ok2, err := s.ClaimAttempt("run-live", "node-a", "", 0, "worker-2", time.Hour)
 	if err != nil {
 		t.Fatalf("second claim: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestClaimAttemptExpiredLeaseCanBeReclaimedWithHigherFencingGeneration(t *te
 	seedRunForAttempts(t, s, "pipe-expire", "run-expire")
 	createAttempt(t, s, "run-expire", "node-a", 0)
 
-	gen1, ok, err := s.ClaimAttempt("run-expire", "node-a", 0, "worker-1", -time.Second) // already expired
+	gen1, ok, err := s.ClaimAttempt("run-expire", "node-a", "", 0, "worker-1", -time.Second) // already expired
 	if err != nil || !ok {
 		t.Fatalf("first claim: ok=%v err=%v", ok, err)
 	}
@@ -159,7 +159,7 @@ func TestClaimAttemptExpiredLeaseCanBeReclaimedWithHigherFencingGeneration(t *te
 	// worker-1's lease is already expired, so worker-2 must be able to
 	// reclaim it, and the fencing generation must strictly increase so
 	// worker-1 can detect its lease was reassigned if it wakes back up.
-	gen2, ok2, err := s.ClaimAttempt("run-expire", "node-a", 0, "worker-2", time.Hour)
+	gen2, ok2, err := s.ClaimAttempt("run-expire", "node-a", "", 0, "worker-2", time.Hour)
 	if err != nil {
 		t.Fatalf("reclaim after expiry: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestClaimAttemptExpiredLeaseCanBeReclaimedWithHigherFencingGeneration(t *te
 	}
 
 	// worker-1, using its now-stale fencing generation, must fail to renew.
-	renewed, err := s.RenewLease("run-expire", "node-a", 0, "worker-1", gen1, time.Hour)
+	renewed, err := s.RenewLease("run-expire", "node-a", "", 0, "worker-1", gen1, time.Hour)
 	if err != nil {
 		t.Fatalf("RenewLease (stale worker-1): %v", err)
 	}
@@ -180,7 +180,7 @@ func TestClaimAttemptExpiredLeaseCanBeReclaimedWithHigherFencingGeneration(t *te
 	}
 
 	// worker-2, using the correct (current) fencing generation, must renew.
-	renewed2, err := s.RenewLease("run-expire", "node-a", 0, "worker-2", gen2, time.Hour)
+	renewed2, err := s.RenewLease("run-expire", "node-a", "", 0, "worker-2", gen2, time.Hour)
 	if err != nil {
 		t.Fatalf("RenewLease (worker-2): %v", err)
 	}
@@ -194,17 +194,17 @@ func TestClaimAttemptCannotReclaimTerminalAttempt(t *testing.T) {
 	seedRunForAttempts(t, s, "pipe-terminal", "run-terminal")
 	createAttempt(t, s, "run-terminal", "node-a", 0)
 
-	gen, ok, err := s.ClaimAttempt("run-terminal", "node-a", 0, "worker-1", time.Hour)
+	gen, ok, err := s.ClaimAttempt("run-terminal", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
-	if err := s.CompleteAttempt("run-terminal", "node-a", 0, gen); err != nil {
+	if err := s.CompleteAttempt("run-terminal", "node-a", "", 0, gen); err != nil {
 		t.Fatalf("CompleteAttempt: %v", err)
 	}
 
 	// Duplicate delivery: re-claiming an already-completed attempt is a
 	// documented no-op, never an error.
-	_, ok2, err := s.ClaimAttempt("run-terminal", "node-a", 0, "worker-2", time.Hour)
+	_, ok2, err := s.ClaimAttempt("run-terminal", "node-a", "", 0, "worker-2", time.Hour)
 	if err != nil {
 		t.Fatalf("reclaim of completed attempt: %v", err)
 	}
@@ -218,15 +218,15 @@ func TestAckAttemptIsIdempotentAndFencingChecked(t *testing.T) {
 	seedRunForAttempts(t, s, "pipe-ack", "run-ack")
 	createAttempt(t, s, "run-ack", "node-a", 0)
 
-	gen, ok, err := s.ClaimAttempt("run-ack", "node-a", 0, "worker-1", time.Hour)
+	gen, ok, err := s.ClaimAttempt("run-ack", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
-	if err := s.AckAttempt("run-ack", "node-a", 0, "worker-1", gen); err != nil {
+	if err := s.AckAttempt("run-ack", "node-a", "", 0, "worker-1", gen); err != nil {
 		t.Fatalf("AckAttempt: %v", err)
 	}
-	got, err := s.GetExecutionAttempt("run-ack", "node-a", 0)
+	got, err := s.GetExecutionAttempt("run-ack", "node-a", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -235,12 +235,12 @@ func TestAckAttemptIsIdempotentAndFencingChecked(t *testing.T) {
 	}
 
 	// Re-acking with the same (still-current) fencing generation is a no-op.
-	if err := s.AckAttempt("run-ack", "node-a", 0, "worker-1", gen); err != nil {
+	if err := s.AckAttempt("run-ack", "node-a", "", 0, "worker-1", gen); err != nil {
 		t.Fatalf("re-AckAttempt: %v", err)
 	}
 
 	// Acking with a stale fencing generation must error.
-	if err := s.AckAttempt("run-ack", "node-a", 0, "worker-1", gen+99); err == nil {
+	if err := s.AckAttempt("run-ack", "node-a", "", 0, "worker-1", gen+99); err == nil {
 		t.Fatal("AckAttempt with wrong fencing generation succeeded, want error")
 	}
 }
@@ -250,20 +250,20 @@ func TestCompleteAndFailAttemptAreIdempotentNoOpsOnDuplicateSettle(t *testing.T)
 	seedRunForAttempts(t, s, "pipe-settle", "run-settle")
 	createAttempt(t, s, "run-settle", "node-a", 0)
 
-	gen, ok, err := s.ClaimAttempt("run-settle", "node-a", 0, "worker-1", time.Hour)
+	gen, ok, err := s.ClaimAttempt("run-settle", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
 
-	if err := s.CompleteAttempt("run-settle", "node-a", 0, gen); err != nil {
+	if err := s.CompleteAttempt("run-settle", "node-a", "", 0, gen); err != nil {
 		t.Fatalf("CompleteAttempt: %v", err)
 	}
 	// Duplicate delivery completing the same attempt again: documented no-op.
-	if err := s.CompleteAttempt("run-settle", "node-a", 0, gen); err != nil {
+	if err := s.CompleteAttempt("run-settle", "node-a", "", 0, gen); err != nil {
 		t.Fatalf("duplicate CompleteAttempt: %v", err)
 	}
 
-	got, err := s.GetExecutionAttempt("run-settle", "node-a", 0)
+	got, err := s.GetExecutionAttempt("run-settle", "node-a", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestCompleteAndFailAttemptAreIdempotentNoOpsOnDuplicateSettle(t *testing.T)
 
 	// Failing an already-completed attempt is a genuine conflict, not a
 	// silent duplicate settle of the same outcome — must error.
-	if err := s.FailAttempt("run-settle", "node-a", 0, gen, "late failure"); err == nil {
+	if err := s.FailAttempt("run-settle", "node-a", "", 0, gen, "late failure"); err == nil {
 		t.Fatal("FailAttempt on an already-completed attempt succeeded, want error")
 	}
 }
@@ -283,14 +283,14 @@ func TestFailAttemptRecordsError(t *testing.T) {
 	seedRunForAttempts(t, s, "pipe-fail", "run-fail")
 	createAttempt(t, s, "run-fail", "node-a", 0)
 
-	gen, ok, err := s.ClaimAttempt("run-fail", "node-a", 0, "worker-1", time.Hour)
+	gen, ok, err := s.ClaimAttempt("run-fail", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("claim: ok=%v err=%v", ok, err)
 	}
-	if err := s.FailAttempt("run-fail", "node-a", 0, gen, "boom"); err != nil {
+	if err := s.FailAttempt("run-fail", "node-a", "", 0, gen, "boom"); err != nil {
 		t.Fatalf("FailAttempt: %v", err)
 	}
-	got, err := s.GetExecutionAttempt("run-fail", "node-a", 0)
+	got, err := s.GetExecutionAttempt("run-fail", "node-a", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestFailAttemptRecordsError(t *testing.T) {
 
 	// Duplicate delivery failing the same attempt again with the same
 	// generation: documented no-op.
-	if err := s.FailAttempt("run-fail", "node-a", 0, gen, "boom again"); err != nil {
+	if err := s.FailAttempt("run-fail", "node-a", "", 0, gen, "boom again"); err != nil {
 		t.Fatalf("duplicate FailAttempt: %v", err)
 	}
 }

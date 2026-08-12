@@ -771,7 +771,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				// how long the node's own timeout is, instead of leaving
 				// reconcileExecutionAttempts (engine/recovery.go) deferring
 				// to it for the whole nodeTimeout window.
-				gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, attempt, r.instanceID, store.DefaultLeaseDuration)
+				gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, "", attempt, r.instanceID, store.DefaultLeaseDuration)
 				if err != nil {
 					return nil, fmt.Errorf("claim execution attempt for %s (attempt %d): %w", node.Name, attempt, err)
 				}
@@ -855,7 +855,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// checked against execFencingGen for the same reason ClaimAttempt
 			// itself is: if this ever fails, some other claimant already
 			// holds the lease, which must not be silently overridden.
-			if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, attempt, r.instanceID, execFencingGen); err != nil {
+			if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, "", attempt, r.instanceID, execFencingGen); err != nil {
 				attemptCancel()
 				return nil, fmt.Errorf("ack execution attempt for %s (attempt %d): %w", node.Name, attempt, err)
 			}
@@ -962,7 +962,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					// reconciling — see TestCrashRecoveryBaseline. Non-fatal:
 					// the NodeRun row is still the authoritative success
 					// record even if this best-effort call fails.
-					if err := execAttemptStore.CompleteAttempt(r.run.ID, node.ID, attempt, execFencingGen); err != nil {
+					if err := execAttemptStore.CompleteAttempt(r.run.ID, node.ID, "", attempt, execFencingGen); err != nil {
 						r.log(node.ID, models.LogLevelWarning, "Failed to settle execution attempt %d as completed (node already succeeded; harmless — recovery reclaims it): %v", attempt, err)
 					}
 				}
@@ -1103,7 +1103,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				// NodeRun row is already the durable record of this
 				// attempt's failure; this settles the supplementary
 				// claim/lease record to match, best-effort.
-				if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, attempt, execFencingGen, err.Error()); failErr != nil {
+				if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, "", attempt, execFencingGen, err.Error()); failErr != nil {
 					r.log(node.ID, models.LogLevelWarning, "Failed to settle execution attempt %d as failed (node already marked failed; harmless — recovery reclaims it): %v", attempt, failErr)
 				}
 			}
@@ -1146,7 +1146,7 @@ func (r *Runner) renewAttemptLease(ctx context.Context, attemptStore store.Execu
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ok, err := attemptStore.RenewLease(r.run.ID, nodeID, attempt, r.instanceID, fencingGen, store.DefaultLeaseDuration)
+			ok, err := attemptStore.RenewLease(r.run.ID, nodeID, "", attempt, r.instanceID, fencingGen, store.DefaultLeaseDuration)
 			if err != nil || !ok {
 				r.log(nodeID, models.LogLevelWarning, "Failed to renew execution attempt lease for attempt %d (ok=%v): %v — a startup recovery pass may have reclaimed it", attempt, ok, err)
 				return

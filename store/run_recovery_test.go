@@ -174,11 +174,11 @@ func TestListExecutionAttemptsByRunReturnsAllStatusesAndNodes(t *testing.T) {
 	createAttempt(t, s, "run-list-attempts", "node-b", 0)
 	createAttempt(t, s, "run-list-attempts", "node-b", 1) // a retry of node-b
 
-	gen, ok, err := s.ClaimAttempt("run-list-attempts", "node-a", 0, "worker-1", time.Hour)
+	gen, ok, err := s.ClaimAttempt("run-list-attempts", "node-a", "", 0, "worker-1", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
 	}
-	if err := s.CompleteAttempt("run-list-attempts", "node-a", 0, gen); err != nil {
+	if err := s.CompleteAttempt("run-list-attempts", "node-a", "", 0, gen); err != nil {
 		t.Fatalf("CompleteAttempt: %v", err)
 	}
 

@@ -57,13 +57,19 @@ type PendingRunClaimer interface {
 // engine.Engine.ExecuteQueuedRun already does for PendingRunClaimer, since
 // it is a capability of the concrete store rather than a requirement every
 // Store implementation must satisfy.
+// instanceKey (ADR-017) identifies which physical instance of nodeID a
+// call targets — empty for a whole-node/whole-pipeline claim, matching
+// models.ExecutionAttempt.InstanceKey. Every method below takes it as an
+// explicit parameter (rather than overloading nodeID or attempt) so a
+// caller that has never heard of instances — every caller before ADR-017 —
+// keeps working unchanged by simply passing "".
 type ExecutionAttemptStore interface {
 	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
 	// an attempt inside an existing transaction (via WithTx), so it commits
 	// atomically alongside CreateRunTx/AppendEventTx. Must be idempotent:
-	// re-creating a row that already exists at (run_id, node_id, attempt) is
-	// a no-op, not an error — duplicate outbox writes from a redelivered
-	// dispatch must be safe.
+	// re-creating a row that already exists at
+	// (run_id, node_id, instance_key, attempt) is a no-op, not an error —
+	// duplicate outbox writes from a redelivered dispatch must be safe.
 	CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error
 
 	// ClaimAttempt atomically transitions an attempt into claimed by
@@ -73,41 +79,42 @@ type ExecutionAttemptStore interface {
 	// in-flight (live-leased) or already-terminal (completed/failed)
 	// attempt returns ok=false with no error and no state change — the
 	// documented no-op duplicate-delivery contract.
-	ClaimAttempt(runID, nodeID string, attempt int, claimedBy string, leaseDuration time.Duration) (fencingGeneration int64, ok bool, err error)
+	ClaimAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (fencingGeneration int64, ok bool, err error)
 
 	// RenewLease extends the lease of an attempt the caller currently holds,
 	// verified by fencingGeneration. Returns ok=false (no error) if the
 	// caller's fencing generation is stale, meaning another worker already
 	// reclaimed the attempt after the lease lapsed.
-	RenewLease(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (ok bool, err error)
+	RenewLease(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (ok bool, err error)
 
 	// AckAttempt marks a claimed attempt as started, fencing-checked.
 	// Re-acknowledging an attempt already in the started state under the
 	// same fencing generation is a no-op success.
-	AckAttempt(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64) error
+	AckAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error
 
 	// CompleteAttempt marks an attempt completed, fencing-checked. Settling
 	// an attempt that is already completed is a no-op success (safe
 	// duplicate delivery); a fencing-generation mismatch against a
 	// non-terminal attempt returns an error.
-	CompleteAttempt(runID, nodeID string, attempt int, fencingGeneration int64) error
+	CompleteAttempt(runID, nodeID, instanceKey string, attempt int, fencingGeneration int64) error
 
 	// FailAttempt marks an attempt failed, fencing-checked, with the same
 	// no-op-on-duplicate and error-on-fencing-mismatch semantics as
 	// CompleteAttempt.
-	FailAttempt(runID, nodeID string, attempt int, fencingGeneration int64, errMsg string) error
+	FailAttempt(runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, errMsg string) error
 
 	// GetExecutionAttempt returns the current durable state of one attempt.
-	GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error)
+	GetExecutionAttempt(runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error)
 
 	// ListExecutionAttemptsByRun returns every execution_attempts row for a
 	// run — across every node_id (including the pipeline-level row, where
-	// node_id is empty) and every status — ordered by (node_id, attempt).
-	// Unlike GetExecutionAttempt, which requires already knowing the exact
-	// key to look up, this is the enumeration startup recovery
-	// (Tnsor-Labs/brokoli#9) needs to find every attempt belonging to a run
-	// so it can check each one's lease state without guessing which node
-	// IDs and attempt numbers exist.
+	// node_id is empty), every instance_key, and every status — ordered by
+	// (node_id, instance_key, attempt). Unlike GetExecutionAttempt, which
+	// requires already knowing the exact key to look up, this is the
+	// enumeration startup recovery (Tnsor-Labs/brokoli#9) needs to find
+	// every attempt belonging to a run so it can check each one's lease
+	// state without guessing which node IDs, instance keys, and attempt
+	// numbers exist.
 	ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error)
 }
 

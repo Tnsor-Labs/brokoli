@@ -70,7 +70,7 @@ func TestExecuteNode_ClaimsAndCompletesExecutionAttempt(t *testing.T) {
 		t.Fatalf("run status = %s, want success", run.Status)
 	}
 
-	attempt, err := s.GetExecutionAttempt(run.ID, "n", 0)
+	attempt, err := s.GetExecutionAttempt(run.ID, "n", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestExecuteNode_FailedThenRetried_TwoExecutionAttempts(t *testing.T) {
 		t.Fatalf("run status = %s, want success (after one retry)", run.Status)
 	}
 
-	failed, err := s.GetExecutionAttempt(run.ID, "n", 0)
+	failed, err := s.GetExecutionAttempt(run.ID, "n", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt(attempt 0): %v", err)
 	}
@@ -110,7 +110,7 @@ func TestExecuteNode_FailedThenRetried_TwoExecutionAttempts(t *testing.T) {
 		t.Errorf("attempt 0 status = %s, want failed", failed.Status)
 	}
 
-	completed, err := s.GetExecutionAttempt(run.ID, "n", 1)
+	completed, err := s.GetExecutionAttempt(run.ID, "n", "", 1)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt(attempt 1): %v", err)
 	}
@@ -173,7 +173,7 @@ func TestExecuteNode_StoreWithoutExecutionAttemptStore_Unaffected(t *testing.T) 
 		t.Fatalf("node_runs = %+v, want one successful row (plain CreateNodeRun path)", nodeRuns)
 	}
 
-	if _, err := real.GetExecutionAttempt(run.ID, "n", 0); err == nil {
+	if _, err := real.GetExecutionAttempt(run.ID, "n", "", 0); err == nil {
 		t.Error("GetExecutionAttempt found a row, want none — nothing should be written when the store lacks ExecutionAttemptStore")
 	}
 }

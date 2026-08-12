@@ -273,12 +273,14 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_events_run_node ON run_events(run_id, node_id)`)
 
 	// Execution attempts — durable outbox/intent + claim/lease record for one
-	// (run_id, node_id, attempt) unit of dispatchable work (issue #7). See
+	// (run_id, node_id, instance_key, attempt) unit of dispatchable work
+	// (issue #7; instance_key added for ADR-017, worker protocol v2). See
 	// the matching table in store/sqlite.go for the full doc comment; kept
 	// in sync column-for-column between backends.
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS execution_attempts (
 		run_id TEXT NOT NULL,
 		node_id TEXT NOT NULL DEFAULT '',
+		instance_key TEXT NOT NULL DEFAULT '',
 		attempt INTEGER NOT NULL DEFAULT 0,
 		status TEXT NOT NULL DEFAULT 'queued',
 		claimed_by TEXT NOT NULL DEFAULT '',
@@ -288,10 +290,28 @@ func (s *PostgresStore) migrate() error {
 		error TEXT NOT NULL DEFAULT '',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-		PRIMARY KEY (run_id, node_id, attempt),
+		PRIMARY KEY (run_id, node_id, instance_key, attempt),
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_lease ON execution_attempts(status, lease_expires_at)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_execution_attempts_idempotency ON execution_attempts(idempotency_key)`)
+
+	// A database created before ADR-017 already has execution_attempts with
+	// the narrower (run_id, node_id, attempt) primary key — the CREATE
+	// TABLE IF NOT EXISTS above is a no-op against it. Unlike SQLite,
+	// Postgres can alter a primary key in place: drop the old constraint
+	// (auto-named execution_attempts_pkey — the default for an inline,
+	// unnamed PRIMARY KEY, which is how the table above defines it), add
+	// the new column, add the new constraint, all in one transaction.
+	// Guarded on instance_key's absence, so this is a safe no-op on every
+	// later startup (including a freshly created database, which already
+	// has the new schema from the CREATE TABLE above).
+	if hasInstanceKey, err := s.hasColumn("execution_attempts", "instance_key"); err != nil {
+		return fmt.Errorf("check execution_attempts schema: %w", err)
+	} else if !hasInstanceKey {
+		if err := s.widenExecutionAttemptsPrimaryKey(); err != nil {
+			return fmt.Errorf("widen execution_attempts primary key for ADR-017: %w", err)
+		}
+	}
 
 	// pipeline_versions unique index — see the matching comment in
 	// store/sqlite.go for why issue #8 makes this race worth guarding now.
@@ -415,6 +435,52 @@ func (s *PostgresStore) migrate() error {
 		return fmt.Errorf("seed pipeline templates: %w", err)
 	}
 
+	return nil
+}
+
+// hasColumn reports whether table has a column named column, via
+// information_schema.columns — see the matching SQLite method (which uses
+// PRAGMA table_info instead, the SQLite equivalent) for why this check
+// exists: guarding a one-time schema migration so it is a safe no-op on
+// every later startup.
+func (s *PostgresStore) hasColumn(table, column string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(
+		`SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name=$1 AND column_name=$2)`,
+		table, column,
+	).Scan(&exists)
+	return exists, err
+}
+
+// widenExecutionAttemptsPrimaryKey widens execution_attempts from
+// (run_id, node_id, attempt) to (run_id, node_id, instance_key, attempt) —
+// see the call site's comment and the matching SQLite method (which needs
+// a full table rebuild for the same change; Postgres can alter the
+// constraint in place).
+func (s *PostgresStore) widenExecutionAttemptsPrimaryKey() (retErr error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err := tx.Exec(`ALTER TABLE execution_attempts DROP CONSTRAINT execution_attempts_pkey`); err != nil {
+		return fmt.Errorf("drop old primary key: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE execution_attempts ADD COLUMN instance_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		return fmt.Errorf("add instance_key column: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE execution_attempts ADD PRIMARY KEY (run_id, node_id, instance_key, attempt)`); err != nil {
+		return fmt.Errorf("add new primary key: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit execution_attempts primary key widen: %w", err)
+	}
 	return nil
 }
 
@@ -1369,28 +1435,28 @@ func (s *PostgresStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.Execution
 		status = models.AttemptStatusQueued
 	}
 	_, err := tx.Exec(
-		`INSERT INTO execution_attempts (run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-		 ON CONFLICT (run_id, node_id, attempt) DO NOTHING`,
-		a.RunID, a.NodeID, a.Attempt, string(status), a.ClaimedBy, a.LeaseExpiresAt,
+		`INSERT INTO execution_attempts (run_id, node_id, instance_key, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		 ON CONFLICT (run_id, node_id, instance_key, attempt) DO NOTHING`,
+		a.RunID, a.NodeID, a.InstanceKey, a.Attempt, string(status), a.ClaimedBy, a.LeaseExpiresAt,
 		a.FencingGeneration, a.IdempotencyKey, a.Error, a.CreatedAt, a.UpdatedAt,
 	)
 	return err
 }
 
-func (s *PostgresStore) ClaimAttempt(runID, nodeID string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
+func (s *PostgresStore) ClaimAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
 	now := time.Now().UTC()
 	leaseExpires := now.Add(leaseDuration)
 	var fencingGeneration int64
 	err := s.db.QueryRow(
 		`UPDATE execution_attempts
 		 SET status=$1, claimed_by=$2, lease_expires_at=$3, fencing_generation=fencing_generation+1, updated_at=$4
-		 WHERE run_id=$5 AND node_id=$6 AND attempt=$7
-		   AND status NOT IN ($8, $9)
-		   AND (status=$10 OR lease_expires_at IS NULL OR lease_expires_at<$4)
+		 WHERE run_id=$5 AND node_id=$6 AND instance_key=$7 AND attempt=$8
+		   AND status NOT IN ($9, $10)
+		   AND (status=$11 OR lease_expires_at IS NULL OR lease_expires_at<$4)
 		 RETURNING fencing_generation`,
 		string(models.AttemptStatusClaimed), claimedBy, leaseExpires, now,
-		runID, nodeID, attempt,
+		runID, nodeID, instanceKey, attempt,
 		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
 		string(models.AttemptStatusQueued),
 	).Scan(&fencingGeneration)
@@ -1403,13 +1469,13 @@ func (s *PostgresStore) ClaimAttempt(runID, nodeID string, attempt int, claimedB
 	return fencingGeneration, true, nil
 }
 
-func (s *PostgresStore) RenewLease(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (bool, error) {
+func (s *PostgresStore) RenewLease(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64, leaseDuration time.Duration) (bool, error) {
 	now := time.Now().UTC()
 	leaseExpires := now.Add(leaseDuration)
 	result, err := s.db.Exec(
 		`UPDATE execution_attempts SET lease_expires_at=$1, updated_at=$2
-		 WHERE run_id=$3 AND node_id=$4 AND attempt=$5 AND claimed_by=$6 AND fencing_generation=$7 AND status IN ($8, $9)`,
-		leaseExpires, now, runID, nodeID, attempt, claimedBy, fencingGeneration,
+		 WHERE run_id=$3 AND node_id=$4 AND instance_key=$5 AND attempt=$6 AND claimed_by=$7 AND fencing_generation=$8 AND status IN ($9, $10)`,
+		leaseExpires, now, runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration,
 		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
 	)
 	if err != nil {
@@ -1422,12 +1488,12 @@ func (s *PostgresStore) RenewLease(runID, nodeID string, attempt int, claimedBy 
 	return n == 1, nil
 }
 
-func (s *PostgresStore) AckAttempt(runID, nodeID string, attempt int, claimedBy string, fencingGeneration int64) error {
+func (s *PostgresStore) AckAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error {
 	now := time.Now().UTC()
 	result, err := s.db.Exec(
 		`UPDATE execution_attempts SET status=$1, updated_at=$2
-		 WHERE run_id=$3 AND node_id=$4 AND attempt=$5 AND claimed_by=$6 AND fencing_generation=$7 AND status IN ($8, $9)`,
-		string(models.AttemptStatusStarted), now, runID, nodeID, attempt, claimedBy, fencingGeneration,
+		 WHERE run_id=$3 AND node_id=$4 AND instance_key=$5 AND attempt=$6 AND claimed_by=$7 AND fencing_generation=$8 AND status IN ($9, $10)`,
+		string(models.AttemptStatusStarted), now, runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration,
 		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
 	)
 	if err != nil {
@@ -1440,7 +1506,7 @@ func (s *PostgresStore) AckAttempt(runID, nodeID string, attempt int, claimedBy 
 	if n == 1 {
 		return nil
 	}
-	existing, getErr := pgGetExecutionAttempt(s.db, runID, nodeID, attempt)
+	existing, getErr := pgGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
 	if getErr != nil {
 		return fmt.Errorf("ack attempt: %w", getErr)
 	}
@@ -1450,12 +1516,12 @@ func (s *PostgresStore) AckAttempt(runID, nodeID string, attempt int, claimedBy 
 	return fmt.Errorf("ack attempt: fencing generation mismatch or attempt not claimed by %q (have generation %d, status %s)", claimedBy, existing.FencingGeneration, existing.Status)
 }
 
-func (s *PostgresStore) CompleteAttempt(runID, nodeID string, attempt int, fencingGeneration int64) error {
-	return pgSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusCompleted, "")
+func (s *PostgresStore) CompleteAttempt(runID, nodeID, instanceKey string, attempt int, fencingGeneration int64) error {
+	return pgSettleAttempt(s.db, runID, nodeID, instanceKey, attempt, fencingGeneration, models.AttemptStatusCompleted, "")
 }
 
-func (s *PostgresStore) FailAttempt(runID, nodeID string, attempt int, fencingGeneration int64, errMsg string) error {
-	return pgSettleAttempt(s.db, runID, nodeID, attempt, fencingGeneration, models.AttemptStatusFailed, errMsg)
+func (s *PostgresStore) FailAttempt(runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, errMsg string) error {
+	return pgSettleAttempt(s.db, runID, nodeID, instanceKey, attempt, fencingGeneration, models.AttemptStatusFailed, errMsg)
 }
 
 // pgSettleAttempt performs the fencing-checked transition into a terminal
@@ -1463,12 +1529,12 @@ func (s *PostgresStore) FailAttempt(runID, nodeID string, attempt int, fencingGe
 // terminal status is a no-op success — the documented duplicate-delivery
 // contract; any other mismatch (wrong fencing generation, or already
 // terminal in the *other* status) is an error.
-func pgSettleAttempt(db *sql.DB, runID, nodeID string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
+func pgSettleAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
 	now := time.Now().UTC()
 	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=$1, error=$2, updated_at=$3
-		 WHERE run_id=$4 AND node_id=$5 AND attempt=$6 AND fencing_generation=$7 AND status NOT IN ($8, $9)`,
-		string(toStatus), errMsg, now, runID, nodeID, attempt, fencingGeneration,
+		 WHERE run_id=$4 AND node_id=$5 AND instance_key=$6 AND attempt=$7 AND fencing_generation=$8 AND status NOT IN ($9, $10)`,
+		string(toStatus), errMsg, now, runID, nodeID, instanceKey, attempt, fencingGeneration,
 		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
 	)
 	if err != nil {
@@ -1481,7 +1547,7 @@ func pgSettleAttempt(db *sql.DB, runID, nodeID string, attempt int, fencingGener
 	if n == 1 {
 		return nil
 	}
-	existing, getErr := pgGetExecutionAttempt(db, runID, nodeID, attempt)
+	existing, getErr := pgGetExecutionAttempt(db, runID, nodeID, instanceKey, attempt)
 	if getErr != nil {
 		return fmt.Errorf("settle attempt: %w", getErr)
 	}
@@ -1491,18 +1557,18 @@ func pgSettleAttempt(db *sql.DB, runID, nodeID string, attempt int, fencingGener
 	return fmt.Errorf("settle attempt: fencing generation mismatch settling attempt to %s (have generation %d, status %s)", toStatus, existing.FencingGeneration, existing.Status)
 }
 
-func (s *PostgresStore) GetExecutionAttempt(runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
-	return pgGetExecutionAttempt(s.db, runID, nodeID, attempt)
+func (s *PostgresStore) GetExecutionAttempt(runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
+	return pgGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
 }
 
-func pgGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*models.ExecutionAttempt, error) {
+func pgGetExecutionAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
 	var a models.ExecutionAttempt
 	var status string
 	err := db.QueryRow(
-		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
-		 FROM execution_attempts WHERE run_id=$1 AND node_id=$2 AND attempt=$3`,
-		runID, nodeID, attempt,
-	).Scan(&a.RunID, &a.NodeID, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt)
+		`SELECT run_id, node_id, instance_key, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id=$1 AND node_id=$2 AND instance_key=$3 AND attempt=$4`,
+		runID, nodeID, instanceKey, attempt,
+	).Scan(&a.RunID, &a.NodeID, &a.InstanceKey, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get execution attempt: %w", err)
 	}
@@ -1516,8 +1582,8 @@ func pgGetExecutionAttempt(db *sql.DB, runID, nodeID string, attempt int) (*mode
 // attempt's lease state during startup recovery.
 func (s *PostgresStore) ListExecutionAttemptsByRun(runID string) ([]models.ExecutionAttempt, error) {
 	rows, err := s.db.Query(
-		`SELECT run_id, node_id, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
-		 FROM execution_attempts WHERE run_id = $1 ORDER BY node_id ASC, attempt ASC`,
+		`SELECT run_id, node_id, instance_key, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
+		 FROM execution_attempts WHERE run_id = $1 ORDER BY node_id ASC, instance_key ASC, attempt ASC`,
 		runID,
 	)
 	if err != nil {
@@ -1529,7 +1595,7 @@ func (s *PostgresStore) ListExecutionAttemptsByRun(runID string) ([]models.Execu
 	for rows.Next() {
 		var a models.ExecutionAttempt
 		var status string
-		if err := rows.Scan(&a.RunID, &a.NodeID, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt); err != nil {
+		if err := rows.Scan(&a.RunID, &a.NodeID, &a.InstanceKey, &a.Attempt, &status, &a.ClaimedBy, &a.LeaseExpiresAt, &a.FencingGeneration, &a.IdempotencyKey, &a.Error, &a.CreatedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("list execution attempts: %w", err)
 		}
 		a.Status = models.AttemptStatus(status)

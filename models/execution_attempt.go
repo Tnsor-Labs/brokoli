@@ -32,25 +32,42 @@ const (
 )
 
 // ExecutionAttempt is the durable outbox/intent + claim/lease record for one
-// (run_id, node_id, attempt) unit of dispatchable work. It is the
-// crash-safe side-effect boundary described by Tnsor-Labs/brokoli#7: no
+// (run_id, node_id, instance_key, attempt) unit of dispatchable work. It is
+// the crash-safe side-effect boundary described by Tnsor-Labs/brokoli#7: no
 // external dispatch (enqueue, plugin/process spawn) is considered committed
 // until its ExecutionAttempt row exists, and no worker may act on an
 // attempt without first winning ClaimAttempt's compare-and-swap.
 //
 // For pipeline-level (not yet node-level) dispatch — the outbox record
 // engine.Engine.RunPipelineAsync writes atomically alongside the run-created
-// event — NodeID is empty and Attempt is 0, mirroring how models.RunEvent
-// already leaves NodeID empty for run-scoped events. Node-level attempt
-// records (one per retry, keyed the same way models.NodeRun.Attempt already
-// is) are the natural next caller of this same table; wiring
-// engine/runner.go's per-node execution loop through claim/lease is
-// follow-up work (this PR adds the store contract and tests it directly).
+// event — NodeID and InstanceKey are empty and Attempt is 0, mirroring how
+// models.RunEvent already leaves NodeID empty for run-scoped events.
+// Node-level attempt records (one per retry, keyed the same way
+// models.NodeRun.Attempt already is, InstanceKey empty) are wired in
+// engine/runner.go's per-node execution loop (Tnsor-Labs/brokoli#90 M3).
+//
+// InstanceKey (added for ADR-017, worker protocol v2) is the physical-
+// instance identity within one node — a pagination page or a dynamic-
+// expansion item, matching models.PhysicalPlan's InstanceKeyTemplate and
+// engine.deriveInstanceKey's "idx:N" scheme, empty for whole-node/pipeline
+// claims. Attempt is scoped WITHIN (node_id, instance_key): an instance's
+// own retry counter, independent of any other instance of the same node —
+// retrying one failed page or expansion item does not touch its siblings'
+// rows or bump their own attempt numbers. Adding this widened an existing
+// table's primary key (see the SQLite/Postgres migration comments at the
+// table's creation site) rather than introducing a parallel table, per
+// ADR-017's stated default lean toward extending this existing contract.
 type ExecutionAttempt struct {
 	RunID  string `json:"run_id"`
 	NodeID string `json:"node_id,omitempty"`
+	// InstanceKey identifies which physical instance of NodeID this
+	// attempt is for — empty for a whole-node (or whole-pipeline, when
+	// NodeID is also empty) claim. See the type doc comment.
+	InstanceKey string `json:"instance_key,omitempty"`
 	// Attempt mirrors models.NodeRun.Attempt: 0 for the first try, 1+ for
-	// retries. Always 0 for pipeline-level (NodeID-empty) outbox records.
+	// retries — scoped within (node_id, instance_key), not shared across
+	// every instance of a node. Always 0 for pipeline-level (NodeID-empty)
+	// outbox records.
 	Attempt int `json:"attempt"`
 
 	Status AttemptStatus `json:"status"`

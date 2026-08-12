@@ -326,7 +326,7 @@ func reconcileExecutionAttempts(attemptStore store.ExecutionAttemptStore, runID 
 	}
 	for _, a := range expired {
 		reason := "startup recovery: lease expired, reclaiming"
-		if err := attemptStore.FailAttempt(a.RunID, a.NodeID, a.Attempt, a.FencingGeneration, reason); err != nil {
+		if err := attemptStore.FailAttempt(a.RunID, a.NodeID, a.InstanceKey, a.Attempt, a.FencingGeneration, reason); err != nil {
 			common.SLog().Warn("recovery: reclaim expired lease failed",
 				common.RunAttr(a.RunID), common.NodeAttr(a.NodeID), common.AttemptAttr(a.Attempt), "error", err)
 			continue
