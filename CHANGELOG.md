@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.18] - 2026-08-12
+
+### Changed
+
+- **Remote dynamic-expansion instances now dispatch concurrently** (#164,
+  ADR-017) — @hc12r. Found under real load in a Kubernetes deployment: a
+  30-item expansion node with 6 idle worker pods still ran no faster
+  than one worker, because instances were dispatched strictly one at a
+  time, waiting for each to fully settle before starting the next.
+  Remote dispatch (`Engine.InstanceJobQueue` set) now fans out up to 16
+  instances at once; local execution is unchanged. No config needed —
+  existing opt-in behavior via `BROKOLI_INSTANCE_DISPATCH=1` (#158) is
+  unaffected.
+
 ## [0.10.17] - 2026-08-12
 
 ### Added
