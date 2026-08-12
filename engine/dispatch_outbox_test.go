@@ -83,7 +83,7 @@ func TestRunPipelineAsyncOutboxCommitsRunEventAndAttemptTogether(t *testing.T) {
 		t.Fatalf("run_events for %s = %v, want a run.created event", runID, events)
 	}
 
-	attempt, err := real.GetExecutionAttempt(runID, "", 0)
+	attempt, err := real.GetExecutionAttempt(runID, "", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v (the outbox record must exist once RunPipelineAsync returns successfully)", err)
 	}
@@ -160,7 +160,7 @@ func TestRunPipelineAsyncOutboxSurvivesEnqueueFailureAfterCommit(t *testing.T) {
 		t.Fatalf("runs after enqueue failure = %+v, want exactly 1 run marked failed", runs)
 	}
 
-	attempt, err := real.GetExecutionAttempt(runs[0].ID, "", 0)
+	attempt, err := real.GetExecutionAttempt(runs[0].ID, "", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v (the outbox record committed before Enqueue was even attempted, so it must still exist)", err)
 	}

@@ -307,11 +307,11 @@ func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID
 		t.Fatalf("run status after first recovery pass = %q, want unchanged running (live lease must defer, not reclaim)", stillRunning.Status)
 	}
 
-	attempt, err := s.GetExecutionAttempt(runID, liveLeaseNodeID, 0)
+	attempt, err := s.GetExecutionAttempt(runID, liveLeaseNodeID, "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt(%s, %s, 0): %v", runID, liveLeaseNodeID, err)
 	}
-	if ok, err := s.RenewLease(runID, liveLeaseNodeID, 0, attempt.ClaimedBy, attempt.FencingGeneration, -time.Second); err != nil || !ok {
+	if ok, err := s.RenewLease(runID, liveLeaseNodeID, "", 0, attempt.ClaimedBy, attempt.FencingGeneration, -time.Second); err != nil || !ok {
 		t.Fatalf("force-expire lease via RenewLease: ok=%v err=%v", ok, err)
 	}
 	if err := s.Close(); err != nil {

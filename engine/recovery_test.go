@@ -393,7 +393,7 @@ func TestRecoverNonTerminalRunsDefersToLiveLease(t *testing.T) {
 	})
 
 	createTestAttempt(t, s, run.ID, "", 0)
-	gen, ok, err := s.ClaimAttempt(run.ID, "", 0, "other-process", time.Hour)
+	gen, ok, err := s.ClaimAttempt(run.ID, "", "", 0, "other-process", time.Hour)
 	if err != nil || !ok {
 		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
 	}
@@ -415,7 +415,7 @@ func TestRecoverNonTerminalRunsDefersToLiveLease(t *testing.T) {
 		t.Fatalf("run status after recovery = %s, want unchanged running (live lease must not be stolen)", got.Status)
 	}
 
-	attempt, err := s.GetExecutionAttempt(run.ID, "", 0)
+	attempt, err := s.GetExecutionAttempt(run.ID, "", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
@@ -438,7 +438,7 @@ func TestRecoverNonTerminalRunsReclaimsExpiredLease(t *testing.T) {
 	})
 
 	createTestAttempt(t, s, run.ID, "", 0)
-	gen, ok, err := s.ClaimAttempt(run.ID, "", 0, "dead-process", -time.Second) // already expired
+	gen, ok, err := s.ClaimAttempt(run.ID, "", "", 0, "dead-process", -time.Second) // already expired
 	if err != nil || !ok {
 		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
 	}
@@ -457,7 +457,7 @@ func TestRecoverNonTerminalRunsReclaimsExpiredLease(t *testing.T) {
 		t.Fatalf("summary = %+v, want 1 no-recoverable-path failure", summary)
 	}
 
-	attempt, err := s.GetExecutionAttempt(run.ID, "", 0)
+	attempt, err := s.GetExecutionAttempt(run.ID, "", "", 0)
 	if err != nil {
 		t.Fatalf("GetExecutionAttempt: %v", err)
 	}
