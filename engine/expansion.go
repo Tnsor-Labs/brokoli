@@ -59,11 +59,13 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"sort"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
@@ -81,6 +83,27 @@ import (
 // distributed/parallel physical planner the issue explicitly scopes out).
 // Overridable per-node via expansion.max_instances.
 const defaultMaxExpansionInstances = 1000
+
+// remoteInstanceDispatchMargin is added to an instance's own timeoutSec to
+// get dispatchExpansionInstanceRemotely's wait deadline — dispatch and
+// queueing latency the synchronous local-execution path never had to
+// account for (ADR-017, 2026-08-12 wait-and-fetch design, which names this
+// an explicit tunable rather than a permanent constant). A package
+// variable rather than an inline literal so a test can shrink it instead
+// of waiting out a real multi-minute timeout to exercise that path.
+var remoteInstanceDispatchMargin = 2 * time.Minute
+
+// remoteInstanceStatusPollInterval is how often
+// dispatchExpansionInstanceRemotely checks whether a dispatched instance
+// has settled yet. Deliberately its own variable, not a reuse of
+// store.DefaultRenewInterval (also 5s by default, coincidentally): that
+// interval's job is keeping a lease from expiring — coarse is fine and
+// even desirable there — while this one's job is user-facing latency
+// after a worker actually finishes. Coupling the two would mean a fast
+// worker's result sits unnoticed for a full lease-renewal tick, which
+// found this exact bug when a 50ms test double's response wasn't picked
+// up until 5 seconds later.
+var remoteInstanceStatusPollInterval = time.Second
 
 // funcRef mirrors brokoli-sdk's _func_ref(fn) output — a name/description
 // reference, NOT executable code (see brokoli/pipeline.py's _func_ref doc
@@ -458,13 +481,20 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		}); err != nil {
 			return nil, fmt.Errorf("persist execution attempt for expansion instance %d: %w", index, err)
 		}
-		// Lease covers this item's whole bounded, synchronous execution
-		// (timeoutSec) plus a margin. No renewal goroutine, unlike
-		// executeNode's long-running case: claim through settle all
-		// happen synchronously, start to finish, within this one call —
-		// there is no window where the lease needs keeping alive across a
-		// separate goroutine's lifetime.
+		// Local execution is one bounded, synchronous call: a lease sized
+		// to cover it (timeoutSec plus a margin) needs no renewal — claim
+		// through settle all happen within this one call, so there is no
+		// window where the lease needs keeping alive across a separate
+		// goroutine's lifetime. Remote dispatch (ADR-017, 2026-08-12
+		// wait-and-fetch design) is not bounded by one blocking call — the
+		// wait spans dispatch, queueing, and remote execution — so it
+		// claims with the same short, renewed lease #144 already uses for
+		// node-level attempts instead; dispatchExpansionInstanceRemotely
+		// starts that renewal goroutine itself.
 		leaseDuration := time.Duration(timeoutSec)*time.Second + 30*time.Second
+		if r.instanceJobQueue != nil {
+			leaseDuration = store.DefaultLeaseDuration
+		}
 		gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, leaseDuration)
 		if err != nil {
 			return nil, fmt.Errorf("claim execution attempt for expansion instance %d: %w", index, err)
@@ -495,7 +525,14 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		"instance_key":   instanceKey,
 	}, "expansion instance %d/%d (key=%s): starting", index+1, total, instanceKey)
 
-	result, stderr, err := ExecuteCodeNode(script, itemDS, configForScript, runParams, timeoutSec)
+	var result *common.DataSet
+	var stderr string
+	var err error
+	if execAttemptStore != nil && r.instanceJobQueue != nil {
+		result, err = r.dispatchExpansionInstanceRemotely(node, nodeAttempt, instanceKey, execFencingGen, itemDS, script, configForScript, runParams, timeoutSec)
+	} else {
+		result, stderr, err = ExecuteCodeNode(script, itemDS, configForScript, runParams, timeoutSec)
+	}
 	if stderr != "" {
 		for _, line := range splitLines(stderr) {
 			if line != "" {
@@ -545,7 +582,14 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		}
 	}
 	if execAttemptStore != nil {
-		// Non-fatal, same reasoning as the failure path above.
+		// Non-fatal, same reasoning as the failure path above. For a
+		// remote dispatch this is also redundant — the enterprise
+		// instance-result endpoint already called CompleteAttempt when
+		// the worker reported in, which is how
+		// dispatchExpansionInstanceRemotely below knew to return — but
+		// CompleteAttempt is a documented idempotent no-op when the row
+		// is already Completed, so calling it again here needs no
+		// branching between the local and remote paths.
 		if cErr := execAttemptStore.CompleteAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, execFencingGen); cErr != nil {
 			r.log(node.ID, models.LogLevelWarning, "failed to settle execution attempt for expansion instance %d as completed: %v", index, cErr)
 		}
@@ -559,6 +603,118 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		"expansion instance %d/%d (key=%s) completed: %d rows in %dms", index+1, total, instanceKey, rowCount, duration)
 
 	return result, nil
+}
+
+// dispatchExpansionInstanceRemotely enqueues this instance as a
+// WorkOrder-bearing extensions.RunJob on r.instanceJobQueue and waits for
+// a remote worker to complete it (ADR-017, 2026-08-12 wait-and-fetch
+// design), returning the same (result, error) shape ExecuteCodeNode
+// would — so executeExpansionInstance's post-processing (settling
+// ExpansionInstance, and CompleteAttempt/FailAttempt above) needs no
+// branching between this path and the local one.
+//
+// execFencingGen is the fencing generation this instance's attempt was
+// already claimed under by the caller, before this function runs. The
+// worker never claims anything itself; it executes on behalf of that
+// claim and reports back holding the same token — the enterprise
+// instance-result endpoint reads FencingGeneration from the job row
+// rather than the worker for exactly this reason, so the two sides were
+// designed to click together without either changing.
+func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt int, instanceKey string, execFencingGen int64, itemDS *common.DataSet, script string, configForScript map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, error) {
+	execAttemptStore, ok := r.store.(store.ExecutionAttemptStore)
+	if !ok {
+		// Cannot happen through executeExpansionInstance's own call site
+		// (it only calls this when execAttemptStore != nil already), kept
+		// as a direct, named failure rather than a panic for any other
+		// caller.
+		return nil, fmt.Errorf("dispatch expansion instance %s remotely: store does not support execution attempts", instanceKey)
+	}
+	if r.artifactStore == nil {
+		return nil, fmt.Errorf("dispatch expansion instance %s remotely: no artifact store configured to read the result back from", instanceKey)
+	}
+
+	var itemRow map[string]interface{}
+	if len(itemDS.Rows) > 0 {
+		itemRow = map[string]interface{}(itemDS.Rows[0])
+	}
+	idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt)
+	job := extensions.RunJob{
+		ID: common.NewID(), PipelineID: r.pipe.ID, RunID: r.run.ID, OrgID: r.pipe.OrgID,
+		NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
+		IdempotencyKey: idempotencyKey, FencingGeneration: execFencingGen,
+		EnqueuedAt: time.Now().UTC(),
+		WorkOrder: &extensions.InstanceWorkOrder{
+			NodeType: string(node.Type), Script: script, Config: configForScript,
+			ItemColumns: itemDS.Columns, ItemRow: itemRow,
+			RunParams: runParams, TimeoutSeconds: timeoutSec,
+		},
+	}
+	if err := r.instanceJobQueue.Enqueue(job); err != nil {
+		return nil, fmt.Errorf("enqueue remote instance dispatch for %s: %w", instanceKey, err)
+	}
+
+	// See remoteInstanceDispatchMargin's own doc comment for the deadline.
+	waitCtx, cancel := context.WithTimeout(r.ctx, time.Duration(timeoutSec)*time.Second+remoteInstanceDispatchMargin)
+	defer cancel()
+	go r.renewAttemptLease(waitCtx, execAttemptStore, node.ID, instanceKey, nodeAttempt, execFencingGen)
+
+	// checkAttempt polls current status; ok=true means it returned a
+	// terminal result (result/error already the return values), ok=false
+	// means still queued/claimed/started — keep waiting.
+	checkAttempt := func() (result *common.DataSet, err error, ok bool) {
+		attempt, getErr := execAttemptStore.GetExecutionAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt)
+		if getErr != nil {
+			r.log(node.ID, models.LogLevelWarning, "failed to poll remote instance %s status: %v", instanceKey, getErr)
+			return nil, nil, false
+		}
+		switch attempt.Status {
+		case models.AttemptStatusCompleted:
+			ds, readErr := r.artifactStore.ReadArtifact(r.run.ID, node.ID, instanceKey)
+			if readErr != nil {
+				return nil, fmt.Errorf("remote instance %s completed but its result could not be read back: %w", instanceKey, readErr), true
+			}
+			return ds, nil, true
+		case models.AttemptStatusFailed:
+			if attempt.Error != "" {
+				return nil, fmt.Errorf("%s", attempt.Error), true
+			}
+			return nil, fmt.Errorf("remote instance %s failed with no error detail", instanceKey), true
+		}
+		return nil, nil, false
+	}
+
+	// Check once immediately — a fast worker (or one whose report was
+	// already in flight when this call started, e.g. a redelivered/retried
+	// dispatch) should not wait out a full poll interval before its
+	// already-available result is noticed.
+	if result, err, ok := checkAttempt(); ok {
+		return result, err
+	}
+
+	ticker := time.NewTicker(remoteInstanceStatusPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-waitCtx.Done():
+			reason := fmt.Sprintf("remote instance dispatch for %s timed out waiting for a worker", instanceKey)
+			if r.ctx.Err() != nil {
+				reason = fmt.Sprintf("pipeline cancelled while waiting for remote instance %s", instanceKey)
+			}
+			// Fencing-checked: if the worker's report is already in flight
+			// and lands right after this, its own settlement call loses
+			// this race honestly (fencing mismatch) rather than silently
+			// overwriting whatever this decided — the same safety net
+			// every other settlement path in this ADR relies on.
+			if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, execFencingGen, reason); failErr != nil {
+				r.log(node.ID, models.LogLevelWarning, "failed to settle timed-out remote instance %s: %v", instanceKey, failErr)
+			}
+			return nil, fmt.Errorf("%s", reason)
+		case <-ticker.C:
+			if result, err, ok := checkAttempt(); ok {
+				return result, err
+			}
+		}
+	}
 }
 
 // reusedExpansionInstance returns a prior attempt's cached successful
