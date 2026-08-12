@@ -35,8 +35,8 @@ type countingFlakyExecutor struct {
 	calls      int
 }
 
-func (e *countingFlakyExecutor) Name() string                  { return "test-counting-flaky" }
-func (e *countingFlakyExecutor) CanHandle(nt string) bool       { return nt == e.nodeType }
+func (e *countingFlakyExecutor) Name() string             { return "test-counting-flaky" }
+func (e *countingFlakyExecutor) CanHandle(nt string) bool { return nt == e.nodeType }
 func (e *countingFlakyExecutor) Execute(ctx extensions.ExecutionContext) (*extensions.ExecutionResult, error) {
 	e.mu.Lock()
 	e.calls++
