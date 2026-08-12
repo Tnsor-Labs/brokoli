@@ -184,10 +184,12 @@ These are genuinely open — this ADR does not answer them unilaterally:
   for in-process node attempts, mirroring the existing scheduler-
   leader-election tradeoff — does a real network hop (worker to server,
   not in-process) change that budget?
-- Where does resolved-input-reference delivery actually live — inline in
-  the claim payload (small refs), or fetched separately by the worker
-  once claimed (large datasets, per ADR-012)? This is the exact seam
-  between this ADR and ADR-012's artifact/dataset plane.
+- ~~Where does resolved-input-reference delivery actually live~~ —
+  answered for the input half: `extensions.RunJob.WorkOrder`
+  (`InstanceWorkOrder`, #150) inlines a dynamic-expansion item's small
+  input row directly in the claim payload. The seam with ADR-012 remains
+  for large inputs and is now symmetric with output delivery — see the
+  2026-08-12 Update below.
 - Does this land alongside, or separately from, ADR-006's still-open
   SODP-unification question? This ADR takes no position on transport
   (WebSocket vs. long-poll vs. SODP) — it is entirely about dispatch
@@ -287,3 +289,73 @@ These are genuinely open — this ADR does not answer them unilaterally:
 - #143 (paginated `source_api` dispatch) and durable per-item expansion
   output storage both resume once this ADR's identity/claim contract is
   settled.
+
+## Update — 2026-08-12: output-reference delivery design
+
+Answers the symmetric half of the open question above — not "how does a
+remote claimant get its input" (settled by #150's `WorkOrder`) but "how
+does a completed instance's *output* get back to whatever is waiting on
+it." Grounded in two things that already exist rather than a new
+mechanism:
+
+**ADR-012 already named this exact gap.** Its own Negative consequences
+section says local-disk-only `ArtifactStore` "doesn't solve the problem
+for a real multi-replica or Kubernetes deployment — a worker on pod B
+can't read a file spilled by pod A." That is precisely the cross-worker
+output-delivery problem, flagged and deferred before anything needed it.
+This update is that gap materializing for real, not a new one.
+
+**ee#55's worker-forwarding endpoints are the proven shape for the
+transport half.** Alerts, run events, and pagination checkpoints already
+cross the worker→server boundary the same way: `WorkerTokenAuth` +
+job-scoped lookup, identity forced from the job row and never trusted
+from the payload, writing into the core engine's own store
+(`eng.PaginationCheckpointStore`, by direct analogy `eng.ArtifactStore`).
+Output-result delivery reuses that shape rather than inventing a fourth
+variant of it.
+
+**Design:**
+
+- **Push, not pull.** The worker delivers the result; the server/engine
+  never reaches into a worker — consistent with every existing
+  worker↔server interaction (workers connect outward only).
+- **`ArtifactStore` gains an `instanceKey` dimension** —
+  `WriteArtifact`/`ReadArtifact` take an `instanceKey string` parameter,
+  empty for today's whole-node case. Same additive-key-widening move
+  already made for `execution_attempts` (#147) and `WorkPoolJob` (#79):
+  zero behavior change for every existing caller.
+- **`ExecutionAttempt` stays control-plane only** — no result payload
+  added to it. The data channel is `ArtifactStore`; the is-it-done
+  channel stays `GetExecutionAttempt`, unchanged. Keeps the same
+  separation of concerns `ExpansionInstance` vs. `ExecutionAttempt`
+  already established: one table, one job.
+- **A new worker→server endpoint modeled directly on the checkpoint
+  handlers**: job-scoped, identity from the job row, writes through the
+  engine's own (now instance-aware) `ArtifactStore`, then calls the
+  already-existing `CompleteAttempt`/`FailAttempt`.
+- **Reuses ADR-012's existing inline-vs-spill threshold** rather than a
+  second one — a small result (the common case) rides inline in the
+  same POST; a large one spills through the artifact store first and the
+  POST carries a reference.
+- **The waiting side polls `GetExecutionAttempt`** (already built and
+  tested) until terminal, bounded by the same `timeoutSec`-derived
+  deadline the lease already uses. On timeout it calls `FailAttempt`
+  itself, fencing-checked — a late result from an actually-still-alive
+  worker is safely rejected on arrival, the same safety net every other
+  settlement path in this ADR already relies on.
+- **Cloud/shared artifact backend stays exactly as deferred as ADR-012
+  already left it** — this design doesn't newly introduce that gap, it
+  only needs the *server* process to be the one persisting the pushed
+  result, which it already is here.
+
+**Rejected alternative:** carrying the result on `ExecutionAttempt`
+itself (a `ResultRef` column). Rejected for the same reason
+`ExpansionInstance` and `ExecutionAttempt` were kept as two tables
+instead of one — overloading a claim/lease/fencing record with a second,
+unrelated concern (the data plane) is the exact anti-pattern that
+decision already argued against.
+
+Implementation lands as the same kind of independently-mergeable slices
+as everything else in this ADR: (1) `ArtifactStore` key-widening (core),
+(2) the worker-side result endpoint (enterprise), (3) the engine's
+wait-and-fetch loop.
