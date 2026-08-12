@@ -96,3 +96,37 @@ func TestRunJob_NilWorkOrderOmittedFromJSON(t *testing.T) {
 		t.Errorf("encoded job has an instance_key key, want it omitted for empty InstanceKey: %s", encoded)
 	}
 }
+
+// TestRunJob_AttemptAndDeliveryCountAreIndependent guards the exact
+// distinction a real deployment caught missing: a JobQueue implementation
+// that redelivers a job (visibility timeout, retry) must not confuse "how
+// many times has the transport delivered this message" (DeliveryCount)
+// with "which node/instance execution attempt does this job settle"
+// (Attempt) — the enterprise Redis-backed JobQueue's claim() once
+// overwrote Attempt with its own delivery counter, which was harmless for
+// whole-pipeline jobs (nothing reads Attempt there) but silently broke
+// ADR-017 remote instance dispatch: a redelivered WorkOrder job could no
+// longer find its own execution_attempts row, since Attempt no longer
+// matched what the dispatcher claimed under. Both fields must round-trip
+// independently through JSON.
+func TestRunJob_AttemptAndDeliveryCountAreIndependent(t *testing.T) {
+	job := RunJob{
+		ID: "job-1", RunID: "run-1", NodeID: "parse", InstanceKey: "idx:0",
+		Attempt: 1, DeliveryCount: 3,
+	}
+
+	encoded, err := json.Marshal(job)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded RunJob
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Attempt != 1 {
+		t.Errorf("decoded.Attempt = %d, want 1 (must survive independent of DeliveryCount)", decoded.Attempt)
+	}
+	if decoded.DeliveryCount != 3 {
+		t.Errorf("decoded.DeliveryCount = %d, want 3", decoded.DeliveryCount)
+	}
+}
