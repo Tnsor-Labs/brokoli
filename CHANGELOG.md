@@ -11,6 +11,40 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.19] - 2026-08-12
+
+### Added
+
+- **`extensions.JobQueueRenewer`** (#167) — @hc12r. Optional capability
+  interface (`RenewClaim(jobID string) error`) a `JobQueue`
+  implementation can support to keep a claim's visibility timer reset
+  while genuinely still processing it. `cmd/serve.go` starts a 10s
+  heartbeat goroutine alongside both whole-pipeline and `WorkOrder` job
+  execution when the configured queue implements it. Fixes a real race
+  found live-testing under sustained concurrent load: a Redis Streams
+  consumer-group job whose processing legitimately exceeded the 30s
+  visibility timeout had its claim silently reassigned via
+  `XAUTOCLAIM` mid-flight, so the true owner's own eventual `Ack`
+  failed with "job is not claimed" even though the work itself
+  completed correctly.
+- **Periodic reclaim sweep on the scheduler leader** (#167) — @hc12r.
+  `RecoverNonTerminalRuns` was already idempotent and safe to call
+  repeatedly, but was only ever called once, at process startup — so a
+  run whose execution attempt died after startup (lease expired, no
+  process left to complete it) stayed "running" forever with nothing to
+  reclaim it. `Scheduler.runReclaimSweep` now calls it on a 20s ticker,
+  gated on the same leader-election check `catchUpMissedRuns` already
+  uses.
+- **`engine.SQLArtifactStore`** (#161, #167) — @hc12r. A Postgres/SQLite-
+  backed `ArtifactStore`, replacing the default local-disk store when
+  remote instance dispatch is enabled. Found live: a dynamic-expansion
+  instance dispatched to a remote worker pod wrote its result artifact
+  to that pod's own local disk, invisible to the dispatcher pod reading
+  it back, so the run failed with "result could not be read back" even
+  though the worker finished successfully. Uses the same database every
+  pod in a distributed deployment already connects to — no new
+  infrastructure required.
+
 ## [0.10.18] - 2026-08-12
 
 ### Changed
