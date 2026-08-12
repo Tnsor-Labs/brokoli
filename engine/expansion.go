@@ -63,6 +63,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -104,6 +105,20 @@ var remoteInstanceDispatchMargin = 2 * time.Minute
 // found this exact bug when a 50ms test double's response wasn't picked
 // up until 5 seconds later.
 var remoteInstanceStatusPollInterval = time.Second
+
+// maxConcurrentRemoteExpansionDispatch bounds how many of one expansion
+// node's instances runCodeExpansion dispatches to remote workers at once.
+// Not unbounded: defaultMaxExpansionInstances allows up to 1000 items, and
+// firing 1000 simultaneous JobQueue enqueues plus ClaimAttempt calls at
+// once would hammer the store and the queue for no real benefit once the
+// worker fleet is saturated. Not maxParallel's much smaller 4, either:
+// that bound exists for concurrent *nodes* sharing one pod's CPU within a
+// single RunPipeline call — remote instances execute on other pods
+// entirely, so the limiting resource is worker fleet size and queue
+// throughput, not this pod's own cores. A package variable, not a
+// literal, so a test can shrink it without needing hundreds of fake
+// workers to prove the bound is actually respected.
+var maxConcurrentRemoteExpansionDispatch = 16
 
 // funcRef mirrors brokoli-sdk's _func_ref(fn) output — a name/description
 // reference, NOT executable code (see brokoli/pipeline.py's _func_ref doc
@@ -310,15 +325,28 @@ func combineExpansionResults(results []*common.DataSet) (*common.DataSet, error)
 }
 
 // runCodeExpansion executes a dynamic-expansion `code` node (#31): once per
-// item in the upstream collection(s) named by expansion.over, in-process
-// and sequentially (concurrency across items is out of scope for this first
-// version — consistent with #30's in-process-sequential scope decision for
-// source_api pagination; see runSourceAPI), tracking each item's outcome as
-// its own durable models.ExpansionInstance row (see that type's doc comment
-// for why this is a dedicated table rather than reusing NodeRun/
-// ExecutionAttempt's (node_id, attempt) keying) so each item's success or
-// failure is independently visible, not one aggregate status for the whole
-// expansion.
+// item in the upstream collection(s) named by expansion.over, tracking each
+// item's outcome as its own durable models.ExpansionInstance row (see that
+// type's doc comment for why this is a dedicated table rather than reusing
+// NodeRun/ExecutionAttempt's (node_id, attempt) keying) so each item's
+// success or failure is independently visible, not one aggregate status for
+// the whole expansion.
+//
+// Local execution (r.instanceJobQueue == nil) stays in-process and
+// sequential — consistent with #30's in-process-sequential scope decision
+// for source_api pagination; see runSourceAPI — since every item competes
+// for the same CPU on the same pod regardless of ordering.
+//
+// Remote dispatch (r.instanceJobQueue != nil, ADR-017) instead dispatches up
+// to maxConcurrentRemoteExpansionDispatch items at once. This was
+// originally sequential too, inherited unchanged when remote dispatch was
+// added — a real, measured cost: a live test with 6 idle worker pods and 30
+// items (~1.5s of real work each) showed items round-robining correctly
+// across all 6 pods but with zero timestamp overlap between any two —
+// exactly one instance in flight at a time regardless of fleet size, node
+// timing out at 30 items × ~2s/item. Each remote instance executes on
+// whatever worker claims it, independent of any other instance, so nothing
+// about correctness requires sequencing them.
 //
 // nodeAttempt is the expansion node's own retry-attempt number (from
 // executeNode's outer retry loop). A retry of the whole node re-invokes
@@ -379,32 +407,116 @@ func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]
 
 	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s)", len(items))
 
-	results := make([]*common.DataSet, 0, len(items))
+	// slots holds each item's eventual result at its original index, so
+	// combineExpansionResults sees results in item order regardless of
+	// dispatch order or completion order below.
+	slots := make([]*common.DataSet, len(items))
+	present := make([]bool, len(items))
 	reused := 0
-	for i, item := range items {
-		instanceKey := deriveInstanceKey(i)
 
+	// First pass, always sequential and cheap: resolve cache hits from a
+	// prior attempt of this same run (see the doc comment above) before
+	// deciding what actually needs dispatching.
+	var pending []int
+	for i := range items {
+		instanceKey := deriveInstanceKey(i)
 		if cached, ok := r.reusedExpansionInstance(node.ID, instanceKey); ok {
 			if err := r.recordReusedExpansionInstance(node, nodeAttempt, i, instanceKey, len(items), cached); err != nil {
 				return nil, fmt.Errorf("node %s (%s): recording reused expansion instance %d/%d (key=%s): %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
 			}
-			results = append(results, cached)
+			slots[i], present[i] = cached, true
 			reused++
 			continue
 		}
+		pending = append(pending, i)
+	}
 
+	runInstance := func(i int) error {
+		item := items[i]
+		instanceKey := deriveInstanceKey(i)
 		itemDS := &common.DataSet{
 			Columns: columnsOf(item),
 			Rows:    []common.DataRow{item},
 		}
-
 		out, err := r.executeExpansionInstance(node, nodeAttempt, i, instanceKey, len(items), itemDS, script, configForScript, runParams, timeoutSec)
 		if err != nil {
-			return nil, fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
+			return fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
 		}
 		if out != nil {
-			r.rememberExpansionInstance(node.ID, instanceKey, out)
-			results = append(results, out)
+			// slots/present are written here by index only — safe for
+			// concurrent goroutines writing distinct indices of a
+			// pre-sized slice. r.expansionResults is a plain map, NOT
+			// safe for concurrent writes, so remembering the result there
+			// happens later, sequentially, after every goroutine below
+			// has finished (wg.Wait()) — see the loop just below this
+			// function's two dispatch branches.
+			slots[i], present[i] = out, true
+		}
+		return nil
+	}
+
+	if r.instanceJobQueue == nil {
+		// Local execution: unchanged, sequential — every item competes for
+		// the same pod's CPU regardless of ordering. Remembered inline,
+		// immediately after each success: a later item's failure returns
+		// out of this loop early, and an earlier item's already-succeeded
+		// result must survive that early return so a retry of this node
+		// doesn't re-run it (single goroutine here, so this is race-free).
+		for _, i := range pending {
+			if err := runInstance(i); err != nil {
+				return nil, err
+			}
+			if present[i] {
+				r.rememberExpansionInstance(node.ID, deriveInstanceKey(i), slots[i])
+			}
+		}
+	} else {
+		// Remote dispatch: bounded concurrent fan-out (see doc comment
+		// above for why sequential here was actively wasting the worker
+		// fleet). Wait for every launched instance before checking errors —
+		// same "let the wave finish, then report the first failure"
+		// semantic runner.go's own DAG-level node parallelism already uses,
+		// rather than cancelling in-flight instances on the first failure.
+		sem := make(chan struct{}, maxConcurrentRemoteExpansionDispatch)
+		var wg sync.WaitGroup
+		errCh := make(chan error, len(pending))
+		for _, i := range pending {
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(idx int) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if err := runInstance(idx); err != nil {
+					errCh <- err
+				}
+			}(i)
+		}
+		wg.Wait()
+		close(errCh)
+
+		// Sequential on purpose: r.expansionResults is a plain map, not
+		// safe for concurrent writes, so remembering results happens here
+		// — after every dispatch goroutine above has already finished
+		// (wg.Wait() already returned) — rather than from inside one.
+		// Covers every pending item regardless of whether some other item
+		// is about to fail below: nothing cancels in-flight instances on
+		// a sibling's failure, so by this point they have all genuinely
+		// finished, successfully or not.
+		for _, i := range pending {
+			if present[i] {
+				r.rememberExpansionInstance(node.ID, deriveInstanceKey(i), slots[i])
+			}
+		}
+
+		if err, ok := <-errCh; ok {
+			return nil, err
+		}
+	}
+
+	results := make([]*common.DataSet, 0, len(items))
+	for i := range items {
+		if present[i] {
+			results = append(results, slots[i])
 		}
 	}
 	if reused > 0 {
