@@ -115,6 +115,16 @@ func TestPluginInstallListRemoveLifecycle(t *testing.T) {
 	if len(listed) != 1 || listed[0].Name != "hello-py" || !listed[0].Packaged || listed[0].ArchiveSHA == "" {
 		t.Fatalf("unexpected list: %+v", listed)
 	}
+	// brokoli#110 M3: the list response carries each plugin's payloads
+	// (runtime/os/arch/requires) so a caller -- a worker checking its own
+	// feasibility -- can call plugins.SelectPayload against them without
+	// downloading the archive first.
+	if len(listed[0].Payloads) != 1 {
+		t.Fatalf("Payloads = %+v, want the one payload the fixture declares", listed[0].Payloads)
+	}
+	if p := listed[0].Payloads[0]; p.Runtime != plugins.RuntimePython || p.Requires["python"] != ">=3.8" {
+		t.Fatalf("Payloads[0] = %+v, want runtime=python requires.python>=3.8", p)
+	}
 
 	// Archive round-trips with the advertised digest.
 	rec = httptest.NewRecorder()
