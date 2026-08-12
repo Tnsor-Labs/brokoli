@@ -385,9 +385,15 @@ reports back holding the same token. The two pieces were designed to
 click together without either changing.
 
 **The wait polls `GetExecutionAttempt`** — already built, cheap,
-DB-native — on `store.DefaultRenewInterval`'s cadence, rather than
-inventing a new signal; `JobQueue` is push/pull, not request/response, so
-there is nothing to block on there.
+DB-native — rather than inventing a new signal; `JobQueue` is push/pull,
+not request/response, so there is nothing to block on there. *(Landed
+as an immediate check plus its own `remoteInstanceStatusPollInterval`,
+1s by default — not `store.DefaultRenewInterval` as first sketched here.
+The two cadences are legitimately different concerns: lease renewal can
+stay coarse, but coupling user-facing result latency to it meant a
+worker responding in milliseconds still wasn't noticed for a full lease
+interval — caught by `TestPipeline_ExpandRemoteDispatch_Succeeds` timing
+out in exactly that way.)*
 
 **A renewal goroutine is now required**, unlike #149's synchronous
 same-process case: the wait is no longer bounded by one blocking call, so
@@ -421,3 +427,80 @@ same as every prior slice in this ADR.
 run the script instead of a whole pipeline) — nothing can dispatch
 remotely end-to-end without it, and it needs its own design pass, not a
 continuation of momentum from this one.
+
+## Update — 2026-08-12: worker-side execution, end-to-end verified
+
+Slice 3's dispatcher half landed as core#155. This closes the loop:
+worker-side execution of a `WorkOrder` (core#156), the piece the previous
+update explicitly scoped out. `dispatchExpansionInstanceRemotely` →
+`ExecuteInstanceJob` → `dispatchExpansionInstanceRemotely` picking the
+result back up is now real and covered by a genuine end-to-end test
+(`TestPipeline_ExpandRemoteDispatch_TrueEndToEnd`): a real dispatch
+enqueues onto a real (channel-backed, not simulated) `JobQueue`, a real
+worker loop dequeues and actually runs the script — no canned response —
+and settles through the same store-level primitives the enterprise
+result endpoint uses, and the dispatcher's own wait-and-fetch loop reads
+the real result back out through `ArtifactStore`.
+
+**Two shared primitives, not one.** `ExecuteInstanceWorkOrder` just runs
+a `WorkOrder`'s script (only `NodeTypeCode` today — anything else is a
+named, explicit error, so a future `WorkOrder` producer for another node
+type finds out immediately rather than getting silently mishandled).
+`ExecuteInstanceJob` wraps it with settlement (`CompleteAttempt`/
+`FailAttempt`, `ArtifactStore.WriteArtifact`) for a worker that shares
+the *same store* as the dispatcher — `cmd/serve.go`'s Redis-`JobQueue`
+worker loop is the first caller. An enterprise WorkPool worker that does
+*not* share the store reaches `ExecuteInstanceWorkOrder` directly and
+reports back over the instance-result HTTP endpoint (ee#81) instead of
+calling `ExecuteInstanceJob`'s settlement half — same execution
+primitive, two different settlement transports, exactly as this ADR's
+two-tables/two-transports shape elsewhere already anticipated.
+
+**A script failure settles the attempt as failed but is not itself a
+job-queue-level failure.** The job's own task — durably record this
+instance's outcome — succeeded even when the script didn't; this mirrors
+the existing whole-pipeline convention of `Ack`ing a job whose run
+failed. Only an infrastructure failure on the worker's own side (can't
+reach the store) is surfaced as a job failure, so the caller can `Fail`
+the job for redelivery — safe to retry with the same `FencingGeneration`
+because the underlying lease keeps getting renewed independently by the
+dispatcher's own goroutine throughout, so it hasn't gone stale.
+
+**`cmd/serve.go` needed its own identity check, not a relaxation of the
+existing one.** The worker loop's pre-existing validation
+(`job.ID == "" || job.RunID == "" || job.ID != job.RunID`) is correct for
+whole-pipeline jobs but would incorrectly reject every `WorkOrder` job,
+whose `job.ID` is a fresh UUID rather than equal to `RunID`. Fixed with a
+distinct `job.WorkOrder != nil` branch ahead of that check, with its own
+validation (`job.ID`, `job.RunID`, `job.NodeID`, `job.InstanceKey` all
+required), rather than loosening the whole-pipeline check to tolerate a
+case it was never meant to describe.
+
+**A pre-existing race in `executeNode`'s own cancellation handling
+surfaced during testing, not introduced by this slice.** `executeNode`'s
+outer `select` races its `attemptCtx.Done()` case against the goroutine
+actually doing the work; on cancellation that outer select can return
+"pipeline cancelled" for the node *before* the inner
+`dispatchExpansionInstanceRemotely` goroutine reaches its own
+`waitCtx.Done()` case and calls `FailAttempt` — leaving that goroutine to
+settle the attempt after `RunPipeline` has already returned. This was
+always true of `executeNode`, remote dispatch just made it observable:
+the local-execution path has no analogous "goroutine still running
+after the caller returns" shape. Not fixed here — settlement is still
+correct, just not synchronous with the run's own terminal status — but
+the corresponding test
+(`TestPipeline_ExpandRemoteDispatch_CancellationSettlesAsFailed`) had to
+be written to poll for the attempt reaching terminal status instead of
+asserting immediately, and that eventually-consistent framing is worth
+carrying forward into any future work that touches this cancellation
+path.
+
+**ADR-017's remote instance dispatch mechanism is now feature-complete
+and verified end-to-end** for the core (self-hosted Redis-`JobQueue`)
+transport: dispatch → real worker execution → real result delivery →
+dispatcher picks it up, opt-in only via `Engine.InstanceJobQueue`, zero
+behavior change for any deployment that doesn't set it. The enterprise
+WorkPool transport (ee#81's HTTP result endpoint, a worker that does not
+share the dispatcher's store) is designed to compose with the same
+`ExecuteInstanceWorkOrder` primitive but is tracked and verified
+separately in the enterprise repo.
