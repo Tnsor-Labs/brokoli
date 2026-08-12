@@ -348,6 +348,34 @@ type JobQueue interface {
 	Close() error
 }
 
+// JobQueueRenewer is an optional JobQueue capability (check via type
+// assertion, same pattern as store's optional capability interfaces):
+// keeping a claimed job's transport-level claim from being treated as
+// abandoned while it is genuinely still being processed.
+//
+// Found live: a transport whose claim has its own idle/visibility
+// timeout (RedisJobQueue's default is 30s) will hand a still-in-flight
+// job's claim to a different, idle consumer the instant that timeout
+// elapses — Redis Streams' XAUTOCLAIM has no way to know the original
+// consumer is still legitimately working, only that it has gone quiet
+// for that long. The stolen-from consumer's own eventual Ack or Fail
+// then fails ("job is not claimed"), since ownership already moved.
+// RunPipeline and a single dynamic-expansion instance can both
+// legitimately run past 30s, so this isn't a corner case.
+//
+// RenewClaim is a heartbeat, not a new delivery: implementations must
+// not increment whatever delivery-count/attempt bookkeeping they use for
+// max-deliveries enforcement, only reset the claim's own idle timer. A
+// JobQueue with no such timeout concept (e.g. an in-memory one) simply
+// doesn't need to implement this — nothing requires it, and a caller
+// must type-assert before calling.
+type JobQueueRenewer interface {
+	// RenewClaim resets the currently-claimed job's idle/visibility timer.
+	// A no-op, not an error, if jobID is not currently claimed by anyone
+	// (it may have already been settled).
+	RenewClaim(jobID string) error
+}
+
 // RunJob represents a pipeline execution request in the job queue.
 //
 // NodeID/Attempt/IdempotencyKey/FencingGeneration (Tnsor-Labs/brokoli#7)

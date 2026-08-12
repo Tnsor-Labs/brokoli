@@ -130,10 +130,23 @@ func (e *Engine) RecoverNonTerminalRuns() (summary *RecoverySummary, err error) 
 		attribute.Int("runs_deferred", summary.RunsDeferred),
 		attribute.Int("attempts_reclaimed", summary.AttemptsReclaimed),
 	)
-	common.SLog().Info("recovery: startup pass complete",
+	// Info when there's something to report; Debug for an empty pass — this
+	// function is called once at startup (always worth an Info line, even
+	// with nothing found) and, as of the scheduler leader's periodic
+	// reclaim sweep, roughly every reclaimSweepInterval thereafter. An
+	// empty steady-state pass logging at Info every 20s would bury the
+	// startup line's own signal in noise; RunsScanned > 0 is exactly the
+	// cases an operator needs to see regardless of which caller this is.
+	logArgs := []any{
 		"runs_scanned", summary.RunsScanned, "runs_reconciled", summary.RunsReconciled,
 		"runs_failed", summary.RunsFailed, "runs_deferred", summary.RunsDeferred,
-		"attempts_reclaimed", summary.AttemptsReclaimed)
+		"attempts_reclaimed", summary.AttemptsReclaimed,
+	}
+	if summary.RunsScanned > 0 {
+		common.SLog().Info("recovery: pass complete", logArgs...)
+	} else {
+		common.SLog().Debug("recovery: pass complete", logArgs...)
+	}
 	return summary, nil
 }
 
