@@ -51,7 +51,7 @@ func newAttemptWiringTestPipeline(t *testing.T, config map[string]interface{}, e
 		t.Fatalf("create pipeline: %v", err)
 	}
 
-	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{executor}, nil, attemptWiringInstanceID)
+	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{executor}, nil, attemptWiringInstanceID, nil)
 	run, err := runner.Execute()
 	if err != nil {
 		t.Fatalf("execute pipeline: %v", err)
@@ -156,7 +156,7 @@ func TestExecuteNode_StoreWithoutExecutionAttemptStore_Unaffected(t *testing.T) 
 	}
 
 	wrapped := storeWithoutAttempts{Store: real}
-	runner := NewRunner(wrapped, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil, attemptWiringInstanceID)
+	runner := NewRunner(wrapped, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil, attemptWiringInstanceID, nil)
 	run, err := runner.Execute()
 	if err != nil {
 		t.Fatalf("execute pipeline: %v", err)

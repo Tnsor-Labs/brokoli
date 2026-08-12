@@ -54,6 +54,11 @@ type Runner struct {
 	// ClaimAttempt/AckAttempt when the node dispatch loop wires through it.
 	instanceID string
 
+	// instanceJobQueue is this Runner's Engine's InstanceJobQueue (ADR-017),
+	// nil by default — see that field's doc comment. Non-nil opts dynamic-
+	// expansion instances into remote dispatch instead of local execution.
+	instanceJobQueue extensions.JobQueue
+
 	// expansionResults caches a dynamic-expansion item's successful output
 	// across that same expansion node's own retry attempts within this run
 	// (Tnsor-Labs/brokoli#90 M3, ADR-015 §6's "retry without rerunning
@@ -142,16 +147,17 @@ type nodeExecutionResult struct {
 }
 
 // NewRunner creates a runner for the given pipeline.
-func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string) *Runner {
+func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string, instanceJobQueue extensions.JobQueue) *Runner {
 	return &Runner{
-		varStore:     vs,
-		connResolver: cr,
-		executors:    execs,
-		notifier:     notifier,
-		store:        s,
-		eventCh:      eventCh,
-		pipe:         pipe,
-		instanceID:   instanceID,
+		varStore:         vs,
+		connResolver:     cr,
+		executors:        execs,
+		notifier:         notifier,
+		store:            s,
+		eventCh:          eventCh,
+		pipe:             pipe,
+		instanceID:       instanceID,
+		instanceJobQueue: instanceJobQueue,
 	}
 }
 
@@ -867,7 +873,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// failure, or timeout — attemptCancel() below covers all three),
 			// so a real process crash simply stops renewing and the lease
 			// expires on its own.
-			go r.renewAttemptLease(attemptCtx, execAttemptStore, node.ID, attempt, execFencingGen)
+			go r.renewAttemptLease(attemptCtx, execAttemptStore, node.ID, "", attempt, execFencingGen)
 		}
 
 		resultCh := make(chan nodeResult, 1)
@@ -1138,7 +1144,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 // Complete/FailAttempt call after runNodeLogic returns will then correctly
 // fail its own fencing check and get logged the same non-fatal way, rather
 // than this goroutine trying to fail the run out-of-band.
-func (r *Runner) renewAttemptLease(ctx context.Context, attemptStore store.ExecutionAttemptStore, nodeID string, attempt int, fencingGen int64) {
+func (r *Runner) renewAttemptLease(ctx context.Context, attemptStore store.ExecutionAttemptStore, nodeID, instanceKey string, attempt int, fencingGen int64) {
 	ticker := time.NewTicker(store.DefaultRenewInterval)
 	defer ticker.Stop()
 	for {
@@ -1146,7 +1152,7 @@ func (r *Runner) renewAttemptLease(ctx context.Context, attemptStore store.Execu
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ok, err := attemptStore.RenewLease(r.run.ID, nodeID, "", attempt, r.instanceID, fencingGen, store.DefaultLeaseDuration)
+			ok, err := attemptStore.RenewLease(r.run.ID, nodeID, instanceKey, attempt, r.instanceID, fencingGen, store.DefaultLeaseDuration)
 			if err != nil || !ok {
 				r.log(nodeID, models.LogLevelWarning, "Failed to renew execution attempt lease for attempt %d (ok=%v): %v — a startup recovery pass may have reclaimed it", attempt, ok, err)
 				return

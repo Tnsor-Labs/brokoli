@@ -40,6 +40,19 @@ type Engine struct {
 	Executors     []extensions.NodeExecutor       // enterprise: K8s, Docker, etc.
 	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 	JobQueue      extensions.JobQueue             // nil = run in-process (default)
+
+	// InstanceJobQueue (ADR-017, worker protocol v2 — proposed) opts a
+	// node's dynamic-expansion instances into remote dispatch: instead of
+	// executing an item in-process, the Runner enqueues a WorkOrder-bearing
+	// extensions.RunJob and waits for a remote worker to complete it (see
+	// that ADR's 2026-08-12 wait-and-fetch design). Deliberately a separate
+	// field from JobQueue, not a reuse of it — a deployment already running
+	// distributed whole-pipeline dispatch via JobQueue must not silently
+	// start attempting instance-level remote dispatch the moment this
+	// ships. Nil by default (the case everywhere today): every expansion
+	// instance executes locally exactly as before, unconditionally.
+	InstanceJobQueue extensions.JobQueue
+
 	// ArtifactStore persists durable node-output artifacts so ResumeRun can
 	// restore a skipped node's real prior output (Tnsor-Labs/brokoli#8).
 	// Defaults to a LocalDiskArtifactStore rooted at BROKOLI_ARTIFACT_DIR
@@ -481,7 +494,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		return blocked, nil
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -756,7 +769,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	}
 
 	// Default: run in-process (current behavior)
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -886,7 +899,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 			Params:    params,
 		},
 	})
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
 	runner.params = params
 	runner.acceptedRun = accepted
@@ -983,7 +996,7 @@ func (e *Engine) DryRun(p *models.Pipeline, maxRows int) (map[string]*DryRunNode
 		maxRows = 10
 	}
 
-	runner := NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
+	runner := NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.dryRun = true
 	runner.dryRunMaxRows = maxRows
 
@@ -1167,7 +1180,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		lineageRun = ancestor
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.conditionResults = conditionResults
