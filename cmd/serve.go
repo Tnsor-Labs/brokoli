@@ -167,6 +167,16 @@ var serveCmd = &cobra.Command{
 		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
 			eng.JobQueue = Extensions.JobQueue
 			log.Printf("Job queue enabled (mode: %s)", RunMode)
+
+			// Wire the SAME queue for instance-level remote dispatch
+			// (ADR-017). One shared queue rather than a second
+			// transport: the worker loop below already dequeues both
+			// whole-pipeline and WorkOrder-bearing jobs from this same
+			// queue, branching on job.WorkOrder != nil.
+			if instanceDispatchEnabled() {
+				eng.InstanceJobQueue = Extensions.JobQueue
+				log.Printf("Instance-level remote dispatch enabled (mode: %s)", RunMode)
+			}
 		}
 
 		// Only start scheduler if mode is "all" or "scheduler"
@@ -517,6 +527,17 @@ func syncPortEnvForSelfReferences(port int) {
 
 func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
+}
+
+// instanceDispatchEnabled reports whether ADR-017's instance-level remote
+// dispatch should be wired onto the whole-pipeline JobQueue. Deliberately
+// opt-in, not automatic just because a JobQueue is present: a distributed
+// deployment already running today must not silently start dispatching
+// dynamic-expansion instances remotely the moment this ships. When this
+// returns false, eng.InstanceJobQueue stays nil and every expansion
+// instance keeps executing in-process exactly as before.
+func instanceDispatchEnabled() bool {
+	return os.Getenv("BROKOLI_INSTANCE_DISPATCH") == "1"
 }
 
 // workerShutdownGracePeriod bounds how long --mode worker's dequeue loop

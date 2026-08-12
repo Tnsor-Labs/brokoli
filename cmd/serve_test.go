@@ -17,6 +17,23 @@ func TestDefaultDatabasePath(t *testing.T) {
 	}
 }
 
+func TestInstanceDispatchEnabled(t *testing.T) {
+	t.Setenv("BROKOLI_INSTANCE_DISPATCH", "")
+	if instanceDispatchEnabled() {
+		t.Fatal("expected instance dispatch to stay off by default")
+	}
+
+	t.Setenv("BROKOLI_INSTANCE_DISPATCH", "true")
+	if instanceDispatchEnabled() {
+		t.Fatal("expected only the exact value \"1\" to enable instance dispatch")
+	}
+
+	t.Setenv("BROKOLI_INSTANCE_DISPATCH", "1")
+	if !instanceDispatchEnabled() {
+		t.Fatal("expected BROKOLI_INSTANCE_DISPATCH=1 to enable instance dispatch")
+	}
+}
+
 func TestEncryptionKeyPathDoesNotContainDatabaseCredentials(t *testing.T) {
 	if got := encryptionKeyPath("postgres://user:secret@db/brokoli"); got != "./brokoli.db.key" {
 		t.Fatalf("encryptionKeyPath(Postgres) = %q", got)
