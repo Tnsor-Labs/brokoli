@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -290,4 +292,81 @@ func TestPipeline_ExpandRemoteDispatch_CancellationSettlesAsFailed(t *testing.T)
 	if attempt.Status != models.AttemptStatusFailed {
 		t.Errorf("attempt status = %s, want failed (settled by the dispatcher's own cancellation handling)", attempt.Status)
 	}
+}
+
+// TestPipeline_ExpandRemoteDispatch_InstancesDispatchConcurrently proves
+// runCodeExpansion's remote-dispatch branch actually fans out concurrently
+// instead of the sequential-per-item behavior this replaced (found live in
+// a real Kubernetes deployment: 30 items × ~1.5s of real work each, 6 idle
+// worker pods, zero timestamp overlap between any two instances — worker
+// count bought nothing). 8 items, each simulated worker taking 300ms to
+// respond: fully sequential would take >=2.4s; concurrent (bounded by
+// maxConcurrentRemoteExpansionDispatch, comfortably above 8) should take
+// close to one item's own delay, not eight of them stacked.
+func TestPipeline_ExpandRemoteDispatch_InstancesDispatchConcurrently(t *testing.T) {
+	realStore := newExpansionTestStore(t, "expand-remote-concurrent")
+	real := realStore.(*store.SQLiteStore)
+
+	dir := t.TempDir()
+	const itemCount = 8
+	csv := "path\n"
+	for i := 0; i < itemCount; i++ {
+		csv += fmt.Sprintf("f%d.csv\n", i)
+	}
+	filesCSV := writeCSV(t, dir, "files.csv", csv)
+	pipeline := remoteDispatchTestPipeline("expand-remote-concurrent-pipeline")
+	pipeline.Nodes[0].Config["path"] = filesCSV
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := NewEngine(real)
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	const perItemDelay = 300 * time.Millisecond
+	var mu sync.Mutex
+	var maxInFlight, inFlight int
+	// delay is 0 on the queue itself — the simulated per-item work
+	// (including its "worker taking time" sleep) all happens inside
+	// respond, so the in-flight counter below spans the FULL simulated
+	// remote-execution window, not just the near-instant work after it.
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: 0,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			mu.Lock()
+			inFlight++
+			if inFlight > maxInFlight {
+				maxInFlight = inFlight
+			}
+			mu.Unlock()
+			time.Sleep(perItemDelay)
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+			return job.WorkOrder.ItemColumns, []common.DataRow{job.WorkOrder.ItemRow}, ""
+		},
+	}
+
+	start := time.Now()
+	run, err := eng.RunPipeline(pipeline.ID)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %s, want success", run.Status)
+	}
+
+	// respond's own delay simulation runs on a goroutine per Enqueue call,
+	// racing the dispatcher's own poll loop reading inFlight concurrently
+	// with other Enqueue goroutines mutating it — mu protects exactly that.
+	mu.Lock()
+	observedMaxInFlight := maxInFlight
+	mu.Unlock()
+	if observedMaxInFlight < 2 {
+		t.Errorf("max concurrent in-flight instances = %d, want >1 — dispatch is still sequential", observedMaxInFlight)
+	}
+	if elapsed >= itemCount*perItemDelay {
+		t.Errorf("elapsed = %s, want well under %s (%d items x %s) — dispatch does not appear concurrent", elapsed, itemCount*perItemDelay, itemCount, perItemDelay)
+	}
+	t.Logf("%d items, %s each, ran in %s (max %d concurrent)", itemCount, perItemDelay, elapsed, observedMaxInFlight)
 }
