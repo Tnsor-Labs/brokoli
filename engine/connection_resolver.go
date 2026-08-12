@@ -56,34 +56,49 @@ func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType mo
 	case models.NodeTypeSourceDB, models.NodeTypeSinkDB:
 		resolved["uri"] = conn.BuildURI()
 
-	case models.NodeTypeSourceAPI:
-		baseURL := conn.BuildURI()
-		if path, ok := config["url"].(string); ok && path != "" && path[0] == '/' {
-			resolved["url"] = baseURL + path
-		} else if _, ok := config["url"].(string); !ok || config["url"] == "" {
-			resolved["url"] = baseURL
-		}
-		if extra != nil {
-			if connHeaders, ok := extra["headers"].(map[string]interface{}); ok {
-				merged := make(map[string]interface{})
-				for k, v := range connHeaders {
-					merged[k] = v
-				}
-				if nodeHeaders, ok := config["headers"].(map[string]interface{}); ok {
-					for k, v := range nodeHeaders {
-						merged[k] = v
-					}
-				}
-				resolved["headers"] = merged
-			}
-		}
-		if conn.Login != "" {
-			resolved["auth_user"] = conn.Login
-			resolved["auth_password"] = conn.Password
-		}
+	case models.NodeTypeSourceAPI, models.NodeTypeSinkAPI:
+		resolveAPIConnectionFields(config, resolved, conn, extra)
 	}
 
 	return resolved
+}
+
+// resolveAPIConnectionFields injects a connection's base URL, merged headers,
+// and Basic Auth credentials into an HTTP node's resolved config. Shared by
+// source_api and sink_api -- both are plain HTTP requests against the same
+// kind of connection, so they resolve identically (previously sink_api had
+// no case here at all: a conn_id on a sink_api node silently injected
+// nothing, unlike every other node type that accepts one).
+func resolveAPIConnectionFields(
+	config map[string]interface{},
+	resolved map[string]interface{},
+	conn *models.Connection,
+	extra map[string]interface{},
+) {
+	baseURL := conn.BuildURI()
+	if path, ok := config["url"].(string); ok && path != "" && path[0] == '/' {
+		resolved["url"] = baseURL + path
+	} else if _, ok := config["url"].(string); !ok || config["url"] == "" {
+		resolved["url"] = baseURL
+	}
+	if extra != nil {
+		if connHeaders, ok := extra["headers"].(map[string]interface{}); ok {
+			merged := make(map[string]interface{})
+			for k, v := range connHeaders {
+				merged[k] = v
+			}
+			if nodeHeaders, ok := config["headers"].(map[string]interface{}); ok {
+				for k, v := range nodeHeaders {
+					merged[k] = v
+				}
+			}
+			resolved["headers"] = merged
+		}
+	}
+	if conn.Login != "" {
+		resolved["auth_user"] = conn.Login
+		resolved["auth_password"] = conn.Password
+	}
 }
 
 // resolveCredentials resolves password_ref and extra_ref using the secrets chain,
