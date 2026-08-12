@@ -17,35 +17,44 @@ import (
 )
 
 // ArtifactStore persists a node's completed output durably, keyed by
-// (run ID, node ID), so a resumed run can restore the REAL prior output of
-// a node it is skipping instead of leaving it unpopulated — the empty
-// dataset data-loss bug fixed by Tnsor-Labs/brokoli#8. See
+// (run ID, node ID, instance key), so a resumed run can restore the REAL
+// prior output of a node it is skipping instead of leaving it unpopulated —
+// the empty dataset data-loss bug fixed by Tnsor-Labs/brokoli#8. See
 // docs/adr/010-run-artifact-and-resume-semantics.md for the full resume
 // policy this backs.
 //
+// instanceKey (added for ADR-017's output-reference delivery design, see
+// that ADR's 2026-08-12 Update) identifies which physical instance of
+// nodeID this artifact belongs to — a dynamic-expansion item, empty for
+// today's whole-node case. Every existing caller passes "" and is
+// unaffected; this is purely additive, the same key-widening move already
+// made for store.ExecutionAttemptStore (#147) and models.WorkPoolJob (#79).
+//
 // This is intentionally a minimal contract — write the completed output of
-// one node, read it back by the same key — not a general blob/object-store
-// abstraction. Provider selection (S3, GCS, a shared network volume, etc.)
-// is explicitly out of scope for this issue; LocalDiskArtifactStore below
-// is the only implementation today, and is enough to make resume correct
-// on a single host or a shared volume mount.
+// one node (or node instance), read it back by the same key — not a
+// general blob/object-store abstraction. Provider selection (S3, GCS, a
+// shared network volume, etc.) is explicitly out of scope for this issue;
+// LocalDiskArtifactStore below is the only implementation today, and is
+// enough to make resume correct on a single host or a shared volume mount.
 type ArtifactStore interface {
-	// WriteArtifact durably persists ds as the completed output of nodeID
-	// within runID. Called once per successful, non-dry-run node execution
-	// whose node type is resumable (see nonResumableNodeTypes) and whose
-	// output is non-nil.
-	WriteArtifact(runID, nodeID string, ds *common.DataSet) error
+	// WriteArtifact durably persists ds as the completed output of
+	// (nodeID, instanceKey) within runID. Called once per successful,
+	// non-dry-run node execution whose node type is resumable (see
+	// nonResumableNodeTypes) and whose output is non-nil, and — since
+	// ADR-017 — once per completed instance whose result was delivered by
+	// a remote worker.
+	WriteArtifact(runID, nodeID, instanceKey string, ds *common.DataSet) error
 
 	// ReadArtifact retrieves a previously written artifact. Returns a
 	// wrapped ErrArtifactNotFound if none was ever written for this
-	// (runID, nodeID) pair.
-	ReadArtifact(runID, nodeID string) (*common.DataSet, error)
+	// (runID, nodeID, instanceKey) key.
+	ReadArtifact(runID, nodeID, instanceKey string) (*common.DataSet, error)
 
 	// DeleteRunArtifacts removes every artifact written for runID, across
-	// all of its nodes — the retention/GC counterpart to WriteArtifact, so
-	// purging old runs (see api.systemPurge) doesn't leave their artifacts
-	// behind forever (Tnsor-Labs/brokoli#49). A no-op, not an error, if
-	// nothing was ever written for runID.
+	// all of its nodes and instances — the retention/GC counterpart to
+	// WriteArtifact, so purging old runs (see api.systemPurge) doesn't
+	// leave their artifacts behind forever (Tnsor-Labs/brokoli#49). A
+	// no-op, not an error, if nothing was ever written for runID.
 	DeleteRunArtifacts(runID string) error
 }
 
@@ -126,11 +135,25 @@ type BlobStoreProvider interface {
 // per-run storage and the same lifetime, including DeleteRunArtifacts.
 func (l *LocalDiskArtifactStore) Blobs() artifact.Store { return l.blobs }
 
-// manifestPath is where the reference describing node nodeID's output lives.
-// It sits beside the blobs in the same per-run directory; the distinct
-// suffix keeps the two apart.
-func (l *LocalDiskArtifactStore) manifestPath(runID, nodeID string) string {
-	return filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(nodeID))+".manifest.json")
+// instanceArtifactKey combines nodeID and instanceKey into the single
+// string manifestPath/artifactPath hash — deliberately producing the exact
+// same value as bare nodeID when instanceKey is empty (the "\x00instance\x00"
+// marker only appears for a non-empty instanceKey), so every artifact
+// written before ADR-017 hashes identically after this change and stays
+// readable. A run already in flight when a binary is upgraded must still
+// resume — the same principle readLegacyArtifact below already exists for.
+func instanceArtifactKey(nodeID, instanceKey string) string {
+	if instanceKey == "" {
+		return nodeID
+	}
+	return nodeID + "\x00instance\x00" + instanceKey
+}
+
+// manifestPath is where the reference describing (nodeID, instanceKey)'s
+// output lives. It sits beside the blobs in the same per-run directory; the
+// distinct suffix keeps the two apart.
+func (l *LocalDiskArtifactStore) manifestPath(runID, nodeID, instanceKey string) string {
+	return filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(instanceArtifactKey(nodeID, instanceKey)))+".manifest.json")
 }
 
 // artifactPath maps (runID, nodeID) to a filesystem path without ever
@@ -142,6 +165,10 @@ func (l *LocalDiskArtifactStore) manifestPath(runID, nodeID string) string {
 // sidesteps path traversal, path separators, and null bytes in one step, at
 // the cost of file names no longer being human-readable — an acceptable
 // trade-off for an internal cache keyed by opaque IDs.
+//
+// No instanceKey parameter: this is only ever used by readLegacyArtifact,
+// for the pre-manifest, pre-ADR-017 layout that predates instances
+// entirely — see that method's own doc comment.
 func (l *LocalDiskArtifactStore) artifactPath(runID, nodeID string) string {
 	return filepath.Join(l.runDir(runID), hex.EncodeToString(sha256Sum(nodeID))+".ndjson")
 }
@@ -165,7 +192,7 @@ func sha256Sum(s string) []byte {
 // resulting reference is written beside them. Streaming rather than staging
 // the encoded bytes in memory or in a second file is the point: the datasets
 // worth persisting are the large ones.
-func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID string, ds *common.DataSet) error {
+func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *common.DataSet) error {
 	if runID == "" || nodeID == "" {
 		return fmt.Errorf("write artifact: runID and nodeID are required")
 	}
@@ -213,7 +240,7 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID string, ds *common.
 		return fmt.Errorf("write artifact: %w", err)
 	}
 
-	path := l.manifestPath(runID, nodeID)
+	path := l.manifestPath(runID, nodeID, instanceKey)
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return fmt.Errorf("create artifact directory: %w", err)
 	}
@@ -235,14 +262,20 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID string, ds *common.
 }
 
 // ReadArtifact implements ArtifactStore.
-func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID string) (*common.DataSet, error) {
+func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string) (*common.DataSet, error) {
 	if runID == "" || nodeID == "" {
 		return nil, fmt.Errorf("read artifact: runID and nodeID are required")
 	}
 
-	data, err := os.ReadFile(l.manifestPath(runID, nodeID)) // #nosec G304 -- path is baseDir joined with two sha256 hex digests; no caller string reaches it, see artifactPath.
+	data, err := os.ReadFile(l.manifestPath(runID, nodeID, instanceKey)) // #nosec G304 -- path is baseDir joined with a sha256 hex digest; no caller string reaches it, see manifestPath/instanceArtifactKey.
 	if err != nil {
 		if os.IsNotExist(err) {
+			if instanceKey != "" {
+				// The pre-manifest legacy layout predates ADR-017's
+				// instance concept entirely — there is no legacy file an
+				// instance-keyed lookup could ever fall back to.
+				return nil, fmt.Errorf("%w: run=%s node=%s instance=%s", ErrArtifactNotFound, runID, nodeID, instanceKey)
+			}
 			// No manifest: either nothing was written, or this artifact
 			// predates manifests. Runs already in flight when a binary is
 			// upgraded must still resume, so the older layout is read

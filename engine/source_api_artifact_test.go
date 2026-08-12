@@ -55,7 +55,7 @@ func TestSourceAPI_ArtifactResponse_StoredByReference(t *testing.T) {
 		t.Fatal("the engine's artifact store does not expose a blob store, so nothing was wired")
 	}
 
-	ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "source")
+	ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "source", "")
 	if err != nil {
 		t.Fatalf("read node output: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestSourceAPI_ArtifactResponse_PurgedWithTheRun(t *testing.T) {
 		t.Fatalf("run: %v status=%v", err, run.Status)
 	}
 
-	ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "source")
+	ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "source", "")
 	if err != nil {
 		t.Fatal(err)
 	}
