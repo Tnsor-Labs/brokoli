@@ -50,6 +50,18 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 		// RecoverNonTerminalRuns should find — 0 only for the
 		// already-terminal case.
 		wantRecoveryScanned int
+		// liveLeaseNodeID names the node whose attempt 0 is still Claimed/
+		// Started — and so still holds a live, unexpired
+		// store.ExecutionAttemptStore lease (Tnsor-Labs/brokoli#90 M3) —
+		// at the moment this crash point fires. Non-empty for every crash
+		// point strictly between a node's attempt being claimed and that
+		// same attempt's Complete/FailAttempt call landing. For these,
+		// reconcileExecutionAttempts (engine/recovery.go) correctly defers
+		// on the FIRST recovery pass — a live lease might still belong to
+		// a genuinely live process — and only reclaims once that lease is
+		// made to look expired, exercised via assertCrashRecoveryDefersThenReclaims
+		// instead of assertCrashRecovery's single-pass assertion.
+		liveLeaseNodeID string
 	}{
 		{name: "before run creation", point: crashPointBeforeRunCreate},
 		{name: "after run creation", point: crashPointAfterRunCreate, runStatus: models.RunStatusRunning,
@@ -66,17 +78,20 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted},
 			wantRecoveredStatus:   models.RunStatusFailed,
 			wantRecoveryEventType: models.RunEventRecoveryFailed,
-			wantRecoveryScanned:   1},
+			wantRecoveryScanned:   1,
+			liveLeaseNodeID:       "source"},
 		{name: "before node execution", point: crashPointBeforeNodeExecution + ":source", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusRunning},
 			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted},
 			wantRecoveredStatus:   models.RunStatusFailed,
 			wantRecoveryEventType: models.RunEventRecoveryFailed,
-			wantRecoveryScanned:   1},
+			wantRecoveryScanned:   1,
+			liveLeaseNodeID:       "source"},
 		{name: "after sink side effect before persistence", point: crashPointAfterNodeExecutionBeforePersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusRunning}, outputExpected: true,
 			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted},
 			wantRecoveredStatus:   models.RunStatusFailed,
 			wantRecoveryEventType: models.RunEventRecoveryFailed,
-			wantRecoveryScanned:   1},
+			wantRecoveryScanned:   1,
+			liveLeaseNodeID:       "sink"},
 		{name: "after sink completion persistence", point: crashPointAfterNodeCompletionPersist + ":sink", runStatus: models.RunStatusRunning, nodeStatuses: map[string]models.RunStatus{"source": models.RunStatusSuccess, "condition": models.RunStatusSuccess, "sink": models.RunStatusSuccess}, outputExpected: true,
 			wantEvents:            []models.RunEventType{models.RunEventCreated, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted, models.AttemptStarted, models.AttemptCompleted},
 			wantRecoveredStatus:   models.RunStatusSuccess,
@@ -121,7 +136,11 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 			assertCrashBaseline(t, dbPath, tc.runStatus, tc.nodeStatuses, outputPath, tc.outputExpected, tc.wantEvents)
 
 			if tc.runStatus != "" {
-				assertCrashRecovery(t, dbPath, tc.wantRecoveredStatus, tc.wantRecoveryEventType, tc.wantRecoveryScanned)
+				if tc.liveLeaseNodeID != "" {
+					assertCrashRecoveryDefersThenReclaims(t, dbPath, tc.liveLeaseNodeID, tc.wantRecoveredStatus, tc.wantRecoveryEventType, tc.wantRecoveryScanned)
+				} else {
+					assertCrashRecovery(t, dbPath, tc.wantRecoveredStatus, tc.wantRecoveryEventType, tc.wantRecoveryScanned)
+				}
 			}
 		})
 	}
@@ -240,6 +259,71 @@ func assertCrashEvents(t *testing.T, s *store.SQLiteStore, runID string, wantEve
 	if !reflect.DeepEqual(gotTypes, wantEvents) {
 		t.Errorf("run_events types = %v, want %v", gotTypes, wantEvents)
 	}
+}
+
+// assertCrashRecoveryDefersThenReclaims covers a crash point where the
+// crashed node's own attempt still holds a live, unexpired
+// store.ExecutionAttemptStore lease (Tnsor-Labs/brokoli#90 M3's claim/lease
+// wiring) at the exact moment the process dies. reconcileExecutionAttempts
+// (engine/recovery.go) correctly refuses to touch the run on a first
+// recovery pass in that state — a live lease might still belong to a
+// genuinely live process elsewhere, the same guarantee
+// TestRecoverNonTerminalRunsDefersToLiveLease already proves directly
+// against the store. This forces the lease to look expired (RenewLease with
+// a negative duration, mirroring that same test's ClaimAttempt trick — the
+// attempt here is already claimed, so RenewLease is the right call) and
+// then hands off to assertCrashRecovery for the now-familiar
+// reclaim-and-reach-terminal assertion.
+func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID string, wantStatus models.RunStatus, wantEventType models.RunEventType, wantScanned int) {
+	t.Helper()
+
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store for first recovery pass: %v", err)
+	}
+
+	runs, err := s.ListRunsByPipeline("crash-harness", 10)
+	if err != nil {
+		t.Fatalf("list runs before first recovery pass: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("runs before first recovery pass = %d, want 1", len(runs))
+	}
+	runID := runs[0].ID
+
+	eng := NewEngine(s)
+	first, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("first RecoverNonTerminalRuns: %v", err)
+	}
+	if first.RunsDeferred != 1 || first.RunsReconciled != 0 || first.RunsFailed != 0 {
+		t.Fatalf("first recovery summary = %+v, want 1 deferred, 0 reconciled, 0 failed (live lease on node %q must not be touched)", first, liveLeaseNodeID)
+	}
+	stillRunning, err := s.GetRun(runID)
+	if err != nil {
+		t.Fatalf("GetRun after first recovery pass: %v", err)
+	}
+	if stillRunning.Status != models.RunStatusRunning {
+		t.Fatalf("run status after first recovery pass = %q, want unchanged running (live lease must defer, not reclaim)", stillRunning.Status)
+	}
+
+	attempt, err := s.GetExecutionAttempt(runID, liveLeaseNodeID, 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(%s, %s, 0): %v", runID, liveLeaseNodeID, err)
+	}
+	if ok, err := s.RenewLease(runID, liveLeaseNodeID, 0, attempt.ClaimedBy, attempt.FencingGeneration, -time.Second); err != nil || !ok {
+		t.Fatalf("force-expire lease via RenewLease: ok=%v err=%v", ok, err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatalf("close store between recovery passes: %v", err)
+	}
+
+	// The lease now looks expired; the next pass (reopened fresh, exactly
+	// as assertCrashRecovery's own doc comment already establishes for a
+	// real process restart) reclaims it and proceeds through the same
+	// event-log reconciliation this whole harness otherwise exercises —
+	// including its own internal idempotency check as the pass after that.
+	assertCrashRecovery(t, dbPath, wantStatus, wantEventType, wantScanned)
 }
 
 // assertCrashRecovery is the phase assertCrashBaseline explicitly deferred

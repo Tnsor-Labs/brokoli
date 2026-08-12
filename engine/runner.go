@@ -49,6 +49,10 @@ type Runner struct {
 	traceID              string                          // distributed tracing correlation ID
 	executors            []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
 	notifier             extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+	// instanceID is this Runner's Engine's InstanceID (Tnsor-Labs/brokoli#90
+	// M3) — the claimedBy identity passed to store.ExecutionAttemptStore's
+	// ClaimAttempt/AckAttempt when the node dispatch loop wires through it.
+	instanceID string
 
 	// pipelineVersion pins a freshly created run (acceptedRun == nil) to the
 	// store.PipelineVersion snapshot it was resolved against — see
@@ -125,7 +129,7 @@ type nodeExecutionResult struct {
 }
 
 // NewRunner creates a runner for the given pipeline.
-func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider) *Runner {
+func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string) *Runner {
 	return &Runner{
 		varStore:     vs,
 		connResolver: cr,
@@ -134,6 +138,7 @@ func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline
 		store:        s,
 		eventCh:      eventCh,
 		pipe:         pipe,
+		instanceID:   instanceID,
 	}
 }
 
@@ -697,6 +702,20 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			TraceID:   r.traceID,
 			SpanID:    spanID,
 		}
+		idempotencyKey := nodeAttemptIdempotencyKey(r.run.ID, node.ID, attempt)
+
+		// execAttemptStore is the optional store.ExecutionAttemptStore
+		// capability (Tnsor-Labs/brokoli#90 M3) — nil on a store that
+		// doesn't implement it (e.g. an older EE APIStore), in which case
+		// this attempt's claim/lease/fencing bookkeeping below is simply
+		// skipped and node execution behaves exactly as it always has.
+		// execFencingGen is only meaningful while execAttemptStore != nil.
+		var execAttemptStore store.ExecutionAttemptStore
+		var execFencingGen int64
+		if as, ok := r.store.(store.ExecutionAttemptStore); ok && !r.dryRun {
+			execAttemptStore = as
+		}
+
 		crashAt(crashPointBeforeNodeAttemptCreate, node.ID)
 		if !r.dryRun {
 			// CreateNodeRun is the durable attempt record: no external
@@ -704,8 +723,59 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// it is persisted. Matches the already-correct run-level
 			// pattern (CreateRun above checks and propagates); previously
 			// this error was discarded entirely.
-			if err := r.store.CreateNodeRun(nr); err != nil {
-				return nil, fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+			//
+			// When the store also supports ExecutionAttemptStore, the
+			// node-level outbox/claim row is created in the SAME
+			// transaction as the NodeRun — mirroring the pipeline-level
+			// outbox pattern in Engine.RunPipelineAsync (see
+			// models.ExecutionAttempt's doc comment: this is that pattern's
+			// "natural next caller"). It starts Queued; ClaimAttempt right
+			// after commit is this Runner claiming its own just-created
+			// attempt, since there is no separate worker dequeue step yet.
+			if execAttemptStore != nil {
+				execAttempt := &models.ExecutionAttempt{
+					RunID:          r.run.ID,
+					NodeID:         node.ID,
+					Attempt:        attempt,
+					Status:         models.AttemptStatusQueued,
+					IdempotencyKey: idempotencyKey,
+				}
+				if err := r.store.WithTx(func(tx *sql.Tx) error {
+					if err := r.store.CreateNodeRunTx(tx, nr); err != nil {
+						return err
+					}
+					return execAttemptStore.CreateExecutionAttemptTx(tx, execAttempt)
+				}); err != nil {
+					return nil, fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+				}
+				// Short lease (store.DefaultLeaseDuration/RenewInterval —
+				// the same 15s/5s tradeoff already accepted for scheduler
+				// leader election, store/postgres_leader.go) kept alive by
+				// a renewal goroutine below for as long as this attempt
+				// actually runs, rather than one long lease sized to
+				// nodeTimeout: a genuinely crashed process stops renewing
+				// and its lease is reclaimable within ~15s regardless of
+				// how long the node's own timeout is, instead of leaving
+				// reconcileExecutionAttempts (engine/recovery.go) deferring
+				// to it for the whole nodeTimeout window.
+				gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, attempt, r.instanceID, store.DefaultLeaseDuration)
+				if err != nil {
+					return nil, fmt.Errorf("claim execution attempt for %s (attempt %d): %w", node.Name, attempt, err)
+				}
+				if !ok {
+					// A just-created Queued row must be claimable; failure
+					// here means something else already claimed or settled
+					// it, which should never happen for in-process dispatch
+					// and indicates a genuine correctness violation worth
+					// surfacing loudly rather than silently proceeding
+					// without a valid lease.
+					return nil, fmt.Errorf("claim execution attempt for %s (attempt %d): already claimed or terminal", node.Name, attempt)
+				}
+				execFencingGen = gen
+			} else {
+				if err := r.store.CreateNodeRun(nr); err != nil {
+					return nil, fmt.Errorf("persist node attempt for %s (attempt %d): %w", node.Name, attempt, err)
+				}
 			}
 			attemptNum := attempt
 			r.appendEvent(models.RunEvent{
@@ -764,7 +834,28 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		// below via runNodeLogic so they can observe cancellation/deadline
 		// instead of being silently abandoned when this select moves on.
 		attemptCtx, attemptCancel := context.WithTimeout(r.ctx, nodeTimeout)
-		idempotencyKey := nodeAttemptIdempotencyKey(r.run.ID, node.ID, attempt)
+
+		if execAttemptStore != nil {
+			// AckAttempt records that this Runner is about to actually
+			// start runNodeLogic under the lease it holds — the claimed→
+			// started transition models.AttemptStatus documents. Fencing-
+			// checked against execFencingGen for the same reason ClaimAttempt
+			// itself is: if this ever fails, some other claimant already
+			// holds the lease, which must not be silently overridden.
+			if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, attempt, r.instanceID, execFencingGen); err != nil {
+				attemptCancel()
+				return nil, fmt.Errorf("ack execution attempt for %s (attempt %d): %w", node.Name, attempt, err)
+			}
+			// Keep the short lease alive for as long as runNodeLogic is
+			// actually still executing, exactly like PostgresLeaderElector.Run
+			// renews leadership (store/postgres_leader.go): renew on a tick
+			// well below the lease duration so one missed tick doesn't cost
+			// the lease, and stop the instant attemptCtx ends (success,
+			// failure, or timeout — attemptCancel() below covers all three),
+			// so a real process crash simply stops renewing and the lease
+			// expires on its own.
+			go r.renewAttemptLease(attemptCtx, execAttemptStore, node.ID, attempt, execFencingGen)
+		}
 
 		resultCh := make(chan nodeResult, 1)
 		go func() {
@@ -846,6 +937,21 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 						return nil, fmt.Errorf("persist successful node attempt for %s (attempt %d): %w", node.Name, attempt, err)
 					}
 					r.appendEvent(completedEvent)
+				}
+				if execAttemptStore != nil {
+					// Settle the claim/lease record BEFORE
+					// crashPointAfterNodeCompletionPersist, not after: the
+					// NodeRun success above and the attempt's terminal state
+					// must agree by the time that boundary is reached, or a
+					// crash landing exactly there leaves a non-terminal,
+					// still-live-leased attempt that startup recovery then
+					// correctly (but here undesirably) defers to instead of
+					// reconciling — see TestCrashRecoveryBaseline. Non-fatal:
+					// the NodeRun row is still the authoritative success
+					// record even if this best-effort call fails.
+					if err := execAttemptStore.CompleteAttempt(r.run.ID, node.ID, attempt, execFencingGen); err != nil {
+						r.log(node.ID, models.LogLevelWarning, "Failed to settle execution attempt %d as completed (node already succeeded; harmless — recovery reclaims it): %v", attempt, err)
+					}
 				}
 			}
 			crashAt(crashPointAfterNodeCompletionPersist, node.ID)
@@ -979,6 +1085,15 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			common.SLog().Warn("node attempt failed",
 				common.RunAttr(r.run.ID), common.NodeAttr(node.ID), common.AttemptAttr(attempt),
 				"error", err, "duration_ms", duration)
+			if execAttemptStore != nil {
+				// Same non-fatal treatment as CompleteAttempt above: the
+				// NodeRun row is already the durable record of this
+				// attempt's failure; this settles the supplementary
+				// claim/lease record to match, best-effort.
+				if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, attempt, execFencingGen, err.Error()); failErr != nil {
+					r.log(node.ID, models.LogLevelWarning, "Failed to settle execution attempt %d as failed (node already marked failed; harmless — recovery reclaims it): %v", attempt, failErr)
+				}
+			}
 		}
 		lastErr = err
 
@@ -996,6 +1111,35 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		return nil, fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return conditionDecision, nil
+}
+
+// renewAttemptLease keeps a node attempt's short execution-attempt lease
+// alive for as long as it is genuinely still executing (Tnsor-Labs/brokoli#90
+// M3), renewing on store.DefaultRenewInterval — well below
+// store.DefaultLeaseDuration, so one missed tick under load doesn't cost
+// the lease — until ctx is done (the attempt finished or timed out, see
+// attemptCtx/attemptCancel in executeNode). A renewal failure means the
+// fencing generation was already reclaimed by someone else (only possible
+// today via startup recovery deciding this process looked dead); it is
+// logged and this goroutine simply stops — the attempt's own
+// Complete/FailAttempt call after runNodeLogic returns will then correctly
+// fail its own fencing check and get logged the same non-fatal way, rather
+// than this goroutine trying to fail the run out-of-band.
+func (r *Runner) renewAttemptLease(ctx context.Context, attemptStore store.ExecutionAttemptStore, nodeID string, attempt int, fencingGen int64) {
+	ticker := time.NewTicker(store.DefaultRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ok, err := attemptStore.RenewLease(r.run.ID, nodeID, attempt, r.instanceID, fencingGen, store.DefaultLeaseDuration)
+			if err != nil || !ok {
+				r.log(nodeID, models.LogLevelWarning, "Failed to renew execution attempt lease for attempt %d (ok=%v): %v — a startup recovery pass may have reclaimed it", attempt, ok, err)
+				return
+			}
+		}
+	}
 }
 
 func (r *Runner) persistSkippedNode(node models.Node, readyAt time.Time) error {

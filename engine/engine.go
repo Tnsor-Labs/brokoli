@@ -61,6 +61,15 @@ type Engine struct {
 	// overridden the same way ArtifactStore is.
 	PaginationCheckpointStore PaginationCheckpointStore
 
+	// InstanceID identifies this engine process as a claimant when it wires
+	// node execution through store.ExecutionAttemptStore's claim/lease/
+	// fencing contract (Tnsor-Labs/brokoli#90 M3). It is not a leader or
+	// worker-pool identity — just a stable value to pass as ClaimAttempt's
+	// claimedBy for every attempt this process's Runners claim, so a lease
+	// left behind by a dead process is visibly attributable on inspection.
+	// Generated once per NewEngine call; never persisted or read back.
+	InstanceID string
+
 	// shutdown is closed by Close. Background goroutines the engine starts
 	// after this point are refused, and run dispatch returns
 	// ErrEngineClosed. bg counts every goroutine whose lifetime the engine
@@ -240,6 +249,7 @@ func NewEngine(s store.Store) *Engine {
 		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
 		SpillThresholdBytes:       spillThreshold,
 		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
+		InstanceID:                common.NewID(),
 	}
 }
 
@@ -471,7 +481,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 		return blocked, nil
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -746,7 +756,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	}
 
 	// Default: run in-process (current behavior)
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -876,7 +886,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 			Params:    params,
 		},
 	})
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
 	runner.orgID = pipe.OrgID
 	runner.params = params
 	runner.acceptedRun = accepted
@@ -973,7 +983,7 @@ func (e *Engine) DryRun(p *models.Pipeline, maxRows int) (map[string]*DryRunNode
 		maxRows = 10
 	}
 
-	runner := NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner := NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
 	runner.dryRun = true
 	runner.dryRunMaxRows = maxRows
 
@@ -1157,7 +1167,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		lineageRun = ancestor
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID)
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.conditionResults = conditionResults
