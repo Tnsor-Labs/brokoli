@@ -11,6 +11,36 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.17] - 2026-08-12
+
+### Added
+
+- **ADR-017 dispatcher-side wait-and-fetch loop** (#155) — @hc12r. The
+  engine can now enqueue a dynamic-expansion instance for remote
+  execution and wait for its result, instead of always running it
+  in-process — `Engine.InstanceJobQueue`, opt-in, nil by default
+  everywhere, zero behavior change for existing deployments.
+- **ADR-017 worker-side execution of a `WorkOrder`** (#156) — @hc12r.
+  `ExecuteInstanceWorkOrder`/`ExecuteInstanceJob` let a worker sharing
+  the dispatcher's store actually run a dispatched instance and settle
+  its claim; wired into `cmd/serve.go`'s `--mode worker` loop, the first
+  real consumer.
+- **`Engine.InstanceJobQueue` now actually wired in `cmd/serve.go`**
+  (#158) — @hc12r. #155/#156 shipped the mechanism, but nothing wired
+  the dispatcher side into either core's own binary or the enterprise
+  binary (which reuses this same command) — found while testing the
+  mechanism end-to-end against a real deployment, not by any test in
+  the original PRs. Opt-in via `BROKOLI_INSTANCE_DISPATCH=1`.
+- **`extensions.RunJob.DeliveryCount`** (#159) — @hc12r. Separates the
+  queue-transport's own delivery/redelivery counter from `Attempt`
+  (which mirrors `models.ExecutionAttempt.Attempt`, the node/instance
+  execution-attempt identity a `WorkOrder`-bearing job settles under).
+  Found live-testing ADR-017 in Kubernetes: the enterprise Redis-backed
+  `JobQueue` was overwriting `Attempt` with its own delivery count on
+  every dequeue, which silently broke every remote instance dispatch —
+  no test caught it because every earlier test used a simplified
+  fake/channel queue that never exercised real redelivery bookkeeping.
+
 ## [0.10.16] - 2026-08-12
 
 ### Added
