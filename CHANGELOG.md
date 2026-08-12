@@ -11,6 +11,43 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.15] - 2026-08-12
+
+### Added
+
+- **Node-level execution attempts now go through claim/lease/fencing**
+  (#144, #90 M3) — @hc12r. `store.ExecutionAttemptStore`'s claim/lease/
+  fencing contract existed but had no production caller below the
+  pipeline-level outbox row; node dispatch now creates, claims, acks, and
+  settles its own attempt row with a short renewed lease
+  (`store.DefaultLeaseDuration`/`RenewInterval`), so a crashed process's
+  lease becomes reclaimable within seconds instead of being deferred to
+  for however long the node's own configured timeout is. Optional
+  capability throughout — a store that doesn't implement
+  `ExecutionAttemptStore` is unaffected.
+- **Dynamic-expansion node retries skip already-succeeded siblings**
+  (#145, #90 M3) — @hc12r. A retry of a `.expand()` node used to
+  re-execute every item from scratch, even ones that had already
+  succeeded before a later sibling failed. Now only items that failed or
+  were never reached run again; reused items still get their own
+  `models.ExpansionInstance` row for the new attempt, so per-attempt
+  history stays complete.
+- **ADR-017 (proposed): worker protocol v2, instance-level dispatch**
+  (#146) — @hc12r. Scopes moving the unit of worker claim from a whole
+  pipeline run to a physical instance (node/page/expansion-item) — what
+  #90 M3's acceptance gate (a worker killed mid-instance, fenced out, its
+  instance retried by a different worker without disturbing successful
+  siblings) actually needs. Status proposed; implementation gated on
+  co-design review.
+- **`execution_attempts`' claim key gains an instance dimension** (#147,
+  ADR-017 slice 1) — @hc12r. `(run_id, node_id, attempt)` widens to
+  `(run_id, node_id, instance_key, attempt)`, matching the physical-plan
+  instance-identity scheme, so a pagination page or expansion item will
+  be able to claim/lease/fence independently of its siblings instead of
+  colliding with them. Purely additive — every existing caller passes an
+  empty instance key and is unaffected. Migrates a live database in
+  place on both backends.
+
 ## [0.10.14] - 2026-08-12
 
 ### Added
