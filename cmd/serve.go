@@ -357,7 +357,7 @@ var serveCmd = &cobra.Command{
 					time.Sleep(time.Second)
 					continue
 				}
-				if job.PipelineID == "" {
+				if job.PipelineID == "" && job.WorkOrder == nil {
 					<-workerSlots
 					if job.ID != "" {
 						if settleErr := Extensions.JobQueue.Ack(job.ID); settleErr != nil {
@@ -366,6 +366,43 @@ var serveCmd = &cobra.Command{
 					}
 					continue // empty job (timeout) or invalid delivery
 				}
+
+				// ADR-017 instance dispatch: a WorkOrder-bearing job's
+				// identity is (RunID, NodeID, InstanceKey, Attempt), not the
+				// whole-pipeline job's own ID==RunID convention below —
+				// job.ID is a fresh, independent identity for the job-queue
+				// delivery itself, deliberately distinct from the attempt it
+				// carries (see extensions.RunJob's own doc comment).
+				if job.WorkOrder != nil {
+					if job.ID == "" || job.RunID == "" || job.NodeID == "" || job.InstanceKey == "" {
+						<-workerSlots
+						log.Printf("Worker: rejecting invalid instance job identity: job=%q run=%q node=%q instance=%q", job.ID, job.RunID, job.NodeID, job.InstanceKey)
+						if job.ID != "" {
+							if settleErr := Extensions.JobQueue.Ack(job.ID); settleErr != nil {
+								log.Printf("Worker: reject invalid instance job %s: %v", job.ID, settleErr)
+							}
+						}
+						continue
+					}
+					log.Printf("Worker: executing instance %s of node %s (run %s)", job.InstanceKey, job.NodeID, job.RunID)
+					go func(j extensions.RunJob) {
+						defer func() { <-workerSlots }()
+						if execErr := engine.ExecuteInstanceJob(s, eng.ArtifactStore, j); execErr != nil {
+							log.Printf("Worker: instance job failed: %v", execErr)
+							if settleErr := Extensions.JobQueue.Fail(j.ID, execErr); settleErr != nil {
+								log.Printf("Worker: fail instance job %s: %v", j.ID, settleErr)
+							}
+							return
+						}
+						if settleErr := Extensions.JobQueue.Ack(j.ID); settleErr != nil {
+							log.Printf("Worker: ack instance job %s: %v", j.ID, settleErr)
+						} else {
+							log.Printf("Worker: completed instance %s of node %s (run %s)", j.InstanceKey, j.NodeID, j.RunID)
+						}
+					}(job)
+					continue
+				}
+
 				if job.ID == "" || job.RunID == "" || job.ID != job.RunID {
 					<-workerSlots
 					log.Printf("Worker: rejecting invalid job identity: job=%q run=%q", job.ID, job.RunID)

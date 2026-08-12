@@ -224,11 +224,22 @@ func TestPipeline_ExpandRemoteDispatch_CancellationSettlesAsFailed(t *testing.T)
 	if runID == "" {
 		t.Fatal("run never appeared to cancel")
 	}
-	// The "parse" node (and this instance's dispatch/wait) only starts
-	// after "files" completes; give it a brief head start so the cancel
-	// lands while dispatchExpansionInstanceRemotely is actually waiting,
-	// not before the instance was ever claimed.
-	time.Sleep(100 * time.Millisecond)
+	// Poll for the instance's own attempt to reach Started (claimed and
+	// acked — see executeExpansionInstance) rather than guessing at a fixed
+	// sleep: cancelling before dispatchExpansionInstanceRemotely has even
+	// claimed the attempt means this function's own cancellation handling
+	// is never reached at all (some earlier point in the call stack notices
+	// r.ctx first instead), leaving the attempt claimed-but-never-settled —
+	// a real race this test hit under load before this fix, not a
+	// pre-existing/unrelated flake.
+	attemptDeadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(attemptDeadline) {
+		attempt, err := real.GetExecutionAttempt(runID, "parse", "idx:0", 0)
+		if err == nil && attempt.Status == models.AttemptStatusStarted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if err := eng.CancelRun(runID); err != nil {
 		t.Fatalf("CancelRun: %v", err)
 	}
@@ -252,9 +263,29 @@ func TestPipeline_ExpandRemoteDispatch_CancellationSettlesAsFailed(t *testing.T)
 		t.Fatal("RunPipeline did not return after cancellation")
 	}
 
-	attempt, aerr := real.GetExecutionAttempt(runID, "parse", "idx:0", 0)
-	if aerr != nil {
-		t.Fatalf("GetExecutionAttempt: %v", aerr)
+	// executeNode's own outer select (engine/runner.go) races its
+	// attemptCtx.Done() case against the goroutine actually running
+	// runNodeLogic — pre-existing behavior, not something this change
+	// alters. On cancellation that outer select can return "pipeline
+	// cancelled" for the node before the inner goroutine (still inside
+	// dispatchExpansionInstanceRemotely) reaches its own waitCtx.Done()
+	// case and calls FailAttempt — so settlement here is eventually
+	// consistent with the run's own reported failure, not synchronous
+	// with it. Poll instead of asserting immediately, and do so before
+	// t.Cleanup closes the store out from under that still-running
+	// goroutine.
+	settleDeadline := time.Now().Add(5 * time.Second)
+	var attempt *models.ExecutionAttempt
+	for time.Now().Before(settleDeadline) {
+		a, aerr := real.GetExecutionAttempt(runID, "parse", "idx:0", 0)
+		if aerr != nil {
+			t.Fatalf("GetExecutionAttempt: %v", aerr)
+		}
+		attempt = a
+		if attempt.Status == models.AttemptStatusFailed || attempt.Status == models.AttemptStatusCompleted {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if attempt.Status != models.AttemptStatusFailed {
 		t.Errorf("attempt status = %s, want failed (settled by the dispatcher's own cancellation handling)", attempt.Status)
