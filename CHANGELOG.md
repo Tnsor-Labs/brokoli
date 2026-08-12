@@ -11,6 +11,46 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.14] - 2026-08-12
+
+### Added
+
+- **`sink_db`/`migrate` generate their own write SQL** (#135, #136,
+  brokoli-sdk#12) — @hc12r. `source -> sink_db(table, mode)` now works on
+  its own — no upstream `sql_generate` node needed. Both `sink_db` and
+  `migrate` support `append`/`overwrite`/`upsert` (upsert keyed on
+  `key_columns`; `ON CONFLICT` on Postgres/SQLite, `ON DUPLICATE KEY
+  UPDATE` on MySQL), generating the SQL from the input rows directly. The
+  older `sql_generate -> sink_db` pattern still works unchanged.
+- **`filter_rows` comparison operators** (#133, brokoli-sdk#14) —
+  @hc12r. `filter_rows` conditions now support `>`, `<`, `>=`, `<=` (in
+  addition to the existing `=`/`==`/`!=`/`in [...]`), with numeric
+  comparison when both sides parse as numbers and lexicographic
+  otherwise. An unrecognized condition is now a run-time error, not a
+  silent keep-all-rows pass-through.
+- **`sink_api` resolves `conn_id`, matching `source_api`** (#139, closes
+  #137) — @hc12r. The connection resolver had no case for `sink_api`, so
+  a `conn_id` on that node type was silently ignored — no base URL, no
+  headers, no Basic Auth ever got injected. It now resolves identically
+  to `source_api` (relative/absolute URL, merged headers, Basic Auth).
+- **`retry_backoff` actually selects a backoff strategy** (#140, closes
+  #138) — @hc12r. The retry loop hardcoded exponential backoff and never
+  read the `retry_backoff` config key. `"linear"` and `"fixed"` now work
+  as documented, alongside the existing default `"exponential"`.
+- **`GET /api/plugins` carries each plugin's payloads** (#141, #110 M3)
+  — @hc12r. The list response now includes each plugin's
+  runtime/os/arch/requires payload list, so a caller can resolve its own
+  feasibility (`plugins.SelectPayload`) without downloading the archive
+  first — the data prerequisite for per-worker plugin availability.
+
+### Fixed
+
+- **Physical-plan e2e test flake under parallel load** (#134) — @hc12r.
+  Inline `NewEngine(s).RunPipeline(...)` calls that never closed the
+  engine left background event goroutines writing to the store after the
+  test returned, occasionally landing a write during `t.TempDir()`
+  cleanup (`directory not empty`). Test-only fix; no production change.
+
 ## [0.10.13] - 2026-08-11
 
 Full curated notes with per-change ownership:
