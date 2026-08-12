@@ -678,6 +678,48 @@ elif path == "bad.csv":
 	if !ok || badAttempt1.Status != models.RunStatusSuccess {
 		t.Errorf("attempt 1 bad.csv (idx:1) = %+v, want a successful row (second try)", badAttempt1)
 	}
+
+	// The same scenario, from the store.ExecutionAttemptStore side (ADR-017):
+	// each (node, instance_key, attempt) combination gets its own durable
+	// claim/lease/fencing row, extending #144's node-level wiring down to
+	// instance granularity.
+	aExecAttempt0, err := real.GetExecutionAttempt(run.ID, "parse", "idx:0", 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(idx:0, attempt 0): %v", err)
+	}
+	if aExecAttempt0.Status != models.AttemptStatusCompleted {
+		t.Errorf("execution attempt idx:0 attempt 0 status = %s, want completed", aExecAttempt0.Status)
+	}
+	if aExecAttempt0.ClaimedBy == "" {
+		t.Error("execution attempt idx:0 attempt 0 claimed_by is empty, want the runner's instance ID (it was actually executed)")
+	}
+
+	badExecAttempt0, err := real.GetExecutionAttempt(run.ID, "parse", "idx:1", 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(idx:1, attempt 0): %v", err)
+	}
+	if badExecAttempt0.Status != models.AttemptStatusFailed {
+		t.Errorf("execution attempt idx:1 attempt 0 status = %s, want failed", badExecAttempt0.Status)
+	}
+
+	aExecAttempt1, err := real.GetExecutionAttempt(run.ID, "parse", "idx:0", 1)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(idx:0, attempt 1): %v", err)
+	}
+	if aExecAttempt1.Status != models.AttemptStatusCompleted {
+		t.Errorf("execution attempt idx:0 attempt 1 status = %s, want completed", aExecAttempt1.Status)
+	}
+	if aExecAttempt1.ClaimedBy != "" {
+		t.Errorf("execution attempt idx:0 attempt 1 claimed_by = %q, want empty — it was reused, never actually claimed", aExecAttempt1.ClaimedBy)
+	}
+
+	badExecAttempt1, err := real.GetExecutionAttempt(run.ID, "parse", "idx:1", 1)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(idx:1, attempt 1): %v", err)
+	}
+	if badExecAttempt1.Status != models.AttemptStatusCompleted {
+		t.Errorf("execution attempt idx:1 attempt 1 status = %s, want completed", badExecAttempt1.Status)
+	}
 }
 
 // goStringLiteral renders s as a double-quoted Python string literal safe

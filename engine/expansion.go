@@ -59,6 +59,7 @@
 package engine
 
 import (
+	"database/sql"
 	"fmt"
 	"sort"
 	"time"
@@ -435,6 +436,48 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		}
 	}
 
+	// execAttemptStore extends #144's node-level claim/lease/fencing
+	// wiring down to instance granularity via ADR-017's instance_key
+	// dimension (#147): this item gets its own claim/lease/fencing record,
+	// keyed (run_id, node_id, instance_key, attempt=nodeAttempt) — attempt
+	// here tracks which dispatch generation of the ENCLOSING node this
+	// instance ran under, exactly matching models.ExpansionInstance's own
+	// NodeAttempt field, not an independent per-item retry counter (an
+	// item is still only retried by the node's own outer retry loop
+	// re-invoking runCodeExpansion — see that function's doc comment).
+	var execAttemptStore store.ExecutionAttemptStore
+	var execFencingGen int64
+	if as, ok := r.store.(store.ExecutionAttemptStore); ok && !r.dryRun {
+		execAttemptStore = as
+		idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt)
+		if err := r.store.WithTx(func(tx *sql.Tx) error {
+			return execAttemptStore.CreateExecutionAttemptTx(tx, &models.ExecutionAttempt{
+				RunID: r.run.ID, NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
+				Status: models.AttemptStatusQueued, IdempotencyKey: idempotencyKey,
+			})
+		}); err != nil {
+			return nil, fmt.Errorf("persist execution attempt for expansion instance %d: %w", index, err)
+		}
+		// Lease covers this item's whole bounded, synchronous execution
+		// (timeoutSec) plus a margin. No renewal goroutine, unlike
+		// executeNode's long-running case: claim through settle all
+		// happen synchronously, start to finish, within this one call —
+		// there is no window where the lease needs keeping alive across a
+		// separate goroutine's lifetime.
+		leaseDuration := time.Duration(timeoutSec)*time.Second + 30*time.Second
+		gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, leaseDuration)
+		if err != nil {
+			return nil, fmt.Errorf("claim execution attempt for expansion instance %d: %w", index, err)
+		}
+		if !ok {
+			return nil, fmt.Errorf("claim execution attempt for expansion instance %d: already claimed or terminal", index)
+		}
+		execFencingGen = gen
+		if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, execFencingGen); err != nil {
+			return nil, fmt.Errorf("ack execution attempt for expansion instance %d: %w", index, err)
+		}
+	}
+
 	var span trace.Span
 	if !r.dryRun {
 		_, span = tracing.Tracer().Start(r.ctx, "brokoli.node.expansion_instance",
@@ -472,6 +515,14 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 				r.log(node.ID, models.LogLevelWarning, "failed to persist failed expansion instance %d: %v", index, uErr)
 			}
 		}
+		if execAttemptStore != nil {
+			// Non-fatal: the ExpansionInstance row above is already the
+			// durable, authoritative record of this item's failure. This
+			// settles the supplementary claim/lease record to match.
+			if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, execFencingGen, err.Error()); failErr != nil {
+				r.log(node.ID, models.LogLevelWarning, "failed to settle execution attempt for expansion instance %d as failed: %v", index, failErr)
+			}
+		}
 		if !r.dryRun {
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
@@ -491,6 +542,12 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 	if instStore != nil && !r.dryRun {
 		if uErr := instStore.UpdateExpansionInstance(ei); uErr != nil {
 			r.log(node.ID, models.LogLevelWarning, "failed to persist successful expansion instance %d: %v", index, uErr)
+		}
+	}
+	if execAttemptStore != nil {
+		// Non-fatal, same reasoning as the failure path above.
+		if cErr := execAttemptStore.CompleteAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, execFencingGen); cErr != nil {
+			r.log(node.ID, models.LogLevelWarning, "failed to settle execution attempt for expansion instance %d as completed: %v", index, cErr)
 		}
 	}
 	if !r.dryRun {
@@ -542,15 +599,33 @@ func (r *Runner) recordReusedExpansionInstance(node models.Node, nodeAttempt, in
 		"instance_key":   instanceKey,
 	}, "expansion instance %d/%d (key=%s): reusing the result from a prior attempt, not re-running", index+1, total, instanceKey)
 
-	instStore, ok := r.store.(store.ExpansionInstanceStore)
-	if !ok || r.dryRun {
-		return nil
-	}
 	rowCount := 0
 	if result != nil {
 		rowCount = len(result.Rows)
 	}
 	now := time.Now().UTC()
+
+	if execAttemptStore, ok := r.store.(store.ExecutionAttemptStore); ok && !r.dryRun {
+		// Written directly as Completed, not via Claim/Ack: nothing is
+		// actually claimed or executed for a reused item, so going through
+		// the claim dance for it would be dishonest about what happened.
+		// FencingGeneration stays 0 (its zero value) — accurately
+		// reflecting "never actually claimed" for this attempt.
+		idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt)
+		if err := r.store.WithTx(func(tx *sql.Tx) error {
+			return execAttemptStore.CreateExecutionAttemptTx(tx, &models.ExecutionAttempt{
+				RunID: r.run.ID, NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
+				Status: models.AttemptStatusCompleted, IdempotencyKey: idempotencyKey,
+			})
+		}); err != nil {
+			r.log(node.ID, models.LogLevelWarning, "failed to persist execution attempt for reused expansion instance %d: %v", index, err)
+		}
+	}
+
+	instStore, ok := r.store.(store.ExpansionInstanceStore)
+	if !ok || r.dryRun {
+		return nil
+	}
 	return instStore.CreateExpansionInstance(&models.ExpansionInstance{
 		ID:            common.NewID(),
 		RunID:         r.run.ID,
