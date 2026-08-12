@@ -373,6 +373,11 @@ type RunJob struct {
 
 	// NodeID is empty for pipeline-level jobs (today's only kind).
 	NodeID string `json:"node_id,omitempty"`
+	// InstanceKey identifies which physical instance of NodeID this job is
+	// for (ADR-017) — a dynamic-expansion item or, in the future, a
+	// pagination page — mirroring models.ExecutionAttempt.InstanceKey.
+	// Empty for a whole-node or whole-pipeline job.
+	InstanceKey string `json:"instance_key,omitempty"`
 	// Attempt mirrors models.NodeRun.Attempt / models.ExecutionAttempt.Attempt.
 	Attempt int `json:"attempt,omitempty"`
 	// IdempotencyKey lets a redelivered job recognize it is re-processing
@@ -382,6 +387,56 @@ type RunJob struct {
 	// under (models.ExecutionAttempt.FencingGeneration), used to detect a
 	// stale claim after a lease was reassigned.
 	FencingGeneration int64 `json:"fencing_generation,omitempty"`
+
+	// WorkOrder (ADR-017) is the work-description envelope a remote
+	// claimant needs to actually execute this instance, when NodeID/
+	// InstanceKey identify one — nil for every job today, including
+	// whole-pipeline jobs, which carry their work implicitly (the claiming
+	// process already has the full pipeline definition via PipelineID).
+	// See InstanceWorkOrder's own doc comment for scope.
+	WorkOrder *InstanceWorkOrder `json:"work_order,omitempty"`
+}
+
+// InstanceWorkOrder (ADR-017, worker protocol v2 — proposed) is the
+// work-description envelope a remote claimant needs to execute one
+// physical instance without already having the full pipeline definition
+// in hand — RFC §18.5's "worker lease" sketch (connector/runtime, input
+// references, config, checkpoint, resource policy, progress endpoint,
+// cancellation token), scoped for now to exactly what a dynamic-expansion
+// item needs: the first, and currently only, kind of instance with
+// durable per-instance claim/lease wiring (engine/expansion.go's
+// executeExpansionInstance, Tnsor-Labs/brokoli#149). Nothing populates or
+// reads this yet — RunJob.WorkOrder is nil on every job today.
+//
+// ItemColumns/ItemRow inline common.DataSet's shape as plain JSON-safe
+// types rather than importing pkg/common here: this package deliberately
+// stays import-light (see ExecutionContext.InputData's own
+// interface{} // *common.DataSet convention above) since it's a low-level
+// interface package many others import.
+type InstanceWorkOrder struct {
+	// NodeType is the work unit's node type (e.g. "code") — a remote
+	// claimant needs this to know how to interpret Script/Config, mirroring
+	// models.Node.Type.
+	NodeType string `json:"node_type"`
+	// Script is the node's executable script body, mirroring
+	// models.Node.Config["script"].
+	Script string `json:"script,omitempty"`
+	// Config is the node's config with script/expansion (engine-dispatch-
+	// only metadata) already stripped — mirrors
+	// engine.runCodeExpansion's own configForScript.
+	Config map[string]interface{} `json:"config,omitempty"`
+	// ItemColumns/ItemRow is this instance's one-row input dataset (a
+	// dynamic-expansion item).
+	ItemColumns []string               `json:"item_columns,omitempty"`
+	ItemRow     map[string]interface{} `json:"item_row,omitempty"`
+	// RunParams carries the run's own params (${param.x} interpolation),
+	// mirroring RunJob.Params.
+	RunParams map[string]string `json:"run_params,omitempty"`
+	// TimeoutSeconds bounds this instance's execution — mirrors
+	// executeExpansionInstance's timeoutSec parameter, and is what a
+	// remote claimant's own lease duration should be derived from (see
+	// that function's claim-duration comment).
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
 }
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.
