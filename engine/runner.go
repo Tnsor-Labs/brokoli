@@ -618,6 +618,18 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	if rd, ok := node.Config["retry_delay"].(float64); ok && rd > 0 {
 		baseDelay = time.Duration(rd) * time.Millisecond
 	}
+	backoffType := "exponential"
+	if bt, ok := node.Config["retry_backoff"].(string); ok && bt != "" {
+		backoffType = bt
+	}
+	// brokoli#138: retry_backoff used to be accepted and compiled but never
+	// read here -- every node retried with a hardcoded exponential formula
+	// regardless of what was configured. ComputeBackoff (engine/retry.go)
+	// already implements exponential/linear/fixed; this just wires it in,
+	// preserving today's max_retries/retry_delay semantics (opt-in via
+	// explicit config, no per-node-type auto-retry defaults) and the
+	// existing 60s cap exactly.
+	retryCfg := RetryConfig{BackoffType: backoffType, BackoffBase: baseDelay, BackoffMax: 60 * time.Second}
 	nodeTimeout := 30 * time.Minute
 	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
 		nodeTimeout = time.Duration(t) * time.Second
@@ -636,13 +648,9 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: baseDelay * 2^(attempt-1), max 60s
-			delay := baseDelay * time.Duration(1<<uint(attempt-1))
-			if delay > 60*time.Second {
-				delay = 60 * time.Second
-			}
+			delay := ComputeBackoff(retryCfg, attempt)
 			r.logWithTrace(node.ID, models.LogLevelWarning, "", attempt, nil,
-				"Retry %d/%d in %v (exponential backoff)", attempt, maxRetries, delay)
+				"Retry %d/%d in %v (%s backoff)", attempt, maxRetries, delay, backoffType)
 			r.emit(models.Event{
 				Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID,
 				Status: "retrying", Error: fmt.Sprintf("retry %d/%d", attempt, maxRetries),
