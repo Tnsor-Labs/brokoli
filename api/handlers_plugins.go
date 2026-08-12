@@ -60,6 +60,15 @@ type pluginDTO struct {
 	NodeTypes  []pluginNodeTypeDTO `json:"node_types"`
 	Packaged   bool                `json:"packaged"` // installed from a .bkg (has a re-servable archive)
 	ArchiveSHA string              `json:"archive_sha256,omitempty"`
+
+	// Payloads carries the manifest's per-platform/runtime alternatives
+	// (brokoli#110 M3: "per-worker availability"). None of these fields
+	// are sensitive -- SHA256 is already exposed above as ArchiveSHA for
+	// the archive as a whole, and Requires/OS/Arch/Runtime are exactly
+	// what a caller needs to resolve feasibility (plugins.SelectPayload)
+	// against its OWN host without downloading the archive first. Empty
+	// for a plugin installed from a bare directory (no PackagingVersion).
+	Payloads []plugins.Payload `json:"payloads,omitempty"`
 }
 
 func toPluginDTO(m *plugins.Manifest) pluginDTO {
@@ -67,7 +76,7 @@ func toPluginDTO(m *plugins.Manifest) pluginDTO {
 	for _, nt := range m.NodeTypes {
 		nts = append(nts, pluginNodeTypeDTO{Type: nt.Type, Kind: string(nt.Kind), DisplayName: nt.DisplayName})
 	}
-	dto := pluginDTO{Name: m.Name, Version: m.Version, Descr: m.Description, NodeTypes: nts}
+	dto := pluginDTO{Name: m.Name, Version: m.Version, Descr: m.Description, NodeTypes: nts, Payloads: m.Payloads}
 	if _, sha, ok := plugins.SourceArchivePath(m.Dir()); ok {
 		dto.Packaged = true
 		dto.ArchiveSHA = sha
