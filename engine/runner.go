@@ -553,7 +553,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// Carry the artifact into this run so a resume-of-a-resume can
 			// restore from its immediate parent without losing lineage.
 			if r.artifactStore != nil {
-				if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, ds); err != nil {
+				if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, "", ds); err != nil {
 					return nil, fmt.Errorf("carry resumed artifact for node %s: %w", node.Name, err)
 				}
 			}
@@ -1010,7 +1010,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					// Node types in nonResumableNodeTypes never get an
 					// artifact even on success — see that var's doc comment.
 					if r.artifactStore != nil && !nonResumableNodeTypes[node.Type] {
-						if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, output); err != nil {
+						if err := r.artifactStore.WriteArtifact(r.run.ID, node.ID, "", output); err != nil {
 							// Not fatal to this node's success — mirrors
 							// AppendLog's "log, don't abort" policy below —
 							// but it does mean a future resume that needs
@@ -1251,7 +1251,7 @@ func (r *Runner) restoreSkippedNodeOutput(node models.Node) (ds *common.DataSet,
 		return nil, false, nil
 	}
 
-	ds, readErr := r.artifactStore.ReadArtifact(sourceRunID, node.ID)
+	ds, readErr := r.artifactStore.ReadArtifact(sourceRunID, node.ID, "")
 	if readErr != nil {
 		if !hasDownstream {
 			return nil, false, nil

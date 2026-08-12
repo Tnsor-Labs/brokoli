@@ -54,10 +54,10 @@ func TestSystemPurge_DeletesArtifactsAndCheckpointsForPurgedRuns(t *testing.T) {
 	}
 
 	ds := &common.DataSet{Columns: []string{"v"}, Rows: []common.DataRow{{"v": "x"}}}
-	if err := e.ArtifactStore.WriteArtifact("run-old", "node-a", ds); err != nil {
+	if err := e.ArtifactStore.WriteArtifact("run-old", "node-a", "", ds); err != nil {
 		t.Fatalf("write artifact for run-old: %v", err)
 	}
-	if err := e.ArtifactStore.WriteArtifact("run-recent", "node-a", ds); err != nil {
+	if err := e.ArtifactStore.WriteArtifact("run-recent", "node-a", "", ds); err != nil {
 		t.Fatalf("write artifact for run-recent: %v", err)
 	}
 	cp := fetchers.PaginationCheckpoint{Strategy: "offset", Offset: 10, PagesFetched: 5, RecordCount: 1}
@@ -86,7 +86,7 @@ func TestSystemPurge_DeletesArtifactsAndCheckpointsForPurgedRuns(t *testing.T) {
 	if _, err := s.GetRun("run-old"); err == nil {
 		t.Error("run-old should have been purged from the DB")
 	}
-	if _, err := e.ArtifactStore.ReadArtifact("run-old", "node-a"); !errors.Is(err, engine.ErrArtifactNotFound) {
+	if _, err := e.ArtifactStore.ReadArtifact("run-old", "node-a", ""); !errors.Is(err, engine.ErrArtifactNotFound) {
 		t.Errorf("run-old artifact: got %v, want ErrArtifactNotFound", err)
 	}
 	if _, _, err := e.PaginationCheckpointStore.LoadCheckpoint("run-old", "node-a"); !errors.Is(err, engine.ErrCheckpointNotFound) {
@@ -97,7 +97,7 @@ func TestSystemPurge_DeletesArtifactsAndCheckpointsForPurgedRuns(t *testing.T) {
 	if _, err := s.GetRun("run-recent"); err != nil {
 		t.Errorf("run-recent should still exist in the DB: %v", err)
 	}
-	if _, err := e.ArtifactStore.ReadArtifact("run-recent", "node-a"); err != nil {
+	if _, err := e.ArtifactStore.ReadArtifact("run-recent", "node-a", ""); err != nil {
 		t.Errorf("run-recent artifact should still exist: %v", err)
 	}
 }

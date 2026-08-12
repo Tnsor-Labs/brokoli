@@ -25,10 +25,10 @@ func TestLocalDiskArtifactStore_PreservesColumnOrder(t *testing.T) {
 			{"zeta": 5, "alpha": 6, "middle": 7, "beta": 8},
 		},
 	}
-	if err := store.WriteArtifact("run-1", "node-1", ds); err != nil {
+	if err := store.WriteArtifact("run-1", "node-1", "", ds); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.ReadArtifact("run-1", "node-1")
+	got, err := store.ReadArtifact("run-1", "node-1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestLocalDiskArtifactStore_ReadsLegacyLayout(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := store.ReadArtifact("run-legacy", "node-1")
+	got, err := store.ReadArtifact("run-legacy", "node-1", "")
 	if err != nil {
 		t.Fatalf("a pre-manifest artifact should still be readable: %v", err)
 	}
@@ -78,13 +78,13 @@ func TestLocalDiskArtifactStore_ReadsLegacyLayout(t *testing.T) {
 // distinction Tnsor-Labs/brokoli#8 exists to protect.
 func TestLocalDiskArtifactStore_EmptyDatasetIsNotAbsence(t *testing.T) {
 	store := NewLocalDiskArtifactStore(t.TempDir())
-	if err := store.WriteArtifact("run-1", "node-1", &common.DataSet{
+	if err := store.WriteArtifact("run-1", "node-1", "", &common.DataSet{
 		Columns: []string{"id"},
 		Rows:    []common.DataRow{},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := store.ReadArtifact("run-1", "node-1")
+	got, err := store.ReadArtifact("run-1", "node-1", "")
 	if err != nil {
 		t.Fatalf("an empty dataset should read back, got %v", err)
 	}
@@ -100,7 +100,7 @@ func TestLocalDiskArtifactStore_EmptyDatasetIsNotAbsence(t *testing.T) {
 func TestLocalDiskArtifactStore_CorruptionIsNotReportedAsMissing(t *testing.T) {
 	base := t.TempDir()
 	store := NewLocalDiskArtifactStore(base)
-	if err := store.WriteArtifact("run-1", "node-1", &common.DataSet{
+	if err := store.WriteArtifact("run-1", "node-1", "", &common.DataSet{
 		Columns: []string{"id"},
 		Rows:    []common.DataRow{{"id": 1}},
 	}); err != nil {
@@ -121,7 +121,7 @@ func TestLocalDiskArtifactStore_CorruptionIsNotReportedAsMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := store.ReadArtifact("run-1", "node-1")
+	_, err := store.ReadArtifact("run-1", "node-1", "")
 	if err == nil {
 		t.Fatal("tampered artifact was read as if it were valid")
 	}
@@ -138,13 +138,13 @@ func TestLocalDiskArtifactStore_CorruptionIsNotReportedAsMissing(t *testing.T) {
 func TestLocalDiskArtifactStore_RejectsUnknownManifestVersion(t *testing.T) {
 	base := t.TempDir()
 	store := NewLocalDiskArtifactStore(base)
-	if err := store.WriteArtifact("run-1", "node-1", &common.DataSet{
+	if err := store.WriteArtifact("run-1", "node-1", "", &common.DataSet{
 		Columns: []string{"id"}, Rows: []common.DataRow{{"id": 1}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	path := store.manifestPath("run-1", "node-1")
+	path := store.manifestPath("run-1", "node-1", "")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -157,7 +157,7 @@ func TestLocalDiskArtifactStore_RejectsUnknownManifestVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := store.ReadArtifact("run-1", "node-1"); err == nil {
+	if _, err := store.ReadArtifact("run-1", "node-1", ""); err == nil {
 		t.Fatal("read a manifest written by a newer schema")
 	}
 }
@@ -168,13 +168,13 @@ func TestLocalDiskArtifactStore_DeleteRunArtifactsReclaimsBlobs(t *testing.T) {
 	base := t.TempDir()
 	store := NewLocalDiskArtifactStore(base)
 	for _, node := range []string{"n1", "n2", "n3"} {
-		if err := store.WriteArtifact("run-1", node, &common.DataSet{
+		if err := store.WriteArtifact("run-1", node, "", &common.DataSet{
 			Columns: []string{"id"}, Rows: []common.DataRow{{"id": node}},
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := store.WriteArtifact("run-2", "n1", &common.DataSet{
+	if err := store.WriteArtifact("run-2", "n1", "", &common.DataSet{
 		Columns: []string{"id"}, Rows: []common.DataRow{{"id": "keep"}},
 	}); err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestLocalDiskArtifactStore_DeleteRunArtifactsReclaimsBlobs(t *testing.T) {
 		t.Errorf("after purging run-1, %d files remain (want run-2's manifest and blob only):\n  %s",
 			len(leftover), strings.Join(leftover, "\n  "))
 	}
-	if _, err := store.ReadArtifact("run-2", "n1"); err != nil {
+	if _, err := store.ReadArtifact("run-2", "n1", ""); err != nil {
 		t.Errorf("purging run-1 damaged run-2: %v", err)
 	}
 }
@@ -209,7 +209,7 @@ func TestLocalDiskArtifactStore_IdenticalOutputsShareOneBlob(t *testing.T) {
 	store := NewLocalDiskArtifactStore(base)
 	ds := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": 1}}}
 	for _, node := range []string{"n1", "n2"} {
-		if err := store.WriteArtifact("run-1", node, ds); err != nil {
+		if err := store.WriteArtifact("run-1", node, "", ds); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -234,7 +234,7 @@ func TestLocalDiskArtifactStore_IdenticalOutputsShareOneBlob(t *testing.T) {
 		t.Errorf("%d manifests, want one per node", manifests)
 	}
 	for _, node := range []string{"n1", "n2"} {
-		if _, err := store.ReadArtifact("run-1", node); err != nil {
+		if _, err := store.ReadArtifact("run-1", node, ""); err != nil {
 			t.Errorf("node %s: %v", node, err)
 		}
 	}

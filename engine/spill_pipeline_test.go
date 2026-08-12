@@ -198,7 +198,7 @@ func TestPipeline_SpilledOutputsPurgedWithTheRun(t *testing.T) {
 	if err := eng.ArtifactStore.DeleteRunArtifacts(run.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eng.ArtifactStore.ReadArtifact(run.ID, "source"); err == nil {
+	if _, err := eng.ArtifactStore.ReadArtifact(run.ID, "source", ""); err == nil {
 		t.Error("the run's artifacts survived DeleteRunArtifacts")
 	}
 }
