@@ -180,3 +180,96 @@ func TestSchedulerCatchUpMissedRunsSkipsWhenNotLeader(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestSchedulerReclaimSweepReclaimsExpiredLeaseWhenLeader is the direct
+// regression test for the gap found live: a worker OOMKilled mid-node
+// execution left a run's execution attempt with an expired lease,
+// permanently orphaned — every other already-running process's own
+// one-shot startup recovery pass had already executed and correctly
+// deferred it (the lease still looked live at that exact moment, per
+// reconcileExecutionAttempts' own documented safety rule), and nothing
+// ever checked again since RecoverNonTerminalRuns only ever ran once, at
+// process boot. Proves the scheduler leader's periodic sweep
+// (runReclaimSweep) picks up exactly that case on a later pass.
+func TestSchedulerReclaimSweepReclaimsExpiredLeaseWhenLeader(t *testing.T) {
+	s := newLeaderTestStore(t).(*store.SQLiteStore)
+	eng := NewEngine(s)
+	seedRecoveryPipeline(t, s, "pipe-sweep-reclaim")
+	run := seedOrphanedRun(t, s, "pipe-sweep-reclaim", "run-sweep-reclaim", models.RunStatusRunning)
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	createTestAttempt(t, s, run.ID, "", 0)
+	if _, ok, err := s.ClaimAttempt(run.ID, "", "", 0, "dead-process", -time.Second); err != nil || !ok {
+		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
+	}
+
+	fake := &fakeLeaderElector{leader: true}
+	sched := NewScheduler(eng, s, fake)
+	prevInterval := reclaimSweepInterval
+	reclaimSweepInterval = 20 * time.Millisecond
+	defer func() { reclaimSweepInterval = prevInterval }()
+
+	if err := sched.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sched.Stop()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		attempt, err := s.GetExecutionAttempt(run.ID, "", "", 0)
+		if err != nil {
+			t.Fatalf("GetExecutionAttempt: %v", err)
+		}
+		if attempt.Status == models.AttemptStatusFailed {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected the periodic sweep to reclaim the expired lease, attempt status still %s after timeout", attempt.Status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestSchedulerReclaimSweepSkipsWhenNotLeader proves the periodic sweep is
+// gated on leadership the same way catchUpMissedRuns already is — only
+// one instance should ever be reclaiming expired leases at a time, and a
+// standby must leave them exactly as found for the real leader (or its
+// own promotion) to handle.
+func TestSchedulerReclaimSweepSkipsWhenNotLeader(t *testing.T) {
+	s := newLeaderTestStore(t).(*store.SQLiteStore)
+	eng := NewEngine(s)
+	seedRecoveryPipeline(t, s, "pipe-sweep-skip")
+	run := seedOrphanedRun(t, s, "pipe-sweep-skip", "run-sweep-skip", models.RunStatusRunning)
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	createTestAttempt(t, s, run.ID, "", 0)
+	gen, ok, err := s.ClaimAttempt(run.ID, "", "", 0, "dead-process", -time.Second)
+	if err != nil || !ok {
+		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
+	}
+	_ = gen
+
+	fake := &fakeLeaderElector{leader: false}
+	sched := NewScheduler(eng, s, fake)
+	prevInterval := reclaimSweepInterval
+	reclaimSweepInterval = 20 * time.Millisecond
+	defer func() { reclaimSweepInterval = prevInterval }()
+
+	if err := sched.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer sched.Stop()
+
+	time.Sleep(200 * time.Millisecond) // several sweep ticks' worth
+	attempt, err := s.GetExecutionAttempt(run.ID, "", "", 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.Status != models.AttemptStatusClaimed {
+		t.Fatalf("attempt status = %s, want unchanged (claimed) — a non-leader must not reclaim", attempt.Status)
+	}
+}

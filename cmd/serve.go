@@ -176,6 +176,28 @@ var serveCmd = &cobra.Command{
 			if instanceDispatchEnabled() {
 				eng.InstanceJobQueue = Extensions.JobQueue
 				log.Printf("Instance-level remote dispatch enabled (mode: %s)", RunMode)
+
+				// eng.ArtifactStore defaults to local disk (see
+				// engine.NewEngine), which is exactly what makes a
+				// remote-dispatched instance's result invisible to this
+				// pod: the worker that produced it wrote to ITS OWN
+				// disk, not this one. Swap in the SQL-backed store — the
+				// same database every pod in this deployment already
+				// connects to — so ReadArtifact actually finds what a
+				// different pod's WriteArtifact wrote. Only reached
+				// alongside instance dispatch itself; a deployment that
+				// hasn't opted into that keeps the local-disk default,
+				// unaffected.
+				if dialect, ok := sqlArtifactDialect(s); ok {
+					if rawDB, ok := s.RawDB().(*sql.DB); ok {
+						if artifactStore, err := engine.NewSQLArtifactStore(rawDB, dialect); err != nil {
+							log.Printf("WARNING: SQL artifact store init failed, remote instance results may not be readable back: %v", err)
+						} else {
+							eng.ArtifactStore = artifactStore
+							log.Printf("Artifact store: SQL-backed (%s), for cross-pod remote instance results", dialect)
+						}
+					}
+				}
 			}
 		}
 
@@ -397,6 +419,11 @@ var serveCmd = &cobra.Command{
 					log.Printf("Worker: executing instance %s of node %s (run %s)", job.InstanceKey, job.NodeID, job.RunID)
 					go func(j extensions.RunJob) {
 						defer func() { <-workerSlots }()
+						if renewer, ok := Extensions.JobQueue.(extensions.JobQueueRenewer); ok {
+							renewCtx, cancelRenew := context.WithCancel(context.Background())
+							defer cancelRenew()
+							go renewJobClaim(renewCtx, renewer, j.ID)
+						}
 						if execErr := engine.ExecuteInstanceJob(s, eng.ArtifactStore, j); execErr != nil {
 							log.Printf("Worker: instance job failed: %v", execErr)
 							if settleErr := Extensions.JobQueue.Fail(j.ID, execErr); settleErr != nil {
@@ -426,6 +453,11 @@ var serveCmd = &cobra.Command{
 				log.Printf("Worker: executing pipeline %s (run %s)", job.PipelineID, job.RunID)
 				go func(j extensions.RunJob) {
 					defer func() { <-workerSlots }()
+					if renewer, ok := Extensions.JobQueue.(extensions.JobQueueRenewer); ok {
+						renewCtx, cancelRenew := context.WithCancel(context.Background())
+						defer cancelRenew()
+						go renewJobClaim(renewCtx, renewer, j.ID)
+					}
 					run, err := eng.ExecuteQueuedRun(j.RunID, j.PipelineID, j.Params)
 					if err != nil {
 						log.Printf("Worker: run failed: %v", err)
@@ -529,6 +561,22 @@ func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
 }
 
+// sqlArtifactDialect reports the SQL dialect engine.NewSQLArtifactStore
+// needs for s, and whether s is a backend it supports at all — a type
+// switch on the concrete store, not a URI re-parse, since s is already
+// the constructed store.Store this process is using, not a connection
+// string lying around to parse.
+func sqlArtifactDialect(s store.Store) (string, bool) {
+	switch s.(type) {
+	case *store.PostgresStore:
+		return "postgres", true
+	case *store.SQLiteStore:
+		return "sqlite", true
+	default:
+		return "", false
+	}
+}
+
 // instanceDispatchEnabled reports whether ADR-017's instance-level remote
 // dispatch should be wired onto the whole-pipeline JobQueue. Deliberately
 // opt-in, not automatic just because a JobQueue is present: a distributed
@@ -538,6 +586,40 @@ func shouldStartPlatformServices(mode string) bool {
 // instance keeps executing in-process exactly as before.
 func instanceDispatchEnabled() bool {
 	return os.Getenv("BROKOLI_INSTANCE_DISPATCH") == "1"
+}
+
+// jobClaimRenewInterval is how often a job's transport-level claim is
+// renewed (extensions.JobQueueRenewer) while it is still being processed.
+// Found live: RunPipeline (a whole-pipeline job) and a single dynamic-
+// expansion instance (a WorkOrder job) can both legitimately run past
+// RedisJobQueue's own default 30s visibility timeout, at which point
+// another idle worker's XAUTOCLAIM correctly-per-Redis-semantics but
+// wrongly-for-us steals the still-in-flight job's claim — the true
+// owner's own eventual Ack/Fail then fails with "not claimed". A fixed
+// interval well under any reasonable visibility timeout, not derived
+// from one: this queue has no way to know what timeout another
+// JobQueueRenewer implementation might use.
+const jobClaimRenewInterval = 10 * time.Second
+
+// renewJobClaim periodically renews jobID's transport-level claim until
+// ctx is cancelled — call cancel once the job's own processing returns,
+// successfully or not, so this goroutine doesn't outlive it. A queue
+// that doesn't implement extensions.JobQueueRenewer needs no renewal
+// (nothing has a timeout to race), so callers should only start this
+// after a successful type assertion.
+func renewJobClaim(ctx context.Context, renewer extensions.JobQueueRenewer, jobID string) {
+	ticker := time.NewTicker(jobClaimRenewInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if err := renewer.RenewClaim(jobID); err != nil {
+				log.Printf("Worker: renew claim for job %s: %v", jobID, err)
+			}
+		}
+	}
 }
 
 // workerShutdownGracePeriod bounds how long --mode worker's dequeue loop

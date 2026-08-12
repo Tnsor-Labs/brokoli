@@ -40,6 +40,9 @@ type Scheduler struct {
 	// leader) so single-instance/SQLite deployments and existing callers
 	// that don't know about leader election see zero behavior change.
 	leader store.LeaderElector
+
+	stopReclaim chan struct{}
+	reclaimDone chan struct{}
 }
 
 // NewScheduler creates a scheduler that uses the given engine to run
@@ -52,13 +55,15 @@ func NewScheduler(engine *Engine, s store.Store, leader store.LeaderElector) *Sc
 		leader = store.NewNoopLeaderElector()
 	}
 	return &Scheduler{
-		cron:      cron.New(cron.WithLocation(time.UTC)),
-		engine:    engine,
-		store:     s,
-		entries:   make(map[string]cron.EntryID),
-		schedules: make(map[string]string),
-		names:     make(map[string]string),
-		leader:    leader,
+		cron:        cron.New(cron.WithLocation(time.UTC)),
+		engine:      engine,
+		store:       s,
+		entries:     make(map[string]cron.EntryID),
+		schedules:   make(map[string]string),
+		names:       make(map[string]string),
+		leader:      leader,
+		stopReclaim: make(chan struct{}),
+		reclaimDone: make(chan struct{}),
 	}
 }
 
@@ -97,9 +102,50 @@ func (s *Scheduler) Start() error {
 	s.catchUpMissedRuns(pipelines)
 
 	s.cron.Start()
+	go s.runReclaimSweep()
 	common.SLog().Info("scheduler started", "pipelines_scheduled", registered)
 
 	return nil
+}
+
+// reclaimSweepInterval is how often the current leader re-runs
+// Engine.RecoverNonTerminalRuns after startup, not just once at boot.
+//
+// Found live: a worker OOMKilled mid-node-execution left a run's
+// execution_attempts row with an expired lease, permanently orphaned —
+// every other already-running process's own one-shot startup recovery
+// pass had already executed and correctly deferred it (the lease still
+// looked live at that exact moment, per reconcileExecutionAttempts'
+// own documented safety rule), and nothing ever checked again.
+// RecoverNonTerminalRuns already documents itself as safe to call
+// repeatedly — this just does that, instead of leaving the one useful
+// invocation stranded at process boot.
+// A package variable, not a literal, so a test can shrink it instead of
+// waiting out a real 20s tick to prove the sweep actually fires.
+var reclaimSweepInterval = 20 * time.Second
+
+// runReclaimSweep periodically re-runs recovery, gated on leadership the
+// same way catchUpMissedRuns is: only one instance should be reclaiming
+// expired leases at a time, and the scheduler already has the
+// leader-election machinery to guarantee that. Runs until Stop closes
+// stopReclaim.
+func (s *Scheduler) runReclaimSweep() {
+	defer close(s.reclaimDone)
+	ticker := time.NewTicker(reclaimSweepInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopReclaim:
+			return
+		case <-ticker.C:
+			if !s.leader.IsLeader() {
+				continue
+			}
+			if _, err := s.engine.RecoverNonTerminalRuns(); err != nil {
+				common.SLog().Warn("reclaim sweep: recovery pass failed", "error", err)
+			}
+		}
+	}
 }
 
 // catchUpMissedRuns checks each scheduled pipeline's last run vs its schedule.
@@ -180,6 +226,8 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 
 // Stop gracefully stops the scheduler.
 func (s *Scheduler) Stop() {
+	close(s.stopReclaim)
+	<-s.reclaimDone // wait for the sweep goroutine to actually exit
 	ctx := s.cron.Stop()
 	<-ctx.Done() // wait for running jobs to finish
 }
