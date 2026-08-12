@@ -99,7 +99,7 @@ func runRoutingPipeline(t *testing.T, pipeline *models.Pipeline, executors ...ex
 		t.Fatalf("create pipeline: %v", err)
 	}
 
-	runner := NewRunner(s, nil, pipeline, nil, nil, executors, nil)
+	runner := NewRunner(s, nil, pipeline, nil, nil, executors, nil, "")
 	run, runErr := runner.Execute()
 	if runErr != nil {
 		t.Fatalf("execute pipeline: %v", runErr)
@@ -257,7 +257,7 @@ func TestConditionalRoutingRejectsInactiveJoinInput(t *testing.T) {
 	if err := s.CreatePipeline(pipeline); err != nil {
 		t.Fatal(err)
 	}
-	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{executor}, nil)
+	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{executor}, nil, "")
 	run, err := runner.Execute()
 	if err == nil || !strings.Contains(err.Error(), "inactive required input") {
 		t.Fatalf("error = %v, want inactive join input failure", err)
@@ -305,7 +305,7 @@ func TestRunnerFailsInsteadOfSucceedingWithUnresolvedNodes(t *testing.T) {
 	if err := s.CreatePipeline(pipeline); err != nil {
 		t.Fatal(err)
 	}
-	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil)
+	runner := NewRunner(s, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil, "")
 	run, err := runner.Execute()
 	if err == nil || !strings.Contains(err.Error(), "scheduler stalled") {
 		t.Fatalf("error = %v, want scheduler stalled", err)
@@ -329,7 +329,7 @@ func TestResumeRestoresConditionDecisionEvenIfExpressionChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := NewRunner(s, nil, pipeline, nil, nil, eng.Executors, nil)
+	runner := NewRunner(s, nil, pipeline, nil, nil, eng.Executors, nil, "")
 	runner.artifactStore = eng.ArtifactStore
 	failedRun, err := runner.Execute()
 	if err == nil || failedRun.Status != models.RunStatusFailed {
@@ -388,7 +388,7 @@ func TestConditionDecisionAndArtifactsSurviveRepeatedResumes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := NewRunner(s, nil, pipeline, nil, nil, eng.Executors, nil)
+	runner := NewRunner(s, nil, pipeline, nil, nil, eng.Executors, nil, "")
 	runner.artifactStore = eng.ArtifactStore
 	first, err := runner.Execute()
 	if err == nil || first.Status != models.RunStatusFailed {
@@ -440,7 +440,7 @@ func TestResumeFindsAncestorAfterLineageCarryFails(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runner := NewRunner(fault, nil, pipeline, nil, nil, eng.Executors, nil)
+	runner := NewRunner(fault, nil, pipeline, nil, nil, eng.Executors, nil, "")
 	runner.artifactStore = eng.ArtifactStore
 	first, err := runner.Execute()
 	if err == nil || first.Status != models.RunStatusFailed {
@@ -518,7 +518,7 @@ func TestSkippedNodeAndEventRollbackTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	fault := &faultInjectingStore{SQLiteStore: real, failAppendEventType: models.AttemptSkipped}
-	runner := NewRunner(fault, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil)
+	runner := NewRunner(fault, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil, "")
 	run, err := runner.Execute()
 	if err == nil || !strings.Contains(err.Error(), "persist skipped node") {
 		t.Fatalf("error = %v, want skipped persistence failure", err)
@@ -564,7 +564,7 @@ func TestConditionSuccessAndDecisionRollbackTogether(t *testing.T) {
 		t.Fatal(err)
 	}
 	fault := &faultInjectingStore{SQLiteStore: real, failAppendEventType: models.AttemptCompleted}
-	runner := NewRunner(fault, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil)
+	runner := NewRunner(fault, nil, pipeline, nil, nil, []extensions.NodeExecutor{newRoutingTestExecutor()}, nil, "")
 	run, err := runner.Execute()
 	if err == nil || !strings.Contains(err.Error(), "with routing decision") {
 		t.Fatalf("error = %v, want condition transaction failure", err)

@@ -50,6 +50,19 @@ func (f *faultInjectingStore) CreateNodeRun(nr *models.NodeRun) error {
 	return f.SQLiteStore.CreateNodeRun(nr)
 }
 
+// CreateNodeRunTx also honors failCreateNodeRun: since Tnsor-Labs/brokoli#90
+// M3 wired node-level attempts through store.ExecutionAttemptStore, the
+// runner now persists NodeRun via this Tx variant (alongside
+// CreateExecutionAttemptTx) whenever the store supports it — which
+// faultInjectingStore, embedding a real *store.SQLiteStore, always does.
+// Without this override failCreateNodeRun would silently stop firing.
+func (f *faultInjectingStore) CreateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
+	if f.failCreateNodeRun {
+		return errInjected
+	}
+	return f.SQLiteStore.CreateNodeRunTx(tx, nr)
+}
+
 func (f *faultInjectingStore) UpdateNodeRun(nr *models.NodeRun) error {
 	if f.failUpdateNodeRun {
 		return errInjected
