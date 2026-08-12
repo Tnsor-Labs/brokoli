@@ -80,16 +80,28 @@ func (s *SQLArtifactStore) ensureSchema() error {
 	return err
 }
 
-// ph returns the positional placeholder this store's dialect expects for
-// argument position i (1-indexed) — "$1"/"$2"/... for postgres, "?" for
-// sqlite (positionless, so i is unused there but kept for a uniform call
-// shape at every use site below).
-func (s *SQLArtifactStore) ph(i int) string {
-	if s.dialect == "postgres" {
-		return fmt.Sprintf("$%d", i)
-	}
-	return "?"
-}
+// Each statement is spelled out in full per dialect — never built with
+// fmt.Sprintf against a placeholder — so nothing about query construction
+// depends on caller-supplied data in a way a static analyzer (or a human
+// skimming this file) would need to trace through a helper to be sure of.
+// Only the argument VALUES vary per call, passed through database/sql's
+// own parameterization, never string-interpolated.
+const (
+	writeArtifactPostgres = `INSERT INTO artifacts (run_id, node_id, instance_key, columns_json, data, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
+		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at`
+	writeArtifactSQLite = `INSERT INTO artifacts (run_id, node_id, instance_key, columns_json, data, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)
+		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
+		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at`
+
+	readArtifactPostgres = `SELECT columns_json, data FROM artifacts WHERE run_id = $1 AND node_id = $2 AND instance_key = $3`
+	readArtifactSQLite   = `SELECT columns_json, data FROM artifacts WHERE run_id = ? AND node_id = ? AND instance_key = ?`
+
+	deleteRunArtifactsPostgres = `DELETE FROM artifacts WHERE run_id = $1`
+	deleteRunArtifactsSQLite   = `DELETE FROM artifacts WHERE run_id = ?`
+)
 
 // WriteArtifact implements ArtifactStore.
 func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *common.DataSet) error {
@@ -109,11 +121,10 @@ func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *
 		return fmt.Errorf("write artifact: encode columns: %w", err)
 	}
 
-	query := fmt.Sprintf(`INSERT INTO artifacts (run_id, node_id, instance_key, columns_json, data, created_at)
-		VALUES (%s, %s, %s, %s, %s, %s)
-		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
-		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at`,
-		s.ph(1), s.ph(2), s.ph(3), s.ph(4), s.ph(5), s.ph(6))
+	query := writeArtifactSQLite
+	if s.dialect == "postgres" {
+		query = writeArtifactPostgres
+	}
 	if _, err := s.db.Exec(query, runID, nodeID, instanceKey, string(colsJSON), buf.String(), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("write artifact: %w", err)
 	}
@@ -125,8 +136,10 @@ func (s *SQLArtifactStore) ReadArtifact(runID, nodeID, instanceKey string) (*com
 	if runID == "" || nodeID == "" {
 		return nil, fmt.Errorf("read artifact: runID and nodeID are required")
 	}
-	query := fmt.Sprintf(`SELECT columns_json, data FROM artifacts WHERE run_id = %s AND node_id = %s AND instance_key = %s`,
-		s.ph(1), s.ph(2), s.ph(3))
+	query := readArtifactSQLite
+	if s.dialect == "postgres" {
+		query = readArtifactPostgres
+	}
 	var colsJSON, data string
 	if err := s.db.QueryRow(query, runID, nodeID, instanceKey).Scan(&colsJSON, &data); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -150,7 +163,10 @@ func (s *SQLArtifactStore) DeleteRunArtifacts(runID string) error {
 	if runID == "" {
 		return nil
 	}
-	query := fmt.Sprintf(`DELETE FROM artifacts WHERE run_id = %s`, s.ph(1))
+	query := deleteRunArtifactsSQLite
+	if s.dialect == "postgres" {
+		query = deleteRunArtifactsPostgres
+	}
 	if _, err := s.db.Exec(query, runID); err != nil {
 		return fmt.Errorf("delete run artifacts: %w", err)
 	}
