@@ -378,8 +378,24 @@ type RunJob struct {
 	// pagination page — mirroring models.ExecutionAttempt.InstanceKey.
 	// Empty for a whole-node or whole-pipeline job.
 	InstanceKey string `json:"instance_key,omitempty"`
-	// Attempt mirrors models.NodeRun.Attempt / models.ExecutionAttempt.Attempt.
+	// Attempt mirrors models.NodeRun.Attempt / models.ExecutionAttempt.Attempt
+	// — which node/instance-level execution attempt generation this job
+	// belongs to. This is a durable identity used to look up and settle a
+	// specific store.ExecutionAttemptStore row (ADR-017); it has nothing to
+	// do with how many times the queue transport itself has (re)delivered
+	// this job message — see DeliveryCount for that. A JobQueue
+	// implementation must never overwrite this field on dequeue: doing so
+	// once silently broke ADR-017 remote instance dispatch, since
+	// WorkOrder-bearing jobs rely on Attempt surviving redelivery unchanged
+	// to keep settling the correct execution_attempts row.
 	Attempt int `json:"attempt,omitempty"`
+	// DeliveryCount is a transport-level concept a JobQueue implementation
+	// may set on Dequeue: how many times this job message has been
+	// delivered (1 on first delivery, 2 on first redelivery, etc.), used
+	// for poison-pill/max-deliveries bookkeeping. Deliberately a separate
+	// field from Attempt (see its doc comment) — a queue is free to leave
+	// this at zero if it doesn't track deliveries.
+	DeliveryCount int `json:"delivery_count,omitempty"`
 	// IdempotencyKey lets a redelivered job recognize it is re-processing
 	// the same logical attempt rather than starting a new one.
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
