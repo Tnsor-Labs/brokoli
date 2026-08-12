@@ -11,6 +11,32 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.16] - 2026-08-12
+
+### Added
+
+- **Dynamic-expansion items get durable claim/lease/fencing** (#149,
+  ADR-017) — @hc12r. Extends #144's node-level wiring down to instance
+  granularity: each expansion item now gets its own claim/lease/fencing
+  record, generalizing #145's in-memory-only retry-skip into the same
+  durable mechanism nodes already have. Same-process only.
+- **ADR-017's claim-payload work-description envelope** (#150) —
+  @hc12r. `extensions.RunJob` gains `InstanceKey` and a `WorkOrder`
+  field (`InstanceWorkOrder`): node type, script, config, the instance's
+  input row, run params, timeout — what a remote claimant would need to
+  execute one physical instance. Purely additive; nothing populates it
+  yet.
+- **ADR-017 output-reference delivery design** (#151) — @hc12r. Answers
+  how a completed remote instance's output gets back: push not pull,
+  `ArtifactStore` gains an instance dimension, `ExecutionAttempt` stays
+  control-plane only, a worker→server endpoint modeled on the existing
+  checkpoint-forwarding handlers, reusing ADR-012's inline-vs-spill
+  threshold.
+- **`ArtifactStore` gains instance-level identity** (#152, ADR-017) —
+  @hc12r. Key widens from `(run_id, node_id)` to `(run_id, node_id,
+  instance_key)`, byte-identical paths for the empty-instance-key case
+  (every existing artifact stays readable), purely additive.
+
 ## [0.10.15] - 2026-08-12
 
 ### Added
