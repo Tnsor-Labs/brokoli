@@ -359,3 +359,65 @@ Implementation lands as the same kind of independently-mergeable slices
 as everything else in this ADR: (1) `ArtifactStore` key-widening (core),
 (2) the worker-side result endpoint (enterprise), (3) the engine's
 wait-and-fetch loop.
+
+## Update — 2026-08-12: dispatcher-side wait-and-fetch loop design
+
+Slices 1 and 2 above are merged (core#152, ee#81). This is the design for
+slice 3, scoped narrowly: **the dispatcher side only** — the engine
+deciding to enqueue an instance and wait for its result. Actually
+executing a `WorkOrder` on a worker (`cmd/serve.go`'s Redis-worker loop
+unconditionally treats every dequeued job as "run this whole pipeline"
+today — confirmed by reading it, there is no `job.WorkOrder != nil`
+branch) is real, separate work this design depends on but does not
+include, scoped as its own follow-on slice rather than folded in here.
+
+**Who claims the attempt stays exactly as it already is.** The dispatcher
+claims its own just-created `ExecutionAttempt` row itself, synchronously,
+before dispatching — identical to #144/#149. The only change is what
+happens after `AckAttempt`: instead of calling `ExecuteCodeNode`
+in-process, it builds the `InstanceWorkOrder` (#150) and enqueues a
+`RunJob` carrying it plus the `FencingGeneration` its own claim already
+produced, then waits. This is precisely why the instance-result endpoint
+(ee#81) was already designed to read `FencingGeneration` from the job row
+rather than have the worker claim anything itself: the worker never
+claims, it executes on behalf of the dispatcher's existing claim and
+reports back holding the same token. The two pieces were designed to
+click together without either changing.
+
+**The wait polls `GetExecutionAttempt`** — already built, cheap,
+DB-native — on `store.DefaultRenewInterval`'s cadence, rather than
+inventing a new signal; `JobQueue` is push/pull, not request/response, so
+there is nothing to block on there.
+
+**A renewal goroutine is now required**, unlike #149's synchronous
+same-process case: the wait is no longer bounded by one blocking call, so
+the lease needs active keep-alive for however long dispatch + queueing +
+remote execution actually takes. Reuses the exact renewal pattern
+`runner.go` already has for node-level attempts, applied to the waiting
+call instead of the executing one.
+
+**Deadline = `timeoutSec` + a dispatch/queueing margin** (`+2 minutes`
+as a starting default — an explicit tunable, not a permanent constant),
+larger than #149's synchronous case since network and queue wait now sit
+on top of actual execution time. On timeout, the dispatcher calls
+`FailAttempt` itself, fencing-checked — a result that arrives late loses
+the settlement race honestly (fencing mismatch, not a silent overwrite),
+the same safety net every other settlement path in this ADR relies on.
+On success, `ReadArtifact(runID, nodeID, instanceKey)` — the exact call
+core#152 was built for — retrieves what the worker's
+`POST .../instance-result` wrote.
+
+**The opt-in gate is a new, separate field: `Engine.InstanceJobQueue`.**
+Not a reuse of the existing `Engine.JobQueue` — a deployment already
+running distributed whole-pipeline dispatch today must not silently start
+attempting instance-level remote dispatch the moment this ships. Nil by
+default everywhere, including existing distributed deployments; nothing
+sets it in this slice, so `runCodeExpansion` keeps taking the existing
+local-execution path unconditionally. Zero behavior change on merge,
+same as every prior slice in this ADR.
+
+**Remaining after this slice:** the worker-side execution of a
+`WorkOrder` (teaching a worker to recognize `job.WorkOrder != nil` and
+run the script instead of a whole pipeline) — nothing can dispatch
+remotely end-to-end without it, and it needs its own design pass, not a
+continuation of momentum from this one.
