@@ -504,3 +504,54 @@ WorkPool transport (ee#81's HTTP result endpoint, a worker that does not
 share the dispatcher's store) is designed to compose with the same
 `ExecuteInstanceWorkOrder` primitive but is tracked and verified
 separately in the enterprise repo.
+
+## Update — 2026-08-12: two real bugs found deploying this for real, both fixed
+
+"Verified end-to-end" above meant verified against Go tests — including
+a genuine channel-backed `JobQueue` and a real worker-loop goroutine
+(`TestPipeline_ExpandRemoteDispatch_TrueEndToEnd`), but still all in one
+process, sharing one `store.Store` and one `ArtifactStore` instance. That
+is a materially different thing from a real distributed deployment, and
+running this in one — separate `api`/`scheduler`/`worker` pods in
+Kubernetes, the enterprise binary, its real Redis-backed `JobQueue` — hit
+two bugs neither the unit tests nor the in-process end-to-end test could
+ever have caught, because neither exercises what only a real transport
+and real separate filesystems introduce:
+
+1. **`Engine.InstanceJobQueue` was never actually wired up** in either
+   binary's real `cmd/serve.go` — #155/#156 built the whole mechanism,
+   but nothing ever set the field outside of tests, so
+   `dispatchExpansionInstanceRemotely` was dead code in production.
+   Fixed in #158 (`BROKOLI_INSTANCE_DISPATCH=1`, opt-in, same reasoning
+   as the field itself).
+2. **The enterprise `RedisJobQueue` overwrote `RunJob.Attempt`** with its
+   own delivery-count on every dequeue — a field collision invisible to
+   any test using a simplified fake queue, since only a *real* queue
+   transport has its own delivery-count bookkeeping to (wrongly) fold
+   into the same field. Every remote instance dispatch failed to settle,
+   retried, and failed identically until the node's own timeout fired.
+   Fixed by giving the queue-transport concept its own field,
+   `RunJob.DeliveryCount` (core#159, brokoli-ee#82).
+3. **`ArtifactStore` defaults to local disk, invisible across pods** —
+   filed as core#161, not yet fixed. The worker's `WriteArtifact` and the
+   dispatcher's later `ReadArtifact` land on two different filesystems in
+   any real multi-pod deployment, so the settled-completed instance's
+   result can never be read back. Worked around locally with a shared
+   hostPath volume (proven to work end-to-end once mounted at the same
+   path in every pod) — viable for a single-node deployment, not a
+   general fix. A real fix needs a network/object-store-backed
+   `ArtifactStore`, which is exactly the gap this ADR's own
+   2026-08-12 output-reference delivery update already named and
+   deferred, on an assumption (the process persisting a pushed result is
+   also the one reading it back) that doesn't hold for this transport.
+
+With 1 and 2 fixed and 3 worked around by a shared volume, the mechanism
+was proven genuinely working end-to-end in Kubernetes: a real pipeline
+dispatched three dynamic-expansion instances, all three executed on
+worker pods distinct from the dispatcher pod (confirmed by each
+instance's result carrying the executing pod's own hostname), and the
+run completed successfully. The general lesson, worth stating plainly:
+an in-process integration test proves the *logic* is correct; it does
+not prove the *deployment* works, whenever real transports and real
+filesystem boundaries are involved. Both are worth having, but they
+prove different things, and this ADR now has both.
