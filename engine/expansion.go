@@ -297,10 +297,16 @@ func combineExpansionResults(results []*common.DataSet) (*common.DataSet, error)
 // expansion.
 //
 // nodeAttempt is the expansion node's own retry-attempt number (from
-// executeNode's outer retry loop) — a retry of the whole node re-runs every
-// item; per-item retry isolation (retrying only the items that failed) is
-// not implemented in this first version and is called out as a limitation
-// below and in the PR description.
+// executeNode's outer retry loop). A retry of the whole node re-invokes
+// this function, but items that already succeeded on an earlier attempt of
+// the SAME Runner (i.e. the same run, still the same process — see
+// Runner.expansionResults) are not re-executed: their cached output is
+// reused directly and only items that failed or were never reached run
+// again (Tnsor-Labs/brokoli#90 M3, ADR-015 §6). This does not yet survive a
+// process crash mid-expansion — that needs durable per-item output storage
+// (not just the status/row-count models.ExpansionInstance already
+// persists), which is the larger per-instance dispatch work #90 M3's
+// acceptance gate covers.
 func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]*common.DataSet, nodeAttempt int) (*common.DataSet, error) {
 	cfg, err := parseExpansionConfig(node)
 	if err != nil {
@@ -350,8 +356,19 @@ func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]
 	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s)", len(items))
 
 	results := make([]*common.DataSet, 0, len(items))
+	reused := 0
 	for i, item := range items {
 		instanceKey := deriveInstanceKey(i)
+
+		if cached, ok := r.reusedExpansionInstance(node.ID, instanceKey); ok {
+			if err := r.recordReusedExpansionInstance(node, nodeAttempt, i, instanceKey, len(items), cached); err != nil {
+				return nil, fmt.Errorf("node %s (%s): recording reused expansion instance %d/%d (key=%s): %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
+			}
+			results = append(results, cached)
+			reused++
+			continue
+		}
+
 		itemDS := &common.DataSet{
 			Columns: columnsOf(item),
 			Rows:    []common.DataRow{item},
@@ -362,8 +379,12 @@ func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]
 			return nil, fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
 		}
 		if out != nil {
+			r.rememberExpansionInstance(node.ID, instanceKey, out)
 			results = append(results, out)
 		}
+	}
+	if reused > 0 {
+		r.log(node.ID, models.LogLevelInfo, "expansion: retry reused %d instance(s) that already succeeded on a prior attempt, re-ran %d", reused, len(items)-reused)
 	}
 
 	combined, err := combineExpansionResults(results)
@@ -481,4 +502,64 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 		"expansion instance %d/%d (key=%s) completed: %d rows in %dms", index+1, total, instanceKey, rowCount, duration)
 
 	return result, nil
+}
+
+// reusedExpansionInstance returns a prior attempt's cached successful
+// output for (nodeID, instanceKey) within this Runner's lifetime, if any —
+// see Runner.expansionResults.
+func (r *Runner) reusedExpansionInstance(nodeID, instanceKey string) (*common.DataSet, bool) {
+	byKey, ok := r.expansionResults[nodeID]
+	if !ok {
+		return nil, false
+	}
+	ds, ok := byKey[instanceKey]
+	return ds, ok
+}
+
+// rememberExpansionInstance caches a successful item's output so a later
+// retry of the same node (same Runner, same run) can skip re-executing it.
+func (r *Runner) rememberExpansionInstance(nodeID, instanceKey string, ds *common.DataSet) {
+	if r.expansionResults == nil {
+		r.expansionResults = make(map[string]map[string]*common.DataSet)
+	}
+	byKey, ok := r.expansionResults[nodeID]
+	if !ok {
+		byKey = make(map[string]*common.DataSet)
+		r.expansionResults[nodeID] = byKey
+	}
+	byKey[instanceKey] = ds
+}
+
+// recordReusedExpansionInstance writes this attempt's models.ExpansionInstance
+// row for an item skipped because it already succeeded on an earlier
+// attempt of the same node — without re-running the subprocess. Every
+// attempt still gets exactly one row per item (matching
+// executeExpansionInstance's own invariant), so per-attempt history stays
+// complete instead of silently missing reused items.
+func (r *Runner) recordReusedExpansionInstance(node models.Node, nodeAttempt, index int, instanceKey string, total int, result *common.DataSet) error {
+	r.logWithTrace(node.ID, models.LogLevelInfo, "", nodeAttempt, map[string]string{
+		"instance_index": fmt.Sprintf("%d", index),
+		"instance_key":   instanceKey,
+	}, "expansion instance %d/%d (key=%s): reusing the result from a prior attempt, not re-running", index+1, total, instanceKey)
+
+	instStore, ok := r.store.(store.ExpansionInstanceStore)
+	if !ok || r.dryRun {
+		return nil
+	}
+	rowCount := 0
+	if result != nil {
+		rowCount = len(result.Rows)
+	}
+	now := time.Now().UTC()
+	return instStore.CreateExpansionInstance(&models.ExpansionInstance{
+		ID:            common.NewID(),
+		RunID:         r.run.ID,
+		NodeID:        node.ID,
+		NodeAttempt:   nodeAttempt,
+		InstanceIndex: index,
+		InstanceKey:   instanceKey,
+		Status:        models.RunStatusSuccess,
+		RowCount:      rowCount,
+		StartedAt:     &now,
+	})
 }

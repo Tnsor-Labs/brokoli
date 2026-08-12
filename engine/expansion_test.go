@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -575,6 +576,116 @@ output_data = {"columns": columns, "rows": rows}
 	if !sawSuccess || !sawFailure {
 		t.Errorf("expected one instance to succeed and one to fail independently, got: %+v", instances)
 	}
+}
+
+// TestPipeline_ExpandRetry_SkipsAlreadySucceededSiblings proves ADR-015
+// §6's "retry without rerunning successful siblings" guarantee at the node
+// level (Tnsor-Labs/brokoli#90 M3): "a.csv" succeeds on the node's first
+// attempt, "bad.csv" fails, forcing the whole node to retry — but "a.csv"'s
+// script must not run a second time on that retry. Verified two ways: (1) a
+// call-count marker file the "a.csv" branch of the script appends to stays
+// at exactly one byte, and (2) all four expected models.ExpansionInstance
+// rows exist (two attempts x two items), with attempt 1's "a.csv" row
+// showing success despite never re-invoking the subprocess.
+func TestPipeline_ExpandRetry_SkipsAlreadySucceededSiblings(t *testing.T) {
+	realStore := newExpansionTestStore(t, "expand-retry-skip")
+	real := realStore.(*store.SQLiteStore)
+
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path\na.csv\nbad.csv\n")
+	aCallsPath := filepath.Join(dir, "a_calls.txt")
+	badMarkerPath := filepath.Join(dir, "bad_failed_once.marker")
+
+	pipeline := &models.Pipeline{
+		ID:   "expand-retry-skip-pipeline",
+		Name: "Expand retry skips successful siblings",
+		Nodes: []models.Node{
+			{ID: "files", Type: models.NodeTypeSourceFile, Name: "Files", Config: map[string]interface{}{"path": filesCSV, "format": "csv"}},
+			{
+				ID: "parse", Type: models.NodeTypeCode, Name: "Parse",
+				Config: map[string]interface{}{
+					"max_retries": float64(1),
+					"retry_delay": float64(1),
+					"script": `
+import os, sys
+path = rows[0]["path"] if rows else None
+if path == "a.csv":
+    with open(` + goStringLiteral(aCallsPath) + `, "a") as f:
+        f.write("x")
+    output_data = {"columns": columns, "rows": rows}
+elif path == "bad.csv":
+    if not os.path.exists(` + goStringLiteral(badMarkerPath) + `):
+        open(` + goStringLiteral(badMarkerPath) + `, "w").close()
+        print("boom", file=sys.stderr)
+        sys.exit(1)
+    output_data = {"columns": columns, "rows": rows}
+`,
+					"expansion": map[string]interface{}{
+						"over": map[string]interface{}{"file": "files"},
+					},
+				},
+			},
+		},
+		Edges:     []models.Edge{{From: "files", To: "parse"}},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := NewEngine(real)
+	run, err := eng.RunPipeline(pipeline.ID)
+	if err != nil {
+		t.Fatalf("RunPipeline failed: %v", err)
+	}
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %s, want success (bad.csv succeeds on the node's retry)", run.Status)
+	}
+
+	calls, err := os.ReadFile(aCallsPath)
+	if err != nil {
+		t.Fatalf("read a.csv call marker: %v", err)
+	}
+	if len(calls) != 1 {
+		t.Fatalf("a.csv's script ran %d time(s), want exactly 1 — it must not be re-executed on the node's retry", len(calls))
+	}
+
+	instances, err := real.ListExpansionInstancesByRun(run.ID)
+	if err != nil {
+		t.Fatalf("ListExpansionInstancesByRun: %v", err)
+	}
+	if len(instances) != 4 {
+		t.Fatalf("expected 4 expansion instance rows (2 attempts x 2 items), got %d: %+v", len(instances), instances)
+	}
+	byAttemptAndKey := map[[2]interface{}]models.ExpansionInstance{}
+	for _, inst := range instances {
+		byAttemptAndKey[[2]interface{}{inst.NodeAttempt, inst.InstanceKey}] = inst
+	}
+	aAttempt0, ok := byAttemptAndKey[[2]interface{}{0, "idx:0"}]
+	if !ok || aAttempt0.Status != models.RunStatusSuccess {
+		t.Errorf("attempt 0 a.csv (idx:0) = %+v, want a successful row", aAttempt0)
+	}
+	badAttempt0, ok := byAttemptAndKey[[2]interface{}{0, "idx:1"}]
+	if !ok || badAttempt0.Status != models.RunStatusFailed {
+		t.Errorf("attempt 0 bad.csv (idx:1) = %+v, want a failed row", badAttempt0)
+	}
+	aAttempt1, ok := byAttemptAndKey[[2]interface{}{1, "idx:0"}]
+	if !ok || aAttempt1.Status != models.RunStatusSuccess {
+		t.Errorf("attempt 1 a.csv (idx:0) = %+v, want a successful (reused) row", aAttempt1)
+	}
+	badAttempt1, ok := byAttemptAndKey[[2]interface{}{1, "idx:1"}]
+	if !ok || badAttempt1.Status != models.RunStatusSuccess {
+		t.Errorf("attempt 1 bad.csv (idx:1) = %+v, want a successful row (second try)", badAttempt1)
+	}
+}
+
+// goStringLiteral renders s as a double-quoted Python string literal safe
+// to splice directly into a generated script — reused across this file's
+// tests that need to embed a filesystem path (e.g. t.TempDir()'s output,
+// which is an absolute path Python must see exactly) inside Python source.
+func goStringLiteral(s string) string {
+	return fmt.Sprintf("%q", s)
 }
 
 // TestPipeline_OrdinaryCodeNode_RegressionNoExpansion is the explicit
