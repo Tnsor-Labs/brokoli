@@ -52,7 +52,7 @@ func TestHasMemoryHeadroom_UnlimitedV2_FailsOpen(t *testing.T) {
 
 func TestHasMemoryHeadroom_V2_PlentyOfHeadroom(t *testing.T) {
 	v2, _ := withCgroupDirs(t)
-	writeCgroupFile(t, v2, "memory.max", strconv.Itoa(1<<30)) // 1 GiB
+	writeCgroupFile(t, v2, "memory.max", strconv.Itoa(1<<30))       // 1 GiB
 	writeCgroupFile(t, v2, "memory.current", strconv.Itoa(100<<20)) // 100 MiB used, 90%+ free
 	if !hasMemoryHeadroom() {
 		t.Fatal("expected headroom with only 10% of the limit used")
