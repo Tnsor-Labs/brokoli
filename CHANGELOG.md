@@ -11,6 +11,29 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.20] - 2026-08-13
+
+### Fixed
+
+- **Recovery's periodic sweep could false-positive-orphan a live run mid
+  node-transition** (#169) — @hc12r. `reconcileExecutionAttempts` only
+  sees non-terminal `execution_attempts` rows, so the instant between
+  one node going terminal and the Runner claiming the next node's
+  attempt has no lease at all — not because the run is orphaned, but
+  because nothing has asked for one yet. Before the periodic reclaim
+  sweep (#167), `RecoverNonTerminalRuns` only ran once per process at
+  startup, so this window was effectively never hit; a sweep ticking
+  every 20s hits it routinely under real concurrent load. Found
+  live-testing #167/brokoli-ee#85/brokoli-ee#86 against a real
+  multi-worker deployment under a 10x-concurrent-run stress test: 7 of
+  7 runs whose worker was OOMKilled mid-flight had a node permanently
+  orphaned as "running" this way, on top of the run itself being
+  correctly marked failed. A 10s grace period on the run's most recent
+  event now defers this specific classification instead of immediately
+  concluding orphaned — negligible added latency against a 20s sweep
+  interval, and it does not affect genuinely orphaned runs, which stay
+  reclaimed on the next pass once the grace period elapses.
+
 ## [0.10.19] - 2026-08-12
 
 ### Added
