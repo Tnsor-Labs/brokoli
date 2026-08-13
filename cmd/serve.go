@@ -153,6 +153,14 @@ var serveCmd = &cobra.Command{
 			}
 		}()
 
+		// Adapt resource defaults to the container this process actually
+		// landed in (GOMEMLIMIT from the cgroup ceiling, run concurrency
+		// from available memory) — see memlimit.go. Must run before the
+		// scheduler starts or the worker loop sizes workerSlots off
+		// GetQueueInfo, so the adapted concurrency is what everything
+		// downstream observes.
+		applyAdaptiveResourceDefaults(eng.SetMaxConcurrentRuns)
+
 		// Recover runs a prior process left in a non-terminal status
 		// (Tnsor-Labs/brokoli#9) — e.g. "running" because it was kill -9'd
 		// mid-execution. Must happen before the scheduler starts firing new
