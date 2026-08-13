@@ -38,18 +38,34 @@ const recoveryBatchSize = 50
 // that node run forever (its own eventual Complete call fails its fencing
 // check against the run recovery already closed out).
 //
-// Node-to-node transition overhead in the healthy case is milliseconds, not
-// seconds, so treating any run with events younger than this as possibly
-// still live costs true orphan detection at most one grace period of extra
-// latency — negligible against reclaimSweepInterval — while eliminating the
-// false positive. Only gates the "no recoverable path" branch in
-// recoverRun: a definite success or an explicit failed-node outcome is
-// unambiguous regardless of timing and does not need this check.
+// Node-to-node transition overhead is milliseconds in the healthy case, but
+// "healthy" assumes an uncontended pod — found live re-testing this ADR's
+// own admission-control fixes together with elastic worker scaling
+// (EE-ADR-008): under real multi-tenant CPU contention (several concurrent
+// runs sharing one worker pod, exactly what admission control lets through
+// and what autoscaling exists to absorb), a single node's own execution can
+// legitimately take several times longer than uncontended — one run's
+// gen_orders took 21.5s where a quiet pod sees single digits — pushing the
+// gap between two nodes past the original 10s grace period and reproducing
+// the identical false-reclaim race a second time. 10s was sized off the
+// "milliseconds, not seconds" uncontended case; it was never going to be
+// enough once the exact scenario admission control is meant to make safe
+// (several jobs genuinely running concurrently on one pod) actually
+// happened.
+//
+// Widened to match reclaimSweepInterval: treating any run with events
+// younger than one full sweep interval as possibly still live costs true
+// orphan detection at most one extra sweep cycle — the same negligible
+// cost the original 10s already accepted, just measured against a bound
+// that reflects real contested-pod behavior instead of an idealized quiet
+// one. Only gates the "no recoverable path" branch in recoverRun: a
+// definite success or an explicit failed-node outcome is unambiguous
+// regardless of timing and does not need this check.
 //
 // A var, not a const — like reclaimSweepInterval, tests override it to a
 // near-zero value so they can assert the "genuinely orphaned, fail now"
-// path without an actual 10s sleep.
-var recoveryTransitionGracePeriod = 10 * time.Second
+// path without an actual multi-second sleep.
+var recoveryTransitionGracePeriod = 20 * time.Second
 
 // recoveryOutcome classifies what RecoverNonTerminalRuns did with one
 // non-terminal run, for RecoverySummary's counters.
