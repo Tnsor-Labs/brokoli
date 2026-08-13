@@ -267,8 +267,9 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 
 	latest := latestNodeOutcome(projected.NodeRuns)
 	var failedNode *models.NodeRun
-	var ambiguousNode string    // stuck mid-attempt: genuinely unknown whether its side effect completed
-	var neverStartedNode string // no record at all: consistent with a normal fail-fast abort, or a run that never got anywhere
+	var ambiguousNode string             // stuck mid-attempt: genuinely unknown whether its side effect completed
+	var ambiguousNodeRun *models.NodeRun // the dangling NodeRun row behind ambiguousNode, so it can be closed out below
+	var neverStartedNode string          // no record at all: consistent with a normal fail-fast abort, or a run that never got anywhere
 	allSuccess := true
 	for _, n := range pipe.Nodes {
 		nr, ok := latest[n.ID]
@@ -300,6 +301,8 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 			allSuccess = false
 			if ambiguousNode == "" {
 				ambiguousNode = n.ID + " (attempt in progress when the process died)"
+				anr := nr
+				ambiguousNodeRun = &anr
 			}
 		}
 	}
@@ -330,6 +333,9 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 			reason = fmt.Sprintf("run was interrupted mid-execution and cannot be safely resumed from process-local state (%s)", ambiguousNode)
 		} else {
 			reason = fmt.Sprintf("run was interrupted mid-execution and cannot be safely resumed from process-local state (%s never started)", neverStartedNode)
+		}
+		if ambiguousNodeRun != nil {
+			e.closeDanglingNodeRun(ambiguousNodeRun, reason)
 		}
 		outcome, ferr := e.markRecoveryFailed(run, reason)
 		return outcome, reclaimed, ferr
@@ -470,6 +476,40 @@ func (e *Engine) markRecoveryFailed(run *models.Run, reason string) (recoveryOut
 	atomic.AddInt64(&e.RunsFailed, 1)
 	common.SLog().Error("recovery: run has no recoverable path — marked failed", common.RunAttr(run.ID), "reason", reason)
 	return recoveryOutcomeFailed, nil
+}
+
+// closeDanglingNodeRun settles the specific NodeRun a run-level recovery
+// failure was blamed on, so it does not sit at status "running" forever on
+// a run whose own top-level status is now terminal. markRecoveryFailed only
+// ever touched the run row and appended a run-level event — the node's own
+// snapshot row (and its event history, which ProjectRun rebuilds state
+// from) was left exactly as the dead process last wrote it. Found live:
+// runs correctly marked failed by recovery still showed a node stuck at
+// "running" in the API/UI indefinitely. Mirrors the normal AttemptFailed
+// path in runner.go's executeNode, so a future ProjectRun replay of this
+// run sees a consistent, fully-terminal history rather than rediscovering
+// the same ambiguity. Best-effort: a failure here is logged, not fatal —
+// the run's own terminal status (set right after by markRecoveryFailed)
+// is what actually matters for "is this run done."
+func (e *Engine) closeDanglingNodeRun(nr *models.NodeRun, reason string) {
+	nr.Status = models.RunStatusFailed
+	nr.Error = reason
+	if err := e.store.UpdateNodeRun(nr); err != nil {
+		common.SLog().Warn("recovery: failed to close dangling node run", common.RunAttr(nr.RunID), common.NodeAttr(nr.NodeID), "error", err)
+	}
+	attempt := nr.Attempt
+	e.appendEvent(&models.RunEvent{
+		RunID:     nr.RunID,
+		NodeID:    nr.NodeID,
+		Attempt:   &attempt,
+		EventType: models.AttemptFailed,
+		Payload: models.RunEventPayload{
+			Status:     models.RunStatusFailed,
+			NodeRunID:  nr.ID,
+			DurationMs: nr.DurationMs,
+			Error:      reason,
+		},
+	})
 }
 
 // latestNodeOutcome collapses projected node-run events (one entry per
