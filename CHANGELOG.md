@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.26] - 2026-08-13
+
+### Added
+
+- **Resource defaults now adapt to the container's own memory limit**
+  (#184, ADR-018) — @hc12r. Two changes, both no-ops on bare hosts:
+  `GOMEMLIMIT` is auto-set to 90% of the cgroup limit when the
+  operator hasn't set one (without it, Go's collector paces itself
+  off GOGC alone with no idea a hard ceiling exists — on a small pod
+  the runtime sails heap+garbage straight through the cgroup limit
+  and the kernel OOM killer fires where an aggressive GC cycle would
+  have sufficed); and `BROKOLI_MAX_CONCURRENT_RUNS`'s default becomes
+  memory-derived, `clamp(limit/256Mi, 1, 4)` — a 512Mi pod takes 2
+  concurrent runs instead of a hardcoded 4, letting demand surface as
+  queue depth an autoscaler answers with more replicas rather than
+  overcommitting one pod. Explicit `GOMEMLIMIT` /
+  `BROKOLI_MAX_CONCURRENT_RUNS` values always win.
+
 ## [0.10.25] - 2026-08-13
 
 ### Fixed
