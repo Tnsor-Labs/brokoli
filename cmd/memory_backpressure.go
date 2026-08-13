@@ -52,6 +52,23 @@ var memoryBackpressureMinMarginBytes int64 = 64 << 20 // 64 MiB
 // once in-flight jobs finish and free memory; long enough not to spin.
 var memoryBackpressureRecheckInterval = 2 * time.Second
 
+// memoryBackpressureSettleDelay is the minimum time a worker waits after
+// successfully admitting one job before it will admit another, regardless
+// of what hasMemoryHeadroom reports in between.
+//
+// A cgroup memory reading is a snapshot of usage *right now* — it says
+// nothing about a job that was just admitted but hasn't started allocating
+// yet. Found live re-testing this exact backpressure change: a burst of
+// simultaneous requests could still land two jobs on the same worker
+// roughly a second apart, because the second admission's headroom check
+// ran before the first job's memory footprint had ramped up enough to be
+// visible — both checks saw a pod that still looked idle. Without this
+// delay, point-in-time admission control cannot see a job it just started;
+// this trades a small amount of throughput under a genuine burst for
+// actually closing that race, rather than only helping the slower,
+// staggered-arrival case a bare headroom check already covers.
+var memoryBackpressureSettleDelay = 3 * time.Second
+
 // cgroupMemoryV2Dir and cgroupMemoryV1Dir are the standard cgroup mount
 // points. Package vars, not consts, so tests can point them at a temp
 // directory holding fake cgroup files instead of depending on actually

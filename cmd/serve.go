@@ -346,6 +346,7 @@ var serveCmd = &cobra.Command{
 				}
 			}
 
+			var lastAdmission time.Time
 			for {
 				// A second, independent admission gate alongside workerSlots'
 				// count-based one (docs/adr/018-chunked-execution-and-backpressure.md):
@@ -353,8 +354,13 @@ var serveCmd = &cobra.Command{
 				// low on memory, regardless of how much of workerCount is
 				// still unused. Checked before entering the slot-claim select
 				// below so a memory-constrained worker backs off instead of
-				// racing into it.
-				if !hasMemoryHeadroom() {
+				// racing into it. Also enforces memoryBackpressureSettleDelay
+				// since the last successful admission — a cgroup reading
+				// can't see a job that was just admitted but hasn't started
+				// allocating yet, so a bare headroom check alone doesn't
+				// prevent two jobs landing back-to-back before the first
+				// one's memory footprint becomes visible.
+				if !hasMemoryHeadroom() || time.Since(lastAdmission) < memoryBackpressureSettleDelay {
 					select {
 					case sig := <-quit:
 						shutdownDraining(sig)
@@ -369,6 +375,7 @@ var serveCmd = &cobra.Command{
 					shutdownDraining(sig)
 					return nil
 				case workerSlots <- struct{}{}:
+					lastAdmission = time.Now()
 				}
 
 				type dequeueResult struct {
