@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.25] - 2026-08-13
+
+### Fixed
+
+- **Recovery's transition grace period was too narrow for real pod
+  contention** (#181, ADR-018) — @hc12r. Found live installing KEDA
+  and testing memory-aware admission control (#176/#178) together
+  with elastic worker scaling (EE-ADR-008) for the first time — the
+  first time this deployment genuinely had several concurrent runs
+  sharing one worker pod under real CPU contention. A node transition
+  under that contention took ~12s where an uncontended pod sees
+  single-digit milliseconds, exceeding the original 10s grace period
+  (#169) and reproducing the identical false-reclaim race a second
+  time. Widened to match `reclaimSweepInterval` (20s) — the same "at
+  most one extra sweep cycle" cost the original 10s already accepted
+  for true orphan detection, measured against contested-pod behavior
+  instead of an idealized quiet one.
+
 ## [0.10.24] - 2026-08-13
 
 ### Fixed
