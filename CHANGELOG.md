@@ -11,6 +11,29 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.28] - 2026-08-13
+
+### Added
+
+- **Reference-passing dataflow (ADR-019 Milestone 1)** (#190) —
+  @hc12r. A stream-capable node whose input is held by blob reference
+  processes it in bounded memory and hands its output back as a
+  reference — code nodes go ref-to-ref (the engine no longer
+  materializes their input or output datasets at all; the Python
+  wrapper's NDJSON files are stream-copied to and from the blob store
+  with rows counted in transit), and transforms whose rules are all
+  row-local stream batch-wise without the whole-input clone. Engaged
+  by the existing spill threshold: streaming is the completion of
+  spilling — data large enough to spill now lives on disk its whole
+  life instead of visiting memory first. Scheduling, retries,
+  attempts, recovery, previews, and the ADR-010 resume-artifact
+  contract are preserved exactly (artifacts for streamed outputs are
+  a zero-copy manifest write via the new optional RefArtifactWriter
+  capability where the store supports it). Blocking rules (sort,
+  dedup, aggregate), multi-input nodes, expansion nodes, and dry runs
+  keep the batch path unchanged, as ADR-019 barriers. Also fixes file
+  mode's longstanding column-order loss via a wrapper sidecar.
+
 ## [0.10.27] - 2026-08-13
 
 ### Fixed
