@@ -82,6 +82,29 @@ fleet — implemented in this same session but not live-tested together
 with this ADR's fixes, since KEDA is not installed in the local k3s
 test cluster this work was verified against.
 
+**Update, same day, once KEDA was installed**: live-testing (c) above
+immediately found a *third* false-reclaim race — with real multi-tenant
+pod contention finally happening for the first time (several concurrent
+runs genuinely sharing one worker pod, exactly what elastic scaling now
+lets through), a node transition took ~12s against an original 10s
+grace period, reproducing #169/#171's bug a second time.
+`recoveryTransitionGracePeriod` widened from 10s to 20s (#181,
+v0.10.25) to cover real contested-pod behavior, not just the
+uncontended case it was originally sized against. Re-running the same
+10-concurrent-run stress test with admission control, the widened
+grace period, and elastic scaling all active together: **zero
+zombies, zero stuck-forever runs, across every run** — the specific
+gap this Update section's "(c)" bullet flagged as untested is now
+closed. The worker fleet scaled 2→5 replicas in response to the
+burst; 2 of 5 workers still took an OOM restart (down from 4 of 6
+static replicas, but not zero) — matching this ADR's own honest
+framing above: admission control and elastic scaling reduce how often
+the underlying OOM condition is hit, they do not eliminate it at this
+deliberately tight per-pod memory sizing. What now definitively holds,
+verified under the exact combined scenario that originally exposed
+the gap: every OOM'd run still resolves cleanly, with nothing left
+dangling.
+
 ## Context
 
 Live stress-testing a real Kubernetes deployment (10 concurrent runs of a
