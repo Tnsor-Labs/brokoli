@@ -31,7 +31,7 @@ func TestSQLArtifactStore_VisibleAcrossSeparateConnections(t *testing.T) {
 	if !ok {
 		t.Fatal("RawDB() did not return *sql.DB")
 	}
-	writer, err := NewSQLArtifactStore(writerDB, "sqlite")
+	writer, err := NewSQLArtifactStore(writerDB, "sqlite", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLArtifactStore (writer): %v", err)
 	}
@@ -61,7 +61,7 @@ func TestSQLArtifactStore_VisibleAcrossSeparateConnections(t *testing.T) {
 	if !ok {
 		t.Fatal("RawDB() did not return *sql.DB")
 	}
-	reader, err := NewSQLArtifactStore(readerDB, "sqlite")
+	reader, err := NewSQLArtifactStore(readerDB, "sqlite", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLArtifactStore (reader): %v", err)
 	}
@@ -164,7 +164,7 @@ func newSQLArtifactTestStore(t *testing.T) *SQLArtifactStore {
 	if !ok {
 		t.Fatal("RawDB() did not return *sql.DB")
 	}
-	s, err := NewSQLArtifactStore(db, "sqlite")
+	s, err := NewSQLArtifactStore(db, "sqlite", t.TempDir())
 	if err != nil {
 		t.Fatalf("NewSQLArtifactStore: %v", err)
 	}
