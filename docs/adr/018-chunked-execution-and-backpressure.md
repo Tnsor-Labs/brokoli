@@ -105,6 +105,43 @@ verified under the exact combined scenario that originally exposed
 the gap: every OOM'd run still resolves cleanly, with nothing left
 dangling.
 
+## Update: zero-OOM achieved (2026-08-13, v0.10.26–v0.10.27)
+
+The residual OOMs above are now eliminated, by measuring instead of
+layering more mitigation:
+
+- **v0.10.26 (#184)**: `GOMEMLIMIT` auto-set to 90% of the cgroup
+  limit (Go's collector otherwise paces off GOGC alone, with no idea
+  a hard ceiling exists), and `BROKOLI_MAX_CONCURRENT_RUNS`'s default
+  derived from pod memory instead of a hardcoded 4.
+- That alone made things *worse* (0/10 runs survived), which forced
+  the right diagnostic: a single 100k-row run, sampled directly
+  against its pod's cgroup `memory.current` on an idle worker,
+  **peaks at ~284 MiB** — so two concurrent runs are ~570 MiB of
+  largely *live* memory on a 512 MiB pod, past the ceiling where no
+  GC setting can help, because live data is not garbage.
+- **v0.10.27 (#186)**: the per-run divisor became the measured
+  512 MiB — a 512 MiB pod runs **one** pipeline at a time, and demand
+  beyond that surfaces as queue depth.
+- **brokoli-ee#101**: the KEDA trigger switched from
+  `pendingEntriesCount` (the delivered-but-unacked PEL, which with
+  single-slot workers never exceeds the replica count and therefore
+  cannot signal a backlog) to consumer-group **lag** — the
+  undelivered backlog, the demand signal that actually matches this
+  dequeue model.
+
+Final verification, same 10-concurrent-run / 100k-row burst, same
+512 MiB worker pods: fleet scaled 2→4 within 15 seconds of dispatch,
+**10/10 runs succeeded, zero OOM kills, zero zombie node-runs, 29.6
+seconds total wall-clock** (vs. ~3 minutes draining sequentially
+through the pod minimum under the wrong scaling metric, and vs. 0–2
+of 10 surviving in every earlier configuration). The full loop this
+ADR and EE-ADR-008 aimed at — bounded per-pod memory, demand
+surfacing as queue depth, the fleet growing to meet it and shrinking
+after — is now observed working end to end. What remains deferred is
+unchanged: the full streaming rewrite (lowering what a single run
+costs), and a prioritized/fair queue.
+
 ## Context
 
 Live stress-testing a real Kubernetes deployment (10 concurrent runs of a
