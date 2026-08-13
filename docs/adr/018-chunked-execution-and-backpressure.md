@@ -1,7 +1,86 @@
 # ADR-018: Chunked node execution and memory-aware backpressure
 
-**Status:** proposed
+**Status:** proposed — Decision 2 (admission control) implemented and
+live-verified with an important honest limitation found in the process;
+see "Update: implemented" below. Decision 1 (chunked node-to-node
+hand-off) reconsidered — see the same section.
 **Date:** 2026-08-13
+
+## Update: implemented (2026-08-13)
+
+Shipped as #176 (memory-aware admission control + the SQLArtifactStore
+spill-support fix) and #178 (a follow-up closing a burst-admission race
+found immediately by redeploying #176 and re-testing), released as
+v0.10.23/v0.10.24.
+
+**What actually shipped, vs. the original Decision:**
+
+- **Decision 2 (memory-aware admission control)** shipped close to as
+  designed: a worker checks real cgroup memory usage before claiming a
+  new job, plus (#178) a 3-second settle delay since its own last
+  admission, closing the specific race where a cgroup reading can't see
+  a job that was just admitted but hasn't started allocating yet.
+- **Decision 1 (chunked node-to-node hand-off via `DataStream`/
+  `RowBatch`)** did *not* ship as originally scoped. Implementing #176
+  found that `node_output_store.go`'s spill mechanism already streams
+  its encode via `io.Pipe` for the default `LocalDiskArtifactStore` —
+  the "whole `*DataSet` handed to `nodeOutputs.Put()` in one shot"
+  framing in the original Context was accurate for the in-memory
+  representation, but the *chunked handoff* this Decision proposed was
+  largely already-existing infrastructure, not a gap. The real, newly
+  found gap was narrower and different: `SQLArtifactStore` (the
+  cross-pod artifact store instance-dispatch deployments swap in)
+  didn't implement `BlobStoreProvider` at all, so spilling was silently
+  disabled — every node's output stayed fully in memory regardless of
+  size — in exactly the deployment shape most likely to run large
+  pipelines across real worker pods. Fixed by giving it a local-disk
+  blob store for spill scratch space. `engine/streaming.go`'s
+  `DataStream`/`RowBatch` remain unwired into any node execution path,
+  same as before this ADR — genuinely finishing that integration is
+  still the "full streaming rewrite" this ADR's own Alternatives
+  section already scoped as future work, not something #176 needed.
+
+**What live re-verification found, and why it doesn't mean the fix
+failed:** re-running the same 10-concurrent-run / 100k-row stress test
+against the same 6×512Mi worker sizing after #178 shipped still showed
+4 of 6 workers OOMKilled — the same raw count as before any of this
+ADR's fixes existed. Diagnosed by hand-building a debug image with
+per-decision logging and testing at both 1 and 6 replicas: the
+admission logic (memory check + settle delay) is provably correct
+*per pod* — traced directly from debug output, each worker's own
+`sinceLast` timer and headroom check behave exactly as designed. What
+it cannot do anything about is *cross-pod* aggregate demand: 6
+independently-scheduled pods each honoring their own 3-second settle
+delay have no coordination with each other, and pods that started
+around the same rollout moment naturally have similarly-timed
+admission windows — so six separate, individually-correct admission
+decisions can still land within a few seconds of each other in
+aggregate. Separately, and more fundamentally: a single 100k-row
+pipeline's own peak memory (Go's `map[string]interface{}`-per-row
+`DataRow` representation is not memory-cheap) is close enough to a
+512Mi ceiling that even correctly-throttled admission cannot fully
+prevent occasional overshoot once several jobs are already in flight
+and still growing — a point-in-time cgroup reading cannot see memory
+growth that hasn't happened yet, at any timescale, no matter how
+tightly the check is re-run.
+
+This does not regress anything the original stress-testing work
+(#169/#171/#173) established: recovery still resolves every OOM'd run
+to a clean terminal state with zero dangling node-runs, verified fresh
+against this exact test. What #176/#178 add on top is a genuine,
+verified reduction in *how easily* that OOM path is hit under a
+simultaneous burst — not, and this ADR was not scoped to be, a
+guarantee that admission control alone eliminates OOM under a
+deliberately tight sizing that this session's own stress test picked
+specifically to probe the limit. Full elimination needs one of: (a)
+sizing worker memory to the actual workload — an operator/deployment
+decision no amount of in-process cleverness substitutes for, (b) the
+deferred full streaming rewrite that lowers a single run's own peak
+memory, or (c) EE-ADR-008's elastic scaling, so a demand spike is
+absorbed by *more replicas* rather than stacked onto a fixed-size
+fleet — implemented in this same session but not live-tested together
+with this ADR's fixes, since KEDA is not installed in the local k3s
+test cluster this work was verified against.
 
 ## Context
 
@@ -178,13 +257,32 @@ of accepting everything and letting the kernel decide who dies.
 
 ## Follow-ups
 
-- Implement chunked hand-off in the Runner behind
-  `BROKOLI_CHUNK_THRESHOLD_BYTES` (default off — mirrors how
-  `BROKOLI_SPILL_THRESHOLD_BYTES` shipped — until proven safe by default).
-- Wire `runtime.MemStats`/cgroup-aware sizing into `workerSlots`.
-- Re-run the same 10-concurrent-run / 100k-row stress test against this
-  change with the same 512Mi worker limit and confirm: no OOM kills, or
-  if capacity is genuinely insufficient, runs queue visibly instead of
-  being admitted and killed.
-- A companion enterprise-layer ADR for elastic worker scaling, consuming
-  `brokoli_runs_queue_waiting` as its primary signal.
+Superseded by the "Update: implemented" section above where it
+conflicts — kept here for what's still genuinely open:
+
+- The full streaming rewrite (wiring `engine/streaming.go`'s
+  `DataStream`/`RowBatch` into an actual node execution path, or an
+  equivalent) is still not done — it's the only remaining lever that
+  reduces a *single run's own* peak memory, which admission control
+  structurally cannot do regardless of how it's tuned. Worth
+  revisiting with real numbers from production admission-control usage
+  informing where it would help most, per this ADR's original
+  Alternatives section.
+- Live-test admission control together with EE-ADR-008's KEDA-based
+  elastic scaling — not done in this session because KEDA isn't
+  installed in the local k3s cluster this work was verified against.
+  This is the most likely near-term lever to actually close the
+  remaining gap for this specific test's sizing, since it grows
+  aggregate capacity to meet aggregate demand rather than trying to
+  make a fixed-size fleet absorb an arbitrary burst.
+- `memoryBackpressureSafetyMarginFraction`/`memoryBackpressureSettleDelay`
+  need real tuning against production traffic patterns, not just this
+  one synthetic worst-case burst test — they were picked as reasonable
+  defaults, not measured ones.
+- ~~Wire `runtime.MemStats`/cgroup-aware sizing into `workerSlots`~~ —
+  done (#176), see Update.
+- ~~Re-run the stress test and confirm no OOM kills~~ — done; found
+  that "no OOM kills" was the wrong bar for what admission control
+  alone can deliver at this sizing — see Update for the honest result
+  (zero stuck-forever runs / zero zombies, which *is* what shipped,
+  still holds).
