@@ -10,6 +10,27 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
+// TestRecoveryTransitionGracePeriodCoversRealContention is the direct
+// regression test for the second false-reclaim race found live: a node
+// transition under real multi-tenant CPU contention (several concurrent
+// runs sharing one worker pod — exactly what admission control lets
+// through and what elastic scaling exists to absorb) took ~12s where an
+// uncontended pod sees single-digit milliseconds, exceeding the original
+// 10s grace period and reproducing the identical bug
+// TestRecoverNonTerminalRunsDefersRecentNodeTransition already covers for
+// the uncontended case. recoveryTransitionGracePeriod must stay at least
+// as wide as reclaimSweepInterval — narrower defeats the whole point (an
+// uncontended transition was already "milliseconds, not seconds"; the
+// grace period exists specifically for the contended case, and shrinking
+// it back below where contention was actually observed silently
+// reintroduces this exact race).
+func TestRecoveryTransitionGracePeriodCoversRealContention(t *testing.T) {
+	if recoveryTransitionGracePeriod < reclaimSweepInterval {
+		t.Fatalf("recoveryTransitionGracePeriod = %s, want >= reclaimSweepInterval (%s) — narrowing this reintroduces the false-reclaim race found under real pod contention",
+			recoveryTransitionGracePeriod, reclaimSweepInterval)
+	}
+}
+
 // newRecoveryTestEngine opens a fresh SQLite-backed Engine for
 // RecoverNonTerminalRuns tests and returns both the Engine and the
 // underlying store for direct fixture setup and post-hoc assertions.
