@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.22] - 2026-08-13
+
+### Fixed
+
+- **Recovery left a dangling `NodeRun` stuck "running" forever on
+  runs it correctly marked failed** (#173) — @hc12r. Found
+  live-testing #169/#171, re-running the same concurrent stress test
+  once more to confirm them: `markRecoveryFailed` only ever touched
+  the run row and appended a run-level event, so the specific node a
+  "no recoverable path" determination was blamed on was left exactly
+  as the dead process last wrote it — visible in the API/UI as a node
+  stuck "running" indefinitely on a run whose own status was already
+  terminal. Not a new regression from #169/#171; present since the
+  original recovery feature, just newly surfaced by the same stress
+  test. `closeDanglingNodeRun` now settles that node and appends a
+  matching failure event, mirroring the normal failure path, so a
+  recovered run's full history is consistently terminal end to end.
+
 ## [0.10.21] - 2026-08-13
 
 ### Fixed
