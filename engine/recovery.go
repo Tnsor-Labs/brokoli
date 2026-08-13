@@ -318,8 +318,7 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		outcome, ferr := e.finalizeRecoveredRun(run, models.RunStatusFailed, failedNode.Error)
 		return outcome, reclaimed, ferr
 	default:
-		if len(events) > 0 {
-			lastActivity := events[len(events)-1].CreatedAt
+		if lastActivity, ok := lastGenuineActivity(events); ok {
 			if time.Since(lastActivity) < recoveryTransitionGracePeriod {
 				common.SLog().Info("recovery: deferring run — last activity too recent to rule out a live in-process node transition",
 					common.RunAttr(run.ID), "since_last_event", time.Since(lastActivity))
@@ -335,6 +334,28 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		outcome, ferr := e.markRecoveryFailed(run, reason)
 		return outcome, reclaimed, ferr
 	}
+}
+
+// lastGenuineActivity returns the CreatedAt of the most recent event that
+// reflects actual execution progress, skipping recovery's own bookkeeping
+// events. recoverRun unconditionally appends RunEventRecoveryStarted at the
+// top of every call, before this check ever runs — including on a pass that
+// only ends up deferring — so without this filter, that just-appended event
+// would always be the newest one, making every run that ever reaches the
+// grace-period check look "active" on every single sweep pass forever, and
+// a genuinely orphaned run would never be reclaimed. Found live: 4 runs a
+// dead worker had left mid-flight sat "running" with since_last_event under
+// 5ms on every 20s sweep tick for minutes straight.
+func lastGenuineActivity(events []models.RunEvent) (time.Time, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		switch events[i].EventType {
+		case models.RunEventRecoveryStarted, models.RunEventRecoveryCompleted, models.RunEventRecoveryFailed:
+			continue
+		default:
+			return events[i].CreatedAt, true
+		}
+	}
+	return time.Time{}, false
 }
 
 // reconcileExecutionAttempts inspects every execution_attempts row for a
