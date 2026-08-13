@@ -408,6 +408,75 @@ func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 	}
 }
 
+// TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers is the direct
+// regression test for a second bug found live testing right after the first
+// (TestRecoverNonTerminalRunsDefersRecentNodeTransition): recoverRun
+// unconditionally appends RunEventRecoveryStarted at the very top of every
+// call, before the grace-period check ever runs — including a pass that
+// only ends up deferring. Reading events[len(events)-1] naively for
+// recency therefore always finds THIS SAME PASS's own just-appended
+// bookkeeping event, which is by definition always fresh — so a genuinely
+// orphaned run would defer forever, every 20s, and never actually get
+// reclaimed. Live evidence: 4 runs left mid-flight by a dead worker sat
+// "running" with since_last_event under 5ms on every sweep tick for
+// several minutes straight. Calling RecoverNonTerminalRuns twice, with a
+// real sleep past the grace period in between, proves the fix
+// (lastGenuineActivity skipping recovery's own event types) actually lets
+// the second pass reclaim it, despite the first pass's RecoveryStarted
+// event being newer than the grace period at call time.
+func TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers(t *testing.T) {
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 30 * time.Millisecond
+	defer func() { recoveryTransitionGracePeriod = old }()
+
+	eng, s := newRecoveryTestEngine(t)
+	seedRecoveryPipeline(t, s, "pipe-repeated-defer")
+	run := seedOrphanedRun(t, s, "pipe-repeated-defer", "run-repeated-defer", models.RunStatusRunning)
+
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptStarted,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, NodeRunID: "source-nr"},
+	})
+	// No AttemptCompleted/AttemptFailed — process died mid-attempt, exactly
+	// like TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath.
+
+	summary1, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns (pass 1): %v", err)
+	}
+	if summary1.RunsDeferred != 1 || summary1.RunsFailed != 0 {
+		t.Fatalf("pass 1 summary = %+v, want 1 deferred, 0 failed (events still fresh)", summary1)
+	}
+	got, err := s.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun after pass 1: %v", err)
+	}
+	if got.Status != models.RunStatusRunning {
+		t.Fatalf("status after pass 1 = %s, want still running", got.Status)
+	}
+
+	time.Sleep(60 * time.Millisecond) // past recoveryTransitionGracePeriod
+
+	summary2, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns (pass 2): %v", err)
+	}
+	if summary2.RunsFailed != 1 || summary2.RunsDeferred != 0 {
+		t.Fatalf("pass 2 summary = %+v, want 1 failed, 0 deferred — a genuinely dead run must not defer forever just because recovery's own bookkeeping event from pass 1 looks recent", summary2)
+	}
+	got, err = s.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun after pass 2: %v", err)
+	}
+	if got.Status != models.RunStatusFailed {
+		t.Fatalf("status after pass 2 = %s, want failed", got.Status)
+	}
+}
+
 // TestRecoverNonTerminalRunsLeavesPendingRunsAlone proves a run that was
 // queued but never claimed by any worker is not treated as orphaned — it
 // legitimately has no node-execution history yet, and redelivering its
