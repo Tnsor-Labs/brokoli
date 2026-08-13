@@ -504,21 +504,31 @@ func (r *Runner) runPartitionTransform(node models.Node, input *common.DataSet, 
 	return result, nil
 }
 
+// parseNodeTransformRules decodes a transform node's rule list from its
+// config — shared by runTransform and the ADR-019 streaming-eligibility
+// check (stream_exec.go), so the two can never disagree about what the
+// rules are.
+func parseNodeTransformRules(node models.Node) ([]TransformRule, error) {
+	rulesRaw := node.Config["rules"]
+	rulesJSON, err := json.Marshal(rulesRaw)
+	if err != nil {
+		return nil, fmt.Errorf("marshal transform rules: %w", err)
+	}
+	var rules []TransformRule
+	if err := json.Unmarshal(rulesJSON, &rules); err != nil {
+		return nil, fmt.Errorf("parse transform rules: %w", err)
+	}
+	return rules, nil
+}
+
 func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("transform node requires input data")
 	}
 
-	// Parse rules from node config
-	rulesRaw, _ := node.Config["rules"]
-	rulesJSON, err := json.Marshal(rulesRaw)
+	rules, err := parseNodeTransformRules(node)
 	if err != nil {
-		return nil, fmt.Errorf("marshal transform rules: %w", err)
-	}
-
-	var rules []TransformRule
-	if err := json.Unmarshal(rulesJSON, &rules); err != nil {
-		return nil, fmt.Errorf("parse transform rules: %w", err)
+		return nil, err
 	}
 
 	// Clone dataset to avoid mutating upstream

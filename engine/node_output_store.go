@@ -265,3 +265,40 @@ func (r *Runner) newOutputs() *nodeOutputs {
 	}
 	return out
 }
+
+// PutRef records a node's output that already lives in the blob store as a
+// reference, without any in-memory dataset ever having existed
+// (docs/adr/019-execution-segments-and-streaming.md, Milestone 1:
+// ref-producing handlers hand their output straight here). The consumer
+// side is unchanged — Get materializes it exactly like any spilled
+// output, and GetRef serves stream-capable consumers.
+func (o *nodeOutputs) PutRef(nodeID string, ref *artifact.DatasetRef) {
+	o.mu.Lock()
+	delete(o.inline, nodeID)
+	o.spilled[nodeID] = ref
+	o.mu.Unlock()
+}
+
+// GetRef returns the blob reference behind a node's output, if it is held
+// by reference (spilled by Put, or produced as a ref via PutRef). An
+// inline output returns (nil, false): it is already materialized, and a
+// stream-capable consumer gains nothing from re-reading it off disk —
+// per ADR-019's engagement rule, small data takes the batch path.
+func (o *nodeOutputs) GetRef(nodeID string) (*artifact.DatasetRef, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	ref, ok := o.spilled[nodeID]
+	return ref, ok
+}
+
+// OpenBatches opens a batch reader over a reference previously returned by
+// GetRef, using the ref's own recorded column order. Caller closes the
+// returned closer when done (also on error paths — the reader holds an
+// open blob).
+func (o *nodeOutputs) OpenBatches(ref *artifact.DatasetRef) (*NDJSONBatchReader, io.Closer, error) {
+	rc, err := o.blobs.Open(context.Background(), &ref.ArtifactRef)
+	if err != nil {
+		return nil, nil, err
+	}
+	return NewNDJSONBatchReader(rc, ref.Columns, 0), rc, nil
+}

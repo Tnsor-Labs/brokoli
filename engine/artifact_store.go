@@ -229,12 +229,18 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID, instanceKey string
 		}
 		rowCount = len(ds.Rows)
 	}
-	manifest := artifact.NewDatasetManifest(&artifact.DatasetRef{
+	return l.writeDatasetManifest(runID, nodeID, instanceKey, &artifact.DatasetRef{
 		ArtifactRef: *ref,
 		Format:      artifact.FormatNDJSON,
 		Columns:     cols,
 		RowCount:    int64(rowCount),
 	})
+}
+
+// writeDatasetManifest records dsRef as the artifact for (runID, nodeID,
+// instanceKey) — the shared tail of WriteArtifact and WriteArtifactRef.
+func (l *LocalDiskArtifactStore) writeDatasetManifest(runID, nodeID, instanceKey string, dsRef *artifact.DatasetRef) error {
+	manifest := artifact.NewDatasetManifest(dsRef)
 	data, err := artifact.MarshalManifest(manifest)
 	if err != nil {
 		return fmt.Errorf("write artifact: %w", err)
@@ -259,6 +265,32 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID, instanceKey string
 		return fmt.Errorf("finalize artifact manifest: %w", err)
 	}
 	return nil
+}
+
+// RefArtifactWriter is the optional capability (discovered by type
+// assertion, like BlobStoreProvider above and every other optional
+// capability in this codebase) an ArtifactStore may support to record an
+// output that ALREADY lives in a blob store as a durable resume artifact,
+// without materializing it (docs/adr/019-execution-segments-and-streaming.md,
+// Milestone 1). A store without it gets the materialize-and-WriteArtifact
+// fallback — exactly today's memory cost, only for those stores.
+type RefArtifactWriter interface {
+	WriteArtifactRef(runID, nodeID, instanceKey string, ref *artifact.DatasetRef) error
+}
+
+// WriteArtifactRef implements RefArtifactWriter. The runner's spill blobs
+// and this store's artifact blobs are the same content-addressed store
+// under the same per-run namespace (see Blobs and Runner.newOutputs), so
+// recording a streamed output as a resume artifact is a manifest write
+// pointing at a blob that is already durably in place — no bytes move.
+func (l *LocalDiskArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, ref *artifact.DatasetRef) error {
+	if runID == "" || nodeID == "" {
+		return fmt.Errorf("write artifact ref: runID and nodeID are required")
+	}
+	if ref == nil {
+		return fmt.Errorf("write artifact ref: nil ref")
+	}
+	return l.writeDatasetManifest(runID, nodeID, instanceKey, ref)
 }
 
 // ReadArtifact implements ArtifactStore.

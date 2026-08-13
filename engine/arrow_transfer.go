@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"encoding/json"
@@ -224,3 +225,89 @@ func ReadColumnarBinary(path string) (*common.DataSet, error) {
 
 	return &common.DataSet{Columns: schema.Columns, Rows: rows}, nil
 }
+
+// streamBatchRows is how many rows NDJSONBatchReader yields per batch —
+// the unit of memory a streamed operator holds at once
+// (docs/adr/019-execution-segments-and-streaming.md, Milestone 1). Big
+// enough that per-batch overhead (function calls, slice growth) is
+// noise; small enough that a batch of even very wide rows stays in
+// single-digit MiB.
+const streamBatchRows = 1000
+
+// NDJSONBatchReader is the incremental counterpart of DecodeArrowJSON: it
+// yields the same rows the same way, batchSize rows at a time, without
+// ever holding the whole dataset. This is the primitive ADR-019's
+// reference-passing dataflow is built on — a spilled/artifact blob can
+// flow through a streamable operator in bounded memory.
+//
+// Unlike DecodeArrowJSON — which silently stops at the first malformed
+// line, a tolerance acceptable when the caller immediately sees the
+// truncated result — a batch reader's consumer has already processed and
+// emitted earlier batches by the time a bad line appears, so silent
+// truncation here would corrupt downstream data invisibly. Malformed
+// input is therefore a loud error.
+type NDJSONBatchReader struct {
+	br        *bufio.Reader
+	dec       *json.Decoder
+	columns   []string
+	batchSize int
+	done      bool
+}
+
+// NewNDJSONBatchReader wraps r, which must contain EncodeArrowJSON
+// output. columns is used verbatim as every batch's column order when
+// non-empty (same contract as DecodeArrowJSON); otherwise it is recovered
+// from the first row's map, losing the original order. batchSize <= 0
+// uses streamBatchRows.
+//
+// The empty-dataset sentinel "[]" (see EncodeArrowJSON's doc comment) is
+// detected here, by peeking, rather than in Next — it is the one thing
+// EncodeArrowJSON ever writes that is not a JSON object per line, and it
+// only ever appears as the entire stream.
+func NewNDJSONBatchReader(r io.Reader, columns []string, batchSize int) *NDJSONBatchReader {
+	if batchSize <= 0 {
+		batchSize = streamBatchRows
+	}
+	br := bufio.NewReader(r)
+	b := &NDJSONBatchReader{br: br, columns: columns, batchSize: batchSize}
+	if head, err := br.Peek(2); err == nil && string(head) == "[]" {
+		b.done = true
+		return b
+	}
+	b.dec = json.NewDecoder(br)
+	return b
+}
+
+// Next returns the next batch, or (nil, io.EOF) once the stream is
+// exhausted. A returned batch always has at least one row.
+func (b *NDJSONBatchReader) Next() (*common.DataSet, error) {
+	if b.done {
+		return nil, io.EOF
+	}
+	rows := make([]common.DataRow, 0, b.batchSize)
+	for len(rows) < b.batchSize {
+		if !b.dec.More() {
+			b.done = true
+			break
+		}
+		var row common.DataRow
+		if err := b.dec.Decode(&row); err != nil {
+			b.done = true
+			return nil, fmt.Errorf("ndjson batch decode: %w", err)
+		}
+		rows = append(rows, row)
+	}
+	if len(rows) == 0 {
+		return nil, io.EOF
+	}
+	if len(b.columns) == 0 {
+		for k := range rows[0] {
+			b.columns = append(b.columns, k)
+		}
+	}
+	return &common.DataSet{Columns: b.columns, Rows: rows}, nil
+}
+
+// Columns reports the column order this reader is using — the caller's,
+// or the recovered one once the first batch has been read.
+func (b *NDJSONBatchReader) Columns() []string { return b.columns }
