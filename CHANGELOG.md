@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.24] - 2026-08-13
+
+### Fixed
+
+- **Memory-aware admission control missed a burst-admission race**
+  (#178, ADR-018) — @hc12r. Found immediately by redeploying #176 and
+  re-running the same concurrent stress test it was meant to fix: a
+  cgroup memory reading is a snapshot of usage right now, and says
+  nothing about a job that was just admitted but hasn't started
+  allocating yet. A burst of simultaneous requests could still land
+  two jobs on the same worker about a second apart — confirmed
+  directly from worker logs, both starting within one second of each
+  other on the same pod, which then OOMKilled shortly after (the same
+  outcome as before the memory check existed). A 3-second settle
+  delay since a worker's last successful admission now closes this,
+  trading a small amount of throughput under a genuine burst for
+  actually preventing it rather than only helping the slower,
+  staggered-arrival case a bare headroom check already covered.
+
 ## [0.10.23] - 2026-08-13
 
 ### Added
