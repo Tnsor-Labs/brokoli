@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -226,6 +227,49 @@ func (s *SQLArtifactStore) DeleteRunArtifacts(runID string) error {
 	}
 	if err := s.blobs.DeleteNamespace(context.Background(), runID); err != nil {
 		return fmt.Errorf("delete run artifacts: spill blobs: %w", err)
+	}
+	return nil
+}
+
+// WriteArtifactRef implements RefArtifactWriter (see artifact_store.go).
+// Unlike LocalDiskArtifactStore — where this is a zero-copy manifest write
+// because the spill blobs and artifact blobs are one store — the SQL
+// store's artifact IS a TEXT column value, so the blob's bytes must be
+// read into memory once to become the INSERT's argument. That is the same
+// inherent cost WriteArtifact's own doc comment records for this store,
+// bounded to one encoded dataset, only in instance-dispatch deployments —
+// still strictly better than the non-ref fallback, which would decode the
+// blob into a full DataSet (5-10x the encoded size) and re-encode it.
+func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, ref *artifact.DatasetRef) error {
+	if runID == "" || nodeID == "" {
+		return fmt.Errorf("write artifact ref: runID and nodeID are required")
+	}
+	if ref == nil {
+		return fmt.Errorf("write artifact ref: nil ref")
+	}
+	rc, err := s.blobs.Open(context.Background(), &ref.ArtifactRef)
+	if err != nil {
+		return fmt.Errorf("write artifact ref: open blob: %w", err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return fmt.Errorf("write artifact ref: read blob: %w", err)
+	}
+	cols := ref.Columns
+	if cols == nil {
+		cols = []string{}
+	}
+	colsJSON, err := json.Marshal(cols)
+	if err != nil {
+		return fmt.Errorf("write artifact ref: encode columns: %w", err)
+	}
+	query := writeArtifactSQLite
+	if s.dialect == "postgres" {
+		query = writeArtifactPostgres
+	}
+	if _, err := s.db.Exec(query, runID, nodeID, instanceKey, string(colsJSON), string(data), time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("write artifact ref: %w", err)
 	}
 	return nil
 }

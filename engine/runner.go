@@ -12,6 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
@@ -144,6 +145,11 @@ const (
 type nodeExecutionResult struct {
 	output    *common.DataSet
 	condition *bool
+	// outputRef is the ADR-019 Milestone 1 alternative to output: the
+	// node's result already in the blob store, never materialized. At
+	// most one of output/outputRef is set; every consumer of output in
+	// executeNode's success path has a ref-aware branch.
+	outputRef *artifact.DatasetRef
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -598,9 +604,25 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		node.Config = r.connResolver.Resolve(node.Config, node.Type)
 	}
 
+	// ADR-019 Milestone 1: decide whether this node takes the
+	// reference-passing path BEFORE resolving inputs, because the whole
+	// point is not materializing them. streamEligible is a static
+	// property of the node; whether streaming actually engages also
+	// depends on what the inputs turn out to be (a ref, or nothing),
+	// resolved in the loop below. Any node this isn't certain about
+	// takes exactly the path it always took.
+	activeInputs := 0
+	for edgeIndex, edge := range r.pipe.Edges {
+		if edge.To == node.ID && edgeStates[edgeIndex] == edgeActive {
+			activeInputs++
+		}
+	}
+	streamable := r.streamEligible(node, outputs) && activeInputs <= 1
+
 	// Find input data from connected upstream nodes. nodeOutputs is
 	// internally synchronized, so no lock is held here.
 	var input *common.DataSet
+	var inputRef *artifact.DatasetRef
 	var allInputs []*common.DataSet
 	// edgeInputsByFrom indexes the same upstream outputs by upstream node
 	// ID, alongside input/allInputs above — needed by dynamic-expansion
@@ -609,6 +631,17 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	edgeInputsByFrom := make(map[string]*common.DataSet)
 	for edgeIndex, edge := range r.pipe.Edges {
 		if edge.To == node.ID && edgeStates[edgeIndex] == edgeActive {
+			if streamable && inputRef == nil {
+				if ref, ok := outputs.GetRef(edge.From); ok {
+					// Held by reference: flow it through without ever
+					// decoding the whole thing. Inline (small) inputs
+					// fall through to Get below — batch is faster and
+					// their memory doesn't matter, per the ADR's
+					// engagement rule.
+					inputRef = ref
+					continue
+				}
+			}
 			ds, ok, err := outputs.Get(edge.From)
 			if err != nil {
 				// The upstream output was spilled and cannot be read back.
@@ -624,6 +657,18 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				allInputs = append(allInputs, ds)
 				edgeInputsByFrom[edge.From] = ds
 			}
+		}
+	}
+	// A transform only streams FROM a ref; a code node also streams with
+	// no input at all (its output side is the win — the benchmark's own
+	// generator node is exactly this shape). Everything else needs the
+	// materialized input it just got.
+	if streamable {
+		switch node.Type {
+		case models.NodeTypeTransform:
+			streamable = inputRef != nil
+		case models.NodeTypeCode:
+			streamable = inputRef != nil || (activeInputs == 0 && input == nil)
 		}
 	}
 
@@ -667,6 +712,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	r.emit(models.Event{Type: models.EventNodeStarted, RunID: r.run.ID, NodeID: node.ID})
 
 	var output *common.DataSet
+	var outputRef *artifact.DatasetRef
 	var conditionDecision *bool
 	var lastErr error
 
@@ -879,14 +925,20 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			crashAt(crashPointBeforeNodeExecution, node.ID)
-			result, e := r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+			var result nodeExecutionResult
+			var e error
+			if streamable {
+				result, e = r.runNodeStreamed(node, inputRef, outputs)
+			} else {
+				result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+			}
 			resultCh <- nodeResult{result, e}
 		}()
 
 		var err error
 		select {
 		case result := <-resultCh:
-			output, conditionDecision, err = result.result.output, result.result.condition, result.err
+			output, outputRef, conditionDecision, err = result.result.output, result.result.outputRef, result.result.condition, result.err
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
 				err = fmt.Errorf("pipeline cancelled")
@@ -907,6 +959,8 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			rowCount := 0
 			if output != nil {
 				rowCount = len(output.Rows)
+			} else if outputRef != nil {
+				rowCount = int(outputRef.RowCount)
 			}
 			rowsPerSec := float64(0)
 			if duration > 0 && rowCount > 0 {
@@ -980,6 +1034,48 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					"Succeeded after %d retries", attempt)
 			}
 
+			// Store output — reference form first (ADR-019 Milestone 1):
+			// the ref goes into nodeOutputs for downstream consumers
+			// (materialized on demand for batch ones, streamed for
+			// stream-capable ones), the preview keeps only the rows it
+			// would have kept anyway, and the resume artifact is recorded
+			// without materializing when the store supports it.
+			if outputRef != nil && !r.dryRun {
+				outputs.PutRef(node.ID, outputRef)
+				preview, perr := previewFromRef(outputs, outputRef, 50)
+				if perr != nil {
+					attemptSpan.RecordError(perr)
+					attemptSpan.SetStatus(codes.Error, perr.Error())
+					attemptSpan.End()
+					return nil, fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, perr)
+				}
+				if err := r.store.SaveNodePreview(r.run.ID, node.ID, preview.Columns, preview.Rows); err != nil {
+					attemptSpan.RecordError(err)
+					attemptSpan.SetStatus(codes.Error, err.Error())
+					attemptSpan.End()
+					return nil, fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, err)
+				}
+				if r.artifactStore != nil && !nonResumableNodeTypes[node.Type] {
+					var aerr error
+					if refWriter, ok := r.artifactStore.(RefArtifactWriter); ok {
+						aerr = refWriter.WriteArtifactRef(r.run.ID, node.ID, "", outputRef)
+					} else {
+						// Store can't record refs: materialize once for the
+						// artifact write — today's memory cost, only for
+						// such stores, only at this boundary.
+						ds, _, gerr := outputs.Get(node.ID)
+						if gerr != nil {
+							aerr = gerr
+						} else {
+							aerr = r.artifactStore.WriteArtifact(r.run.ID, node.ID, "", ds)
+						}
+					}
+					if aerr != nil {
+						r.log(node.ID, models.LogLevelWarning, "Failed to persist durable artifact for node %s (a future resume needing its output will fail loudly): %v", node.Name, aerr)
+					}
+				}
+			}
+
 			// Store output
 			if output != nil {
 				if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
@@ -1043,6 +1139,8 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			colInfo := ""
 			if output != nil && len(output.Columns) > 0 {
 				colInfo = fmt.Sprintf(", columns: [%s]", truncateList(output.Columns, 8))
+			} else if outputRef != nil && len(outputRef.Columns) > 0 {
+				colInfo = fmt.Sprintf(", columns: [%s]", truncateList(outputRef.Columns, 8))
 			}
 			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt,
 				map[string]string{

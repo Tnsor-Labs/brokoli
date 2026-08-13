@@ -41,6 +41,7 @@ _input_csv = os.environ.get("BROKED_INPUT_CSV", "")
 _output_csv = os.environ.get("BROKED_OUTPUT_CSV", "")
 _input_ndjson = os.environ.get("BROKED_INPUT_NDJSON", "")
 _output_ndjson = os.environ.get("BROKED_OUTPUT_NDJSON", "")
+_output_columns = os.environ.get("BROKED_OUTPUT_COLUMNS", "")
 _use_file = bool(_input_csv) or bool(_input_ndjson)
 
 # Try to use pyarrow/pandas for faster processing
@@ -108,6 +109,14 @@ if _output_ndjson and _out_rows:
     with open(_output_ndjson, 'w') as _f:
         for row in _out_rows:
             _f.write(json.dumps(row) + '\n')
+    if _output_columns:
+        # Column-order sidecar: NDJSON rows are JSON objects, whose key
+        # order Go recovers from a map (arbitrary). The script's own
+        # declared column order in output_data["columns"] survives via
+        # this file instead of being lost the way plain file mode always
+        # lost it.
+        with open(_output_columns, 'w') as _f:
+            json.dump(list(_out_cols), _f)
     print(f"#PROGRESS:95 Wrote {len(_out_rows)} rows via NDJSON", file=sys.stderr)
 elif _output_csv and _out_rows:
     if _has_pandas:
