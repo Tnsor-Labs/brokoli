@@ -85,6 +85,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Proposed |
 | [ADR-016](./016-plugin-packaging-and-distribution.md) | Plugin packaging, runtime resolution, and distribution | Proposed |
 | [ADR-017](./017-worker-protocol-v2-instance-dispatch.md) | Worker protocol v2 — instance-level dispatch, lease, and fencing | Proposed |
+| [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Proposed |
 
 ## How to add a new ADR
 
