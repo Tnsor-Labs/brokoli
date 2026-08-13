@@ -11,6 +11,37 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.23] - 2026-08-13
+
+### Added
+
+- **Memory-aware admission control for `--mode worker`** (#176,
+  ADR-018) — @hc12r. A worker no longer claims a new job from the
+  distributed queue when its container is genuinely low on memory,
+  checked via real cgroup v2/v1 usage against the container's own
+  limit — not a predicted or configured concurrency count. Every
+  existing admission control (`maxParallel`,
+  `BROKOLI_MAX_CONCURRENT_RUNS`, `workerSlots`) bounded how many
+  things ran, never how much memory they were allowed to use, which
+  is the actual root cause behind the OOM findings #169/#171/#173
+  already fixed the aftermath of. Fails open when cgroup limits can't
+  be determined (bare host, most dev environments) — a strict
+  addition to existing admission control, never a replacement.
+  Escape hatch: `BROKOLI_MEMORY_BACKPRESSURE_DISABLED=1`.
+
+### Fixed
+
+- **`SQLArtifactStore` silently disabled node-level spilling** (#176,
+  ADR-018) — @hc12r. `cmd/serve.go` swaps `eng.ArtifactStore` to
+  `SQLArtifactStore` alongside instance-level remote dispatch — the
+  deployment shape most likely to run large pipelines across real
+  worker pods — and `SQLArtifactStore` didn't implement
+  `BlobStoreProvider` at all, so every node's output stayed fully in
+  memory regardless of size in that entire deployment mode, with no
+  error or warning. Now backed by a local-disk blob store for
+  intra-run spill scratch space, matching the default
+  `LocalDiskArtifactStore`'s behavior.
+
 ## [0.10.22] - 2026-08-13
 
 ### Fixed
