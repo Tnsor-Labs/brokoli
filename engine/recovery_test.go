@@ -353,6 +353,23 @@ func TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath(t *testing
 	if !containsEventType(types, models.RunEventRecoveryFailed) {
 		t.Errorf("events %v missing RunEventRecoveryFailed", types)
 	}
+	if !containsEventType(types, models.AttemptFailed) {
+		t.Errorf("events %v missing AttemptFailed for the dangling mid-attempt node — closeDanglingNodeRun should have appended one", types)
+	}
+
+	// Direct regression check for the zombie-node-run bug found live: a run
+	// correctly marked failed by recovery still showed its ambiguous node
+	// stuck at "running" forever, since markRecoveryFailed only ever
+	// touched the run row. closeDanglingNodeRun must settle it too.
+	nodeRuns, err := s.ListNodeRunsByRun(run.ID)
+	if err != nil {
+		t.Fatalf("ListNodeRunsByRun: %v", err)
+	}
+	for _, nr := range nodeRuns {
+		if nr.NodeID == "source" && nr.Status != models.RunStatusFailed {
+			t.Fatalf("source node run status = %s, want failed (must not stay running forever on a failed run)", nr.Status)
+		}
+	}
 }
 
 // TestRecoverNonTerminalRunsDefersRecentNodeTransition is the direct
