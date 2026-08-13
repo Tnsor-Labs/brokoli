@@ -102,14 +102,18 @@ func TestAdaptiveMaxConcurrentRuns(t *testing.T) {
 		wantN      int
 		wantOK     bool
 	}{
-		// 512Mi pod — this session's own stress-test sizing — should take
-		// 2 concurrent runs, not the old fixed 4.
-		{"512Mi", 512 << 20, 2, true},
-		{"256Mi", 256 << 20, 1, true},
+		// 512Mi pod — this session's own stress-test sizing — takes ONE
+		// run at a time: a single 100k-row run measures ~284Mi peak
+		// against the pod's own cgroup, so two would put ~570Mi of live
+		// memory on a 512Mi ceiling. Demand beyond one run belongs in the
+		// queue, where the autoscaler can see it.
+		{"512Mi", 512 << 20, 1, true},
 		// Below one run's worth of memory still floors at 1: a pod that
 		// exists should do SOMETHING, it just shouldn't stack.
+		{"256Mi", 256 << 20, 1, true},
 		{"128Mi", 128 << 20, 1, true},
-		{"1Gi", 1 << 30, 4, true},
+		{"1Gi", 1 << 30, 2, true},
+		{"2Gi", 2 << 30, 4, true},
 		// Huge machine: capped at the old fixed default; raising the
 		// ceiling is an operator decision, not a heuristic's.
 		{"16Gi", 16 << 30, 4, true},

@@ -48,12 +48,28 @@ var autoMemLimitFraction = 0.9
 
 // memoryPerConcurrentRunBytes is the working assumption behind the
 // adaptive concurrency default: one in-flight run of a "normal" pipeline
-// deserves roughly this much of the pod's memory budget. Derived from this
-// session's own live numbers — a 100k-row pipeline's live footprint sits
-// in the low hundreds of MiB with spilling active — deliberately round and
-// conservative rather than tuned to one benchmark. Only shapes the DEFAULT;
-// an explicit BROKOLI_MAX_CONCURRENT_RUNS always wins.
-var memoryPerConcurrentRunBytes = int64(256 << 20) // 256 MiB
+// deserves roughly this much of the pod's memory budget.
+//
+// Measured, not guessed — the first version of this constant (256 MiB)
+// was a guess, and it was wrong in exactly the way that matters: a single
+// 100k-row pipeline run, measured directly against its pod's cgroup
+// memory.current on an otherwise idle worker, peaks at ~284 MiB. Two
+// concurrent runs under the old divisor put ~570 MiB of largely LIVE
+// memory on a 512 MiB pod — past the cgroup ceiling, where no GC setting
+// can help, because live data is not garbage. That is why GOMEMLIMIT
+// alone did not stop the OOMs: it governs collection pacing, not how much
+// data the workload genuinely holds.
+//
+// 512 MiB per run = the measured ~284 MiB peak, plus GC operating room
+// under GOMEMLIMIT, plus the runtime/CGO/stack overhead the Go heap
+// number never shows, plus margin for pipelines somewhat heavier than the
+// benchmark. The consequence — a 512 MiB pod runs ONE pipeline at a time —
+// is the correct production posture now that queuing and elastic scaling
+// exist: demand beyond one run surfaces as queue depth the autoscaler
+// answers with more replicas, instead of overcommitting the pod and
+// letting the kernel pick a victim. Only shapes the DEFAULT; an explicit
+// BROKOLI_MAX_CONCURRENT_RUNS always wins.
+var memoryPerConcurrentRunBytes = int64(512 << 20) // 512 MiB
 
 // defaultMaxConcurrentRunsCap keeps the adaptive default from silently
 // exceeding what the old fixed default ever allowed on huge machines —
