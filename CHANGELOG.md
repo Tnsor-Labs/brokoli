@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.27] - 2026-08-13
+
+### Fixed
+
+- **Per-run memory divisor sized from measurement, not a guess**
+  (#186, ADR-018) — @hc12r. v0.10.26's adaptive concurrency default
+  assumed 256 MiB per concurrent run; measuring a single 100k-row run
+  directly against its pod's cgroup showed a ~284 MiB peak — two
+  concurrent runs put ~570 MiB of largely live memory on a 512 MiB
+  pod, past the ceiling where no GC setting helps, which is exactly
+  why GOMEMLIMIT alone didn't stop the OOMs. The divisor becomes
+  512 MiB: a 512 MiB pod runs one pipeline at a time, and demand
+  beyond that surfaces as queue depth an autoscaler answers with
+  more replicas.
+
 ## [0.10.26] - 2026-08-13
 
 ### Added
