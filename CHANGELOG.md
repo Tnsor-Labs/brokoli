@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.21] - 2026-08-13
+
+### Fixed
+
+- **Recovery's periodic sweep could defer a genuinely orphaned run
+  forever** (#171) — @hc12r. Follow-up to #169, found immediately by
+  redeploying it and re-running the same concurrent stress test.
+  `recoverRun` unconditionally appends `RunEventRecoveryStarted` at
+  the top of every call, before #169's grace-period check ever runs
+  — including a pass that only ends up deferring — so reading the
+  run's last event naively for recency always found *that same
+  pass's own just-appended event*, which is by definition always
+  fresh. A genuinely orphaned run therefore deferred forever, on
+  every sweep tick, and was never actually reclaimed. Confirmed live:
+  4 runs left mid-flight by an OOMKilled worker sat "running" with
+  `since_last_event` under 5ms on every 20s sweep pass for several
+  minutes straight. `lastGenuineActivity` now skips recovery's own
+  event types when computing the recency signal.
+
 ## [0.10.20] - 2026-08-13
 
 ### Fixed
