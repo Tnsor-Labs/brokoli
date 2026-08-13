@@ -263,6 +263,10 @@ func TestRecoverNonTerminalRunsFinalizesFailedNodeAsFailed(t *testing.T) {
 // must not guess; it marks the run failed via the dedicated
 // RunEventRecoveryFailed event type instead of the ordinary RunEventTerminal.
 func TestRecoverNonTerminalRunsMarksNoRecoverablePathFailed(t *testing.T) {
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 0
+	defer func() { recoveryTransitionGracePeriod = old }()
+
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-no-nodes")
 	run := seedOrphanedRun(t, s, "pipe-no-nodes", "run-no-nodes", models.RunStatusRunning)
@@ -311,6 +315,10 @@ func TestRecoverNonTerminalRunsMarksNoRecoverablePathFailed(t *testing.T) {
 // tell, so this must never be folded into success or failure, only
 // "no recoverable path".
 func TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath(t *testing.T) {
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 0
+	defer func() { recoveryTransitionGracePeriod = old }()
+
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-mid-attempt")
 	run := seedOrphanedRun(t, s, "pipe-mid-attempt", "run-mid-attempt", models.RunStatusRunning)
@@ -344,6 +352,59 @@ func TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath(t *testing
 	types := eventTypes(t, s, run.ID)
 	if !containsEventType(types, models.RunEventRecoveryFailed) {
 		t.Errorf("events %v missing RunEventRecoveryFailed", types)
+	}
+}
+
+// TestRecoverNonTerminalRunsDefersRecentNodeTransition is the direct
+// regression test for the false-reclaim race found live-testing #167's
+// periodic reclaim sweep under real concurrent load: "source" just finished
+// successfully and "sink" has no execution_attempts row yet (the owning
+// process's Runner is in the brief in-process gap between completing one
+// node and claiming the next). reconcileExecutionAttempts alone sees no
+// live lease at all in that instant, since the only two states its scan
+// covers are terminal (source, just completed) and never-claimed (sink) —
+// this must not be misread as an orphaned run, only as recent-enough
+// activity to defer, exactly like TestRecoverNonTerminalRunsDefersToLiveLease
+// does for an explicit lease.
+func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
+	eng, s := newRecoveryTestEngine(t)
+	seedRecoveryPipeline(t, s, "pipe-recent-transition")
+	run := seedOrphanedRun(t, s, "pipe-recent-transition", "run-recent-transition", models.RunStatusRunning)
+
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptStarted,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, NodeRunID: "source-nr"},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptCompleted,
+		Payload: models.RunEventPayload{Status: models.RunStatusSuccess, NodeRunID: "source-nr", RowCount: 1},
+	})
+	// No attempt for "sink" at all — recovery runs in the gap right after
+	// "source" finished, before the still-live process claims it.
+
+	summary, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns: %v", err)
+	}
+	if summary.RunsDeferred != 1 || summary.RunsFailed != 0 || summary.RunsReconciled != 0 {
+		t.Fatalf("summary = %+v, want 1 deferred, 0 failed, 0 reconciled", summary)
+	}
+
+	got, err := s.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != models.RunStatusRunning {
+		t.Fatalf("run status = %s, want running (left untouched, not force-failed)", got.Status)
+	}
+
+	types := eventTypes(t, s, run.ID)
+	if containsEventType(types, models.RunEventRecoveryFailed) {
+		t.Errorf("events %v should not contain RunEventRecoveryFailed — this run is still plausibly live", types)
 	}
 }
 
@@ -429,6 +490,10 @@ func TestRecoverNonTerminalRunsDefersToLiveLease(t *testing.T) {
 // than left claimed forever, and that the run itself still proceeds through
 // the normal event-log reconciliation afterward.
 func TestRecoverNonTerminalRunsReclaimsExpiredLease(t *testing.T) {
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 0
+	defer func() { recoveryTransitionGracePeriod = old }()
+
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-expired-lease")
 	run := seedOrphanedRun(t, s, "pipe-expired-lease", "run-expired-lease", models.RunStatusRunning)

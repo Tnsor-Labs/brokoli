@@ -22,6 +22,35 @@ import (
 // how e.g. maxParallel is a fixed constant in runner.go.
 const recoveryBatchSize = 50
 
+// recoveryTransitionGracePeriod guards a real gap in the liveLease check:
+// reconcileExecutionAttempts only sees non-terminal execution_attempts rows,
+// so the instant between one node going terminal (success/failed) and the
+// Runner claiming the next node's attempt has no lease at all — not because
+// the run is orphaned, but because nothing has asked for one yet. Before
+// #167 added a periodic reclaim sweep, RecoverNonTerminalRuns only ran once
+// per process at startup, so this window was effectively never hit in
+// practice (a fresh process's own startup pass doesn't race its own
+// in-flight runs). A sweep ticking every reclaimSweepInterval hits it
+// routinely under real concurrent load — confirmed live: a run whose
+// compute_totals node had just finished successfully was marked failed
+// ("aggregate_by_region never started") while the owning process was very
+// much alive and claimed aggregate_by_region six seconds later, orphaning
+// that node run forever (its own eventual Complete call fails its fencing
+// check against the run recovery already closed out).
+//
+// Node-to-node transition overhead in the healthy case is milliseconds, not
+// seconds, so treating any run with events younger than this as possibly
+// still live costs true orphan detection at most one grace period of extra
+// latency — negligible against reclaimSweepInterval — while eliminating the
+// false positive. Only gates the "no recoverable path" branch in
+// recoverRun: a definite success or an explicit failed-node outcome is
+// unambiguous regardless of timing and does not need this check.
+//
+// A var, not a const — like reclaimSweepInterval, tests override it to a
+// near-zero value so they can assert the "genuinely orphaned, fail now"
+// path without an actual 10s sleep.
+var recoveryTransitionGracePeriod = 10 * time.Second
+
 // recoveryOutcome classifies what RecoverNonTerminalRuns did with one
 // non-terminal run, for RecoverySummary's counters.
 type recoveryOutcome int
@@ -289,6 +318,14 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		outcome, ferr := e.finalizeRecoveredRun(run, models.RunStatusFailed, failedNode.Error)
 		return outcome, reclaimed, ferr
 	default:
+		if len(events) > 0 {
+			lastActivity := events[len(events)-1].CreatedAt
+			if time.Since(lastActivity) < recoveryTransitionGracePeriod {
+				common.SLog().Info("recovery: deferring run — last activity too recent to rule out a live in-process node transition",
+					common.RunAttr(run.ID), "since_last_event", time.Since(lastActivity))
+				return recoveryOutcomeDeferred, reclaimed, nil
+			}
+		}
 		var reason string
 		if ambiguousNode != "" {
 			reason = fmt.Sprintf("run was interrupted mid-execution and cannot be safely resumed from process-local state (%s)", ambiguousNode)

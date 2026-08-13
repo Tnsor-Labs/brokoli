@@ -20,6 +20,20 @@ import (
 // run reaches a terminal state instead of staying stuck non-terminal
 // forever. See assertCrashRecovery.
 func TestCrashRecoveryBaseline(t *testing.T) {
+	// This harness's whole design is "assert recovery's classification is
+	// correct with no other live-process signal available" — every event
+	// AppendEvent persists is stamped with a fresh now() (store can't take
+	// a caller-supplied CreatedAt), so recoveryTransitionGracePeriod's
+	// real-clock grace window (engine/recovery.go) would otherwise defer
+	// every one of these crash points on the first RecoverNonTerminalRuns
+	// call, same as the false-transition-gap race it exists to guard
+	// against. Zero it out here, exactly like the recoveryTransitionGracePeriod
+	// overrides in recovery_test.go, so this harness keeps testing the
+	// reconstruction logic itself rather than the grace period.
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 0
+	defer func() { recoveryTransitionGracePeriod = old }()
+
 	cases := []struct {
 		name           string
 		point          string
