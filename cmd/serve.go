@@ -190,7 +190,7 @@ var serveCmd = &cobra.Command{
 				// unaffected.
 				if dialect, ok := sqlArtifactDialect(s); ok {
 					if rawDB, ok := s.RawDB().(*sql.DB); ok {
-						if artifactStore, err := engine.NewSQLArtifactStore(rawDB, dialect); err != nil {
+						if artifactStore, err := engine.NewSQLArtifactStore(rawDB, dialect, os.Getenv("BROKOLI_ARTIFACT_DIR")); err != nil {
 							log.Printf("WARNING: SQL artifact store init failed, remote instance results may not be readable back: %v", err)
 						} else {
 							eng.ArtifactStore = artifactStore
@@ -337,15 +337,36 @@ var serveCmd = &cobra.Command{
 			quit := make(chan os.Signal, 1)
 			signal.Notify(quit, os.Interrupt, syscall.SIGTERM)
 
+			shutdownDraining := func(sig os.Signal) {
+				log.Printf("Worker: received %v, draining in-flight jobs (up to %s)...", sig, workerShutdownGracePeriod)
+				if drainWorkerSlots(workerSlots, workerCount, workerShutdownGracePeriod) {
+					log.Println("Worker: all in-flight jobs completed, shutting down cleanly")
+				} else {
+					log.Println("Worker: grace period expired with jobs still in-flight — abandoning to the recovery system")
+				}
+			}
+
 			for {
+				// A second, independent admission gate alongside workerSlots'
+				// count-based one (docs/adr/018-chunked-execution-and-backpressure.md):
+				// don't claim a new slot at all while this pod is genuinely
+				// low on memory, regardless of how much of workerCount is
+				// still unused. Checked before entering the slot-claim select
+				// below so a memory-constrained worker backs off instead of
+				// racing into it.
+				if !hasMemoryHeadroom() {
+					select {
+					case sig := <-quit:
+						shutdownDraining(sig)
+						return nil
+					case <-time.After(memoryBackpressureRecheckInterval):
+					}
+					continue
+				}
+
 				select {
 				case sig := <-quit:
-					log.Printf("Worker: received %v, draining in-flight jobs (up to %s)...", sig, workerShutdownGracePeriod)
-					if drainWorkerSlots(workerSlots, workerCount, workerShutdownGracePeriod) {
-						log.Println("Worker: all in-flight jobs completed, shutting down cleanly")
-					} else {
-						log.Println("Worker: grace period expired with jobs still in-flight — abandoning to the recovery system")
-					}
+					shutdownDraining(sig)
 					return nil
 				case workerSlots <- struct{}{}:
 				}

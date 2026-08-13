@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
@@ -43,21 +45,56 @@ import (
 type SQLArtifactStore struct {
 	db      *sql.DB
 	dialect string // "postgres" or "sqlite" — the two backends store.Store supports
+
+	// blobs backs Blobs()/BlobStoreProvider — see that method's doc comment
+	// for why this exists and is deliberately local disk, not the SQL
+	// database WriteArtifact/ReadArtifact use.
+	blobs artifact.Store
 }
 
 // NewSQLArtifactStore creates (if not already present) the artifacts table
 // and returns a store backed by it. dialect must be "postgres" or
-// "sqlite".
-func NewSQLArtifactStore(db *sql.DB, dialect string) (*SQLArtifactStore, error) {
+// "sqlite". spillDir roots the local-disk blob store Blobs() exposes for
+// intra-run spill scratch space (see that method); empty uses the same
+// "./brokoli-artifacts" default engine.NewEngine's own LocalDiskArtifactStore
+// falls back to when BROKOLI_ARTIFACT_DIR is unset.
+func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtifactStore, error) {
 	if dialect != "postgres" && dialect != "sqlite" {
 		return nil, fmt.Errorf("sql artifact store: unsupported dialect %q (want postgres or sqlite)", dialect)
 	}
-	s := &SQLArtifactStore{db: db, dialect: dialect}
+	if spillDir == "" {
+		spillDir = "./brokoli-artifacts"
+	}
+	s := &SQLArtifactStore{db: db, dialect: dialect, blobs: artifact.NewLocalDiskStore(spillDir)}
 	if err := s.ensureSchema(); err != nil {
 		return nil, fmt.Errorf("sql artifact store: %w", err)
 	}
 	return s, nil
 }
+
+// Blobs implements BlobStoreProvider (see artifact_store.go), so
+// docs/adr/018-chunked-execution-and-backpressure.md's node-level spill
+// mechanism (node_output_store.go's nodeOutputs, gated on
+// r.artifactStore.(BlobStoreProvider)) works under this store too.
+//
+// Found live implementing that ADR: cmd/serve.go swaps eng.ArtifactStore
+// to SQLArtifactStore only alongside instance-level remote dispatch
+// (instanceDispatchEnabled) — exactly the deployment shape most likely to
+// run large, memory-heavy pipelines across real worker pods — and
+// SQLArtifactStore did not implement BlobStoreProvider at all. Since
+// spillEnabled() requires the type assertion to succeed, every node's
+// output stayed fully in memory regardless of size in that entire
+// deployment mode: the one place the spill mechanism matters most had it
+// silently disabled.
+//
+// Backed by local disk, not the SQL database WriteArtifact/ReadArtifact
+// use: spill scratch space is read back only by the same run, on the same
+// pod, within the same process — it has no cross-pod visibility
+// requirement (that is specifically what WriteArtifact/ReadArtifact solve
+// for a run's genuinely durable, resumable output). Routing spill traffic
+// through the database instead would add write load and row bloat to
+// solve a problem local disk already solves for free.
+func (s *SQLArtifactStore) Blobs() artifact.Store { return s.blobs }
 
 func (s *SQLArtifactStore) ensureSchema() error {
 	// TEXT even for created_at rather than a dialect-specific TIMESTAMP
@@ -104,6 +141,17 @@ const (
 )
 
 // WriteArtifact implements ArtifactStore.
+//
+// Unlike LocalDiskArtifactStore.WriteArtifact and Blobs()'s spill path,
+// this cannot stream the encode straight into the write: the destination
+// is a single TEXT column value passed to database/sql's Exec, which has
+// no streaming-write API in either the postgres or sqlite driver this
+// store supports — the whole encoded value must exist before Exec can be
+// called, full stop. This is an inherent cost of storing an artifact as a
+// SQL column rather than a real blob store, not an oversight matching the
+// other two paths' io.Pipe pattern would fix. It is bounded in practice:
+// this method is called once per completed remote instance result
+// (ADR-017), not on the hot per-node spill path Blobs() exists for.
 func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *common.DataSet) error {
 	if runID == "" || nodeID == "" {
 		return fmt.Errorf("write artifact: runID and nodeID are required")
@@ -158,7 +206,13 @@ func (s *SQLArtifactStore) ReadArtifact(runID, nodeID, instanceKey string) (*com
 	return ds, nil
 }
 
-// DeleteRunArtifacts implements ArtifactStore.
+// DeleteRunArtifacts implements ArtifactStore. Also clears any spill
+// scratch space Blobs() holds under this run's namespace (nodeOutputs
+// spills using r.run.ID as the namespace — see node_output_store.go's
+// newOutputs) — the SQL rows and the local-disk spill blobs are two
+// separate stores for two different purposes (see Blobs()'s doc comment)
+// but share one lifetime, same as LocalDiskArtifactStore's own manifests
+// and blobs already do.
 func (s *SQLArtifactStore) DeleteRunArtifacts(runID string) error {
 	if runID == "" {
 		return nil
@@ -169,6 +223,9 @@ func (s *SQLArtifactStore) DeleteRunArtifacts(runID string) error {
 	}
 	if _, err := s.db.Exec(query, runID); err != nil {
 		return fmt.Errorf("delete run artifacts: %w", err)
+	}
+	if err := s.blobs.DeleteNamespace(context.Background(), runID); err != nil {
+		return fmt.Errorf("delete run artifacts: spill blobs: %w", err)
 	}
 	return nil
 }
