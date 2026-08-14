@@ -48,6 +48,18 @@ type Run struct {
 	// should be restored from.
 	ResumedFromRunID string `json:"resumed_from_run_id,omitempty"`
 
+	// CancelRequested records a durable cancellation intent
+	// (store.RunCancelRequester), set by Engine.CancelRun before it acts.
+	// It exists because the acting half of a cancel can be lost — the
+	// relay broadcast is fire-and-forget, and a process can die between
+	// receiving a cancel and finalizing the run — while this flag cannot.
+	// The Runner re-checks it at every wave boundary and recovery honors
+	// it when closing out a run with no recoverable path, so a cancel
+	// whose delivery was lost still converges to cancelled instead of the
+	// run silently completing or being recovery-failed. Never cleared:
+	// terminal runs simply stop consulting it.
+	CancelRequested bool `json:"cancel_requested,omitempty"`
+
 	// OrgID is the owning pipeline's org at the moment this run was
 	// created (copied from Pipeline.OrgID, not re-resolved later — a
 	// pipeline moved to a different org afterward doesn't retroactively

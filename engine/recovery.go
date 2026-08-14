@@ -471,6 +471,40 @@ func (e *Engine) finalizeRecoveredRun(run *models.Run, status models.RunStatus, 
 // from "recovery discovered exactly what the live process would have
 // persisted" in the audit trail.
 func (e *Engine) markRecoveryFailed(run *models.Run, reason string) (recoveryOutcome, error) {
+	// A run with durable cancel intent (models.Run.CancelRequested) whose
+	// event log has no recoverable path is the crash-during-cancel case:
+	// the user asked for cancellation, the owning process died before
+	// finalizing, and recovery is now inventing the outcome. Honor the
+	// recorded intent — close it out as cancelled, not failed, so a
+	// cancel is never rewritten into a failure by the recovery path the
+	// same way #203 stopped the live path from doing it. Runs whose log
+	// PROVES a terminal outcome never reach here (finalizeRecoveredRun
+	// reconciles those): work that genuinely completed before the crash
+	// stays completed even if a cancel arrived too late.
+	if run.CancelRequested {
+		now := time.Now().UTC()
+		errMsg := "recovery: cancellation was requested before the owning process died (" + reason + ")"
+		run.Status = models.RunStatusCancelled
+		run.FinishedAt = &now
+		run.Error = errMsg
+		if err := e.store.UpdateRun(run); err != nil {
+			return recoveryOutcomeDeferred, fmt.Errorf("persist recovery-cancelled run: %w", err)
+		}
+		e.appendEvent(&models.RunEvent{
+			RunID:     run.ID,
+			EventType: models.RunEventCancelled,
+			Payload: models.RunEventPayload{
+				Status:     models.RunStatusCancelled,
+				FinishedAt: run.FinishedAt,
+				Error:      errMsg,
+			},
+		})
+		e.appendEvent(&models.RunEvent{RunID: run.ID, EventType: models.RunEventRecoveryCompleted})
+		atomic.AddInt64(&e.RunsRecovered, 1)
+		common.SLog().Info("recovery: run closed out as cancelled per durable cancel intent", common.RunAttr(run.ID), "reason", reason)
+		return recoveryOutcomeReconciled, nil
+	}
+
 	now := time.Now().UTC()
 	errMsg := "recovery: " + reason
 	run.Status = models.RunStatusFailed

@@ -376,6 +376,23 @@ func (e *Engine) Events() <-chan models.Event {
 
 // CancelRun stops a running pipeline.
 func (e *Engine) CancelRun(runID string) error {
+	// Durable intent first, before any acting: the acting halves below can
+	// all be lost (this process can die after the local ctx-cancel but
+	// before the runner finalizes; a relay broadcast is fire-and-forget),
+	// but this conditional row write cannot. The Runner re-checks the flag
+	// at every wave boundary and recovery honors it when closing out a run
+	// with no recoverable path, so a cancel that gets this far always
+	// converges to cancelled. Returns false (nothing written) for terminal
+	// or missing runs — the error paths below still report those.
+	intentPersisted := false
+	if requester, ok := e.store.(store.RunCancelRequester); ok {
+		persisted, err := requester.RequestRunCancel(runID)
+		if err != nil {
+			return fmt.Errorf("persist cancel intent for run %s: %w", runID, err)
+		}
+		intentPersisted = persisted
+	}
+
 	// Case 1: the run executes in this process — cancel its Runner directly.
 	if e.cancelLocalRun(runID) {
 		return nil
@@ -427,6 +444,12 @@ func (e *Engine) CancelRun(runID string) error {
 		if bErr := e.CancelRelay.BroadcastCancel(runID); bErr != nil {
 			return fmt.Errorf("broadcast cancel for run %s: %w", runID, bErr)
 		}
+		return nil
+	}
+	// No relay, but the durable intent is persisted: the owning Runner
+	// picks it up at its next wave boundary, so the cancel succeeds —
+	// with node-boundary latency instead of the relay's immediacy.
+	if intentPersisted {
 		return nil
 	}
 	return fmt.Errorf("run %s not found or already completed", runID)
@@ -1022,12 +1045,15 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.metrics = e.newRunnerMetrics()
 	runner.parentCtx = claimCtx
 
-	atomic.AddInt64(&e.RunsQueueWaiting, 1)
-	e.runSem <- struct{}{}
-	atomic.AddInt64(&e.RunsQueueWaiting, -1)
-	defer func() { <-e.runSem }()
-	atomic.AddInt64(&e.RunsTotal, 1)
-
+	// Register the runner as active BEFORE waiting for a concurrency slot,
+	// not after. The run's status is already "running" from the claim
+	// above, so a cancel (local or relayed) arriving during the semaphore
+	// wait must be able to find the runner — under saturation that wait
+	// can last minutes, and before this ordering a relayed cancel in that
+	// window found nothing in e.active, was dropped, and the run later
+	// executed to completion. Runner.Cancel is durable across the
+	// pre-Execute window, so a cancel landing here is remembered and the
+	// run finalizes as cancelled the moment it gets its slot.
 	e.mu.Lock()
 	e.active[runID] = runner
 	e.mu.Unlock()
@@ -1036,6 +1062,12 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 		delete(e.active, runID)
 		e.mu.Unlock()
 	}()
+
+	atomic.AddInt64(&e.RunsQueueWaiting, 1)
+	e.runSem <- struct{}{}
+	atomic.AddInt64(&e.RunsQueueWaiting, -1)
+	defer func() { <-e.runSem }()
+	atomic.AddInt64(&e.RunsTotal, 1)
 
 	_, executeErr := runner.Execute()
 	if executeErr != nil {
