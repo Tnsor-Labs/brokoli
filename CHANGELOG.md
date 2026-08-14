@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.31] - 2026-08-14
+
+### Added
+
+- **Streaming hash aggregation (ADR-019 Milestone 2)** (#199) —
+  @hc12r. An `aggregate` rule was a hard barrier — one anywhere in a
+  transform forced the whole node to materialize its input. Rule
+  lists now compile to a stream plan: row-local prefix streams per
+  batch, the aggregate folds batches into per-group accumulator
+  state, and suffix rules (anything, including sort) run on the
+  grouped output. Incremental accumulators replicate the batch
+  implementation's exact semantics, held to equivalence by test.
+  Fan-out replay of ref outputs is pinned by test (it fell out of
+  Milestone 1's per-consumer blob opens); concurrent cross-node
+  stages are deferred with the reason recorded in ADR-019 (the
+  re-iterable lazy-rows compat contract requires a seekable file — a
+  FIFO would deadlock `len(rows)` — so pipelined subprocess input
+  needs a future explicit per-script opt-in).
+
 ## [0.10.30] - 2026-08-14
 
 ### Added
