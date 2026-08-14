@@ -37,6 +37,39 @@ story:
   over-conservative for streamed workloads and should be re-measured,
   per this ADR's own follow-up list.
 
+## Update: Milestone 1.5 measured (2026-08-14, v0.10.30)
+
+Milestone 1.5 shipped (#195): lazy re-iterable `rows`, the
+`emit`/`begin_emit` idiom, and generator outputs in the code-node
+harness — full backward compatibility (len/indexing transparently
+materialize; every pre-existing test unchanged), with `begin_emit`
+added after the tests caught that a zero-match filter using bare
+`emit` would have fallen back to passthrough and output its entire
+input.
+
+Measuring it forced a metrics correction worth recording: every
+earlier number in these updates sampled cgroup `memory.current`,
+which includes page cache — and the reference-passing path is
+I/O-heavy by design, so its own temp files and blobs inflate that
+counter with perfectly reclaimable cache the kernel drops under
+pressure instead of OOM-killing anything. Coarse 2-second sampling
+also missed short transients both ways. The number that actually
+maps to OOM pressure is the cgroup's **anon** memory, densely
+sampled. On that metric, cold pods, same benchmark:
+
+- **Unchanged legacy scripts: 100 MiB anon peak** — entirely the
+  Python `out` lists; the lazy `rows` input side is already free.
+- **The same pipeline in the emit/generator idiom: 7 MiB anon peak.**
+  The full 100k-row, three-node pipeline runs in seven megabytes of
+  anonymous memory, end to end, results identical.
+
+Against the ~284 MiB this investigation started from, that is a ~40x
+reduction for streaming-idiom pipelines and ~3x for completely
+untouched ones. ADR-018's one-run-per-512Mi divisor is now deeply
+conservative for streamed workloads; re-measuring it (and possibly
+deriving it from observed per-run anon peaks rather than a constant)
+is the natural next step, alongside Milestone 2.
+
 ## Context
 
 ADR-018's whole arc — memory-aware admission control, GOMEMLIMIT,
