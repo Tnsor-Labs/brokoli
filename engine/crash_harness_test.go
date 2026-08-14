@@ -193,7 +193,7 @@ func TestCrashRecoveryBaselineProcess(t *testing.T) {
 	if err := s.CreatePipeline(pipeline); err != nil {
 		t.Fatalf("create pipeline: %v", err)
 	}
-	if _, err := NewEngine(s).RunPipeline(pipeline.ID); err != nil {
+	if _, err := drainEngineOnCleanup(t, NewEngine(s)).RunPipeline(pipeline.ID); err != nil {
 		t.Fatalf("run pipeline before injected crash: %v", err)
 	}
 	t.Fatal("crash point was not reached")
@@ -305,7 +305,7 @@ func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID
 	}
 	runID := runs[0].ID
 
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	first, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("first RecoverNonTerminalRuns: %v", err)
@@ -360,7 +360,7 @@ func assertCrashRecovery(t *testing.T, dbPath string, wantStatus models.RunStatu
 	}
 	defer s.Close()
 
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	summary, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("RecoverNonTerminalRuns: %v", err)

@@ -91,7 +91,7 @@ func TestPipeline_ExpandRemoteDispatch_Succeeds(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.InstanceJobQueue = &fakeInstanceJobQueue{
 		attempts: real, artifacts: eng.ArtifactStore, delay: 50 * time.Millisecond,
@@ -145,7 +145,7 @@ func TestPipeline_ExpandRemoteDispatch_WorkerFailureFailsTheRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.InstanceJobQueue = &fakeInstanceJobQueue{
 		attempts: real, artifacts: eng.ArtifactStore, delay: 50 * time.Millisecond,
@@ -197,7 +197,7 @@ func TestPipeline_ExpandRemoteDispatch_CancellationSettlesAsFailed(t *testing.T)
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.InstanceJobQueue = &fakeInstanceJobQueue{respond: nil} // never responds
 
@@ -320,7 +320,7 @@ func TestPipeline_ExpandRemoteDispatch_InstancesDispatchConcurrently(t *testing.
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	const perItemDelay = 300 * time.Millisecond
 	var mu sync.Mutex

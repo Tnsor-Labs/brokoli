@@ -47,7 +47,7 @@ func TestRunPipeline_BlockedByUnsatisfiedDep(t *testing.T) {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
 
-	e := NewEngine(s)
+	e := drainEngineOnCleanup(t, NewEngine(s))
 	run, err := e.RunPipeline("down")
 	if err != nil {
 		t.Fatalf("RunPipeline: %v", err)

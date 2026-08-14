@@ -483,25 +483,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 	// Check if already cancelled (by CancelRun)
 	if r.ctx.Err() != nil {
-		r.run.Status = models.RunStatusCancelled
-		r.run.FinishedAt = &finishTime
-		if err := r.store.UpdateRun(r.run); err != nil {
-			return r.run, fmt.Errorf("persist cancelled run: %w", err)
-		}
-		r.appendEvent(models.RunEvent{
-			RunID:     r.run.ID,
-			EventType: models.RunEventCancelled,
-			Payload: models.RunEventPayload{
-				Status:     models.RunStatusCancelled,
-				FinishedAt: r.run.FinishedAt,
-				Error:      "cancelled",
-			},
-		})
-		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
-		r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
-		common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
-			"status", models.RunStatusCancelled)
-		return r.run, fmt.Errorf("pipeline cancelled")
+		return r.run, r.finalizeCancelled()
 	}
 
 	if runErr != nil {
@@ -1499,7 +1481,45 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	}
 }
 
+// finalizeCancelled persists the run as cancelled and emits the cancellation
+// event, hook, and log line. It returns the "pipeline cancelled" error the
+// caller should propagate as Execute's error.
+func (r *Runner) finalizeCancelled() error {
+	finishTime := time.Now().UTC()
+	r.run.Status = models.RunStatusCancelled
+	r.run.FinishedAt = &finishTime
+	if err := r.store.UpdateRun(r.run); err != nil {
+		return fmt.Errorf("persist cancelled run: %w", err)
+	}
+	r.appendEvent(models.RunEvent{
+		RunID:     r.run.ID,
+		EventType: models.RunEventCancelled,
+		Payload: models.RunEventPayload{
+			Status:     models.RunStatusCancelled,
+			FinishedAt: r.run.FinishedAt,
+			Error:      "cancelled",
+		},
+	})
+	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
+	r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
+	common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+		"status", models.RunStatusCancelled)
+	return fmt.Errorf("pipeline cancelled")
+}
+
 func (r *Runner) failRun(err error) error {
+	// Cancellation wins over failure, no matter which exit path noticed the
+	// node error first. When CancelRun fires while a node is in flight, the
+	// node fails with "pipeline cancelled" and the wave loop exits through
+	// here — without this guard the run would be persisted as FAILED (plus
+	// DLQ entry, failure alert, and critical notification) whenever this
+	// goroutine won the UpdateRun race against CancelRun's own cancelled
+	// write. r.ctx is only ever cancelled by Runner.Cancel (it has no
+	// deadline: parentCtx is a span context over context.Background()), so
+	// ctx.Err() != nil here means exactly "the user cancelled this run".
+	if r.ctx.Err() != nil {
+		return r.finalizeCancelled()
+	}
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusFailed
 	r.run.FinishedAt = &finishTime

@@ -78,7 +78,7 @@ func TestSchedulerRegisterSkipsDispatchWhenNotLeader(t *testing.T) {
 		t.Fatalf("CreatePipeline: %v", err)
 	}
 
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	fake := &fakeLeaderElector{leader: false}
 	sched := NewScheduler(eng, s, fake)
 
@@ -146,7 +146,7 @@ func TestSchedulerCatchUpMissedRunsSkipsWhenNotLeader(t *testing.T) {
 		t.Fatalf("seed CreateRun: %v", err)
 	}
 
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	fake := &fakeLeaderElector{leader: false}
 	sched := NewScheduler(eng, s, fake)
 
@@ -193,7 +193,7 @@ func TestSchedulerCatchUpMissedRunsSkipsWhenNotLeader(t *testing.T) {
 // (runReclaimSweep) picks up exactly that case on a later pass.
 func TestSchedulerReclaimSweepReclaimsExpiredLeaseWhenLeader(t *testing.T) {
 	s := newLeaderTestStore(t).(*store.SQLiteStore)
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	seedRecoveryPipeline(t, s, "pipe-sweep-reclaim")
 	run := seedOrphanedRun(t, s, "pipe-sweep-reclaim", "run-sweep-reclaim", models.RunStatusRunning)
 	appendRecoveryEvent(t, s, &models.RunEvent{
@@ -239,7 +239,7 @@ func TestSchedulerReclaimSweepReclaimsExpiredLeaseWhenLeader(t *testing.T) {
 // own promotion) to handle.
 func TestSchedulerReclaimSweepSkipsWhenNotLeader(t *testing.T) {
 	s := newLeaderTestStore(t).(*store.SQLiteStore)
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	seedRecoveryPipeline(t, s, "pipe-sweep-skip")
 	run := seedOrphanedRun(t, s, "pipe-sweep-skip", "run-sweep-skip", models.RunStatusRunning)
 	appendRecoveryEvent(t, s, &models.RunEvent{

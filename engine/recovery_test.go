@@ -42,7 +42,7 @@ func newRecoveryTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return NewEngine(s), s
+	return drainEngineOnCleanup(t, NewEngine(s)), s
 }
 
 // seedRecoveryPipeline creates a two-node source->sink pipeline. Recovery

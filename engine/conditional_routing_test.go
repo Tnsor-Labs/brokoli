@@ -426,7 +426,7 @@ func TestResumeFindsAncestorAfterLineageCarryFails(t *testing.T) {
 	}
 	t.Cleanup(func() { real.Close() })
 	fault := &faultInjectingStore{SQLiteStore: real}
-	eng := NewEngine(fault)
+	eng := drainEngineOnCleanup(t, NewEngine(fault))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	executor := newRoutingTestExecutor()
 	eng.Executors = []extensions.NodeExecutor{executor}
