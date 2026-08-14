@@ -268,7 +268,7 @@ func (s *SQLiteStore) migrate() error {
 
 	// Durable cancellation intent (see models.Run.CancelRequested and
 	// RequestRunCancel below). Set-only; terminal runs stop consulting it.
-	s.db.Exec(`ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN cancel_requested INTEGER NOT NULL DEFAULT 0`) // #nosec G104 -- best-effort additive migration, same idiom as every ALTER above (errors on re-run are expected)
 
 	// Expansion instances — durable per-item execution record for a
 	// dynamic-expansion `code` node (issue #31). See

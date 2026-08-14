@@ -324,7 +324,7 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
 	// Durable cancellation intent (see models.Run.CancelRequested and
 	// RequestRunCancel below). Set-only; terminal runs stop consulting it.
-	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`) // #nosec G104 -- best-effort additive migration, same idiom as every ALTER above
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 
 	// Scheduler leadership — single-row lease + fencing-generation table
