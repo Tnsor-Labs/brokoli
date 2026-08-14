@@ -519,3 +519,55 @@ func TestFilterRows_BadConditionErrorsOnEmptyDataset(t *testing.T) {
 		t.Fatal("a bad condition on an empty dataset must still error")
 	}
 }
+
+// TestAddColumn_Arithmetic covers the fix for the silent-corruption bug
+// found live: "quantity * unit_price" used to store the literal STRING
+// of the expression in every row, which a downstream aggregate summed to
+// zero with no error anywhere.
+func TestAddColumn_Arithmetic(t *testing.T) {
+	mk := func() *common.DataSet {
+		return &common.DataSet{
+			Columns: []string{"qty", "price", "weird-name", "label"},
+			Rows: []common.DataRow{
+				{"qty": float64(4), "price": float64(2.5), "weird-name": float64(9), "label": "x"},
+			},
+		}
+	}
+
+	cases := []struct {
+		expr string
+		want interface{}
+	}{
+		{"qty * price", float64(10)},
+		{"price / qty", 0.625},
+		{"price - qty", -1.5},
+		{"qty * price * 2", float64(20)},   // same-op chain left-folds
+		{"qty * 1.5", float64(6)},          // numeric literal operand
+		{"'seen'", "seen"},                 // quoted literal loses its quotes
+		{"manual_import", "manual_import"}, // bare word stays a literal (pinned)
+		{"a-b", "a-b"},                     // wordy '-' stays a literal, not arithmetic
+	}
+	for _, tc := range cases {
+		ds := mk()
+		if err := ApplyTransforms([]TransformRule{{Type: "add_column", Name: "out", Expression: tc.expr}}, ds); err != nil {
+			t.Fatalf("%q: %v", tc.expr, err)
+		}
+		if got := ds.Rows[0]["out"]; got != tc.want {
+			t.Errorf("%q = %v (%T), want %v (%T)", tc.expr, got, got, tc.want, tc.want)
+		}
+	}
+
+	// Division by zero and a non-numeric value in a real column both yield
+	// nil — aggregates skip nil instead of folding in corruption.
+	ds := mk()
+	ds.Rows[0]["qty"] = float64(0)
+	_ = ApplyTransforms([]TransformRule{{Type: "add_column", Name: "out", Expression: "price / qty"}}, ds)
+	if ds.Rows[0]["out"] != nil {
+		t.Errorf("div-by-zero = %v, want nil", ds.Rows[0]["out"])
+	}
+	ds = mk()
+	_ = ApplyTransforms([]TransformRule{{Type: "add_column", Name: "out", Expression: "qty * label"}}, ds)
+	if ds.Rows[0]["out"] != nil {
+		t.Errorf("non-numeric column value = %v, want nil", ds.Rows[0]["out"])
+	}
+}
