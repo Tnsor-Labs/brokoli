@@ -18,4 +18,5 @@ type Registry struct {
 	Team        TeamProvider
 	EventBus    EventBus
 	JobQueue    JobQueue
+	CancelRelay RunCancelRelay
 }

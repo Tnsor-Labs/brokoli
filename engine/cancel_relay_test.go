@@ -26,6 +26,8 @@ func (r *recordingCancelRelay) BroadcastCancel(runID string) error {
 	return nil
 }
 
+func (r *recordingCancelRelay) SubscribeCancels(func(runID string)) error { return nil }
+
 func (r *recordingCancelRelay) Close() error { return nil }
 
 func (r *recordingCancelRelay) recorded() []string {

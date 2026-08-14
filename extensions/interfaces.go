@@ -397,7 +397,14 @@ type RunCancelRelay interface {
 	// engine instances, including the caller's own.
 	BroadcastCancel(runID string) error
 
-	// Close shuts down the relay.
+	// SubscribeCancels registers the handler invoked for every broadcast
+	// this instance receives (typically Engine.CancelRelayedRun). Called
+	// once at engine wiring time, before any broadcasts are expected;
+	// implementations deliver each received run ID on a background
+	// goroutine until Close.
+	SubscribeCancels(handler func(runID string)) error
+
+	// Close shuts down the relay and its subscription.
 	Close() error
 }
 
