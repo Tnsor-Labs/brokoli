@@ -11,6 +11,26 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.35] - 2026-08-14
+
+### Fixed
+
+- **The remaining cancel-loss windows, closed with durable intent**
+  (#207) — @hc12r. Two windows where a cancel could still vanish
+  after v0.10.34's relay: a claimed run waiting for a concurrency
+  slot was not yet registered as cancellable (minutes-long window
+  under saturation — precisely when users cancel things), and a
+  relay message could be lost outright (fire-and-forget transport,
+  or the owning process dying mid-cancel). The runner now registers
+  before the semaphore wait, and a new runs.cancel_requested column
+  records intent durably BEFORE any acting: the Runner re-checks it
+  at every wave boundary (so cross-instance cancel now works even
+  with no relay configured, at node-boundary latency) and recovery
+  honors it when closing out a run with no recoverable path —
+  cancelled, not recovery-failed. A too-late cancel never rewrites
+  genuinely completed work. ADR-018 flipped to accepted in the same
+  cycle (#209); remote-WorkOrder cancellation filed as #208.
+
 ## [0.10.34] - 2026-08-14
 
 ### Fixed
