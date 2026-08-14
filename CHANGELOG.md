@@ -11,6 +11,27 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.34] - 2026-08-14
+
+### Fixed
+
+- **Run cancellation now works in distributed deployments** (#205) —
+  @hc12r. Found live-verifying v0.10.33 on a real cluster: every
+  cancel against the API pod returned 404 while the run kept
+  executing on its worker — Engine.CancelRun only ever consulted its
+  own process's active-runner map, so cancellation simply did not
+  work in scheduler mode, and never had. Three fixes in one seam:
+  the new extensions.RunCancelRelay (enterprise transport, mirrors
+  JobQueue) broadcasts cancels to the instance that owns the run;
+  the new store.PendingRunCanceller cancels queued, unclaimed runs
+  with a compare-and-swap that ClaimPendingRun can never override
+  (exactly one of claim and cancel wins); and Runner.Cancel is now
+  durable across the pre-Execute window (previously a silent no-op
+  against a nil cancel func — under semaphore saturation that window
+  lasts minutes). Resolution order: local runner, pending
+  compare-and-swap, relay broadcast, loud error. Single-process
+  deployments behave exactly as before.
+
 ## [0.10.33] - 2026-08-14
 
 ### Fixed
