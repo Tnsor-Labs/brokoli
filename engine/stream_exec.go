@@ -70,7 +70,14 @@ func rowLocalTransformRules(rules []TransformRule) bool {
 // is summarized rather than replicated per batch — one line for the
 // whole streamed pass, so a 100-batch input doesn't produce 100x the log
 // volume of its batch equivalent.
-func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, rules []TransformRule) (*artifact.DatasetRef, error) {
+func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, plan transformStreamPlan) (*artifact.DatasetRef, error) {
+	var aggState *streamAggState
+	if plan.agg != nil {
+		var err error
+		if aggState, err = newStreamAggState(*plan.agg); err != nil {
+			return nil, err
+		}
+	}
 	batches, closer, err := outputs.OpenBatches(inputRef)
 	if err != nil {
 		return nil, fmt.Errorf("open streamed input: %w", err)
@@ -109,9 +116,16 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, r
 			streamErr = fmt.Errorf("read streamed input: %w", err)
 			break
 		}
-		if err := ApplyTransforms(rules, batch); err != nil {
+		if err := ApplyTransforms(plan.prefix, batch); err != nil {
 			streamErr = err
 			break
+		}
+		if aggState != nil {
+			// Milestone 2 streaming aggregation: the batch folds into
+			// small per-group state instead of flowing through; the
+			// grouped result is emitted once, after EOF below.
+			aggState.fold(batch)
+			continue
 		}
 		if outCols == nil && len(batch.Columns) > 0 {
 			outCols = batch.Columns
@@ -126,6 +140,24 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, r
 		}
 		if streamErr != nil {
 			break
+		}
+	}
+	if streamErr == nil && aggState != nil {
+		final := aggState.finalize()
+		// Suffix rules — anything, including sort — run on the grouped
+		// output, which is small by construction (one row per group).
+		if err := ApplyTransforms(plan.suffix, final); err != nil {
+			streamErr = err
+		} else {
+			outCols = final.Columns
+			for _, row := range final.Rows {
+				if err := enc.Encode(row); err != nil {
+					streamErr = fmt.Errorf("encode aggregated output: %w", err)
+					break
+				}
+				rowCount++
+				wroteAny = true
+			}
 		}
 	}
 	if streamErr == nil && !wroteAny {
@@ -417,7 +449,11 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 		return !nodeHasExpansion(node)
 	case models.NodeTypeTransform:
 		rules, err := parseNodeTransformRules(node)
-		return err == nil && rowLocalTransformRules(rules)
+		if err != nil {
+			return false
+		}
+		_, ok := planTransformRules(rules)
+		return ok
 	}
 	return false
 }
@@ -434,11 +470,15 @@ func (r *Runner) runNodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
+		plan, ok := planTransformRules(rules)
+		if !ok {
+			return nodeExecutionResult{}, fmt.Errorf("transform rules are not streamable (dispatch bug: eligibility should have caught this)")
+		}
 		inRows := int64(0)
 		if inputRef != nil {
 			inRows = inputRef.RowCount
 		}
-		ref, err := streamTransformToRef(outputs, inputRef, rules)
+		ref, err := streamTransformToRef(outputs, inputRef, plan)
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}

@@ -149,7 +149,11 @@ func TestStreamTransformToRef_EquivalentToBatchTransform(t *testing.T) {
 	if !ok {
 		t.Fatal("input did not spill to a ref despite a 1-byte threshold")
 	}
-	outRef, err := streamTransformToRef(outputs, inRef, rules)
+	plan, ok := planTransformRules(rules)
+	if !ok {
+		t.Fatal("rules should be streamable")
+	}
+	outRef, err := streamTransformToRef(outputs, inRef, plan)
 	if err != nil {
 		t.Fatalf("streamTransformToRef: %v", err)
 	}
@@ -185,9 +189,10 @@ func TestStreamTransformToRef_EmptyResultUsesSentinel(t *testing.T) {
 		t.Fatalf("Put: %v", err)
 	}
 	inRef, _ := outputs.GetRef("up")
-	outRef, err := streamTransformToRef(outputs, inRef, []TransformRule{
+	plan, _ := planTransformRules([]TransformRule{
 		{Type: "filter_rows", Condition: "id > 9999"}, // drops everything
 	})
+	outRef, err := streamTransformToRef(outputs, inRef, plan)
 	if err != nil {
 		t.Fatalf("streamTransformToRef: %v", err)
 	}
@@ -536,5 +541,209 @@ for r in rows:
 		if nr.NodeID == "consume" && nr.RowCount != 0 {
 			t.Fatalf("consume row_count = %d, want 0", nr.RowCount)
 		}
+	}
+}
+
+// TestStreamAggregation_EquivalentToBatch holds the incremental
+// aggregation to byte-identical results against transform.go's batch
+// aggregate across its edge semantics: count counting all rows regardless
+// of column values, avg over only-accepted values, min/max returning 0.0
+// when nothing was accepted, alias defaults (fn_col), the
+// agg_fields/aggregations compat alias, first-seen group ordering, and
+// suffix rules (including sort) applied after grouping.
+func TestStreamAggregation_EquivalentToBatch(t *testing.T) {
+	cases := []struct {
+		name  string
+		rules []TransformRule
+	}{
+		{"basic-sum-count", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region"}, AggFields: []AggField{
+				{Column: "amount", Function: "sum"},
+				{Column: "amount", Function: "count", Alias: "n"},
+			}},
+		}},
+		{"all-functions", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region", "kind"}, AggFields: []AggField{
+				{Column: "amount", Function: "sum"},
+				{Column: "amount", Function: "avg"},
+				{Column: "amount", Function: "min"},
+				{Column: "amount", Function: "max"},
+				{Column: "mixed", Function: "avg", Alias: "mixed_avg"},
+				{Column: "mixed", Function: "min", Alias: "mixed_min"},
+			}},
+		}},
+		{"aggregations-compat-alias", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region"}, Aggregations: []AggField{
+				{Column: "amount", Function: "sum"},
+			}},
+		}},
+		{"prefix-then-agg", []TransformRule{
+			{Type: "filter_rows", Condition: "id >= 500"},
+			{Type: "add_column", Name: "half", Expression: "amount / 2"},
+			{Type: "aggregate", GroupBy: []string{"region"}, AggFields: []AggField{
+				{Column: "half", Function: "sum"},
+			}},
+		}},
+		{"agg-then-sort-suffix", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region"}, AggFields: []AggField{
+				{Column: "amount", Function: "sum", Alias: "total"},
+			}},
+			{Type: "sort", Columns: []string{"total"}, Ascending: false},
+			{Type: "filter_rows", Condition: "total > 0"},
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			outputs := newStreamTestOutputs(t)
+			in := &common.DataSet{Columns: []string{"id", "region", "kind", "amount", "mixed"}}
+			for i := 0; i < 3200; i++ {
+				var mixed interface{} = float64(i)
+				if i%3 == 0 {
+					mixed = "not-a-number" // exercised the toAggFloat-rejected path
+				}
+				in.Rows = append(in.Rows, common.DataRow{
+					"id": float64(i), "region": fmt.Sprintf("r%d", i%5),
+					"kind": fmt.Sprintf("k%d", i%2), "amount": float64(i) * 1.25, "mixed": mixed,
+				})
+			}
+
+			// Batch ground truth.
+			batchDS := &common.DataSet{Columns: append([]string{}, in.Columns...)}
+			for _, row := range in.Rows {
+				nr := make(common.DataRow, len(row))
+				for k, v := range row {
+					nr[k] = v
+				}
+				batchDS.Rows = append(batchDS.Rows, nr)
+			}
+			if err := ApplyTransforms(tc.rules, batchDS); err != nil {
+				t.Fatalf("batch: %v", err)
+			}
+
+			// Streamed.
+			if err := outputs.Put("up", in); err != nil {
+				t.Fatal(err)
+			}
+			inRef, ok := outputs.GetRef("up")
+			if !ok {
+				t.Fatal("input did not spill")
+			}
+			plan, ok := planTransformRules(tc.rules)
+			if !ok {
+				t.Fatal("rules should plan as streamable")
+			}
+			outRef, err := streamTransformToRef(outputs, inRef, plan)
+			if err != nil {
+				t.Fatalf("streamed: %v", err)
+			}
+			outputs.PutRef("down", outRef)
+			streamedDS, ok, err := outputs.Get("down")
+			if err != nil || !ok {
+				t.Fatalf("materialize: ok=%v err=%v", ok, err)
+			}
+
+			if !reflect.DeepEqual(streamedDS.Columns, batchDS.Columns) {
+				t.Fatalf("columns: streamed=%v batch=%v", streamedDS.Columns, batchDS.Columns)
+			}
+			if len(streamedDS.Rows) != len(batchDS.Rows) {
+				t.Fatalf("rows: streamed=%d batch=%d", len(streamedDS.Rows), len(batchDS.Rows))
+			}
+			for i := range streamedDS.Rows {
+				for _, col := range batchDS.Columns {
+					sv, bv := streamedDS.Rows[i][col], batchDS.Rows[i][col]
+					// count is int in batch; the NDJSON round-trip makes it
+					// float64 — compare numerically.
+					sf, sok := toAggFloat(sv)
+					bf, bok := toAggFloat(bv)
+					if sok && bok {
+						if sf != bf {
+							t.Fatalf("row %d col %s: streamed=%v batch=%v", i, col, sv, bv)
+						}
+					} else if !reflect.DeepEqual(sv, bv) {
+						t.Fatalf("row %d col %s: streamed=%v (%T) batch=%v (%T)", i, col, sv, sv, bv, bv)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPlanTransformRules(t *testing.T) {
+	// Blocking before aggregate: not streamable.
+	if _, ok := planTransformRules([]TransformRule{{Type: "sort", Column: "a"}, {Type: "aggregate", GroupBy: []string{"a"}, AggFields: []AggField{{Column: "a", Function: "sum"}}}}); ok {
+		t.Fatal("sort before aggregate must not stream")
+	}
+	// Aggregate then anything: streamable.
+	plan, ok := planTransformRules([]TransformRule{
+		{Type: "filter_rows", Condition: "x > 1"},
+		{Type: "aggregate", GroupBy: []string{"a"}, AggFields: []AggField{{Column: "a", Function: "sum"}}},
+		{Type: "sort", Columns: []string{"sum_a"}},
+		{Type: "deduplicate"},
+	})
+	if !ok || plan.agg == nil || len(plan.prefix) != 1 || len(plan.suffix) != 2 {
+		t.Fatalf("plan = %+v, ok=%v", plan, ok)
+	}
+}
+
+// TestPipeline_FanOutReplayFromRef proves ADR-019 Milestone 2's fan-out
+// property: one node's ref output consumed by TWO downstream streamable
+// consumers replays independently and correctly for each — no shared
+// cursor, no interference — because each consumer opens the blob afresh.
+func TestPipeline_FanOutReplayFromRef(t *testing.T) {
+	dir := t.TempDir()
+	eng, s := newResumeTestEngine(t)
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.SpillThresholdBytes = 1
+	eng.StreamThresholdBytes = 1
+
+	pipe := &models.Pipeline{
+		ID: "p-fanout-replay", Name: "Fan-out replay", Enabled: true,
+		Nodes: []models.Node{
+			{ID: "gen", Type: models.NodeTypeCode, Name: "Gen",
+				Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+				Config: map[string]interface{}{"script": `
+begin_emit(["id", "region", "amount"])
+for i in range(3000):
+    emit({"id": i, "region": "r" + str(i % 4), "amount": float(i)})
+`}},
+			{ID: "sum_by_region", Type: models.NodeTypeTransform, Name: "Sum",
+				Config: map[string]interface{}{"rules": []interface{}{
+					map[string]interface{}{"type": "aggregate", "group_by": []interface{}{"region"},
+						"agg_fields": []interface{}{map[string]interface{}{"column": "amount", "function": "sum", "alias": "total"}}},
+				}}},
+			{ID: "big_only", Type: models.NodeTypeTransform, Name: "Big",
+				Config: map[string]interface{}{"rules": []interface{}{
+					map[string]interface{}{"type": "filter_rows", "condition": "id >= 2900"},
+				}}},
+		},
+		Edges: []models.Edge{{From: "gen", To: "sum_by_region"}, {From: "gen", To: "big_only"}},
+	}
+	if err := s.CreatePipeline(pipe); err != nil {
+		t.Fatal(err)
+	}
+	run, err := eng.RunPipeline("p-fanout-replay")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %s (error: %s)", run.Status, run.Error)
+	}
+	byNode := map[string]int{}
+	nodeRuns, _ := s.ListNodeRunsByRun(run.ID)
+	for _, nr := range nodeRuns {
+		byNode[nr.NodeID] = nr.RowCount
+	}
+	if byNode["gen"] != 3000 || byNode["sum_by_region"] != 4 || byNode["big_only"] != 100 {
+		t.Fatalf("row counts = %v, want gen=3000 sum=4 big=100", byNode)
+	}
+	// Both consumers' artifacts hold correct, independent results.
+	sums, err := eng.ArtifactStore.ReadArtifact(run.ID, "sum_by_region", "")
+	if err != nil || len(sums.Rows) != 4 {
+		t.Fatalf("sum artifact: err=%v rows=%v", err, sums)
+	}
+	big, err := eng.ArtifactStore.ReadArtifact(run.ID, "big_only", "")
+	if err != nil || len(big.Rows) != 100 {
+		t.Fatalf("big artifact: err=%v rows=%d", err, len(big.Rows))
 	}
 }
