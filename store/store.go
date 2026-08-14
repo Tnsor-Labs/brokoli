@@ -62,6 +62,21 @@ type PendingRunCanceller interface {
 	CancelPendingRun(runID string, finishedAt time.Time) (cancelled bool, err error)
 }
 
+// RunCancelRequester is an optional store capability (type-assert, same
+// pattern as PendingRunClaimer): durably record that cancellation of a run
+// was requested, before any of the acting halves of a cancel (local ctx
+// cancel, pending compare-and-swap, relay broadcast) happen. The acting
+// half can be lost — a broadcast is fire-and-forget, a process can die
+// mid-cancel — but this row write cannot: the Runner re-checks the flag at
+// every wave boundary and recovery honors it when closing out a run with
+// no recoverable path, so the cancel still converges.
+type RunCancelRequester interface {
+	// RequestRunCancel sets the durable cancel flag on runID. Returns
+	// false with a nil error when the run is already terminal or missing
+	// (nothing left to cancel).
+	RequestRunCancel(runID string) (requested bool, err error)
+}
+
 // ExecutionAttemptStore provides durable claim/lease operations over
 // models.ExecutionAttempt rows — the outbox/intent record and
 // compare-and-swap claim contract described by Tnsor-Labs/brokoli#7,

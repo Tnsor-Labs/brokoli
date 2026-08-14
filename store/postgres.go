@@ -322,6 +322,9 @@ func (s *PostgresStore) migrate() error {
 	// column-for-column between backends.
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS pipeline_version INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
+	// Durable cancellation intent (see models.Run.CancelRequested and
+	// RequestRunCancel below). Set-only; terminal runs stop consulting it.
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS cancel_requested BOOLEAN NOT NULL DEFAULT FALSE`) // #nosec G104 -- best-effort additive migration, same idiom as every ALTER above
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 
 	// Scheduler leadership — single-row lease + fencing-generation table
@@ -842,7 +845,7 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 
 	query := `
 		SELECT DISTINCT ON (pipeline_id)
-		    id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
+		    id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
 		FROM runs
 		WHERE pipeline_id IN (` + strings.Join(placeholders, ",") + `)
 		ORDER BY pipeline_id, started_at DESC NULLS FIRST, id DESC
@@ -860,7 +863,7 @@ func (s *PostgresStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mo
 			startedAt, finishedAt sql.NullTime
 			paramsJSON            []byte
 		)
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(paramsJSON, &r.Params); err != nil {
@@ -976,8 +979,8 @@ func pgCreateRun(x sqlExecerPg, r *models.Run) error {
 		return fmt.Errorf("marshal run params: %w", err)
 	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON, r.PipelineVersion, r.ResumedFromRunID, r.OrgID,
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+		r.ID, r.PipelineID, string(r.Status), r.StartedAt, r.FinishedAt, r.TraceID, r.Error, paramsJSON, r.PipelineVersion, r.ResumedFromRunID, r.OrgID, r.CancelRequested,
 	)
 	return err
 }
@@ -994,6 +997,21 @@ func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time
 	result, err := s.db.Exec(
 		`UPDATE runs SET status=$1, started_at=$2, trace_id=$3 WHERE id=$4 AND pipeline_id=$5 AND status=$6`,
 		string(models.RunStatusRunning), startedAt, traceID, runID, pipelineID, string(models.RunStatusPending),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+func (s *PostgresStore) RequestRunCancel(runID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET cancel_requested=TRUE WHERE id=$1 AND status IN ($2, $3)`,
+		runID, string(models.RunStatusPending), string(models.RunStatusRunning),
 	)
 	if err != nil {
 		return false, err
@@ -1025,8 +1043,8 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 	var status string
 	var paramsJSON []byte
 	err := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id FROM runs WHERE id = $1`, id,
-	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID)
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested FROM runs WHERE id = $1`, id,
+	).Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,7 +1063,7 @@ func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 
 func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
 		 FROM runs WHERE pipeline_id = $1 ORDER BY started_at DESC NULLS FIRST, id DESC LIMIT $2`,
 		pipelineID, limit,
 	)
@@ -1059,7 +1077,7 @@ func (s *PostgresStore) ListRunsByPipeline(pipelineID string, limit int) ([]mode
 		var r models.Run
 		var status string
 		var paramsJSON []byte
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested); err != nil {
 			return nil, err
 		}
 		r.Status = models.RunStatus(status)
@@ -1080,7 +1098,7 @@ func scanRunsPG(rows *sql.Rows) ([]models.Run, error) {
 		var r models.Run
 		var status string
 		var paramsJSON []byte
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested); err != nil {
 			return nil, err
 		}
 		r.Status = models.RunStatus(status)
@@ -1092,7 +1110,7 @@ func scanRunsPG(rows *sql.Rows) ([]models.Run, error) {
 	return runs, rows.Err()
 }
 
-const runColumnsPG = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id`
+const runColumnsPG = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested`
 
 func (s *PostgresStore) ListRunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error) {
 	// Fetch one more than asked for: if it comes back, there is another
@@ -1155,13 +1173,13 @@ func (s *PostgresStore) ListNonTerminalRuns(afterID string, limit int) ([]models
 	var err error
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` ORDER BY id ASC LIMIT $1`,
 			fetchN,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` AND id > $1 ORDER BY id ASC LIMIT $2`,
 			afterID, fetchN,
 		)
@@ -1176,7 +1194,7 @@ func (s *PostgresStore) ListNonTerminalRuns(afterID string, limit int) ([]models
 		var r models.Run
 		var status string
 		var paramsJSON []byte
-		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID); err != nil {
+		if err := rows.Scan(&r.ID, &r.PipelineID, &status, &r.StartedAt, &r.FinishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested); err != nil {
 			return nil, false, err
 		}
 		r.Status = models.RunStatus(status)

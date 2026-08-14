@@ -714,3 +714,57 @@ func createTestAttempt(t *testing.T, s *store.SQLiteStore, runID, nodeID string,
 		t.Fatalf("createTestAttempt(%s,%s,%d): %v", runID, nodeID, attempt, err)
 	}
 }
+
+// TestRecoverNonTerminalRunsHonorsDurableCancelIntent is the
+// crash-during-cancel case (store.RunCancelRequester): cancellation was
+// durably requested, the owning process died before finalizing, and the
+// run's event log has no recoverable path. Recovery must close it out as
+// CANCELLED — honoring the recorded user intent — not invent a failure,
+// mirroring what #203 guaranteed for the live path. Without the flag this
+// exact setup is the forced-failed case covered above.
+func TestRecoverNonTerminalRunsHonorsDurableCancelIntent(t *testing.T) {
+	old := recoveryTransitionGracePeriod
+	recoveryTransitionGracePeriod = 0
+	defer func() { recoveryTransitionGracePeriod = old }()
+
+	eng, s := newRecoveryTestEngine(t)
+	seedRecoveryPipeline(t, s, "pipe-cancel-intent")
+	run := seedOrphanedRun(t, s, "pipe-cancel-intent", "run-cancel-intent", models.RunStatusRunning)
+
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, NodeID: "source", Attempt: attemptPtr(0), EventType: models.AttemptStarted,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, NodeRunID: "source-nr"},
+	})
+	// No AttemptCompleted/AttemptFailed — died mid-attempt. But unlike the
+	// plain no-recoverable-path case, the user had requested cancellation:
+	if requested, err := s.RequestRunCancel(run.ID); err != nil || !requested {
+		t.Fatalf("RequestRunCancel = %v, %v", requested, err)
+	}
+
+	summary, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns: %v", err)
+	}
+	if summary.RunsFailed != 0 {
+		t.Fatalf("summary = %+v, want 0 forced failures — intent should divert to cancelled", summary)
+	}
+
+	got, err := s.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.RunStatusCancelled {
+		t.Fatalf("run status = %s, want cancelled", got.Status)
+	}
+	types := eventTypes(t, s, run.ID)
+	if !containsEventType(types, models.RunEventCancelled) {
+		t.Errorf("events %v missing RunEventCancelled", types)
+	}
+	if containsEventType(types, models.RunEventRecoveryFailed) {
+		t.Errorf("events %v contain RunEventRecoveryFailed — the cancel intent was ignored", types)
+	}
+}

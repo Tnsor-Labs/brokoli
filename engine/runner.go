@@ -353,6 +353,18 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	}
 
 	for terminalNodes < len(r.pipe.Nodes) {
+		// Durable cancel intent (store.RunCancelRequester): a cancel whose
+		// delivery was lost — relay message dropped, or requested while no
+		// process owned the run — still lands here, at the next wave
+		// boundary. One cheap primary-key read per wave; a read failure is
+		// ignored (the relay and local paths remain the fast, primary
+		// mechanisms — this is the convergence backstop).
+		if r.run != nil {
+			if stored, err := r.store.GetRun(r.run.ID); err == nil && stored.CancelRequested {
+				r.Cancel()
+			}
+		}
+
 		// Check if cancelled
 		if r.ctx.Err() != nil {
 			runErr = fmt.Errorf("pipeline cancelled")
