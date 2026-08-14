@@ -101,6 +101,9 @@ type Runner struct {
 	// in memory for the rest of the run (Tnsor-Labs/brokoli#38). Zero uses
 	// DefaultSpillThresholdBytes; negative disables spilling.
 	spillThreshold int64
+	// streamThreshold is the ADR-019 reference-passing engagement size —
+	// see Engine.StreamThresholdBytes.
+	streamThreshold int64
 
 	// checkpointStore persists/restores mid-pagination progress for
 	// source_api nodes using execution().checkpoint_every. See
