@@ -136,7 +136,7 @@ func TestDryRunReturnsRunnerError(t *testing.T) {
 	}
 	defer s.Close()
 
-	e := NewEngine(s)
+	e := drainEngineOnCleanup(t, NewEngine(s))
 	p := &models.Pipeline{
 		ID:   "dry-run-error",
 		Name: "dry run error",

@@ -43,7 +43,7 @@ func newDispatchOutboxTestEngine(t *testing.T) (*Engine, *faultInjectingStore, *
 	}
 
 	fault := &faultInjectingStore{SQLiteStore: real}
-	eng := NewEngine(fault)
+	eng := drainEngineOnCleanup(t, NewEngine(fault))
 	eng.JobQueue = &recordingJobQueue{}
 	return eng, fault, real, pipeline.ID
 }

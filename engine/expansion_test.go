@@ -343,7 +343,7 @@ output_data = {"columns": columns + ["seen"], "rows": [dict(r, seen=1) for r in 
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)
@@ -433,7 +433,7 @@ func TestPipeline_ExpandThenUnion_CollectShape(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)
@@ -488,7 +488,7 @@ func TestPipeline_ExpandMaxInstances_Exceeded(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err == nil {
 		t.Fatal("expected RunPipeline to fail when the collection exceeds expansion.max_instances")
@@ -545,7 +545,7 @@ output_data = {"columns": columns, "rows": rows}
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err == nil {
 		t.Fatal("expected RunPipeline to fail when an expansion instance's script fails")
@@ -634,7 +634,7 @@ elif path == "bad.csv":
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)
@@ -770,7 +770,7 @@ output_data = {"columns": columns, "rows": rows}
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)

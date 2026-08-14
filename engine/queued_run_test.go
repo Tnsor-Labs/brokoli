@@ -66,7 +66,7 @@ func newQueuedRunTestEngine(t *testing.T, queue extensions.JobQueue) (*Engine, *
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(s)
+	eng := drainEngineOnCleanup(t, NewEngine(s))
 	eng.JobQueue = queue
 	return eng, s, pipeline.ID
 }

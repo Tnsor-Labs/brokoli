@@ -169,7 +169,7 @@ func TestPipeline_UnionEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)

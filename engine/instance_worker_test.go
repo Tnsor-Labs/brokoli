@@ -120,7 +120,7 @@ func TestPipeline_ExpandRemoteDispatch_TrueEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	queue := newChannelJobQueue()
 	eng.InstanceJobQueue = queue

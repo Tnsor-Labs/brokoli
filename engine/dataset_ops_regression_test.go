@@ -42,7 +42,7 @@ func TestPipeline_UnknownNodeType_FailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	if _, err := eng.RunPipeline(pipeline.ID); err == nil || !strings.Contains(err.Error(), "unsupported type") {
 		t.Fatalf("RunPipeline error = %v, want unsupported type", err)
 	}
@@ -97,7 +97,7 @@ output_data = {"columns": columns, "rows": rows}
 		t.Fatal(err)
 	}
 
-	eng := NewEngine(real)
+	eng := drainEngineOnCleanup(t, NewEngine(real))
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err != nil {
 		t.Fatalf("RunPipeline failed: %v", err)
