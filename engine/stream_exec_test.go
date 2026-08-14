@@ -385,3 +385,156 @@ output_data = {"columns": ["id", "region", "amount"], "rows": out}
 		t.Errorf("agg row_count = %d, want 3 regions", byNode["agg"])
 	}
 }
+
+// TestPipeline_LazyRows_CompatAndIdioms is Milestone 1.5's contract in
+// one pipeline: four downstream code nodes each consume the same large
+// ref input a different way — plain iteration (lazy), double iteration
+// (re-iterability), len()+indexing (transparent materialization), and
+// the new emit() idiom — and every one must produce correct results.
+func TestPipeline_LazyRows_CompatAndIdioms(t *testing.T) {
+	dir := t.TempDir()
+	eng, s := newResumeTestEngine(t)
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.SpillThresholdBytes = 1
+	eng.StreamThresholdBytes = 1
+
+	gen := models.Node{ID: "gen", Type: models.NodeTypeCode, Name: "Generate",
+		Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+		Config: map[string]interface{}{"script": `
+out = []
+for i in range(4000):
+    out.append({"id": i, "v": i * 3})
+output_data = {"columns": ["id", "v"], "rows": out}
+`}}
+
+	cases := []struct {
+		name   string
+		script string
+		check  func(t *testing.T, ds *common.DataSet)
+	}{
+		{"iterate-lazy", `
+total = 0
+n = 0
+for r in rows:
+    total += r["v"]
+    n += 1
+output_data = {"columns": ["n", "total"], "rows": [{"n": n, "total": total}]}
+`, func(t *testing.T, ds *common.DataSet) {
+			if len(ds.Rows) != 1 || ds.Rows[0]["n"] != float64(4000) {
+				t.Fatalf("iterate-lazy: %v", ds.Rows)
+			}
+		}},
+		{"iterate-twice", `
+n1 = sum(1 for r in rows)
+n2 = sum(1 for r in rows)
+output_data = {"columns": ["n1", "n2"], "rows": [{"n1": n1, "n2": n2}]}
+`, func(t *testing.T, ds *common.DataSet) {
+			if len(ds.Rows) != 1 || ds.Rows[0]["n1"] != float64(4000) || ds.Rows[0]["n2"] != float64(4000) {
+				t.Fatalf("iterate-twice (re-iterability broken): %v", ds.Rows)
+			}
+		}},
+		{"len-and-index", `
+output_data = {"columns": ["count", "first", "last"], "rows": [{"count": len(rows), "first": rows[0]["id"], "last": rows[len(rows)-1]["id"]}]}
+`, func(t *testing.T, ds *common.DataSet) {
+			if len(ds.Rows) != 1 || ds.Rows[0]["count"] != float64(4000) || ds.Rows[0]["first"] != float64(0) || ds.Rows[0]["last"] != float64(3999) {
+				t.Fatalf("len-and-index (transparent materialization broken): %v", ds.Rows)
+			}
+		}},
+		{"emit-idiom", `
+for r in rows:
+    if r["id"] < 2000:
+        emit({"id": r["id"], "doubled": r["v"] * 2})
+`, func(t *testing.T, ds *common.DataSet) {
+			if len(ds.Rows) != 2000 {
+				t.Fatalf("emit-idiom: %d rows, want 2000", len(ds.Rows))
+			}
+			if !reflect.DeepEqual(ds.Columns, []string{"id", "doubled"}) {
+				t.Fatalf("emit-idiom columns = %v, want [id doubled] (first emitted row's key order)", ds.Columns)
+			}
+		}},
+		{"generator-output", `
+output_data = {"columns": ["id"], "rows": ({"id": r["id"]} for r in rows if r["id"] >= 3000)}
+`, func(t *testing.T, ds *common.DataSet) {
+			if len(ds.Rows) != 1000 {
+				t.Fatalf("generator-output: %d rows, want 1000", len(ds.Rows))
+			}
+		}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			pipeID := "p-lazy-" + tc.name
+			pipe := &models.Pipeline{
+				ID: pipeID, Name: pipeID, Enabled: true,
+				Nodes: []models.Node{gen, {ID: "consume", Type: models.NodeTypeCode, Name: "Consume",
+					Config: map[string]interface{}{"script": tc.script}}},
+				Edges: []models.Edge{{From: "gen", To: "consume"}},
+			}
+			if err := s.CreatePipeline(pipe); err != nil {
+				t.Fatal(err)
+			}
+			run, err := eng.RunPipeline(pipeID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if run.Status != models.RunStatusSuccess {
+				t.Fatalf("run status = %s (error: %s)", run.Status, run.Error)
+			}
+			ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "consume", "")
+			if err != nil {
+				t.Fatalf("read consume artifact: %v", err)
+			}
+			tc.check(t, ds)
+		})
+	}
+}
+
+// TestPipeline_EmitZeroRows preserves the empty-output contract under the
+// emit idiom: a script that calls emit() zero times must behave like a
+// script producing no rows, not leave a half-open file behind.
+func TestPipeline_EmitZeroRows(t *testing.T) {
+	dir := t.TempDir()
+	eng, s := newResumeTestEngine(t)
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.SpillThresholdBytes = 1
+	eng.StreamThresholdBytes = 1
+
+	pipe := &models.Pipeline{
+		ID: "p-emit-zero", Name: "Emit Zero", Enabled: true,
+		Nodes: []models.Node{
+			{ID: "gen", Type: models.NodeTypeCode, Name: "Gen",
+				Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+				Config: map[string]interface{}{"script": `
+out = [{"id": i} for i in range(2000)]
+output_data = {"columns": ["id"], "rows": out}
+`}},
+			{ID: "consume", Type: models.NodeTypeCode, Name: "Consume",
+				Config: map[string]interface{}{"script": `
+begin_emit(["id"])
+for r in rows:
+    if r["id"] > 99999:
+        emit(r)
+`}},
+		},
+		Edges: []models.Edge{{From: "gen", To: "consume"}},
+	}
+	if err := s.CreatePipeline(pipe); err != nil {
+		t.Fatal(err)
+	}
+	run, err := eng.RunPipeline("p-emit-zero")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %s (error: %s)", run.Status, run.Error)
+	}
+	nodeRuns, err := s.ListNodeRunsByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, nr := range nodeRuns {
+		if nr.NodeID == "consume" && nr.RowCount != 0 {
+			t.Fatalf("consume row_count = %d, want 0", nr.RowCount)
+		}
+	}
+}

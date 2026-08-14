@@ -42,6 +42,43 @@ _output_csv = os.environ.get("BROKED_OUTPUT_CSV", "")
 _input_ndjson = os.environ.get("BROKED_INPUT_NDJSON", "")
 _output_ndjson = os.environ.get("BROKED_OUTPUT_NDJSON", "")
 _output_columns = os.environ.get("BROKED_OUTPUT_COLUMNS", "")
+_input_columns_env = os.environ.get("BROKED_INPUT_COLUMNS", "")
+
+class _LazyRows:
+    """ADR-019 Milestone 1.5: a disk-backed, RE-ITERABLE view of the input.
+
+    Iterating streams the NDJSON file line by line in constant memory, and
+    every fresh iteration is a fresh pass over the file — so a script that
+    loops over rows twice still works. len(rows), rows[i], and slicing
+    transparently materialize the whole list first: full backward
+    compatibility at the old memory cost, paid only by scripts that
+    actually need whole-dataset access."""
+    def __init__(self, path):
+        self._path = path
+        self._m = None
+    def __iter__(self):
+        if self._m is not None:
+            return iter(self._m)
+        def _gen():
+            with open(self._path, 'r') as f:
+                for line in f:
+                    if line.strip():
+                        yield json.loads(line)
+        return _gen()
+    def _force(self):
+        if self._m is None:
+            self._m = [r for r in self]
+        return self._m
+    def __len__(self):
+        return len(self._force())
+    def __getitem__(self, i):
+        return self._force()[i]
+    def __bool__(self):
+        if self._m is not None:
+            return bool(self._m)
+        for _ in self:
+            return True
+        return False
 _use_file = bool(_input_csv) or bool(_input_ndjson)
 
 # Try to use pyarrow/pandas for faster processing
@@ -60,12 +97,18 @@ try:
 except ImportError:
     pass
 
-# Read input — NDJSON mode is fastest for large datasets
+# Read input — NDJSON mode attaches lazily (constant memory until the
+# script itself demands otherwise via len()/indexing)
 if _input_ndjson:
-    with open(_input_ndjson, 'r') as _f:
-        rows = [json.loads(line) for line in _f if line.strip()]
-    columns = list(rows[0].keys()) if rows else []
-    print(f"#PROGRESS:5 Loaded {len(rows)} rows via NDJSON (fast mode)", file=sys.stderr)
+    rows = _LazyRows(_input_ndjson)
+    if _input_columns_env:
+        columns = json.loads(_input_columns_env)
+    else:
+        columns = []
+        for _first in rows:
+            columns = list(_first.keys())
+            break
+    print("#PROGRESS:5 Input attached lazily via NDJSON (constant memory)", file=sys.stderr)
 elif _use_file and _has_pyarrow:
     _table = pa_csv.read_csv(_input_csv)
     columns = _table.column_names
@@ -94,6 +137,36 @@ _params_json = os.environ.get("BROKED_PARAMS", "{}")
 config = json.loads(_config_json)
 params = json.loads(_params_json)
 
+# Streaming output (ADR-019 Milestone 1.5): emit(row) writes straight to
+# the output file, one row at a time — a script that emits instead of
+# building a list holds no output in memory at all. Column order for
+# emitted output is the first emitted row's own key order (Python dicts
+# preserve insertion order); output_data is ignored once emit() is used.
+_emit_state = {"f": None, "count": 0, "cols": None, "mode": False}
+def begin_emit(columns=None):
+    """Declare emit-mode output explicitly. Optional before emit() when at
+    least one row will be emitted — but a filter that might match nothing
+    MUST call this, or its zero-emit case falls back to the passthrough
+    default and outputs the entire input. Also fixes the column order
+    instead of inferring it from the first emitted row."""
+    _emit_state["mode"] = True
+    if columns is not None:
+        _emit_state["cols"] = list(columns)
+def emit(row):
+    if not _emit_state["mode"]:
+        begin_emit()
+    if _emit_state["f"] is None:
+        if not _output_ndjson:
+            raise RuntimeError("emit() requires file-mode output; build output_data instead")
+        _emit_state["f"] = open(_output_ndjson, 'w')
+    _emit_state["f"].write(json.dumps(row) + '\n')
+    if _emit_state["cols"] is None:
+        try:
+            _emit_state["cols"] = list(row.keys())
+        except AttributeError:
+            _emit_state["cols"] = []
+    _emit_state["count"] += 1
+
 # Output defaults to passthrough
 output_data = {"columns": columns, "rows": rows}
 
@@ -102,22 +175,51 @@ output_data = {"columns": columns, "rows": rows}
 # --- USER SCRIPT END ---
 
 # Write output
-_out_cols = output_data.get("columns", columns)
-_out_rows = output_data.get("rows", [])
+if _emit_state["mode"]:
+    if _emit_state["f"] is not None:
+        _emit_state["f"].close()
+    if _emit_state["count"] == 0:
+        # Zero emitted rows is a real, intentional result (a filter that
+        # matched nothing) — the empty output travels as stdout JSON,
+        # preserving the no-rows/no-file contract.
+        print(json.dumps({"columns": _emit_state["cols"] or [], "rows": []}))
+    else:
+        if _output_columns:
+            with open(_output_columns, 'w') as _f:
+                json.dump(list(_emit_state["cols"] or []), _f)
+        print(f"#PROGRESS:95 Wrote {_emit_state['count']} rows via emit", file=sys.stderr)
+    _out_rows = None  # emitted output wins; skip every branch below
+    _out_cols = []
+else:
+    _out_cols = output_data.get("columns", columns)
+    _out_rows = output_data.get("rows", [])
 
-if _output_ndjson and _out_rows:
+if _emit_state["mode"]:
+    pass
+elif _output_ndjson and _out_rows is not None:
+    # Iterated, not len()'d: _out_rows may be a list, a generator (a
+    # fully-streaming script), or the untouched lazy passthrough — all
+    # write in constant memory here.
+    _written = 0
     with open(_output_ndjson, 'w') as _f:
         for row in _out_rows:
             _f.write(json.dumps(row) + '\n')
-    if _output_columns:
-        # Column-order sidecar: NDJSON rows are JSON objects, whose key
-        # order Go recovers from a map (arbitrary). The script's own
-        # declared column order in output_data["columns"] survives via
-        # this file instead of being lost the way plain file mode always
-        # lost it.
-        with open(_output_columns, 'w') as _f:
-            json.dump(list(_out_cols), _f)
-    print(f"#PROGRESS:95 Wrote {len(_out_rows)} rows via NDJSON", file=sys.stderr)
+            _written += 1
+    if _written == 0:
+        # Preserve the original contract exactly: no rows means no NDJSON
+        # file, and the result travels as stdout JSON instead.
+        os.remove(_output_ndjson)
+        print(json.dumps({"columns": list(_out_cols) if _out_cols is not None else [], "rows": []}))
+    else:
+        if _output_columns:
+            # Column-order sidecar: NDJSON rows are JSON objects, whose key
+            # order Go recovers from a map (arbitrary). The script's own
+            # declared column order in output_data["columns"] survives via
+            # this file instead of being lost the way plain file mode always
+            # lost it.
+            with open(_output_columns, 'w') as _f:
+                json.dump(list(_out_cols), _f)
+        print(f"#PROGRESS:95 Wrote {_written} rows via NDJSON", file=sys.stderr)
 elif _output_csv and _out_rows:
     if _has_pandas:
         _df_out = pd.DataFrame(_out_rows, columns=_out_cols)
@@ -130,6 +232,9 @@ elif _output_csv and _out_rows:
             writer.writerows(_out_rows)
         print(f"#PROGRESS:95 Wrote {len(_out_rows)} rows via CSV", file=sys.stderr)
 else:
+    _rows_val = output_data.get("rows", [])
+    if not isinstance(_rows_val, list):
+        output_data["rows"] = [r for r in _rows_val]
     print(json.dumps(output_data))
 `
 

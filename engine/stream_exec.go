@@ -187,7 +187,7 @@ type codeStreamResult struct {
 // lattice is battle-tested and this path never needs it — a streamed
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
-func executeCodeNodeStreamed(script string, inputNDJSONPath string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*codeStreamResult, error) {
+func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*codeStreamResult, error) {
 	if script == "" {
 		return nil, fmt.Errorf("code node requires a 'script' in config")
 	}
@@ -229,6 +229,14 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, nodeConfig m
 	)
 	if inputNDJSONPath != "" {
 		cmd.Env = append(cmd.Env, "BROKED_INPUT_NDJSON="+inputNDJSONPath)
+		if len(inputColumns) > 0 {
+			// Milestone 1.5: hand the wrapper the column order from the
+			// input ref so its lazy rows never need a first-row peek —
+			// and column ORDER survives, which map keys never preserved.
+			if colsJSON, err := json.Marshal(inputColumns); err == nil {
+				cmd.Env = append(cmd.Env, "BROKED_INPUT_COLUMNS="+string(colsJSON))
+			}
+		}
 	}
 	cmd.Stdin = bytes.NewReader([]byte(""))
 
@@ -477,7 +485,11 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 		r.log(node.ID, models.LogLevelInfo, "Staged %d row(s) to the script by reference (never materialized in the engine)", inputRef.RowCount)
 	}
 
-	res, err := executeCodeNodeStreamed(script, stagedInput, configForScript, runParams, timeoutSec)
+	var inputCols []string
+	if inputRef != nil {
+		inputCols = inputRef.Columns
+	}
+	res, err := executeCodeNodeStreamed(script, stagedInput, inputCols, configForScript, runParams, timeoutSec)
 	if res != nil && res.stderr != "" {
 		for _, line := range splitLines(res.stderr) {
 			if line != "" {
