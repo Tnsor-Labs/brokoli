@@ -171,6 +171,21 @@ var serveCmd = &cobra.Command{
 			log.Printf("WARNING: startup recovery failed: %v", err)
 		}
 
+		// Wire the run-cancel relay from extensions (enterprise distributed
+		// mode). Every instance both broadcasts (CancelRun falls back to it
+		// for runs it doesn't own) and subscribes (so a broadcast reaches
+		// the instance that DOES own the run). Wired independently of the
+		// job queue: an API pod in scheduler mode never dequeues jobs but
+		// must still relay and receive cancels.
+		if Extensions != nil && Extensions.CancelRelay != nil {
+			eng.CancelRelay = Extensions.CancelRelay
+			if err := Extensions.CancelRelay.SubscribeCancels(eng.CancelRelayedRun); err != nil {
+				log.Printf("WARNING: run-cancel relay subscription failed: %v (cross-instance cancels degraded)", err)
+			} else {
+				log.Printf("Run-cancel relay enabled (mode: %s)", RunMode)
+			}
+		}
+
 		// Wire job queue from extensions (enterprise distributed mode)
 		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
 			eng.JobQueue = Extensions.JobQueue

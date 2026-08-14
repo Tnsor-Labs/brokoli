@@ -48,6 +48,20 @@ type PendingRunClaimer interface {
 	ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (claimed bool, err error)
 }
 
+// PendingRunCanceller is an optional store capability (check via type
+// assertion, same pattern as PendingRunClaimer): atomically cancel a run
+// only while it is still pending — the compare-and-swap mirror image of
+// ClaimPendingRun. The conditional write is what makes cancel-vs-claim
+// race-free: both sides are UPDATE ... WHERE status='pending', so exactly
+// one of "worker claims the run" and "cancel marks it cancelled" wins, and
+// the loser observes it lost.
+type PendingRunCanceller interface {
+	// CancelPendingRun transitions runID from pending to cancelled.
+	// Returns false with a nil error when the run was not pending —
+	// already claimed, already terminal, or missing.
+	CancelPendingRun(runID string, finishedAt time.Time) (cancelled bool, err error)
+}
+
 // ExecutionAttemptStore provides durable claim/lease operations over
 // models.ExecutionAttempt rows — the outbox/intent record and
 // compare-and-swap claim contract described by Tnsor-Labs/brokoli#7,

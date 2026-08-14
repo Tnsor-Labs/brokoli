@@ -53,6 +53,13 @@ type Engine struct {
 	// instance executes locally exactly as before, unconditionally.
 	InstanceJobQueue extensions.JobQueue
 
+	// CancelRelay broadcasts cancellation requests for runs executing in
+	// OTHER engine instances (see extensions.RunCancelRelay). Nil by
+	// default: a single-process deployment cancels every run locally and
+	// needs no transport. When set, the process must also subscribe its
+	// transport to deliver received run IDs to CancelRelayedRun.
+	CancelRelay extensions.RunCancelRelay
+
 	// ArtifactStore persists durable node-output artifacts so ResumeRun can
 	// restore a skipped node's real prior output (Tnsor-Labs/brokoli#8).
 	// Defaults to a LocalDiskArtifactStore rooted at BROKOLI_ARTIFACT_DIR
@@ -369,11 +376,80 @@ func (e *Engine) Events() <-chan models.Event {
 
 // CancelRun stops a running pipeline.
 func (e *Engine) CancelRun(runID string) error {
+	// Case 1: the run executes in this process — cancel its Runner directly.
+	if e.cancelLocalRun(runID) {
+		return nil
+	}
+
+	run, err := e.store.GetRun(runID)
+	if err != nil {
+		return fmt.Errorf("run %s not found or already completed", runID)
+	}
+	if isTerminalRunStatus(run.Status) {
+		return fmt.Errorf("run %s not found or already completed", runID)
+	}
+
+	// Case 2: the run is still pending — queued but claimed by nobody.
+	// Cancel it with a compare-and-swap against the pending status, the
+	// mirror image of ClaimPendingRun's conditional claim: exactly one of
+	// the two transitions wins, so a worker can never execute a run this
+	// path cancelled. Losing the swap means a claim landed in between —
+	// fall through to the running-elsewhere case.
+	if run.Status == models.RunStatusPending {
+		if canceller, ok := e.store.(store.PendingRunCanceller); ok {
+			now := time.Now().UTC()
+			cancelled, cErr := canceller.CancelPendingRun(runID, now)
+			if cErr != nil {
+				return fmt.Errorf("cancel pending run %s: %w", runID, cErr)
+			}
+			if cancelled {
+				e.appendEvent(&models.RunEvent{
+					RunID:     runID,
+					EventType: models.RunEventCancelled,
+					Payload: models.RunEventPayload{
+						Status:     models.RunStatusCancelled,
+						FinishedAt: &now,
+						Error:      "cancelled by user",
+					},
+				})
+				e.emitCancelledEvent(runID, run.PipelineID, "")
+				return nil
+			}
+		}
+	}
+
+	// Case 3: the run executes in another engine instance. Broadcast when
+	// a relay is configured; the owning instance's CancelRelayedRun does
+	// the actual cancel (and, post-#203, finalizes the run as cancelled on
+	// every exit path). Without a relay this remains an error — better a
+	// loud "could not cancel" than silently doing nothing.
+	if e.CancelRelay != nil {
+		if bErr := e.CancelRelay.BroadcastCancel(runID); bErr != nil {
+			return fmt.Errorf("broadcast cancel for run %s: %w", runID, bErr)
+		}
+		return nil
+	}
+	return fmt.Errorf("run %s not found or already completed", runID)
+}
+
+// CancelRelayedRun delivers a relayed cancellation request (see
+// extensions.RunCancelRelay): it cancels runID if that run is executing in
+// this process and quietly ignores it otherwise — every instance receives
+// every broadcast, and only the owner acts.
+func (e *Engine) CancelRelayedRun(runID string) {
+	e.cancelLocalRun(runID)
+}
+
+// cancelLocalRun cancels runID if its Runner lives in this process's
+// active map, returning whether it did. The status write here converges
+// with the Runner's own finalizeCancelled write — both record cancelled,
+// whichever lands last.
+func (e *Engine) cancelLocalRun(runID string) bool {
 	e.mu.RLock()
 	runner, ok := e.active[runID]
 	e.mu.RUnlock()
 	if !ok {
-		return fmt.Errorf("run %s not found or already completed", runID)
+		return false
 	}
 	runner.Cancel()
 	// Update run status
@@ -393,15 +469,27 @@ func (e *Engine) CancelRun(runID string) error {
 			},
 		})
 	}
+	e.emitCancelledEvent(runID, runner.pipe.ID, runner.pipe.Name)
+	return true
+}
+
+// emitCancelledEvent pushes the user-facing cancellation event. An empty
+// name is resolved best-effort from the store — the ID is always present,
+// and consumers already tolerate an empty name (deleted pipelines).
+func (e *Engine) emitCancelledEvent(runID, pipelineID, name string) {
+	if name == "" {
+		if pipe, err := e.store.GetPipeline(pipelineID); err == nil && pipe != nil {
+			name = pipe.Name
+		}
+	}
 	e.eventCh <- models.Event{
 		Type:         models.EventRunFailed,
 		RunID:        runID,
-		PipelineID:   runner.pipe.ID,
-		PipelineName: runner.pipe.Name,
+		PipelineID:   pipelineID,
+		PipelineName: name,
 		Status:       models.RunStatusCancelled,
 		Error:        "cancelled by user",
 	}
-	return nil
 }
 
 // resolveRunPipelineVersion returns the store.PipelineVersion number that

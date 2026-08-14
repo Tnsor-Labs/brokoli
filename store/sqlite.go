@@ -1046,6 +1046,21 @@ func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.T
 	return n == 1, nil
 }
 
+func (s *SQLiteStore) CancelPendingRun(runID string, finishedAt time.Time) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=?, finished_at=?, error=? WHERE id=? AND status=?`,
+		string(models.RunStatusCancelled), formatTimePtr(&finishedAt), "cancelled by user", runID, string(models.RunStatusPending),
+	)
+	if err != nil {
+		return false, wrapStoreErr("CancelPendingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, wrapStoreErr("CancelPendingRun", runID, err)
+	}
+	return n == 1, nil
+}
+
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
 		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id FROM runs WHERE id = ?`, id,
