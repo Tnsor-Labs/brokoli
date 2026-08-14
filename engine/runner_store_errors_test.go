@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"os"
@@ -133,7 +134,25 @@ func newFaultTestEngine(t *testing.T) (*Engine, *faultInjectingStore, *store.SQL
 	}
 
 	fault := &faultInjectingStore{SQLiteStore: real}
-	return NewEngine(fault), fault, real, pipeline.ID
+	eng := NewEngine(fault)
+	// Registered after the store's cleanup so it runs before it (LIFO):
+	// the engine's background goroutines — trigger-mode dependency fan-out
+	// in particular — must drain before the store closes underneath them
+	// and before t.TempDir's RemoveAll. This is the same "test half of
+	// Tnsor-Labs/brokoli#94" newResumeTestEngine already applies; its
+	// absence HERE was a real CI flake: the fan-out goroutine's in-flight
+	// SQLite connection recreated WAL files mid-RemoveAll, failing
+	// teardown with "TempDir RemoveAll cleanup: directory not empty"
+	// (seen on two separate PRs, always preceded by the goroutine's own
+	// "trigger-mode: ... sql: database is closed" log line).
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("engine close: %v", err)
+		}
+	})
+	return eng, fault, real, pipeline.ID
 }
 
 func TestRunnerSurfacesCreateNodeRunFailure(t *testing.T) {
@@ -238,6 +257,15 @@ func TestRunnerSurfacesAddToDLQFailureAlongsideOriginalRunError(t *testing.T) {
 	// the DLQ write on top of it is injected to fail.
 	fault := &faultInjectingStore{SQLiteStore: real, failAddToDLQ: true}
 	eng := NewEngine(fault)
+	// Same background-goroutine drain as newFaultTestEngine — see the
+	// comment there.
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := eng.Close(ctx); err != nil {
+			t.Errorf("engine close: %v", err)
+		}
+	})
 
 	run, err := eng.RunPipeline(pipeline.ID)
 	if err == nil {
