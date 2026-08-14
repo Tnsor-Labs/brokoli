@@ -1,9 +1,13 @@
 # ADR-018: Chunked node execution and memory-aware backpressure
 
-**Status:** proposed — Decision 2 (admission control) implemented and
+**Status:** accepted — Decision 2 (admission control) implemented and
 live-verified with an important honest limitation found in the process;
 see "Update: implemented" below. Decision 1 (chunked node-to-node
-hand-off) reconsidered — see the same section.
+hand-off) reconsidered and superseded by ADR-019's reference-passing
+streaming, which shipped and was measured live (M1/M1.5/M2 updates in
+that ADR). The one-run-per-512Mi divisor stays: it protects the
+batch-path worst case (blocking operators over large datasets still
+materialize), which streaming narrows but does not eliminate.
 **Date:** 2026-08-13
 
 ## Update: implemented (2026-08-13)
