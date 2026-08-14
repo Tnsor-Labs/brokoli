@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.29] - 2026-08-14
+
+### Fixed
+
+- **Stream engagement gets its own threshold** (#192, ADR-019) —
+  @hc12r. Live measurement of v0.10.28 showed reference-passing never
+  engaged for the benchmark workload: it was gated on the spill
+  threshold (64 MiB encoded), while the datasets that OOM'd pods
+  encode to ~15-20 MiB and cost 5-6x that as in-memory map rows.
+  Spilling parks memory already paid; streaming prevents it being
+  paid — different economics, different knob.
+  `BROKOLI_STREAM_THRESHOLD_BYTES` (default 8 MiB encoded), negative
+  disables reference-passing entirely.
+- **Toolchain pinned to go1.25.13** (#192) — @hc12r. Seven newly
+  published Go standard library vulnerabilities affect go1.25.12 and
+  broke govulncheck CI on every branch; the toolchain directive makes
+  the fix independent of what patch release the CI runner has cached.
+
 ## [0.10.28] - 2026-08-13
 
 ### Added
