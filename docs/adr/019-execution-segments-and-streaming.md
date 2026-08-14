@@ -70,6 +70,47 @@ conservative for streamed workloads; re-measuring it (and possibly
 deriving it from observed per-run anon peaks rather than a constant)
 is the natural next step, alongside Milestone 2.
 
+## Update: Milestone 2 (2026-08-14, v0.10.31)
+
+Milestone 2 landed re-scoped, and the re-scoping is the finding:
+
+- **Streaming hash aggregation shipped.** An `aggregate` rule was a
+  hard barrier — one anywhere in a transform forced the whole node to
+  materialize. Now the rule list compiles to a plan: row-local prefix
+  streams per batch, the aggregate folds batches into per-group
+  accumulator state (small by construction), and suffix rules —
+  anything, including sort — run on the grouped output. Incremental
+  accumulators replicate the batch implementation's exact semantics,
+  including its edges (count counts all rows regardless of column
+  values; min/max over zero accepted values return 0.0; first-seen
+  group ordering; alias defaults; the agg_fields/aggregations compat
+  alias), held to equivalence by test across all of them. The common
+  ETL shape — filter/derive into a group-by, then sort the totals —
+  now streams end to end.
+- **Fan-out replay needed no new machinery** — it fell out of
+  Milestone 1's design: every consumer of a ref output opens the blob
+  independently, so multiple streamable consumers replay the same
+  output with no shared cursor and no interference. Now pinned by a
+  dedicated test rather than assumed.
+- **Concurrent cross-node stages are deferred, deliberately, with a
+  reason worth recording.** True time-overlap between code nodes
+  requires the downstream subprocess to consume its input while the
+  upstream still produces it — a FIFO, not a file. But Milestone
+  1.5's compatibility contract is that `rows` is RE-ITERABLE and that
+  `len(rows)`/indexing transparently materialize — both require a
+  complete, seekable file; against a FIFO, a second iteration or a
+  `len()` call would deadlock. The contract that made lazy rows
+  safely adoptable by every existing script is exactly the contract
+  that forbids pipelined subprocess input. Breaking it silently is
+  unacceptable; the honest path is an explicit per-script opt-in
+  (a declared strict-streaming capability that trades away
+  re-iteration and len() for FIFO input), which is real protocol
+  design and belongs to a future milestone if the latency win ever
+  justifies it. Meanwhile the disk-pipelined form is already
+  memory-optimal — at ~7 MiB anon for streaming-idiom pipelines, the
+  remaining sequential-vs-overlapped latency difference on the
+  benchmark is a few seconds, and nothing currently hurts for it.
+
 ## Context
 
 ADR-018's whole arc — memory-aware admission control, GOMEMLIMIT,
