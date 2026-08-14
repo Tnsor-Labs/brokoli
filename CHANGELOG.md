@@ -11,6 +11,34 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.30] - 2026-08-14
+
+### Added
+
+- **Lazy rows, emit, and generator outputs in code nodes (ADR-019
+  Milestone 1.5)** (#195) — @hc12r. Bounds the Python side of a code
+  node, the residual peak Milestone 1 left behind. `rows` becomes a
+  disk-backed, re-iterable lazy view in NDJSON mode: iteration
+  streams in constant memory (double loops still work — each pass
+  re-reads the file), while `len(rows)`/indexing transparently
+  materialize for full backward compatibility. New `emit(row)` /
+  `begin_emit(columns)` write output row-by-row with no output list
+  at all, and generator `output_data["rows"]` becomes legal — a
+  fully-streaming script holds near-zero Python memory. Input column
+  order now travels from the ref via `BROKED_INPUT_COLUMNS`,
+  preserving order that map keys never did.
+
+### Fixed
+
+- **Fault-injection tests leaked engine goroutines into teardown**
+  (#195) — @hc12r. The CI flake that blocked two PRs: the fault-test
+  harness never drained the engine's background goroutines (the
+  missing "test half of #94"), so trigger-mode fan-out's in-flight
+  SQLite connection recreated WAL files during `t.TempDir` removal —
+  "TempDir RemoveAll cleanup: directory not empty". Both engine
+  constructions in the file now close the engine before the store,
+  before the directory.
+
 ## [0.10.29] - 2026-08-14
 
 ### Fixed
