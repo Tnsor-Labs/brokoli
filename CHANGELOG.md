@@ -11,6 +11,26 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.33] - 2026-08-14
+
+### Fixed
+
+- **Cancelling a run could record it as failed** (#203) — @hc12r.
+  CancelRun and the runner's node-failure exit path raced on the
+  run's terminal status: a cancel that killed an in-flight node made
+  the node fail with "pipeline cancelled", and the runner then
+  persisted the run as FAILED — plus a dead-letter-queue entry, a
+  failure alert, and a critical notification — whenever its goroutine
+  won the write race. Cancellation now wins over failure on every
+  exit path. Found by TestExecutionContext_ObservesRunCancellation
+  flaking about 1 in 5 full-suite runs; the test was right, the
+  product lost the race.
+- **Engine test teardown races** (#203) — @hc12r. 27 test sites
+  across 13 files built engines without draining their background
+  goroutines before store close and TempDir removal (the #94-family
+  teardown flake). All now route through a shared
+  drainEngineOnCleanup helper.
+
 ## [0.10.32] - 2026-08-14
 
 ### Fixed
