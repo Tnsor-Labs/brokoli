@@ -29,6 +29,15 @@ type Runner struct {
 	connResolver *ConnectionResolver // for conn_id → URI
 	ctx          context.Context
 	cancel       context.CancelFunc
+	// cancelMu guards cancel/preCancelled so Cancel is durable across the
+	// window before Execute creates r.ctx. Without it, a Cancel that lands
+	// while the runner is registered in Engine.active but not yet executing
+	// (RunPipeline's pre-goroutine registration; ExecuteQueuedRun waiting on
+	// the concurrency semaphore, which under saturation can be minutes) hit
+	// a nil r.cancel and was silently lost — the run then executed to
+	// completion as if never cancelled.
+	cancelMu     sync.Mutex
+	preCancelled bool
 	run          *models.Run
 	pipe         *models.Pipeline
 	skipNodes    map[string]bool
@@ -170,10 +179,16 @@ func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline
 	}
 }
 
-// Cancel stops a running pipeline.
+// Cancel stops a running pipeline. Safe to call at any point in the
+// runner's lifecycle: before Execute has created the run context, the
+// cancellation is remembered and applied the moment the context exists.
 func (r *Runner) Cancel() {
-	if r.cancel != nil {
-		r.cancel()
+	r.cancelMu.Lock()
+	r.preCancelled = true
+	cancel := r.cancel
+	r.cancelMu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
@@ -199,7 +214,16 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		span.End()
 	}()
 
+	r.cancelMu.Lock()
 	r.ctx, r.cancel = context.WithCancel(spanCtx)
+	if r.preCancelled {
+		// A Cancel arrived before the run context existed (see Cancel).
+		// Cancelling the fresh context up front routes the whole execution
+		// through the standard cancellation exits: the pre-node ctx checks
+		// fire immediately and the run finalizes as cancelled.
+		r.cancel()
+	}
+	r.cancelMu.Unlock()
 	defer r.cancel()
 
 	now := time.Now().UTC()

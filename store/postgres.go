@@ -1005,6 +1005,21 @@ func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time
 	return n == 1, nil
 }
 
+func (s *PostgresStore) CancelPendingRun(runID string, finishedAt time.Time) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1, finished_at=$2, error=$3 WHERE id=$4 AND status=$5`,
+		string(models.RunStatusCancelled), finishedAt, "cancelled by user", runID, string(models.RunStatusPending),
+	)
+	if err != nil {
+		return false, err
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
 func (s *PostgresStore) GetRun(id string) (*models.Run, error) {
 	var r models.Run
 	var status string
