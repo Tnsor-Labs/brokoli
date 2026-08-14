@@ -66,6 +66,21 @@ type Engine struct {
 	// or by assigning after NewEngine. A negative value disables spilling
 	// and restores the previous always-in-memory behaviour exactly.
 	SpillThresholdBytes int64
+	// StreamThresholdBytes is the encoded size at or above which ADR-019's
+	// reference-passing paths engage — a code node's output file becomes a
+	// blob reference instead of materializing, which is what lets the next
+	// stream-capable node process it in bounded memory. Deliberately a
+	// SEPARATE, much lower knob than SpillThresholdBytes: spilling parks an
+	// already-materialized output (the memory was already paid, disk I/O
+	// only buys back the steady state), while streaming prevents the
+	// memory from ever being paid — measured live, this workload's NDJSON
+	// encodes ~5-6x smaller than its map-row in-memory form, so a dataset
+	// far below the spill threshold's 64 MiB is still worth streaming.
+	// Defaults to DefaultStreamThresholdBytes, overridable via
+	// BROKOLI_STREAM_THRESHOLD_BYTES or by assigning after NewEngine. A
+	// negative value disables reference-passing entirely (every node takes
+	// its pre-ADR-019 batch path).
+	StreamThresholdBytes int64
 	// PaginationCheckpointStore persists mid-pagination progress for
 	// source_api nodes so a retry or resume can continue a large paginated
 	// fetch instead of restarting it (Tnsor-Labs/brokoli#41 M2). Defaults to
@@ -247,6 +262,12 @@ func NewEngine(s store.Store) *Engine {
 			spillThreshold = n
 		}
 	}
+	streamThreshold := DefaultStreamThresholdBytes
+	if v := os.Getenv("BROKOLI_STREAM_THRESHOLD_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			streamThreshold = n
+		}
+	}
 
 	checkpointDir := os.Getenv("BROKOLI_PAGINATION_CHECKPOINT_DIR")
 	if checkpointDir == "" {
@@ -261,6 +282,7 @@ func NewEngine(s store.Store) *Engine {
 		runSem:                    make(chan struct{}, maxC),
 		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
 		SpillThresholdBytes:       spillThreshold,
+		StreamThresholdBytes:      streamThreshold,
 		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
 		InstanceID:                common.NewID(),
 	}
@@ -499,6 +521,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
 	runner.spillThreshold = e.SpillThresholdBytes
+	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
@@ -774,6 +797,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
 	runner.spillThreshold = e.SpillThresholdBytes
+	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	if len(params) > 0 && params[0] != nil {
@@ -905,6 +929,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.acceptedRun = accepted
 	runner.artifactStore = e.ArtifactStore
 	runner.spillThreshold = e.SpillThresholdBytes
+	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	runner.parentCtx = claimCtx
@@ -1188,6 +1213,7 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.params = oldRun.Params
 	runner.artifactStore = e.ArtifactStore
 	runner.spillThreshold = e.SpillThresholdBytes
+	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
 	runner.pipelineVersion = newRunVersion

@@ -235,7 +235,8 @@ func TestPipeline_StreamedCodeChain_RefsEndToEnd(t *testing.T) {
 	dir := t.TempDir()
 	eng, s := newResumeTestEngine(t)
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
-	eng.SpillThresholdBytes = 1 // everything streams
+	eng.SpillThresholdBytes = 1  // everything spills
+	eng.StreamThresholdBytes = 1 // everything streams
 
 	pipeline := &models.Pipeline{
 		ID: "p-streamed-code-chain", Name: "Streamed Code Chain", Enabled: true,
@@ -328,6 +329,7 @@ func TestPipeline_StreamedTransformAfterCode(t *testing.T) {
 	eng, s := newResumeTestEngine(t)
 	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
 	eng.SpillThresholdBytes = 1
+	eng.StreamThresholdBytes = 1
 
 	pipeline := &models.Pipeline{
 		ID: "p-streamed-mixed", Name: "Streamed Mixed Chain", Enabled: true,

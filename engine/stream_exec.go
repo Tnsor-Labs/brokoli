@@ -28,6 +28,17 @@ import (
 // threshold: data small enough to live in memory cheaply still does,
 // because batch is faster and its memory doesn't matter.
 
+// DefaultStreamThresholdBytes is the encoded size at or above which
+// reference-passing engages when no explicit threshold is configured.
+// Sized from the live measurement that exposed the need for a knob
+// separate from spilling: the benchmark's 100k-row datasets encode to
+// ~15-20 MiB of NDJSON but cost ~95 MiB each as in-memory map rows (a
+// 5-6x multiplier), so an 8 MiB encoded floor means streaming starts
+// where roughly 40-50 MiB of real memory per dataset copy is at stake —
+// well below the spill threshold's deliberately high 64 MiB, which was
+// sized for a mechanism that only parks memory already paid for.
+const DefaultStreamThresholdBytes int64 = 8 << 20 // 8 MiB
+
 // rowLocalTransformRules reports whether every rule in the list is
 // row-local — computable on one row without seeing any other — which is
 // the streamability condition for a transform node. The blocking rules
@@ -390,7 +401,7 @@ func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows 
 // reference, expansion code nodes resolve upstream data by node ID, and
 // every type not listed here simply keeps its batch path.
 func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
-	if r.dryRun || !outputs.spillEnabled() {
+	if r.dryRun || !outputs.spillEnabled() || outputs.streamThreshold <= 0 {
 		return false
 	}
 	switch node.Type {
@@ -481,7 +492,7 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 	if res.outputPath != "" {
 		defer os.Remove(res.outputPath)
 		info, statErr := os.Stat(res.outputPath)
-		if statErr == nil && info.Size() >= outputs.threshold {
+		if statErr == nil && info.Size() >= outputs.streamThreshold {
 			ref, err := storeNDJSONFileAsRef(outputs, res.outputPath, res.columns)
 			if err != nil {
 				return nodeExecutionResult{}, err

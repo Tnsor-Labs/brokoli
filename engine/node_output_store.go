@@ -64,6 +64,11 @@ type nodeOutputs struct {
 	// threshold is the estimated encoded size at or above which an output
 	// spills. Zero or negative disables spilling.
 	threshold int64
+	// streamThreshold is the encoded size at or above which ADR-019's
+	// reference-passing paths engage (see Engine.StreamThresholdBytes) —
+	// resolved here alongside threshold so the two knobs travel together.
+	// Zero or negative disables reference-passing.
+	streamThreshold int64
 
 	// onSpill, when set, is called after an output is spilled. Used for
 	// logging; kept as a hook so this type does not need a logger.
@@ -243,6 +248,10 @@ func (r *Runner) newOutputs() *nodeOutputs {
 	if threshold == 0 {
 		threshold = DefaultSpillThresholdBytes
 	}
+	streamThreshold := r.streamThreshold
+	if streamThreshold == 0 {
+		streamThreshold = DefaultStreamThresholdBytes
+	}
 
 	var blobs artifact.Store
 	namespace := ""
@@ -258,6 +267,7 @@ func (r *Runner) newOutputs() *nodeOutputs {
 	}
 
 	out := newNodeOutputs(blobs, namespace, threshold)
+	out.streamThreshold = streamThreshold
 	out.onSpill = func(nodeID string, estimatedBytes int64, ref *artifact.DatasetRef) {
 		r.log(nodeID, models.LogLevelInfo,
 			"Spilled %d row(s) (~%d bytes) to the artifact store; held by reference for the rest of the run",
