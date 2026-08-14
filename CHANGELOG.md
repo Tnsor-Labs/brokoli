@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.32] - 2026-08-14
+
+### Fixed
+
+- **add_column arithmetic silently stored expression text as data**
+  (#201) — @hc12r. Found live verifying ADR-019 Milestone 2:
+  "quantity * unit_price" put the literal STRING of the expression in
+  every row, and a downstream aggregate summed it to zero with no
+  error anywhere — since the rule's beginning, in pure batch.
+  `*`/`/`/`-` now evaluate as arithmetic when every operand resolves
+  numerically; div-by-zero and non-numeric column values yield nil
+  (aggregates skip it); the `+`-concat and bare-word-literal
+  behaviors are pinned and untouched, and hyphenated column names
+  stay literals via the all-operands-numeric guard.
+
 ## [0.10.31] - 2026-08-14
 
 ### Added
