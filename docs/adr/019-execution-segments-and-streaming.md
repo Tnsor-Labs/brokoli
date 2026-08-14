@@ -1,7 +1,41 @@
 # ADR-019: Execution segments, streaming capabilities, and reference-passing dataflow
 
-**Status:** proposed
+**Status:** accepted — Milestone 1 implemented (#190, v0.10.28), with
+the engagement threshold corrected after live measurement (#192,
+v0.10.29); see "Update: measured" below.
 **Date:** 2026-08-13
+
+## Update: measured (2026-08-14)
+
+Milestone 1 shipped in two steps, and the live measurements are the
+story:
+
+- **v0.10.28 (#190)** implemented reference-passing, gated on the
+  spill threshold — and the single-run measurement came back at
+  **291 MiB against the 284 MiB baseline: statistically nothing.**
+  Streaming never engaged: the benchmark's datasets encode to
+  ~15–20 MiB, under the 64 MiB spill threshold, while costing 5–6x
+  that as in-memory map rows. Spilling parks memory already paid;
+  streaming prevents it being paid — the engagement floor had to be
+  its own, much lower knob.
+- **v0.10.29 (#192)** added `BROKOLI_STREAM_THRESHOLD_BYTES` (default
+  8 MiB encoded). Re-measured, same methodology, same pipeline:
+  **86 MiB peak, settling to 38 MiB after the run** — versus 284 MiB
+  peak and ~283 MiB retained before. A 3.3x collapse. Engagement
+  confirmed from the run's own logs ("Staged 100000 row(s) to the
+  script by reference (never materialized in the engine)"), results
+  byte-correct, and the resume-artifact contract intact.
+- The full 10-concurrent-run burst on the same 512 MiB pods:
+  **10/10 success, zero OOM kills, zero zombies, 17 seconds
+  wall-clock** — down from 29.6s in the pre-streaming zero-OOM
+  configuration, and from minutes-with-casualties at the start of
+  this investigation.
+- The residual 86 MiB peak is dominated by the Python subprocess
+  materializing its `rows`/`out` lists — exactly the boundary this
+  ADR assigned to Milestone 1.5, now the next lever. The
+  one-run-per-512Mi concurrency divisor (ADR-018) is now measurably
+  over-conservative for streamed workloads and should be re-measured,
+  per this ADR's own follow-up list.
 
 ## Context
 
