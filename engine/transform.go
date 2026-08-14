@@ -94,25 +94,132 @@ func addColumn(r TransformRule, ds *common.DataSet) error {
 	}
 	ds.Columns = append(ds.Columns, r.Name)
 	for _, row := range ds.Rows {
-		if strings.Contains(r.Expression, "+") {
-			parts := strings.Split(r.Expression, "+")
-			var result string
-			for _, part := range parts {
-				part = strings.TrimSpace(part)
-				if val, ok := row[part]; ok {
-					result += fmt.Sprintf("%v", val)
-				} else if len(part) >= 2 && (part[0] == '\'' || part[0] == '"') {
-					result += part[1 : len(part)-1]
-				} else {
-					result += part
-				}
-			}
-			row[r.Name] = result
-		} else {
-			row[r.Name] = r.Expression
-		}
+		row[r.Name] = evalAddColumnExpression(r.Expression, row)
 	}
 	return nil
+}
+
+// evalAddColumnExpression computes an add_column expression for one row.
+//
+// Three forms, evaluated in order:
+//
+//  1. "+" means string CONCATENATION over columns and quoted literals —
+//     the original, test-pinned behavior, kept exactly (numbers
+//     concatenate as their string forms; this is documented behavior,
+//     not addition).
+//  2. "*", "/", or "-" between operands means ARITHMETIC — but only when
+//     EVERY operand resolves to a number (a numeric column value or a
+//     numeric literal). Found live: "quantity * unit_price" used to fall
+//     through to form 3 and store the literal STRING
+//     "quantity * unit_price" in every row, which a downstream aggregate
+//     then silently summed to zero — data corruption with no error
+//     anywhere. Same-operator chains left-fold; division by zero and any
+//     non-numeric operand yield nil (which aggregation correctly skips),
+//     never a corrupt string. The all-operands-numeric guard is what
+//     keeps this backward-safe: a hyphenated column name or a wordy
+//     literal containing "-" fails resolution and falls through to
+//     form 3, exactly as before.
+//  3. Anything else is a literal: a single quoted token has its quotes
+//     stripped (consistent with how form 1 treats quoted parts — the old
+//     behavior kept the quotes, which nothing relied on and nobody
+//     wanted); a bare word stays a bare-word literal, exactly as the
+//     pinned tests require.
+func evalAddColumnExpression(expr string, row common.DataRow) interface{} {
+	if strings.Contains(expr, "+") {
+		parts := strings.Split(expr, "+")
+		var result string
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if val, ok := row[part]; ok {
+				result += fmt.Sprintf("%v", val)
+			} else if len(part) >= 2 && (part[0] == '\'' || part[0] == '"') {
+				result += part[1 : len(part)-1]
+			} else {
+				result += part
+			}
+		}
+		return result
+	}
+	for _, op := range []string{"*", "/", "-"} {
+		if !strings.Contains(expr, op) {
+			continue
+		}
+		parts := strings.Split(expr, op)
+		if len(parts) < 2 {
+			continue
+		}
+		operands := make([]float64, 0, len(parts))
+		allNumeric := true
+		for _, part := range parts {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				allNumeric = false
+				break
+			}
+			if val, ok := row[part]; ok {
+				if f, fok := toAggFloat(val); fok {
+					operands = append(operands, f)
+					continue
+				}
+				allNumeric = false
+				break
+			}
+			if f, err := strconv.ParseFloat(part, 64); err == nil {
+				operands = append(operands, f)
+				continue
+			}
+			allNumeric = false
+			break
+		}
+		if !allNumeric {
+			// Not arithmetic after all (hyphenated name, wordy literal,
+			// or a non-numeric value in this row): the row-independent
+			// forms fall through to the literal branch below; a
+			// non-numeric VALUE in an otherwise-arithmetic expression
+			// yields nil so aggregates skip it rather than folding in a
+			// corrupt string.
+			if columnRefBroken(parts, row) {
+				return nil
+			}
+			break
+		}
+		result := operands[0]
+		for _, f := range operands[1:] {
+			switch op {
+			case "*":
+				result *= f
+			case "/":
+				if f == 0 {
+					return nil
+				}
+				result /= f
+			case "-":
+				result -= f
+			}
+		}
+		return result
+	}
+	if len(expr) >= 2 && (expr[0] == '\'' || expr[0] == '"') && expr[len(expr)-1] == expr[0] {
+		return expr[1 : len(expr)-1]
+	}
+	return expr
+}
+
+// columnRefBroken reports whether an arithmetic-looking expression names a
+// real column whose value just isn't numeric IN THIS ROW — the case where
+// the expression is genuinely arithmetic and the honest per-row answer is
+// nil, as opposed to an expression that was never arithmetic at all.
+func columnRefBroken(parts []string, row common.DataRow) bool {
+	sawColumn := false
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if _, ok := row[part]; ok {
+			sawColumn = true
+		} else if _, err := strconv.ParseFloat(part, 64); err != nil {
+			return false // a non-column, non-number token: not arithmetic
+		}
+	}
+	return sawColumn
 }
 
 func filterRows(r TransformRule, ds *common.DataSet) error {
