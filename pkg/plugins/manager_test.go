@@ -186,8 +186,14 @@ func TestManager_Execute_Source_EndToEnd(t *testing.T) {
 	if result.RowCount != 3 {
 		t.Errorf("RowCount: got %d, want 3", result.RowCount)
 	}
-	if result.DurationMs <= 0 {
-		t.Errorf("DurationMs should be > 0, got %d", result.DurationMs)
+	// DurationMs is time.Since truncated to whole milliseconds, and the
+	// hello plugin can legitimately finish in under one on a fast machine —
+	// asserting > 0 made this test flake exactly there (it failed the
+	// v0.10.35 release workflow with "got 0" at 0.00s test runtime). Zero
+	// is a valid measurement; only a negative value would mean the clock
+	// math is broken.
+	if result.DurationMs < 0 {
+		t.Errorf("DurationMs should never be negative, got %d", result.DurationMs)
 	}
 }
 
