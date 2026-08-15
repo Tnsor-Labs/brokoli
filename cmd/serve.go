@@ -216,6 +216,34 @@ var serveCmd = &cobra.Command{
 			log.Printf("Pending-run redispatch sweep enabled (interval %s, grace %s)",
 				engine.DefaultPendingRedispatchInterval, engine.DefaultPendingRedispatchGrace)
 
+			// eng.ArtifactStore defaults to local disk (see
+			// engine.NewEngine). In distributed mode that default is
+			// wrong twice over. First, resume: a resumed run is claimed
+			// by whichever worker dequeues it, but the original run's
+			// artifacts sit on the ORIGINAL worker's own disk — restore
+			// works only by placement luck. Second, lifecycle: the
+			// TransientBlobJanitor reclaim (Tnsor-Labs/brokoli#215) only
+			// engages on the SQL store, because only there are worker-
+			// local blobs pure scratch — live verification of that fix
+			// found it dormant on this exact deployment shape, worker
+			// disks still growing, because this wiring used to happen
+			// only alongside ADR-017 instance dispatch (which nothing
+			// enables yet). Swap in the SQL-backed store — the same
+			// database every pod already connects to — for EVERY
+			// distributed deployment. Single-process "all" mode keeps
+			// the local-disk default: no cross-pod problem to solve, no
+			// reason to route artifacts through the database.
+			if dialect, ok := sqlArtifactDialect(s); ok {
+				if rawDB, ok := s.RawDB().(*sql.DB); ok {
+					if artifactStore, err := engine.NewSQLArtifactStore(rawDB, dialect, os.Getenv("BROKOLI_ARTIFACT_DIR")); err != nil {
+						log.Printf("WARNING: SQL artifact store init failed, cross-pod artifact reads degraded: %v", err)
+					} else {
+						eng.ArtifactStore = artifactStore
+						log.Printf("Artifact store: SQL-backed (%s), for cross-pod artifacts and terminal blob reclaim", dialect)
+					}
+				}
+			}
+
 			// Wire the SAME queue for instance-level remote dispatch
 			// (ADR-017). One shared queue rather than a second
 			// transport: the worker loop below already dequeues both
@@ -224,28 +252,6 @@ var serveCmd = &cobra.Command{
 			if instanceDispatchEnabled() {
 				eng.InstanceJobQueue = Extensions.JobQueue
 				log.Printf("Instance-level remote dispatch enabled (mode: %s)", RunMode)
-
-				// eng.ArtifactStore defaults to local disk (see
-				// engine.NewEngine), which is exactly what makes a
-				// remote-dispatched instance's result invisible to this
-				// pod: the worker that produced it wrote to ITS OWN
-				// disk, not this one. Swap in the SQL-backed store — the
-				// same database every pod in this deployment already
-				// connects to — so ReadArtifact actually finds what a
-				// different pod's WriteArtifact wrote. Only reached
-				// alongside instance dispatch itself; a deployment that
-				// hasn't opted into that keeps the local-disk default,
-				// unaffected.
-				if dialect, ok := sqlArtifactDialect(s); ok {
-					if rawDB, ok := s.RawDB().(*sql.DB); ok {
-						if artifactStore, err := engine.NewSQLArtifactStore(rawDB, dialect, os.Getenv("BROKOLI_ARTIFACT_DIR")); err != nil {
-							log.Printf("WARNING: SQL artifact store init failed, remote instance results may not be readable back: %v", err)
-						} else {
-							eng.ArtifactStore = artifactStore
-							log.Printf("Artifact store: SQL-backed (%s), for cross-pod remote instance results", dialect)
-						}
-					}
-				}
 			}
 		}
 
