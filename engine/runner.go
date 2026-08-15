@@ -1557,8 +1557,12 @@ func (r *Runner) startCancelIntentWatcher() func() {
 	}
 	runID := r.run.ID
 	done := make(chan struct{})
+	// Read the interval before spawning: the goroutine can outlive its
+	// Execute call by a scheduling beat, and tests override the package
+	// var between sequential runs — an async read would race that write.
+	interval := cancelIntentPollInterval
 	go func() {
-		ticker := time.NewTicker(cancelIntentPollInterval)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
