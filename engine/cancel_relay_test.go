@@ -487,3 +487,65 @@ func TestRunnerCancelBeforeExecuteIsDurable(t *testing.T) {
 		t.Fatalf("pre-cancelled run status = %q, want cancelled", stored.Status)
 	}
 }
+
+// TestRunner_CancelIntentWatcherFiresMidNode is the live-found regression:
+// a single-node pipeline mid-execution has no wave boundary, so when the
+// relay transport is down (a Redis restart used to kill every subscriber
+// permanently), a durably-recorded cancel was never observed and the run
+// completed. The watcher polls the flag DURING execution: the gate node
+// here never finishes on its own — only the watcher can end this run.
+func TestRunner_CancelIntentWatcherFiresMidNode(t *testing.T) {
+	oldInterval := cancelIntentPollInterval
+	cancelIntentPollInterval = 50 * time.Millisecond
+	defer func() { cancelIntentPollInterval = oldInterval }()
+
+	eng, s := newExecCtxTestEngine(t)
+	gate := &gateExecutor{nodeType: "gate", startedCh: make(chan struct{}), proceed: make(chan struct{})}
+	defer close(gate.proceed) // let the executor's goroutine exit after the test
+	eng.Executors = []extensions.NodeExecutor{gate}
+
+	pipe := &models.Pipeline{
+		ID: "p-midnode-intent", Name: "Mid-node Intent", Enabled: true,
+		Nodes: []models.Node{
+			{ID: "source", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": execCtxSourceCSV(t), "format": "csv"}},
+			{ID: "gate", Type: models.NodeType("gate"), Name: "Gate"},
+		},
+		Edges: []models.Edge{{From: "source", To: "gate"}},
+	}
+	if err := s.CreatePipeline(pipe); err != nil {
+		t.Fatal(err)
+	}
+	runID, err := eng.RunPipelineAsync(pipe.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-gate.startedCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate never dispatched")
+	}
+
+	// Simulate the dead-transport scenario: intent lands durably, nothing
+	// delivers it — no relay, no CancelRun, just the flag.
+	if requested, rErr := s.RequestRunCancel(runID); rErr != nil || !requested {
+		t.Fatalf("RequestRunCancel = %v, %v", requested, rErr)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stored, gErr := s.GetRun(runID)
+		if gErr != nil {
+			t.Fatal(gErr)
+		}
+		if stored.Status == models.RunStatusCancelled {
+			return
+		}
+		if stored.Status == models.RunStatusFailed || stored.Status == models.RunStatusSuccess {
+			t.Fatalf("run finalized as %s, want cancelled", stored.Status)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("watcher never fired; run still %s mid-node", stored.Status)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
