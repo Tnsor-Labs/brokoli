@@ -117,8 +117,8 @@
   --radius-xl: 14px;
 
   /* Fonts */
-  --font-ui: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --font-ui: "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Fira Code", monospace;
 
   /* Transitions */
   --transition-fast: 150ms ease;
@@ -127,6 +127,13 @@
 
   /* Sidebar */
   --sidebar-width: 240px;
+}
+
+/* User-collapsed sidebar rail (data-sidebar set by lib/sidebar.ts, the
+   same html-attribute pattern the theme uses). The media queries below
+   still override this at narrow widths — viewport wins there. */
+:root[data-sidebar="collapsed"] {
+  --sidebar-width: 64px;
 }
 
 /* ============ LIGHT THEME ============
@@ -172,11 +179,11 @@
  */
 :root[data-theme="light"] {
   /* Surfaces, lightest = most elevated */
-  --bg-primary: #e2e7f0;         /* page canvas, and recessed areas on cards */
-  --bg-secondary: #ffffff;       /* cards/panels — the raised surface */
-  --bg-tertiary: #eef1f6;        /* row hover, table headers */
+  --bg-primary: #e2e7f0; /* page canvas, and recessed areas on cards */
+  --bg-secondary: #ffffff; /* cards/panels — the raised surface */
+  --bg-tertiary: #eef1f6; /* row hover, table headers */
   --bg-sidebar: #dbe2ed;
-  --bg-canvas: #e2e7f0;          /* pipeline editor canvas */
+  --bg-canvas: #e2e7f0; /* pipeline editor canvas */
   --bg-code: #f1f4f9;
   --bg-code-line: #e8ecf2;
   --bg-input: #ffffff;
@@ -184,16 +191,16 @@
   --bg-overlay: rgba(16, 24, 40, 0.4);
 
   /* Borders carry the edges the old theme was missing */
-  --border: #c3ccda;             /* 1.62:1 on card */
+  --border: #c3ccda; /* 1.62:1 on card */
   --border-hover: #8d98a8;
-  --border-subtle: #dde3ec;      /* 1.29:1 on card — dividers inside panels */
+  --border-subtle: #dde3ec; /* 1.29:1 on card — dividers inside panels */
   --border-sidebar: #ccd4e1;
 
-  --text-primary: #0f172a;       /* 17.9:1 on card, 14.4 on canvas */
-  --text-secondary: #2f3b4d;     /* 11.3:1 on card,  9.1 on canvas */
-  --text-muted: #45505f;         /*  8.2:1 on card,  6.6 on canvas */
-  --text-dim: #54606f;           /*  6.4:1 on card,  5.2 on canvas — 10px labels */
-  --text-ghost: #8d98a8;         /*  decorative only, never text */
+  --text-primary: #0f172a; /* 17.9:1 on card, 14.4 on canvas */
+  --text-secondary: #2f3b4d; /* 11.3:1 on card,  9.1 on canvas */
+  --text-muted: #45505f; /*  8.2:1 on card,  6.6 on canvas */
+  --text-dim: #54606f; /*  6.4:1 on card,  5.2 on canvas — 10px labels */
+  --text-ghost: #8d98a8; /*  decorative only, never text */
 
   /* Teal accent */
   --accent: #0e6f68;
@@ -242,16 +249,19 @@
   --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08);
   --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.14);
   --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --shadow-card-hover: 0 4px 12px rgba(16, 24, 40, 0.10);
+  --shadow-card-hover: 0 4px 12px rgba(16, 24, 40, 0.1);
 }
 
-*, *::before, *::after {
+*,
+*::before,
+*::after {
   margin: 0;
   padding: 0;
   box-sizing: border-box;
 }
 
-html, body {
+html,
+body {
   height: 100%;
   font-family: var(--font-ui);
   background: var(--bg-primary);
@@ -260,7 +270,9 @@ html, body {
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  transition: background 200ms ease, color 200ms ease;
+  transition:
+    background 200ms ease,
+    color 200ms ease;
 }
 
 #app {
@@ -285,7 +297,9 @@ button {
   color: var(--text-primary);
 }
 
-input, textarea, select {
+input,
+textarea,
+select {
   font-family: var(--font-ui);
   font-size: 0.875rem;
   background: var(--bg-secondary);
@@ -293,22 +307,33 @@ input, textarea, select {
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   padding: 9px var(--space-md);
-  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+  transition:
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    background var(--transition-fast);
 }
-input:hover, textarea:hover, select:hover {
+input:hover,
+textarea:hover,
+select:hover {
   border-color: var(--border-hover);
 }
-input:focus, textarea:focus, select:focus {
+input:focus,
+textarea:focus,
+select:focus {
   outline: none;
   border-color: var(--accent);
   background: var(--bg-primary);
-  box-shadow: 0 0 0 3px var(--accent-glow), 0 0 0 1px var(--accent);
+  box-shadow:
+    0 0 0 3px var(--accent-glow),
+    0 0 0 1px var(--accent);
 }
-input::placeholder, textarea::placeholder {
+input::placeholder,
+textarea::placeholder {
   color: var(--text-dim);
 }
 
-code, pre {
+code,
+pre {
   font-family: var(--font-mono);
 }
 
@@ -330,13 +355,24 @@ code, pre {
 
 /* Animations */
 @keyframes pulse-glow {
-  0%, 100% { box-shadow: 0 0 0 0 var(--accent-glow); }
-  50% { box-shadow: 0 0 0 4px var(--accent-glow-strong); }
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 var(--accent-glow);
+  }
+  50% {
+    box-shadow: 0 0 0 4px var(--accent-glow-strong);
+  }
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(4px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-in {
@@ -387,10 +423,10 @@ code, pre {
    Mobile Responsiveness
    ═══════════════════════════════════════════════════════════ */
 
-/* Tablet: collapse sidebar */
+/* Tablet: collapse sidebar (rail width matches the user-collapsed rail) */
 @media (max-width: 1024px) {
   :root {
-    --sidebar-width: 60px;
+    --sidebar-width: 64px;
     --space-xl: 16px;
   }
 }

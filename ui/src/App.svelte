@@ -20,10 +20,19 @@
   import { getSodpClient, closeSodpClient } from "./lib/sodp";
   import { notify } from "./lib/toast";
   import { initTheme } from "./lib/theme";
-  import { initAuth, authReady, authUser, needsSetup, loadPermissions, dashboardKey } from "./lib/auth";
+  import { initSidebar } from "./lib/sidebar";
+  import {
+    initAuth,
+    authReady,
+    authUser,
+    needsSetup,
+    loadPermissions,
+    dashboardKey,
+  } from "./lib/auth";
   import GlobalSearch from "./components/GlobalSearch.svelte";
 
   initTheme();
+  initSidebar();
 
   const routes = {
     "/": Dashboard,
@@ -130,10 +139,18 @@
         const tag2 = (e2.target as HTMLElement)?.tagName;
         if (tag2 === "INPUT" || tag2 === "TEXTAREA") return;
         const map: Record<string, string> = {
-          d: "#/", p: "#/pipelines", c: "#/connections", v: "#/variables",
-          l: "#/lineage", s: "#/settings", a: "#/api",
+          d: "#/",
+          p: "#/pipelines",
+          c: "#/connections",
+          v: "#/variables",
+          l: "#/lineage",
+          s: "#/settings",
+          a: "#/api",
         };
-        if (map[e2.key]) { e2.preventDefault(); window.location.hash = map[e2.key]; }
+        if (map[e2.key]) {
+          e2.preventDefault();
+          window.location.hash = map[e2.key];
+        }
       };
       window.addEventListener("keydown", handler);
       setTimeout(() => window.removeEventListener("keydown", handler), 1000);
@@ -142,7 +159,9 @@
 
   // Track current hash reactively
   let currentHash = window.location.hash;
-  function onHashChange() { currentHash = window.location.hash; }
+  function onHashChange() {
+    currentHash = window.location.hash;
+  }
 
   $: isLoginRoute = currentHash === "#/login";
   $: requiresAuth = $authReady && !$authUser && !$needsSetup;
@@ -152,7 +171,7 @@
 
 {#if showShortcuts}
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="shortcut-overlay" on:click={() => showShortcuts = false} on:keydown={() => {}}>
+  <div class="shortcut-overlay" on:click={() => (showShortcuts = false)} on:keydown={() => {}}>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="shortcut-modal" on:click|stopPropagation on:keydown={() => {}}>
       <h2>Keyboard Shortcuts</h2>
@@ -228,39 +247,65 @@
     animation: spin 0.8s linear infinite;
   }
   @keyframes spin {
-    to { transform: rotate(360deg); }
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .shortcut-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
-    display: flex; align-items: center; justify-content: center;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
     z-index: 9999;
   }
   .shortcut-modal {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 12px; padding: 24px 32px;
-    max-width: 560px; width: 90vw;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px 32px;
+    max-width: 560px;
+    width: 90vw;
   }
   .shortcut-modal h2 {
-    font-size: 16px; font-weight: 600; margin-bottom: 16px;
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 16px;
     color: var(--text-primary);
   }
   .shortcut-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
     gap: 20px;
   }
   .shortcut-section h3 {
-    font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-muted); font-weight: 600; margin-bottom: 8px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    font-weight: 600;
+    margin-bottom: 8px;
   }
   .shortcut-row {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 4px 0; font-size: 12px; color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 4px 0;
+    font-size: 12px;
+    color: var(--text-secondary);
   }
   .shortcut-row kbd {
-    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    padding: 2px 6px; border-radius: 4px; color: var(--text-primary);
-    min-width: 24px; text-align: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 4px;
+    color: var(--text-primary);
+    min-width: 24px;
+    text-align: center;
   }
 </style>
