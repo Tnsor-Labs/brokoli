@@ -41,10 +41,28 @@ const (
 
 // User represents a user account.
 type User struct {
-	ID        string    `json:"id"`
-	Username  string    `json:"username"`
-	Role      Role      `json:"role"`
-	CreatedAt time.Time `json:"created_at"`
+	ID       string `json:"id"`
+	Username string `json:"username"`
+	// DisplayName is the human name to show in the UI; Email is the
+	// address the account is reachable at. Both are optional and both
+	// are empty for password accounts created with just a username.
+	// They exist because SSO providers hand us a real name and address,
+	// and without somewhere to put them the provider-prefixed username
+	// (e.g. "google_someone@example.com") ends up greeting the user.
+	// Identity still keys on Username — these are presentation only.
+	DisplayName string    `json:"display_name,omitempty"`
+	Email       string    `json:"email,omitempty"`
+	Role        Role      `json:"role"`
+	CreatedAt   time.Time `json:"created_at"`
+}
+
+// DisplayLabel returns the best human label for a user: the display
+// name when the account has one, otherwise the username.
+func (u *User) DisplayLabel() string {
+	if u.DisplayName != "" {
+		return u.DisplayName
+	}
+	return u.Username
 }
 
 // UserStore handles user persistence. Uses the same DB connection.
@@ -66,6 +84,13 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create users table: %w", err)
 	}
+
+	// Additive columns for installs whose users table predates them.
+	// Both dialects error on a duplicate column and both are fine to
+	// ignore: this runs on every boot, so "already exists" is the
+	// normal case, not a failure.
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
 
 	// Login attempts table for account lockout
 	db.Exec(`CREATE TABLE IF NOT EXISTS login_attempts (
@@ -115,11 +140,11 @@ func (us *UserStore) IsSuperAdmin(userID string) bool {
 func (us *UserStore) GetUserByID(id string) (*User, error) {
 	var u User
 	var createdAt string
-	err := us.db.QueryRow(`SELECT id, username, role, created_at FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &createdAt)
+	err := us.db.QueryRow(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt)
 	if err != nil {
-		err = us.db.QueryRow(`SELECT id, username, role, created_at FROM users WHERE id = $1`, id).
-			Scan(&u.ID, &u.Username, &u.Role, &createdAt)
+		err = us.db.QueryRow(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = $1`, id).
+			Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
@@ -169,13 +194,13 @@ func (us *UserStore) Authenticate(username, password string) (*User, error) {
 	var hash, createdAt string
 
 	err := us.db.QueryRow(
-		`SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?`, username,
-	).Scan(&u.ID, &u.Username, &hash, &u.Role, &createdAt)
+		`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = ?`, username,
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &hash, &u.Role, &createdAt)
 	if err != nil {
 		// Try Postgres
 		err = us.db.QueryRow(
-			`SELECT id, username, password_hash, role, created_at FROM users WHERE username = $1`, username,
-		).Scan(&u.ID, &u.Username, &hash, &u.Role, &createdAt)
+			`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = $1`, username,
+		).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &hash, &u.Role, &createdAt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
@@ -262,8 +287,43 @@ func (us *UserStore) AdminResetPassword(userID, newPassword string) error {
 	return nil
 }
 
+// SetProfile updates the presentation fields of an account. Empty
+// arguments are ignored rather than written, so a provider that returns
+// only some of them (or a later login that returns none) never blanks
+// out what an earlier one supplied.
+//
+// The three cases are spelled out as literal statements rather than
+// assembled from fragments: there are only three, and a fixed string
+// per case keeps the SQL obviously parameterized.
+func (us *UserStore) SetProfile(userID, displayName, email string) error {
+	var qmark, dollar string
+	var args []any
+	switch {
+	case displayName != "" && email != "":
+		qmark = `UPDATE users SET display_name = ?, email = ? WHERE id = ?`
+		dollar = `UPDATE users SET display_name = $1, email = $2 WHERE id = $3`
+		args = []any{displayName, email, userID}
+	case displayName != "":
+		qmark = `UPDATE users SET display_name = ? WHERE id = ?`
+		dollar = `UPDATE users SET display_name = $1 WHERE id = $2`
+		args = []any{displayName, userID}
+	case email != "":
+		qmark = `UPDATE users SET email = ? WHERE id = ?`
+		dollar = `UPDATE users SET email = $1 WHERE id = $2`
+		args = []any{email, userID}
+	default:
+		return nil
+	}
+
+	_, err := us.db.Exec(qmark, args...)
+	if err != nil {
+		_, err = us.db.Exec(dollar, args...)
+	}
+	return err
+}
+
 func (us *UserStore) ListUsers() ([]User, error) {
-	rows, err := us.db.Query(`SELECT id, username, role, created_at FROM users ORDER BY created_at`)
+	rows, err := us.db.Query(`SELECT id, username, display_name, email, role, created_at FROM users ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -273,7 +333,7 @@ func (us *UserStore) ListUsers() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var createdAt string
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt); err != nil {
 			return nil, err
 		}
 		u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -285,7 +345,7 @@ func (us *UserStore) ListUsers() ([]User, error) {
 // ListUsersByOrg returns users that belong to a specific org via org_members join.
 func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 	rows, err := us.db.Query(
-		`SELECT u.id, u.username, u.role, u.created_at
+		`SELECT u.id, u.username, u.display_name, u.email, u.role, u.created_at
 		 FROM users u
 		 INNER JOIN org_members om ON u.id = om.user_id
 		 WHERE om.org_id = $1
@@ -298,7 +358,7 @@ func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 	for rows.Next() {
 		var u User
 		var createdAt string
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &createdAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt); err != nil {
 			return nil, err
 		}
 		u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -346,6 +406,16 @@ func GenerateToken(user *User) (string, error) {
 		"username": user.Username,
 		"role":     string(user.Role),
 		"exp":      time.Now().Add(24 * time.Hour).Unix(),
+	}
+	// Presentation fields ride along so /api/auth/me (which returns the
+	// claims verbatim) can label the signed-in user without a second
+	// lookup. Omitted when empty to keep password-account tokens as they
+	// were. Identity remains sub/username — never these.
+	if user.DisplayName != "" {
+		claims["display_name"] = user.DisplayName
+	}
+	if user.Email != "" {
+		claims["email"] = user.Email
 	}
 	// Include org_id if enterprise org resolver is configured
 	if OrgResolverFunc != nil {

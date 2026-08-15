@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { icons } from "../lib/icons";
   import { theme, toggleTheme } from "../lib/theme";
-  import { authUser, logout } from "../lib/auth";
+  import { authUser, logout, userLabel } from "../lib/auth";
   import { wsConnected } from "../lib/sodp";
   import { sidebarCollapsed, sidebarGroups, toggleSidebar, toggleGroup } from "../lib/sidebar";
   export let currentPath: string = "/";
@@ -210,7 +210,7 @@
           </svg>
         </div>
         <div class="user-details">
-          <span class="user-name">{$authUser.username}</span>
+          <span class="user-name">{userLabel($authUser)}</span>
           <span class="user-role">{$authUser.role}</span>
         </div>
         <button class="logout-btn" on:click={logout} title="Sign out" aria-label="Sign out">

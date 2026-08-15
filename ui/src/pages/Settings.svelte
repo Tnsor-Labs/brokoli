@@ -8,6 +8,8 @@
   interface UserInfo {
     id: string;
     username: string;
+    display_name?: string;
+    email?: string;
     role: string;
     created_at: string;
   }
@@ -485,7 +487,10 @@
               {#each users as user}
                 <div class="users-row">
                   <span class="col-user">
-                    {user.username}
+                    {user.display_name || user.username}
+                    {#if user.display_name}
+                      <span class="user-handle">{user.username}</span>
+                    {/if}
                     {#if $authUser?.username === user.username}
                       <span class="you-badge">you</span>
                     {/if}
@@ -1448,6 +1453,13 @@ assertions:
     border-top: 1px solid var(--border);
     font-size: 0.8125rem;
   }
+  .user-handle {
+    margin-left: 6px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 10px;
+  }
+
   .you-badge {
     font-size: 0.625rem;
     color: var(--accent-text);
