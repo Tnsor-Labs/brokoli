@@ -225,6 +225,12 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	}
 	r.cancelMu.Unlock()
 	defer r.cancel()
+	// Reclaim the run's transient blob scratch once it is terminal
+	// (Tnsor-Labs/brokoli#215) — see TransientBlobJanitor. Registered
+	// before the run row exists, so the helper no-ops if Execute bails
+	// early, and it skips non-terminal exits: an unsettled outcome (e.g.
+	// a persist failure mid-finalize) keeps its state for recovery.
+	defer r.reclaimTransientBlobs()
 
 	now := time.Now().UTC()
 	if r.acceptedRun != nil {
@@ -1514,6 +1520,27 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 		return outputExecutionResult(r.runDatasetFilter(node, input))
 	default:
 		return nodeExecutionResult{}, fmt.Errorf("built-in node type %q has no runtime handler", node.Type)
+	}
+}
+
+// reclaimTransientBlobs deletes the run's blob scratch namespace when the
+// run is terminal and the artifact store declares the namespace transient
+// (TransientBlobJanitor). Best-effort: a failure here costs disk, never
+// correctness, so it logs and moves on.
+func (r *Runner) reclaimTransientBlobs() {
+	if r.run == nil || r.artifactStore == nil {
+		return
+	}
+	if !isTerminalRunStatus(r.run.Status) {
+		return
+	}
+	janitor, ok := r.artifactStore.(TransientBlobJanitor)
+	if !ok {
+		return
+	}
+	if err := janitor.DeleteTransientBlobs(r.run.ID); err != nil {
+		common.SLog().Warn("transient blob reclaim failed",
+			common.RunAttr(r.run.ID), "error", err)
 	}
 }
 

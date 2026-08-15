@@ -119,6 +119,30 @@ func NewLocalDiskArtifactStore(baseDir string) *LocalDiskArtifactStore {
 	}
 }
 
+// TransientBlobJanitor is an optional ArtifactStore capability
+// (Tnsor-Labs/brokoli#215): reclaim a run's per-run blob scratch namespace
+// once the run is terminal, WITHOUT touching persisted artifacts.
+//
+// Only implementations whose artifact persistence does not alias the blob
+// namespace may offer it. SQLArtifactStore qualifies: its artifacts live
+// in database rows, so the local-disk blobs under a run's namespace are
+// pure transport — spill parking and ADR-019 reference-passing hand-off —
+// and are dead weight the moment the run finalizes and its artifacts are
+// persisted. LocalDiskArtifactStore deliberately does NOT implement this:
+// its WriteArtifactRef is a zero-copy manifest over the SAME namespace,
+// so deleting the namespace would destroy the artifacts the ADR-010
+// resume contract depends on; there, blob lifetime is artifact lifetime
+// (DeleteRunArtifacts, retention).
+//
+// Measured need: a 3-hour soak grew each worker's blob directory linearly
+// at ~450MB/hour with nothing reclaiming it — node disk pressure was a
+// matter of days on any stable fleet.
+type TransientBlobJanitor interface {
+	// DeleteTransientBlobs removes the run's blob scratch namespace. A
+	// no-op, not an error, when nothing was written.
+	DeleteTransientBlobs(runID string) error
+}
+
 // BlobStoreProvider is implemented by an ArtifactStore that can also hold
 // arbitrary bytes by reference, not only keyed node output.
 //
