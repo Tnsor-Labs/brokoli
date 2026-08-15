@@ -11,6 +11,23 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.39] - 2026-08-15
+
+### Added
+
+- **Application-surface redesign** (#221) — @hc12r. The pipeline
+  inventory gains run metrics, filtering, saved views, density
+  controls, and a five-run history strip per pipeline (new
+  `run_history` field in `GET /api/pipelines/summary`); the DAG editor
+  gains a searchable node library, explicit save state, and undo for
+  node and edge movement. Settings, Variables, Connections, Plugins,
+  API Integrations, Calendar, and the Dashboard adopt one
+  control-center hierarchy — operational hero, section navigation,
+  bordered control surfaces, deliberate empty/loading/error states —
+  with width caps removed from management routes and layouts hardened
+  against horizontal overflow. Existing routes and graph behavior are
+  preserved.
+
 ## [0.10.38] - 2026-08-15
 
 ### Fixed
