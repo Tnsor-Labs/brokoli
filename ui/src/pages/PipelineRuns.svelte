@@ -38,27 +38,29 @@
   let profileNodeId: string | null = null;
   let profileData: any = null;
   let loadingProfile = false;
+  let profileRequest = 0;
 
   async function loadProfile(runId: string, nodeId: string) {
+    const request = ++profileRequest;
     if (profileNodeId === nodeId) {
       profileNodeId = null;
       profileData = null;
+      loadingProfile = false;
       return;
     }
     profileNodeId = nodeId;
     loadingProfile = true;
+    let nextProfile: any = null;
     try {
       const res = await fetch(`/api/runs/${runId}/nodes/${nodeId}/profile`, {
         headers: authHeaders(),
       });
       if (res.ok) {
-        profileData = await res.json();
-      } else {
-        profileData = null;
+        nextProfile = await res.json();
       }
-    } catch {
-      profileData = null;
-    }
+    } catch {}
+    if (request !== profileRequest) return;
+    profileData = nextProfile;
     loadingProfile = false;
   }
 
@@ -71,6 +73,8 @@
   let dashboardUnsub: (() => void) | null = null;
   let logsUnsub: (() => void) | null = null;
   let runListReloadTimer: ReturnType<typeof setTimeout> | null = null;
+  let relativeTimeTimer: ReturnType<typeof setInterval> | null = null;
+  let now = Date.now();
 
   async function reloadRunList() {
     if (!params.id) return;
@@ -142,12 +146,14 @@
         runListReloadTimer = null;
       }, 150);
     });
+    relativeTimeTimer = setInterval(() => (now = Date.now()), 60_000);
   });
 
   onDestroy(() => {
     dashboardUnsub?.();
     logsUnsub?.();
     if (runListReloadTimer) clearTimeout(runListReloadTimer);
+    if (relativeTimeTimer) clearInterval(relativeTimeTimer);
   });
 
   async function selectRun(run: Run) {
@@ -160,6 +166,11 @@
       return;
     }
     expandedRunId = run.id;
+    previewNodeId = null;
+    profileNodeId = null;
+    profileData = null;
+    loadingProfile = false;
+    profileRequest += 1;
     try {
       selectedRun = await api.runs.get(run.id);
       logs = await api.runs.getLogs(run.id);
@@ -272,7 +283,7 @@
 
   function nodeStatuses(run: Run): Record<string, RunStatus> {
     const map: Record<string, RunStatus> = {};
-    for (const nr of run.node_runs || []) {
+    for (const nr of primaryNodeRuns(run)) {
       map[nr.node_id] = nr.status;
     }
     // Per-node live state comes from the dashboard tripwire above, which
@@ -282,8 +293,40 @@
     return map;
   }
 
+  function primaryNodeRuns(run: Run) {
+    const latest = new Map<string, (typeof run.node_runs)[number]>();
+    for (const nr of run.node_runs || []) {
+      const current = latest.get(nr.node_id);
+      if (!current || (nr.attempt ?? 0) >= (current.attempt ?? 0)) latest.set(nr.node_id, nr);
+    }
+    return [...latest.values()];
+  }
+
   function totalRows(run: Run): number {
-    return (run.node_runs || []).reduce((sum, nr) => sum + nr.row_count, 0);
+    return primaryNodeRuns(run).reduce((sum, nr) => sum + nr.row_count, 0);
+  }
+
+  function nodeCount(run: Run, status: RunStatus): number {
+    return primaryNodeRuns(run).filter((nr) => nr.status === status).length;
+  }
+
+  function relativeTime(ts: string | null, currentTime: number): string {
+    if (!ts) return "Not started";
+    const seconds = Math.max(0, Math.floor((currentTime - new Date(ts).getTime()) / 1000));
+    if (seconds < 60) return "just now";
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}h ago`;
+    const days = Math.floor(hours / 24);
+    return days < 30 ? `${days}d ago` : new Date(ts).toLocaleDateString();
+  }
+
+  function historyTitle(run: Run): string {
+    const parts = [run.id.slice(0, 8), run.status, formatTime(run.started_at), formatDuration(run)];
+    if (run.node_runs?.length) parts.push(`${totalRows(run)} rows`);
+    if (run.error) parts.push(run.error.slice(0, 50));
+    return parts.join(" | ");
   }
 
   function formatFullTime(ts: string | null): string {
@@ -327,9 +370,7 @@
           day: "numeric",
         }),
         runs: dayRuns.sort((a, b) => (a.started_at || "").localeCompare(b.started_at || "")),
-        success: dayRuns.filter(
-          (r) => r.status === "success" || r.status === "succeeded" || r.status === "completed",
-        ).length,
+        success: dayRuns.filter((r) => isSuccessStatus(r.status)).length,
         failed: dayRuns.filter((r) => r.status === "failed").length,
         total: dayRuns.length,
       });
@@ -337,71 +378,87 @@
     return result.sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14);
   }
 
+  function isSuccessStatus(status: string): boolean {
+    return status === "success" || status === "succeeded" || status === "completed";
+  }
+
   $: runsByDate = groupRunsByDate(runs);
+  $: latestRun = runs[0] || null;
+  $: terminalRuns = runs.filter((run) => run.status === "success" || run.status === "failed");
+  $: recentSuccessRate = terminalRuns.length
+    ? Math.round(
+        (terminalRuns.filter((run) => run.status === "success").length / terminalRuns.length) * 100,
+      )
+    : null;
 </script>
 
 <div class="runs-page animate-in">
-  <div class="toolbar">
-    <div class="toolbar-left">
-      <Breadcrumb
-        items={[
-          { label: "Pipelines", href: "#/pipelines" },
-          { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params.id}/edit` },
-          { label: "Runs" },
-        ]}
-      />
+  <header class="runs-header">
+    <Breadcrumb
+      items={[
+        { label: "Pipelines", href: "#/pipelines" },
+        { label: pipeline?.name || "Pipeline", href: `#/pipelines/${params.id}/edit` },
+        { label: "Runs" },
+      ]}
+    />
+    <div class="header-main">
+      <div class="header-copy">
+        <span class="eyebrow">Execution control</span>
+        <h1>{pipeline?.name || "Pipeline runs"}</h1>
+        <p>Inspect run health, node timing, output data, and logs.</p>
+      </div>
+      <div class="toolbar-right">
+        <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+            ><path
+              d={icons.layout.d}
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
+          >
+          <span class="btn-label">Edit Pipeline</span>
+        </a>
+        <button class="btn-sm" on:click={() => (showBackfill = !showBackfill)} title="Backfill">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+            ><path
+              d={icons.history.d}
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
+          >
+          <span class="btn-label">Backfill</span>
+        </button>
+        <button class="btn-sm" on:click={openParamsModal} title="Run with Params">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+            ><path
+              d={icons.settings.d}
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
+          >
+          <span class="btn-label">Run with Params</span>
+        </button>
+        <button class="btn-sm btn-run" on:click={triggerRun} title="Run Now">
+          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+            ><path
+              d={icons.play.d}
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            /></svg
+          >
+          <span class="btn-label">Run Now</span>
+        </button>
+      </div>
     </div>
-    <div class="toolbar-right">
-      <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.layout.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          /></svg
-        >
-        <span class="btn-label">Edit Pipeline</span>
-      </a>
-      <button class="btn-sm" on:click={() => (showBackfill = !showBackfill)} title="Backfill">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.history.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          /></svg
-        >
-        <span class="btn-label">Backfill</span>
-      </button>
-      <button class="btn-sm" on:click={openParamsModal} title="Run with Params">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.settings.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          /></svg
-        >
-        <span class="btn-label">Run with Params</span>
-      </button>
-      <button class="btn-sm btn-run" on:click={triggerRun} title="Run Now">
-        <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.play.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          /></svg
-        >
-        <span class="btn-label">Run Now</span>
-      </button>
-    </div>
-  </div>
+  </header>
 
   {#if showBackfill}
     <div class="backfill-panel">
@@ -420,28 +477,61 @@
     </div>
   {/if}
 
+  {#if latestRun}
+    <section class="run-metrics" aria-label="Recent run metrics">
+      <div class="metric latest">
+        <span>Latest state</span><strong><StatusBadge status={latestRun.status} size="sm" /></strong
+        >
+      </div>
+      <div class="metric">
+        <span>Recent runs</span><strong>{runs.length}</strong><small>loaded executions</small>
+      </div>
+      <div class="metric">
+        <span>Success rate</span><strong
+          >{recentSuccessRate === null ? "--" : `${recentSuccessRate}%`}</strong
+        ><small>completed runs</small>
+      </div>
+      <div class="metric">
+        <span>Latest duration</span><strong class="mono">{formatDuration(latestRun)}</strong><small
+          >{relativeTime(latestRun.started_at, now)}</small
+        >
+      </div>
+    </section>
+  {/if}
+
   <!-- Run History Grid (collapsed by default, shows last 3 days) -->
   {#if runs.length > 0}
     <div class="history-section">
       <div class="history-header">
-        <h3 class="detail-section-title" style="margin:0">Run History</h3>
-        <button class="history-toggle" on:click={() => (historyExpanded = !historyExpanded)}>
-          {historyExpanded ? "Collapse" : `Show all ${runsByDate.length} days`}
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 24 24"
-            fill="none"
-            style="transform:rotate({historyExpanded ? 180 : 0}deg);transition:transform 150ms ease"
-            ><path
-              d="M6 9l6 6 6-6"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            /></svg
+        <div>
+          <h2>Run history</h2>
+          <p>Each marker is an execution, grouped by start date.</p>
+        </div>
+        <div class="history-tools">
+          <span class="history-legend"
+            ><i class="success"></i>Success <i class="failed"></i>Failed
+            <i class="running"></i>Running</span
           >
-        </button>
+          <button class="history-toggle" on:click={() => (historyExpanded = !historyExpanded)}>
+            {historyExpanded ? "Collapse" : `Show all ${runsByDate.length} days`}
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              style="transform:rotate({historyExpanded
+                ? 180
+                : 0}deg);transition:transform 150ms ease"
+              ><path
+                d="M6 9l6 6 6-6"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              /></svg
+            >
+          </button>
+        </div>
       </div>
       <div class="history-grid">
         {#each historyExpanded ? runsByDate : runsByDate.slice(0, 3) as day}
@@ -451,17 +541,11 @@
               {#each day.runs as r}
                 <button
                   class="history-cell"
-                  class:cell-success={r.status === "success" ||
-                    r.status === "succeeded" ||
-                    r.status === "completed"}
+                  class:cell-success={isSuccessStatus(r.status)}
                   class:cell-failed={r.status === "failed"}
                   class:cell-running={r.status === "running"}
                   class:cell-pending={r.status === "pending"}
-                  title="{r.id.slice(0, 8)} | {r.status} | {formatTime(
-                    r.started_at,
-                  )} | {formatDuration(r)} | {totalRows(r)} rows{r.error
-                    ? ' | ' + r.error.slice(0, 50)
-                    : ''}"
+                  title={historyTitle(r)}
                   on:click={() => selectRun(r)}
                 ></button>
               {/each}
@@ -485,61 +569,88 @@
       <button class="btn-primary" on:click={triggerRun}>Run Now</button>
     </div>
   {:else}
+    <div class="list-heading">
+      <div>
+        <span class="eyebrow">Execution log</span>
+        <h2>Recent runs</h2>
+      </div>
+      <span>{runs.length} loaded</span>
+    </div>
     <div class="runs-list">
       {#each runs.slice((runPage - 1) * runPageSize, runPage * runPageSize) as run}
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
-          class="run-card"
-          class:expanded={expandedRunId === run.id}
-          on:click={() => selectRun(run)}
-          on:keydown={() => {}}
-        >
+        <article class="run-card status-{run.status}" class:expanded={expandedRunId === run.id}>
           <div class="run-header">
-            <StatusBadge status={run.status} />
-            <span class="run-id mono">{run.id.slice(0, 8)}</span>
-            <span class="run-time">{formatTime(run.started_at)}</span>
-            <span class="run-duration mono">{formatDuration(run)}</span>
-            <span class="run-rows mono">{totalRows(run)} rows</span>
-            {#if run.status === "running"}
-              <button class="btn-cancel" on:click|stopPropagation={() => cancelRun(run.id)}
-                >Cancel</button
-              >
-            {/if}
-            {#if run.status === "failed"}
-              <span class="run-error-hint" title={run.error || "Check logs for details"}>Error</span
-              >
-              <button class="btn-resume" on:click|stopPropagation={() => resumeRun(run.id)}
-                >Resume</button
-              >
-              <button class="btn-rerun" on:click|stopPropagation={() => rerunPipeline()}
-                >Re-run</button
-              >
-            {/if}
-            <a
-              href="/api/runs/{run.id}/logs/export"
-              class="btn-export"
-              on:click|stopPropagation
-              title="Download logs"
-              target="_blank">Logs</a
+            <button
+              class="run-select"
+              aria-expanded={expandedRunId === run.id}
+              on:click={() => selectRun(run)}
             >
-            <svg
-              class="expand-icon"
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              style="transform: rotate({expandedRunId === run.id
-                ? 90
-                : 0}deg); transition: transform 150ms ease"
-            >
-              <path
-                d={icons.chevronRight.d}
-                stroke="currentColor"
-                stroke-width="2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+              <StatusBadge status={run.status} />
+              <span class="run-identity"
+                ><strong class="run-id mono">{run.id.slice(0, 8)}</strong><small
+                  >{formatTime(run.started_at)} · {relativeTime(run.started_at, now)}</small
+                ></span
+              >
+              <span class="run-stat"
+                ><small>Duration</small><strong class="mono">{formatDuration(run)}</strong></span
+              >
+              {#if run.node_runs?.length}
+                <span class="run-stat"
+                  ><small>Rows</small><strong class="mono">{totalRows(run).toLocaleString()}</strong
+                  ></span
+                >
+              {/if}
+            </button>
+            <div class="run-actions">
+              {#if run.status === "running"}
+                <button class="btn-cancel" on:click|stopPropagation={() => cancelRun(run.id)}
+                  >Cancel</button
+                >
+              {/if}
+              {#if run.status === "failed"}
+                <span class="run-error-hint" title={run.error || "Check logs for details"}
+                  >Error</span
+                >
+                <button class="btn-resume" on:click|stopPropagation={() => resumeRun(run.id)}
+                  >Resume</button
+                >
+                <button class="btn-rerun" on:click|stopPropagation={() => rerunPipeline()}
+                  >Re-run</button
+                >
+              {/if}
+              <a
+                href="/api/runs/{run.id}/logs/export"
+                class="btn-export"
+                on:click|stopPropagation
+                title="Download logs"
+                target="_blank">Logs</a
+              >
+              <button
+                class="expand-button"
+                aria-label={expandedRunId === run.id
+                  ? "Collapse run details"
+                  : "Expand run details"}
+                on:click={() => selectRun(run)}
+                ><svg
+                  class="expand-icon"
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  style="transform: rotate({expandedRunId === run.id
+                    ? 90
+                    : 0}deg); transition: transform 150ms ease"
+                >
+                  <path
+                    d={icons.chevronRight.d}
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  />
+                </svg></button
+              >
+            </div>
           </div>
 
           {#if expandedRunId === run.id && selectedRun}
@@ -566,9 +677,9 @@
                 <div class="summary-item">
                   <span class="summary-label">Nodes</span>
                   <span class="summary-value mono">
-                    {selectedRun.node_runs?.filter((n) => n.status === "success").length || 0} ok,
-                    {selectedRun.node_runs?.filter((n) => n.status === "failed").length || 0} failed,
-                    {selectedRun.node_runs?.filter((n) => n.status === "skipped").length || 0} skipped
+                    {nodeCount(selectedRun, "success")} ok,
+                    {nodeCount(selectedRun, "failed")} failed,
+                    {nodeCount(selectedRun, "skipped")} skipped
                   </span>
                 </div>
                 {#if selectedRun.error}
@@ -619,7 +730,7 @@
                 <div class="detail-section">
                   <h3>Data Preview</h3>
                   <div class="preview-tabs">
-                    {#each selectedRun.node_runs as nr}
+                    {#each primaryNodeRuns(selectedRun) as nr}
                       {@const node = (pipeline?.nodes || []).find((n) => n.id === nr.node_id)}
                       <button
                         class="preview-tab"
@@ -637,7 +748,7 @@
                       <DataPreview
                         runId={selectedRun.id}
                         nodeId={previewNodeId}
-                        nodeName={(pipeline?.nodes || []).find((n) => n.id === previewNodeId)
+                        nodeName={(pipeline?.nodes || []).find((node) => node.id === previewNodeId)
                           ?.name || ""}
                       />
                     {/key}
@@ -650,12 +761,12 @@
                 <div class="detail-section">
                   <h3>Data Profile</h3>
                   <div class="preview-tabs">
-                    {#each selectedRun.node_runs as nr}
+                    {#each primaryNodeRuns(selectedRun) as nr}
                       {@const node = (pipeline?.nodes || []).find((n) => n.id === nr.node_id)}
                       <button
                         class="preview-tab"
                         class:active={profileNodeId === nr.node_id}
-                        on:click={() => loadProfile(selectedRun.id, nr.node_id)}
+                        on:click={() => loadProfile(run.id, nr.node_id)}
                       >
                         {node?.name || nr.node_id}
                       </button>
@@ -730,7 +841,7 @@
               </div>
             </div>
           {/if}
-        </div>
+        </article>
       {/each}
     </div>
     <Pagination
@@ -1426,5 +1537,509 @@
   .summary-error .summary-value {
     color: var(--failed);
     font-size: 0.75rem;
+  }
+
+  /* Refined execution workspace */
+  .runs-header {
+    margin-bottom: 18px;
+  }
+  .header-main {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 24px;
+    margin-top: 18px;
+  }
+  .header-copy {
+    min-width: 0;
+  }
+  .eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .header-copy h1 {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header-copy p {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .header-main .toolbar-right {
+    flex: none;
+    align-items: center;
+  }
+  .header-main .btn-sm {
+    min-height: 34px;
+    padding: 0 12px;
+    border-color: var(--border-subtle);
+    background: var(--bg-secondary);
+  }
+  .header-main .btn-sm:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-tertiary);
+  }
+  .header-main .btn-run {
+    border-color: color-mix(in srgb, var(--success), transparent 35%);
+    background: var(--success-bg);
+  }
+
+  .run-metrics {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+    margin-bottom: 18px;
+  }
+  .metric {
+    position: relative;
+    display: grid;
+    min-height: 78px;
+    grid-template-columns: 1fr;
+    align-content: center;
+    gap: 3px;
+    padding: 13px 15px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background:
+      linear-gradient(140deg, color-mix(in srgb, var(--bg-tertiary), transparent 52%), transparent),
+      var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .metric::before {
+    content: "";
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .metric.latest::before {
+    background: var(--accent);
+  }
+  .metric > span {
+    color: var(--text-muted);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+  .metric > strong {
+    min-height: 23px;
+    color: var(--text-primary);
+    font-size: 18px;
+    font-weight: 640;
+  }
+  .metric.latest > strong {
+    display: flex;
+    align-items: center;
+  }
+  .metric > small {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+
+  .history-section {
+    margin-bottom: 22px;
+  }
+  .history-header {
+    margin-bottom: 9px;
+  }
+  .history-header h2,
+  .list-heading h2 {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 620;
+    letter-spacing: -0.01em;
+  }
+  .history-header p {
+    margin-top: 2px;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .history-tools,
+  .history-legend {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  .history-legend {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .history-legend i {
+    width: 7px;
+    height: 7px;
+    margin-right: -5px;
+    border-radius: 2px;
+    background: var(--pending);
+  }
+  .history-legend i.success {
+    background: var(--success);
+  }
+  .history-legend i.failed {
+    background: var(--failed);
+  }
+  .history-legend i.running {
+    background: var(--running);
+  }
+  .history-grid {
+    padding: 11px 14px;
+    border-color: var(--border-subtle);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .history-row {
+    min-height: 31px;
+    padding: 6px 2px;
+  }
+  .history-date {
+    width: 62px;
+    color: var(--text-secondary);
+  }
+  .history-cell {
+    width: 20px;
+    height: 9px;
+    border-radius: 3px;
+    opacity: 0.88;
+  }
+  .history-cell:hover {
+    opacity: 1;
+    transform: translateY(-1px) scaleY(1.35);
+  }
+
+  .list-heading {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    margin: 0 1px 9px;
+  }
+  .list-heading .eyebrow {
+    margin-bottom: 2px;
+  }
+  .list-heading > span {
+    color: var(--text-dim);
+    font: 9px var(--font-mono);
+  }
+  .runs-list {
+    gap: 8px;
+  }
+  .run-card {
+    position: relative;
+    border-color: var(--border-subtle);
+    border-radius: 8px;
+    cursor: default;
+    box-shadow: var(--shadow-card);
+  }
+  .run-card::before {
+    content: "";
+    position: absolute;
+    z-index: 1;
+    top: 10px;
+    bottom: 10px;
+    left: 0;
+    width: 2px;
+    border-radius: 0 2px 2px 0;
+    background: var(--pending);
+    opacity: 0.7;
+  }
+  .run-card.status-success::before {
+    background: var(--success);
+  }
+  .run-card.status-failed::before {
+    background: var(--failed);
+  }
+  .run-card.status-running::before {
+    background: var(--running);
+  }
+  .run-card:hover {
+    border-color: var(--border-hover);
+  }
+  .run-card.expanded {
+    border-color: color-mix(in srgb, var(--accent), transparent 30%);
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--accent), transparent 88%),
+      var(--shadow-md);
+  }
+  .run-header {
+    gap: 0;
+    padding: 0;
+  }
+  .run-select {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    align-items: center;
+    gap: 14px;
+    padding: 13px 16px 13px 18px;
+    color: inherit;
+    text-align: left;
+  }
+  .run-select:hover {
+    background: color-mix(in srgb, var(--bg-tertiary), transparent 58%);
+  }
+  .run-identity {
+    display: flex;
+    min-width: 180px;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .run-id {
+    color: var(--text-primary);
+    font-size: 11px;
+    font-weight: 650;
+    letter-spacing: 0.025em;
+  }
+  .run-identity small {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 9.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .run-stat {
+    display: flex;
+    min-width: 78px;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .run-stat small {
+    color: var(--text-dim);
+    font-size: 8.5px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .run-stat strong {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 500;
+  }
+  .run-actions {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 6px;
+    padding-right: 12px;
+  }
+  .btn-export,
+  .btn-cancel,
+  .btn-resume,
+  .btn-rerun {
+    min-height: 25px;
+    display: inline-flex;
+    align-items: center;
+  }
+  .expand-button {
+    display: grid;
+    width: 28px;
+    height: 28px;
+    place-items: center;
+    border-radius: 5px;
+    color: var(--text-muted);
+  }
+  .expand-button:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  .run-detail {
+    padding: 18px;
+    border-color: var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 30%);
+  }
+  .run-summary-bar {
+    display: grid;
+    grid-template-columns: 1.2fr 1.2fr 0.55fr 0.45fr 1fr;
+    gap: 0;
+    margin-bottom: 14px;
+    padding: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    background: var(--bg-secondary);
+  }
+  .summary-item {
+    min-height: 62px;
+    justify-content: center;
+    padding: 11px 13px;
+    border-right: 1px solid var(--border-subtle);
+  }
+  .summary-item:last-child {
+    border-right: 0;
+  }
+  .summary-label {
+    font-size: 8.5px;
+  }
+  .summary-value {
+    font-size: 10.5px;
+  }
+  .summary-error {
+    grid-column: 1 / -1;
+    min-height: auto;
+    border-top: 1px solid var(--border-subtle);
+    border-right: 0;
+  }
+  .detail-section {
+    margin-bottom: 12px;
+    padding: 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .detail-section h3 {
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+    font-size: 9px;
+    font-weight: 650;
+    letter-spacing: 0.1em;
+  }
+  .canvas-header {
+    margin-bottom: 10px;
+  }
+  .canvas-header h3 {
+    margin: 0;
+  }
+  .canvas-status {
+    height: 270px;
+    border-radius: 6px;
+    background: var(--bg-canvas);
+  }
+  .preview-tab {
+    min-height: 28px;
+    padding: 4px 9px;
+    border-radius: 5px;
+    font-size: 10.5px;
+  }
+  .modal-content {
+    width: min(540px, calc(100vw - 32px));
+    min-width: 0;
+  }
+
+  @media (max-width: 980px) {
+    .header-main {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .run-summary-bar {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .summary-item {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+  }
+  @media (max-width: 768px) {
+    .runs-header {
+      margin-bottom: 14px;
+    }
+    .header-main {
+      gap: 14px;
+      margin-top: 14px;
+    }
+    .header-copy h1 {
+      font-size: 20px;
+    }
+    .header-main .toolbar-right {
+      width: 100%;
+    }
+    .run-metrics {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .history-legend {
+      display: none;
+    }
+    .run-header {
+      align-items: stretch;
+    }
+    .run-select {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+    }
+    .run-identity {
+      min-width: 0;
+    }
+    .run-stat {
+      min-width: 64px;
+    }
+    .run-actions {
+      padding-right: 8px;
+    }
+    .btn-export {
+      font-size: 0;
+      width: 28px;
+      justify-content: center;
+    }
+    .btn-export::after {
+      content: "↓";
+      font-size: 12px;
+    }
+    .run-summary-bar {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .canvas-status {
+      height: 230px;
+    }
+  }
+  @media (max-width: 520px) {
+    .header-main .toolbar-right {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .header-main .btn-sm {
+      justify-content: center;
+      padding: 0 8px;
+    }
+    .metric {
+      min-height: 70px;
+    }
+    .history-tools {
+      gap: 2px;
+    }
+    .history-grid {
+      padding-inline: 10px;
+    }
+    .history-cell {
+      width: 16px;
+    }
+    .run-header {
+      flex-wrap: wrap;
+    }
+    .run-select {
+      width: 100%;
+      flex-basis: 100%;
+    }
+    .run-actions {
+      width: 100%;
+      justify-content: flex-end;
+      padding: 0 8px 8px;
+    }
+    .run-detail {
+      padding: 10px;
+    }
+    .run-summary-bar {
+      grid-template-columns: 1fr;
+    }
+    .summary-item {
+      min-height: 54px;
+      border-right: 0;
+    }
+    .detail-section {
+      padding: 10px;
+    }
+    .canvas-hint {
+      display: none;
+    }
   }
 </style>

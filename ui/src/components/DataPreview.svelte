@@ -38,7 +38,7 @@
   }
 </script>
 
-<div class="preview">
+<div class="preview" aria-label={nodeName ? `Data preview for ${nodeName}` : "Data preview"}>
   {#if !loading && !error && rows.length > 0}
     <div class="preview-summary">
       <span class="summary-stat">{rows.length} rows</span>
@@ -89,14 +89,17 @@
     display: flex;
     gap: 16px;
     padding: 10px 0;
-    border-bottom: 1px solid var(--border-subtle);
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
   .summary-stat {
     font-family: var(--font-mono);
     font-size: 12px;
     font-weight: 600;
-    color: var(--text-primary);
+    padding: 3px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
   }
 
   .preview-empty {
@@ -110,6 +113,8 @@
     overflow-x: auto;
     max-height: 360px;
     overflow-y: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
   }
 
   table {
@@ -131,7 +136,7 @@
     white-space: nowrap;
     position: sticky;
     top: 0;
-    background: var(--bg-primary);
+    background: var(--bg-tertiary);
     z-index: 1;
   }
 
@@ -143,6 +148,10 @@
     max-width: 280px;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  tbody tr:last-child td {
+    border-bottom: 0;
   }
 
   tr:hover td {

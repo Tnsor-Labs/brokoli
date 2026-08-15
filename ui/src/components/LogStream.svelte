@@ -8,9 +8,7 @@
 
   let container: HTMLDivElement;
 
-  $: filtered = filterNodeId
-    ? logs.filter((l) => l.node_id === filterNodeId)
-    : logs;
+  $: filtered = filterNodeId ? logs.filter((l) => l.node_id === filterNodeId) : logs;
 
   afterUpdate(() => {
     if (autoScroll && container) {
@@ -44,7 +42,9 @@
     {#each filtered as log}
       <div class="log-line">
         <span class="log-time">{formatTime(log.timestamp)}</span>
-        <span class="log-level" style="color: {levelColor(log.level)}">{log.level.toUpperCase().padEnd(7)}</span>
+        <span class="log-level" style="color: {levelColor(log.level)}"
+          >{log.level.toUpperCase().padEnd(7)}</span
+        >
         {#if log.node_id && !filterNodeId}
           <span class="log-node">[{log.node_id}]</span>
         {/if}
@@ -59,8 +59,9 @@
     font-family: var(--font-mono);
     font-size: 0.75rem;
     line-height: 1.6;
-    background: var(--bg-primary);
-    border: 1px solid var(--border);
+    min-height: 120px;
+    background: var(--bg-code);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     padding: var(--space-sm);
     overflow: auto;
@@ -76,7 +77,8 @@
   .log-line {
     display: flex;
     gap: var(--space-sm);
-    padding: 1px 0;
+    padding: 2px 5px;
+    border-radius: 3px;
     white-space: nowrap;
   }
   .log-line:hover {
