@@ -23,11 +23,14 @@
     if ((e.target as Element).classList.contains("port")) return;
 
     dragging = true;
+    let moved = false;
     const startX = e.clientX - node.position.x;
     const startY = e.clientY - node.position.y;
 
     const onMove = (e: MouseEvent) => {
       if (!dragging) return;
+      if (!moved) dispatch("moveStart", node.id);
+      moved = true;
       node.position = {
         x: Math.max(0, e.clientX - startX),
         y: Math.max(0, e.clientY - startY),
@@ -36,6 +39,7 @@
     };
     const onUp = () => {
       dragging = false;
+      if (moved) dispatch("moveEnd", node.id);
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
     };

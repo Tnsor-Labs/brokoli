@@ -187,6 +187,7 @@
         if (from !== to && !edges.some((e) => e.from === from && e.to === to)) {
           const edge = createEdge(from, to);
           if (edge) {
+            dispatch("edgeAdding", edge);
             edges = [...edges, edge];
             dispatch("edgeAdded", edge);
           }
@@ -223,7 +224,11 @@
 
     if (!edges.some((e) => e.from === from && e.to === to)) {
       const edge = createEdge(from, to);
-      if (edge) edges = [...edges, edge];
+      if (edge) {
+        dispatch("edgeAdding", edge);
+        edges = [...edges, edge];
+        dispatch("edgeAdded", edge);
+      }
     }
 
     drawing = false;
@@ -331,7 +336,9 @@
   }
 
   function onDeleteEdge(fromId: string, toId: string) {
+    dispatch("edgeDeleting", { from: fromId, to: toId });
     edges = edges.filter((e) => !(e.from === fromId && e.to === toId));
+    dispatch("edgeDeleted", { from: fromId, to: toId });
   }
 
   // Recompute edge paths whenever nodes or edges change
@@ -513,6 +520,8 @@
         {readonly}
         on:portDragStart={onPortDragStart}
         on:portDragEnd={onPortDragEnd}
+        on:moveStart={(e) => dispatch("nodeMoveStart", e.detail)}
+        on:moveEnd={(e) => dispatch("nodeMoveEnd", e.detail)}
       />
     </g>
   {/each}

@@ -29,6 +29,11 @@
   let selectedNodeId: string | null = null;
   let loading = true;
   let saving = false;
+  let dirty = false;
+  let editRevision = 0;
+  let lastSavedAt: Date | null = null;
+  let showMobileLibrary = false;
+  let showMobileInspector = false;
   let showCode = false;
   let codeFormat: "yaml" | "json" = "yaml";
   let codeText = "";
@@ -36,9 +41,14 @@
   let previewing = false;
   let previewResults: Record<
     string,
-    { columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }
+    { name?: string; columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }
   > = {};
   let previewNodeId: string | null = null;
+
+  function markDirty() {
+    dirty = true;
+    editRevision += 1;
+  }
 
   // ── Version History ─────────────────────────────────────────
   let showHistory = false;
@@ -70,8 +80,10 @@
       pipeline = restored;
       nodes = restored.nodes || [];
       edges = restored.edges || [];
-      undoStack = [snapshot()];
+      undoStack = [];
       redoStack = [];
+      dirty = false;
+      lastSavedAt = new Date();
       notify.success(`Rolled back to v${version}`);
       showHistory = false;
     } catch {
@@ -110,6 +122,7 @@
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
     pipeline.webhook_token = "whk_" + hex;
+    markDirty();
     generatingToken = false;
   }
 
@@ -181,6 +194,7 @@
     undoStack = undoStack.slice(0, -1);
     nodes = prev.nodes;
     edges = prev.edges;
+    markDirty();
   }
 
   function redo() {
@@ -190,6 +204,7 @@
     redoStack = redoStack.slice(0, -1);
     nodes = next.nodes;
     edges = next.edges;
+    markDirty();
   }
 
   $: canUndo = undoStack.length > 0;
@@ -202,8 +217,9 @@
         pipeline = await api.pipelines.get(params.id);
         nodes = pipeline.nodes || [];
         edges = pipeline.edges || [];
-        // Initial snapshot for undo
-        undoStack = [snapshot()];
+        undoStack = [];
+        dirty = false;
+        lastSavedAt = new Date();
       } catch (e) {
         error = "Failed to load pipeline";
       }
@@ -224,16 +240,27 @@
       position: { x, y },
     };
     nodes = [...nodes, node];
+    selectedNodeId = node.id;
+    markDirty();
+  }
+
+  function addNodeFromPalette(e: CustomEvent<string>) {
+    const index = nodes.length;
+    addNode(new CustomEvent("addNode", { detail: { type: e.detail, x: 120 + (index % 3) * 230, y: 90 + Math.floor(index / 3) * 150 } }));
+    showMobileLibrary = false;
+    showMobileInspector = true;
   }
 
   function selectNode(e: CustomEvent<string | null>) {
     selectedNodeId = e.detail;
+    if (e.detail) showMobileInspector = true;
   }
 
   function updateNode(e: CustomEvent<Node>) {
     pushUndo();
     const updated = e.detail;
     nodes = nodes.map((n) => (n.id === updated.id ? updated : n));
+    markDirty();
   }
 
   function deleteNode(e: CustomEvent<string>) {
@@ -242,6 +269,7 @@
     nodes = nodes.filter((n) => n.id !== id);
     edges = edges.filter((e) => e.from !== id && e.to !== id);
     if (selectedNodeId === id) selectedNodeId = null;
+    markDirty();
   }
 
   function duplicateNode(nodeId: string) {
@@ -257,15 +285,16 @@
     };
     nodes = [...nodes, clone];
     selectedNodeId = clone.id;
+    markDirty();
     notify.success("Node duplicated");
   }
 
-  function onEdgeAdded() {
-    // Edge was already added to the array by PipelineCanvas, just save undo point
-    // We push before the change, so we need a slight workaround:
-    // PipelineCanvas binds edges, so the push happens in handleGlobalKeydown or we do it on the event
+  function onEdgeAdding() {
     pushUndo();
   }
+  function onEdgeChanged() { markDirty(); }
+  function onNodeMoveStart() { pushUndo(); }
+  function onNodeMoveEnd() { markDirty(); }
 
   // ── Save / Run ──────────────────────────────────────────────
   // Returns true only when the canvas was actually persisted. Callers that
@@ -279,7 +308,10 @@
     try {
       pipeline.nodes = nodes;
       pipeline.edges = edges;
+      const revisionAtSave = editRevision;
       await api.pipelines.update(pipeline.id, pipeline);
+      if (editRevision === revisionAtSave) dirty = false;
+      lastSavedAt = new Date();
       notify.success("Pipeline saved");
       return true;
     } catch (e: any) {
@@ -353,6 +385,7 @@
   function doAutoLayout() {
     pushUndo();
     nodes = autoLayout(nodes, edges);
+    markDirty();
   }
 
   function pipelineData() {
@@ -406,7 +439,7 @@
     codeText = fmt === "yaml" ? toYaml() : toJson();
   }
 
-  $: void (showCode && codeFormat); // keep reactivity on these
+  $: if (showCode) { nodes; edges; pipeline; codeText = codeFormat === "yaml" ? toYaml() : toJson(); }
 
   $: if (pipeline && edges.some((edge) => edge.condition !== undefined)) {
     pipeline.ir_version = "2.1";
@@ -443,6 +476,7 @@
       nodes = nodes.filter((n) => n.id !== selectedNodeId);
       edges = edges.filter((e) => e.from !== selectedNodeId && e.to !== selectedNodeId);
       selectedNodeId = null;
+      markDirty();
       return;
     }
     // D = duplicate selected node
@@ -486,6 +520,7 @@
             value={pipeline?.schedule || ""}
             on:input={(e) => {
               if (pipeline) pipeline.schedule = e.currentTarget.value;
+              markDirty();
             }}
             placeholder="No schedule (manual)"
             title="Cron expression, e.g. 0 2 * * * (daily at 2am)"
@@ -493,6 +528,9 @@
         </div>
       </div>
       <div class="toolbar-right">
+        <div class="save-state" class:unsaved={dirty}><i></i><span>{saving ? "Saving" : dirty ? "Unsaved" : lastSavedAt ? "Saved" : "Loaded"}</span></div>
+        <button class="btn-sm mobile-panel-button" on:click={() => (showMobileLibrary = !showMobileLibrary)}>Nodes</button>
+        <button class="btn-sm mobile-panel-button" on:click={() => (showMobileInspector = !showMobileInspector)} disabled={!selectedNode}>Configure</button>
         <!-- Undo/Redo -->
         <button class="btn-icon-sm" on:click={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -641,7 +679,7 @@
 
     <!-- Unified Pipeline Settings Panel -->
     {#if showPipelineSettings && pipeline}
-      <div class="settings-panel">
+      <div class="settings-panel" on:input={markDirty} on:change={markDirty}>
         <div class="settings-grid">
           <!-- Description -->
           <div class="setting-item full">
@@ -665,7 +703,8 @@
                   <button
                     class="tag-remove"
                     on:click={() => {
-                      if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i);
+                    if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i);
+                    markDirty();
                     }}>x</button
                   >
                 </span>
@@ -677,6 +716,7 @@
                 on:keydown={(e) => {
                   if (e.key === "Enter" && tagInput.trim() && pipeline) {
                     pipeline.tags = [...(pipeline.tags || []), tagInput.trim()];
+                    markDirty();
                     tagInput = "";
                     e.preventDefault();
                   }
@@ -740,6 +780,7 @@
                   class="setting-btn danger"
                   on:click={() => {
                     if (pipeline) pipeline.webhook_token = "";
+                    markDirty();
                   }}>Revoke</button
                 >
               {:else}
@@ -759,6 +800,7 @@
                 if (pipeline) {
                   pipeline.dependency_rules = r;
                   pipeline.depends_on = legacy;
+                  markDirty();
                 }
               }}
             />
@@ -876,8 +918,8 @@
     {/if}
 
     <div class="editor-body">
-      <div class="palette-sidebar">
-        <NodePalette />
+      <div class="palette-sidebar" class:mobile-open={showMobileLibrary}>
+        <NodePalette on:add={addNodeFromPalette} />
       </div>
 
       <div class="canvas-area">
@@ -928,12 +970,17 @@
             nodeStatuses={{}}
             on:selectNode={selectNode}
             on:addNode={addNode}
-            on:edgeAdded={onEdgeAdded}
+            on:edgeAdding={onEdgeAdding}
+            on:edgeAdded={onEdgeChanged}
+            on:edgeDeleting={onEdgeAdding}
+            on:edgeDeleted={onEdgeChanged}
+            on:nodeMoveStart={onNodeMoveStart}
+            on:nodeMoveEnd={onNodeMoveEnd}
           />
         {/if}
       </div>
 
-      <div class="config-sidebar">
+      <div class="config-sidebar" class:mobile-open={showMobileInspector}>
         {#if showHistory}
           <!-- Version History Panel -->
           <div class="version-panel">
@@ -1122,6 +1169,10 @@
     align-items: center;
     gap: 6px;
   }
+  .save-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font: 10px var(--font-mono); }
+  .save-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  .save-state.unsaved { color: var(--warning); } .save-state.unsaved i { background: var(--warning); }
+  .mobile-panel-button { display: none; }
 
   .toolbar-sep {
     width: 1px;
@@ -1252,6 +1303,7 @@
     flex: 1;
     gap: 10px;
     min-height: 0;
+    position: relative;
   }
 
   .palette-sidebar {
@@ -1776,22 +1828,31 @@
       display: none;
     }
     .editor-body {
-      flex-direction: column;
+      display: block;
     }
     .palette-sidebar {
-      width: 100%;
-      height: auto;
-      max-height: 120px;
-      flex-direction: row;
-      overflow-x: auto;
+      display: none;
+      position: absolute;
+      inset: 0 auto 0 0;
+      z-index: 20;
+      width: min(280px, 88vw);
+      height: 100%;
+      box-shadow: var(--shadow-lg);
     }
     .config-sidebar {
-      width: 100%;
-      max-height: 300px;
+      display: none;
+      position: absolute;
+      inset: 0 0 0 auto;
+      z-index: 20;
+      width: min(320px, 92vw);
+      max-height: none;
+      box-shadow: var(--shadow-lg);
     }
+    .palette-sidebar.mobile-open, .config-sidebar.mobile-open { display: flex; }
     .canvas-area {
-      min-height: 300px;
+      width: 100%; height: 100%; min-height: 360px;
     }
+    .mobile-panel-button { display: inline-flex; }
     .btn-sm span {
       display: none;
     }
