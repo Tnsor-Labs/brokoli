@@ -358,6 +358,12 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		return nil
 	}
 
+	// Watch the durable cancel flag while nodes execute — see
+	// startCancelIntentWatcher for why the wave-boundary check below is
+	// not enough on its own.
+	stopIntentWatcher := r.startCancelIntentWatcher()
+	defer stopIntentWatcher()
+
 	for terminalNodes < len(r.pipe.Nodes) {
 		// Durable cancel intent (store.RunCancelRequester): a cancel whose
 		// delivery was lost — relay message dropped, or requested while no
@@ -1521,6 +1527,58 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	default:
 		return nodeExecutionResult{}, fmt.Errorf("built-in node type %q has no runtime handler", node.Type)
 	}
+}
+
+// cancelIntentPollInterval is how often the watcher below re-reads the
+// run's durable cancel flag while nodes execute. A var so tests can
+// shrink it; 5s keeps a cancelled run's worst-case convergence in
+// single-digit seconds at the cost of one primary-key read per interval
+// per in-flight run.
+var cancelIntentPollInterval = 5 * time.Second
+
+// startCancelIntentWatcher polls the run's durable cancel_requested flag
+// WHILE nodes execute, cancelling the run context the moment it appears.
+// Returns a stop func for the caller to defer.
+//
+// This is the mid-node half of the durable-intent design. The wave-
+// boundary check catches a lost cancel between nodes, but a single-node
+// pipeline mid-execution has no boundary — found live when a Redis
+// restart killed every pod's relay subscription (see brokoli-ee's relay
+// resilience fix): cancels returned 200, intent was durably recorded,
+// and a 45-second single-node run still completed because nothing looked
+// at the flag until the run was already over. With the watcher, ANY run
+// converges within cancelIntentPollInterval of the intent landing, no
+// matter what the relay transport is doing and no matter the pipeline's
+// shape — the relay becomes a latency optimization, not a correctness
+// dependency.
+func (r *Runner) startCancelIntentWatcher() func() {
+	if r.run == nil || r.store == nil {
+		return func() {}
+	}
+	runID := r.run.ID
+	done := make(chan struct{})
+	// Read the interval before spawning: the goroutine can outlive its
+	// Execute call by a scheduling beat, and tests override the package
+	// var between sequential runs — an async read would race that write.
+	interval := cancelIntentPollInterval
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-r.ctx.Done():
+				return
+			case <-ticker.C:
+				if stored, err := r.store.GetRun(runID); err == nil && stored.CancelRequested {
+					r.Cancel()
+					return
+				}
+			}
+		}
+	}()
+	return func() { close(done) }
 }
 
 // reclaimTransientBlobs deletes the run's blob scratch namespace when the
