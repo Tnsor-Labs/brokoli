@@ -9,7 +9,7 @@
   function copyText(text: string, label: string) {
     navigator.clipboard.writeText(text).then(() => {
       copied = label;
-      setTimeout(() => copied = "", 2000);
+      setTimeout(() => (copied = ""), 2000);
     });
   }
 
@@ -82,7 +82,7 @@ console.log(await status.json());`,
 curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   -H "X-Webhook-Token: \$WEBHOOK_TOKEN" \\
   -H "Content-Type: application/json" \\
-  -d '{"ref": "main", "trigger": "ci"}'`
+  -d '{"ref": "main", "trigger": "ci"}'`,
   };
 
   let activeTab: "python" | "curl" | "javascript" | "webhook" = "curl";
@@ -91,6 +91,7 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
 <div class="page animate-in">
   <header class="page-header">
     <div>
+      <span class="eyebrow">Developer platform</span>
       <h1>API & Integrations</h1>
       <span class="page-sub">Connect your tools, CI/CD, and scripts to Brokoli</span>
     </div>
@@ -100,7 +101,16 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   <div class="connect-grid">
     <div class="connect-card">
       <div class="cc-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8"/></svg>
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8" /></svg
+        >
       </div>
       <div class="cc-body">
         <h3>REST API</h3>
@@ -109,7 +119,19 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     </div>
     <div class="connect-card">
       <div class="cc-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><path
+            d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"
+          /></svg
+        >
       </div>
       <div class="cc-body">
         <h3>Webhooks</h3>
@@ -118,7 +140,21 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     </div>
     <div class="connect-card">
       <div class="cc-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>
+        <svg
+          width="20"
+          height="20"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          ><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" /><circle
+            cx="12"
+            cy="12"
+            r="3"
+          /></svg
+        >
       </div>
       <div class="cc-body">
         <h3>WebSocket</h3>
@@ -134,11 +170,16 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
       <p class="auth-desc">Include your token in the <code>Authorization</code> header:</p>
       <div class="auth-example">
         <code>Authorization: Bearer brk_your_token_here</code>
-        <button class="copy-btn" on:click={() => copyText('Authorization: Bearer brk_your_token_here', 'auth')}>
+        <button
+          class="copy-btn"
+          on:click={() => copyText("Authorization: Bearer brk_your_token_here", "auth")}
+        >
           {copied === "auth" ? "Copied!" : "Copy"}
         </button>
       </div>
-      <p class="auth-hint">Generate tokens in <a href="#/workspaces">Workspaces</a> &rarr; Token settings, or <a href="#/settings">Settings</a> &rarr; API & CLI.</p>
+      <p class="auth-hint">
+        In <a href="#/settings">Settings</a>, open the Users tab and use API Key Authentication.
+      </p>
     </div>
   </section>
 
@@ -146,15 +187,29 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   <section class="section">
     <h2 class="section-title">Quick Start</h2>
     <div class="tabs">
-      <button class="tab" class:active={activeTab === "curl"} on:click={() => activeTab = "curl"}>cURL</button>
-      <button class="tab" class:active={activeTab === "python"} on:click={() => activeTab = "python"}>Python</button>
-      <button class="tab" class:active={activeTab === "javascript"} on:click={() => activeTab = "javascript"}>JavaScript</button>
-      <button class="tab" class:active={activeTab === "webhook"} on:click={() => activeTab = "webhook"}>Webhooks / CI</button>
+      <button class="tab" class:active={activeTab === "curl"} on:click={() => (activeTab = "curl")}
+        >cURL</button
+      >
+      <button
+        class="tab"
+        class:active={activeTab === "python"}
+        on:click={() => (activeTab = "python")}>Python</button
+      >
+      <button
+        class="tab"
+        class:active={activeTab === "javascript"}
+        on:click={() => (activeTab = "javascript")}>JavaScript</button
+      >
+      <button
+        class="tab"
+        class:active={activeTab === "webhook"}
+        on:click={() => (activeTab = "webhook")}>Webhooks / CI</button
+      >
     </div>
     <div class="code-card">
       <div class="code-header">
         <span class="code-lang">{activeTab}</span>
-        <button class="copy-btn" on:click={() => copyText(codeExamples[activeTab], 'code')}>
+        <button class="copy-btn" on:click={() => copyText(codeExamples[activeTab], "code")}>
           {copied === "code" ? "Copied!" : "Copy"}
         </button>
       </div>
@@ -165,26 +220,34 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   <!-- Endpoints reference -->
   <section class="section">
     <h2 class="section-title">Endpoints</h2>
-    <div class="endpoint-table">
-      <div class="ep-header">
-        <span class="ep-method-col">Method</span>
-        <span class="ep-path-col">Path</span>
-        <span class="ep-desc-col">Description</span>
-      </div>
-      {#each endpoints as ep}
-        <div class="ep-row">
-          <span class="ep-method" class:get={ep.method === "GET"} class:post={ep.method === "POST"}>{ep.method}</span>
-          <code class="ep-path">{ep.path}</code>
-          <span class="ep-desc">{ep.desc}</span>
+    <div class="endpoint-scroll">
+      <div class="endpoint-table">
+        <div class="ep-header">
+          <span class="ep-method-col">Method</span>
+          <span class="ep-path-col">Path</span>
+          <span class="ep-desc-col">Description</span>
         </div>
-      {/each}
+        {#each endpoints as ep}
+          <div class="ep-row">
+            <span
+              class="ep-method"
+              class:get={ep.method === "GET"}
+              class:post={ep.method === "POST"}>{ep.method}</span
+            >
+            <code class="ep-path">{ep.path}</code>
+            <span class="ep-desc">{ep.desc}</span>
+          </div>
+        {/each}
+      </div>
     </div>
   </section>
 
   <section class="section">
     <h2 class="section-title">WebSocket Events</h2>
     <div class="auth-card">
-      <p class="auth-desc">Connect to <code>{baseUrl}/api/ws?token=YOUR_TOKEN</code> for real-time events:</p>
+      <p class="auth-desc">
+        Connect to <code>{baseUrl}/api/ws?token=YOUR_TOKEN</code> for real-time events:
+      </p>
       <div class="ws-events">
         <span class="ws-event"><code>run.started</code> — Pipeline run begins</span>
         <span class="ws-event"><code>run.completed</code> — Run finished successfully</span>
@@ -197,122 +260,334 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
 </div>
 
 <style>
-  .page-header { margin-bottom: var(--space-xl); }
-  .page-header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
-  .page-sub { font-size: 13px; color: var(--text-muted); margin-top: 2px; display: block; }
+  .page-header {
+    margin-bottom: 18px;
+  }
+  .eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .page-header h1 {
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+  }
+  .page-sub {
+    font-size: 13px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    display: block;
+  }
 
-  .section { margin-bottom: var(--space-xl); }
+  .section {
+    margin-bottom: 18px;
+  }
   .section-title {
-    font-size: 11px; font-weight: 600; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
   }
 
   /* Connect cards */
-  .connect-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: var(--space-xl); }
+  .connect-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 10px;
+    margin-bottom: 18px;
+  }
   .connect-card {
-    display: flex; gap: 14px; padding: 20px;
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); box-shadow: var(--shadow-card);
+    display: flex;
+    gap: 12px;
+    padding: 15px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    box-shadow: var(--shadow-card);
     transition: border-color 200ms ease;
   }
-  .connect-card:hover { border-color: var(--border); }
-  .cc-icon {
-    width: 40px; height: 40px; flex-shrink: 0; border-radius: 10px;
-    background: var(--accent-glow); color: var(--accent);
-    display: flex; align-items: center; justify-content: center;
+  .connect-card:hover {
+    border-color: var(--border);
   }
-  .cc-body h3 { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
-  .cc-body p { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+  .cc-icon {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cc-body h3 {
+    font-size: 14px;
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .cc-body p {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
 
   /* Auth */
   .auth-card {
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); padding: 20px; box-shadow: var(--shadow-card);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    padding: 16px;
+    box-shadow: var(--shadow-card);
   }
-  .auth-desc { font-size: 13px; color: var(--text-secondary); margin-bottom: 12px; }
+  .auth-desc {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin-bottom: 12px;
+  }
   .auth-desc code {
-    font-family: var(--font-mono); color: var(--accent); font-size: 12px; font-weight: 500;
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: 12px;
+    font-weight: 500;
   }
   .auth-example {
-    display: flex; align-items: center; justify-content: space-between;
-    background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: 8px; padding: 10px 14px; margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin-bottom: 10px;
   }
-  .auth-example code { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
-  .auth-hint { font-size: 12px; color: var(--text-dim); }
-  .auth-hint a { color: var(--accent); }
+  .auth-example code {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+  }
+  .auth-hint {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .auth-hint a {
+    color: var(--accent);
+  }
 
   .copy-btn {
-    font-size: 11px; font-weight: 500; color: var(--accent);
-    padding: 4px 10px; border-radius: 5px; border: 1px solid var(--accent);
-    background: none; cursor: pointer; transition: all 150ms ease;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--accent);
+    padding: 4px 10px;
+    border-radius: 5px;
+    border: 1px solid var(--accent);
+    background: none;
+    cursor: pointer;
+    transition: all 150ms ease;
   }
-  .copy-btn:hover { background: var(--accent-glow); }
+  .copy-btn:hover {
+    background: var(--accent-glow);
+  }
 
   /* Tabs */
-  .tabs { display: flex; gap: 2px; margin-bottom: -1px; position: relative; z-index: 1; }
-  .tab {
-    padding: 8px 16px; font-size: 12px; font-weight: 500;
-    color: var(--text-muted); border: 1px solid transparent;
-    border-bottom: none; border-radius: 8px 8px 0 0;
-    background: none; cursor: pointer; transition: all 150ms ease;
+  .tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: -1px;
+    position: relative;
+    z-index: 1;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
   }
-  .tab:hover { color: var(--text-secondary); }
+  .tabs::-webkit-scrollbar {
+    display: none;
+  }
+  .tab {
+    padding: 8px 16px;
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted);
+    border: 1px solid transparent;
+    border-bottom: none;
+    border-radius: 8px 8px 0 0;
+    background: none;
+    cursor: pointer;
+    transition: all 150ms ease;
+    white-space: nowrap;
+    flex: none;
+  }
+  .tab:hover {
+    color: var(--text-secondary);
+  }
   .tab.active {
-    color: var(--text-primary); background: var(--bg-secondary);
+    color: var(--text-primary);
+    background: var(--bg-secondary);
     border-color: var(--border-subtle);
   }
 
   /* Code block */
   .code-card {
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: 0 var(--radius-xl, 14px) var(--radius-xl, 14px) var(--radius-xl, 14px);
-    overflow: hidden; box-shadow: var(--shadow-card);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: 0 9px 9px 9px;
+    overflow: hidden;
+    box-shadow: var(--shadow-card);
   }
   .code-header {
-    display: flex; justify-content: space-between; align-items: center;
-    padding: 8px 16px; border-bottom: 1px solid var(--border-subtle);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 8px 16px;
+    border-bottom: 1px solid var(--border-subtle);
   }
-  .code-lang { font-size: 10px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.06em; }
+  .code-lang {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
   .code-block {
-    font-family: var(--font-mono); font-size: 12px; line-height: 1.7;
-    padding: 16px 20px; margin: 0; color: var(--text-secondary);
-    overflow-x: auto; white-space: pre;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    line-height: 1.7;
+    padding: 16px 20px;
+    margin: 0;
+    color: var(--text-secondary);
+    max-width: 100%;
+    overflow-x: auto;
+    white-space: pre;
   }
 
   /* Endpoint table */
-  .endpoint-table {
-    border: 1px solid var(--border-subtle); border-radius: var(--radius-xl, 14px);
-    overflow: hidden; box-shadow: var(--shadow-card);
+  .endpoint-scroll {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
   }
-  .ep-header, .ep-row {
-    display: grid; grid-template-columns: 70px 1fr 1fr; padding: 0 16px; align-items: center; min-height: 40px;
+  .endpoint-table {
+    min-width: 620px;
+  }
+  .ep-header,
+  .ep-row {
+    display: grid;
+    grid-template-columns: 70px 1fr 1fr;
+    padding: 0 16px;
+    align-items: center;
+    min-height: 40px;
   }
   .ep-header {
-    background: transparent; font-size: 11px; font-weight: 600;
-    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    background: transparent;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
     border-bottom: 2px solid var(--border-subtle);
   }
-  .ep-row { border-bottom: 1px solid var(--border-subtle); font-size: 13px; }
-  .ep-row:last-child { border-bottom: none; }
-  .ep-row:hover { background: rgba(255,255,255,0.02); }
-  .ep-method {
-    font-size: 10px; font-weight: 700; font-family: var(--font-mono);
-    padding: 2px 8px; border-radius: 4px; text-align: center; width: fit-content;
+  .ep-row {
+    border-bottom: 1px solid var(--border-subtle);
+    font-size: 13px;
   }
-  .ep-method.get { color: var(--success); background: var(--success-bg); }
-  .ep-method.post { color: var(--running); background: var(--running-bg); }
-  .ep-path { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); }
-  .ep-desc { color: var(--text-muted); font-size: 12px; }
+  .ep-row:last-child {
+    border-bottom: none;
+  }
+  .ep-row:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .ep-method {
+    font-size: 10px;
+    font-weight: 700;
+    font-family: var(--font-mono);
+    padding: 2px 8px;
+    border-radius: 4px;
+    text-align: center;
+    width: fit-content;
+  }
+  .ep-method.get {
+    color: var(--success);
+    background: var(--success-bg);
+  }
+  .ep-method.post {
+    color: var(--running);
+    background: var(--running-bg);
+  }
+  .ep-path {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--text-primary);
+  }
+  .ep-desc {
+    color: var(--text-muted);
+    font-size: 12px;
+  }
 
   /* WebSocket events */
-  .ws-events { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
-  .ws-event { font-size: 12px; color: var(--text-secondary); }
-  .ws-event code { font-family: var(--font-mono); color: var(--accent); font-size: 11px; font-weight: 500; }
+  .ws-events {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .ws-event {
+    font-size: 12px;
+    color: var(--text-secondary);
+  }
+  .ws-event code {
+    font-family: var(--font-mono);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 500;
+  }
 
   @media (max-width: 768px) {
-    .connect-grid { grid-template-columns: 1fr; }
-    .ep-header, .ep-row { grid-template-columns: 60px 1fr; }
-    .ep-desc-col, .ep-desc { display: none; }
+    .connect-grid {
+      grid-template-columns: 1fr;
+    }
+    .connect-card {
+      padding: 13px;
+    }
+    .tabs {
+      margin-right: calc(var(--space-md) * -1);
+      padding-right: var(--space-md);
+    }
+    .auth-example {
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .endpoint-table {
+      min-width: 560px;
+    }
+  }
+  @media (max-width: 520px) {
+    .page-header h1 {
+      font-size: 22px;
+    }
+    .auth-card {
+      padding: 14px;
+    }
+    .auth-example {
+      flex-direction: column;
+    }
+    .auth-example .copy-btn {
+      align-self: flex-end;
+    }
+    .code-header {
+      padding-inline: 12px;
+    }
+    .code-block {
+      padding: 14px;
+      font-size: 11px;
+    }
   }
 </style>

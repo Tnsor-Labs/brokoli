@@ -3,6 +3,7 @@
   import type { Pipeline, Run, NodeRun, RunStatus, NodeStats } from "../lib/types";
   import { authHeaders } from "../lib/auth";
   import StatusBadge from "../components/StatusBadge.svelte";
+  import Skeleton from "../components/Skeleton.svelte";
   import { Timeline, DataSet } from "vis-timeline/standalone";
   import "vis-timeline/styles/vis-timeline-graph2d.css";
   import Arrow from "timeline-arrows";
@@ -95,7 +96,7 @@
     if (arrows.length > 0) {
       try {
         new Arrow(timeline, arrows, {
-          color: "#52525b",
+          color: "var(--text-muted)",
           strokeWidth: 1.5,
           arrowEnd: true,
         });
@@ -129,12 +130,12 @@
           attempts.length > 1 ? `<span class="g-badge retry">R${attempts.length}</span>` : "";
         const sc =
           nr.status === "failed"
-            ? "#ef4444"
+            ? "var(--failed)"
             : nr.status === "running"
-              ? "#0d9488"
+              ? "var(--running)"
               : nr.status === "skipped"
-                ? "#71717a"
-                : "#22c55e";
+                ? "var(--pending)"
+                : "var(--success)";
 
         return {
           id: nr.node_id,
@@ -275,13 +276,13 @@
   });
 </script>
 
-<div class="page">
-  <header class="tb">
-    <div class="tb-l">
-      <a href="#/pipelines/{params.id}/runs" class="tb-back">
+<div class="page animate-in">
+  <header class="page-header">
+    <div class="header-copy">
+      <a href="#/pipelines/{params.id}/runs" class="back-link">
         <svg
-          width="16"
-          height="16"
+          width="14"
+          height="14"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"
@@ -289,125 +290,174 @@
         >
         Back to Runs
       </a>
-      <span class="tb-sep"></span>
-      <span class="tb-name">{pipeline?.name || "..."}</span>
-      <span class="tb-id">{params.runId?.slice(0, 8)}</span>
-      {#if run}<StatusBadge status={run.status} size="sm" />{/if}
+      <p class="eyebrow">Execution timeline</p>
+      <div class="title-row">
+        <h1>{pipeline?.name || "Run timeline"}</h1>
+        {#if run}<StatusBadge status={run.status} size="sm" />{/if}
+      </div>
+      <p class="page-subtitle">
+        Run <code>{params.runId?.slice(0, 8) || "..."}</code> · Inspect node timing, throughput, and retries.
+      </p>
     </div>
-    <div class="tb-r">
-      <div class="tb-kv">
-        <span class="tb-v">{fmt(totalMs)}</span><span class="tb-k">TOTAL</span>
-      </div>
-      <div class="tb-kv">
-        <span class="tb-v">{primaryRuns.length}</span><span class="tb-k">NODES</span>
-      </div>
-      <div class="tb-kv">
-        <span class="tb-v">{fmtRows(totalRows)}</span><span class="tb-k">ROWS</span>
-      </div>
-      {#if run?.trace_id}
-        <div class="tb-kv">
-          <span class="tb-v trace">{run.trace_id.slice(0, 12)}</span><span class="tb-k">TRACE</span>
+    {#if run}
+      <div class="run-metrics" aria-label="Run summary">
+        <div class="metric">
+          <span class="metric-value">{fmt(totalMs)}</span><span class="metric-label">Duration</span>
         </div>
-      {/if}
-    </div>
+        <div class="metric">
+          <span class="metric-value">{primaryRuns.length}</span><span class="metric-label"
+            >Nodes</span
+          >
+        </div>
+        <div class="metric">
+          <span class="metric-value">{fmtRows(totalRows)}</span><span class="metric-label"
+            >Rows</span
+          >
+        </div>
+        {#if run?.trace_id}
+          <div class="metric">
+            <span class="metric-value trace">{run.trace_id.slice(0, 12)}</span><span
+              class="metric-label">Trace</span
+            >
+          </div>
+        {/if}
+      </div>
+    {/if}
   </header>
 
   {#if loading}
-    <div class="msg">Loading...</div>
-  {:else if error}
-    <div class="msg err">{error}</div>
-  {:else}
-    <div class="body" class:has-detail={!!sel}>
-      <div class="timeline-container" bind:this={containerEl}></div>
-    </div>
-
-    {#if sel && selNode}
-      <div class="detail">
-        <div class="d-head">
-          <div class="d-title">
-            <span
-              class="d-dot"
-              style="background:{sel.status === 'failed'
-                ? '#ef4444'
-                : sel.status === 'skipped'
-                  ? '#71717a'
-                  : '#22c55e'}"
-            ></span>
-            <span class="d-name">{selNode.name}</span>
-            <StatusBadge status={sel.status} size="sm" />
-            <span class="d-type">{selNode.type}</span>
-          </div>
-          <button
-            class="d-close"
-            on:click={() => {
-              selectedNodeId = null;
-              if (timeline) timeline.setSelection([]);
-            }}
+    <div class="state-card loading-state" aria-label="Loading execution timeline">
+      <div class="state-heading">
+        <span class="state-icon">↦</span>
+        <div>
+          <strong>Loading execution timeline</strong><small
+            >Preparing node timings and run telemetry...</small
           >
-            <svg
-              width="14"
-              height="14"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg
-            >
-          </button>
-        </div>
-        <div class="d-stats">
-          <div class="d-kv">
-            <span class="d-v">{fmt(sel.duration_ms)}</span><span class="d-k">DURATION</span>
-          </div>
-          <div class="d-kv">
-            <span class="d-v">{sel.row_count.toLocaleString()}</span><span class="d-k">ROWS</span>
-          </div>
-          <div class="d-kv">
-            <span class="d-v"
-              >{sel.started_at
-                ? new Date(sel.started_at).toLocaleTimeString("en-US", { hour12: false })
-                : "—"}</span
-            ><span class="d-k">STARTED</span>
-          </div>
-          {#if sel.rows_per_sec}<div class="d-kv">
-              <span class="d-v">{fmtRows(sel.rows_per_sec)}/s</span><span class="d-k"
-                >THROUGHPUT</span
-              >
-            </div>{/if}
-          {#if sel.queue_ms}<div class="d-kv">
-              <span class="d-v">{fmt(sel.queue_ms)}</span><span class="d-k">QUEUE</span>
-            </div>{/if}
-          {#if sel.trace_id}<div class="d-kv">
-              <span class="d-v trace">{sel.trace_id.slice(0, 12)}</span><span class="d-k"
-                >TRACE</span
-              >
-            </div>{/if}
-          {#if sel.error}<div class="d-kv err">
-              <span class="d-v">{sel.error}</span><span class="d-k">ERROR</span>
-            </div>{/if}
-        </div>
-        {#if selAttempts.length > 1}
-          <div class="d-attempts">
-            {#each selAttempts as att, i}
-              <div class="d-att" class:att-fail={att.status === "failed"}>
-                <span class="att-n">A{i}</span><StatusBadge status={att.status} size="sm" /><span
-                  class="att-d">{fmt(att.duration_ms)}</span
-                >
-              </div>
-            {/each}
-          </div>
-        {/if}
-        <div class="d-logs">
-          {#each selLogs as l}
-            <div class="log" class:log-e={l.level === "error"} class:log-w={l.level === "warning"}>
-              <span class="log-l">{l.level}</span><span class="log-m">{l.message}</span>
-            </div>
-          {/each}
-          {#if selLogs.length === 0}<div class="log">
-              <span class="log-m" style="opacity:0.4">No logs</span>
-            </div>{/if}
         </div>
       </div>
-    {/if}
+      <Skeleton height="420px" />
+    </div>
+  {:else if error}
+    <div class="state-card empty-state error-state">
+      <span class="empty-icon">!</span>
+      <h2>Timeline unavailable</h2>
+      <p>{error}</p>
+      <a href="#/pipelines/{params.id}/runs">Return to runs</a>
+    </div>
+  {:else if primaryRuns.length === 0}
+    <div class="state-card empty-state">
+      <span class="empty-icon">↦</span>
+      <h2>No node timing data</h2>
+      <p>This run has not produced execution timing data yet.</p>
+      <a href="#/pipelines/{params.id}/runs">Return to runs</a>
+    </div>
+  {:else}
+    <section class="workspace" aria-label="Execution timeline workspace">
+      <div class="workspace-toolbar">
+        <div>
+          <span class="workspace-title">Node execution</span><span class="workspace-hint"
+            >Select a bar to inspect details</span
+          >
+        </div>
+        <div class="status-legend" aria-label="Execution statuses">
+          <span><i class="success"></i>Succeeded</span>
+          <span><i class="running"></i>Running</span>
+          <span><i class="failed"></i>Failed</span>
+          <span><i class="skipped"></i>Skipped</span>
+        </div>
+      </div>
+      <div class="body" class:has-detail={!!sel}>
+        <div class="timeline-container" bind:this={containerEl}></div>
+      </div>
+
+      {#if sel && selNode}
+        <div class="detail">
+          <div class="d-head">
+            <div class="d-title">
+              <span class="d-dot status-{sel.status}"></span>
+              <div class="d-identity">
+                <span class="d-label">Selected node</span><span class="d-name">{selNode.name}</span>
+              </div>
+              <StatusBadge status={sel.status} size="sm" />
+              <span class="d-type">{selNode.type}</span>
+            </div>
+            <button
+              class="d-close"
+              aria-label="Close node details"
+              on:click={() => {
+                selectedNodeId = null;
+                if (timeline) timeline.setSelection([]);
+              }}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"><path d="M18 6L6 18M6 6l12 12" /></svg
+              >
+            </button>
+          </div>
+          <div class="d-stats">
+            <div class="d-kv">
+              <span class="d-v">{fmt(sel.duration_ms)}</span><span class="d-k">Duration</span>
+            </div>
+            <div class="d-kv">
+              <span class="d-v">{sel.row_count.toLocaleString()}</span><span class="d-k">Rows</span>
+            </div>
+            <div class="d-kv">
+              <span class="d-v"
+                >{sel.started_at
+                  ? new Date(sel.started_at).toLocaleTimeString("en-US", { hour12: false })
+                  : "—"}</span
+              ><span class="d-k">Started</span>
+            </div>
+            {#if sel.rows_per_sec}<div class="d-kv">
+                <span class="d-v">{fmtRows(sel.rows_per_sec)}/s</span><span class="d-k"
+                  >Throughput</span
+                >
+              </div>{/if}
+            {#if sel.queue_ms}<div class="d-kv">
+                <span class="d-v">{fmt(sel.queue_ms)}</span><span class="d-k">Queue</span>
+              </div>{/if}
+            {#if sel.trace_id}<div class="d-kv">
+                <span class="d-v trace">{sel.trace_id.slice(0, 12)}</span><span class="d-k"
+                  >Trace</span
+                >
+              </div>{/if}
+            {#if sel.error}<div class="d-kv err">
+                <span class="d-v">{sel.error}</span><span class="d-k">Error</span>
+              </div>{/if}
+          </div>
+          {#if selAttempts.length > 1}
+            <div class="d-attempts">
+              {#each selAttempts as att, i}
+                <div class="d-att" class:att-fail={att.status === "failed"}>
+                  <span class="att-n">A{i}</span><StatusBadge status={att.status} size="sm" /><span
+                    class="att-d">{fmt(att.duration_ms)}</span
+                  >
+                </div>
+              {/each}
+            </div>
+          {/if}
+          <div class="d-logs">
+            {#each selLogs as l}
+              <div
+                class="log"
+                class:log-e={l.level === "error"}
+                class:log-w={l.level === "warning"}
+              >
+                <span class="log-l">{l.level}</span><span class="log-m">{l.message}</span>
+              </div>
+            {/each}
+            {#if selLogs.length === 0}<div class="log">
+                <span class="log-m no-logs">No logs for this node.</span>
+              </div>{/if}
+          </div>
+        </div>
+      {/if}
+    </section>
   {/if}
 </div>
 
@@ -415,77 +465,169 @@
   .page {
     display: flex;
     flex-direction: column;
-    height: 100vh;
-    background: var(--bg-primary);
+    height: 100%;
+    min-height: 0;
     color: var(--text-primary);
-    overflow: hidden;
   }
 
-  .tb {
+  .page-header {
     display: flex;
-    align-items: center;
+    align-items: flex-end;
     justify-content: space-between;
-    padding: 0 14px;
-    height: 44px;
-    background: var(--bg-secondary);
-    border-bottom: 1px solid var(--border-subtle);
+    gap: 24px;
+    margin-bottom: 18px;
     flex-shrink: 0;
   }
-  .tb-l,
-  .tb-r {
-    display: flex;
-    align-items: center;
-    gap: 10px;
+  .header-copy {
+    min-width: 0;
   }
-  .tb-back {
+  .back-link {
     display: flex;
     align-items: center;
     gap: 4px;
+    width: fit-content;
+    margin-bottom: 14px;
     color: var(--text-muted);
     text-decoration: none;
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
   }
-  .tb-back:hover {
+  .back-link:hover {
     color: var(--accent);
   }
-  .tb-sep {
-    width: 1px;
-    height: 18px;
-    background: var(--border-subtle);
+  .eyebrow {
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
   }
-  .tb-name {
-    font-size: 13px;
-    font-weight: 600;
-  }
-  .tb-id {
-    font-size: 10px;
-    font-family: var(--font-mono);
-    color: var(--text-ghost);
-  }
-  .tb-kv {
+  .title-row {
     display: flex;
-    flex-direction: column;
+    min-width: 0;
     align-items: center;
+    gap: 10px;
   }
-  .tb-v {
+  .title-row h1 {
+    overflow: hidden;
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .page-subtitle {
+    margin-top: 4px;
+    color: var(--text-muted);
     font-size: 12px;
+  }
+  .page-subtitle code {
+    color: var(--text-secondary);
+    font-size: 10px;
+  }
+  .run-metrics {
+    display: flex;
+    flex: none;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .metric {
+    display: flex;
+    min-width: 76px;
+    flex-direction: column;
+    justify-content: center;
+    padding: 10px 13px;
+    border-right: 1px solid var(--border-subtle);
+  }
+  .metric:last-child {
+    border-right: 0;
+  }
+  .metric-value {
+    font-size: 11px;
     font-family: var(--font-mono);
     font-weight: 600;
   }
-  .tb-v.trace {
+  .metric-value.trace {
     font-size: 9px;
     color: var(--text-muted);
   }
-  .tb-k {
+  .metric-label {
     font-size: 8px;
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    color: var(--text-ghost);
+    color: var(--text-dim);
+  }
+
+  .workspace {
+    display: flex;
+    min-height: 0;
+    flex: 1;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .workspace-toolbar {
+    display: flex;
+    min-height: 42px;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .workspace-toolbar > div {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .workspace-title {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 620;
+  }
+  .workspace-hint {
+    color: var(--text-dim);
+    font: 9px var(--font-mono);
+  }
+  .status-legend {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .status-legend span {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .status-legend i {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    background: var(--pending);
+  }
+  .status-legend i.success {
+    background: var(--success);
+  }
+  .status-legend i.running {
+    background: var(--running);
+  }
+  .status-legend i.failed {
+    background: var(--failed);
+  }
+  .status-legend i.skipped {
+    background: var(--pending);
+    opacity: 0.65;
   }
 
   .body {
     flex: 1;
+    min-height: 0;
     overflow: hidden;
   }
   .body.has-detail {
@@ -626,28 +768,48 @@
     transform: translateY(-1px);
   }
   .timeline-container :global(.vis-item.bar-success) {
-    background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%);
+    background: linear-gradient(
+      135deg,
+      var(--success),
+      color-mix(in srgb, var(--success), black 18%)
+    );
   }
   .timeline-container :global(.vis-item.bar-success .vis-item-overflow) {
     background: transparent;
   }
   .timeline-container :global(.vis-item.bar-failed) {
-    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+    background: linear-gradient(
+      135deg,
+      var(--failed),
+      color-mix(in srgb, var(--failed), black 18%)
+    );
   }
   .timeline-container :global(.vis-item.bar-failed .vis-item-overflow) {
     background: transparent;
   }
   .timeline-container :global(.vis-item.bar-running) {
-    background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%);
+    background: linear-gradient(
+      135deg,
+      var(--running),
+      color-mix(in srgb, var(--running), black 18%)
+    );
   }
   .timeline-container :global(.vis-item.bar-running .vis-item-overflow) {
     background: transparent;
   }
   .timeline-container :global(.vis-item.bar-pending) {
-    background: linear-gradient(135deg, #71717a 0%, #52525b 100%);
+    background: linear-gradient(
+      135deg,
+      var(--pending),
+      color-mix(in srgb, var(--pending), black 18%)
+    );
   }
   .timeline-container :global(.vis-item.bar-skipped) {
-    background: linear-gradient(135deg, #71717a 0%, #52525b 100%);
+    background: linear-gradient(
+      135deg,
+      var(--pending),
+      color-mix(in srgb, var(--pending), black 18%)
+    );
     opacity: 0.65;
   }
   .timeline-container :global(.vis-item.vis-selected) {
@@ -713,21 +875,70 @@
     display: none;
   }
 
-  .msg {
-    flex: 1;
+  .state-card {
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-md);
+  }
+  .state-heading {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 10px;
+    padding: 2px;
+  }
+  .state-heading div {
+    display: flex;
+    flex-direction: column;
+  }
+  .state-heading strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .state-heading small {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .state-icon,
+  .empty-icon {
+    color: var(--accent);
+    font: 18px var(--font-mono);
+  }
+  .empty-state {
+    padding: 72px var(--space-xl);
+    text-align: center;
     color: var(--text-muted);
   }
-  .msg.err {
+  .empty-state h2 {
+    margin-top: 8px;
+    color: var(--text-primary);
+    font-size: 16px;
+    font-weight: 620;
+  }
+  .empty-state p {
+    margin-top: 4px;
+    font-size: 12px;
+  }
+  .empty-state a {
+    display: inline-block;
+    margin-top: var(--space-md);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .error-state .empty-icon {
     color: var(--failed);
   }
 
   .detail {
     flex-shrink: 0;
     height: 200px;
-    border-top: 2px solid var(--accent);
+    border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     display: flex;
     flex-direction: column;
@@ -745,10 +956,35 @@
     align-items: center;
     gap: 8px;
   }
+  .d-identity {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+  .d-label {
+    color: var(--text-dim);
+    font-size: 8px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
   .d-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
+  }
+  .d-dot.status-success {
+    background: var(--success);
+  }
+  .d-dot.status-failed {
+    background: var(--failed);
+  }
+  .d-dot.status-running {
+    background: var(--running);
+  }
+  .d-dot.status-skipped,
+  .d-dot.status-pending {
+    background: var(--pending);
   }
   .d-name {
     font-size: 13px;
@@ -851,11 +1087,107 @@
     color: var(--text-secondary);
     word-break: break-word;
   }
+  .no-logs {
+    opacity: 0.55;
+  }
   .log-e .log-l,
   .log-e .log-m {
     color: var(--failed);
   }
   .log-w .log-l {
     color: var(--warning);
+  }
+
+  @media (max-width: 980px) {
+    .page-header {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .run-metrics {
+      width: fit-content;
+      max-width: 100%;
+    }
+  }
+
+  @media (max-width: 768px) {
+    .page {
+      height: auto;
+      min-height: calc(100dvh - 102px);
+    }
+    .title-row h1 {
+      font-size: 20px;
+    }
+    .run-metrics {
+      width: 100%;
+      overflow-x: auto;
+    }
+    .metric {
+      min-width: 25%;
+      flex: 1;
+    }
+    .workspace {
+      min-height: 610px;
+      flex: none;
+    }
+    .workspace-toolbar {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 7px;
+      padding: 9px 12px;
+    }
+    .workspace-toolbar > div {
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+    .workspace-hint {
+      display: none;
+    }
+    .status-legend {
+      flex-wrap: wrap;
+    }
+    .body.has-detail {
+      flex: 0.58;
+    }
+    .detail {
+      height: 250px;
+    }
+    .d-title {
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .d-identity {
+      max-width: 170px;
+    }
+    .d-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .d-stats {
+      overflow-x: auto;
+    }
+    .d-kv {
+      flex: none;
+    }
+  }
+
+  @media (max-width: 480px) {
+    .metric {
+      min-width: 82px;
+    }
+    .status-legend span {
+      font-size: 0;
+    }
+    .status-legend i {
+      width: 9px;
+      height: 9px;
+    }
+    .detail {
+      height: 280px;
+    }
+    .d-type {
+      display: none;
+    }
   }
 </style>

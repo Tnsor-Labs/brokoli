@@ -9,6 +9,12 @@
     currentPath = window.location.hash.replace("#", "") || "/";
   }
 
+  function isRouteActive(path: string) {
+    return path === "/"
+      ? currentPath === path
+      : currentPath === path || currentPath.startsWith(`${path}/`);
+  }
+
   const mobileNav = [
     { path: "/", label: "Home", icon: icons.dashboard.d },
     { path: "/pipelines", label: "Pipelines", icon: icons.pipeline.d },
@@ -33,9 +39,15 @@
 <!-- Mobile bottom nav -->
 <nav class="mobile-nav">
   {#each mobileNav as item}
-    <a href="#{item.path}" class="mobile-nav-item" class:active={currentPath === item.path}>
+    <a href="#{item.path}" class="mobile-nav-item" class:active={isRouteActive(item.path)}>
       <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-        <path d={item.icon} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+        <path
+          d={item.icon}
+          stroke="currentColor"
+          stroke-width="1.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        />
       </svg>
       <span>{item.label}</span>
     </a>

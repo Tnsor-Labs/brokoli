@@ -5,12 +5,23 @@
   import { icons } from "../lib/icons";
   import Stepper from "../components/Stepper.svelte";
 
-  interface UserInfo { id: string; username: string; role: string; created_at: string; }
+  interface UserInfo {
+    id: string;
+    username: string;
+    role: string;
+    created_at: string;
+  }
 
   let generatedKey = "";
   let generating = false;
   let copied = false;
-  let sysInfo: { version: string; db_size_mb: string; pipelines: number; active_runs: number; max_concurrent_runs: number } | null = null;
+  let sysInfo: {
+    version: string;
+    db_size_mb: string;
+    pipelines: number;
+    active_runs: number;
+    max_concurrent_runs: number;
+  } | null = null;
   let purging = false;
   let purgeDays = 30;
   let users: UserInfo[] = [];
@@ -27,7 +38,10 @@
   let resettingPw = false;
 
   async function adminResetPassword() {
-    if (!resetNewPw || resetNewPw.length < 6) { notify.warning("Min 6 characters"); return; }
+    if (!resetNewPw || resetNewPw.length < 6) {
+      notify.warning("Min 6 characters");
+      return;
+    }
     resettingPw = true;
     try {
       const res = await fetch("/api/auth/admin-reset-password", {
@@ -37,12 +51,15 @@
       });
       if (res.ok) {
         notify.success(`Password reset for ${resetUsername}`);
-        showResetPw = false; resetNewPw = "";
+        showResetPw = false;
+        resetNewPw = "";
       } else {
         const data = await res.json();
         notify.error(data.error || "Failed to reset password");
       }
-    } catch { notify.error("Failed"); }
+    } catch {
+      notify.error("Failed");
+    }
     resettingPw = false;
   }
 
@@ -53,9 +70,18 @@
   let changingPw = false;
 
   async function changePassword() {
-    if (!currentPw || !newPw) { notify.warning("Fill in all fields"); return; }
-    if (newPw.length < 6) { notify.warning("New password must be at least 6 characters"); return; }
-    if (newPw !== confirmPw) { notify.warning("Passwords don't match"); return; }
+    if (!currentPw || !newPw) {
+      notify.warning("Fill in all fields");
+      return;
+    }
+    if (newPw.length < 6) {
+      notify.warning("New password must be at least 6 characters");
+      return;
+    }
+    if (newPw !== confirmPw) {
+      notify.warning("Passwords don't match");
+      return;
+    }
     changingPw = true;
     try {
       const res = await fetch("/api/auth/change-password", {
@@ -65,7 +91,9 @@
       });
       if (res.ok) {
         notify.success("Password changed");
-        currentPw = ""; newPw = ""; confirmPw = "";
+        currentPw = "";
+        newPw = "";
+        confirmPw = "";
       } else {
         const data = await res.json();
         notify.error(data.error || "Failed to change password");
@@ -92,7 +120,9 @@
     try {
       const res = await fetch("/api/system/info", { headers: authHeaders() });
       sysInfo = await res.json();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
     loadUsers();
   });
 
@@ -100,7 +130,9 @@
     try {
       const res = await fetch("/api/auth/users", { headers: authHeaders() });
       if (res.ok) users = await res.json();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   }
 
   async function createUser() {
@@ -155,7 +187,9 @@
     try {
       const arr = new Uint8Array(24);
       crypto.getRandomValues(arr);
-      const hex = Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
+      const hex = Array.from(arr)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
       generatedKey = "brk_" + hex;
     } finally {
       generating = false;
@@ -262,7 +296,11 @@
 
 <div class="settings-page animate-in">
   <header class="page-header">
-    <h1>Settings</h1>
+    <div class="header-copy">
+      <span class="eyebrow">Workspace controls</span>
+      <h1>Settings</h1>
+      <p>Configure access, alerts, integrations, and runtime behavior.</p>
+    </div>
   </header>
 
   <!-- Tab bar -->
@@ -271,10 +309,16 @@
       <button
         class="tab-btn"
         class:active={activeTab === tab.id}
-        on:click={() => activeTab = tab.id}
+        on:click={() => (activeTab = tab.id)}
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path d={tab.icon} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path
+            d={tab.icon}
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
         {tab.label}
       </button>
@@ -282,7 +326,6 @@
   </div>
 
   <div class="tab-content">
-
     <!-- ═══════════════════ GENERAL TAB ═══════════════════ -->
     {#if activeTab === "general"}
       <section class="section">
@@ -342,14 +385,17 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ USERS TAB ═══════════════════ -->
+      <!-- ═══════════════════ USERS TAB ═══════════════════ -->
     {:else if activeTab === "users"}
       <section class="section">
         <h2 class="section-title">Users & Access Control</h2>
         <div class="info-card">
           {#if users.length === 0}
             <div class="auth-section">
-              <p class="auth-desc">No users configured. The system is in <strong>open mode</strong> — anyone can access all features. Create a user to enable authentication.</p>
+              <p class="auth-desc">
+                No users configured. The system is in <strong>open mode</strong> — anyone can access all
+                features. Create a user to enable authentication.
+              </p>
             </div>
           {:else}
             <div class="users-table">
@@ -370,10 +416,19 @@
                   <span class="col-role">
                     <span class="role-badge role-{user.role}">{user.role}</span>
                   </span>
-                  <span class="col-created mono">{new Date(user.created_at).toLocaleDateString()}</span>
+                  <span class="col-created mono"
+                    >{new Date(user.created_at).toLocaleDateString()}</span
+                  >
                   <span class="col-actions">
                     {#if $authUser?.role === "admin" && $authUser?.username !== user.username}
-                      <button class="btn-reset-pw" on:click={() => { resetUserId = user.id; resetUsername = user.username; showResetPw = true; }}>
+                      <button
+                        class="btn-reset-pw"
+                        on:click={() => {
+                          resetUserId = user.id;
+                          resetUsername = user.username;
+                          showResetPw = true;
+                        }}
+                      >
                         Reset PW
                       </button>
                     {/if}
@@ -385,8 +440,18 @@
           <div class="add-user-form">
             <span class="form-title">Add User</span>
             <div class="form-row">
-              <input type="text" bind:value={newUsername} placeholder="Username" class="form-input" />
-              <input type="password" bind:value={newPassword} placeholder="Password" class="form-input" />
+              <input
+                type="text"
+                bind:value={newUsername}
+                placeholder="Username"
+                class="form-input"
+              />
+              <input
+                type="password"
+                bind:value={newPassword}
+                placeholder="Password"
+                class="form-input"
+              />
               <select bind:value={newRole} class="form-input form-select">
                 <option value="admin">Admin</option>
                 <option value="editor">Editor</option>
@@ -413,7 +478,11 @@
               <div class="pw-form">
                 <div class="form-group-inline">
                   <label>Current Password</label>
-                  <input type="password" bind:value={currentPw} placeholder="Enter current password" />
+                  <input
+                    type="password"
+                    bind:value={currentPw}
+                    placeholder="Enter current password"
+                  />
                 </div>
                 <div class="form-row-2">
                   <div class="form-group-inline">
@@ -422,8 +491,14 @@
                   </div>
                   <div class="form-group-inline">
                     <label>Confirm New Password</label>
-                    <input type="password" bind:value={confirmPw} placeholder="Repeat new password"
-                      on:keydown={(e) => { if (e.key === "Enter") changePassword(); }} />
+                    <input
+                      type="password"
+                      bind:value={confirmPw}
+                      placeholder="Repeat new password"
+                      on:keydown={(e) => {
+                        if (e.key === "Enter") changePassword();
+                      }}
+                    />
                   </div>
                 </div>
                 <button class="btn-action" on:click={changePassword} disabled={changingPw}>
@@ -437,17 +512,23 @@
 
       {#if showResetPw}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="modal-overlay" on:click={() => showResetPw = false} on:keydown={() => {}}>
+        <div class="modal-overlay" on:click={() => (showResetPw = false)} on:keydown={() => {}}>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div class="modal" on:click|stopPropagation on:keydown={() => {}}>
             <h2>Reset Password: {resetUsername}</h2>
             <div class="form-group-inline">
               <label>New Password</label>
-              <input type="password" bind:value={resetNewPw} placeholder="Min 6 characters"
-                on:keydown={(e) => { if (e.key === "Enter") adminResetPassword(); }} />
+              <input
+                type="password"
+                bind:value={resetNewPw}
+                placeholder="Min 6 characters"
+                on:keydown={(e) => {
+                  if (e.key === "Enter") adminResetPassword();
+                }}
+              />
             </div>
             <div class="modal-actions">
-              <button class="btn-secondary" on:click={() => showResetPw = false}>Cancel</button>
+              <button class="btn-secondary" on:click={() => (showResetPw = false)}>Cancel</button>
               <button class="btn-action" on:click={adminResetPassword} disabled={resettingPw}>
                 {resettingPw ? "Resetting..." : "Reset Password"}
               </button>
@@ -483,7 +564,7 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ ALERTS & SLA TAB ═══════════════════ -->
+      <!-- ═══════════════════ ALERTS & SLA TAB ═══════════════════ -->
     {:else if activeTab === "notifications"}
       <section class="section">
         <h2 class="section-title">Slack Notifications</h2>
@@ -524,7 +605,9 @@
               <input
                 type="password"
                 bind:value={slackWebhook}
-                placeholder={slackConfigured ? "Leave empty to keep current" : "https://hooks.slack.com/services/T.../B.../xxx"}
+                placeholder={slackConfigured
+                  ? "Leave empty to keep current"
+                  : "https://hooks.slack.com/services/T.../B.../xxx"}
               />
             </div>
             <div class="form-row-2">
@@ -546,14 +629,16 @@
                 <button class="btn-action btn-test" on:click={testSlack} disabled={slackTesting}>
                   {slackTesting ? "Sending..." : "Send Test Message"}
                 </button>
-                <button class="btn-action btn-clear" on:click={clearSlack}>
-                  Disconnect
-                </button>
+                <button class="btn-action btn-clear" on:click={clearSlack}> Disconnect </button>
               {/if}
             </div>
 
             {#if slackTestResult}
-              <div class="test-result" class:success={slackTestResult.ok} class:fail={!slackTestResult.ok}>
+              <div
+                class="test-result"
+                class:success={slackTestResult.ok}
+                class:fail={!slackTestResult.ok}
+              >
                 {slackTestResult.msg}
               </div>
             {/if}
@@ -597,7 +682,9 @@
               <input
                 type="password"
                 bind:value={teamsWebhook}
-                placeholder={teamsConfigured ? "Leave empty to keep current" : "https://your-org.webhook.office.com/webhookb2/..."}
+                placeholder={teamsConfigured
+                  ? "Leave empty to keep current"
+                  : "https://your-org.webhook.office.com/webhookb2/..."}
               />
             </div>
             <div class="slack-actions">
@@ -605,19 +692,27 @@
                 Save
               </button>
               {#if teamsConfigured}
-                <button class="btn-action btn-clear" on:click={async () => {
-                  await fetch("/api/settings/notifications", { method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ teams_webhook: "__clear__" }) });
-                  // For now just reload
-                  teamsWebhook = "";
-                  await loadSlackConfig();
-                  notify.success("Teams disconnected");
-                }}>
+                <button
+                  class="btn-action btn-clear"
+                  on:click={async () => {
+                    await fetch("/api/settings/notifications", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", ...authHeaders() },
+                      body: JSON.stringify({ teams_webhook: "__clear__" }),
+                    });
+                    // For now just reload
+                    teamsWebhook = "";
+                    await loadSlackConfig();
+                    notify.success("Teams disconnected");
+                  }}
+                >
                   Disconnect
                 </button>
               {/if}
             </div>
             <p class="auth-desc" style="margin-top: 12px; font-size: 11px; color: var(--text-dim)">
-              Create a webhook in Teams: Channel Settings → Connectors → Incoming Webhook → Configure.
+              Create a webhook in Teams: Channel Settings → Connectors → Incoming Webhook →
+              Configure.
             </p>
           </div>
         </div>
@@ -628,8 +723,8 @@
         <div class="info-card">
           <div class="auth-section">
             <p class="auth-desc">
-              Set SLA deadlines per pipeline in the editor toolbar (click <strong>SLA</strong>).
-              The checker runs every minute and alerts when a pipeline misses its deadline.
+              Set SLA deadlines per pipeline in the editor toolbar (click <strong>SLA</strong>). The
+              checker runs every minute and alerts when a pipeline misses its deadline.
             </p>
           </div>
           <div class="info-row">
@@ -647,19 +742,24 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ INTEGRATIONS TAB ═══════════════════ -->
+      <!-- ═══════════════════ INTEGRATIONS TAB ═══════════════════ -->
     {:else if activeTab === "integrations"}
       <section class="section">
         <h2 class="section-title">Python Integration</h2>
         <div class="info-card">
           <div class="auth-section">
-            <p class="auth-desc">Python Code nodes work with any <code>python3</code>. For faster processing:</p>
+            <p class="auth-desc">
+              Python Code nodes work with any <code>python3</code>. For faster processing:
+            </p>
             <pre class="code-block">pip install pyarrow pandas</pre>
-            <p class="auth-desc" style="margin-top: 8px">Recommended: use a virtualenv and set the path in Code node config:</p>
+            <p class="auth-desc" style="margin-top: 8px">
+              Recommended: use a virtualenv and set the path in Code node config:
+            </p>
             <pre class="code-block">python3 -m venv ~/.brokoli-env
 ~/.brokoli-env/bin/pip install pyarrow pandas numpy requests</pre>
             <p class="auth-desc" style="margin-top: 8px; font-size: 11px; color: var(--text-dim)">
-              Under 10K rows: JSON. Larger: CSV temp files (3-5x faster). With pyarrow: Arrow IPC (5-10x faster).
+              Under 10K rows: JSON. Larger: CSV temp files (3-5x faster). With pyarrow: Arrow IPC
+              (5-10x faster).
             </p>
           </div>
         </div>
@@ -675,7 +775,9 @@
             </span>
           </div>
           <div class="auth-section">
-            <p class="auth-desc">Emit lineage events to DataHub, Marquez, or any OpenLineage-compatible endpoint:</p>
+            <p class="auth-desc">
+              Emit lineage events to DataHub, Marquez, or any OpenLineage-compatible endpoint:
+            </p>
             <pre class="code-block">BROKOLI_OPENLINEAGE_URL=http://marquez:5000/api/v1/lineage
 BROKOLI_OPENLINEAGE_NAMESPACE=brokoli-prod
 BROKOLI_OPENLINEAGE_API_KEY=...</pre>
@@ -688,17 +790,21 @@ BROKOLI_OPENLINEAGE_API_KEY=...</pre>
         <div class="info-card">
           <div class="auth-section">
             <p class="auth-desc">
-              Trigger pipeline runs via HTTP. Generate a webhook token in the pipeline editor (click <strong>Webhook</strong>), then:
+              Trigger pipeline runs via HTTP. Generate a webhook token in the pipeline editor (click <strong
+                >Webhook</strong
+              >), then:
             </p>
-            <pre class="code-block">curl -X POST http://localhost:9900/api/pipelines/PIPELINE_ID/webhook?token=whk_...</pre>
+            <pre
+              class="code-block">curl -X POST http://localhost:9900/api/pipelines/PIPELINE_ID/webhook?token=whk_...</pre>
             <p class="auth-desc" style="margin-top: 8px; font-size: 11px; color: var(--text-dim)">
-              Useful for triggering on external events: git push, model deploy, dbt completion, Kafka consumer, etc.
+              Useful for triggering on external events: git push, model deploy, dbt completion,
+              Kafka consumer, etc.
             </p>
           </div>
         </div>
       </section>
 
-    <!-- ═══════════════════ API & CLI TAB ═══════════════════ -->
+      <!-- ═══════════════════ API & CLI TAB ═══════════════════ -->
     {:else if activeTab === "api"}
       <section class="section">
         <h2 class="section-title">API Reference</h2>
@@ -791,12 +897,29 @@ assertions:
 
 <style>
   .page-header {
-    margin-bottom: var(--space-lg);
+    margin-bottom: 18px;
+  }
+  .header-copy {
+    min-width: 0;
+  }
+  .eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
   }
   .page-header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+    color: var(--text-primary);
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+  }
+  .header-copy p {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
   }
 
   /* ── Tab Bar ── */
@@ -804,7 +927,13 @@ assertions:
     display: flex;
     gap: 2px;
     border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-xl);
+    margin-bottom: 18px;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+  .tab-bar::-webkit-scrollbar {
+    display: none;
   }
   .tab-btn {
     display: flex;
@@ -819,6 +948,8 @@ assertions:
     transition: all 150ms ease;
     background: none;
     border-radius: 0;
+    white-space: nowrap;
+    flex: none;
   }
   .tab-btn:hover {
     color: var(--text-primary);
@@ -841,7 +972,7 @@ assertions:
 
   /* ── Sections ── */
   .section {
-    margin-bottom: var(--space-xl);
+    margin-bottom: 18px;
   }
   .section-title {
     font-size: 0.75rem;
@@ -854,9 +985,10 @@ assertions:
 
   .info-card {
     background: var(--bg-secondary);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
     overflow: hidden;
+    box-shadow: var(--shadow-card);
   }
   .info-row {
     display: flex;
@@ -865,7 +997,9 @@ assertions:
     padding: var(--space-md) var(--space-lg);
     border-bottom: 1px solid var(--border);
   }
-  .info-row:last-child { border-bottom: none; }
+  .info-row:last-child {
+    border-bottom: none;
+  }
   .info-label {
     font-size: 0.8125rem;
     color: var(--text-secondary);
@@ -873,7 +1007,9 @@ assertions:
   .info-value {
     font-size: 0.8125rem;
   }
-  .mono { font-family: var(--font-mono); }
+  .mono {
+    font-family: var(--font-mono);
+  }
   code {
     background: var(--bg-tertiary);
     padding: 1px 5px;
@@ -885,29 +1021,47 @@ assertions:
     padding: var(--space-lg);
   }
   .edition-badge {
-    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-    padding: 2px 8px; border-radius: 4px;
-    background: var(--bg-tertiary); color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
   }
   .edition-badge.enterprise {
-    background: var(--accent-glow); color: var(--accent);
+    background: var(--accent-glow);
+    color: var(--accent);
   }
   .feature-tag {
-    font-size: 10px; font-family: var(--font-mono); font-weight: 500;
-    padding: 1px 6px; border-radius: 3px;
-    background: var(--accent-glow); color: var(--accent);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--accent-glow);
+    color: var(--accent);
     margin-right: 4px;
   }
   .code-block {
-    font-family: var(--font-mono); font-size: 11px; line-height: 1.6;
-    background: var(--bg-code); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md); padding: 10px 14px;
-    color: var(--text-secondary); white-space: pre; overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    background: var(--bg-code);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    color: var(--text-secondary);
+    white-space: pre;
+    overflow-x: auto;
     margin: 0;
   }
   .auth-desc code {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--accent); font-weight: 500;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 500;
   }
   .auth-desc {
     font-size: 0.8125rem;
@@ -917,28 +1071,56 @@ assertions:
   }
 
   .event-tags {
-    display: flex; gap: 6px; margin-top: var(--space-sm);
+    display: flex;
+    gap: 6px;
+    margin-top: var(--space-sm);
   }
   .event-tag {
-    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
-    padding: 2px 8px; border-radius: 4px;
-    background: var(--bg-tertiary); color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
   }
   .event-tag.alert {
-    background: rgba(245, 158, 11, 0.1); color: var(--warning);
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning);
   }
 
   .btn-action {
     background: var(--accent);
     color: white;
-    padding: 6px 14px;
+    min-height: 34px;
+    padding: 0 14px;
     border-radius: var(--radius-md);
     font-weight: 500;
     font-size: 0.8125rem;
     transition: background 150ms ease;
   }
-  .btn-action:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-action:disabled { opacity: 0.5; }
+  .btn-secondary {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    transition: all 150ms ease;
+  }
+  .btn-secondary:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .btn-action:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .btn-action:disabled {
+    opacity: 0.5;
+  }
 
   .key-actions {
     margin-bottom: var(--space-md);
@@ -972,7 +1154,10 @@ assertions:
     transition: all 150ms ease;
     flex-shrink: 0;
   }
-  .btn-copy:hover { color: var(--text-primary); background: var(--border); }
+  .btn-copy:hover {
+    color: var(--text-primary);
+    background: var(--border);
+  }
 
   .key-hint {
     font-size: 0.75rem;
@@ -982,19 +1167,31 @@ assertions:
     font-size: 0.6875rem;
   }
 
-  .users-table { overflow: hidden; }
-  .users-header, .users-row {
+  .users-table {
+    overflow: hidden;
+  }
+  .users-header,
+  .users-row {
     display: grid;
     grid-template-columns: 1fr 100px 100px 80px;
     padding: var(--space-sm) var(--space-lg);
     align-items: center;
   }
-  .col-actions { text-align: right; }
-  .btn-reset-pw {
-    padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 500;
-    color: var(--text-dim); transition: all 150ms ease;
+  .col-actions {
+    text-align: right;
   }
-  .btn-reset-pw:hover { color: var(--warning); background: rgba(245,158,11,0.1); }
+  .btn-reset-pw {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-dim);
+    transition: all 150ms ease;
+  }
+  .btn-reset-pw:hover {
+    color: var(--warning);
+    background: rgba(245, 158, 11, 0.1);
+  }
   .users-header {
     background: var(--bg-tertiary);
     font-size: 0.7rem;
@@ -1023,9 +1220,18 @@ assertions:
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .role-admin { color: var(--failed); background: var(--failed-bg); }
-  .role-editor { color: var(--accent-text); background: var(--accent-glow); }
-  .role-viewer { color: var(--text-muted); background: var(--pending-bg); }
+  .role-admin {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
+  .role-editor {
+    color: var(--accent-text);
+    background: var(--accent-glow);
+  }
+  .role-viewer {
+    color: var(--text-muted);
+    background: var(--pending-bg);
+  }
 
   .add-user-form {
     padding: var(--space-md) var(--space-lg);
@@ -1050,7 +1256,9 @@ assertions:
     padding: 6px 10px;
     flex: 1;
   }
-  .form-select { flex: 0.7; }
+  .form-select {
+    flex: 0.7;
+  }
   .role-help {
     font-size: 0.6875rem;
     color: var(--text-dim);
@@ -1063,18 +1271,29 @@ assertions:
     align-items: center;
     gap: var(--space-sm);
   }
-  .purge-label { font-size: 0.8125rem; color: var(--text-secondary); }
+  .purge-label {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
   /* ── Slack config ── */
   .status-active {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 600; color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--success);
   }
   .status-dot-green {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--success); box-shadow: 0 0 6px var(--success-glow);
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success-glow);
   }
   .status-inactive {
-    font-size: 12px; color: var(--text-dim);
+    font-size: 12px;
+    color: var(--text-dim);
   }
   .slack-form {
     padding: var(--space-lg);
@@ -1084,22 +1303,37 @@ assertions:
     margin-bottom: 12px;
   }
   .form-group-inline label {
-    display: block; font-size: 10px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em;
-    margin-bottom: 4px; font-weight: 600;
+    display: block;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    font-weight: 600;
   }
   .form-group-inline input {
-    width: 100%; padding: 9px 12px;
-    background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: var(--radius-md); color: var(--text-primary);
-    font-size: 13px; font-family: var(--font-ui);
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-ui);
   }
-  .form-group-inline input:focus { border-color: var(--accent); outline: none; }
+  .form-group-inline input:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
   .form-row-2 {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
   }
   .slack-actions {
-    display: flex; gap: 8px; margin-top: 4px;
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
   }
   .btn-test {
     background: var(--bg-tertiary) !important;
@@ -1113,27 +1347,39 @@ assertions:
   .btn-clear {
     background: transparent !important;
     color: var(--failed) !important;
-    border: 1px solid rgba(239,68,68,0.2);
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
-  .btn-clear:hover { background: var(--failed-bg) !important; }
+  .btn-clear:hover {
+    background: var(--failed-bg) !important;
+  }
   .test-result {
-    margin-top: 12px; padding: 10px 14px; border-radius: var(--radius-md);
-    font-size: 12px; font-weight: 500;
+    margin-top: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    font-weight: 500;
   }
   .test-result.success {
-    background: var(--success-bg); color: var(--success);
-    border: 1px solid rgba(34,197,94,0.2);
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(34, 197, 94, 0.2);
   }
   .test-result.fail {
-    background: var(--failed-bg); color: var(--failed);
-    border: 1px solid rgba(239,68,68,0.2);
+    background: var(--failed-bg);
+    color: var(--failed);
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
   .slack-events {
-    display: flex; align-items: center; gap: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 12px var(--space-lg);
     border-top: 1px solid var(--border);
   }
-  .events-label { font-size: 11px; color: var(--text-dim); }
+  .events-label {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
 
   .purge-input {
     width: 60px;
@@ -1145,53 +1391,107 @@ assertions:
 
   /* ── Roles ── */
   .tab-header-row {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: var(--space-md);
   }
-  .roles-list { display: flex; flex-direction: column; gap: 8px; }
+  .roles-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   .role-card {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); overflow: hidden;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
     transition: border-color 150ms ease;
   }
-  .role-card.editing { border-color: var(--accent); }
+  .role-card.editing {
+    border-color: var(--accent);
+  }
   .role-card-header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 14px 20px;
   }
-  .role-card-info { display: flex; flex-direction: column; gap: 2px; }
-  .role-card-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .role-card-desc { font-size: 11px; color: var(--text-muted); }
+  .role-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .role-card-name {
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .role-card-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
   .system-badge {
-    font-size: 9px; font-weight: 600; text-transform: uppercase;
-    padding: 1px 6px; border-radius: 3px;
-    background: var(--bg-tertiary); color: var(--text-dim);
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-dim);
     letter-spacing: 0.06em;
   }
-  .role-card-meta { display: flex; align-items: center; gap: 8px; }
+  .role-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .perm-count {
-    font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
   }
   .btn-sm-action {
-    padding: 5px 14px; border-radius: 5px; font-size: 11px; font-weight: 500;
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    color: var(--text-secondary); transition: all 150ms ease;
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: all 150ms ease;
   }
-  .btn-sm-action:hover { border-color: var(--accent); color: var(--accent-text); }
+  .btn-sm-action:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
   .btn-sm-danger {
-    padding: 5px 14px; border-radius: 5px; font-size: 11px; font-weight: 500;
-    color: var(--text-dim); transition: all 150ms ease;
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    transition: all 150ms ease;
   }
-  .btn-sm-danger:hover { color: var(--failed); background: var(--failed-bg); }
+  .btn-sm-danger:hover {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
   .btn-secondary-sm {
-    padding: 6px 14px; border-radius: var(--radius-md); font-size: 12px;
-    background: var(--bg-tertiary); color: var(--text-secondary);
+    padding: 6px 14px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
     border: 1px solid var(--border);
   }
 
   /* Permission editor */
   .perm-editor {
-    padding: 20px 24px; border-top: 1px solid var(--border);
+    padding: 20px 24px;
+    border-top: 1px solid var(--border);
     background: var(--bg-primary);
   }
   .perm-group {
@@ -1201,12 +1501,19 @@ assertions:
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
   }
-  .perm-group:last-child { margin-bottom: 0; }
+  .perm-group:last-child {
+    margin-bottom: 0;
+  }
   .perm-group-title {
-    display: block; font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-muted); margin-bottom: 10px;
-    padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle);
   }
   .perm-checkboxes {
     display: grid;
@@ -1214,18 +1521,26 @@ assertions:
     gap: 6px;
   }
   .perm-checkbox {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: var(--text-secondary);
-    cursor: pointer; padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px 10px;
     border-radius: 6px;
     transition: background 120ms ease;
   }
-  .perm-checkbox:hover { background: var(--bg-tertiary); }
+  .perm-checkbox:hover {
+    background: var(--bg-tertiary);
+  }
 
   /* Custom toggle switch */
   .perm-checkbox input[type="checkbox"] {
-    appearance: none; -webkit-appearance: none;
-    width: 32px; height: 18px;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 32px;
+    height: 18px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: 9px;
@@ -1237,8 +1552,10 @@ assertions:
   .perm-checkbox input[type="checkbox"]::after {
     content: "";
     position: absolute;
-    top: 2px; left: 2px;
-    width: 12px; height: 12px;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     background: var(--text-ghost);
     transition: all 200ms ease;
@@ -1252,52 +1569,198 @@ assertions:
     transform: translateX(14px);
   }
   .perm-checkbox input:disabled {
-    opacity: 0.4; cursor: default;
+    opacity: 0.4;
+    cursor: default;
   }
-  .perm-label { text-transform: capitalize; user-select: none; }
+  .perm-label {
+    text-transform: capitalize;
+    user-select: none;
+  }
   .perm-actions {
-    display: flex; gap: 8px; margin-top: 20px;
-    padding-top: 14px; border-top: 1px solid var(--border-subtle);
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .modal-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    display: flex; align-items: center; justify-content: center;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
     z-index: 200;
   }
   .modal {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 12px; padding: 28px;
-    max-width: 90vw;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    width: min(480px, 100%);
+    max-width: none;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
   }
-  .modal h2 { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  .modal h2 {
+    font-size: 17px;
+    font-weight: 600;
+    margin-bottom: 16px;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
   .modal-role {
-    width: 640px; max-width: 95vw; max-height: 85vh;
-    display: flex; flex-direction: column;
-    padding: 0; overflow: hidden;
+    width: 640px;
+    max-width: 95vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
   }
   .modal-role-header {
     padding: 24px 28px 16px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
-  .modal-role-header h2 { margin-bottom: 16px; }
+  .modal-role-header h2 {
+    margin-bottom: 16px;
+  }
   .modal-role-body {
-    flex: 1; overflow-y: auto;
+    flex: 1;
+    overflow-y: auto;
     min-height: 0;
   }
-  .modal-role-body .perm-editor { padding: 16px 28px 20px; }
+  .modal-role-body .perm-editor {
+    padding: 16px 28px 20px;
+  }
   .modal-role-footer {
     padding: 14px 28px;
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     flex-shrink: 0;
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
   .perm-selected-count {
-    font-size: 11px; font-family: var(--font-mono);
+    font-size: 11px;
+    font-family: var(--font-mono);
     color: var(--text-dim);
+  }
+
+  @media (max-width: 768px) {
+    .tab-bar {
+      margin-right: calc(var(--space-md) * -1);
+      margin-left: calc(var(--space-md) * -1);
+      padding: 0 var(--space-md);
+      scroll-padding-inline: var(--space-md);
+    }
+    .tab-btn {
+      padding: 9px 12px;
+    }
+    .info-row {
+      gap: 16px;
+      padding: 11px 14px;
+    }
+    .info-value {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+    .users-header {
+      display: none;
+    }
+    .users-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 14px;
+      padding: 13px 14px;
+    }
+    .users-row .col-user {
+      grid-column: 1;
+      grid-row: 1;
+    }
+    .users-row .col-actions {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .users-row .col-role {
+      grid-column: 1;
+      grid-row: 2;
+    }
+    .users-row .col-created {
+      grid-column: 2;
+      grid-row: 2;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-align: right;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .form-row .btn-action {
+      width: 100%;
+    }
+    .code-block {
+      max-width: 100%;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .page-header h1 {
+      font-size: 22px;
+    }
+    .section-title {
+      margin-bottom: 8px;
+    }
+    .auth-section,
+    .slack-form {
+      padding: 14px;
+    }
+    .form-row,
+    .form-row-2 {
+      grid-template-columns: 1fr;
+    }
+    .form-input,
+    .form-select {
+      width: 100%;
+    }
+    .purge-controls,
+    .slack-actions,
+    .slack-events {
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .purge-controls .btn-action {
+      flex-basis: 100%;
+    }
+    .slack-actions .btn-action {
+      flex: 1 1 auto;
+    }
+    .key-display {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .key-display .btn-copy {
+      align-self: flex-end;
+    }
+    .modal-overlay {
+      align-items: flex-end;
+      padding: 8px;
+    }
+    .modal {
+      max-height: calc(100vh - 16px);
+      padding: 20px;
+    }
+    .modal-actions button {
+      flex: 1;
+    }
   }
 </style>
