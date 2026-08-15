@@ -22,9 +22,11 @@
     active_runs: number;
     max_concurrent_runs: number;
   } | null = null;
+  let sysInfoLoaded = false;
   let purging = false;
   let purgeDays = 30;
   let users: UserInfo[] = [];
+  let usersLoaded = false;
   let newUsername = "";
   let newPassword = "";
   let newRole = "editor";
@@ -108,12 +110,27 @@
   type Tab = "general" | "users" | "notifications" | "integrations" | "api";
   let activeTab: Tab = "general";
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: "general", label: "General", icon: icons.settings.d },
-    { id: "users", label: "Users", icon: icons.user.d },
-    { id: "notifications", label: "Alerts & SLA", icon: icons.bell.d },
-    { id: "integrations", label: "Integrations", icon: icons.connection.d },
-    { id: "api", label: "API & CLI", icon: icons.code.d },
+  const tabs: { id: Tab; label: string; description: string; icon: string }[] = [
+    {
+      id: "general",
+      label: "General",
+      description: "Runtime & maintenance",
+      icon: icons.settings.d,
+    },
+    { id: "users", label: "Users", description: "Access & credentials", icon: icons.user.d },
+    {
+      id: "notifications",
+      label: "Alerts & SLA",
+      description: "Delivery & monitoring",
+      icon: icons.bell.d,
+    },
+    {
+      id: "integrations",
+      label: "Integrations",
+      description: "Python & lineage",
+      icon: icons.connection.d,
+    },
+    { id: "api", label: "API & CLI", description: "Endpoints & automation", icon: icons.code.d },
   ];
 
   onMount(async () => {
@@ -122,6 +139,8 @@
       sysInfo = await res.json();
     } catch {
       /* ignore */
+    } finally {
+      sysInfoLoaded = true;
     }
     loadUsers();
   });
@@ -132,6 +151,8 @@
       if (res.ok) users = await res.json();
     } catch {
       /* ignore */
+    } finally {
+      usersLoaded = true;
     }
   }
 
@@ -213,6 +234,8 @@
   let slackTesting = false;
   let slackTestResult: { ok: boolean; msg: string } | null = null;
   let slackLoaded = false;
+  let slackLoading = false;
+  let slackLoadFailed = false;
 
   // Teams config
   let teamsWebhook = "";
@@ -221,6 +244,8 @@
   let teamsSaving = false;
 
   async function loadSlackConfig() {
+    slackLoading = true;
+    slackLoadFailed = false;
     try {
       const res = await fetch("/api/settings/notifications", { headers: authHeaders() });
       if (res.ok) {
@@ -232,8 +257,14 @@
         teamsConfigured = data.teams_configured || false;
         teamsMasked = data.teams_webhook_masked || "";
         slackLoaded = true;
+      } else {
+        slackLoadFailed = true;
       }
-    } catch {}
+    } catch {
+      slackLoadFailed = true;
+    } finally {
+      slackLoading = false;
+    }
   }
 
   async function saveSlackConfig() {
@@ -295,35 +326,60 @@
 </script>
 
 <div class="settings-page animate-in">
-  <header class="page-header">
-    <div class="header-copy">
-      <span class="eyebrow">Workspace controls</span>
-      <h1>Settings</h1>
-      <p>Configure access, alerts, integrations, and runtime behavior.</p>
+  <header class="identity-header">
+    <div class="identity-main">
+      <div class="workspace-mark" aria-hidden="true">B</div>
+      <div class="header-copy">
+        <span class="eyebrow">Organization control center</span>
+        <h1>Brokoli workspace</h1>
+        <p>Runtime, access, delivery, and automation in one operational view.</p>
+      </div>
     </div>
+    <dl class="identity-stats" aria-label="System summary">
+      <div>
+        <dt>Edition</dt>
+        <dd>Community</dd>
+      </div>
+      <div>
+        <dt>Version</dt>
+        <dd>{sysInfoLoaded ? sysInfo?.version || "Unavailable" : "--"}</dd>
+      </div>
+      <div>
+        <dt>Pipelines</dt>
+        <dd>{sysInfoLoaded ? (sysInfo?.pipelines ?? "Unavailable") : "--"}</dd>
+      </div>
+      <div class:attention={(sysInfo?.active_runs ?? 0) > 0}>
+        <dt>Active runs</dt>
+        <dd>{sysInfoLoaded ? (sysInfo?.active_runs ?? "Unavailable") : "--"}</dd>
+      </div>
+    </dl>
   </header>
 
-  <!-- Tab bar -->
-  <div class="tab-bar">
+  <nav class="tab-bar" aria-label="Organization settings">
     {#each tabs as tab}
       <button
+        type="button"
         class="tab-btn"
         class:active={activeTab === tab.id}
+        aria-current={activeTab === tab.id ? "page" : undefined}
         on:click={() => (activeTab = tab.id)}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path
-            d={tab.icon}
-            stroke="currentColor"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-          />
-        </svg>
-        {tab.label}
+        <span class="tab-icon" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path
+              d={tab.icon}
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
+        <span class="tab-copy"><strong>{tab.label}</strong><small>{tab.description}</small></span>
+        <span class="tab-arrow" aria-hidden="true">›</span>
       </button>
     {/each}
-  </div>
+  </nav>
 
   <div class="tab-content">
     <!-- ═══════════════════ GENERAL TAB ═══════════════════ -->
@@ -333,7 +389,9 @@
         <div class="info-card">
           <div class="info-row">
             <span class="info-label">Version</span>
-            <span class="info-value mono">{sysInfo?.version || "0.1.0-dev"}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? sysInfo?.version || "Unavailable" : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Edition</span>
@@ -351,19 +409,29 @@
           </div>
           <div class="info-row">
             <span class="info-label">DB Size</span>
-            <span class="info-value mono">{sysInfo?.db_size_mb || "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? sysInfo?.db_size_mb || "Unavailable" : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Pipelines</span>
-            <span class="info-value mono">{sysInfo?.pipelines ?? "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? (sysInfo?.pipelines ?? "Unavailable") : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Active Runs</span>
-            <span class="info-value mono">{sysInfo?.active_runs ?? 0}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? (sysInfo?.active_runs ?? "Unavailable") : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Max Concurrent</span>
-            <span class="info-value mono">{sysInfo?.max_concurrent_runs ?? "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded
+                ? (sysInfo?.max_concurrent_runs ?? "Unavailable")
+                : "Loading..."}</span
+            >
           </div>
         </div>
       </section>
@@ -390,7 +458,16 @@
       <section class="section">
         <h2 class="section-title">Users & Access Control</h2>
         <div class="info-card">
-          {#if users.length === 0}
+          {#if !usersLoaded}
+            <div class="empty-state" role="status">
+              <span class="state-pulse" aria-hidden="true"></span>
+              <div>
+                <strong>Loading access inventory</strong><span
+                  >Checking configured users and roles.</span
+                >
+              </div>
+            </div>
+          {:else if users.length === 0}
             <div class="auth-section">
               <p class="auth-desc">
                 No users configured. The system is in <strong>open mode</strong> — anyone can access all
@@ -514,25 +591,63 @@
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <div class="modal-overlay" on:click={() => (showResetPw = false)} on:keydown={() => {}}>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="modal" on:click|stopPropagation on:keydown={() => {}}>
-            <h2>Reset Password: {resetUsername}</h2>
-            <div class="form-group-inline">
-              <label>New Password</label>
-              <input
-                type="password"
-                bind:value={resetNewPw}
-                placeholder="Min 6 characters"
-                on:keydown={(e) => {
-                  if (e.key === "Enter") adminResetPassword();
-                }}
-              />
+          <div
+            class="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-password-title"
+            aria-describedby="reset-password-description"
+            tabindex="-1"
+            on:click|stopPropagation
+            on:keydown={(event) => {
+              if (event.key === "Escape") showResetPw = false;
+            }}
+          >
+            <button
+              class="modal-close"
+              type="button"
+              aria-label="Close reset password dialog"
+              on:click={() => (showResetPw = false)}>×</button
+            >
+            <header class="modal-header">
+              <div class="modal-symbol" aria-hidden="true">
+                <svg viewBox="0 0 24 24"
+                  ><path d="M7 11V8a5 5 0 0 1 10 0v3"></path><rect
+                    x="5"
+                    y="11"
+                    width="14"
+                    height="10"
+                    rx="2"
+                  ></rect></svg
+                >
+              </div>
+              <span class="eyebrow">Administrative access</span>
+              <h2 id="reset-password-title">Reset {resetUsername}'s password</h2>
+              <p id="reset-password-description">
+                Set a temporary replacement credential. The user can change it after signing in.
+              </p>
+            </header>
+            <div class="modal-body">
+              <div class="form-group-inline">
+                <label for="reset-new-password">New Password</label>
+                <input
+                  id="reset-new-password"
+                  type="password"
+                  bind:value={resetNewPw}
+                  placeholder="Min 6 characters"
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") adminResetPassword();
+                  }}
+                />
+                <span class="field-hint">Minimum 6 characters</span>
+              </div>
             </div>
-            <div class="modal-actions">
+            <footer class="modal-actions">
               <button class="btn-secondary" on:click={() => (showResetPw = false)}>Cancel</button>
               <button class="btn-action" on:click={adminResetPassword} disabled={resettingPw}>
                 {resettingPw ? "Resetting..." : "Reset Password"}
               </button>
-            </div>
+            </footer>
           </div>
         </div>
       {/if}
@@ -573,7 +688,11 @@
           <div class="info-row">
             <span class="info-label">Status</span>
             <span class="info-value">
-              {#if slackConfigured}
+              {#if slackLoading}
+                <span class="status-inactive">Loading notification settings...</span>
+              {:else if slackLoadFailed}
+                <span class="status-inactive">Notification settings unavailable</span>
+              {:else if slackConfigured}
                 <span class="status-active">
                   <span class="status-dot-green"></span>
                   Active
@@ -660,7 +779,11 @@
           <div class="info-row">
             <span class="info-label">Status</span>
             <span class="info-value">
-              {#if teamsConfigured}
+              {#if slackLoading}
+                <span class="status-inactive">Loading notification settings...</span>
+              {:else if slackLoadFailed}
+                <span class="status-inactive">Notification settings unavailable</span>
+              {:else if teamsConfigured}
                 <span class="status-active">
                   <span class="status-dot-green"></span>
                   Active
@@ -896,8 +1019,52 @@ assertions:
 </div>
 
 <style>
-  .page-header {
-    margin-bottom: 18px;
+  .settings-page {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .identity-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(300px, 1.15fr) minmax(480px, 1fr);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background:
+      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 36%), var(--bg-secondary);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  }
+  .identity-header::after {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 34%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent));
+    content: "";
+    opacity: 0.7;
+  }
+  .identity-main {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 26px;
+  }
+  .workspace-mark {
+    display: grid;
+    width: 52px;
+    height: 52px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 56%);
+    border-radius: 12px;
+    background: var(--accent-glow);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--accent), transparent 88%);
+    color: var(--accent);
+    font: 700 20px var(--font-mono);
   }
   .header-copy {
     min-width: 0;
@@ -910,60 +1077,132 @@ assertions:
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
-  .page-header h1 {
+  .header-copy h1 {
+    overflow: hidden;
+    margin: 5px 0 3px;
     color: var(--text-primary);
-    font-size: 24px;
-    font-weight: 650;
-    letter-spacing: -0.035em;
+    font-size: clamp(1.35rem, 2.4vw, 1.8rem);
+    font-weight: 680;
+    letter-spacing: -0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .header-copy p {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .identity-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 0;
+    border-left: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 52%);
+  }
+  .identity-stats div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 18px 14px;
+    border-left: 1px solid var(--border-subtle);
+  }
+  .identity-stats div:first-child {
+    border-left: 0;
+  }
+  .identity-stats dt {
+    color: var(--text-dim);
+    font: 8px var(--font-mono);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .identity-stats dd {
+    overflow: hidden;
+    margin: 0;
+    color: var(--text-primary);
+    font: 650 12px var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-stats .attention dd {
+    color: var(--accent);
   }
 
   /* ── Tab Bar ── */
   .tab-bar {
-    display: flex;
-    gap: 2px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: 18px;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
-    scrollbar-width: none;
-  }
-  .tab-bar::-webkit-scrollbar {
-    display: none;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
   }
   .tab-btn {
-    display: flex;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) 12px;
     align-items: center;
-    gap: 7px;
-    padding: 10px 16px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: all 150ms ease;
-    background: none;
-    border-radius: 0;
-    white-space: nowrap;
-    flex: none;
+    gap: 9px;
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-secondary), transparent 18%);
+    color: inherit;
+    text-align: left;
+    transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
   }
   .tab-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
+    border-color: var(--border-hover);
+    background: var(--bg-secondary);
+    transform: translateY(-1px);
   }
   .tab-btn.active {
-    color: var(--accent-text);
-    border-bottom-color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent), transparent 38%);
+    background: linear-gradient(110deg, var(--accent-glow), var(--bg-secondary) 65%);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent), transparent 80%);
   }
-  .tab-btn svg {
-    opacity: 0.6;
+  .tab-icon {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
   }
-  .tab-btn.active svg {
-    opacity: 1;
+  .tab-btn.active .tab-icon {
+    border-color: color-mix(in srgb, var(--accent), transparent 58%);
+    color: var(--accent);
+  }
+  .tab-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tab-copy strong {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab-copy small {
+    overflow: hidden;
+    color: var(--text-dim);
+    font-size: 8.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab-arrow {
+    color: var(--text-dim);
+    font-size: 17px;
+  }
+  .tab-btn.active .tab-arrow {
+    color: var(--accent);
   }
 
   .tab-content {
@@ -975,20 +1214,25 @@ assertions:
     margin-bottom: 18px;
   }
   .section-title {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text-muted);
+    margin: 0;
+    padding: 15px 18px;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: 11px 11px 0 0;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 650;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: var(--space-md);
+    letter-spacing: 0.1em;
   }
 
   .info-card {
     background: var(--bg-secondary);
-    border: 1px solid var(--border-subtle);
-    border-radius: 9px;
+    border: 1px solid var(--border);
+    border-radius: 0 0 11px 11px;
     overflow: hidden;
-    box-shadow: var(--shadow-card);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
   }
   .info-row {
     display: flex;
@@ -1264,6 +1508,41 @@ assertions:
     color: var(--text-dim);
     margin-top: var(--space-sm);
     line-height: 1.6;
+  }
+  .empty-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 24px var(--space-lg);
+    color: var(--text-muted);
+  }
+  .empty-state > div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .empty-state strong {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .empty-state span:not(.state-pulse) {
+    font-size: 10px;
+  }
+  .state-pulse {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent-glow);
+    animation: state-pulse 1.4s ease-out infinite;
+  }
+  @keyframes state-pulse {
+    70%,
+    100% {
+      box-shadow: 0 0 0 8px transparent;
+    }
   }
 
   .purge-controls {
@@ -1587,33 +1866,109 @@ assertions:
   .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.6);
+    background: rgba(0, 4, 6, 0.8);
+    backdrop-filter: blur(10px) saturate(0.75);
     display: flex;
     align-items: center;
     justify-content: center;
     padding: 16px;
-    z-index: 200;
+    z-index: 2000;
+    animation: modal-fade 180ms ease-out;
+  }
+  @keyframes modal-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   .modal {
-    background: var(--bg-secondary);
+    position: relative;
     border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 28px;
-    width: min(480px, 100%);
+    border-radius: 13px;
+    padding: 0;
+    width: min(520px, 100%);
     max-width: none;
-    max-height: calc(100vh - 32px);
+    max-height: calc(100dvh - 32px);
     overflow-y: auto;
+    background:
+      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 30%), var(--bg-secondary);
+    box-shadow:
+      0 36px 100px rgba(0, 0, 0, 0.65),
+      inset 0 1px 0 rgba(255, 255, 255, 0.035);
   }
-  .modal h2 {
-    font-size: 17px;
-    font-weight: 600;
-    margin-bottom: 16px;
+  .modal-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: grid;
+    width: 30px;
+    height: 30px;
+    z-index: 2;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 19px;
+  }
+  .modal-close:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .modal-header {
+    padding: 28px 30px 21px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .modal-symbol {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    margin-bottom: 22px;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 58%);
+    border-radius: 10px;
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .modal-symbol svg {
+    width: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+  }
+  .modal-header h2 {
+    margin: 6px 0;
+    color: var(--text-primary);
+    font-size: 21px;
+    font-weight: 680;
+    letter-spacing: -0.035em;
+  }
+  .modal-header p {
+    max-width: 410px;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .modal-body {
+    padding: 21px 30px 9px;
+  }
+  .field-hint {
+    display: block;
+    margin-top: 5px;
+    color: var(--text-dim);
+    font-size: 9px;
   }
   .modal-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
-    margin-top: 20px;
+    margin: 0;
+    padding: 14px 30px;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 48%);
   }
   .modal-role {
     width: 640px;
@@ -1655,15 +2010,22 @@ assertions:
     color: var(--text-dim);
   }
 
+  @media (max-width: 1100px) {
+    .identity-header {
+      grid-template-columns: 1fr;
+    }
+    .identity-stats {
+      border-top: 1px solid var(--border-subtle);
+      border-left: 0;
+    }
+    .tab-bar {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
   @media (max-width: 768px) {
     .tab-bar {
-      margin-right: calc(var(--space-md) * -1);
-      margin-left: calc(var(--space-md) * -1);
-      padding: 0 var(--space-md);
-      scroll-padding-inline: var(--space-md);
-    }
-    .tab-btn {
-      padding: 9px 12px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
     .info-row {
       gap: 16px;
@@ -1714,11 +2076,43 @@ assertions:
   }
 
   @media (max-width: 520px) {
-    .page-header h1 {
-      font-size: 22px;
+    .settings-page {
+      gap: 12px;
+    }
+    .identity-main {
+      padding: 18px;
+    }
+    .workspace-mark {
+      width: 42px;
+      height: 42px;
+      font-size: 17px;
+    }
+    .header-copy p {
+      display: none;
+    }
+    .identity-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .identity-stats div {
+      min-height: 58px;
+      box-sizing: border-box;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .identity-stats div:nth-child(3),
+    .identity-stats div:nth-child(4) {
+      border-bottom: 0;
+    }
+    .tab-bar {
+      grid-template-columns: 1fr;
+      gap: 5px;
+    }
+    .tab-btn {
+      min-height: 48px;
+      padding: 7px 10px;
     }
     .section-title {
-      margin-bottom: 8px;
+      padding: 13px 14px;
     }
     .auth-section,
     .slack-form {
@@ -1756,8 +2150,16 @@ assertions:
       padding: 8px;
     }
     .modal {
-      max-height: calc(100vh - 16px);
-      padding: 20px;
+      max-height: calc(100dvh - 16px);
+    }
+    .modal-header,
+    .modal-body,
+    .modal-actions {
+      padding-right: 20px;
+      padding-left: 20px;
+    }
+    .modal-symbol {
+      margin-bottom: 16px;
     }
     .modal-actions button {
       flex: 1;

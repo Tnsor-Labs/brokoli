@@ -19,6 +19,7 @@
   let conflictDependents: { id: string; name: string }[] = [];
 
   let loading = true;
+  let loadError = "";
   let pgPage = 1;
   let pgSize = 25;
   let pipelineRuns: Map<string, SummaryRun[]> = new Map();
@@ -181,6 +182,7 @@
     // every time a run state changes looks like a forced page reload
     // and kills the whole point of realtime updates.
     if (!opts.silent) loading = true;
+    if (!opts.silent) loadError = "";
     try {
       // Single request: pipelines + last run status + run counts
       const [summaryRes, schedRes] = await Promise.all([
@@ -205,6 +207,8 @@
           }
         }
         pipelineRuns = new Map(pipelineRuns);
+      } else if (!opts.silent) {
+        loadError = "Pipeline inventory could not be loaded.";
       }
 
       if (schedRes.ok) {
@@ -216,6 +220,7 @@
         scheduleInfo = new Map(scheduleInfo);
       }
     } catch (e) {
+      if (!opts.silent) loadError = "Pipeline inventory could not be loaded.";
       notify.error("Failed to load pipelines");
     } finally {
       loading = false;
@@ -492,7 +497,7 @@
   <input type="file" accept=".yaml,.yml,.json" bind:this={fileInput} on:change={handleFileUpload} style="display:none" />
 
   <header class="page-header">
-    <div><p class="eyebrow">Orchestration</p><h1>Pipelines</h1><p class="page-subtitle">Build, schedule, and monitor every data workflow.</p></div>
+    <div class="header-copy"><p class="eyebrow">Organization control center</p><h1>Pipelines</h1><p class="page-subtitle">Build, schedule, and monitor every data workflow from one operational inventory.</p></div>
     <div class="header-actions">
       <button class="btn-secondary" on:click={importYaml}>Import</button>
       <button class="btn-primary" on:click={() => (showCreateModal = true)}>
@@ -503,10 +508,10 @@
   </header>
 
   <section class="health-strip" aria-label="Pipeline health filters">
-    <button class:active={!statusFilter} on:click={() => (statusFilter = "")}><i class="metric-icon all">☷</i><span>All pipelines<strong>{healthCounts.all}</strong></span></button>
-    <button class:active={statusFilter === "enabled"} on:click={() => selectStatus("enabled")}><i class="metric-icon enabled">✓</i><span>Enabled<strong>{healthCounts.enabled}</strong></span></button>
-    <button class:active={statusFilter === "paused"} on:click={() => selectStatus("paused")}><i class="metric-icon paused">Ⅱ</i><span>Paused<strong>{healthCounts.paused}</strong></span></button>
-    <button class:active={statusFilter === "failed"} on:click={() => selectStatus("failed")}><i class="metric-icon failed">×</i><span>Needs attention<strong>{healthCounts.failed}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={!statusFilter} on:click={() => (statusFilter = "")}><i class="metric-icon all">☷</i><span>All pipelines<strong>{loading || loadError ? "—" : healthCounts.all}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "enabled"} on:click={() => selectStatus("enabled")}><i class="metric-icon enabled">✓</i><span>Enabled<strong>{loading || loadError ? "—" : healthCounts.enabled}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "paused"} on:click={() => selectStatus("paused")}><i class="metric-icon paused">Ⅱ</i><span>Paused<strong>{loading || loadError ? "—" : healthCounts.paused}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "failed"} on:click={() => selectStatus("failed")}><i class="metric-icon failed">×</i><span>Needs attention<strong>{loading || loadError ? "—" : healthCounts.failed}</strong></span></button>
   </section>
 
   <section class="inventory" aria-label="Pipeline inventory">
@@ -566,10 +571,20 @@
   {/if}
 
   {#if loading}
-    <div class="skeleton-rows">
+    <div class="loading-state" aria-live="polite">
+      <div class="state-heading"><span class="state-orbit"></span><div><strong>Loading pipeline inventory</strong><small>Collecting workflow status, schedules, and run history.</small></div></div>
+      <div class="skeleton-rows">
       {#each Array(5) as _}
         <Skeleton height="48px" width="100%" />
       {/each}
+      </div>
+    </div>
+  {:else if loadError}
+    <div class="state-card" role="alert">
+      <span class="state-kicker">Inventory unavailable</span>
+      <h2>We could not retrieve your pipelines</h2>
+      <p>{loadError} Your existing workflows have not been changed.</p>
+      <button class="btn-secondary" on:click={() => loadPipelines()}>Try again</button>
     </div>
   {:else if $pipelines.length === 0}
     <div class="empty-hero">
@@ -597,6 +612,13 @@
           </button>
         {/each}
       </div>
+    </div>
+  {:else if filteredPipelines.length === 0}
+    <div class="state-card filtered-empty">
+      <span class="state-kicker">No matching pipelines</span>
+      <h2>Your filters returned no results</h2>
+      <p>Adjust the search, status, or tag filters. No pipelines have been removed.</p>
+      <button class="btn-secondary" on:click={() => { searchQuery = ""; statusFilter = ""; tagFilter = ""; }}>Clear filters</button>
     </div>
   {:else}
     <div class="table-scroll">
@@ -706,16 +728,30 @@
 />
 
 <style>
+  .pipelines-page { width: 100%; min-width: 0; }
   .page-header {
+    position: relative;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-xl);
+    gap: 28px;
+    min-height: 154px;
+    margin-bottom: 0;
+    padding: 28px 30px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px 12px 0 0;
+    background:
+      radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 36%),
+      linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 60%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
   }
+  .page-header::after { content: ""; position: absolute; inset: auto 30px 0; height: 1px; background: linear-gradient(90deg, var(--accent), transparent 72%); opacity: .55; }
+  .header-copy { position: relative; z-index: 1; max-width: 660px; }
   .page-header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+    font-size: clamp(1.75rem, 3vw, 2.35rem);
+    font-weight: 650;
+    letter-spacing: -0.045em;
   }
   .header-actions {
     display: flex;
@@ -927,6 +963,17 @@
   .act-danger:hover { color: var(--failed); background: var(--failed-bg); }
 
   .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
+  .loading-state { padding: 22px 14px; }
+  .state-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .state-heading div { display: flex; flex-direction: column; gap: 3px; }
+  .state-heading strong { color: var(--text-primary); font-size: 12px; }
+  .state-heading small { color: var(--text-muted); font-size: 10px; }
+  .state-orbit { width: 30px; height: 30px; border: 1px solid color-mix(in srgb, var(--accent), transparent 48%); border-top-color: var(--accent); border-radius: 50%; animation: state-spin 1s linear infinite; }
+  @keyframes state-spin { to { transform: rotate(360deg); } }
+  .state-card { display: grid; min-height: 360px; place-content: center; justify-items: center; padding: 42px 24px; text-align: center; background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent), transparent 92%), transparent 35%); }
+  .state-card h2 { margin-top: 7px; color: var(--text-primary); font-size: 19px; letter-spacing: -.025em; }
+  .state-card p { max-width: 480px; margin: 8px 0 20px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .state-kicker { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
   .empty-state {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -1085,11 +1132,15 @@
     margin-top: 2px;
   }
 
-  .eyebrow { display: none; }
-  .page-subtitle { margin-top: 3px; color: var(--text-muted); font-size: 13px; }
-  .health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 16px; }
-  .health-strip button { display: grid; min-height: 80px; grid-template-columns: 40px 1fr; align-items: center; gap: 12px; padding: 14px 16px; border: 1px solid var(--border-subtle); border-radius: 8px; background: linear-gradient(135deg, var(--bg-secondary), color-mix(in srgb, var(--bg-secondary), black 5%)); color: var(--text-muted); text-align: left; }
-  .health-strip button:hover, .health-strip button.active { border-color: color-mix(in srgb, var(--accent), transparent 45%); background: var(--bg-secondary); }
+  .eyebrow { display: block; margin-bottom: 7px; color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+  .page-subtitle { max-width: 620px; margin-top: 7px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+  .health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-bottom: 16px; overflow: hidden; border: 1px solid var(--border-subtle); border-top: 0; border-radius: 0 0 10px 10px; background: var(--bg-secondary); box-shadow: var(--shadow-card); }
+  .health-strip button { position: relative; display: grid; min-height: 82px; grid-template-columns: 40px 1fr; align-items: center; gap: 12px; padding: 14px 18px; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-muted); text-align: left; }
+  .health-strip button:last-child { border-right: 0; }
+  .health-strip button:disabled { cursor: default; }
+  .health-strip button::after { content: ""; position: absolute; inset: auto 18px 0; height: 2px; background: var(--accent); opacity: 0; transform: scaleX(.4); transition: opacity 150ms ease, transform 150ms ease; }
+  .health-strip button:hover, .health-strip button.active { background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 95%), transparent); }
+  .health-strip button.active::after { opacity: 1; transform: scaleX(1); }
   .health-strip span { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; font-size: 11px; }
   .health-strip strong { color: var(--text-primary); font-size: 20px; font-weight: 650; }
   .metric-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent), transparent 70%); border-radius: 50%; background: var(--accent-glow); color: var(--accent); font-style: normal; font-size: 18px; }
@@ -1287,14 +1338,22 @@
   .modal .modal-actions .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
 
   @media (max-width: 768px) {
-    .page-header { flex-wrap: wrap; gap: 8px; }
+    .page-header { min-height: 0; align-items: flex-start; flex-direction: column; gap: 18px; padding: 24px 20px; }
+    .header-actions { width: 100%; } .header-actions button { flex: 1; justify-content: center; }
     .search-bar { width: 100%; }
     .table-header { display: none; }
     .table-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px; }
     .td-name { flex: 1; min-width: 60%; }
     .td-schedule, .td-nodes, .td-runs, .td-next { font-size: 10px; }
     .health-strip { grid-template-columns: repeat(2, 1fr); }
-    .inventory .filter-bar { display: flex; align-items: stretch; } .inventory .filter-controls { overflow-x: auto; }
+    .health-strip button:nth-child(2) { border-right: 0; } .health-strip button:nth-child(-n+2) { border-bottom: 1px solid var(--border-subtle); }
+    .inventory { min-height: 520px; }
+    .inventory .filter-bar { display: flex; align-items: stretch; padding: 12px; } .inventory .filter-controls { width: 100%; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+    .inventory .filter-select, .toolbar-button { flex: 0 0 auto; }
+    .table-scroll { overscroll-behavior-x: contain; scrollbar-color: var(--accent) var(--bg-tertiary); }
+    .table-scroll table { min-width: 980px; }
+    .table-scroll th:first-child, .table-scroll td:first-child { position: sticky; left: 0; z-index: 2; background: var(--bg-secondary); box-shadow: 1px 0 0 var(--border-subtle); }
+    .table-scroll tr:hover td:first-child, .table-scroll tr.selected td:first-child { background: var(--bg-card-hover); }
     .inventory-footer > span { display: none; }
     .inventory .template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
     .inventory .empty-hero { padding-inline: 20px; }

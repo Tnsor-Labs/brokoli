@@ -1,8 +1,4 @@
 <script lang="ts">
-  import { authHeaders } from "../lib/auth";
-  import { notify } from "../lib/toast";
-  import Skeleton from "../components/Skeleton.svelte";
-
   let baseUrl = window.location.origin;
   let copied = "";
 
@@ -28,6 +24,18 @@
     { method: "GET", path: "/api/lineage", desc: "Full data lineage graph" },
     { method: "GET", path: "/api/scheduler/status", desc: "Scheduled pipelines + next runs" },
   ];
+
+  const websocketEvents = [
+    "run.started",
+    "run.completed",
+    "run.failed",
+    "node.status",
+    "pipeline.updated",
+  ];
+
+  function navigateTo(id: string) {
+    document.getElementById(id)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
   const codeExamples = {
     python: `import requests
@@ -89,17 +97,49 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
 </script>
 
 <div class="page animate-in">
-  <header class="page-header">
-    <div>
-      <span class="eyebrow">Developer platform</span>
-      <h1>API & Integrations</h1>
-      <span class="page-sub">Connect your tools, CI/CD, and scripts to Brokoli</span>
+  <header class="identity-hero">
+    <div class="hero-main">
+      <div class="hero-mark" aria-hidden="true">API</div>
+      <div class="hero-copy">
+        <span class="eyebrow">Organization control center / Developer platform</span>
+        <h1>API & Integrations</h1>
+        <span class="page-sub">Connect your tools, CI/CD, and scripts to Brokoli.</span>
+      </div>
+      <div class="hero-endpoint">
+        <span>Organization API base</span><code>{baseUrl}/api</code>
+        <button class="copy-btn" on:click={() => copyText(`${baseUrl}/api`, "base")}
+          >{copied === "base" ? "Copied!" : "Copy base URL"}</button
+        >
+      </div>
+    </div>
+    <div class="status-summary" aria-label="API capability summary">
+      <div class="status-segment accent">
+        <span>Documented routes</span><strong>{endpoints.length}</strong><small
+          >reference endpoints</small
+        >
+      </div>
+      <div class="status-segment get">
+        <span>GET operations</span><strong
+          >{endpoints.filter((endpoint) => endpoint.method === "GET").length}</strong
+        ><small>read and observe</small>
+      </div>
+      <div class="status-segment post">
+        <span>POST operations</span><strong
+          >{endpoints.filter((endpoint) => endpoint.method === "POST").length}</strong
+        ><small>create and trigger</small>
+      </div>
+      <div class="status-segment live">
+        <span>Realtime events</span><strong>{websocketEvents.length}</strong><small
+          >documented WebSocket topics</small
+        >
+      </div>
     </div>
   </header>
 
   <!-- Quick connect cards -->
   <div class="connect-grid">
-    <div class="connect-card">
+    <button class="connect-card" on:click={() => navigateTo("endpoints")}>
+      <span class="card-index">01 / REFERENCE</span>
       <div class="cc-icon">
         <svg
           width="20"
@@ -114,10 +154,14 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
       </div>
       <div class="cc-body">
         <h3>REST API</h3>
-        <p>Full CRUD access to pipelines, runs, connections, and variables.</p>
+        <p>Documented access to pipelines, runs, connections, and variables.</p>
+        <span class="card-context"
+          >{endpoints.length} documented routes <b>View reference →</b></span
+        >
       </div>
-    </div>
-    <div class="connect-card">
+    </button>
+    <button class="connect-card" on:click={() => navigateTo("quick-start")}>
+      <span class="card-index">02 / AUTOMATION</span>
       <div class="cc-icon">
         <svg
           width="20"
@@ -136,9 +180,11 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
       <div class="cc-body">
         <h3>Webhooks</h3>
         <p>Trigger pipelines from GitHub Actions, GitLab CI, or any HTTP client.</p>
+        <span class="card-context">Token-authenticated triggers <b>Open examples →</b></span>
       </div>
-    </div>
-    <div class="connect-card">
+    </button>
+    <button class="connect-card" on:click={() => navigateTo("websocket-events")}>
+      <span class="card-index">03 / REALTIME</span>
       <div class="cc-icon">
         <svg
           width="20"
@@ -158,14 +204,23 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
       </div>
       <div class="cc-body">
         <h3>WebSocket</h3>
-        <p>Real-time events for run status, logs, and pipeline changes.</p>
+        <p>Real-time events for run, node, and pipeline status changes.</p>
+        <span class="card-context"
+          >{websocketEvents.length} documented topics <b>Review events →</b></span
+        >
       </div>
-    </div>
+    </button>
   </div>
 
   <!-- Auth section -->
-  <section class="section">
-    <h2 class="section-title">Authentication</h2>
+  <section class="section panel-section" id="authentication">
+    <div class="panel-heading">
+      <div>
+        <span>Access control</span>
+        <h2 class="section-title">Authentication</h2>
+      </div>
+      <strong>Bearer token</strong>
+    </div>
     <div class="auth-card">
       <p class="auth-desc">Include your token in the <code>Authorization</code> header:</p>
       <div class="auth-example">
@@ -184,8 +239,14 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   </section>
 
   <!-- Code examples -->
-  <section class="section">
-    <h2 class="section-title">Quick Start</h2>
+  <section class="section panel-section" id="quick-start">
+    <div class="panel-heading">
+      <div>
+        <span>Implementation guide</span>
+        <h2 class="section-title">Quick Start</h2>
+      </div>
+      <strong>{activeTab}</strong>
+    </div>
     <div class="tabs">
       <button class="tab" class:active={activeTab === "curl"} on:click={() => (activeTab = "curl")}
         >cURL</button
@@ -218,8 +279,14 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   </section>
 
   <!-- Endpoints reference -->
-  <section class="section">
-    <h2 class="section-title">Endpoints</h2>
+  <section class="section panel-section" id="endpoints">
+    <div class="panel-heading">
+      <div>
+        <span>REST inventory</span>
+        <h2 class="section-title">Endpoints</h2>
+      </div>
+      <strong>{endpoints.length} routes</strong>
+    </div>
     <div class="endpoint-scroll">
       <div class="endpoint-table">
         <div class="ep-header">
@@ -242,8 +309,14 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     </div>
   </section>
 
-  <section class="section">
-    <h2 class="section-title">WebSocket Events</h2>
+  <section class="section panel-section" id="websocket-events">
+    <div class="panel-heading">
+      <div>
+        <span>Realtime inventory</span>
+        <h2 class="section-title">WebSocket Events</h2>
+      </div>
+      <strong>{websocketEvents.length} topics</strong>
+    </div>
     <div class="auth-card">
       <p class="auth-desc">
         Connect to <code>{baseUrl}/api/ws?token=YOUR_TOKEN</code> for real-time events:
@@ -258,10 +331,124 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     </div>
   </section>
 </div>
+padding: 7px 10px 0; border-inline: 1px solid var(--border-subtle); background: var(--bg-secondary);
 
 <style>
-  .page-header {
-    margin-bottom: 18px;
+  .page {
+    width: 100%;
+    min-width: 0;
+  }
+  .identity-hero {
+    margin-bottom: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 11px;
+    background:
+      linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--accent-glow), transparent 22%),
+        transparent 52%
+      ),
+      var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .hero-main {
+    display: flex;
+    min-height: 124px;
+    align-items: center;
+    gap: 15px;
+    padding: 20px;
+  }
+  .hero-mark {
+    display: grid;
+    width: 50px;
+    height: 50px;
+    flex: none;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
+    border-radius: 11px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font: 700 10px var(--font-mono);
+    letter-spacing: 0.08em;
+  }
+  .hero-copy {
+    min-width: 0;
+    flex: 1;
+  }
+  .hero-endpoint {
+    display: grid;
+    max-width: 310px;
+    justify-items: end;
+    gap: 5px;
+  }
+  .hero-endpoint span {
+    color: var(--text-dim);
+    font: 600 8px var(--font-mono);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .hero-endpoint code {
+    max-width: 100%;
+    overflow: hidden;
+    padding: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    font: 10px var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .status-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 38%);
+  }
+  .status-segment {
+    position: relative;
+    display: grid;
+    min-height: 72px;
+    align-content: center;
+    gap: 2px;
+    padding: 11px 18px;
+    border-right: 1px solid var(--border-subtle);
+  }
+  .status-segment:last-child {
+    border-right: 0;
+  }
+  .status-segment::before {
+    content: "";
+    position: absolute;
+    inset: 14px auto 14px 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .status-segment.accent::before {
+    background: var(--accent);
+  }
+  .status-segment.get::before {
+    background: var(--success);
+  }
+  .status-segment.post::before {
+    background: var(--running);
+  }
+  .status-segment.live::before {
+    background: var(--node-transform);
+  }
+  .status-segment span {
+    color: var(--text-muted);
+    font: 600 8.5px var(--font-mono);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .status-segment strong {
+    color: var(--text-primary);
+    font-size: 17px;
+    font-weight: 650;
+  }
+  .status-segment small {
+    color: var(--text-dim);
+    font-size: 9px;
   }
   .eyebrow {
     display: block;
@@ -271,7 +458,7 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
-  .page-header h1 {
+  .identity-hero h1 {
     font-size: 24px;
     font-weight: 650;
     letter-spacing: -0.035em;
@@ -285,14 +472,43 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
 
   .section {
     margin-bottom: 18px;
+    scroll-margin-top: 18px;
   }
   .section-title {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-muted);
+    margin-top: 3px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .panel-heading {
+    display: flex;
+    min-height: 58px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 14px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px 9px 0 0;
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--bg-tertiary), transparent 35%),
+      var(--bg-secondary)
+    );
+  }
+  .panel-heading span {
+    color: var(--accent);
+    font: 600 8px var(--font-mono);
+    letter-spacing: 0.09em;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 10px;
+  }
+  .panel-heading strong {
+    padding: 5px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    font: 600 9px var(--font-mono);
+    text-transform: capitalize;
   }
 
   /* Connect cards */
@@ -303,9 +519,15 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     margin-bottom: 18px;
   }
   .connect-card {
+    position: relative;
     display: flex;
+    width: 100%;
+    min-height: 154px;
+    align-items: flex-start;
     gap: 12px;
-    padding: 15px;
+    padding: 36px 15px 15px;
+    color: inherit;
+    text-align: left;
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
     border-radius: 9px;
@@ -313,7 +535,17 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     transition: border-color 200ms ease;
   }
   .connect-card:hover {
-    border-color: var(--border);
+    border-color: color-mix(in srgb, var(--accent), transparent 45%);
+    background: linear-gradient(145deg, var(--accent-glow), transparent 55%), var(--bg-secondary);
+    transform: translateY(-1px);
+  }
+  .card-index {
+    position: absolute;
+    top: 13px;
+    left: 15px;
+    color: var(--text-dim);
+    font: 600 8px var(--font-mono);
+    letter-spacing: 0.08em;
   }
   .cc-icon {
     width: 36px;
@@ -336,12 +568,27 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     color: var(--text-muted);
     line-height: 1.5;
   }
+  .card-context {
+    display: flex;
+    margin-top: 14px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-dim);
+    font: 9px var(--font-mono);
+  }
+  .card-context b {
+    color: var(--accent);
+    font: 600 9px var(--font-ui);
+    white-space: nowrap;
+  }
 
   /* Auth */
   .auth-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
-    border-radius: 9px;
+    border-top: 0;
+    border-radius: 0 0 9px 9px;
     padding: 16px;
     box-shadow: var(--shadow-card);
   }
@@ -400,11 +647,14 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   .tabs {
     display: flex;
     gap: 2px;
-    margin-bottom: -1px;
+    margin-bottom: 0;
     position: relative;
     z-index: 1;
     overflow-x: auto;
     overscroll-behavior-x: contain;
+    padding: 7px 10px 0;
+    border-inline: 1px solid var(--border-subtle);
+    background: var(--bg-secondary);
     scrollbar-width: none;
   }
   .tabs::-webkit-scrollbar {
@@ -437,7 +687,8 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   .code-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-subtle);
-    border-radius: 0 9px 9px 9px;
+    border-top: 0;
+    border-radius: 0 0 9px 9px;
     overflow: hidden;
     box-shadow: var(--shadow-card);
   }
@@ -471,7 +722,8 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   .endpoint-scroll {
     overflow-x: auto;
     border: 1px solid var(--border-subtle);
-    border-radius: 9px;
+    border-top: 0;
+    border-radius: 0 0 9px 9px;
     background: var(--bg-secondary);
     box-shadow: var(--shadow-card);
   }
@@ -551,6 +803,21 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
   }
 
   @media (max-width: 768px) {
+    .hero-main {
+      align-items: flex-start;
+    }
+    .hero-endpoint {
+      display: none;
+    }
+    .status-summary {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .status-segment:nth-child(2) {
+      border-right: 0;
+    }
+    .status-segment:nth-child(-n + 2) {
+      border-bottom: 1px solid var(--border-subtle);
+    }
     .connect-grid {
       grid-template-columns: 1fr;
     }
@@ -570,8 +837,30 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     }
   }
   @media (max-width: 520px) {
-    .page-header h1 {
+    .hero-main {
+      padding: 16px;
+    }
+    .hero-mark {
+      width: 40px;
+      height: 40px;
+    }
+    .identity-hero h1 {
       font-size: 22px;
+    }
+    .status-summary {
+      grid-template-columns: 1fr;
+    }
+    .status-segment,
+    .status-segment:nth-child(2) {
+      min-height: 58px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-segment:last-child {
+      border-bottom: 0;
+    }
+    .panel-heading strong {
+      display: none;
     }
     .auth-card {
       padding: 14px;

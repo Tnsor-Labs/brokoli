@@ -14,6 +14,7 @@
 
   let days: CalendarDay[] = [];
   let loading = true;
+  let loadError = "";
   // Fixed 1-year window. At 365 days the cell grid auto-sizes to a compact
   // GitHub-style heatmap that fits any modern viewport without scrolling.
   const rangeDays = 365;
@@ -25,10 +26,13 @@
 
   async function loadCalendar() {
     loading = true;
+    loadError = "";
     try {
       const res = await fetch(`/api/runs/calendar?days=${rangeDays}`, { headers: authHeaders() });
+      if (!res.ok) throw new Error(`Calendar request failed (${res.status})`);
       days = await res.json();
     } catch {
+      loadError = "Run history could not be retrieved for this organization.";
       notify.error("Failed to load calendar");
     } finally {
       loading = false;
@@ -219,32 +223,32 @@
 <div class="calendar-page animate-in">
   <header class="page-header">
     <div class="header-left">
-      <p class="eyebrow">Observability</p>
+      <p class="eyebrow">Organization control center</p>
       <h1>Run Calendar</h1>
-      <p class="page-subtitle">Review execution volume and outcomes across the last 12 months.</p>
+      <p class="page-subtitle">A year-wide operating record of execution volume, reliability, and active days.</p>
     </div>
-    <span class="meta">{totalRuns} runs · {activeDays} active days</span>
+    <span class="meta">{loading ? "Loading execution record" : loadError ? "Execution record unavailable" : `${totalRuns} runs · ${activeDays} active days`}</span>
   </header>
 
   <section class="stats-bar" aria-label="Calendar metrics">
     <div class="stat">
       <span class="stat-marker total"></span>
-      <span class="stat-value">{totalRuns}</span>
+      <span class="stat-value">{loading || loadError ? "—" : totalRuns}</span>
       <span class="stat-label">Total Runs</span>
     </div>
     <div class="stat">
       <span class="stat-marker success"></span>
-      <span class="stat-value" style="color: var(--cal-ok)">{totalSuccess}</span>
+      <span class="stat-value" style="color: var(--cal-ok)">{loading || loadError ? "—" : totalSuccess}</span>
       <span class="stat-label">Succeeded</span>
     </div>
     <div class="stat">
       <span class="stat-marker failed"></span>
-      <span class="stat-value" style="color: var(--cal-fail)">{totalFailed}</span>
+      <span class="stat-value" style="color: var(--cal-fail)">{loading || loadError ? "—" : totalFailed}</span>
       <span class="stat-label">Failed</span>
     </div>
     <div class="stat">
       <span class="stat-marker active"></span>
-      <span class="stat-value">{activeDays}</span>
+      <span class="stat-value">{loading || loadError ? "—" : activeDays}</span>
       <span class="stat-label">Active Days</span>
     </div>
     <div class="stat">
@@ -259,19 +263,30 @@
               ? 'var(--cal-fail)'
               : 'var(--text-dim)'}"
       >
-        {totalRuns > 0 ? successRate.toFixed(1) : "—"}%
+        {loading || loadError ? "—" : totalRuns > 0 ? `${successRate.toFixed(1)}%` : "—"}
       </span>
       <span class="stat-label">Success Rate</span>
     </div>
   </section>
 
   {#if loading}
-    <div style="display:flex;flex-direction:column;gap:8px">
+    <div class="loading-card" aria-live="polite">
+      <div><strong>Building the execution record</strong><span>Aggregating 365 days of run outcomes.</span></div>
       <Skeleton height="40px" /><Skeleton height="220px" />
+    </div>
+  {:else if loadError}
+    <div class="empty-card error-card" role="alert">
+      <span class="empty-kicker">Calendar unavailable</span>
+      <h2>Execution history could not be loaded</h2>
+      <p>{loadError} No run data is being represented as zero.</p>
+      <button on:click={loadCalendar}>Try again</button>
     </div>
   {:else if totalRuns === 0}
     <div class="empty-card">
-      <p>No runs yet in the selected range.</p>
+      <span class="empty-kicker">No recorded activity</span>
+      <h2>The last 365 days are clear</h2>
+      <p>No pipeline runs were recorded in this organization during this period.</p>
+      <a href="#/pipelines">View pipeline inventory</a>
     </div>
   {:else}
     <!-- Sparkline trend strip -->
@@ -474,11 +489,21 @@
   }
 
   .page-header {
+    position: relative;
     display: flex;
-    align-items: flex-end;
+    min-height: 154px;
+    align-items: center;
     justify-content: space-between;
     gap: 24px;
-    margin-bottom: 2px;
+    margin-bottom: -18px;
+    padding: 28px 30px 46px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px 12px 0 0;
+    background:
+      radial-gradient(circle at 88% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 38%),
+      linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 62%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
   }
   .header-left {
     min-width: 0;
@@ -492,7 +517,7 @@
   }
   .page-header h1 {
     color: var(--text-primary);
-    font-size: 24px;
+    font-size: clamp(1.75rem, 3vw, 2.35rem);
     font-weight: 650;
     letter-spacing: -0.035em;
   }
@@ -509,9 +534,16 @@
   }
 
   .stats-bar {
+    position: relative;
+    z-index: 1;
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 10px;
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
   }
   .stat {
     position: relative;
@@ -522,13 +554,13 @@
     gap: 3px;
     padding: 13px 15px 13px 18px;
     overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    border-right: 1px solid var(--border-subtle);
     background:
       linear-gradient(140deg, color-mix(in srgb, var(--bg-tertiary), transparent 52%), transparent),
       var(--bg-secondary);
-    box-shadow: var(--shadow-card);
+    box-shadow: none;
   }
+  .stat:last-child { border-right: 0; }
   .stat-marker {
     position: absolute;
     inset: 0 auto 0 0;
@@ -569,6 +601,16 @@
     font-size: 13px;
     box-shadow: var(--shadow-card);
   }
+  .empty-card h2 { margin: 7px 0 6px; color: var(--text-primary); font-size: 19px; letter-spacing: -.025em; }
+  .empty-card p { max-width: 500px; margin: 0 auto; line-height: 1.6; }
+  .empty-card a, .empty-card button { display: inline-flex; min-height: 34px; align-items: center; margin-top: 18px; padding: 0 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; }
+  .empty-card a:hover, .empty-card button:hover { border-color: var(--accent); color: var(--accent); }
+  .empty-kicker { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+  .error-card { background: radial-gradient(circle at 50% 25%, color-mix(in srgb, var(--failed), transparent 92%), transparent 38%), var(--bg-secondary); }
+  .loading-card { display: flex; flex-direction: column; gap: 8px; padding: 18px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-secondary); }
+  .loading-card > div { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
+  .loading-card strong { color: var(--text-primary); font-size: 12px; }
+  .loading-card span { color: var(--text-muted); font-size: 10px; }
 
   /* ── Sparkline trend strip ───────────────────────────────────── */
   .trend-card {
@@ -936,7 +978,9 @@
     .page-header {
       align-items: flex-start;
       flex-direction: column;
-      gap: 8px;
+      gap: 14px;
+      margin-bottom: -14px;
+      padding: 24px 20px 42px;
     }
     .page-header h1 {
       font-size: 20px;
@@ -947,6 +991,9 @@
     .stats-bar {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
+    .stat { border-bottom: 1px solid var(--border-subtle); }
+    .stat:nth-child(2n) { border-right: 0; }
+    .stat:last-child { grid-column: 1 / -1; border-bottom: 0; }
     .stat {
       min-height: 70px;
     }

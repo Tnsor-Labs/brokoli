@@ -19,6 +19,7 @@
 
   let variables: Variable[] = [];
   let loading = true;
+  let loadError = false;
   let searchQuery = "";
   let typeFilter = "";
   let varPage = 1;
@@ -39,12 +40,22 @@
   });
 
   async function loadVariables() {
+    loadError = false;
     try {
       const res = await fetch("/api/variables", { headers: authHeaders() });
-      variables = await res.json();
+      if (!res.ok) throw new Error("Variables unavailable");
+      const data = await res.json();
+      variables = Array.isArray(data) ? data : [];
     } catch {
+      loadError = true;
       notify.error("Failed to load variables");
     }
+  }
+
+  async function retryLoad() {
+    loading = true;
+    await loadVariables();
+    loading = false;
   }
 
   function openCreate() {
@@ -124,42 +135,50 @@
 </script>
 
 <div class="variables-page animate-in">
-  <header class="page-header">
-    <div class="header-copy">
-      <span class="eyebrow">Runtime configuration</span>
-      <h1>Variables</h1>
-      <p>Centralize reusable values and protected secrets for every pipeline.</p>
+  <header class="identity-hero">
+    <div class="hero-main">
+      <div class="hero-mark" aria-hidden="true">{"{ }"}</div>
+      <div class="header-copy">
+        <span class="eyebrow">Organization control center / Runtime configuration</span>
+        <h1>Variables</h1>
+        <p>Centralize reusable values and protected secrets for every pipeline.</p>
+      </div>
+      <button class="btn-primary" on:click={openCreate}
+        ><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+          ><path
+            d={icons.plus.d}
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+          /></svg
+        >New Variable</button
+      >
     </div>
-    <button class="btn-primary" on:click={openCreate}
-      ><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-        ><path
-          d={icons.plus.d}
-          stroke="currentColor"
-          stroke-width="2"
-          stroke-linecap="round"
-        /></svg
-      >New Variable</button
-    >
+    <div class="status-summary" aria-label="Variable summary">
+      <div class="status-segment accent">
+        <span>Total variables</span><strong>{loading || loadError ? "—" : variables.length}</strong
+        ><small>available references</small>
+      </div>
+      <div class="status-segment secret">
+        <span>Protected secrets</span><strong>{loading || loadError ? "—" : secretCount}</strong
+        ><small>encrypted and masked</small>
+      </div>
+      <div class="status-segment">
+        <span>JSON values</span><strong>{loading || loadError ? "—" : structuredCount}</strong
+        ><small>structured configuration</small>
+      </div>
+    </div>
   </header>
 
-  <section class="metric-strip" aria-label="Variable summary">
-    <div class="metric accent">
-      <span>Total variables</span><strong>{variables.length}</strong><small
-        >available references</small
-      >
-    </div>
-    <div class="metric secret">
-      <span>Protected secrets</span><strong>{secretCount}</strong><small>encrypted and masked</small
-      >
-    </div>
-    <div class="metric">
-      <span>JSON values</span><strong>{structuredCount}</strong><small
-        >structured configuration</small
-      >
-    </div>
-  </section>
-
   <section class="inventory" aria-label="Variable inventory">
+    <div class="inventory-heading">
+      <div>
+        <span class="panel-kicker">Configuration inventory</span>
+        <h2>Organization variables</h2>
+        <p>Values exposed to pipeline node configuration.</p>
+      </div>
+      <span class="inventory-count">{loading || loadError ? "—" : variables.length}</span>
+    </div>
     <div class="inventory-toolbar">
       <label class="search-bar"
         ><span class="sr-only">Search variables</span><svg
@@ -198,8 +217,25 @@
     </div>
 
     {#if loading}
-      <div class="skeleton-rows">
+      <div class="state-intro">
+        <span class="state-pulse"></span>
+        <div>
+          <strong>Loading variable inventory</strong><small
+            >Retrieving organization configuration and protected references.</small
+          >
+        </div>
+      </div>
+      <div class="skeleton-rows" aria-label="Loading variables">
         {#each Array(4) as _}<Skeleton height="58px" width="100%" />{/each}
+      </div>
+    {:else if loadError}
+      <div class="unavailable-state">
+        <span class="state-icon">!</span><strong>Variable inventory unavailable</strong>
+        <p>
+          The organization configuration service could not be reached. Existing values have not been
+          changed.
+        </p>
+        <button class="btn-secondary" on:click={retryLoad}>Try again</button>
       </div>
     {:else if variables.length === 0}
       <div class="empty-wrap">
@@ -426,18 +462,189 @@
 />
 
 <style>
-  .page-header {
+  .variables-page {
+    width: 100%;
+    min-width: 0;
+  }
+  .identity-hero {
+    margin-bottom: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 11px;
+    background:
+      linear-gradient(
+        120deg,
+        color-mix(in srgb, var(--accent-glow), transparent 22%),
+        transparent 52%
+      ),
+      var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .hero-main {
     display: flex;
-    justify-content: space-between;
+    min-height: 112px;
     align-items: center;
-    margin-bottom: var(--space-md);
+    gap: 15px;
+    padding: 20px;
   }
-  .page-header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+  .hero-mark {
+    display: grid;
+    width: 48px;
+    height: 48px;
+    flex: none;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
+    border-radius: 10px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font: 700 12px var(--font-mono);
   }
-
+  .hero-main .header-copy {
+    flex: 1;
+  }
+  .status-summary {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 38%);
+  }
+  .status-segment {
+    position: relative;
+    display: grid;
+    min-height: 72px;
+    align-content: center;
+    gap: 2px;
+    padding: 11px 18px;
+    border-right: 1px solid var(--border-subtle);
+  }
+  .status-segment:last-child {
+    border-right: 0;
+  }
+  .status-segment::before {
+    content: "";
+    position: absolute;
+    inset: 14px auto 14px 0;
+    width: 2px;
+    background: var(--border);
+  }
+  .status-segment.accent::before {
+    background: var(--accent);
+  }
+  .status-segment.secret::before {
+    background: var(--failed);
+  }
+  .status-segment span,
+  .panel-kicker {
+    color: var(--text-muted);
+    font: 600 8.5px var(--font-mono);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .status-segment strong {
+    color: var(--text-primary);
+    font-size: 17px;
+    font-weight: 650;
+  }
+  .status-segment small {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .inventory-heading {
+    display: flex;
+    min-height: 66px;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border-subtle);
+    background: linear-gradient(
+      90deg,
+      color-mix(in srgb, var(--bg-tertiary), transparent 35%),
+      transparent
+    );
+  }
+  .inventory-heading h2 {
+    margin-top: 3px;
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 650;
+  }
+  .inventory-heading p {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 9.5px;
+  }
+  .inventory-count {
+    display: grid;
+    min-width: 30px;
+    height: 26px;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    font: 600 10px var(--font-mono);
+  }
+  .state-intro {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 13px 15px 0;
+  }
+  .state-intro div {
+    display: grid;
+    gap: 2px;
+  }
+  .state-intro strong {
+    color: var(--text-secondary);
+    font-size: 10.5px;
+  }
+  .state-intro small {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .state-pulse {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 5px var(--accent-glow);
+  }
+  .unavailable-state {
+    display: flex;
+    min-height: 360px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 7px;
+    padding: 32px;
+    text-align: center;
+  }
+  .unavailable-state .state-icon {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    margin-bottom: 4px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--failed), transparent 65%);
+    border-radius: 50%;
+    background: var(--failed-bg);
+    color: var(--failed);
+    font-weight: 700;
+  }
+  .unavailable-state strong {
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+  .unavailable-state p {
+    max-width: 430px;
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
+  .unavailable-state button {
+    margin-top: 8px;
+  }
   .usage-hint {
     font-size: 12px;
     color: var(--text-muted);
@@ -707,11 +914,6 @@
   }
 
   /* Refined configuration inventory */
-  .page-header {
-    align-items: flex-end;
-    gap: 24px;
-    margin-bottom: 18px;
-  }
   .header-copy {
     min-width: 0;
   }
@@ -723,7 +925,7 @@
     letter-spacing: 0.14em;
     text-transform: uppercase;
   }
-  .page-header h1 {
+  .identity-hero h1 {
     color: var(--text-primary);
     font-size: 24px;
     font-weight: 650;
@@ -754,57 +956,6 @@
     border-color: var(--border);
     background: var(--bg-secondary);
     color: var(--text-secondary);
-  }
-
-  .metric-strip {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
-    margin-bottom: 18px;
-  }
-  .metric {
-    position: relative;
-    display: grid;
-    min-height: 78px;
-    align-content: center;
-    gap: 3px;
-    padding: 13px 15px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background:
-      linear-gradient(140deg, color-mix(in srgb, var(--bg-tertiary), transparent 52%), transparent),
-      var(--bg-secondary);
-    box-shadow: var(--shadow-card);
-  }
-  .metric::before {
-    content: "";
-    position: absolute;
-    inset: 0 auto 0 0;
-    width: 2px;
-    background: var(--border);
-  }
-  .metric.accent::before {
-    background: var(--accent);
-  }
-  .metric.secret::before {
-    background: var(--failed);
-  }
-  .metric span {
-    color: var(--text-muted);
-    font-size: 9px;
-    font-weight: 600;
-    letter-spacing: 0.07em;
-    text-transform: uppercase;
-  }
-  .metric strong {
-    color: var(--text-primary);
-    font-size: 18px;
-    font-weight: 640;
-  }
-  .metric small {
-    color: var(--text-dim);
-    font-size: 9px;
   }
 
   .inventory {
@@ -1199,11 +1350,8 @@
   }
 
   @media (max-width: 768px) {
-    .page-header {
+    .hero-main {
       align-items: flex-start;
-    }
-    .metric-strip {
-      grid-template-columns: repeat(3, 1fr);
     }
     .inventory-toolbar {
       grid-template-columns: 1fr;
@@ -1246,18 +1394,34 @@
     }
   }
   @media (max-width: 520px) {
-    .page-header {
-      flex-direction: column;
+    .hero-main {
+      flex-wrap: wrap;
+      padding: 16px;
     }
-    .page-header .btn-primary {
+    .hero-mark {
+      width: 40px;
+      height: 40px;
+    }
+    .hero-main .header-copy {
+      width: calc(100% - 56px);
+      flex: none;
+    }
+    .hero-main .btn-primary {
       width: 100%;
     }
-    .metric-strip {
+    .status-summary {
       grid-template-columns: 1fr;
-      gap: 7px;
     }
-    .metric {
-      min-height: 62px;
+    .status-segment {
+      min-height: 58px;
+      border-right: 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-segment:last-child {
+      border-bottom: 0;
+    }
+    .inventory-heading p {
+      display: none;
     }
     .filter-controls label,
     .result-count {

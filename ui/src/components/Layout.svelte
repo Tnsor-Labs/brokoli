@@ -62,12 +62,15 @@
   }
   .main-area {
     flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     overflow: hidden;
   }
   .content {
     flex: 1;
+    width: 100%;
+    min-width: 0;
     overflow-y: auto;
     padding: var(--space-xl);
   }
