@@ -191,6 +191,15 @@ var serveCmd = &cobra.Command{
 			eng.JobQueue = Extensions.JobQueue
 			log.Printf("Job queue enabled (mode: %s)", RunMode)
 
+			// Consume the dispatch outbox: re-enqueue accepted runs whose
+			// queue delivery was lost (Tnsor-Labs/brokoli#216 — e.g. a
+			// Redis restart wiping a non-persistent queue). Safe on every
+			// instance concurrently: enqueue is idempotent by job ID and
+			// the claim CAS settles genuine duplicates.
+			eng.StartPendingRedispatchSweep(engine.DefaultPendingRedispatchInterval, engine.DefaultPendingRedispatchGrace)
+			log.Printf("Pending-run redispatch sweep enabled (interval %s, grace %s)",
+				engine.DefaultPendingRedispatchInterval, engine.DefaultPendingRedispatchGrace)
+
 			// Wire the SAME queue for instance-level remote dispatch
 			// (ADR-017). One shared queue rather than a second
 			// transport: the worker loop below already dequeues both
