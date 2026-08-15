@@ -42,6 +42,7 @@
 
   let recentRuns: { pipeline: Pipeline; run: Run }[] = [];
   let loading = true;
+  let loadError = "";
   let unsubDashboard: (() => void) | null = null;
   // Debounce handle for the snapshot-triggered refetch of /api/dashboard.
   let statsReloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -155,12 +156,12 @@
   // misleading 100% success rate) while the run history they claim to
   // summarise still exists. See Tnsor-Labs/brokoli#78 and the doc comment
   // on recomputeDashboard in pkg/sodp/bridge.go.
-  async function loadDashboardStats() {
+  async function loadDashboardStats(): Promise<boolean> {
     try {
       const res = await fetch("/api/dashboard", {
         headers: { ...authHeaders(), "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default" },
       });
-      if (!res.ok) return;
+      if (!res.ok) return false;
       const d = await res.json();
 
       runsToday     = d.runs_today       ?? 0;
@@ -192,12 +193,14 @@
       }));
       if (recentRuns.length > 0) totalRuns = Math.max(totalRuns, recentRuns.length);
       recomputeFailedPipelines();
+      return true;
     } catch {
       // Leave the previous values in place rather than flashing zeros.
+      return false;
     }
   }
 
-  async function loadStaticData() {
+  async function loadStaticData(): Promise<boolean> {
     try {
       const [pipesRes, schedRes, connRes] = await Promise.all([
         fetch("/api/pipelines/summary", {
@@ -233,15 +236,24 @@
         const connData = await connRes.json();
         totalConnections = Array.isArray(connData) ? connData.length : 0;
       }
+      return pipesRes.ok && schedRes.ok && connRes.ok;
     } catch {
       notify.error("Failed to load dashboard");
+      return false;
     }
   }
 
-  onMount(async () => {
-    await loadStaticData();
-    await loadDashboardStats();
+  async function loadDashboard() {
+    loading = true;
+    loadError = "";
+    const staticLoaded = await loadStaticData();
+    const statsLoaded = await loadDashboardStats();
+    if (!staticLoaded || !statsLoaded) loadError = "Some organization data could not be retrieved.";
     loading = false;
+  }
+
+  onMount(async () => {
+    await loadDashboard();
 
     // The snapshot is a tripwire, not a data source. Every run-state change
     // rewrites dashboard.{org}, which tells us something happened — we then
@@ -310,8 +322,9 @@
 <div class="dashboard animate-in">
   <header class="page-header">
     <div class="header-left">
+      <span class="eyebrow">Organization control center</span>
       <h1>Dashboard</h1>
-      <span class="page-sub">Last 24 hours</span>
+      <span class="page-sub">Live operational posture with a 24-hour reliability window.</span>
     </div>
     <!-- The clock used to be the largest, brightest element on the page,
          outcompeting the failure count for attention while carrying no
@@ -324,6 +337,7 @@
   </header>
 
   {#if loading}
+    <div class="loading-copy" aria-live="polite"><strong>Assembling organization health</strong><span>Loading pipelines, schedules, run outcomes, and intervention queues.</span></div>
     <div class="skeleton-grid">
       {#each Array(5) as _}
         <Skeleton variant="card" height="80px" />
@@ -333,6 +347,13 @@
       {#each Array(3) as _}
         <Skeleton variant="card" height="200px" />
       {/each}
+    </div>
+  {:else if loadError}
+    <div class="load-error" role="alert">
+      <span>Control center unavailable</span>
+      <h2>We could not assemble a trustworthy organization view</h2>
+      <p>{loadError} Existing pipelines and runs have not been changed.</p>
+      <button on:click={loadDashboard}>Try again</button>
     </div>
   {:else if !onboardingComplete}
     <!-- Welcome hero for new users -->
@@ -499,10 +520,12 @@
     min-width: 0;
   }
 
-  .page-header { display: flex; align-items: center; justify-content: space-between; }
-  .header-left { display: flex; align-items: baseline; gap: 12px; }
-  .page-header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
-  .page-sub { font-size: 12px; color: var(--text-muted); }
+  .page-header { position: relative; display: flex; min-height: 154px; align-items: center; justify-content: space-between; gap: 28px; padding: 28px 30px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 12px; background: radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 38%), linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 62%); box-shadow: inset 0 1px 0 rgba(255,255,255,.035), var(--shadow-card); }
+  .page-header::after { content: ""; position: absolute; inset: auto 30px 0; height: 1px; background: linear-gradient(90deg, var(--accent), transparent 72%); opacity: .55; }
+  .header-left { position: relative; z-index: 1; display: flex; max-width: 680px; flex-direction: column; align-items: flex-start; gap: 0; }
+  .eyebrow { margin-bottom: 7px; color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+  .page-header h1 { font-size: clamp(1.75rem, 3vw, 2.35rem); font-weight: 650; letter-spacing: -0.045em; }
+  .page-sub { margin-top: 7px; font-size: 12px; line-height: 1.55; color: var(--text-muted); }
   .header-right { display: flex; align-items: center; gap: var(--space-sm); }
   /* Metadata weight, not hero weight — see the markup comment. */
   .clock {
@@ -511,6 +534,15 @@
     color: var(--text-dim);
     letter-spacing: 0.02em;
   }
+  .loading-copy { display: flex; flex-direction: column; gap: 3px; padding: 2px 0; }
+  .loading-copy strong { color: var(--text-primary); font-size: 12px; }
+  .loading-copy span { color: var(--text-muted); font-size: 10px; }
+  .load-error { display: grid; min-height: 360px; place-content: center; justify-items: center; padding: 42px 24px; border: 1px solid var(--border-subtle); border-radius: 10px; background: radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--failed), transparent 92%), transparent 38%), var(--bg-secondary); text-align: center; box-shadow: var(--shadow-card); }
+  .load-error > span { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+  .load-error h2 { max-width: 580px; margin-top: 8px; color: var(--text-primary); font-size: 20px; letter-spacing: -.025em; }
+  .load-error p { max-width: 520px; margin: 8px 0 20px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .load-error button { min-height: 34px; padding: 0 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; }
+  .load-error button:hover { border-color: var(--accent); color: var(--accent); }
 
   /* Layout: runs take the width, the rail carries what isn't a duplicate
      of them. The old bottom row put Recent Runs beside an Activity feed
@@ -619,7 +651,7 @@
   }
   .quick-start-grid {
     display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 16px; width: 100%; max-width: 780px;
+    gap: 16px; width: 100%;
   }
   .quick-card {
     position: relative;
@@ -711,7 +743,9 @@
       max-height: none;
     }
     .rail-fill { flex: 0 0 auto; }
-    .page-header h1 { font-size: 1.2rem; }
+    .page-header { min-height: 0; align-items: flex-start; flex-direction: column; gap: 18px; padding: 24px 20px; }
+    .header-right { width: 100%; justify-content: space-between; }
+    .page-header h1 { font-size: 1.75rem; }
     .quick-start-grid { grid-template-columns: 1fr; }
   }
 </style>

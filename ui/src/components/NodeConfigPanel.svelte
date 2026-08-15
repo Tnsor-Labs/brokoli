@@ -42,14 +42,12 @@
 
   function updateConfig(key: string, value: unknown) {
     if (!node) return;
-    node.config = { ...node.config, [key]: value };
-    dispatch("update", node);
+    dispatch("update", { ...node, config: { ...node.config, [key]: value } });
   }
 
   function updateName(name: string) {
     if (!node) return;
-    node.name = name;
-    dispatch("update", node);
+    dispatch("update", { ...node, name });
   }
 
   function deleteNode() {
@@ -60,7 +58,7 @@
   // Quality check rules
   function getQualityRules(): any[] {
     if (!node) return [];
-    return (node.config["rules"] as any[]) || [];
+    return ((node.config["rules"] as any[]) || []).map((rule) => ({ ...rule, params: { ...(rule.params || {}) } }));
   }
   function addQualityRule() {
     const rules = getQualityRules();

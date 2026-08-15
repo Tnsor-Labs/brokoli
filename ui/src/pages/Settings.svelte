@@ -5,15 +5,28 @@
   import { icons } from "../lib/icons";
   import Stepper from "../components/Stepper.svelte";
 
-  interface UserInfo { id: string; username: string; role: string; created_at: string; }
+  interface UserInfo {
+    id: string;
+    username: string;
+    role: string;
+    created_at: string;
+  }
 
   let generatedKey = "";
   let generating = false;
   let copied = false;
-  let sysInfo: { version: string; db_size_mb: string; pipelines: number; active_runs: number; max_concurrent_runs: number } | null = null;
+  let sysInfo: {
+    version: string;
+    db_size_mb: string;
+    pipelines: number;
+    active_runs: number;
+    max_concurrent_runs: number;
+  } | null = null;
+  let sysInfoLoaded = false;
   let purging = false;
   let purgeDays = 30;
   let users: UserInfo[] = [];
+  let usersLoaded = false;
   let newUsername = "";
   let newPassword = "";
   let newRole = "editor";
@@ -27,7 +40,10 @@
   let resettingPw = false;
 
   async function adminResetPassword() {
-    if (!resetNewPw || resetNewPw.length < 6) { notify.warning("Min 6 characters"); return; }
+    if (!resetNewPw || resetNewPw.length < 6) {
+      notify.warning("Min 6 characters");
+      return;
+    }
     resettingPw = true;
     try {
       const res = await fetch("/api/auth/admin-reset-password", {
@@ -37,12 +53,15 @@
       });
       if (res.ok) {
         notify.success(`Password reset for ${resetUsername}`);
-        showResetPw = false; resetNewPw = "";
+        showResetPw = false;
+        resetNewPw = "";
       } else {
         const data = await res.json();
         notify.error(data.error || "Failed to reset password");
       }
-    } catch { notify.error("Failed"); }
+    } catch {
+      notify.error("Failed");
+    }
     resettingPw = false;
   }
 
@@ -53,9 +72,18 @@
   let changingPw = false;
 
   async function changePassword() {
-    if (!currentPw || !newPw) { notify.warning("Fill in all fields"); return; }
-    if (newPw.length < 6) { notify.warning("New password must be at least 6 characters"); return; }
-    if (newPw !== confirmPw) { notify.warning("Passwords don't match"); return; }
+    if (!currentPw || !newPw) {
+      notify.warning("Fill in all fields");
+      return;
+    }
+    if (newPw.length < 6) {
+      notify.warning("New password must be at least 6 characters");
+      return;
+    }
+    if (newPw !== confirmPw) {
+      notify.warning("Passwords don't match");
+      return;
+    }
     changingPw = true;
     try {
       const res = await fetch("/api/auth/change-password", {
@@ -65,7 +93,9 @@
       });
       if (res.ok) {
         notify.success("Password changed");
-        currentPw = ""; newPw = ""; confirmPw = "";
+        currentPw = "";
+        newPw = "";
+        confirmPw = "";
       } else {
         const data = await res.json();
         notify.error(data.error || "Failed to change password");
@@ -80,19 +110,38 @@
   type Tab = "general" | "users" | "notifications" | "integrations" | "api";
   let activeTab: Tab = "general";
 
-  const tabs: { id: Tab; label: string; icon: string }[] = [
-    { id: "general", label: "General", icon: icons.settings.d },
-    { id: "users", label: "Users", icon: icons.user.d },
-    { id: "notifications", label: "Alerts & SLA", icon: icons.bell.d },
-    { id: "integrations", label: "Integrations", icon: icons.connection.d },
-    { id: "api", label: "API & CLI", icon: icons.code.d },
+  const tabs: { id: Tab; label: string; description: string; icon: string }[] = [
+    {
+      id: "general",
+      label: "General",
+      description: "Runtime & maintenance",
+      icon: icons.settings.d,
+    },
+    { id: "users", label: "Users", description: "Access & credentials", icon: icons.user.d },
+    {
+      id: "notifications",
+      label: "Alerts & SLA",
+      description: "Delivery & monitoring",
+      icon: icons.bell.d,
+    },
+    {
+      id: "integrations",
+      label: "Integrations",
+      description: "Python & lineage",
+      icon: icons.connection.d,
+    },
+    { id: "api", label: "API & CLI", description: "Endpoints & automation", icon: icons.code.d },
   ];
 
   onMount(async () => {
     try {
       const res = await fetch("/api/system/info", { headers: authHeaders() });
       sysInfo = await res.json();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    } finally {
+      sysInfoLoaded = true;
+    }
     loadUsers();
   });
 
@@ -100,7 +149,11 @@
     try {
       const res = await fetch("/api/auth/users", { headers: authHeaders() });
       if (res.ok) users = await res.json();
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    } finally {
+      usersLoaded = true;
+    }
   }
 
   async function createUser() {
@@ -155,7 +208,9 @@
     try {
       const arr = new Uint8Array(24);
       crypto.getRandomValues(arr);
-      const hex = Array.from(arr).map(b => b.toString(16).padStart(2, "0")).join("");
+      const hex = Array.from(arr)
+        .map((b) => b.toString(16).padStart(2, "0"))
+        .join("");
       generatedKey = "brk_" + hex;
     } finally {
       generating = false;
@@ -179,6 +234,8 @@
   let slackTesting = false;
   let slackTestResult: { ok: boolean; msg: string } | null = null;
   let slackLoaded = false;
+  let slackLoading = false;
+  let slackLoadFailed = false;
 
   // Teams config
   let teamsWebhook = "";
@@ -187,6 +244,8 @@
   let teamsSaving = false;
 
   async function loadSlackConfig() {
+    slackLoading = true;
+    slackLoadFailed = false;
     try {
       const res = await fetch("/api/settings/notifications", { headers: authHeaders() });
       if (res.ok) {
@@ -198,8 +257,14 @@
         teamsConfigured = data.teams_configured || false;
         teamsMasked = data.teams_webhook_masked || "";
         slackLoaded = true;
+      } else {
+        slackLoadFailed = true;
       }
-    } catch {}
+    } catch {
+      slackLoadFailed = true;
+    } finally {
+      slackLoading = false;
+    }
   }
 
   async function saveSlackConfig() {
@@ -261,28 +326,62 @@
 </script>
 
 <div class="settings-page animate-in">
-  <header class="page-header">
-    <h1>Settings</h1>
+  <header class="identity-header">
+    <div class="identity-main">
+      <div class="workspace-mark" aria-hidden="true">B</div>
+      <div class="header-copy">
+        <span class="eyebrow">Organization control center</span>
+        <h1>Brokoli workspace</h1>
+        <p>Runtime, access, delivery, and automation in one operational view.</p>
+      </div>
+    </div>
+    <dl class="identity-stats" aria-label="System summary">
+      <div>
+        <dt>Edition</dt>
+        <dd>Community</dd>
+      </div>
+      <div>
+        <dt>Version</dt>
+        <dd>{sysInfoLoaded ? sysInfo?.version || "Unavailable" : "--"}</dd>
+      </div>
+      <div>
+        <dt>Pipelines</dt>
+        <dd>{sysInfoLoaded ? (sysInfo?.pipelines ?? "Unavailable") : "--"}</dd>
+      </div>
+      <div class:attention={(sysInfo?.active_runs ?? 0) > 0}>
+        <dt>Active runs</dt>
+        <dd>{sysInfoLoaded ? (sysInfo?.active_runs ?? "Unavailable") : "--"}</dd>
+      </div>
+    </dl>
   </header>
 
-  <!-- Tab bar -->
-  <div class="tab-bar">
+  <nav class="tab-bar" aria-label="Organization settings">
     {#each tabs as tab}
       <button
+        type="button"
         class="tab-btn"
         class:active={activeTab === tab.id}
-        on:click={() => activeTab = tab.id}
+        aria-current={activeTab === tab.id ? "page" : undefined}
+        on:click={() => (activeTab = tab.id)}
       >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-          <path d={tab.icon} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-        </svg>
-        {tab.label}
+        <span class="tab-icon" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+            <path
+              d={tab.icon}
+              stroke="currentColor"
+              stroke-width="1.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
+          </svg>
+        </span>
+        <span class="tab-copy"><strong>{tab.label}</strong><small>{tab.description}</small></span>
+        <span class="tab-arrow" aria-hidden="true">›</span>
       </button>
     {/each}
-  </div>
+  </nav>
 
   <div class="tab-content">
-
     <!-- ═══════════════════ GENERAL TAB ═══════════════════ -->
     {#if activeTab === "general"}
       <section class="section">
@@ -290,7 +389,9 @@
         <div class="info-card">
           <div class="info-row">
             <span class="info-label">Version</span>
-            <span class="info-value mono">{sysInfo?.version || "0.1.0-dev"}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? sysInfo?.version || "Unavailable" : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Edition</span>
@@ -308,19 +409,29 @@
           </div>
           <div class="info-row">
             <span class="info-label">DB Size</span>
-            <span class="info-value mono">{sysInfo?.db_size_mb || "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? sysInfo?.db_size_mb || "Unavailable" : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Pipelines</span>
-            <span class="info-value mono">{sysInfo?.pipelines ?? "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? (sysInfo?.pipelines ?? "Unavailable") : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Active Runs</span>
-            <span class="info-value mono">{sysInfo?.active_runs ?? 0}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded ? (sysInfo?.active_runs ?? "Unavailable") : "Loading..."}</span
+            >
           </div>
           <div class="info-row">
             <span class="info-label">Max Concurrent</span>
-            <span class="info-value mono">{sysInfo?.max_concurrent_runs ?? "..."}</span>
+            <span class="info-value mono"
+              >{sysInfoLoaded
+                ? (sysInfo?.max_concurrent_runs ?? "Unavailable")
+                : "Loading..."}</span
+            >
           </div>
         </div>
       </section>
@@ -342,14 +453,26 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ USERS TAB ═══════════════════ -->
+      <!-- ═══════════════════ USERS TAB ═══════════════════ -->
     {:else if activeTab === "users"}
       <section class="section">
         <h2 class="section-title">Users & Access Control</h2>
         <div class="info-card">
-          {#if users.length === 0}
+          {#if !usersLoaded}
+            <div class="empty-state" role="status">
+              <span class="state-pulse" aria-hidden="true"></span>
+              <div>
+                <strong>Loading access inventory</strong><span
+                  >Checking configured users and roles.</span
+                >
+              </div>
+            </div>
+          {:else if users.length === 0}
             <div class="auth-section">
-              <p class="auth-desc">No users configured. The system is in <strong>open mode</strong> — anyone can access all features. Create a user to enable authentication.</p>
+              <p class="auth-desc">
+                No users configured. The system is in <strong>open mode</strong> — anyone can access all
+                features. Create a user to enable authentication.
+              </p>
             </div>
           {:else}
             <div class="users-table">
@@ -370,10 +493,19 @@
                   <span class="col-role">
                     <span class="role-badge role-{user.role}">{user.role}</span>
                   </span>
-                  <span class="col-created mono">{new Date(user.created_at).toLocaleDateString()}</span>
+                  <span class="col-created mono"
+                    >{new Date(user.created_at).toLocaleDateString()}</span
+                  >
                   <span class="col-actions">
                     {#if $authUser?.role === "admin" && $authUser?.username !== user.username}
-                      <button class="btn-reset-pw" on:click={() => { resetUserId = user.id; resetUsername = user.username; showResetPw = true; }}>
+                      <button
+                        class="btn-reset-pw"
+                        on:click={() => {
+                          resetUserId = user.id;
+                          resetUsername = user.username;
+                          showResetPw = true;
+                        }}
+                      >
                         Reset PW
                       </button>
                     {/if}
@@ -385,8 +517,18 @@
           <div class="add-user-form">
             <span class="form-title">Add User</span>
             <div class="form-row">
-              <input type="text" bind:value={newUsername} placeholder="Username" class="form-input" />
-              <input type="password" bind:value={newPassword} placeholder="Password" class="form-input" />
+              <input
+                type="text"
+                bind:value={newUsername}
+                placeholder="Username"
+                class="form-input"
+              />
+              <input
+                type="password"
+                bind:value={newPassword}
+                placeholder="Password"
+                class="form-input"
+              />
               <select bind:value={newRole} class="form-input form-select">
                 <option value="admin">Admin</option>
                 <option value="editor">Editor</option>
@@ -413,7 +555,11 @@
               <div class="pw-form">
                 <div class="form-group-inline">
                   <label>Current Password</label>
-                  <input type="password" bind:value={currentPw} placeholder="Enter current password" />
+                  <input
+                    type="password"
+                    bind:value={currentPw}
+                    placeholder="Enter current password"
+                  />
                 </div>
                 <div class="form-row-2">
                   <div class="form-group-inline">
@@ -422,8 +568,14 @@
                   </div>
                   <div class="form-group-inline">
                     <label>Confirm New Password</label>
-                    <input type="password" bind:value={confirmPw} placeholder="Repeat new password"
-                      on:keydown={(e) => { if (e.key === "Enter") changePassword(); }} />
+                    <input
+                      type="password"
+                      bind:value={confirmPw}
+                      placeholder="Repeat new password"
+                      on:keydown={(e) => {
+                        if (e.key === "Enter") changePassword();
+                      }}
+                    />
                   </div>
                 </div>
                 <button class="btn-action" on:click={changePassword} disabled={changingPw}>
@@ -437,21 +589,65 @@
 
       {#if showResetPw}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div class="modal-overlay" on:click={() => showResetPw = false} on:keydown={() => {}}>
+        <div class="modal-overlay" on:click={() => (showResetPw = false)} on:keydown={() => {}}>
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div class="modal" on:click|stopPropagation on:keydown={() => {}}>
-            <h2>Reset Password: {resetUsername}</h2>
-            <div class="form-group-inline">
-              <label>New Password</label>
-              <input type="password" bind:value={resetNewPw} placeholder="Min 6 characters"
-                on:keydown={(e) => { if (e.key === "Enter") adminResetPassword(); }} />
+          <div
+            class="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="reset-password-title"
+            aria-describedby="reset-password-description"
+            tabindex="-1"
+            on:click|stopPropagation
+            on:keydown={(event) => {
+              if (event.key === "Escape") showResetPw = false;
+            }}
+          >
+            <button
+              class="modal-close"
+              type="button"
+              aria-label="Close reset password dialog"
+              on:click={() => (showResetPw = false)}>×</button
+            >
+            <header class="modal-header">
+              <div class="modal-symbol" aria-hidden="true">
+                <svg viewBox="0 0 24 24"
+                  ><path d="M7 11V8a5 5 0 0 1 10 0v3"></path><rect
+                    x="5"
+                    y="11"
+                    width="14"
+                    height="10"
+                    rx="2"
+                  ></rect></svg
+                >
+              </div>
+              <span class="eyebrow">Administrative access</span>
+              <h2 id="reset-password-title">Reset {resetUsername}'s password</h2>
+              <p id="reset-password-description">
+                Set a temporary replacement credential. The user can change it after signing in.
+              </p>
+            </header>
+            <div class="modal-body">
+              <div class="form-group-inline">
+                <label for="reset-new-password">New Password</label>
+                <input
+                  id="reset-new-password"
+                  type="password"
+                  bind:value={resetNewPw}
+                  placeholder="Min 6 characters"
+                  on:keydown={(e) => {
+                    if (e.key === "Enter") adminResetPassword();
+                  }}
+                />
+                <span class="field-hint">Minimum 6 characters</span>
+              </div>
             </div>
-            <div class="modal-actions">
-              <button class="btn-secondary" on:click={() => showResetPw = false}>Cancel</button>
+            <footer class="modal-actions">
+              <button class="btn-secondary" on:click={() => (showResetPw = false)}>Cancel</button>
               <button class="btn-action" on:click={adminResetPassword} disabled={resettingPw}>
                 {resettingPw ? "Resetting..." : "Reset Password"}
               </button>
-            </div>
+            </footer>
           </div>
         </div>
       {/if}
@@ -483,7 +679,7 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ ALERTS & SLA TAB ═══════════════════ -->
+      <!-- ═══════════════════ ALERTS & SLA TAB ═══════════════════ -->
     {:else if activeTab === "notifications"}
       <section class="section">
         <h2 class="section-title">Slack Notifications</h2>
@@ -492,7 +688,11 @@
           <div class="info-row">
             <span class="info-label">Status</span>
             <span class="info-value">
-              {#if slackConfigured}
+              {#if slackLoading}
+                <span class="status-inactive">Loading notification settings...</span>
+              {:else if slackLoadFailed}
+                <span class="status-inactive">Notification settings unavailable</span>
+              {:else if slackConfigured}
                 <span class="status-active">
                   <span class="status-dot-green"></span>
                   Active
@@ -524,7 +724,9 @@
               <input
                 type="password"
                 bind:value={slackWebhook}
-                placeholder={slackConfigured ? "Leave empty to keep current" : "https://hooks.slack.com/services/T.../B.../xxx"}
+                placeholder={slackConfigured
+                  ? "Leave empty to keep current"
+                  : "https://hooks.slack.com/services/T.../B.../xxx"}
               />
             </div>
             <div class="form-row-2">
@@ -546,14 +748,16 @@
                 <button class="btn-action btn-test" on:click={testSlack} disabled={slackTesting}>
                   {slackTesting ? "Sending..." : "Send Test Message"}
                 </button>
-                <button class="btn-action btn-clear" on:click={clearSlack}>
-                  Disconnect
-                </button>
+                <button class="btn-action btn-clear" on:click={clearSlack}> Disconnect </button>
               {/if}
             </div>
 
             {#if slackTestResult}
-              <div class="test-result" class:success={slackTestResult.ok} class:fail={!slackTestResult.ok}>
+              <div
+                class="test-result"
+                class:success={slackTestResult.ok}
+                class:fail={!slackTestResult.ok}
+              >
                 {slackTestResult.msg}
               </div>
             {/if}
@@ -575,7 +779,11 @@
           <div class="info-row">
             <span class="info-label">Status</span>
             <span class="info-value">
-              {#if teamsConfigured}
+              {#if slackLoading}
+                <span class="status-inactive">Loading notification settings...</span>
+              {:else if slackLoadFailed}
+                <span class="status-inactive">Notification settings unavailable</span>
+              {:else if teamsConfigured}
                 <span class="status-active">
                   <span class="status-dot-green"></span>
                   Active
@@ -597,7 +805,9 @@
               <input
                 type="password"
                 bind:value={teamsWebhook}
-                placeholder={teamsConfigured ? "Leave empty to keep current" : "https://your-org.webhook.office.com/webhookb2/..."}
+                placeholder={teamsConfigured
+                  ? "Leave empty to keep current"
+                  : "https://your-org.webhook.office.com/webhookb2/..."}
               />
             </div>
             <div class="slack-actions">
@@ -605,19 +815,27 @@
                 Save
               </button>
               {#if teamsConfigured}
-                <button class="btn-action btn-clear" on:click={async () => {
-                  await fetch("/api/settings/notifications", { method: "PUT", headers: { "Content-Type": "application/json", ...authHeaders() }, body: JSON.stringify({ teams_webhook: "__clear__" }) });
-                  // For now just reload
-                  teamsWebhook = "";
-                  await loadSlackConfig();
-                  notify.success("Teams disconnected");
-                }}>
+                <button
+                  class="btn-action btn-clear"
+                  on:click={async () => {
+                    await fetch("/api/settings/notifications", {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json", ...authHeaders() },
+                      body: JSON.stringify({ teams_webhook: "__clear__" }),
+                    });
+                    // For now just reload
+                    teamsWebhook = "";
+                    await loadSlackConfig();
+                    notify.success("Teams disconnected");
+                  }}
+                >
                   Disconnect
                 </button>
               {/if}
             </div>
             <p class="auth-desc" style="margin-top: 12px; font-size: 11px; color: var(--text-dim)">
-              Create a webhook in Teams: Channel Settings → Connectors → Incoming Webhook → Configure.
+              Create a webhook in Teams: Channel Settings → Connectors → Incoming Webhook →
+              Configure.
             </p>
           </div>
         </div>
@@ -628,8 +846,8 @@
         <div class="info-card">
           <div class="auth-section">
             <p class="auth-desc">
-              Set SLA deadlines per pipeline in the editor toolbar (click <strong>SLA</strong>).
-              The checker runs every minute and alerts when a pipeline misses its deadline.
+              Set SLA deadlines per pipeline in the editor toolbar (click <strong>SLA</strong>). The
+              checker runs every minute and alerts when a pipeline misses its deadline.
             </p>
           </div>
           <div class="info-row">
@@ -647,19 +865,24 @@
         </div>
       </section>
 
-    <!-- ═══════════════════ INTEGRATIONS TAB ═══════════════════ -->
+      <!-- ═══════════════════ INTEGRATIONS TAB ═══════════════════ -->
     {:else if activeTab === "integrations"}
       <section class="section">
         <h2 class="section-title">Python Integration</h2>
         <div class="info-card">
           <div class="auth-section">
-            <p class="auth-desc">Python Code nodes work with any <code>python3</code>. For faster processing:</p>
+            <p class="auth-desc">
+              Python Code nodes work with any <code>python3</code>. For faster processing:
+            </p>
             <pre class="code-block">pip install pyarrow pandas</pre>
-            <p class="auth-desc" style="margin-top: 8px">Recommended: use a virtualenv and set the path in Code node config:</p>
+            <p class="auth-desc" style="margin-top: 8px">
+              Recommended: use a virtualenv and set the path in Code node config:
+            </p>
             <pre class="code-block">python3 -m venv ~/.brokoli-env
 ~/.brokoli-env/bin/pip install pyarrow pandas numpy requests</pre>
             <p class="auth-desc" style="margin-top: 8px; font-size: 11px; color: var(--text-dim)">
-              Under 10K rows: JSON. Larger: CSV temp files (3-5x faster). With pyarrow: Arrow IPC (5-10x faster).
+              Under 10K rows: JSON. Larger: CSV temp files (3-5x faster). With pyarrow: Arrow IPC
+              (5-10x faster).
             </p>
           </div>
         </div>
@@ -675,7 +898,9 @@
             </span>
           </div>
           <div class="auth-section">
-            <p class="auth-desc">Emit lineage events to DataHub, Marquez, or any OpenLineage-compatible endpoint:</p>
+            <p class="auth-desc">
+              Emit lineage events to DataHub, Marquez, or any OpenLineage-compatible endpoint:
+            </p>
             <pre class="code-block">BROKOLI_OPENLINEAGE_URL=http://marquez:5000/api/v1/lineage
 BROKOLI_OPENLINEAGE_NAMESPACE=brokoli-prod
 BROKOLI_OPENLINEAGE_API_KEY=...</pre>
@@ -688,17 +913,21 @@ BROKOLI_OPENLINEAGE_API_KEY=...</pre>
         <div class="info-card">
           <div class="auth-section">
             <p class="auth-desc">
-              Trigger pipeline runs via HTTP. Generate a webhook token in the pipeline editor (click <strong>Webhook</strong>), then:
+              Trigger pipeline runs via HTTP. Generate a webhook token in the pipeline editor (click <strong
+                >Webhook</strong
+              >), then:
             </p>
-            <pre class="code-block">curl -X POST http://localhost:9900/api/pipelines/PIPELINE_ID/webhook?token=whk_...</pre>
+            <pre
+              class="code-block">curl -X POST http://localhost:9900/api/pipelines/PIPELINE_ID/webhook?token=whk_...</pre>
             <p class="auth-desc" style="margin-top: 8px; font-size: 11px; color: var(--text-dim)">
-              Useful for triggering on external events: git push, model deploy, dbt completion, Kafka consumer, etc.
+              Useful for triggering on external events: git push, model deploy, dbt completion,
+              Kafka consumer, etc.
             </p>
           </div>
         </div>
       </section>
 
-    <!-- ═══════════════════ API & CLI TAB ═══════════════════ -->
+      <!-- ═══════════════════ API & CLI TAB ═══════════════════ -->
     {:else if activeTab === "api"}
       <section class="section">
         <h2 class="section-title">API Reference</h2>
@@ -790,49 +1019,190 @@ assertions:
 </div>
 
 <style>
-  .page-header {
-    margin-bottom: var(--space-lg);
+  .settings-page {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 18px;
   }
-  .page-header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+  .identity-header {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(300px, 1.15fr) minmax(480px, 1fr);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    background:
+      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 36%), var(--bg-secondary);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+  }
+  .identity-header::after {
+    position: absolute;
+    top: 0;
+    right: 0;
+    width: 34%;
+    height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent));
+    content: "";
+    opacity: 0.7;
+  }
+  .identity-main {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    gap: 16px;
+    padding: 24px 26px;
+  }
+  .workspace-mark {
+    display: grid;
+    width: 52px;
+    height: 52px;
+    flex: 0 0 auto;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 56%);
+    border-radius: 12px;
+    background: var(--accent-glow);
+    box-shadow: 0 0 28px color-mix(in srgb, var(--accent), transparent 88%);
+    color: var(--accent);
+    font: 700 20px var(--font-mono);
+  }
+  .header-copy {
+    min-width: 0;
+  }
+  .eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .header-copy h1 {
+    overflow: hidden;
+    margin: 5px 0 3px;
+    color: var(--text-primary);
+    font-size: clamp(1.35rem, 2.4vw, 1.8rem);
+    font-weight: 680;
+    letter-spacing: -0.04em;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .header-copy p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 10px;
+  }
+  .identity-stats {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    margin: 0;
+    border-left: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 52%);
+  }
+  .identity-stats div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    justify-content: center;
+    gap: 5px;
+    padding: 18px 14px;
+    border-left: 1px solid var(--border-subtle);
+  }
+  .identity-stats div:first-child {
+    border-left: 0;
+  }
+  .identity-stats dt {
+    color: var(--text-dim);
+    font: 8px var(--font-mono);
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+  }
+  .identity-stats dd {
+    overflow: hidden;
+    margin: 0;
+    color: var(--text-primary);
+    font: 650 12px var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .identity-stats .attention dd {
+    color: var(--accent);
   }
 
   /* ── Tab Bar ── */
   .tab-bar {
-    display: flex;
-    gap: 2px;
-    border-bottom: 1px solid var(--border);
-    margin-bottom: var(--space-xl);
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
   }
   .tab-btn {
-    display: flex;
+    display: grid;
+    grid-template-columns: 34px minmax(0, 1fr) 12px;
     align-items: center;
-    gap: 7px;
-    padding: 10px 16px;
-    font-size: 13px;
-    font-weight: 500;
-    color: var(--text-muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -1px;
-    transition: all 150ms ease;
-    background: none;
-    border-radius: 0;
+    gap: 9px;
+    min-width: 0;
+    padding: 10px 11px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg-secondary), transparent 18%);
+    color: inherit;
+    text-align: left;
+    transition:
+      border-color 150ms ease,
+      background 150ms ease,
+      transform 150ms ease;
   }
   .tab-btn:hover {
-    color: var(--text-primary);
-    background: var(--bg-tertiary);
+    border-color: var(--border-hover);
+    background: var(--bg-secondary);
+    transform: translateY(-1px);
   }
   .tab-btn.active {
-    color: var(--accent-text);
-    border-bottom-color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent), transparent 38%);
+    background: linear-gradient(110deg, var(--accent-glow), var(--bg-secondary) 65%);
+    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent), transparent 80%);
   }
-  .tab-btn svg {
-    opacity: 0.6;
+  .tab-icon {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border: 1px solid var(--border-subtle);
+    border-radius: 7px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
   }
-  .tab-btn.active svg {
-    opacity: 1;
+  .tab-btn.active .tab-icon {
+    border-color: color-mix(in srgb, var(--accent), transparent 58%);
+    color: var(--accent);
+  }
+  .tab-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .tab-copy strong {
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 620;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab-copy small {
+    overflow: hidden;
+    color: var(--text-dim);
+    font-size: 8.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .tab-arrow {
+    color: var(--text-dim);
+    font-size: 17px;
+  }
+  .tab-btn.active .tab-arrow {
+    color: var(--accent);
   }
 
   .tab-content {
@@ -841,22 +1211,28 @@ assertions:
 
   /* ── Sections ── */
   .section {
-    margin-bottom: var(--space-xl);
+    margin-bottom: 18px;
   }
   .section-title {
-    font-size: 0.75rem;
-    font-weight: 600;
-    color: var(--text-muted);
+    margin: 0;
+    padding: 15px 18px;
+    border: 1px solid var(--border);
+    border-bottom: 0;
+    border-radius: 11px 11px 0 0;
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.68rem;
+    font-weight: 650;
     text-transform: uppercase;
-    letter-spacing: 0.08em;
-    margin-bottom: var(--space-md);
+    letter-spacing: 0.1em;
   }
 
   .info-card {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
+    border-radius: 0 0 11px 11px;
     overflow: hidden;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.02);
   }
   .info-row {
     display: flex;
@@ -865,7 +1241,9 @@ assertions:
     padding: var(--space-md) var(--space-lg);
     border-bottom: 1px solid var(--border);
   }
-  .info-row:last-child { border-bottom: none; }
+  .info-row:last-child {
+    border-bottom: none;
+  }
   .info-label {
     font-size: 0.8125rem;
     color: var(--text-secondary);
@@ -873,7 +1251,9 @@ assertions:
   .info-value {
     font-size: 0.8125rem;
   }
-  .mono { font-family: var(--font-mono); }
+  .mono {
+    font-family: var(--font-mono);
+  }
   code {
     background: var(--bg-tertiary);
     padding: 1px 5px;
@@ -885,29 +1265,47 @@ assertions:
     padding: var(--space-lg);
   }
   .edition-badge {
-    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
-    padding: 2px 8px; border-radius: 4px;
-    background: var(--bg-tertiary); color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
   }
   .edition-badge.enterprise {
-    background: var(--accent-glow); color: var(--accent);
+    background: var(--accent-glow);
+    color: var(--accent);
   }
   .feature-tag {
-    font-size: 10px; font-family: var(--font-mono); font-weight: 500;
-    padding: 1px 6px; border-radius: 3px;
-    background: var(--accent-glow); color: var(--accent);
+    font-size: 10px;
+    font-family: var(--font-mono);
+    font-weight: 500;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--accent-glow);
+    color: var(--accent);
     margin-right: 4px;
   }
   .code-block {
-    font-family: var(--font-mono); font-size: 11px; line-height: 1.6;
-    background: var(--bg-code); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-md); padding: 10px 14px;
-    color: var(--text-secondary); white-space: pre; overflow-x: auto;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.6;
+    background: var(--bg-code);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 10px 14px;
+    color: var(--text-secondary);
+    white-space: pre;
+    overflow-x: auto;
     margin: 0;
   }
   .auth-desc code {
-    font-family: var(--font-mono); font-size: 12px;
-    color: var(--accent); font-weight: 500;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    color: var(--accent);
+    font-weight: 500;
   }
   .auth-desc {
     font-size: 0.8125rem;
@@ -917,28 +1315,56 @@ assertions:
   }
 
   .event-tags {
-    display: flex; gap: 6px; margin-top: var(--space-sm);
+    display: flex;
+    gap: 6px;
+    margin-top: var(--space-sm);
   }
   .event-tag {
-    font-family: var(--font-mono); font-size: 11px; font-weight: 500;
-    padding: 2px 8px; border-radius: 4px;
-    background: var(--bg-tertiary); color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
   }
   .event-tag.alert {
-    background: rgba(245, 158, 11, 0.1); color: var(--warning);
+    background: rgba(245, 158, 11, 0.1);
+    color: var(--warning);
   }
 
   .btn-action {
     background: var(--accent);
     color: white;
-    padding: 6px 14px;
+    min-height: 34px;
+    padding: 0 14px;
     border-radius: var(--radius-md);
     font-weight: 500;
     font-size: 0.8125rem;
     transition: background 150ms ease;
   }
-  .btn-action:hover:not(:disabled) { background: var(--accent-hover); }
-  .btn-action:disabled { opacity: 0.5; }
+  .btn-secondary {
+    min-height: 34px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    transition: all 150ms ease;
+  }
+  .btn-secondary:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .btn-action:hover:not(:disabled) {
+    background: var(--accent-hover);
+  }
+  .btn-action:disabled {
+    opacity: 0.5;
+  }
 
   .key-actions {
     margin-bottom: var(--space-md);
@@ -972,7 +1398,10 @@ assertions:
     transition: all 150ms ease;
     flex-shrink: 0;
   }
-  .btn-copy:hover { color: var(--text-primary); background: var(--border); }
+  .btn-copy:hover {
+    color: var(--text-primary);
+    background: var(--border);
+  }
 
   .key-hint {
     font-size: 0.75rem;
@@ -982,19 +1411,31 @@ assertions:
     font-size: 0.6875rem;
   }
 
-  .users-table { overflow: hidden; }
-  .users-header, .users-row {
+  .users-table {
+    overflow: hidden;
+  }
+  .users-header,
+  .users-row {
     display: grid;
     grid-template-columns: 1fr 100px 100px 80px;
     padding: var(--space-sm) var(--space-lg);
     align-items: center;
   }
-  .col-actions { text-align: right; }
-  .btn-reset-pw {
-    padding: 3px 8px; border-radius: 4px; font-size: 10px; font-weight: 500;
-    color: var(--text-dim); transition: all 150ms ease;
+  .col-actions {
+    text-align: right;
   }
-  .btn-reset-pw:hover { color: var(--warning); background: rgba(245,158,11,0.1); }
+  .btn-reset-pw {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    color: var(--text-dim);
+    transition: all 150ms ease;
+  }
+  .btn-reset-pw:hover {
+    color: var(--warning);
+    background: rgba(245, 158, 11, 0.1);
+  }
   .users-header {
     background: var(--bg-tertiary);
     font-size: 0.7rem;
@@ -1023,9 +1464,18 @@ assertions:
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }
-  .role-admin { color: var(--failed); background: var(--failed-bg); }
-  .role-editor { color: var(--accent-text); background: var(--accent-glow); }
-  .role-viewer { color: var(--text-muted); background: var(--pending-bg); }
+  .role-admin {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
+  .role-editor {
+    color: var(--accent-text);
+    background: var(--accent-glow);
+  }
+  .role-viewer {
+    color: var(--text-muted);
+    background: var(--pending-bg);
+  }
 
   .add-user-form {
     padding: var(--space-md) var(--space-lg);
@@ -1050,12 +1500,49 @@ assertions:
     padding: 6px 10px;
     flex: 1;
   }
-  .form-select { flex: 0.7; }
+  .form-select {
+    flex: 0.7;
+  }
   .role-help {
     font-size: 0.6875rem;
     color: var(--text-dim);
     margin-top: var(--space-sm);
     line-height: 1.6;
+  }
+  .empty-state {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 24px var(--space-lg);
+    color: var(--text-muted);
+  }
+  .empty-state > div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .empty-state strong {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .empty-state span:not(.state-pulse) {
+    font-size: 10px;
+  }
+  .state-pulse {
+    width: 9px;
+    height: 9px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 0 var(--accent-glow);
+    animation: state-pulse 1.4s ease-out infinite;
+  }
+  @keyframes state-pulse {
+    70%,
+    100% {
+      box-shadow: 0 0 0 8px transparent;
+    }
   }
 
   .purge-controls {
@@ -1063,18 +1550,29 @@ assertions:
     align-items: center;
     gap: var(--space-sm);
   }
-  .purge-label { font-size: 0.8125rem; color: var(--text-secondary); }
+  .purge-label {
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+  }
   /* ── Slack config ── */
   .status-active {
-    display: flex; align-items: center; gap: 6px;
-    font-size: 12px; font-weight: 600; color: var(--success);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--success);
   }
   .status-dot-green {
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--success); box-shadow: 0 0 6px var(--success-glow);
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--success);
+    box-shadow: 0 0 6px var(--success-glow);
   }
   .status-inactive {
-    font-size: 12px; color: var(--text-dim);
+    font-size: 12px;
+    color: var(--text-dim);
   }
   .slack-form {
     padding: var(--space-lg);
@@ -1084,22 +1582,37 @@ assertions:
     margin-bottom: 12px;
   }
   .form-group-inline label {
-    display: block; font-size: 10px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.08em;
-    margin-bottom: 4px; font-weight: 600;
+    display: block;
+    font-size: 10px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 4px;
+    font-weight: 600;
   }
   .form-group-inline input {
-    width: 100%; padding: 9px 12px;
-    background: var(--bg-primary); border: 1px solid var(--border);
-    border-radius: var(--radius-md); color: var(--text-primary);
-    font-size: 13px; font-family: var(--font-ui);
+    width: 100%;
+    padding: 9px 12px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text-primary);
+    font-size: 13px;
+    font-family: var(--font-ui);
   }
-  .form-group-inline input:focus { border-color: var(--accent); outline: none; }
+  .form-group-inline input:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
   .form-row-2 {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
   }
   .slack-actions {
-    display: flex; gap: 8px; margin-top: 4px;
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
   }
   .btn-test {
     background: var(--bg-tertiary) !important;
@@ -1113,27 +1626,39 @@ assertions:
   .btn-clear {
     background: transparent !important;
     color: var(--failed) !important;
-    border: 1px solid rgba(239,68,68,0.2);
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
-  .btn-clear:hover { background: var(--failed-bg) !important; }
+  .btn-clear:hover {
+    background: var(--failed-bg) !important;
+  }
   .test-result {
-    margin-top: 12px; padding: 10px 14px; border-radius: var(--radius-md);
-    font-size: 12px; font-weight: 500;
+    margin-top: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    font-weight: 500;
   }
   .test-result.success {
-    background: var(--success-bg); color: var(--success);
-    border: 1px solid rgba(34,197,94,0.2);
+    background: var(--success-bg);
+    color: var(--success);
+    border: 1px solid rgba(34, 197, 94, 0.2);
   }
   .test-result.fail {
-    background: var(--failed-bg); color: var(--failed);
-    border: 1px solid rgba(239,68,68,0.2);
+    background: var(--failed-bg);
+    color: var(--failed);
+    border: 1px solid rgba(239, 68, 68, 0.2);
   }
   .slack-events {
-    display: flex; align-items: center; gap: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
     padding: 12px var(--space-lg);
     border-top: 1px solid var(--border);
   }
-  .events-label { font-size: 11px; color: var(--text-dim); }
+  .events-label {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
 
   .purge-input {
     width: 60px;
@@ -1145,53 +1670,107 @@ assertions:
 
   /* ── Roles ── */
   .tab-header-row {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: var(--space-md);
   }
-  .roles-list { display: flex; flex-direction: column; gap: 8px; }
+  .roles-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
   .role-card {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-lg); overflow: hidden;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
     transition: border-color 150ms ease;
   }
-  .role-card.editing { border-color: var(--accent); }
+  .role-card.editing {
+    border-color: var(--accent);
+  }
   .role-card-header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     padding: 14px 20px;
   }
-  .role-card-info { display: flex; flex-direction: column; gap: 2px; }
-  .role-card-name { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
-  .role-card-desc { font-size: 11px; color: var(--text-muted); }
+  .role-card-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .role-card-name {
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .role-card-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
   .system-badge {
-    font-size: 9px; font-weight: 600; text-transform: uppercase;
-    padding: 1px 6px; border-radius: 3px;
-    background: var(--bg-tertiary); color: var(--text-dim);
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    color: var(--text-dim);
     letter-spacing: 0.06em;
   }
-  .role-card-meta { display: flex; align-items: center; gap: 8px; }
+  .role-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .perm-count {
-    font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
   }
   .btn-sm-action {
-    padding: 5px 14px; border-radius: 5px; font-size: 11px; font-weight: 500;
-    background: var(--bg-tertiary); border: 1px solid var(--border);
-    color: var(--text-secondary); transition: all 150ms ease;
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: all 150ms ease;
   }
-  .btn-sm-action:hover { border-color: var(--accent); color: var(--accent-text); }
+  .btn-sm-action:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
   .btn-sm-danger {
-    padding: 5px 14px; border-radius: 5px; font-size: 11px; font-weight: 500;
-    color: var(--text-dim); transition: all 150ms ease;
+    padding: 5px 14px;
+    border-radius: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-dim);
+    transition: all 150ms ease;
   }
-  .btn-sm-danger:hover { color: var(--failed); background: var(--failed-bg); }
+  .btn-sm-danger:hover {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
   .btn-secondary-sm {
-    padding: 6px 14px; border-radius: var(--radius-md); font-size: 12px;
-    background: var(--bg-tertiary); color: var(--text-secondary);
+    padding: 6px 14px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
     border: 1px solid var(--border);
   }
 
   /* Permission editor */
   .perm-editor {
-    padding: 20px 24px; border-top: 1px solid var(--border);
+    padding: 20px 24px;
+    border-top: 1px solid var(--border);
     background: var(--bg-primary);
   }
   .perm-group {
@@ -1201,12 +1780,19 @@ assertions:
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
   }
-  .perm-group:last-child { margin-bottom: 0; }
+  .perm-group:last-child {
+    margin-bottom: 0;
+  }
   .perm-group-title {
-    display: block; font-size: 11px; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.08em;
-    color: var(--text-muted); margin-bottom: 10px;
-    padding-bottom: 8px; border-bottom: 1px solid var(--border-subtle);
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border-subtle);
   }
   .perm-checkboxes {
     display: grid;
@@ -1214,18 +1800,26 @@ assertions:
     gap: 6px;
   }
   .perm-checkbox {
-    display: flex; align-items: center; gap: 8px;
-    font-size: 12px; color: var(--text-secondary);
-    cursor: pointer; padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 6px 10px;
     border-radius: 6px;
     transition: background 120ms ease;
   }
-  .perm-checkbox:hover { background: var(--bg-tertiary); }
+  .perm-checkbox:hover {
+    background: var(--bg-tertiary);
+  }
 
   /* Custom toggle switch */
   .perm-checkbox input[type="checkbox"] {
-    appearance: none; -webkit-appearance: none;
-    width: 32px; height: 18px;
+    appearance: none;
+    -webkit-appearance: none;
+    width: 32px;
+    height: 18px;
     background: var(--bg-tertiary);
     border: 1px solid var(--border);
     border-radius: 9px;
@@ -1237,8 +1831,10 @@ assertions:
   .perm-checkbox input[type="checkbox"]::after {
     content: "";
     position: absolute;
-    top: 2px; left: 2px;
-    width: 12px; height: 12px;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
     border-radius: 50%;
     background: var(--text-ghost);
     transition: all 200ms ease;
@@ -1252,52 +1848,321 @@ assertions:
     transform: translateX(14px);
   }
   .perm-checkbox input:disabled {
-    opacity: 0.4; cursor: default;
+    opacity: 0.4;
+    cursor: default;
   }
-  .perm-label { text-transform: capitalize; user-select: none; }
+  .perm-label {
+    text-transform: capitalize;
+    user-select: none;
+  }
   .perm-actions {
-    display: flex; gap: 8px; margin-top: 20px;
-    padding-top: 14px; border-top: 1px solid var(--border-subtle);
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border-subtle);
   }
 
   .modal-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.6);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 200;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 4, 6, 0.8);
+    backdrop-filter: blur(10px) saturate(0.75);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    z-index: 2000;
+    animation: modal-fade 180ms ease-out;
+  }
+  @keyframes modal-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   .modal {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: 12px; padding: 28px;
-    max-width: 90vw;
+    position: relative;
+    border: 1px solid var(--border);
+    border-radius: 13px;
+    padding: 0;
+    width: min(520px, 100%);
+    max-width: none;
+    max-height: calc(100dvh - 32px);
+    overflow-y: auto;
+    background:
+      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 30%), var(--bg-secondary);
+    box-shadow:
+      0 36px 100px rgba(0, 0, 0, 0.65),
+      inset 0 1px 0 rgba(255, 255, 255, 0.035);
   }
-  .modal h2 { font-size: 17px; font-weight: 600; margin-bottom: 16px; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 20px; }
+  .modal-close {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    display: grid;
+    width: 30px;
+    height: 30px;
+    z-index: 2;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 19px;
+  }
+  .modal-close:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .modal-header {
+    padding: 28px 30px 21px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .modal-symbol {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    margin-bottom: 22px;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 58%);
+    border-radius: 10px;
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .modal-symbol svg {
+    width: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-width: 1.6;
+  }
+  .modal-header h2 {
+    margin: 6px 0;
+    color: var(--text-primary);
+    font-size: 21px;
+    font-weight: 680;
+    letter-spacing: -0.035em;
+  }
+  .modal-header p {
+    max-width: 410px;
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 10px;
+    line-height: 1.6;
+  }
+  .modal-body {
+    padding: 21px 30px 9px;
+  }
+  .field-hint {
+    display: block;
+    margin-top: 5px;
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin: 0;
+    padding: 14px 30px;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 48%);
+  }
   .modal-role {
-    width: 640px; max-width: 95vw; max-height: 85vh;
-    display: flex; flex-direction: column;
-    padding: 0; overflow: hidden;
+    width: 640px;
+    max-width: 95vw;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    padding: 0;
+    overflow: hidden;
   }
   .modal-role-header {
     padding: 24px 28px 16px;
     border-bottom: 1px solid var(--border);
     flex-shrink: 0;
   }
-  .modal-role-header h2 { margin-bottom: 16px; }
+  .modal-role-header h2 {
+    margin-bottom: 16px;
+  }
   .modal-role-body {
-    flex: 1; overflow-y: auto;
+    flex: 1;
+    overflow-y: auto;
     min-height: 0;
   }
-  .modal-role-body .perm-editor { padding: 16px 28px 20px; }
+  .modal-role-body .perm-editor {
+    padding: 16px 28px 20px;
+  }
   .modal-role-footer {
     padding: 14px 28px;
     border-top: 1px solid var(--border);
     background: var(--bg-secondary);
     flex-shrink: 0;
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
   }
   .perm-selected-count {
-    font-size: 11px; font-family: var(--font-mono);
+    font-size: 11px;
+    font-family: var(--font-mono);
     color: var(--text-dim);
+  }
+
+  @media (max-width: 1100px) {
+    .identity-header {
+      grid-template-columns: 1fr;
+    }
+    .identity-stats {
+      border-top: 1px solid var(--border-subtle);
+      border-left: 0;
+    }
+    .tab-bar {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (max-width: 768px) {
+    .tab-bar {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .info-row {
+      gap: 16px;
+      padding: 11px 14px;
+    }
+    .info-value {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      text-align: right;
+    }
+    .users-header {
+      display: none;
+    }
+    .users-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px 14px;
+      padding: 13px 14px;
+    }
+    .users-row .col-user {
+      grid-column: 1;
+      grid-row: 1;
+    }
+    .users-row .col-actions {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .users-row .col-role {
+      grid-column: 1;
+      grid-row: 2;
+    }
+    .users-row .col-created {
+      grid-column: 2;
+      grid-row: 2;
+      color: var(--text-muted);
+      font-size: 11px;
+      text-align: right;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+    }
+    .form-row .btn-action {
+      width: 100%;
+    }
+    .code-block {
+      max-width: 100%;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .settings-page {
+      gap: 12px;
+    }
+    .identity-main {
+      padding: 18px;
+    }
+    .workspace-mark {
+      width: 42px;
+      height: 42px;
+      font-size: 17px;
+    }
+    .header-copy p {
+      display: none;
+    }
+    .identity-stats {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    .identity-stats div {
+      min-height: 58px;
+      box-sizing: border-box;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .identity-stats div:nth-child(3),
+    .identity-stats div:nth-child(4) {
+      border-bottom: 0;
+    }
+    .tab-bar {
+      grid-template-columns: 1fr;
+      gap: 5px;
+    }
+    .tab-btn {
+      min-height: 48px;
+      padding: 7px 10px;
+    }
+    .section-title {
+      padding: 13px 14px;
+    }
+    .auth-section,
+    .slack-form {
+      padding: 14px;
+    }
+    .form-row,
+    .form-row-2 {
+      grid-template-columns: 1fr;
+    }
+    .form-input,
+    .form-select {
+      width: 100%;
+    }
+    .purge-controls,
+    .slack-actions,
+    .slack-events {
+      align-items: stretch;
+      flex-wrap: wrap;
+    }
+    .purge-controls .btn-action {
+      flex-basis: 100%;
+    }
+    .slack-actions .btn-action {
+      flex: 1 1 auto;
+    }
+    .key-display {
+      align-items: flex-start;
+      flex-direction: column;
+    }
+    .key-display .btn-copy {
+      align-self: flex-end;
+    }
+    .modal-overlay {
+      align-items: flex-end;
+      padding: 8px;
+    }
+    .modal {
+      max-height: calc(100dvh - 16px);
+    }
+    .modal-header,
+    .modal-body,
+    .modal-actions {
+      padding-right: 20px;
+      padding-left: 20px;
+    }
+    .modal-symbol {
+      margin-bottom: 16px;
+    }
+    .modal-actions button {
+      flex: 1;
+    }
   }
 </style>

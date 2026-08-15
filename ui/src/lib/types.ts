@@ -23,6 +23,8 @@ export interface Pipeline {
   runs_total?: number;
   runs_success?: number;
   runs_failed?: number;
+  runs_running?: number;
+  run_history?: string[];
   enabled: boolean;
   created_at: string;
   updated_at: string;

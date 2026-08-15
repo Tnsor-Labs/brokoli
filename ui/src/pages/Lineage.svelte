@@ -7,9 +7,9 @@
 
   interface LineageNode {
     id: string;
-    type: string;        // file, table, api, processing
+    type: string; // file, table, api, processing
     name: string;
-    sub_type?: string;   // transform, join, code, quality_check, sql_generate
+    sub_type?: string; // transform, join, code, quality_check, sql_generate
     pipeline_id?: string;
     pipeline?: string;
   }
@@ -19,7 +19,10 @@
     pipeline_id: string;
     pipeline: string;
   }
-  interface Pos { x: number; y: number; }
+  interface Pos {
+    x: number;
+    y: number;
+  }
 
   let nodes: LineageNode[] = [];
   let edges: LineageEdge[] = [];
@@ -62,7 +65,7 @@
     // Build adjacency
     const outgoing = new Map<string, string[]>();
     const incoming = new Map<string, string[]>();
-    const allIds = new Set(nodes.map(n => n.id));
+    const allIds = new Set(nodes.map((n) => n.id));
 
     for (const n of nodes) {
       outgoing.set(n.id, []);
@@ -118,7 +121,10 @@
     positions = newPositions;
 
     // Fit viewBox to content
-    let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = 0,
+      maxY = 0;
     for (const p of positions.values()) {
       minX = Math.min(minX, p.x);
       minY = Math.min(minY, p.y);
@@ -137,7 +143,8 @@
   function clientToSvg(cx: number, cy: number): Pos {
     if (!svgEl) return { x: cx, y: cy };
     const pt = svgEl.createSVGPoint();
-    pt.x = cx; pt.y = cy;
+    pt.x = cx;
+    pt.y = cy;
     const ctm = svgEl.getScreenCTM();
     if (!ctm) return { x: cx, y: cy };
     const s = pt.matrixTransform(ctm.inverse());
@@ -246,19 +253,29 @@
   function nodeColor(n: LineageNode): string {
     if (n.type === "processing") {
       switch (n.sub_type) {
-        case "transform": return "var(--node-transform)";
-        case "code": return "var(--node-code)";
-        case "join": return "var(--node-join)";
-        case "quality_check": return "var(--node-quality)";
-        case "sql_generate": return "var(--node-sql)";
-        default: return "var(--text-muted)";
+        case "transform":
+          return "var(--node-transform)";
+        case "code":
+          return "var(--node-code)";
+        case "join":
+          return "var(--node-join)";
+        case "quality_check":
+          return "var(--node-quality)";
+        case "sql_generate":
+          return "var(--node-sql)";
+        default:
+          return "var(--text-muted)";
       }
     }
     switch (n.type) {
-      case "file": return "var(--node-source-file)";
-      case "table": return "var(--node-sql)";
-      case "api": return "var(--node-source-api)";
-      default: return "var(--text-muted)";
+      case "file":
+        return "var(--node-source-file)";
+      case "table":
+        return "var(--node-sql)";
+      case "api":
+        return "var(--node-source-api)";
+      default:
+        return "var(--text-muted)";
     }
   }
 
@@ -274,10 +291,14 @@
       return labels[n.sub_type || ""] || "PROCESS";
     }
     switch (n.type) {
-      case "file": return "FILE";
-      case "table": return "TABLE";
-      case "api": return "API";
-      default: return n.type.toUpperCase();
+      case "file":
+        return "FILE";
+      case "table":
+        return "TABLE";
+      case "api":
+        return "API";
+      default:
+        return n.type.toUpperCase();
     }
   }
 
@@ -293,10 +314,14 @@
       return letters[n.sub_type || ""] || "P";
     }
     switch (n.type) {
-      case "file": return "F";
-      case "table": return "T";
-      case "api": return "A";
-      default: return "?";
+      case "file":
+        return "F";
+      case "table":
+        return "T";
+      case "api":
+        return "A";
+      default:
+        return "?";
     }
   }
 
@@ -315,10 +340,10 @@
   }
 
   function upstreamNodes(nodeId: string): string[] {
-    return edges.filter(e => e.to === nodeId).map(e => e.from);
+    return edges.filter((e) => e.to === nodeId).map((e) => e.from);
   }
   function downstreamNodes(nodeId: string): string[] {
-    return edges.filter(e => e.from === nodeId).map(e => e.to);
+    return edges.filter((e) => e.from === nodeId).map((e) => e.to);
   }
 
   function fitToView() {
@@ -332,19 +357,26 @@
   $: edgeStroke = isDark ? "#3f3f46" : "#98a2b3";
   $: edgeHover = isDark ? "#6366f1" : "#0d9488";
 
-  $: selectedNode = nodes.find(n => n.id === selectedNodeId) || null;
+  $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 </script>
 
 <div class="lineage-page animate-in">
   <header class="page-header">
     <div class="header-left">
+      <p class="eyebrow">Observability</p>
       <h1>Data Lineage</h1>
-      <span class="meta">{nodes.filter(n => n.type !== 'processing').length} assets, {nodes.filter(n => n.type === 'processing').length} steps, {edges.length} connections</span>
+      <p class="page-subtitle">Trace assets and transformations across every pipeline.</p>
     </div>
     <div class="header-right">
       <button class="btn-sm" on:click={fitToView} title="Reset layout">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-          <path d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path
+            d="M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
         Reset Layout
       </button>
@@ -352,16 +384,35 @@
   </header>
 
   {#if loading}
-    <div style="display:flex;flex-direction:column;gap:8px">
-      <Skeleton height="400px" />
+    <div class="state-card loading-state" aria-label="Loading data lineage">
+      <div class="state-heading">
+        <span class="state-icon">⌁</span>
+        <div>
+          <strong>Building lineage map</strong><small
+            >Connecting assets and processing steps...</small
+          >
+        </div>
+      </div>
+      <Skeleton height="360px" />
     </div>
   {:else if nodes.length === 0}
-    <div class="empty-state">
-      <p>No data lineage detected.</p>
+    <div class="state-card empty-state">
+      <span class="empty-icon">⌁</span>
+      <h2>No data lineage detected</h2>
       <p class="hint">Create pipelines with source and sink nodes to see the data flow.</p>
+      <a href="#/pipelines">View pipelines</a>
     </div>
   {:else}
     <div class="lineage-container" bind:this={containerEl}>
+      <div class="workspace-toolbar">
+        <span class="workspace-title">Lineage map</span>
+        <div class="workspace-meta">
+          <span>{nodes.filter((n) => n.type !== "processing").length} assets</span>
+          <span>{nodes.filter((n) => n.type === "processing").length} steps</span>
+          <span>{edges.length} connections</span>
+          <span class="workspace-hint">Drag nodes · Scroll to zoom</span>
+        </div>
+      </div>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <svg
         class="lineage-graph"
@@ -382,7 +433,14 @@
           <marker id="lin-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
             <polygon points="0 0.5, 7 3, 0 5.5" fill={edgeStroke} />
           </marker>
-          <marker id="lin-arrow-hl" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+          <marker
+            id="lin-arrow-hl"
+            markerWidth="8"
+            markerHeight="6"
+            refX="7"
+            refY="3"
+            orient="auto"
+          >
             <polygon points="0 0.5, 7 3, 0 5.5" fill={edgeHover} />
           </marker>
         </defs>
@@ -409,8 +467,8 @@
             stroke="transparent"
             stroke-width="16"
             class="edge-hit"
-            on:mouseenter={() => hoveredEdge = { from: eg.from, to: eg.to }}
-            on:mouseleave={() => hoveredEdge = null}
+            on:mouseenter={() => (hoveredEdge = { from: eg.from, to: eg.to })}
+            on:mouseleave={() => (hoveredEdge = null)}
             on:keydown={() => {}}
           />
           <!-- Visible edge -->
@@ -434,11 +492,7 @@
                 rx="4"
                 class="edge-label-bg"
               />
-              <text
-                text-anchor="middle"
-                class="edge-label"
-                dominant-baseline="middle"
-              >
+              <text text-anchor="middle" class="edge-label" dominant-baseline="middle">
                 {eg.pipeline}
               </text>
             </g>
@@ -450,13 +504,16 @@
           {@const p = positions.get(node.id)}
           {#if p}
             {@const isSelected = selectedNodeId === node.id}
-            {@const isConnected = selectedNodeId && (upstreamNodes(selectedNodeId).includes(node.id) || downstreamNodes(selectedNodeId).includes(node.id))}
+            {@const isConnected =
+              selectedNodeId &&
+              (upstreamNodes(selectedNodeId).includes(node.id) ||
+                downstreamNodes(selectedNodeId).includes(node.id))}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <g
               class="lin-node"
               class:selected={isSelected}
               class:connected={isConnected}
-              class:processing={node.type === 'processing'}
+              class:processing={node.type === "processing"}
               transform="translate({p.x}, {p.y})"
               on:mousedown={(e) => {
                 if (e.button === 0) {
@@ -467,25 +524,25 @@
               on:keydown={() => {}}
             >
               <!-- Card bg -->
-              <rect
-                width={NW} height={NH} rx="8"
-                class="lin-node-bg"
-              />
+              <rect width={NW} height={NH} rx="8" class="lin-node-bg" />
 
               <!-- Left color bar -->
               <clipPath id="lin-clip-{node.id}">
                 <rect width="4" height={NH} rx="8" />
               </clipPath>
               <rect
-                width="4" height={NH}
+                width="4"
+                height={NH}
                 fill={nodeColor(node)}
                 clip-path="url(#lin-clip-{node.id})"
               />
 
               <!-- Type badge -->
               <rect
-                x="14" y={(NH - 22) / 2}
-                width="22" height="22"
+                x="14"
+                y={(NH - 22) / 2}
+                width="22"
+                height="22"
                 rx="5"
                 fill={nodeColor(node)}
                 opacity="0.1"
@@ -502,19 +559,12 @@
               </text>
 
               <!-- Name -->
-              <text
-                x="44" y={NH / 2 - 5}
-                class="lin-node-name"
-                dominant-baseline="auto"
-              >
+              <text x="44" y={NH / 2 - 5} class="lin-node-name" dominant-baseline="auto">
                 {truncate(node.name, 18)}
               </text>
 
               <!-- Type label -->
-              <text
-                x="44" y={NH / 2 + 9}
-                class="lin-node-type"
-              >
+              <text x="44" y={NH / 2 + 9} class="lin-node-type">
                 {typeLabel(node)}
               </text>
             </g>
@@ -526,28 +576,45 @@
       {#if selectedNode}
         <div class="detail-panel">
           <div class="detail-header">
-            <div class="detail-type-badge" style="background: {nodeColor(selectedNode)}; opacity: 0.15;">
-            </div>
+            <div
+              class="detail-type-badge"
+              style="background: {nodeColor(selectedNode)}; opacity: 0.15;"
+            ></div>
             <div class="detail-title-wrap">
               <h3 class="detail-title">{selectedNode.name}</h3>
-              <span class="detail-type" style="color: {nodeColor(selectedNode)}">{typeLabel(selectedNode)}</span>
+              <span class="detail-type" style="color: {nodeColor(selectedNode)}"
+                >{typeLabel(selectedNode)}</span
+              >
             </div>
-            <button class="detail-close" on:click={() => selectedNodeId = null}>
+            <button
+              class="detail-close"
+              aria-label="Close asset details"
+              on:click={() => (selectedNodeId = null)}
+            >
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-                <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
+                <path
+                  d="M18 6L6 18M6 6l12 12"
+                  stroke="currentColor"
+                  stroke-width="1.5"
+                  stroke-linecap="round"
+                />
               </svg>
             </button>
           </div>
 
           <div class="detail-section">
-            <span class="detail-label">{selectedNode.type === 'processing' ? 'Node ID' : 'Asset ID'}</span>
+            <span class="detail-label"
+              >{selectedNode.type === "processing" ? "Node ID" : "Asset ID"}</span
+            >
             <code class="detail-code">{selectedNode.id}</code>
           </div>
 
-          {#if selectedNode.type === 'processing' && selectedNode.pipeline}
+          {#if selectedNode.type === "processing" && selectedNode.pipeline}
             <div class="detail-section">
               <span class="detail-label">Pipeline</span>
-              <a href="#/pipelines/{selectedNode.pipeline_id}" class="pipeline-tag">{selectedNode.pipeline}</a>
+              <a href="#/pipelines/{selectedNode.pipeline_id}" class="pipeline-tag"
+                >{selectedNode.pipeline}</a
+              >
             </div>
           {/if}
 
@@ -565,10 +632,14 @@
               <span class="detail-label">Upstream ({upstreamNodes(selectedNode.id).length})</span>
               <div class="dep-list">
                 {#each upstreamNodes(selectedNode.id) as uid}
-                  {@const un = nodes.find(n => n.id === uid)}
+                  {@const un = nodes.find((n) => n.id === uid)}
                   {#if un}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <div class="dep-item" on:click={() => selectedNodeId = uid} on:keydown={() => {}}>
+                    <div
+                      class="dep-item"
+                      on:click={() => (selectedNodeId = uid)}
+                      on:keydown={() => {}}
+                    >
                       <span class="dep-dot" style="background: {nodeColor(un)}"></span>
                       <span class="dep-name">{truncate(un.name, 24)}</span>
                     </div>
@@ -580,13 +651,19 @@
 
           {#if downstreamNodes(selectedNode.id).length > 0}
             <div class="detail-section">
-              <span class="detail-label">Downstream ({downstreamNodes(selectedNode.id).length})</span>
+              <span class="detail-label"
+                >Downstream ({downstreamNodes(selectedNode.id).length})</span
+              >
               <div class="dep-list">
                 {#each downstreamNodes(selectedNode.id) as did}
-                  {@const dn = nodes.find(n => n.id === did)}
+                  {@const dn = nodes.find((n) => n.id === did)}
                   {#if dn}
                     <!-- svelte-ignore a11y_no_static_element_interactions -->
-                    <div class="dep-item" on:click={() => selectedNodeId = did} on:keydown={() => {}}>
+                    <div
+                      class="dep-item"
+                      on:click={() => (selectedNodeId = did)}
+                      on:keydown={() => {}}
+                    >
                       <span class="dep-dot" style="background: {nodeColor(dn)}"></span>
                       <span class="dep-name">{truncate(dn.name, 24)}</span>
                     </div>
@@ -606,60 +683,192 @@
     display: flex;
     flex-direction: column;
     height: 100%;
+    min-height: 0;
   }
 
   .page-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
-    margin-bottom: var(--space-md);
+    align-items: flex-end;
+    gap: var(--space-lg);
+    margin-bottom: 18px;
     flex-shrink: 0;
   }
-  .header-left { display: flex; align-items: baseline; gap: 12px; }
-  .page-header h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.02em; }
-  .meta { font-size: 0.8125rem; color: var(--text-muted); font-family: var(--font-mono); }
-  .header-right { display: flex; gap: 8px; }
-  .btn-sm {
-    display: flex; align-items: center; gap: 6px;
-    padding: 6px 12px; border-radius: 6px; font-size: 12px; font-weight: 500;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    color: var(--text-secondary); cursor: pointer; transition: all 150ms ease;
+  .header-left {
+    min-width: 0;
   }
-  .btn-sm:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-
-  .empty-state {
+  .eyebrow {
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .page-header h1 {
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+  }
+  .page-subtitle {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
+  .header-right {
+    display: flex;
+    gap: 8px;
+  }
+  .btn-sm {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 34px;
+    padding: 0 12px;
+    border-radius: var(--radius-md);
+    font-size: 12px;
+    font-weight: 500;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 150ms ease;
+  }
+  .btn-sm:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+
+  .state-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
-    padding: var(--space-xl);
+    box-shadow: var(--shadow-card);
+  }
+  .loading-state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-md);
+    padding: var(--space-md);
+  }
+  .state-heading {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 2px;
+  }
+  .state-heading div {
+    display: flex;
+    flex-direction: column;
+  }
+  .state-heading strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .state-heading small {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .state-icon,
+  .empty-icon {
+    color: var(--accent);
+    font: 18px var(--font-mono);
+  }
+  .empty-state {
+    padding: 72px var(--space-xl);
     text-align: center;
     color: var(--text-secondary);
   }
-  .hint { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-xs); }
+  .empty-state h2 {
+    margin-top: 8px;
+    font-size: 16px;
+    font-weight: 620;
+    color: var(--text-primary);
+  }
+  .empty-state a {
+    display: inline-block;
+    margin-top: var(--space-md);
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-top: var(--space-xs);
+  }
 
   .lineage-container {
     flex: 1;
     display: flex;
+    flex-direction: column;
     gap: 0;
     position: relative;
     min-height: 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .workspace-toolbar {
+    display: flex;
+    min-height: 42px;
+    flex: none;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 0 14px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .workspace-title {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 620;
+  }
+  .workspace-meta {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    color: var(--text-dim);
+    font: 9px var(--font-mono);
+  }
+  .workspace-meta span:not(:first-child)::before {
+    content: "·";
+    margin-right: 12px;
+    color: var(--border-hover);
+  }
+  .workspace-hint {
+    color: var(--text-muted);
+  }
+  .workspace-hint::before {
+    color: var(--accent) !important;
   }
 
   .lineage-graph {
     flex: 1;
     background: var(--bg-canvas);
-    border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-lg);
+    min-height: 0;
     cursor: grab;
     user-select: none;
   }
-  .lineage-graph:active { cursor: grabbing; }
+  .lineage-graph:active {
+    cursor: grabbing;
+  }
 
-  .lineage-bg { cursor: grab; }
+  .lineage-bg {
+    cursor: grab;
+  }
 
   /* Edges */
-  .edge-hit { cursor: pointer; }
-  .edge-line { transition: stroke 150ms ease, opacity 150ms ease; pointer-events: none; }
+  .edge-hit {
+    cursor: pointer;
+  }
+  .edge-line {
+    transition:
+      stroke 150ms ease,
+      opacity 150ms ease;
+    pointer-events: none;
+  }
 
   .edge-label-bg {
     fill: var(--bg-secondary);
@@ -674,14 +883,20 @@
   }
 
   /* Nodes */
-  .lin-node { cursor: grab; }
-  .lin-node:active { cursor: grabbing; }
+  .lin-node {
+    cursor: grab;
+  }
+  .lin-node:active {
+    cursor: grabbing;
+  }
 
   .lin-node-bg {
     fill: var(--bg-secondary);
     stroke: var(--border);
     stroke-width: 1;
-    transition: stroke 150ms ease, fill 150ms ease;
+    transition:
+      stroke 150ms ease,
+      fill 150ms ease;
   }
   .lin-node:hover .lin-node-bg {
     stroke: var(--border-hover);
@@ -708,7 +923,7 @@
   }
   .lin-node-name {
     fill: var(--text-primary);
-    font-family: 'Inter', system-ui, sans-serif;
+    font-family: "Inter", system-ui, sans-serif;
     font-size: 11.5px;
     font-weight: 600;
     letter-spacing: -0.01em;
@@ -725,7 +940,7 @@
   .detail-panel {
     position: absolute;
     right: 8px;
-    top: 8px;
+    top: 50px;
     bottom: 8px;
     width: 280px;
     background: var(--bg-secondary);
@@ -733,13 +948,19 @@
     border-radius: var(--radius-lg);
     padding: 0;
     overflow-y: auto;
-    box-shadow: -4px 0 20px rgba(0,0,0,0.1);
+    box-shadow: var(--shadow-lg);
     animation: slide-in 200ms ease-out;
   }
 
   @keyframes slide-in {
-    from { transform: translateX(20px); opacity: 0; }
-    to { transform: translateX(0); opacity: 1; }
+    from {
+      transform: translateX(20px);
+      opacity: 0;
+    }
+    to {
+      transform: translateX(0);
+      opacity: 1;
+    }
   }
 
   .detail-header {
@@ -750,13 +971,15 @@
     border-bottom: 1px solid var(--border-subtle);
   }
   .detail-type-badge {
-    width: 8px; height: 8px;
+    width: 8px;
+    height: 8px;
     border-radius: 50%;
     margin-top: 6px;
     flex-shrink: 0;
   }
   .detail-title-wrap {
-    flex: 1; min-width: 0;
+    flex: 1;
+    min-width: 0;
   }
   .detail-title {
     font-size: 14px;
@@ -777,7 +1000,8 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    width: 28px; height: 28px;
+    width: 28px;
+    height: 28px;
     border-radius: 6px;
     color: var(--text-muted);
     flex-shrink: 0;
@@ -845,7 +1069,8 @@
     background: var(--bg-tertiary);
   }
   .dep-dot {
-    width: 6px; height: 6px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     flex-shrink: 0;
   }
@@ -855,5 +1080,54 @@
   }
   .dep-item:hover .dep-name {
     color: var(--text-primary);
+  }
+
+  @media (max-width: 900px) {
+    .workspace-hint {
+      display: none;
+    }
+    .detail-panel {
+      width: min(280px, calc(100% - 16px));
+    }
+  }
+
+  @media (max-width: 640px) {
+    .lineage-page {
+      height: auto;
+      min-height: calc(100dvh - 102px);
+    }
+    .page-header {
+      align-items: stretch;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .header-right,
+    .btn-sm {
+      width: 100%;
+    }
+    .btn-sm {
+      justify-content: center;
+    }
+    .workspace-toolbar {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: 2px;
+      padding: 9px 12px;
+    }
+    .workspace-meta {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .workspace-meta span:not(:first-child)::before {
+      margin-right: 6px;
+    }
+    .lineage-container {
+      min-height: 580px;
+    }
+    .detail-panel {
+      top: auto;
+      left: 8px;
+      max-height: 52%;
+    }
   }
 </style>

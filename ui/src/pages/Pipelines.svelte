@@ -6,12 +6,11 @@
   import { dashboardKey } from "../lib/auth";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
-  import StatusBadge from "../components/StatusBadge.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import DeletePipelineDialog from "../components/DeletePipelineDialog.svelte";
-  import Pagination from "../components/Pagination.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, PipelineTemplate, Run } from "../lib/types";
+  type SummaryRun = Run & { last_run_status?: string; _total?: number; _success?: number; _failed?: number; _running?: number };
 
   let confirmDelete = false;
   let deleteTargetId = "";
@@ -20,9 +19,10 @@
   let conflictDependents: { id: string; name: string }[] = [];
 
   let loading = true;
+  let loadError = "";
   let pgPage = 1;
   let pgSize = 25;
-  let pipelineRuns: Map<string, Run[]> = new Map();
+  let pipelineRuns: Map<string, SummaryRun[]> = new Map();
   let scheduleInfo: Map<string, { next_run: string; schedule: string }> = new Map();
   let showCreateModal = false;
   let newName = "";
@@ -31,6 +31,9 @@
   let statusFilter = "";
   let tagFilter = "";
   let sortBy = "name";
+  let density: "compact" | "comfortable" = "compact";
+  let openMenuId: string | null = null;
+  let actionMenuPosition = { top: 0, left: 0 };
 
   // Collect all unique tags
   $: allTags = [...new Set($pipelines.flatMap((p: any) => p.tags || []))].sort();
@@ -45,12 +48,13 @@
       }
       // Status filter
       if (statusFilter) {
+        if (p.enabled === false && statusFilter !== "paused") return false;
+        if (p.enabled !== false && statusFilter === "paused") return false;
         const runs = pipelineRuns.get(p.id) || [];
-        const lastStatus = runs[0]?.status || runs[0]?.last_run_status || "";
+        const lastStatus = String(runs[0]?.status || runs[0]?.last_run_status || "");
         if (statusFilter === "failed" && lastStatus !== "failed") return false;
         if (statusFilter === "success" && lastStatus !== "success" && lastStatus !== "completed") return false;
         if (statusFilter === "running" && lastStatus !== "running") return false;
-        if (statusFilter === "paused" && p.enabled !== false) return false;
         if (statusFilter === "never" && lastStatus) return false;
       }
       // Tag filter
@@ -65,7 +69,18 @@
     });
 
   $: paginatedPipelines = filteredPipelines.slice((pgPage - 1) * pgSize, pgPage * pgSize);
+  $: totalPages = Math.max(1, Math.ceil(filteredPipelines.length / pgSize));
   $: if (searchQuery || statusFilter || tagFilter) pgPage = 1;
+  $: healthCounts = $pipelines.reduce((counts: any, p: any) => {
+    counts.all++;
+    if (p.enabled === false) { counts.paused++; return counts; }
+    counts.enabled++;
+    const status = pipelineRuns.get(p.id)?.[0]?.status || p.last_run_status;
+    if (status === "success" || status === "completed") counts.success++;
+    if (status === "failed") counts.failed++;
+    if (status === "running") counts.running++;
+    return counts;
+  }, { all: 0, enabled: 0, success: 0, failed: 0, running: 0, paused: 0 });
   let selectedIds: Set<string> = new Set();
 
   function toggleSelect(id: string) {
@@ -78,10 +93,11 @@
   }
 
   function selectAll() {
-    if (selectedIds.size === $pipelines.length) {
-      selectedIds = new Set();
+    const pageIds = paginatedPipelines.map((p) => p.id);
+    if (pageIds.every((id) => selectedIds.has(id))) {
+      selectedIds = new Set([...selectedIds].filter((id) => !pageIds.includes(id)));
     } else {
-      selectedIds = new Set($pipelines.map(p => p.id));
+      selectedIds = new Set([...selectedIds, ...pageIds]);
     }
   }
 
@@ -94,7 +110,7 @@
         body: JSON.stringify({ ids: [...selectedIds], action }),
       });
       const data = await res.json();
-      notify.success(`${action}: ${data.affected} pipelines affected`);
+      notify.success(`${action}: ${data.succeeded ?? 0} pipelines updated`);
       selectedIds = new Set();
       await loadPipelines();
     } catch {
@@ -108,6 +124,15 @@
   let summaryReloadTimer: ReturnType<typeof setTimeout> | null = null;
 
   onMount(async () => {
+    try {
+      const saved = JSON.parse(localStorage.getItem("brokoli-pipeline-view") || "null");
+      if (saved) {
+        if (["", "enabled", "paused", "success", "failed", "running", "never"].includes(saved.statusFilter)) statusFilter = saved.statusFilter;
+        if (["name", "last_run", "nodes"].includes(saved.sortBy)) sortBy = saved.sortBy;
+        if (["compact", "comfortable"].includes(saved.density)) density = saved.density;
+        if (typeof saved.tagFilter === "string") tagFilter = saved.tagFilter;
+      }
+    } catch { /* Ignore invalid saved views. */ }
     await Promise.all([loadPipelines(), loadTemplates()]);
 
     // Subscribe to the dashboard.{org} state key. Every time a run state
@@ -157,6 +182,7 @@
     // every time a run state changes looks like a forced page reload
     // and kills the whole point of realtime updates.
     if (!opts.silent) loading = true;
+    if (!opts.silent) loadError = "";
     try {
       // Single request: pipelines + last run status + run counts
       const [summaryRes, schedRes] = await Promise.all([
@@ -167,6 +193,7 @@
       if (summaryRes.ok) {
         const list = await summaryRes.json();
         pipelines.set(list);
+        pipelineRuns = new Map();
 
         // Build run map from embedded data (no extra requests)
         for (const p of list) {
@@ -180,16 +207,20 @@
           }
         }
         pipelineRuns = new Map(pipelineRuns);
+      } else if (!opts.silent) {
+        loadError = "Pipeline inventory could not be loaded.";
       }
 
       if (schedRes.ok) {
         const schedData = await schedRes.json();
+        scheduleInfo = new Map();
         for (const s of schedData) {
           scheduleInfo.set(s.pipeline_id, { next_run: s.next_run, schedule: s.schedule });
         }
         scheduleInfo = new Map(scheduleInfo);
       }
     } catch (e) {
+      if (!opts.silent) loadError = "Pipeline inventory could not be loaded.";
       notify.error("Failed to load pipelines");
     } finally {
       loading = false;
@@ -266,7 +297,8 @@
     }
   }
 
-  function handleConflictResolve(e: CustomEvent<{ mode: "cascade" | "decouple" }>) {
+  function handleConflictResolve(e: CustomEvent<{ mode: "abort" | "cascade" | "decouple" }>) {
+    if (e.detail.mode === "abort") { conflictDialogVisible = false; conflictDependents = []; return; }
     deletePipeline(deleteTargetId, e.detail.mode);
   }
 
@@ -277,6 +309,42 @@
   function formatSchedule(cron: string): string {
     if (!cron) return "Manual";
     return cron;
+  }
+
+  function statusLabel(pipeline: any): { label: string; tone: string } {
+    if (pipeline.enabled === false) return { label: "Paused", tone: "paused" };
+    const status = getLastRun(pipeline.id)?.status || pipeline.last_run_status;
+    if (status === "success" || status === "completed") return { label: "Healthy", tone: "success" };
+    if (status === "failed") return { label: "Failed", tone: "failed" };
+    if (status === "running") return { label: "Running", tone: "running" };
+    return { label: "Never run", tone: "neutral" };
+  }
+
+  function relativeTime(value?: string): string {
+    if (!value) return "—";
+    const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+    if (seconds < 60) return "just now";
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  }
+
+  function saveView() {
+    localStorage.setItem("brokoli-pipeline-view", JSON.stringify({ statusFilter, tagFilter, sortBy, density }));
+    notify.success("Pipeline view saved");
+  }
+
+  function selectStatus(status: string) { statusFilter = statusFilter === status ? "" : status; }
+  function handlePageKeydown(event: KeyboardEvent) { if (event.key === "Escape") openMenuId = null; }
+  function toggleActionMenu(event: MouseEvent, pipelineId: string) {
+    if (openMenuId === pipelineId) { openMenuId = null; return; }
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    const menuHeight = 158;
+    actionMenuPosition = {
+      top: window.innerHeight - rect.bottom > menuHeight + 8 ? rect.bottom + 4 : rect.top - menuHeight - 4,
+      left: Math.max(8, rect.right - 160),
+    };
+    openMenuId = pipelineId;
   }
 
   function getRunCounts(pipelineId: string): { success: number; failed: number; running: number; total: number } {
@@ -366,6 +434,7 @@
   async function createFromTemplate() {
     if (!newName.trim()) return;
     const tmpl = templates[selectedTemplate];
+    if (!tmpl) { notify.error("Select a template before creating a pipeline"); return; }
     try {
       const created = await api.pipelines.create({
         name: newName,
@@ -422,11 +491,13 @@
   }
 </script>
 
+<svelte:window on:keydown={handlePageKeydown} />
+
 <div class="pipelines-page animate-in">
   <input type="file" accept=".yaml,.yml,.json" bind:this={fileInput} on:change={handleFileUpload} style="display:none" />
 
   <header class="page-header">
-    <h1>Pipelines</h1>
+    <div class="header-copy"><p class="eyebrow">Organization control center</p><h1>Pipelines</h1><p class="page-subtitle">Build, schedule, and monitor every data workflow from one operational inventory.</p></div>
     <div class="header-actions">
       <button class="btn-secondary" on:click={importYaml}>Import</button>
       <button class="btn-primary" on:click={() => (showCreateModal = true)}>
@@ -436,6 +507,14 @@
     </div>
   </header>
 
+  <section class="health-strip" aria-label="Pipeline health filters">
+    <button disabled={loading || !!loadError} class:active={!statusFilter} on:click={() => (statusFilter = "")}><i class="metric-icon all">☷</i><span>All pipelines<strong>{loading || loadError ? "—" : healthCounts.all}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "enabled"} on:click={() => selectStatus("enabled")}><i class="metric-icon enabled">✓</i><span>Enabled<strong>{loading || loadError ? "—" : healthCounts.enabled}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "paused"} on:click={() => selectStatus("paused")}><i class="metric-icon paused">Ⅱ</i><span>Paused<strong>{loading || loadError ? "—" : healthCounts.paused}</strong></span></button>
+    <button disabled={loading || !!loadError} class:active={statusFilter === "failed"} on:click={() => selectStatus("failed")}><i class="metric-icon failed">×</i><span>Needs attention<strong>{loading || loadError ? "—" : healthCounts.failed}</strong></span></button>
+  </section>
+
+  <section class="inventory" aria-label="Pipeline inventory">
   <div class="filter-bar">
     <div class="search-bar">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
@@ -450,6 +529,7 @@
       <span class="search-hint">Ctrl+K</span>
     </div>
     <div class="filter-controls">
+      <button class="toolbar-button" on:click={saveView}>▥ Save view</button>
       <select class="filter-select" bind:value={statusFilter}>
         <option value="">All Status</option>
         <option value="success">Succeeded</option>
@@ -457,6 +537,7 @@
         <option value="running">Running</option>
         <option value="paused">Paused</option>
         <option value="never">Never Run</option>
+        <option value="enabled">Enabled</option>
       </select>
       {#if allTags.length > 0}
         <select class="filter-select" bind:value={tagFilter}>
@@ -471,7 +552,11 @@
         <option value="last_run">Sort: Last Run</option>
         <option value="nodes">Sort: Nodes</option>
       </select>
-      <span class="filter-count">{filteredPipelines.length} pipeline{filteredPipelines.length !== 1 ? "s" : ""}</span>
+      <select class="filter-select" bind:value={density}>
+        <option value="compact">☷ Compact</option>
+        <option value="comfortable">☰ Comfortable</option>
+      </select>
+      <span class="filter-count">Showing {filteredPipelines.length} of {$pipelines.length}</span>
     </div>
   </div>
 
@@ -486,15 +571,26 @@
   {/if}
 
   {#if loading}
-    <div class="skeleton-rows">
+    <div class="loading-state" aria-live="polite">
+      <div class="state-heading"><span class="state-orbit"></span><div><strong>Loading pipeline inventory</strong><small>Collecting workflow status, schedules, and run history.</small></div></div>
+      <div class="skeleton-rows">
       {#each Array(5) as _}
         <Skeleton height="48px" width="100%" />
       {/each}
+      </div>
+    </div>
+  {:else if loadError}
+    <div class="state-card" role="alert">
+      <span class="state-kicker">Inventory unavailable</span>
+      <h2>We could not retrieve your pipelines</h2>
+      <p>{loadError} Your existing workflows have not been changed.</p>
+      <button class="btn-secondary" on:click={() => loadPipelines()}>Try again</button>
     </div>
   {:else if $pipelines.length === 0}
     <div class="empty-hero">
+      <span class="empty-kicker">Start with a template</span>
       <h2>Build your first pipeline</h2>
-      <p class="empty-hero-sub">Choose a template to get started quickly, or start from scratch.</p>
+      <p class="empty-hero-sub">Choose a production-ready pattern, name it, then tailor the nodes to your workflow.</p>
       <div class="template-grid">
         {#each templates as tmpl, i}
           <button class="template-card" on:click={() => { selectedTemplate = i; showCreateModal = true; }}>
@@ -517,148 +613,98 @@
         {/each}
       </div>
     </div>
+  {:else if filteredPipelines.length === 0}
+    <div class="state-card filtered-empty">
+      <span class="state-kicker">No matching pipelines</span>
+      <h2>Your filters returned no results</h2>
+      <p>Adjust the search, status, or tag filters. No pipelines have been removed.</p>
+      <button class="btn-secondary" on:click={() => { searchQuery = ""; statusFilter = ""; tagFilter = ""; }}>Clear filters</button>
+    </div>
   {:else}
-    <div class="table">
-      <div class="table-header">
-        <span class="th-toggle"></span>
-        <span class="th-name">Pipeline</span>
-        <span class="th-runs">Runs</span>
-        <span class="th-schedule">Schedule</span>
-        <span class="th-lastrun">Last Run</span>
-        <span class="th-nextrun">Next Run</span>
-        <span class="th-nodes">Nodes</span>
-        <span class="th-actions">Actions</span>
-      </div>
+    <div class="table-scroll">
+      <table class:comfortable={density === "comfortable"}>
+        <thead><tr><th>Pipeline</th><th>Last result</th><th>Run history ⓘ</th><th>Schedule</th><th>Last run</th><th>Next run</th><th>Nodes</th><th>Actions</th></tr></thead>
+        <tbody>
       {#each paginatedPipelines as pipeline}
         {@const lastRun = getLastRun(pipeline.id)}
-        {@const counts = getRunCounts(pipeline.id)}
         {@const si = scheduleInfo.get(pipeline.id)}
-        <div class="table-row" class:selected={selectedIds.has(pipeline.id)}>
-          <!-- Toggle / enabled switch -->
-          <span class="td-toggle">
-            <label class="switch" title={pipeline.enabled ? "Click to pause" : "Click to enable"}>
-              <input type="checkbox" checked={pipeline.enabled} on:change|stopPropagation={() => toggleEnabled(pipeline)} />
-              <span class="slider" class:on={pipeline.enabled}></span>
-            </label>
-          </span>
-
-          <!-- Name -->
-          <span class="td-name">
-            <a href="#/pipelines/{pipeline.id}" class="pipe-link">{pipeline.name}</a>
-            {#if pipeline.tags?.length > 0}
-              <span class="tag-list">
-                {#each pipeline.tags as tag}
-                  <span class="tag">{tag}</span>
-                {/each}
-              </span>
-            {/if}
-          </span>
-
-          <!-- Run status circles with hover info -->
-          <span class="td-runs">
-            <span class="status-circles">
-              <span class="circle circle-ok" class:has={counts.success > 0}>
-                {counts.success || ""}
-                <span class="circle-tip">{counts.success} succeeded</span>
-              </span>
-              <span class="circle circle-fail" class:has={counts.failed > 0}>
-                {counts.failed || ""}
-                <span class="circle-tip">{counts.failed} failed</span>
-              </span>
-              <span class="circle circle-run" class:has={counts.running > 0}>
-                {counts.running || ""}
-                <span class="circle-tip">{counts.running} running</span>
-              </span>
-            </span>
-            {#if counts.total > 0}
-              <a href="#/pipelines/{pipeline.id}/runs" class="runs-link" title="View all {counts.total} runs">{counts.total} total</a>
-            {/if}
-          </span>
-
-          <!-- Schedule -->
-          <span class="td-schedule">
-            <span class="mono">{formatSchedule(pipeline.schedule)}</span>
-          </span>
-
-          <!-- Last Run timestamp -->
-          <span class="td-lastrun">
-            {#if lastRun?.started_at}
-              <span class="ts" class:ts-ok={lastRun.status === "success"} class:ts-fail={lastRun.status === "failed"}>
-                {new Date(lastRun.started_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })},
-                {new Date(lastRun.started_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}
-              </span>
-            {:else}
-              <span class="ts-none">—</span>
-            {/if}
-          </span>
-
-          <!-- Next Run -->
-          <span class="td-nextrun">
-            {#if si?.next_run}
-              <span class="ts">
-                {new Date(si.next_run).toLocaleDateString("en-US", { month: "short", day: "numeric" })},
-                {new Date(si.next_run).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", hour12: false })}
-              </span>
-            {:else}
-              <span class="ts-none">—</span>
-            {/if}
-          </span>
-
-          <!-- Node count -->
-          <span class="td-nodes mono">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</span>
-
-          <!-- Actions -->
-          <span class="td-actions">
-            <button class="act-btn" title="Trigger run" on:click|stopPropagation={() => triggerRun(pipeline.id)}>
+        {@const health = statusLabel(pipeline)}
+        <tr class:selected={selectedIds.has(pipeline.id)}>
+          <td class="pipeline-cell">
+            <button class="enable-toggle" class:on={pipeline.enabled} role="switch" aria-checked={pipeline.enabled} aria-label={pipeline.enabled ? `Pause ${pipeline.name}` : `Enable ${pipeline.name}`} on:click={() => toggleEnabled(pipeline)}><i></i></button>
+            <span class="pipeline-identity"><a href="#/pipelines/{pipeline.id}/edit">{pipeline.name}</a><small>{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small></span>
+          </td>
+          <td><span class="result-badge {health.tone}">{health.tone === "success" ? "✓" : health.tone === "failed" ? "×" : health.tone === "running" ? "◷" : "Ⅱ"} {health.label}</span></td>
+          <td><div class="run-bars" aria-label="Recent run history">{#each Array(5) as _, i}<i class={pipeline.run_history?.[i] || "never"}></i>{/each}</div></td>
+          <td><span class:cron={pipeline.schedule} class="muted">{formatSchedule(pipeline.schedule)}</span></td>
+          <td>{#if lastRun?.started_at}<span class="timestamp"><strong>{relativeTime(lastRun.started_at)}</strong><small>{new Date(lastRun.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span>{:else}<span class="muted">—<small>Never run</small></span>{/if}</td>
+          <td><span class="muted">{si?.next_run ? formatNextRun(si.next_run) : "—"}</span></td>
+          <td class="nodes-cell">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</td>
+          <td class="row-actions">
+            <button class="act-btn" title="Trigger run" disabled={pipeline.enabled === false || lastRun?.status === "running"} on:click|stopPropagation={() => triggerRun(pipeline.id)}>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} fill="currentColor" /></svg>
             </button>
-            <button class="act-btn act-danger" title="Delete" on:click|stopPropagation={() => { deleteTargetId = pipeline.id; deleteTargetName = pipeline.name; confirmDelete = true; }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.trash.d} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" /></svg>
-            </button>
-            <button class="act-btn" title="More" on:click|stopPropagation={() => clonePipeline(pipeline.id)}>···</button>
-          </span>
-        </div>
+            <div class="action-menu-wrap"><button class="act-btn" aria-label="More actions for {pipeline.name}" on:click|stopPropagation={(event) => toggleActionMenu(event, pipeline.id)}>···</button>
+              {#if openMenuId === pipeline.id}<div class="action-menu" style:top="{actionMenuPosition.top}px" style:left="{actionMenuPosition.left}px">
+                <button on:click={() => { toggleEnabled(pipeline); openMenuId = null; }}>{pipeline.enabled ? "Pause" : "Enable"}</button>
+                <button on:click={() => { clonePipeline(pipeline.id); openMenuId = null; }}>Clone</button>
+                <button on:click={() => { exportYaml(pipeline.id, pipeline.name); openMenuId = null; }}>Export YAML</button>
+                <button class="danger" on:click={() => { deleteTargetId = pipeline.id; deleteTargetName = pipeline.name; confirmDelete = true; openMenuId = null; }}>Delete</button>
+              </div>{/if}
+            </div>
+          </td>
+        </tr>
       {/each}
+        </tbody>
+      </table>
     </div>
-    <Pagination total={filteredPipelines.length} page={pgPage} pageSize={pgSize}
-      on:page={(e) => pgPage = e.detail} on:pagesize={(e) => { pgSize = e.detail; pgPage = 1; }} />
+    <footer class="inventory-footer"><label>Rows per page <select bind:value={pgSize} on:change={() => (pgPage = 1)}><option value={15}>15</option><option value={25}>25</option><option value={50}>50</option></select></label><span>Showing {filteredPipelines.length} pipelines</span><button disabled={pgPage <= 1} on:click={() => pgPage--}>‹</button><strong>{pgPage}</strong><small>of {totalPages}</small><button disabled={pgPage >= totalPages} on:click={() => pgPage++}>›</button></footer>
   {/if}
+  </section>
 
   {#if showCreateModal}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="modal-overlay" on:click={() => (showCreateModal = false)} on:keydown={() => {}}>
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="modal modal-wide" on:click|stopPropagation on:keydown={() => {}}>
-        <h2>New Pipeline</h2>
+        <header class="create-header">
+          <div class="create-heading"><span class="create-mark">+</span><div><h2>Create pipeline</h2><p>Choose a starting pattern and make it yours.</p></div></div>
+          <button class="modal-close" aria-label="Close create pipeline dialog" on:click={() => (showCreateModal = false)}>×</button>
+        </header>
 
-        <div class="template-grid">
-          {#each templates as tmpl, i}
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div
-              class="template-card"
-              class:active={selectedTemplate === i}
-              on:click={() => selectedTemplate = i}
-              on:keydown={() => {}}
-            >
-              <span class="template-name">{tmpl.name}</span>
-              <span class="template-desc">{tmpl.description}</span>
-              <span class="template-meta">{tmpl.nodes.length} nodes</span>
+        <div class="create-body">
+          <fieldset class="template-picker">
+            <legend>Choose a template</legend>
+            <div class="template-grid">
+              {#each templates as tmpl, i}
+                <button type="button" class="template-card" class:active={selectedTemplate === i} aria-pressed={selectedTemplate === i} on:click={() => selectedTemplate = i}>
+                  <span class="modal-template-icon">
+                    {#if tmpl.icon === "api"}◎{:else if tmpl.icon === "merge"}⌘{:else if tmpl.icon === "code"}‹›{:else}▤{/if}
+                  </span>
+                  <span class="template-copy"><strong>{tmpl.name}</strong><small>{tmpl.description}</small></span>
+                  <span class="template-meta">{tmpl.nodes.length} nodes</span>
+                  {#if selectedTemplate === i}<span class="selected-check">✓</span>{/if}
+                </button>
+              {/each}
             </div>
-          {/each}
-        </div>
+          </fieldset>
 
-        <div class="form-group">
-          <label for="name">Name</label>
-          <input id="name" bind:value={newName} placeholder="my-pipeline" />
+          <div class="pipeline-details">
+            <div class="details-heading"><span>Pipeline details</span><small>You can change these later.</small></div>
+            <div class="form-group">
+              <label for="name">Name</label>
+              <input id="name" bind:value={newName} placeholder="e.g. daily-customer-sync" autocomplete="off" />
+            </div>
+            <div class="form-group">
+              <label for="desc">Description <span>Optional</span></label>
+              <input id="desc" bind:value={newDescription} placeholder="What does this pipeline do?" />
+            </div>
+          </div>
         </div>
-        <div class="form-group">
-          <label for="desc">Description</label>
-          <input id="desc" bind:value={newDescription} placeholder="Optional description" />
-        </div>
-        <div class="modal-actions">
+        <footer class="modal-actions">
           <button class="btn-secondary" on:click={() => (showCreateModal = false)}>Cancel</button>
-          <button class="btn-primary" on:click={createFromTemplate}>Create</button>
-        </div>
+          <button class="btn-primary" on:click={createFromTemplate} disabled={!newName.trim()}>Create pipeline <span>→</span></button>
+        </footer>
       </div>
     </div>
   {/if}
@@ -682,16 +728,30 @@
 />
 
 <style>
+  .pipelines-page { width: 100%; min-width: 0; }
   .page-header {
+    position: relative;
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: var(--space-xl);
+    gap: 28px;
+    min-height: 154px;
+    margin-bottom: 0;
+    padding: 28px 30px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 12px 12px 0 0;
+    background:
+      radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 36%),
+      linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 60%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
   }
+  .page-header::after { content: ""; position: absolute; inset: auto 30px 0; height: 1px; background: linear-gradient(90deg, var(--accent), transparent 72%); opacity: .55; }
+  .header-copy { position: relative; z-index: 1; max-width: 660px; }
   .page-header h1 {
-    font-size: 1.5rem;
-    font-weight: 600;
-    letter-spacing: -0.02em;
+    font-size: clamp(1.75rem, 3vw, 2.35rem);
+    font-weight: 650;
+    letter-spacing: -0.045em;
   }
   .header-actions {
     display: flex;
@@ -903,6 +963,17 @@
   .act-danger:hover { color: var(--failed); background: var(--failed-bg); }
 
   .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
+  .loading-state { padding: 22px 14px; }
+  .state-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+  .state-heading div { display: flex; flex-direction: column; gap: 3px; }
+  .state-heading strong { color: var(--text-primary); font-size: 12px; }
+  .state-heading small { color: var(--text-muted); font-size: 10px; }
+  .state-orbit { width: 30px; height: 30px; border: 1px solid color-mix(in srgb, var(--accent), transparent 48%); border-top-color: var(--accent); border-radius: 50%; animation: state-spin 1s linear infinite; }
+  @keyframes state-spin { to { transform: rotate(360deg); } }
+  .state-card { display: grid; min-height: 360px; place-content: center; justify-items: center; padding: 42px 24px; text-align: center; background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent), transparent 92%), transparent 35%); }
+  .state-card h2 { margin-top: 7px; color: var(--text-primary); font-size: 19px; letter-spacing: -.025em; }
+  .state-card p { max-width: 480px; margin: 8px 0 20px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .state-kicker { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
   .empty-state {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -1061,12 +1132,237 @@
     margin-top: 2px;
   }
 
+  .eyebrow { display: block; margin-bottom: 7px; color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
+  .page-subtitle { max-width: 620px; margin-top: 7px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
+  .health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-bottom: 16px; overflow: hidden; border: 1px solid var(--border-subtle); border-top: 0; border-radius: 0 0 10px 10px; background: var(--bg-secondary); box-shadow: var(--shadow-card); }
+  .health-strip button { position: relative; display: grid; min-height: 82px; grid-template-columns: 40px 1fr; align-items: center; gap: 12px; padding: 14px 18px; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-muted); text-align: left; }
+  .health-strip button:last-child { border-right: 0; }
+  .health-strip button:disabled { cursor: default; }
+  .health-strip button::after { content: ""; position: absolute; inset: auto 18px 0; height: 2px; background: var(--accent); opacity: 0; transform: scaleX(.4); transition: opacity 150ms ease, transform 150ms ease; }
+  .health-strip button:hover, .health-strip button.active { background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 95%), transparent); }
+  .health-strip button.active::after { opacity: 1; transform: scaleX(1); }
+  .health-strip span { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; font-size: 11px; }
+  .health-strip strong { color: var(--text-primary); font-size: 20px; font-weight: 650; }
+  .metric-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent), transparent 70%); border-radius: 50%; background: var(--accent-glow); color: var(--accent); font-style: normal; font-size: 18px; }
+  .metric-icon.enabled { border-color: color-mix(in srgb, var(--success), transparent 70%); background: var(--success-bg); color: var(--success); }
+  .metric-icon.paused { border-color: color-mix(in srgb, var(--warning), transparent 70%); background: var(--warning-bg); color: var(--warning); }
+  .metric-icon.failed { border-color: color-mix(in srgb, var(--failed), transparent 70%); background: var(--failed-bg); color: var(--failed); }
+  .inventory { display: flex; min-height: 610px; flex-direction: column; overflow: visible; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-secondary); box-shadow: var(--shadow-card); }
+  .inventory .filter-bar { display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: center; gap: 10px; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); }
+  .inventory .search-bar { padding: 6px 10px; border-radius: 6px; background: var(--bg-primary); }
+  .inventory .filter-controls { flex-wrap: nowrap; }
+  .toolbar-button { height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
+  .toolbar-button:hover { border-color: var(--accent); color: var(--accent); }
+  .inventory .filter-select { height: 32px; padding: 0 28px 0 10px; }
+  .inventory .filter-count { display: none; }
+  .table-scroll { min-height: 0; overflow: auto; }
+  .table-scroll table { width: 100%; min-width: 1120px; border-collapse: collapse; table-layout: fixed; }
+  .table-scroll th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
+  .table-scroll th:nth-child(1) { width: 30%; padding-left: 16px; } .table-scroll th:nth-child(2) { width: 12%; } .table-scroll th:nth-child(3) { width: 16%; } .table-scroll th:nth-child(4) { width: 10%; } .table-scroll th:nth-child(5) { width: 12%; } .table-scroll th:nth-child(6) { width: 9%; } .table-scroll th:nth-child(7) { width: 5%; text-align: center; } .table-scroll th:nth-child(8) { width: 7%; text-align: center; }
+  .table-scroll td { height: 44px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
+  .table-scroll table.comfortable td { height: 56px; }
+  .table-scroll tr:hover td, .table-scroll tr.selected td { background: var(--bg-card-hover); }
+  .pipeline-cell { display: flex; align-items: center; gap: 11px; padding-left: 16px !important; }
+  .enable-toggle { position: relative; width: 30px; height: 17px; flex: none; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-tertiary); }
+  .enable-toggle i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-dim); transition: transform 150ms ease; }
+  .enable-toggle.on { border-color: var(--accent); background: var(--accent-glow-strong); } .enable-toggle.on i { background: var(--accent); transform: translateX(13px); }
+  .pipeline-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
+  .pipeline-identity a { overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; } .pipeline-identity a:hover { color: var(--accent); }
+  .pipeline-identity small, .timestamp small, .muted small { display: block; overflow: hidden; color: var(--text-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+  .result-badge { display: inline-flex; height: 25px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 10px; font-weight: 600; }
+  .result-badge.success { border-color: color-mix(in srgb, var(--success), transparent 75%); background: var(--success-bg); color: var(--success); } .result-badge.failed { border-color: color-mix(in srgb, var(--failed), transparent 75%); background: var(--failed-bg); color: var(--failed); } .result-badge.running { border-color: color-mix(in srgb, var(--warning), transparent 75%); background: var(--warning-bg); color: var(--warning); }
+  .run-bars { display: flex; gap: 7px; } .run-bars i { width: 26px; height: 9px; border-radius: 3px; background: var(--border); } .run-bars .succeeded, .run-bars .success, .run-bars .completed { background: var(--success); } .run-bars .failed { background: var(--failed); } .run-bars .running { background: var(--warning); }
+  .cron { color: var(--text-secondary); font: 10px var(--font-mono); } .muted { color: var(--text-muted); }
+  .timestamp { display: flex; flex-direction: column; gap: 2px; } .timestamp strong { color: var(--text-primary); font-weight: 500; }
+  .nodes-cell { text-align: center; } .row-actions { display: flex; align-items: center; justify-content: center; gap: 3px; overflow: visible; }
+  .act-btn { min-width: 28px; width: auto; padding: 0 7px; } .act-btn:disabled { opacity: .35; cursor: not-allowed; }
+  .action-menu-wrap { position: relative; }
+  .action-menu { position: fixed; z-index: 1000; width: 160px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-secondary); box-shadow: var(--shadow-lg); }
+  .action-menu button { display: block; width: 100%; padding: 7px 9px; border-radius: 4px; color: var(--text-secondary); font-size: 11px; text-align: left; }
+  .action-menu button:hover { color: var(--text-primary); background: var(--bg-tertiary); } .action-menu button.danger { color: var(--failed); }
+  .inventory-footer { display: flex; height: 48px; align-items: center; gap: 10px; margin-top: auto; padding: 0 14px; border-top: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; }
+  .inventory-footer label { display: flex; align-items: center; gap: 8px; } .inventory-footer select { height: 29px; padding: 0 22px 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-tertiary); color: var(--text-secondary); }
+  .inventory-footer > span { margin-left: auto; } .inventory-footer button { width: 28px; height: 28px; color: var(--text-muted); } .inventory-footer button:disabled { opacity: .3; } .inventory-footer strong { display: grid; width: 34px; height: 29px; place-items: center; border-radius: 5px; background: var(--accent); color: #031514; }
+
+  .inventory .empty-hero {
+    position: relative;
+    display: flex;
+    min-height: 480px;
+    align-items: center;
+    justify-content: flex-start;
+    padding: 56px 32px 72px;
+    overflow: hidden;
+    border-radius: 0 0 9px 9px;
+    background:
+      radial-gradient(circle at 50% 8%, color-mix(in srgb, var(--accent), transparent 88%), transparent 34%),
+      linear-gradient(180deg, color-mix(in srgb, var(--bg-secondary), white 1.5%), var(--bg-secondary));
+  }
+  .inventory .empty-hero::before {
+    content: "";
+    position: absolute;
+    top: 42px;
+    left: 50%;
+    width: 440px;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent), transparent 55%), transparent);
+    transform: translateX(-50%);
+  }
+  .empty-kicker {
+    margin-bottom: 10px;
+    color: var(--accent);
+    font: 650 10px var(--font-mono);
+    letter-spacing: .14em;
+    text-transform: uppercase;
+  }
+  .inventory .empty-hero h2 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.035em; }
+  .inventory .empty-hero-sub { max-width: 540px; margin: 8px auto 32px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .inventory .template-grid {
+    display: grid;
+    width: min(920px, 100%);
+    max-width: 920px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: center;
+    gap: 14px;
+    margin: 0 auto;
+  }
+  .inventory .template-card {
+    position: relative;
+    display: grid;
+    min-height: 164px;
+    grid-template-rows: 46px auto 1fr;
+    align-items: start;
+    gap: 8px;
+    padding: 18px;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background:
+      linear-gradient(145deg, color-mix(in srgb, var(--bg-tertiary), transparent 28%), transparent 58%),
+      var(--bg-secondary);
+    color: inherit;
+    text-align: left;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.025), 0 8px 22px rgba(0,0,0,.12);
+    transform: none;
+    transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+  }
+  .inventory .template-card::after {
+    content: "→";
+    position: absolute;
+    right: 16px;
+    bottom: 14px;
+    color: var(--text-dim);
+    font-size: 15px;
+    transition: color 160ms ease, transform 160ms ease;
+  }
+  .inventory .template-card:hover {
+    border-color: color-mix(in srgb, var(--accent), transparent 38%);
+    background:
+      linear-gradient(145deg, color-mix(in srgb, var(--accent), transparent 91%), transparent 62%),
+      var(--bg-secondary);
+    box-shadow: 0 14px 30px rgba(0,0,0,.22), inset 0 0 0 1px color-mix(in srgb, var(--accent), transparent 88%);
+    transform: translateY(-3px);
+  }
+  .inventory .template-card:hover::after { color: var(--accent); transform: translateX(3px); }
+  .inventory .tmpl-icon {
+    display: grid;
+    width: 42px;
+    height: 42px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 68%);
+    border-radius: 9px;
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .inventory .tmpl-name { color: var(--text-primary); font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
+  .inventory .tmpl-desc { max-width: calc(100% - 22px); color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
+
+  .modal-overlay { background: rgba(0, 4, 6, .78); backdrop-filter: blur(8px) saturate(.8); }
+  .modal.modal-wide {
+    width: min(720px, calc(100vw - 32px));
+    max-width: 720px;
+    padding: 0;
+    overflow: hidden;
+    border-color: color-mix(in srgb, var(--border), white 8%);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    box-shadow: 0 32px 90px rgba(0,0,0,.62), inset 0 1px 0 rgba(255,255,255,.035);
+  }
+  .create-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 22px; border-bottom: 1px solid var(--border-subtle); }
+  .create-heading { display: flex; align-items: center; gap: 12px; }
+  .create-mark { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent), transparent 65%); border-radius: 9px; background: var(--accent-glow); color: var(--accent); font-size: 22px; font-weight: 300; }
+  .modal .create-heading h2 { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
+  .create-heading p { margin-top: 3px; color: var(--text-muted); font-size: 10.5px; }
+  .modal-close { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 6px; color: var(--text-muted); font-size: 20px; font-weight: 300; }
+  .modal-close:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+  .create-body { display: flex; flex-direction: column; gap: 24px; padding: 22px; }
+  .template-picker { min-width: 0; border: 0; }
+  .template-picker legend { margin-bottom: 10px; color: var(--text-secondary); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+  .modal .template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; width: 100%; margin: 0; }
+  .modal .template-card {
+    position: relative;
+    display: grid;
+    min-height: 84px;
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 11px;
+    padding: 13px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--bg-tertiary), transparent 48%), transparent), var(--bg-secondary);
+    color: inherit;
+    text-align: left;
+    box-shadow: none;
+    transform: none;
+  }
+  .modal .template-card:hover { border-color: var(--border-hover); background: var(--bg-tertiary); transform: none; box-shadow: none; }
+  .modal .template-card.active { border-color: color-mix(in srgb, var(--accent), transparent 25%); background: var(--accent-glow); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%); }
+  .modal-template-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-muted); font: 17px var(--font-mono); }
+  .template-card.active .modal-template-icon { border-color: color-mix(in srgb, var(--accent), transparent 55%); background: color-mix(in srgb, var(--accent-glow), var(--bg-primary) 45%); color: var(--accent); }
+  .template-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+  .template-copy strong { color: var(--text-primary); font-size: 11.5px; font-weight: 620; }
+  .template-copy small { overflow: hidden; color: var(--text-muted); font-size: 9.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+  .modal .template-meta { align-self: end; color: var(--text-dim); font: 8.5px var(--font-mono); white-space: nowrap; }
+  .selected-check { position: absolute; top: 7px; right: 8px; color: var(--accent); font-size: 10px; }
+  .pipeline-details { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
+  .details-heading { display: flex; grid-column: 1 / -1; align-items: baseline; justify-content: space-between; }
+  .details-heading span { color: var(--text-secondary); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
+  .details-heading small { color: var(--text-dim); font-size: 9px; }
+  .modal .form-group { margin: 0; }
+  .modal .form-group label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: var(--text-secondary); font-size: 10px; font-weight: 550; letter-spacing: 0; text-transform: none; }
+  .modal .form-group label span { color: var(--text-dim); font-size: 8.5px; font-weight: 400; }
+  .modal .form-group input { height: 38px; padding: 0 11px; border-color: var(--border); border-radius: 6px; background: var(--bg-primary); font-size: 11px; }
+  .modal .form-group input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
+  .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 14px 22px; border-top: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--bg-primary), transparent 45%); }
+  .modal .modal-actions button { min-height: 34px; padding-inline: 14px; font-size: 11px; }
+  .modal .modal-actions .btn-primary { gap: 9px; }
+  .modal .modal-actions .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+
   @media (max-width: 768px) {
-    .page-header { flex-wrap: wrap; gap: 8px; }
+    .page-header { min-height: 0; align-items: flex-start; flex-direction: column; gap: 18px; padding: 24px 20px; }
+    .header-actions { width: 100%; } .header-actions button { flex: 1; justify-content: center; }
     .search-bar { width: 100%; }
     .table-header { display: none; }
     .table-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px; }
     .td-name { flex: 1; min-width: 60%; }
     .td-schedule, .td-nodes, .td-runs, .td-next { font-size: 10px; }
+    .health-strip { grid-template-columns: repeat(2, 1fr); }
+    .health-strip button:nth-child(2) { border-right: 0; } .health-strip button:nth-child(-n+2) { border-bottom: 1px solid var(--border-subtle); }
+    .inventory { min-height: 520px; }
+    .inventory .filter-bar { display: flex; align-items: stretch; padding: 12px; } .inventory .filter-controls { width: 100%; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
+    .inventory .filter-select, .toolbar-button { flex: 0 0 auto; }
+    .table-scroll { overscroll-behavior-x: contain; scrollbar-color: var(--accent) var(--bg-tertiary); }
+    .table-scroll table { min-width: 980px; }
+    .table-scroll th:first-child, .table-scroll td:first-child { position: sticky; left: 0; z-index: 2; background: var(--bg-secondary); box-shadow: 1px 0 0 var(--border-subtle); }
+    .table-scroll tr:hover td:first-child, .table-scroll tr.selected td:first-child { background: var(--bg-card-hover); }
+    .inventory-footer > span { display: none; }
+    .inventory .template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
+    .inventory .empty-hero { padding-inline: 20px; }
+    .pipeline-details { grid-template-columns: 1fr; } .details-heading { grid-column: 1; }
+  }
+  @media (max-width: 520px) {
+    .inventory .template-grid { grid-template-columns: minmax(0, 320px); }
+    .inventory .template-card { min-height: 145px; }
+    .modal .template-grid { grid-template-columns: 1fr; }
+    .create-body { max-height: 70vh; overflow-y: auto; }
   }
 </style>

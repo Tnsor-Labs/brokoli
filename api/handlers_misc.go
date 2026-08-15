@@ -562,13 +562,14 @@ func pipelineSummaryHandler(s store.Store) http.HandlerFunc {
 		pipelinesList, _ := listPipelinesForRequest(s, r)
 		type PipelineWithRun struct {
 			PipelineSummary
-			LastRunStatus string `json:"last_run_status"`
-			LastRunAt     string `json:"last_run_at,omitempty"`
-			LastRunError  string `json:"last_run_error,omitempty"`
-			RunsTotal     int    `json:"runs_total"`
-			RunsSuccess   int    `json:"runs_success"`
-			RunsFailed    int    `json:"runs_failed"`
-			RunsRunning   int    `json:"runs_running"`
+			LastRunStatus string   `json:"last_run_status"`
+			LastRunAt     string   `json:"last_run_at,omitempty"`
+			LastRunError  string   `json:"last_run_error,omitempty"`
+			RunsTotal     int      `json:"runs_total"`
+			RunsSuccess   int      `json:"runs_success"`
+			RunsFailed    int      `json:"runs_failed"`
+			RunsRunning   int      `json:"runs_running"`
+			RunHistory    []string `json:"run_history"`
 		}
 		results := make([]PipelineWithRun, 0, len(pipelinesList))
 		for _, p := range pipelinesList {
@@ -584,6 +585,13 @@ func pipelineSummaryHandler(s store.Store) http.HandlerFunc {
 				case "running":
 					pr.RunsRunning++
 				}
+			}
+			for i := 0; i < len(runs) && i < 5; i++ {
+				status := string(runs[i].Status)
+				if status == "completed" || status == "success" {
+					status = "succeeded"
+				}
+				pr.RunHistory = append(pr.RunHistory, status)
 			}
 			if len(runs) > 0 {
 				pr.LastRunStatus = string(runs[0].Status)

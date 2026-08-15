@@ -49,14 +49,29 @@
     runStartedAt && primaryRuns.length
       ? Math.max(
           ...primaryRuns.map((nr) => {
-            const start = nr.started_at ? new Date(nr.started_at).getTime() : 0;
-            return start - new Date(runStartedAt!).getTime() + nr.duration_ms;
+            if (!nr.started_at) return nr.duration_ms;
+            return (
+              new Date(nr.started_at).getTime() - new Date(runStartedAt!).getTime() + nr.duration_ms
+            );
           }),
         )
       : maxDuration;
 
   function barWidth(duration: number): number {
-    return Math.max(2, (duration / maxDuration) * 100);
+    return Math.max(1.5, (duration / Math.max(totalDuration, 1)) * 100);
+  }
+
+  function barOffset(startedAt: string | null): number {
+    if (!runStartedAt || !startedAt) return 0;
+    return Math.min(
+      98.5,
+      Math.max(
+        0,
+        ((new Date(startedAt).getTime() - new Date(runStartedAt).getTime()) /
+          Math.max(totalDuration, 1)) *
+          100,
+      ),
+    );
   }
 
   function barColor(status: RunStatus): string {
@@ -116,17 +131,18 @@
       {@const node = nodeMap.get(g.nodeId)}
       {@const nr = g.attempts[g.attempts.length - 1]}
       {@const width = barWidth(nr.duration_ms)}
+      {@const offset = barOffset(nr.started_at)}
       <div class="row-group">
-        <!-- svelte-ignore a11y_no_static_element_interactions -->
-        <div
+        <button
+          type="button"
           class="row"
           class:selected={selectedId === g.nodeId}
           class:failed={nr.status === "failed"}
+          aria-pressed={selectedId === g.nodeId}
           on:click={() => {
             selectedId = selectedId === g.nodeId ? null : g.nodeId;
             onSelectNode?.(g.nodeId);
           }}
-          on:keydown={() => {}}
         >
           <div class="row-label">
             <span class="node-name">{node?.name || g.nodeId}</span>
@@ -138,17 +154,22 @@
             <StatusBadge status={nr.status} size="sm" />
           </div>
           <div class="row-bar-area">
-            <div
-              class="bar"
-              class:running={nr.status === "running"}
-              style="width: {width}%; background: {barColor(nr.status)}"
-            ></div>
+            <div class="bar-track">
+              <div
+                class="bar"
+                class:running={nr.status === "running"}
+                style="left: {offset}%; width: {Math.min(
+                  width,
+                  100 - offset,
+                )}%; background: {barColor(nr.status)}"
+              ></div>
+            </div>
             <span class="bar-duration">{formatDuration(nr.duration_ms)}</span>
             {#if nr.row_count > 0}
               <span class="bar-rows">{formatRows(nr.row_count)}</span>
             {/if}
           </div>
-        </div>
+        </button>
         {#if g.attempts.length > 1}
           <div class="attempt-stack">
             {#each g.attempts as att, i (att.id)}
@@ -192,7 +213,7 @@
 <style>
   .timeline {
     border: 1px solid var(--border-subtle);
-    border-radius: 8px;
+    border-radius: 6px;
     overflow: hidden;
     background: var(--bg-secondary);
   }
@@ -211,7 +232,7 @@
     justify-content: space-between;
     padding: 10px 14px;
     border-bottom: 1px solid var(--border-subtle);
-    background: var(--bg-tertiary);
+    background: color-mix(in srgb, var(--bg-tertiary), transparent 20%);
   }
   .header-label {
     font-size: 10px;
@@ -243,9 +264,10 @@
 
   .row {
     display: flex;
+    width: 100%;
     align-items: center;
     padding: 6px 14px;
-    min-height: 36px;
+    min-height: 42px;
     border-bottom: 1px solid var(--border-subtle);
     cursor: pointer;
     transition: background 100ms;
@@ -306,8 +328,8 @@
   }
 
   .row-label {
-    width: 200px;
-    min-width: 200px;
+    width: 210px;
+    min-width: 210px;
     display: flex;
     align-items: center;
     gap: 8px;
@@ -329,12 +351,36 @@
     display: flex;
     align-items: center;
     gap: 10px;
+    min-width: 0;
     height: 24px;
   }
 
-  .bar {
-    height: 100%;
+  .bar-track {
+    position: relative;
+    height: 18px;
+    flex: 1;
+    overflow: hidden;
     border-radius: 4px;
+    background:
+      linear-gradient(
+        90deg,
+        transparent 24.8%,
+        var(--border-subtle) 25%,
+        transparent 25.2%,
+        transparent 49.8%,
+        var(--border-subtle) 50%,
+        transparent 50.2%,
+        transparent 74.8%,
+        var(--border-subtle) 75%,
+        transparent 75.2%
+      ),
+      color-mix(in srgb, var(--bg-primary), transparent 20%);
+  }
+  .bar {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    border-radius: 3px;
     min-width: 4px;
     opacity: 0.85;
     transition:
@@ -373,7 +419,7 @@
     font-family: var(--font-mono);
     color: var(--text-muted);
     border-top: 1px solid var(--border-subtle);
-    background: var(--bg-tertiary);
+    background: color-mix(in srgb, var(--bg-tertiary), transparent 20%);
   }
   .sep {
     opacity: 0.3;
@@ -399,6 +445,12 @@
     }
     .node-name {
       max-width: 80px;
+    }
+    .bar-rows {
+      display: none;
+    }
+    .bar-duration {
+      min-width: 40px;
     }
   }
 </style>
