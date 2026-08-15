@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.37] - 2026-08-15
+
+### Fixed
+
+- **SQL artifact store wires in for every distributed deployment**
+  (#222) — @hc12r. Live-verifying v0.10.36's blob reclaim found it
+  dormant: the SQL artifact store was gated behind ADR-017 instance
+  dispatch (which nothing enables), so distributed deployments still
+  ran local-disk artifacts — leaving worker disks growing AND resume
+  broken by placement luck (a resumed run claims on any worker; the
+  original run's artifacts lived on the original worker's own disk).
+  Distributed mode now always uses the SQL store: cross-pod artifact
+  reads work, and terminal blob reclaim engages on the deployment
+  shape it was written for. Single-process mode keeps local disk.
+
 ## [0.10.36] - 2026-08-15
 
 ### Fixed
