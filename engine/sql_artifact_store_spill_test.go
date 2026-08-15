@@ -88,12 +88,18 @@ func TestPipeline_SQLArtifactStore_SpillsWithoutChangingResults(t *testing.T) {
 	// spilled node writes real blob files under spillDir; before Blobs()
 	// existed, spillEnabled() was always false and this directory would
 	// never be created at all.
+	// The directory is only ever created by an actual blob write, so its
+	// existence proves engagement. Its CONTENTS are gone by now: since
+	// #215 the run's scratch namespace is reclaimed at run-terminal
+	// (TransientBlobJanitor — SQL-store blobs are transport, not
+	// artifacts), so post-run emptiness is the fixed contract, where it
+	// used to be the unbounded-growth bug the soak measured.
 	entries, err := os.ReadDir(spillDir)
 	if err != nil {
 		t.Fatalf("read spill dir: %v (spilling never engaged — BlobStoreProvider gap regressed)", err)
 	}
-	if len(entries) == 0 {
-		t.Fatal("spill directory exists but is empty — spilling did not actually write anything")
+	if len(entries) != 0 {
+		t.Fatalf("spill dir holds %d entr(ies) after the run finalized — transient scratch was not reclaimed (#215)", len(entries))
 	}
 
 	nodeRuns, err := s.ListNodeRunsByRun(run.ID)

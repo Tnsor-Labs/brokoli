@@ -231,6 +231,18 @@ func (s *SQLArtifactStore) DeleteRunArtifacts(runID string) error {
 	return nil
 }
 
+// DeleteTransientBlobs implements TransientBlobJanitor: this store's
+// artifacts are database rows, so a run's local blob namespace is pure
+// scratch (spill + reference-passing transport) and safe to reclaim the
+// moment the run is terminal. Persisted artifacts are untouched — resume
+// reads them from the database, never from this scratch space.
+func (s *SQLArtifactStore) DeleteTransientBlobs(runID string) error {
+	if runID == "" {
+		return nil
+	}
+	return s.blobs.DeleteNamespace(context.Background(), runID)
+}
+
 // WriteArtifactRef implements RefArtifactWriter (see artifact_store.go).
 // Unlike LocalDiskArtifactStore — where this is a zero-copy manifest write
 // because the spill blobs and artifact blobs are one store — the SQL
