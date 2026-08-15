@@ -11,6 +11,22 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.41] - 2026-08-15
+
+### Added
+
+- **Users carry a display name and email** (#232) — @hc12r. An
+  account's username is an identity key, and for SSO accounts it is
+  provider-prefixed, so using it as the label greeted people with a
+  string that was never their name. `users` gains optional
+  `display_name` and `email` columns (added by `ALTER TABLE` on boot,
+  so existing installs need no migration step), read back on every
+  user load and carried in the session token as claims omitted when
+  empty. `SetProfile` writes only non-empty values, so one provider
+  can never blank what another supplied. The UI resolves labels
+  through a single `userLabel()` helper. Identity still keys on
+  username: nothing here creates, merges, or re-points an account.
+
 ## [0.10.40] - 2026-08-15
 
 ### Added
