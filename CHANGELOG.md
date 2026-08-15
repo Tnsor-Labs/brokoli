@@ -11,6 +11,37 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.36] - 2026-08-15
+
+### Fixed
+
+- **Everything that accumulates is now managed** (#217, #218, #219) —
+  @hc12r. The production-readiness review's verdict was "everything
+  that executes is solid; everything that accumulates is unmanaged."
+  Three fixes close it:
+  - **Lost queue deliveries recover** (#217, fixes half of #216): the
+    dispatch outbox finally has its consumer — a sweep on every
+    queue-wired instance re-enqueues pending runs whose committed
+    outbox intent is older than a grace window. Live-verified gap: a
+    Redis restart wiped the queue and stranded 5 accepted runs
+    pending forever. Idempotent enqueue + the claim CAS make the
+    sweep safe everywhere with no leader gating. The helm chart's
+    Redis gains AOF + a PVC in brokoli-ee so the sweep is backstop,
+    not routine.
+  - **Transient blob scratch reclaimed at run-terminal** (#218, fixes
+    #215): the 3-hour soak measured ~450MB/hour/worker of spill and
+    reference-passing blobs nothing reclaimed. On SQL-artifact
+    deployments those blobs are pure transport and are now deleted
+    the moment a run finalizes (success, failed, or cancelled). On
+    local-disk deployments the blobs ARE the artifacts and are
+    deliberately untouched — the new TransientBlobJanitor capability
+    encodes exactly that conditional.
+  - **Scheduled run retention** (#219, fixes #214):
+    BROKOLI_RUN_RETENTION_DAYS drives a 6-hourly purge that deletes
+    expiring runs' artifacts first, then the rows (events and node
+    runs cascade). Unset keeps runs forever — exactly the old
+    behavior.
+
 ## [0.10.35] - 2026-08-14
 
 ### Fixed
