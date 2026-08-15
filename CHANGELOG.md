@@ -11,6 +11,32 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.40] - 2026-08-15
+
+### Added
+
+- **Collapsible sidebar and grouped navigation** (#229) — @hc12r. The
+  sidebar collapses to a 64px icon rail via a chevron in the brand
+  zone, and nav items are grouped, with the Data group collapsible.
+  Both states persist and apply pre-paint, so there is no width flash
+  on load. Below 1025px the rail is forced as before; the duplicated
+  60px collapsed width is unified onto the 64px token. Settings moves
+  to a footer utility cluster with the user row and status controls.
+
+- **Visual connector catalog** (#229) — @hc12r. Creating a connection
+  starts from a searchable card grid grouped by category, each type
+  with a glyph and one-line description, then a form step with a
+  summary tile and back control; editing is unchanged.
+  `GET /api/connection-types` additionally serves `description` and
+  `icon` per type, and per-field hints now surface as input
+  placeholders. A handler test pins the payload shape.
+
+- **Local preflight script** (#229) — @hc12r. `preflight.sh` runs
+  every CI gate locally (formatting, vet, UI build and checks, race
+  tests, build smoke, gosec vs baseline, govulncheck, licenses) so
+  regressions surface before a push, not in CI. CONTRIBUTING
+  documents the local-first workflow.
+
 ## [0.10.39] - 2026-08-15
 
 ### Added
