@@ -625,33 +625,69 @@ func testGeneric(ctx context.Context, c *models.Connection, extra map[string]int
 }
 
 // ConnectionTypes returns available connection type metadata.
+//
+// description and icon are presentation metadata for the connection
+// catalog: description is the one-line card copy, icon names an entry in
+// the UI's icon set (ui/src/lib/icons.ts). Additive — clients that only
+// know type/label/fields keep working; the UI falls back to a monogram
+// tile when an icon name is missing from its set.
 func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 	types := []map[string]interface{}{
 		// Databases
-		{"type": "postgres", "label": "PostgreSQL", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "mysql", "label": "MySQL", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "snowflake", "label": "Snowflake", "category": "database", "fields": []string{"host", "port", "schema", "login", "password", "extra"},
-			"hints": map[string]string{"host": "account.snowflakecomputing.com", "schema": "database/schema", "extra": `{"warehouse": "COMPUTE_WH", "role": "SYSADMIN"}`}},
-		{"type": "redshift", "label": "Amazon Redshift", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"},
-			"hints": map[string]string{"host": "cluster.region.redshift.amazonaws.com", "port": "5439"}},
-		{"type": "bigquery", "label": "Google BigQuery", "category": "database", "fields": []string{"schema", "extra"},
-			"hints": map[string]string{"schema": "project_id.dataset", "extra": "Service account JSON key"}},
-		{"type": "databricks", "label": "Databricks", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"},
-			"hints": map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
-		{"type": "oracle", "label": "Oracle", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "mssql", "label": "SQL Server", "category": "database", "fields": []string{"host", "port", "schema", "login", "password"}},
-		{"type": "sqlite", "label": "SQLite", "category": "database", "fields": []string{"host"}},
+		{"type": "postgres", "label": "PostgreSQL", "category": "database", "icon": "connPostgres",
+			"description": "Open-source relational database with strong standards compliance",
+			"fields":      []string{"host", "port", "schema", "login", "password"}},
+		{"type": "mysql", "label": "MySQL", "category": "database", "icon": "connMysql",
+			"description": "The most widely used open-source relational database",
+			"fields":      []string{"host", "port", "schema", "login", "password"}},
+		{"type": "snowflake", "label": "Snowflake", "category": "database", "icon": "connSnowflake",
+			"description": "Cloud data warehouse with separated storage and compute",
+			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints":       map[string]string{"host": "account.snowflakecomputing.com", "schema": "database/schema", "extra": `{"warehouse": "COMPUTE_WH", "role": "SYSADMIN"}`}},
+		{"type": "redshift", "label": "Amazon Redshift", "category": "database", "icon": "connRedshift",
+			"description": "AWS's managed petabyte-scale data warehouse",
+			"fields":      []string{"host", "port", "schema", "login", "password"},
+			"hints":       map[string]string{"host": "cluster.region.redshift.amazonaws.com", "port": "5439"}},
+		{"type": "bigquery", "label": "Google BigQuery", "category": "database", "icon": "connBigquery",
+			"description": "Serverless data warehouse on Google Cloud",
+			"fields":      []string{"schema", "extra"},
+			"hints":       map[string]string{"schema": "project_id.dataset", "extra": "Service account JSON key"}},
+		{"type": "databricks", "label": "Databricks", "category": "database", "icon": "connDatabricks",
+			"description": "Lakehouse platform for analytics and machine learning",
+			"fields":      []string{"host", "port", "schema", "login", "password"},
+			"hints":       map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
+		{"type": "oracle", "label": "Oracle", "category": "database", "icon": "connOracle",
+			"description": "Enterprise relational database for mission-critical workloads",
+			"fields":      []string{"host", "port", "schema", "login", "password"}},
+		{"type": "mssql", "label": "SQL Server", "category": "database", "icon": "connMssql",
+			"description": "Microsoft's enterprise relational database",
+			"fields":      []string{"host", "port", "schema", "login", "password"}},
+		{"type": "sqlite", "label": "SQLite", "category": "database", "icon": "connSqlite",
+			"description": "Zero-configuration embedded database in a single file",
+			"fields":      []string{"host"}},
 		// Cloud Storage
-		{"type": "s3", "label": "Amazon S3", "category": "storage", "fields": []string{"extra"},
-			"hints": map[string]string{"extra": `{"bucket": "my-bucket", "region": "us-east-1", "access_key": "...", "secret_key": "..."}`}},
-		{"type": "gcs", "label": "Google Cloud Storage", "category": "storage", "fields": []string{"extra"},
-			"hints": map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
-		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "fields": []string{"extra"},
-			"hints": map[string]string{"extra": `{"container": "my-container", "account": "storageaccount", "key": "..."}`}},
+		{"type": "s3", "label": "Amazon S3", "category": "storage", "icon": "connS3",
+			"description": "AWS object storage — buckets of files at any scale",
+			"fields":      []string{"extra"},
+			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "region": "us-east-1", "access_key": "...", "secret_key": "..."}`}},
+		{"type": "gcs", "label": "Google Cloud Storage", "category": "storage", "icon": "connGcs",
+			"description": "Object storage on Google Cloud",
+			"fields":      []string{"extra"},
+			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
+		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "icon": "connAzureBlob",
+			"description": "Object storage on Microsoft Azure",
+			"fields":      []string{"extra"},
+			"hints":       map[string]string{"extra": `{"container": "my-container", "account": "storageaccount", "key": "..."}`}},
 		// APIs & Other
-		{"type": "http", "label": "HTTP / REST API", "category": "api", "fields": []string{"host", "port", "login", "password", "extra"}},
-		{"type": "sftp", "label": "SFTP / SSH", "category": "api", "fields": []string{"host", "port", "login", "password", "extra"}},
-		{"type": "generic", "label": "Generic", "category": "other", "fields": []string{"host", "port", "login", "password", "extra"}},
+		{"type": "http", "label": "HTTP / REST API", "category": "api", "icon": "connHttp",
+			"description": "Any HTTP endpoint — REST APIs, webhooks, exports",
+			"fields":      []string{"host", "port", "login", "password", "extra"}},
+		{"type": "sftp", "label": "SFTP / SSH", "category": "api", "icon": "connSftp",
+			"description": "File transfer over SSH — drop zones and exports",
+			"fields":      []string{"host", "port", "login", "password", "extra"}},
+		{"type": "generic", "label": "Generic", "category": "other", "icon": "connGeneric",
+			"description": "Any other system — bring your own settings",
+			"fields":      []string{"host", "port", "login", "password", "extra"}},
 	}
 	writeJSON(w, http.StatusOK, types)
 }
