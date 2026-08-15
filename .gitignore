@@ -61,3 +61,4 @@ brokoli-artifacts/
 
 # Node modules
 node_modules/
+.preflight/

@@ -1,0 +1,5 @@
+{
+  "errors": 16,
+  "recorded_at": "2026-08-15",
+  "note": "Pre-existing svelte-check errors (13 NodeConfigPanel a11y/typing, 2 FullGantt vis-timeline typings, 1 CodeEditorModal). preflight.sh fails only when the count GROWS. Reduce when touching these files; update this note when the number changes."
+}
