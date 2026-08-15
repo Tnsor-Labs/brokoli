@@ -171,6 +171,22 @@ var serveCmd = &cobra.Command{
 			log.Printf("WARNING: startup recovery failed: %v", err)
 		}
 
+		// Scheduled run retention (Tnsor-Labs/brokoli#214): opt-in via
+		// BROKOLI_RUN_RETENTION_DAYS; unset or 0 keeps runs forever,
+		// exactly the old behavior. Safe on every instance concurrently —
+		// the purge is one conditional bulk DELETE and artifact deletes
+		// are idempotent.
+		if v := os.Getenv("BROKOLI_RUN_RETENTION_DAYS"); v != "" {
+			days, convErr := strconv.Atoi(v)
+			switch {
+			case convErr != nil || days < 0:
+				log.Printf("WARNING: invalid BROKOLI_RUN_RETENTION_DAYS %q — retention disabled", v)
+			case days > 0:
+				eng.StartRunRetentionSweep(days, engine.DefaultRetentionSweepInterval)
+				log.Printf("Run retention enabled: %d day(s), sweep every %s", days, engine.DefaultRetentionSweepInterval)
+			}
+		}
+
 		// Wire the run-cancel relay from extensions (enterprise distributed
 		// mode). Every instance both broadcasts (CancelRun falls back to it
 		// for runs it doesn't own) and subscribes (so a broadcast reaches
