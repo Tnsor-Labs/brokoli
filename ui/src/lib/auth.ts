@@ -3,8 +3,24 @@ import { writable, get } from "svelte/store";
 export interface AuthUser {
   id: string;
   username: string;
+  /** Human name from an SSO provider, when the account came from one. */
+  display_name?: string;
+  email?: string;
   role: "admin" | "editor" | "viewer";
   org_id?: string;
+}
+
+/**
+ * The label to show for a user. SSO accounts carry a provider-prefixed
+ * username (e.g. "google_someone@example.com") that is an identity key,
+ * not something to greet a person with — prefer the display name the
+ * provider gave us, and fall back to the username for password accounts.
+ */
+export function userLabel(
+  user: AuthUser | { username: string; display_name?: string } | null,
+): string {
+  if (!user) return "";
+  return user.display_name || user.username;
 }
 
 /**
@@ -167,6 +183,8 @@ export async function initAuth() {
       authUser.set({
         id: claims.sub,
         username: claims.username,
+        display_name: claims.display_name,
+        email: claims.email,
         role: claims.role,
         org_id: claims.org_id,
       });
@@ -208,6 +226,8 @@ export async function login(username: string, password: string): Promise<string 
     authUser.set({
       id: claims.sub,
       username: claims.username,
+      display_name: claims.display_name,
+      email: claims.email,
       role: claims.role,
       org_id: claims.org_id,
     });
