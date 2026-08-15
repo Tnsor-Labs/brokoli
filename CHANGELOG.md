@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.38] - 2026-08-15
+
+### Fixed
+
+- **Cancellation converges mid-node, with or without the relay** (#226)
+  — @hc12r. Third live-found cancellation bug of the arc, surfaced by
+  the Redis kill-tests: a Redis restart permanently killed every pod's
+  relay subscription (the receive loops exited on first error — fixed
+  in brokoli-ee alongside this), after which cancels returned 200 with
+  intent durably recorded while a 45-second single-node run completed
+  anyway. Wave boundaries never arrive during a node, and single-node
+  pipelines have none at all. A per-run watcher now polls the durable
+  cancel_requested flag every 5 seconds while nodes execute and
+  cancels the run context the moment it appears: any run converges
+  within one poll interval of a cancel landing, regardless of relay
+  transport health or pipeline shape. The relay is now a latency
+  optimization, not a correctness dependency.
+
 ## [0.10.37] - 2026-08-15
 
 ### Fixed
