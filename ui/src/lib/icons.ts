@@ -207,6 +207,56 @@ export const icons: Record<string, IconDef> = {
   helpCircle: {
     d: `M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01`,
   },
+
+  // Connection catalog: hand-drawn vendor-evoking glyphs (never official
+  // logos — original single-path marks in the house stroke style). Names
+  // are referenced by /api/connection-types' `icon` field and pinned by
+  // api/handlers_connection_types_test.go's allowlist.
+  connPostgres: {
+    d: `M6 18v-4a6 6 0 1 1 12 0v4h-3v-3a3 3 0 0 0-6 0v3zM9 10h.01M15 10h.01M12 18v3`,
+  },
+  connMysql: {
+    d: `M3 15c3-6 8-8.5 13-7.5 2.5.5 4 2 5 4.5-2-.5-3.5 0-4 1.5-.4 1.3.2 2.5 1 3.5-4 1-8 .5-10-1.5-1.5 1-3.5 1-5-.5zM16 7l1.5-2.5`,
+  },
+  connSnowflake: {
+    d: `M12 3v18M5 7l14 10M19 7L5 17M12 3l-2.5 2M12 3l2.5 2M12 21l-2.5-2M12 21l2.5-2M5 7l3 .5M5 7l.5 3M19 17l-3-.5M19 17l-.5-3M19 7l-3 .5M19 7l-.5 3M5 17l3-.5M5 17l.5-3`,
+  },
+  connRedshift: {
+    d: `M4 16.5l8 4 8-4M4 12l8 4 8-4M12 3v9M9 6l3-3 3 3`,
+  },
+  connBigquery: {
+    d: `M10.5 3a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15zM21 21l-5.2-5.2M8 11v3M10.5 9v5M13 12v2`,
+  },
+  connDatabricks: {
+    d: `M12 3l8 4.5-8 4.5-8-4.5zM4 12l8 4.5 8-4.5M4 16.5L12 21l8-4.5`,
+  },
+  connOracle: {
+    d: `M8 7h8a5 5 0 0 1 0 10H8a5 5 0 0 1 0-10z`,
+  },
+  connMssql: {
+    d: `M5 5l14 3.5L5 12l14 3.5L5 19M5 5c4-1.5 10-1.5 14 0M5 19c4 1.5 10 1.5 14 0`,
+  },
+  connSqlite: {
+    d: `M20 4c-7 0-12 5-14 12l-2 4 4-2c7-2 12-7 12-14zM5 19L19 5M9 13l2 2M12 10l2 2`,
+  },
+  connS3: {
+    d: `M5 5h14l-2 14a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2zM5 5c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5M8.5 12c1 .7 2.1 1 3.5 1s2.5-.3 3.5-1`,
+  },
+  connGcs: {
+    d: `M7 18a4 4 0 0 1-.6-7.96A5.5 5.5 0 0 1 17 8.6 4.7 4.7 0 0 1 16.8 18zM8.5 14h7`,
+  },
+  connAzureBlob: {
+    d: `M14 3L6 21M14 3l4.5 18M8.7 15h8M14 3l-4 9`,
+  },
+  connHttp: {
+    d: `M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM2 12h20M12 2c3.2 3 3.2 17 0 20M12 2c-3.2 3-3.2 17 0 20`,
+  },
+  connSftp: {
+    d: `M3 8a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 17v-5M9.5 14.5L12 12l2.5 2.5`,
+  },
+  connGeneric: {
+    d: `M9 3v5M15 3v5M6 8h12v3a6 6 0 0 1-12 0zM12 17v4`,
+  },
 };
 
 /** Get the icon key for a node type */

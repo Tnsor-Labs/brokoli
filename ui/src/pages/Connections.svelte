@@ -23,11 +23,11 @@
     updated_at: string;
   }
 
-  interface ConnType {
-    type: string;
-    label: string;
-    fields: string[];
-  }
+  import CatalogCard from "../components/CatalogCard.svelte";
+  import { groupByCategory, describe, monogramFor } from "../lib/connectionCatalog";
+  import type { ConnTypeMeta } from "../lib/connectionCatalog";
+
+  type ConnType = ConnTypeMeta;
 
   let connections: Connection[] = [];
   let connPage = 1;
@@ -38,9 +38,13 @@
   let searchQuery = "";
   let typeFilter = "";
 
-  // Modal state
+  // Modal state — creating is a two-step flow: pick a type from the
+  // catalog, then fill the type's fields. Editing goes straight to the
+  // form (type is immutable on an existing connection).
   let showModal = false;
   let editing = false;
+  let modalStep: "catalog" | "form" = "catalog";
+  let catalogQuery = "";
   let form: Partial<Connection> = {};
   let testing = false;
   let testResult: { success: boolean; message?: string; error?: string } | null = null;
@@ -84,17 +88,57 @@
 
   function openCreate() {
     editing = false;
-    form = { type: "postgres", port: 5432 };
+    modalStep = "catalog";
+    catalogQuery = "";
+    form = {};
     testResult = null;
     showModal = true;
   }
 
   function openEdit(c: Connection) {
     editing = true;
+    modalStep = "form";
     form = { ...c };
     testResult = null;
     showModal = true;
   }
+
+  function chooseType(type: string) {
+    onTypeChange(type);
+    modalStep = "form";
+  }
+
+  function backToCatalog() {
+    modalStep = "catalog";
+    testResult = null;
+  }
+
+  function typeMeta(type: string): ConnType | undefined {
+    return connTypes.find((t) => t.type === type);
+  }
+
+  function typeIconD(ct: ConnType | undefined): string {
+    if (!ct?.icon) return "";
+    const entry = (icons as Record<string, { d: string } | undefined>)[ct.icon];
+    return entry?.d || "";
+  }
+
+  // Server-provided per-field hints double as placeholders in the form.
+  function typeHint(field: string, fallback: string): string {
+    return typeMeta(form.type || "")?.hints?.[field] || fallback;
+  }
+
+  $: catalogGroups = groupByCategory(
+    connTypes.filter((ct) => {
+      const q = catalogQuery.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        ct.label.toLowerCase().includes(q) ||
+        ct.type.toLowerCase().includes(q) ||
+        describe(ct).toLowerCase().includes(q)
+      );
+    }),
+  );
 
   async function saveConnection() {
     if (!form.conn_id?.trim()) {
@@ -404,6 +448,7 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div
         class="modal"
+        class:wide={!editing && modalStep === "catalog"}
         role="dialog"
         tabindex="-1"
         aria-modal="true"
@@ -415,11 +460,19 @@
           <div class="modal-heading">
             <span class="modal-mark">{editing ? "↗" : "+"}</span>
             <div>
-              <h2 id="connection-dialog-title">{editing ? "Edit connection" : "New connection"}</h2>
+              <h2 id="connection-dialog-title">
+                {editing
+                  ? "Edit connection"
+                  : modalStep === "catalog"
+                    ? "New connection"
+                    : `New ${typeMeta(form.type || "")?.label || "connection"}`}
+              </h2>
               <p>
                 {editing
                   ? "Update access details or verify connectivity."
-                  : "Add a reusable external resource for your pipelines."}
+                  : modalStep === "catalog"
+                    ? "Pick the system you're connecting — databases, storage, APIs."
+                    : "Add a reusable external resource for your pipelines."}
               </p>
             </div>
           </div>
@@ -430,149 +483,219 @@
           >
         </header>
 
-        <div class="modal-body">
-          <div class="form-group">
-            <label for="connection-id">Connection ID</label>
+        {#if !editing && modalStep === "catalog"}
+          <div class="modal-body catalog-body">
             <input
-              id="connection-id"
-              value={form.conn_id || ""}
-              on:input={(e) =>
-                (form.conn_id = e.currentTarget.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
-              placeholder="my_postgres"
-              disabled={editing}
+              class="catalog-search"
+              type="search"
+              placeholder="Search types — postgres, bucket, api..."
+              bind:value={catalogQuery}
+              aria-label="Search connection types"
             />
-            {#if !editing}<span class="field-hint">Lowercase, hyphens, underscores only</span>{/if}
-          </div>
-
-          <div class="form-group">
-            <label for="connection-type">Type</label>
-            <select
-              id="connection-type"
-              value={form.type || "postgres"}
-              on:change={(e) => onTypeChange(e.currentTarget.value)}
-              disabled={editing}
-            >
-              {#each connTypes as ct}
-                <option value={ct.type}>{ct.label}</option>
-              {/each}
-            </select>
-          </div>
-
-          <div class="form-group">
-            <label for="connection-description">Description <span>Optional</span></label>
-            <input
-              id="connection-description"
-              value={form.description || ""}
-              on:input={(e) => (form.description = e.currentTarget.value)}
-              placeholder="Production database"
-            />
-          </div>
-
-          {#if typeFields(form.type || "").includes("host")}
-            <div class="form-row">
-              <div class="form-group flex-2">
-                <label for="connection-host">Host</label>
-                <input
-                  id="connection-host"
-                  value={form.host || ""}
-                  on:input={(e) => (form.host = e.currentTarget.value)}
-                  placeholder="localhost"
-                />
+            {#if connTypes.length === 0}
+              <div class="catalog-empty">
+                Connection types unavailable — check the server connection and retry.
               </div>
-              {#if typeFields(form.type || "").includes("port")}
-                <div class="form-group flex-1">
-                  <label for="connection-port">Port</label>
-                  <input
-                    id="connection-port"
-                    type="number"
-                    value={form.port || 0}
-                    on:input={(e) => (form.port = Number(e.currentTarget.value))}
-                  />
+            {:else if catalogGroups.length === 0}
+              <div class="catalog-empty">No connection type matches "{catalogQuery}".</div>
+            {:else}
+              {#each catalogGroups as group (group.category)}
+                <section class="catalog-section">
+                  <h3 class="catalog-kicker">{group.label}</h3>
+                  <div class="catalog-grid">
+                    {#each group.types as ct (ct.type)}
+                      <CatalogCard
+                        title={ct.label}
+                        description={describe(ct)}
+                        iconD={typeIconD(ct)}
+                        monogram={monogramFor(ct.label)}
+                        category={group.category}
+                        on:click={() => chooseType(ct.type)}
+                      />
+                    {/each}
+                  </div>
+                </section>
+              {/each}
+            {/if}
+          </div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button class="btn-secondary" on:click={() => (showModal = false)}>Cancel</button>
+          </div>
+        {:else}
+          <div class="modal-body">
+            {#if !editing}
+              <div class="type-summary">
+                <span class="type-tile cat-{typeMeta(form.type || '')?.category || 'other'}">
+                  {#if typeIconD(typeMeta(form.type || ""))}
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d={typeIconD(typeMeta(form.type || ""))}
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      />
+                    </svg>
+                  {:else}
+                    <span class="type-monogram">{monogramFor(typeLabel(form.type || ""))}</span>
+                  {/if}
+                </span>
+                <div class="type-summary-copy">
+                  <strong>{typeLabel(form.type || "")}</strong>
+                  <small
+                    >{describe(
+                      typeMeta(form.type || "") || { type: "", label: "", fields: [] },
+                    )}</small
+                  >
                 </div>
-              {/if}
-            </div>
-          {/if}
+                <button class="btn-secondary back-type" on:click={backToCatalog}
+                  >← Change type</button
+                >
+              </div>
+            {/if}
 
-          {#if typeFields(form.type || "").includes("schema")}
             <div class="form-group">
-              <label for="connection-schema">Database / Schema</label>
+              <label for="connection-id">Connection ID</label>
               <input
-                id="connection-schema"
-                value={form.schema || ""}
-                on:input={(e) => (form.schema = e.currentTarget.value)}
-                placeholder="mydb"
+                id="connection-id"
+                value={form.conn_id || ""}
+                on:input={(e) =>
+                  (form.conn_id = e.currentTarget.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                placeholder="my_{form.type || 'connection'}"
+                disabled={editing}
+              />
+              {#if !editing}<span class="field-hint">Lowercase, hyphens, underscores only</span
+                >{/if}
+            </div>
+
+            {#if editing}
+              <div class="form-group">
+                <label for="connection-type">Type</label>
+                <select id="connection-type" value={form.type || "postgres"} disabled>
+                  {#each connTypes as ct}
+                    <option value={ct.type}>{ct.label}</option>
+                  {/each}
+                </select>
+              </div>
+            {/if}
+
+            <div class="form-group">
+              <label for="connection-description">Description <span>Optional</span></label>
+              <input
+                id="connection-description"
+                value={form.description || ""}
+                on:input={(e) => (form.description = e.currentTarget.value)}
+                placeholder="Production database"
               />
             </div>
-          {/if}
 
-          {#if typeFields(form.type || "").includes("login")}
-            <div class="form-row">
-              <div class="form-group flex-1">
-                <label for="connection-login">Login / Username</label>
-                <input
-                  id="connection-login"
-                  value={form.login || ""}
-                  on:input={(e) => (form.login = e.currentTarget.value)}
-                  placeholder="admin"
-                />
-              </div>
-              {#if typeFields(form.type || "").includes("password")}
-                <div class="form-group flex-1">
-                  <label for="connection-password">Password</label>
+            {#if typeFields(form.type || "").includes("host")}
+              <div class="form-row">
+                <div class="form-group flex-2">
+                  <label for="connection-host">Host</label>
                   <input
-                    id="connection-password"
-                    type="password"
-                    value={form.password || ""}
-                    on:input={(e) => (form.password = e.currentTarget.value)}
-                    placeholder={editing ? "Leave blank to keep" : "password"}
+                    id="connection-host"
+                    value={form.host || ""}
+                    on:input={(e) => (form.host = e.currentTarget.value)}
+                    placeholder={typeHint("host", "localhost")}
                   />
                 </div>
-              {/if}
-            </div>
-          {/if}
+                {#if typeFields(form.type || "").includes("port")}
+                  <div class="form-group flex-1">
+                    <label for="connection-port">Port</label>
+                    <input
+                      id="connection-port"
+                      type="number"
+                      value={form.port || 0}
+                      on:input={(e) => (form.port = Number(e.currentTarget.value))}
+                    />
+                  </div>
+                {/if}
+              </div>
+            {/if}
 
-          {#if typeFields(form.type || "").includes("extra")}
-            <div class="form-group">
-              <label for="connection-extra">Extra (JSON)</label>
-              <textarea
-                id="connection-extra"
-                class="code-input"
-                rows="3"
-                value={form.extra || ""}
-                on:input={(e) => (form.extra = e.currentTarget.value)}
-                placeholder="JSON extra fields"
-              ></textarea>
-              <span class="field-hint"
-                >Type-specific fields: headers, tokens, bucket, region, etc.</span
+            {#if typeFields(form.type || "").includes("schema")}
+              <div class="form-group">
+                <label for="connection-schema">Database / Schema</label>
+                <input
+                  id="connection-schema"
+                  value={form.schema || ""}
+                  on:input={(e) => (form.schema = e.currentTarget.value)}
+                  placeholder={typeHint("schema", "mydb")}
+                />
+              </div>
+            {/if}
+
+            {#if typeFields(form.type || "").includes("login")}
+              <div class="form-row">
+                <div class="form-group flex-1">
+                  <label for="connection-login">Login / Username</label>
+                  <input
+                    id="connection-login"
+                    value={form.login || ""}
+                    on:input={(e) => (form.login = e.currentTarget.value)}
+                    placeholder={typeHint("login", "admin")}
+                  />
+                </div>
+                {#if typeFields(form.type || "").includes("password")}
+                  <div class="form-group flex-1">
+                    <label for="connection-password">Password</label>
+                    <input
+                      id="connection-password"
+                      type="password"
+                      value={form.password || ""}
+                      on:input={(e) => (form.password = e.currentTarget.value)}
+                      placeholder={editing ? "Leave blank to keep" : "password"}
+                    />
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
+            {#if typeFields(form.type || "").includes("extra")}
+              <div class="form-group">
+                <label for="connection-extra">Extra (JSON)</label>
+                <textarea
+                  id="connection-extra"
+                  class="code-input"
+                  rows="3"
+                  value={form.extra || ""}
+                  on:input={(e) => (form.extra = e.currentTarget.value)}
+                  placeholder={typeHint("extra", "JSON extra fields")}
+                ></textarea>
+                <span class="field-hint"
+                  >Type-specific fields: headers, tokens, bucket, region, etc.</span
+                >
+              </div>
+            {/if}
+
+            {#if testResult}
+              <div
+                class="test-result"
+                role="status"
+                class:success={testResult.success}
+                class:error={!testResult.success}
               >
-            </div>
-          {/if}
-
-          {#if testResult}
-            <div
-              class="test-result"
-              role="status"
-              class:success={testResult.success}
-              class:error={!testResult.success}
-            >
-              {testResult.success
-                ? "Connection successful"
-                : testResult.error || "Connection failed"}
-            </div>
-          {/if}
-        </div>
-        <div class="modal-actions">
-          {#if editing}
-            <button class="btn-secondary" on:click={testConnection} disabled={testing}>
-              {testing ? "Testing..." : "Test Connection"}
+                {testResult.success
+                  ? "Connection successful"
+                  : testResult.error || "Connection failed"}
+              </div>
+            {/if}
+          </div>
+          <div class="modal-actions">
+            {#if editing}
+              <button class="btn-secondary" on:click={testConnection} disabled={testing}>
+                {testing ? "Testing..." : "Test Connection"}
+              </button>
+            {/if}
+            <span class="spacer"></span>
+            <button class="btn-secondary" on:click={() => (showModal = false)}>Cancel</button>
+            <button class="btn-primary" on:click={saveConnection}>
+              {editing ? "Update" : "Create"}
             </button>
-          {/if}
-          <span class="spacer"></span>
-          <button class="btn-secondary" on:click={() => (showModal = false)}>Cancel</button>
-          <button class="btn-primary" on:click={saveConnection}>
-            {editing ? "Update" : "Create"}
-          </button>
-        </div>
+          </div>
+        {/if}
       </div>
     </div>
   {/if}
@@ -1080,6 +1203,126 @@
       0 32px 90px rgba(0, 0, 0, 0.62),
       inset 0 1px 0 rgba(255, 255, 255, 0.035);
     animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .modal.wide {
+    width: min(860px, 100%);
+  }
+
+  /* ── Type catalog (create step 1) ── */
+  .catalog-body {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .catalog-search {
+    width: 100%;
+    padding: 9px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-input);
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+  .catalog-search:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+  .catalog-section {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .catalog-kicker {
+    margin: 0;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+  }
+  .catalog-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  @media (max-width: 700px) {
+    .catalog-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  .catalog-empty {
+    padding: 24px;
+    border: 1px dashed var(--border-subtle);
+    border-radius: var(--radius-lg);
+    color: var(--text-muted);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  /* ── Chosen-type summary (create step 2) ── */
+  .type-summary {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-lg);
+    background: var(--bg-tertiary);
+    margin-bottom: 4px;
+  }
+  .type-tile {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 34px;
+    height: 34px;
+    border-radius: var(--radius-md);
+    flex-shrink: 0;
+  }
+  .type-tile.cat-database {
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .type-tile.cat-storage {
+    background: var(--success-bg);
+    color: var(--success);
+  }
+  .type-tile.cat-api {
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+  .type-tile.cat-other {
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+  }
+  .type-monogram {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 700;
+  }
+  .type-summary-copy {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+    flex: 1;
+  }
+  .type-summary-copy strong {
+    color: var(--text-primary);
+    font-size: 13px;
+  }
+  .type-summary-copy small {
+    color: var(--text-muted);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .back-type {
+    flex-shrink: 0;
+    font-size: 11px;
+    padding: 6px 10px;
   }
   .modal-header {
     display: flex;

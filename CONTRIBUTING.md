@@ -60,3 +60,22 @@ If your change affects behavior an ADR describes, update that ADR in
 the same PR (a Deferred item filled in, a dated `## Update` section
 appended) rather than leaving it to drift. See
 [`docs/adr/README.md`](./docs/adr/README.md) for the exact convention.
+
+## Local-first workflow
+
+CI exists to confirm what you already verified — not to discover failures.
+Before every push:
+
+1. `./preflight.sh` — replicates CI exactly (gofmt unfiltered, race tests,
+   UI build, gosec against the baseline via the CI-pinned image,
+   govulncheck, licenses) plus two local-only strictness additions
+   (`go vet`, `svelte-check`). `PREFLIGHT_FAST=1` skips `npm ci`;
+   `PREFLIGHT_COVERAGE=1` adds the CI coverage pass.
+2. For UI work, deploy to the evaluation server and review visually
+   before pushing.
+3. Push only on local green. CI failures after a green preflight are
+   treated as preflight bugs — fix the script alongside the code.
+
+Node: CI pins v20. `preflight.sh` switches via nvm when available and
+warns otherwise — a build under a different major may pass locally and
+fail in CI (or vice versa).
