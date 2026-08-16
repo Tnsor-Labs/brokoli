@@ -146,6 +146,11 @@ func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]
 // page WorkOrder; pageURL is used by link-based callers while pageParams are
 // merged into the source node's configured params for offset/numbered pages.
 func (f *RESTFetcher) FetchPage(source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error) {
+	return f.FetchPageContext(context.Background(), source, options, pageURL, pageParams)
+}
+
+// FetchPageContext executes one pagination request while honoring ctx.
+func (f *RESTFetcher) FetchPageContext(ctx context.Context, source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error) {
 	if source == "" {
 		return nil, ErrInvalidURL
 	}
@@ -157,7 +162,7 @@ func (f *RESTFetcher) FetchPage(source string, options map[string]interface{}, p
 		pageURL = source
 	}
 
-	responseBody, headers, err := f.executeRequest(pageURL, requestOptions)
+	responseBody, headers, err := f.executeRequestContext(ctx, pageURL, requestOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -229,6 +234,10 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 // body and headers. Headers are returned (rather than discarded) because
 // link_header pagination needs to read the response's Link header.
 func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]byte, http.Header, error) {
+	return f.executeRequestContext(context.Background(), rawURL, options)
+}
+
+func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, options RequestOptions) ([]byte, http.Header, error) {
 	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the
 	// Brokoli server. A relative path is an implicit self-reference to the
 	// trusted server, so the SSRF guard must not block it — in k8s/docker
@@ -275,6 +284,10 @@ func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]b
 	if err != nil {
 		return nil, nil, fmt.Errorf("%w: %v", ErrInvalidURL, err)
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req = req.WithContext(ctx)
 
 	if options.Body != nil {
 		switch b := options.Body.(type) {

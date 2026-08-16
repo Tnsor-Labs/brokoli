@@ -56,6 +56,41 @@ func TestExecuteInstanceWorkOrderContext_CancelsCodeProcess(t *testing.T) {
 	}
 }
 
+func TestExecuteInstanceWorkOrderContext_CancelsSourcePageRequest(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecuteInstanceWorkOrderContext(ctx, &extensions.InstanceWorkOrder{
+			NodeType:   "source_api",
+			SourceURL:  server.URL,
+			SourceType: "rest",
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("source page request did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("source page request did not stop after cancellation")
+	}
+}
+
 func TestExecuteInstanceWorkOrder_RejectsUnsupportedNodeType(t *testing.T) {
 	_, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{NodeType: "unsupported"})
 	if err == nil {
@@ -273,5 +308,59 @@ func TestExecuteInstanceJob_ScriptFailureSettlesAttemptFailedAndAcksJob(t *testi
 	}
 	if attempt.Error == "" {
 		t.Error("attempt.Error is empty, want the script's own error message")
+	}
+}
+
+func TestExecuteInstanceJob_CancellationStopsRunningWorkOrder(t *testing.T) {
+	realStore := newExpansionTestStore(t, "instance-job-cancel")
+	real := realStore.(*store.SQLiteStore)
+	now := time.Now().UTC()
+	if err := real.CreatePipeline(&models.Pipeline{ID: "pipe-cancel", Name: "pipe-cancel", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	if err := real.CreateRun(&models.Run{ID: "run-cancel", PipelineID: "pipe-cancel", Status: models.RunStatusRunning, StartedAt: &now}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+	if err := real.WithTx(func(tx *sql.Tx) error {
+		return real.CreateExecutionAttemptTx(tx, &models.ExecutionAttempt{
+			RunID: "run-cancel", NodeID: "parse", InstanceKey: "idx:0", Status: models.AttemptStatusQueued,
+		})
+	}); err != nil {
+		t.Fatalf("CreateExecutionAttemptTx: %v", err)
+	}
+	gen, ok, err := real.ClaimAttempt("run-cancel", "parse", "idx:0", 0, "worker-1", time.Minute)
+	if err != nil || !ok {
+		t.Fatalf("ClaimAttempt: ok=%v err=%v", ok, err)
+	}
+
+	job := extensions.RunJob{
+		ID: "job-cancel", RunID: "run-cancel", NodeID: "parse", InstanceKey: "idx:0",
+		FencingGeneration: gen,
+		WorkOrder: &extensions.InstanceWorkOrder{
+			NodeType: "code", Script: "import time; time.sleep(30)", TimeoutSeconds: 60,
+		},
+	}
+	artifacts := NewLocalDiskArtifactStore(t.TempDir())
+	done := make(chan error, 1)
+	go func() { done <- ExecuteInstanceJob(real, artifacts, job) }()
+
+	time.Sleep(100 * time.Millisecond)
+	requested, err := real.RequestRunCancel("run-cancel")
+	if err != nil || !requested {
+		t.Fatalf("RequestRunCancel: requested=%v err=%v", requested, err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("ExecuteInstanceJob: %v", err)
+	}
+
+	attempt, err := real.GetExecutionAttempt("run-cancel", "parse", "idx:0", 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt: %v", err)
+	}
+	if attempt.Status != models.AttemptStatusFailed {
+		t.Errorf("attempt status = %s, want failed cancellation settlement", attempt.Status)
+	}
+	if _, err := artifacts.ReadArtifact("run-cancel", "parse", "idx:0"); err == nil {
+		t.Fatal("cancelled WorkOrder must not write an artifact")
 	}
 }

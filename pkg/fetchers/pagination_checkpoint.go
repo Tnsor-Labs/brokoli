@@ -1,6 +1,10 @@
 package fetchers
 
-import "github.com/Tnsor-Labs/brokoli/pkg/common"
+import (
+	"context"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
+)
 
 // PaginationCheckpoint captures enough state to resume a paginated fetch
 // from where it left off, without re-fetching pages already retrieved. Only
@@ -66,4 +70,13 @@ type CheckpointingFetcher interface {
 // worker does not need to recreate the coordinator's pagination loop.
 type PageFetcher interface {
 	FetchPage(source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error)
+}
+
+// ContextPageFetcher is the cancellable form of PageFetcher. Workers use it
+// when a parent run can be cancelled while an HTTP page request is in flight.
+// Implementations that only satisfy PageFetcher retain the legacy behavior and
+// are still checked for cancellation before and after the fetch.
+type ContextPageFetcher interface {
+	PageFetcher
+	FetchPageContext(ctx context.Context, source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error)
 }

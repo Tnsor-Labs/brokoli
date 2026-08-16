@@ -11,6 +11,14 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.45] - 2026-08-16
+
+### Fixed
+
+- **Same-store WorkOrder cancellation** — core workers now observe durable
+  run cancellation while executing physical instances, including in-flight
+  code processes and source API page requests.
+
 ## [0.10.44] - 2026-08-16
 
 ### Fixed

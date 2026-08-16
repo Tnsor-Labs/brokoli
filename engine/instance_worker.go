@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -43,7 +44,7 @@ func ExecuteInstanceWorkOrderContext(ctx context.Context, wo *extensions.Instanc
 	case string(models.NodeTypeCode):
 		return executeCodeWorkOrder(ctx, wo)
 	case string(models.NodeTypeSourceAPI):
-		result, err := executeSourceAPIPageWorkOrder(wo)
+		result, err := executeSourceAPIPageWorkOrder(ctx, wo)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -66,7 +67,7 @@ func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder)
 	return result, err
 }
 
-func executeSourceAPIPageWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	if wo.SourceURL == "" {
 		return nil, fmt.Errorf("execute source_api page work order: source URL is required")
 	}
@@ -81,6 +82,9 @@ func executeSourceAPIPageWorkOrder(wo *extensions.InstanceWorkOrder) (*common.Da
 	pageFetcher, ok := fetcher.(fetchers.PageFetcher)
 	if !ok {
 		return nil, fmt.Errorf("execute source_api page work order: source type %q does not support page execution", sourceType)
+	}
+	if cancellable, ok := pageFetcher.(fetchers.ContextPageFetcher); ok {
+		return cancellable.FetchPageContext(ctx, wo.SourceURL, wo.Config, wo.PageURL, wo.PageParams)
 	}
 	return pageFetcher.FetchPage(wo.SourceURL, wo.Config, wo.PageURL, wo.PageParams)
 }
@@ -108,6 +112,20 @@ func executeSourceAPIPageWorkOrder(wo *extensions.InstanceWorkOrder) (*common.Da
 // same FencingGeneration the job already carries is safe and meaningful,
 // not a stale token.
 func ExecuteInstanceJob(s store.Store, artifacts ArtifactStore, job extensions.RunJob) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if cancelled, err := runCancellationRequested(s, job.RunID); err != nil {
+		return fmt.Errorf("execute instance job: check run cancellation: %w", err)
+	} else if cancelled {
+		cancel()
+	}
+	go watchRunCancellation(ctx, cancel, s, job.RunID)
+
+	return executeInstanceJobContext(ctx, s, artifacts, job)
+}
+
+func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts ArtifactStore, job extensions.RunJob) error {
 	if job.WorkOrder == nil {
 		return fmt.Errorf("execute instance job: job %s has no work order", job.ID)
 	}
@@ -116,7 +134,7 @@ func ExecuteInstanceJob(s store.Store, artifacts ArtifactStore, job extensions.R
 		return fmt.Errorf("execute instance job: store does not support execution attempts")
 	}
 
-	result, execErr := ExecuteInstanceWorkOrder(job.WorkOrder)
+	result, execErr := ExecuteInstanceWorkOrderContext(ctx, job.WorkOrder)
 	if execErr != nil {
 		if failErr := attemptStore.FailAttempt(job.RunID, job.NodeID, job.InstanceKey, job.Attempt, job.FencingGeneration, execErr.Error()); failErr != nil {
 			return fmt.Errorf("execute instance job: instance failed (%v), and settling that failure also failed: %w", execErr, failErr)
@@ -142,4 +160,29 @@ func ExecuteInstanceJob(s store.Store, artifacts ArtifactStore, job extensions.R
 		return fmt.Errorf("execute instance job: failed to settle completed instance: %w", err)
 	}
 	return nil
+}
+
+func runCancellationRequested(s store.Store, runID string) (bool, error) {
+	run, err := s.GetRun(runID)
+	if err != nil {
+		return false, err
+	}
+	return run.CancelRequested || run.Status == models.RunStatusCancelled, nil
+}
+
+func watchRunCancellation(ctx context.Context, cancel context.CancelFunc, s store.Store, runID string) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cancelled, err := runCancellationRequested(s, runID)
+			if err == nil && cancelled {
+				cancel()
+				return
+			}
+		}
+	}
 }
