@@ -82,6 +82,11 @@ var FeatureGateFunc func(r *http.Request, feature string) bool
 // When nil (community edition), no OAuth providers are available.
 var AuthMethodsFunc func() []string
 
+// PasswordLoginEnabledFunc lets an enterprise integration disable local
+// password authentication while retaining the core login route and its
+// session-cookie behavior. When nil, password login remains enabled.
+var PasswordLoginEnabledFunc func() bool
+
 // RequireFeature middleware blocks access if the user's plan doesn't include the feature.
 // In community edition (FeatureGateFunc nil), all features are allowed.
 func RequireFeature(feature string) func(http.Handler) http.Handler {
