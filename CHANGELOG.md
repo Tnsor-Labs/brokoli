@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.44] - 2026-08-16
+
 ### Fixed
 
 - **Remote WorkOrder cancellation** — workers now observe durable run
