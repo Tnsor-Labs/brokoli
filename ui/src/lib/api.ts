@@ -4,6 +4,7 @@ import type {
   PipelineTemplate,
   Run,
   RunEvent,
+  PhysicalInstance,
   LogEntry,
   AlertsResponse,
   DLQEntry,
@@ -144,6 +145,7 @@ export const api = {
     listByPipeline: (pipelineId: string) =>
       request<Run[]>(`/pipelines/${pipelineId}/runs`),
     get: (id: string) => request<Run>(`/runs/${id}`),
+    instances: (id: string) => request<PhysicalInstance[]>(`/runs/${id}/instances`),
     getLogs: (id: string) => request<LogEntry[]>(`/runs/${id}/logs`),
     backfill: (pipelineId: string, startDate: string, endDate: string) =>
       request<{ runs: string[]; count: number }>(`/pipelines/${pipelineId}/backfill`, {

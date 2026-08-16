@@ -209,6 +209,19 @@ export interface Run {
   node_runs: NodeRun[];
 }
 
+export interface PhysicalInstance {
+  logical_node_id: string;
+  kind: "single" | "expansion" | string;
+  instance_key: string;
+  index: number;
+  status: RunStatus;
+  row_count: number;
+  started_at?: string | null;
+  duration_ms: number;
+  error?: string;
+  attempt: number;
+}
+
 export interface NodeRun {
   id: string;
   run_id: string;
