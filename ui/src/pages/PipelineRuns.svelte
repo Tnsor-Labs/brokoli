@@ -39,7 +39,6 @@
   let chronicleFilter = "all";
   let selectedChronicleEvent: RunEvent | null = null;
   let planExpanded = false;
-  let expandedPlanStage: number | null = null;
   let selectedPlanUnit: PhysicalWorkUnit | null = null;
   let loading = true;
   let expandedRunId: string | null = null;
@@ -57,6 +56,53 @@
   let profileData: any = null;
   let loadingProfile = false;
   let profileRequest = 0;
+
+  type PlanGraphNode = {
+    unit: PhysicalWorkUnit;
+    stage: number;
+    x: number;
+    y: number;
+  };
+
+  type PlanGraphEdge = {
+    from: PlanGraphNode;
+    to: PlanGraphNode;
+  };
+
+  function buildPlanGraph(currentPlan: PhysicalPlan, currentPipeline: Pipeline) {
+    const nodes: PlanGraphNode[] = [];
+    const byLogicalID = new Map<string, PlanGraphNode>();
+    const columnWidth = 238;
+    const rowHeight = 112;
+    const nodeWidth = 202;
+
+    currentPlan.stages.forEach((stage, stageOrder) => {
+      stage.work_units.forEach((unit, row) => {
+        const node: PlanGraphNode = {
+          unit,
+          stage: stage.index,
+          x: 22 + stageOrder * columnWidth,
+          y: 42 + row * rowHeight,
+        };
+        nodes.push(node);
+        byLogicalID.set(unit.logical_node_id, node);
+      });
+    });
+
+    const edges: PlanGraphEdge[] = (currentPipeline.edges || [])
+      .map((edge) => ({ from: byLogicalID.get(edge.from), to: byLogicalID.get(edge.to) }))
+      .filter((edge): edge is PlanGraphEdge => Boolean(edge.from && edge.to));
+
+    return {
+      nodes,
+      edges,
+      width: Math.max(680, currentPlan.stages.length * columnWidth + 22),
+      height: Math.max(210, Math.max(0, ...nodes.map((node) => node.y)) + 98),
+      nodeWidth,
+    };
+  }
+
+  $: planGraph = plan && pipeline ? buildPlanGraph(plan, pipeline) : null;
 
   async function loadProfile(runId: string, nodeId: string) {
     const request = ++profileRequest;
@@ -601,55 +647,54 @@
         </span>
       </button>
       {#if planExpanded}
-        <div class="plan-explorer">
-          <div class="plan-stage-list">
-            {#each plan.stages as stage}
-              <button
-                class="plan-stage-button"
-                class:active={expandedPlanStage === stage.index}
-                on:click={() => {
-                  expandedPlanStage = expandedPlanStage === stage.index ? null : stage.index;
-                  selectedPlanUnit = null;
-                }}
-              >
-                <span class="stage-index">{String(stage.index + 1).padStart(2, "0")}</span>
-                <span><strong>Stage {stage.index + 1}</strong><small>{stage.work_units.length} work unit{stage.work_units.length === 1 ? "" : "s"}</small></span>
-                <span class="disclosure-icon small" class:open={expandedPlanStage === stage.index}>›</span>
-              </button>
-            {/each}
-          </div>
-          <div class="plan-detail">
-            {#if expandedPlanStage !== null}
-              {@const activeStage = plan.stages.find((stage) => stage.index === expandedPlanStage)}
-              {#if activeStage}
-                <div class="plan-detail-heading">
-                  <div><span class="eyebrow">Stage {activeStage.index + 1}</span><h3>Placement units</h3></div>
-                  <span>{activeStage.work_units.length} units</span>
-                </div>
-                <div class="stage-units">
-                  {#each activeStage.work_units as unit}
-                    <button class="plan-unit" class:selected={selectedPlanUnit?.logical_node_id === unit.logical_node_id} on:click={() => (selectedPlanUnit = unit)}>
-                      <div class="plan-unit-top"><strong>{unit.logical_node_id}</strong><span>{unit.kind}</span></div>
-                      <small>{unit.runtime_resolved ? "Runtime-resolved" : `${unit.static_instance_count} static instance${unit.static_instance_count === 1 ? "" : "s"}`}</small>
-                    </button>
+        <div class="plan-graph-explorer">
+          {#if planGraph}
+            <div class="plan-graph-legend">
+              <span><i class="legend-dot static"></i>Static placement</span>
+              <span><i class="legend-dot runtime"></i>Runtime-resolved</span>
+              <span class="graph-hint">Click a unit for placement details</span>
+            </div>
+            <div class="plan-graph-scroll">
+              <div class="plan-graph-canvas" style="width:{planGraph.width}px;height:{planGraph.height}px">
+                <svg class="plan-graph-lines" width={planGraph.width} height={planGraph.height} aria-hidden="true">
+                  <defs>
+                    <marker id="plan-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                      <path d="M0,0 L8,4 L0,8 z" fill="var(--accent)" />
+                    </marker>
+                  </defs>
+                  {#each planGraph.edges as edge}
+                    <path
+                      d={`M ${edge.from.x + planGraph.nodeWidth} ${edge.from.y + 38} C ${edge.from.x + planGraph.nodeWidth + 34} ${edge.from.y + 38}, ${edge.to.x - 34} ${edge.to.y + 38}, ${edge.to.x} ${edge.to.y + 38}`}
+                      marker-end="url(#plan-arrow)"
+                    />
                   {/each}
+                </svg>
+                {#each planGraph.nodes as graphNode}
+                  <button
+                    class="plan-graph-node"
+                    class:selected={selectedPlanUnit?.logical_node_id === graphNode.unit.logical_node_id}
+                    style="left:{graphNode.x}px;top:{graphNode.y}px"
+                    on:click={() => (selectedPlanUnit = graphNode.unit)}
+                  >
+                    <span class="graph-node-stage">Stage {graphNode.stage + 1}</span>
+                    <span class="graph-node-title"><strong>{graphNode.unit.logical_node_id}</strong><i class:runtime={graphNode.unit.runtime_resolved}></i></span>
+                    <span class="graph-node-meta">{graphNode.unit.kind} · {graphNode.unit.runtime_resolved ? "runtime" : `${graphNode.unit.static_instance_count} instance${graphNode.unit.static_instance_count === 1 ? "" : "s"}`}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+            {#if selectedPlanUnit}
+              <div class="plan-unit-detail graph-selection">
+                <div class="plan-unit-top"><strong>{selectedPlanUnit.logical_node_id}</strong><span>{selectedPlanUnit.node_type}</span></div>
+                <p>{selectedPlanUnit.explain}</p>
+                <div class="plan-facts">
+                  <span><b>Retry</b>{selectedPlanUnit.retry_scope}</span>
+                  <span><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code></span>
+                  {#if selectedPlanUnit.concurrency_group}<span><b>Pool</b>{selectedPlanUnit.concurrency_group}</span>{/if}
                 </div>
-                {#if selectedPlanUnit}
-                  <div class="plan-unit-detail">
-                    <div class="plan-unit-top"><strong>{selectedPlanUnit.logical_node_id}</strong><span>{selectedPlanUnit.node_type}</span></div>
-                    <p>{selectedPlanUnit.explain}</p>
-                    <div class="plan-facts">
-                      <span><b>Retry</b>{selectedPlanUnit.retry_scope}</span>
-                      <span><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code></span>
-                      {#if selectedPlanUnit.concurrency_group}<span><b>Pool</b>{selectedPlanUnit.concurrency_group}</span>{/if}
-                    </div>
-                  </div>
-                {/if}
-              {/if}
-            {:else}
-              <div class="plan-empty"><strong>Select a stage</strong><span>See what Nodus will place and why.</span></div>
+              </div>
             {/if}
-          </div>
+          {/if}
         </div>
       {/if}
     </section>
@@ -1814,9 +1859,6 @@
     gap: var(--space-lg);
     margin-bottom: var(--space-md);
   }
-  .plan-header h2 {
-    margin: 3px 0 0;
-  }
   .plan-header p {
     margin: 4px 0 0;
     color: var(--text-muted);
@@ -1965,6 +2007,127 @@
     padding-top: var(--space-md);
     border-top: 1px solid var(--border-subtle);
   }
+  .plan-graph-explorer {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .plan-graph-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-graph-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .graph-hint {
+    margin-left: auto;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .legend-dot.runtime {
+    background: var(--warning);
+  }
+  .plan-graph-scroll {
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .plan-graph-canvas {
+    position: relative;
+    min-width: 680px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent) 1px, transparent 1px) 0 0 / 238px 100%,
+      var(--bg-primary);
+  }
+  .plan-graph-lines {
+    position: absolute;
+    inset: 0;
+    overflow: visible;
+  }
+  .plan-graph-lines path {
+    fill: none;
+    stroke: color-mix(in srgb, var(--accent) 70%, var(--border));
+    stroke-width: 1.5;
+  }
+  .plan-graph-node {
+    position: absolute;
+    display: flex;
+    width: 202px;
+    height: 76px;
+    box-sizing: border-box;
+    align-items: flex-start;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+  }
+  .plan-graph-node:hover,
+  .plan-graph-node.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow), 0 8px 20px color-mix(in srgb, black 15%, transparent);
+    transform: translateY(-1px);
+  }
+  .graph-node-stage {
+    color: var(--accent);
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .graph-node-title {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .graph-node-title strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .graph-node-title i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .graph-node-title i.runtime {
+    background: var(--warning);
+  }
+  .graph-node-meta {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .graph-selection {
+    margin-top: 9px;
+  }
   .plan-stage-list {
     display: grid;
     align-content: start;
@@ -1986,13 +2149,6 @@
   .plan-stage-button.active {
     border-color: var(--accent);
     background: var(--accent-glow);
-  }
-  .plan-stage-button > span:nth-child(2) {
-    display: flex;
-    min-width: 0;
-    flex: 1;
-    flex-direction: column;
-    gap: 2px;
   }
   .plan-stage-button small {
     color: var(--text-muted);
@@ -2017,10 +2173,6 @@
     font-size: 0.8125rem;
     text-transform: none;
     letter-spacing: normal;
-  }
-  .plan-detail-heading > span {
-    color: var(--text-muted);
-    font-size: 0.625rem;
   }
   .plan-unit {
     width: 100%;
