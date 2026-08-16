@@ -10,12 +10,43 @@ import (
 
 // LineageNode represents a data asset or processing step in the lineage graph.
 type LineageNode struct {
-	ID         string `json:"id"`
-	Type       string `json:"type"` // file, table, api, processing
-	Name       string `json:"name"`
-	SubType    string `json:"sub_type,omitempty"`    // for processing: transform, join, code, quality_check, sql_generate
-	PipelineID string `json:"pipeline_id,omitempty"` // which pipeline owns this (processing nodes only)
-	Pipeline   string `json:"pipeline,omitempty"`    // pipeline name (processing nodes only)
+	ID         string           `json:"id"`
+	Type       string           `json:"type"` // file, table, api, processing
+	Name       string           `json:"name"`
+	SubType    string           `json:"sub_type,omitempty"`    // for processing: transform, join, code, quality_check, sql_generate
+	PipelineID string           `json:"pipeline_id,omitempty"` // which pipeline owns this (processing nodes only)
+	Pipeline   string           `json:"pipeline,omitempty"`    // pipeline name (processing nodes only)
+	Metadata   *LineageMetadata `json:"metadata,omitempty"`
+}
+
+// LineageMetadata is the latest observed metadata for a dataset or processing
+// step. It is deliberately observation-shaped: absent metadata means the
+// system has not profiled that node, not that the dataset has no schema.
+type LineageMetadata struct {
+	Namespace   string          `json:"namespace,omitempty"`
+	Dataset     string          `json:"dataset,omitempty"`
+	RowCount    int             `json:"row_count,omitempty"`
+	ColumnCount int             `json:"column_count,omitempty"`
+	Columns     []LineageColumn `json:"columns,omitempty"`
+}
+
+type LineageColumn struct {
+	Name      string  `json:"name"`
+	Type      string  `json:"type,omitempty"`
+	NullPct   float64 `json:"null_pct,omitempty"`
+	UniquePct float64 `json:"unique_pct,omitempty"`
+	MinVal    string  `json:"min_val,omitempty"`
+	MaxVal    string  `json:"max_val,omitempty"`
+}
+
+// LineageProfile is the profile payload persisted by NodeProfileStore for a
+// pipeline node. RunID/ObservedAt are optional because older stores expose
+// only the latest profile JSON, not its source run identity.
+type LineageProfile struct {
+	Profile    *DataProfile
+	Schema     *SchemaSnapshot
+	RunID      string
+	ObservedAt *time.Time
 }
 
 // LineageEdge represents data flow between nodes through a pipeline.
@@ -28,16 +59,37 @@ type LineageEdge struct {
 
 // LineageGraph is the full cross-pipeline data flow graph.
 type LineageGraph struct {
-	Nodes []LineageNode `json:"nodes"`
-	Edges []LineageEdge `json:"edges"`
+	Nodes       []LineageNode       `json:"nodes"`
+	Edges       []LineageEdge       `json:"edges"`
+	ColumnEdges []LineageColumnEdge `json:"column_edges,omitempty"`
+}
+
+type LineageColumnEdge struct {
+	From          string  `json:"from"`
+	FromColumn    string  `json:"from_column"`
+	To            string  `json:"to"`
+	ToColumn      string  `json:"to_column"`
+	Confidence    float64 `json:"confidence"`
+	MappingReason string  `json:"mapping_reason"`
 }
 
 // BuildLineageGraph scans all pipelines and constructs a lineage graph
 // by walking actual DAG edges inside each pipeline.
 func BuildLineageGraph(pipelines []models.Pipeline) *LineageGraph {
+	return buildLineageGraph(pipelines, nil)
+}
+
+// BuildLineageGraphWithProfiles adds observed schema/statistics and
+// evidence-backed column mappings to the topology graph.
+func BuildLineageGraphWithProfiles(pipelines []models.Pipeline, profiles map[string]LineageProfile) *LineageGraph {
+	return buildLineageGraph(pipelines, profiles)
+}
+
+func buildLineageGraph(pipelines []models.Pipeline, profiles map[string]LineageProfile) *LineageGraph {
 	assetNodes := make(map[string]LineageNode) // shared across pipelines, deduped by asset ID
 	procNodes := make(map[string]LineageNode)  // pipeline-scoped processing nodes
 	edgeSet := make(map[string]LineageEdge)    // deduped by from|to|pipeline_id
+	columnEdgeSet := make(map[string]LineageColumnEdge)
 
 	for _, p := range pipelines {
 		// Resolve variables in configs
@@ -56,26 +108,42 @@ func BuildLineageGraph(pipelines []models.Pipeline) *LineageGraph {
 
 		for _, n := range p.Nodes {
 			resolved := pipeNodes[n.ID]
+			profile, hasProfile := profiles[profileKey(p.ID, n.ID)]
 
 			switch n.Type {
 			// Sources -> extract external asset
 			case models.NodeTypeSourceFile:
 				id := extractFileAsset(resolved.Config, assetNodes)
+				if hasProfile {
+					attachLineageProfile(assetNodes, id, id, profile)
+				}
 				lineageID[n.ID] = id
 			case models.NodeTypeSourceAPI:
 				id := extractAPIAsset(resolved.Config, assetNodes)
+				if hasProfile {
+					attachLineageProfile(assetNodes, id, id, profile)
+				}
 				lineageID[n.ID] = id
 			case models.NodeTypeSourceDB:
 				id := extractSourceDBAsset(resolved.Config, assetNodes)
+				if hasProfile {
+					attachLineageProfile(assetNodes, id, id, profile)
+				}
 				lineageID[n.ID] = id
 
 			// Sinks -> extract external asset
 			case models.NodeTypeSinkFile:
 				id := extractFileAsset(resolved.Config, assetNodes)
+				if hasProfile {
+					attachLineageProfile(assetNodes, id, id, profile)
+				}
 				lineageID[n.ID] = id
 			case models.NodeTypeSinkDB:
 				tableName := findUpstreamTableName(n.ID, pipeNodes, p.Edges)
 				id := extractSinkDBAsset(resolved.Config, tableName, assetNodes)
+				if hasProfile {
+					attachLineageProfile(assetNodes, id, id, profile)
+				}
 				lineageID[n.ID] = id
 
 			// Processing nodes -> create pipeline-scoped lineage node
@@ -94,6 +162,9 @@ func BuildLineageGraph(pipelines []models.Pipeline) *LineageGraph {
 					Pipeline:   p.Name,
 				}
 				lineageID[n.ID] = procID
+				if hasProfile {
+					attachLineageProfile(procNodes, procID, procID, profile)
+				}
 
 				// sql_generate also produces a table asset (its output)
 				if n.Type == models.NodeTypeSQLGenerate {
@@ -120,6 +191,14 @@ func BuildLineageGraph(pipelines []models.Pipeline) *LineageGraph {
 				PipelineID: p.ID,
 				Pipeline:   p.Name,
 			}
+
+			if fromProfile, ok := profiles[profileKey(p.ID, e.From)]; ok {
+				if toProfile, ok := profiles[profileKey(p.ID, e.To)]; ok {
+					for _, mapping := range inferColumnMappings(fromLID, toLID, fromProfile, toProfile) {
+						columnEdgeSet[mapping.From+"|"+mapping.FromColumn+"|"+mapping.To+"|"+mapping.ToColumn] = mapping
+					}
+				}
+			}
 		}
 	}
 
@@ -137,8 +216,64 @@ func BuildLineageGraph(pipelines []models.Pipeline) *LineageGraph {
 	for _, e := range edgeSet {
 		allEdges = append(allEdges, e)
 	}
+	columnEdges := make([]LineageColumnEdge, 0, len(columnEdgeSet))
+	for _, edge := range columnEdgeSet {
+		columnEdges = append(columnEdges, edge)
+	}
 
-	return &LineageGraph{Nodes: allNodes, Edges: allEdges}
+	return &LineageGraph{Nodes: allNodes, Edges: allEdges, ColumnEdges: columnEdges}
+}
+
+func profileKey(pipelineID, nodeID string) string { return pipelineID + ":" + nodeID }
+
+func attachLineageProfile(nodes map[string]LineageNode, id, datasetID string, profile LineageProfile) {
+	node, ok := nodes[id]
+	if !ok || profile.Profile == nil {
+		return
+	}
+	metadata := metadataFromProfile(datasetID, profile)
+	if node.Metadata == nil || len(metadata.Columns) > len(node.Metadata.Columns) {
+		node.Metadata = metadata
+	}
+	nodes[id] = node
+}
+
+func metadataFromProfile(datasetID string, profile LineageProfile) *LineageMetadata {
+	metadata := &LineageMetadata{Dataset: datasetID}
+	if profile.Profile == nil {
+		return metadata
+	}
+	metadata.RowCount = profile.Profile.RowCount
+	metadata.ColumnCount = profile.Profile.ColumnCount
+	metadata.Columns = make([]LineageColumn, 0, len(profile.Profile.Columns))
+	for _, column := range profile.Profile.Columns {
+		metadata.Columns = append(metadata.Columns, LineageColumn{
+			Name: column.Name, Type: column.Type, NullPct: column.NullPct,
+			UniquePct: column.UniquePct, MinVal: column.MinVal, MaxVal: column.MaxVal,
+		})
+	}
+	return metadata
+}
+
+func inferColumnMappings(from, to string, source, target LineageProfile) []LineageColumnEdge {
+	if source.Profile == nil || target.Profile == nil {
+		return nil
+	}
+	targetColumns := make(map[string]struct{}, len(target.Profile.Columns))
+	for _, column := range target.Profile.Columns {
+		targetColumns[column.Name] = struct{}{}
+	}
+	mappings := make([]LineageColumnEdge, 0)
+	for _, column := range source.Profile.Columns {
+		if _, ok := targetColumns[column.Name]; !ok {
+			continue
+		}
+		mappings = append(mappings, LineageColumnEdge{
+			From: from, FromColumn: column.Name, To: to, ToColumn: column.Name,
+			Confidence: 0.7, MappingReason: "observed column name match",
+		})
+	}
+	return mappings
 }
 
 // --- Asset extraction helpers ---

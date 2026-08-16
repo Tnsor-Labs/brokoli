@@ -12,12 +12,36 @@
     sub_type?: string; // transform, join, code, quality_check, sql_generate
     pipeline_id?: string;
     pipeline?: string;
+    metadata?: LineageMetadata;
+  }
+  interface LineageMetadata {
+    namespace?: string;
+    dataset?: string;
+    row_count?: number;
+    column_count?: number;
+    columns?: LineageColumn[];
+  }
+  interface LineageColumn {
+    name: string;
+    type?: string;
+    null_pct?: number;
+    unique_pct?: number;
+    min_val?: string;
+    max_val?: string;
   }
   interface LineageEdge {
     from: string;
     to: string;
     pipeline_id: string;
     pipeline: string;
+  }
+  interface LineageColumnEdge {
+    from: string;
+    from_column: string;
+    to: string;
+    to_column: string;
+    confidence: number;
+    mapping_reason: string;
   }
   interface Pos {
     x: number;
@@ -26,6 +50,7 @@
 
   let nodes: LineageNode[] = [];
   let edges: LineageEdge[] = [];
+  let columnEdges: LineageColumnEdge[] = [];
   let loading = true;
   let selectedNodeId: string | null = null;
   let hoveredEdge: { from: string; to: string } | null = null;
@@ -50,6 +75,7 @@
       const data = await res.json();
       nodes = data.nodes || [];
       edges = data.edges || [];
+      columnEdges = data.column_edges || [];
       layoutNodes();
     } catch {
       notify.error("Failed to load lineage");
@@ -358,6 +384,9 @@
   $: edgeHover = isDark ? "#6366f1" : "#0d9488";
 
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
+  $: selectedColumnEdges = selectedNodeId
+    ? columnEdges.filter((edge) => edge.from === selectedNodeId || edge.to === selectedNodeId)
+    : [];
 </script>
 
 <div class="lineage-page animate-in">
@@ -407,9 +436,10 @@
       <div class="workspace-toolbar">
         <span class="workspace-title">Lineage map</span>
         <div class="workspace-meta">
-          <span>{nodes.filter((n) => n.type !== "processing").length} assets</span>
-          <span>{nodes.filter((n) => n.type === "processing").length} steps</span>
-          <span>{edges.length} connections</span>
+            <span>{nodes.filter((n) => n.type !== "processing").length} assets</span>
+            <span>{nodes.filter((n) => n.type === "processing").length} steps</span>
+            <span>{edges.length} connections</span>
+            <span>{columnEdges.length} column mappings</span>
           <span class="workspace-hint">Drag nodes · Scroll to zoom</span>
         </div>
       </div>
@@ -608,6 +638,51 @@
             >
             <code class="detail-code">{selectedNode.id}</code>
           </div>
+
+          {#if selectedNode.metadata}
+            <div class="detail-section metadata-section">
+              <div class="metadata-heading">
+                <span class="detail-label">Observed metadata</span>
+                <span class="metadata-source">latest profile</span>
+              </div>
+              <div class="metadata-stats">
+                <span><strong>{selectedNode.metadata.row_count ?? 0}</strong> rows</span>
+                <span><strong>{selectedNode.metadata.column_count ?? selectedNode.metadata.columns?.length ?? 0}</strong> columns</span>
+              </div>
+              {#if selectedNode.metadata.columns && selectedNode.metadata.columns.length > 0}
+                <div class="column-list">
+                  {#each selectedNode.metadata.columns as column}
+                    <div class="column-row">
+                      <code>{column.name}</code>
+                      <span>{column.type || "unknown"}</span>
+                      {#if column.null_pct !== undefined}<small>{column.null_pct.toFixed(1)}% null</small>{/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+            </div>
+          {:else}
+            <div class="detail-section metadata-empty">
+              <span class="detail-label">Observed metadata</span>
+              <span>No persisted profile is available for this asset yet.</span>
+            </div>
+          {/if}
+
+          {#if selectedColumnEdges.length > 0}
+            <div class="detail-section">
+              <span class="detail-label">Column-level lineage ({selectedColumnEdges.length})</span>
+              <div class="column-lineage-list">
+                {#each selectedColumnEdges as edge}
+                  <div class="column-lineage-row">
+                    <code>{edge.from_column}</code>
+                    <span>→</span>
+                    <code>{edge.to_column}</code>
+                    <small title={edge.mapping_reason}>{Math.round(edge.confidence * 100)}% inferred</small>
+                  </div>
+                {/each}
+              </div>
+            </div>
+          {/if}
 
           {#if selectedNode.type === "processing" && selectedNode.pipeline}
             <div class="detail-section">
@@ -1030,6 +1105,66 @@
     font-size: 11px;
     color: var(--text-secondary);
     word-break: break-all;
+  }
+  .metadata-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .metadata-source {
+    color: var(--text-dim);
+    font-size: 9px;
+    font-family: var(--font-mono);
+  }
+  .metadata-stats {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .metadata-stats strong {
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+  }
+  .column-list,
+  .column-lineage-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 190px;
+    overflow-y: auto;
+  }
+  .column-row,
+  .column-lineage-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 5px 7px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .column-row code,
+  .column-lineage-row code {
+    flex: 1;
+    overflow: hidden;
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .column-row small,
+  .column-lineage-row small {
+    color: var(--text-dim);
+    white-space: nowrap;
+  }
+  .metadata-empty {
+    display: flex;
+    flex-direction: column;
+    color: var(--text-dim);
+    font-size: 10px;
   }
 
   .pipeline-tags {
