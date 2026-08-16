@@ -13,7 +13,7 @@
   import DataPreview from "../components/DataPreview.svelte";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
   import Pagination from "../components/Pagination.svelte";
-  import type { Pipeline, Run, LogEntry, RunStatus } from "../lib/types";
+  import type { Pipeline, Run, LogEntry, RunStatus, PhysicalInstance } from "../lib/types";
 
   export let params: { id?: string } = {};
   let runPage = 1;
@@ -23,6 +23,7 @@
   let runs: Run[] = [];
   let selectedRun: Run | null = null;
   let logs: LogEntry[] = [];
+  let instances: PhysicalInstance[] = [];
   let loading = true;
   let expandedRunId: string | null = null;
   let previewNodeId: string | null = null;
@@ -86,6 +87,7 @@
     if (expandedRunId) {
       try {
         selectedRun = await api.runs.get(expandedRunId);
+        instances = await api.runs.instances(expandedRunId);
       } catch {
         /* ignore */
       }
@@ -160,6 +162,7 @@
     if (expandedRunId === run.id) {
       expandedRunId = null;
       selectedRun = null;
+      instances = [];
       logsUnsub?.();
       logsUnsub = null;
       logs = [];
@@ -172,8 +175,11 @@
     loadingProfile = false;
     profileRequest += 1;
     try {
-      selectedRun = await api.runs.get(run.id);
-      logs = await api.runs.getLogs(run.id);
+      [selectedRun, logs, instances] = await Promise.all([
+        api.runs.get(run.id),
+        api.runs.getLogs(run.id),
+        api.runs.instances(run.id),
+      ]);
     } catch (e) {
       notify.error("Failed to load run");
     }
@@ -690,6 +696,44 @@
                 {/if}
               </div>
 
+              {#if instances.length > 0}
+                <div class="detail-section">
+                  <div class="physical-header">
+                    <div>
+                      <h3>Physical execution</h3>
+                      <p>Nodus instances produced from this logical run.</p>
+                    </div>
+                    <span class="physical-count">{instances.length} instance{instances.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div class="physical-table-wrap">
+                    <table class="physical-table">
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Instance</th>
+                          <th>Status</th>
+                          <th>Attempt</th>
+                          <th>Rows</th>
+                          <th>Duration</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each instances as instance (instance.logical_node_id + instance.instance_key + instance.attempt)}
+                          <tr>
+                            <td class="mono">{instance.logical_node_id}</td>
+                            <td class="mono">{instance.instance_key}</td>
+                            <td><StatusBadge status={instance.status} /></td>
+                            <td class="mono">{instance.attempt}</td>
+                            <td class="mono">{instance.row_count.toLocaleString()}</td>
+                            <td class="mono">{instance.duration_ms}ms</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {/if}
+
               <!-- DAG with live status -->
               {#if pipeline && pipeline.nodes.length > 0}
                 <div class="detail-section">
@@ -1088,6 +1132,52 @@
     font-family: var(--font-mono);
     font-size: 0.8125rem;
     padding: 4px 8px;
+  }
+
+  .physical-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  .physical-header p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .physical-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .physical-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .physical-table {
+    width: 100%;
+    min-width: 620px;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+  }
+  .physical-table th,
+  .physical-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+  }
+  .physical-table th {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .physical-table tr:last-child td {
+    border-bottom: 0;
   }
 
   .expand-icon {
