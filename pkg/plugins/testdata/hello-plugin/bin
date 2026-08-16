@@ -10,7 +10,9 @@
 #   spec      → prints this plugin's manifest to stdout
 #   check     → reads config from stdin, emits a status:ok
 #   discover  → lists the "greetings" stream
-#   read      → emits 3 record lines + 1 state line
+#   plan      → breaks "greetings" into 2 work units (batch-1, batch-2)
+#   read      → emits 3 record lines + 1 state line; if the params carry
+#               a unit with an "offset" (from a prior plan), logs it first
 #   write     → counts records from stdin, emits status with the count
 
 set -eu
@@ -19,7 +21,7 @@ cmd="${1:-}"
 case "$cmd" in
     spec)
         cat <<'EOF'
-{"protocol_version":1,"name":"hello","version":"0.1.0","binary":"./bin","node_types":[{"type":"source_hello","kind":"source"},{"type":"sink_hello","kind":"sink"}]}
+{"protocol_version":1,"name":"hello","version":"0.1.0","binary":"./bin","node_types":[{"type":"source_hello","kind":"source","supports_plan":true},{"type":"sink_hello","kind":"sink"}]}
 EOF
         ;;
     check)
@@ -32,8 +34,22 @@ EOF
         read -r _config
         printf '{"type":"stream","stream":{"name":"greetings","mode":"full_refresh","columns":[{"name":"id","type":"int"},{"name":"message","type":"string"}]}}\n'
         ;;
+    plan)
+        read -r _params
+        printf '{"type":"work_unit","work_unit":{"unit_id":"batch-1","params":{"offset":0},"label":"first half"}}\n'
+        printf '{"type":"work_unit","work_unit":{"unit_id":"batch-2","params":{"offset":2},"label":"second half"}}\n'
+        ;;
     read)
-        read -r _config
+        read -r params
+        # If the host called ReadUnit, the params line carries a trailing
+        # "unit":{"offset":N} (Unit is ReadParams's last field, so it's
+        # last in the marshaled JSON whenever it's set). Surface it as a
+        # log line so a test can prove the offset a `plan` call handed
+        # out actually made it back to `read` unchanged.
+        offset=$(printf '%s' "$params" | sed -n 's/.*"unit":{"offset":\([0-9]*\)}.*/\1/p')
+        if [ -n "$offset" ]; then
+            printf '{"type":"log","level":"info","message":"reading unit at offset %s"}\n' "$offset"
+        fi
         printf '{"type":"log","level":"info","message":"emitting 3 greetings"}\n'
         printf '{"type":"record","data":{"id":1,"message":"hello world"}}\n'
         printf '{"type":"progress","progress":{"current":1,"total":3,"unit":"records","rows_out":1,"rate":1.5}}\n'
