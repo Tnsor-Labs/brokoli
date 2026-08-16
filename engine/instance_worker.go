@@ -6,6 +6,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -14,24 +15,30 @@ import (
 // engine/expansion.go's dispatchExpansionInstanceRemotely; this is the
 // shared primitive every dispatch-surface consumer of a WorkOrder-bearing
 // job calls to actually do the work, so "how do I run one of these" is
-// answered once, not once per transport. Today's only wired-in caller is
-// ExecuteInstanceJob below (cmd/serve.go's Redis-JobQueue worker loop); an
-// enterprise WorkPool worker reaching this same function (rather than
-// re-implementing it) is the natural next caller.
+// answered once, not once per transport. ExecuteInstanceJob below and the
+// Enterprise WorkPool worker both reach this same function rather than
+// re-implementing execution per transport.
 //
-// Only NodeTypeCode is dispatched remotely today (dynamic-expansion items
-// — see dispatchExpansionInstanceRemotely's own scope). Anything else is a
-// named, explicit failure rather than a silent mishandling, so a future
-// WorkOrder producer that starts dispatching a different node type finds
-// out immediately rather than getting a wrong result.
+// Code expansion items and source_api pagination pages are dispatched
+// remotely today. Anything else is a named, explicit failure rather than a
+// silent mishandling, so a future WorkOrder producer that starts dispatching a
+// different node type finds out immediately rather than getting a wrong
+// result.
 func ExecuteInstanceWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	if wo == nil {
 		return nil, fmt.Errorf("execute instance work order: nil work order")
 	}
-	if wo.NodeType != string(models.NodeTypeCode) {
-		return nil, fmt.Errorf("execute instance work order: unsupported node type %q (only %q dispatches remotely today)", wo.NodeType, models.NodeTypeCode)
+	switch wo.NodeType {
+	case string(models.NodeTypeCode):
+		return executeCodeWorkOrder(wo)
+	case string(models.NodeTypeSourceAPI):
+		return executeSourceAPIPageWorkOrder(wo)
+	default:
+		return nil, fmt.Errorf("execute instance work order: unsupported node type %q", wo.NodeType)
 	}
+}
 
+func executeCodeWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	itemDS := &common.DataSet{Columns: wo.ItemColumns}
 	if wo.ItemRow != nil {
 		itemDS.Rows = []common.DataRow{common.DataRow(wo.ItemRow)}
@@ -42,6 +49,25 @@ func ExecuteInstanceWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet
 	// see ExecuteInstanceJob below, which is the layer that actually knows
 	// which run/node/instance this belongs to.
 	return result, err
+}
+
+func executeSourceAPIPageWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+	if wo.SourceURL == "" {
+		return nil, fmt.Errorf("execute source_api page work order: source URL is required")
+	}
+	sourceType := wo.SourceType
+	if sourceType == "" {
+		sourceType = "rest"
+	}
+	fetcher, err := fetchers.GetFetcher(sourceType)
+	if err != nil {
+		return nil, fmt.Errorf("execute source_api page work order: get fetcher: %w", err)
+	}
+	pageFetcher, ok := fetcher.(fetchers.PageFetcher)
+	if !ok {
+		return nil, fmt.Errorf("execute source_api page work order: source type %q does not support page execution", sourceType)
+	}
+	return pageFetcher.FetchPage(wo.SourceURL, wo.Config, wo.PageURL, wo.PageParams)
 }
 
 // ExecuteInstanceJob is the full worker-side handling of a WorkOrder-

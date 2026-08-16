@@ -141,6 +141,29 @@ func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]
 	return f.parseResponseContract(responseBody, options, headers.Get("Content-Type"))
 }
 
+// FetchPage executes one pagination request without entering the fetcher's
+// multi-page coordinator. It is the worker-side primitive for a source_api
+// page WorkOrder; pageURL is used by link-based callers while pageParams are
+// merged into the source node's configured params for offset/numbered pages.
+func (f *RESTFetcher) FetchPage(source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error) {
+	if source == "" {
+		return nil, ErrInvalidURL
+	}
+
+	f.ensureClientInitialized(options)
+	requestOptions := f.extractRequestOptions(options)
+	requestOptions.Params = mergeParams(requestOptions.Params, pageParams)
+	if pageURL == "" {
+		pageURL = source
+	}
+
+	responseBody, headers, err := f.executeRequest(pageURL, requestOptions)
+	if err != nil {
+		return nil, err
+	}
+	return f.parseResponseContract(responseBody, options, headers.Get("Content-Type"))
+}
+
 func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
 	if f.client == nil {
 		f.client = &http.Client{

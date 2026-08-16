@@ -733,33 +733,41 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 // rather than the worker for exactly this reason, so the two sides were
 // designed to click together without either changing.
 func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt int, instanceKey string, execFencingGen int64, itemDS *common.DataSet, script string, configForScript map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, error) {
+	var itemRow map[string]interface{}
+	if len(itemDS.Rows) > 0 {
+		itemRow = map[string]interface{}(itemDS.Rows[0])
+	}
+	return r.dispatchInstanceWorkOrderRemotely(node.ID, nodeAttempt, instanceKey, execFencingGen, &extensions.InstanceWorkOrder{
+		NodeType: string(node.Type), Script: script, Config: configForScript,
+		ItemColumns: itemDS.Columns, ItemRow: itemRow,
+		RunParams: runParams, TimeoutSeconds: timeoutSec,
+	}, timeoutSec)
+}
+
+// dispatchInstanceWorkOrderRemotely enqueues an already-built WorkOrder and
+// waits for its fenced execution attempt to settle. Expansion items and
+// pagination pages share this transport-side lifecycle; only their WorkOrder
+// payloads differ.
+func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt int, instanceKey string, execFencingGen int64, workOrder *extensions.InstanceWorkOrder, timeoutSec int) (*common.DataSet, error) {
 	execAttemptStore, ok := r.store.(store.ExecutionAttemptStore)
 	if !ok {
 		// Cannot happen through executeExpansionInstance's own call site
 		// (it only calls this when execAttemptStore != nil already), kept
 		// as a direct, named failure rather than a panic for any other
 		// caller.
-		return nil, fmt.Errorf("dispatch expansion instance %s remotely: store does not support execution attempts", instanceKey)
+		return nil, fmt.Errorf("dispatch instance %s remotely: store does not support execution attempts", instanceKey)
 	}
 	if r.artifactStore == nil {
-		return nil, fmt.Errorf("dispatch expansion instance %s remotely: no artifact store configured to read the result back from", instanceKey)
+		return nil, fmt.Errorf("dispatch instance %s remotely: no artifact store configured to read the result back from", instanceKey)
 	}
 
-	var itemRow map[string]interface{}
-	if len(itemDS.Rows) > 0 {
-		itemRow = map[string]interface{}(itemDS.Rows[0])
-	}
-	idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt)
+	idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, nodeID, instanceKey, nodeAttempt)
 	job := extensions.RunJob{
 		ID: common.NewID(), PipelineID: r.pipe.ID, RunID: r.run.ID, OrgID: r.pipe.OrgID,
-		NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
+		NodeID: nodeID, InstanceKey: instanceKey, Attempt: nodeAttempt,
 		IdempotencyKey: idempotencyKey, FencingGeneration: execFencingGen,
 		EnqueuedAt: time.Now().UTC(),
-		WorkOrder: &extensions.InstanceWorkOrder{
-			NodeType: string(node.Type), Script: script, Config: configForScript,
-			ItemColumns: itemDS.Columns, ItemRow: itemRow,
-			RunParams: runParams, TimeoutSeconds: timeoutSec,
-		},
+		WorkOrder:  workOrder,
 	}
 	if err := r.instanceJobQueue.Enqueue(job); err != nil {
 		return nil, fmt.Errorf("enqueue remote instance dispatch for %s: %w", instanceKey, err)
@@ -768,20 +776,20 @@ func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt
 	// See remoteInstanceDispatchMargin's own doc comment for the deadline.
 	waitCtx, cancel := context.WithTimeout(r.ctx, time.Duration(timeoutSec)*time.Second+remoteInstanceDispatchMargin)
 	defer cancel()
-	go r.renewAttemptLease(waitCtx, execAttemptStore, node.ID, instanceKey, nodeAttempt, execFencingGen)
+	go r.renewAttemptLease(waitCtx, execAttemptStore, nodeID, instanceKey, nodeAttempt, execFencingGen)
 
 	// checkAttempt polls current status; ok=true means it returned a
 	// terminal result (result/error already the return values), ok=false
 	// means still queued/claimed/started — keep waiting.
 	checkAttempt := func() (result *common.DataSet, err error, ok bool) {
-		attempt, getErr := execAttemptStore.GetExecutionAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt)
+		attempt, getErr := execAttemptStore.GetExecutionAttempt(r.run.ID, nodeID, instanceKey, nodeAttempt)
 		if getErr != nil {
-			r.log(node.ID, models.LogLevelWarning, "failed to poll remote instance %s status: %v", instanceKey, getErr)
+			r.log(nodeID, models.LogLevelWarning, "failed to poll remote instance %s status: %v", instanceKey, getErr)
 			return nil, nil, false
 		}
 		switch attempt.Status {
 		case models.AttemptStatusCompleted:
-			ds, readErr := r.artifactStore.ReadArtifact(r.run.ID, node.ID, instanceKey)
+			ds, readErr := r.artifactStore.ReadArtifact(r.run.ID, nodeID, instanceKey)
 			if readErr != nil {
 				return nil, fmt.Errorf("remote instance %s completed but its result could not be read back: %w", instanceKey, readErr), true
 			}
@@ -817,8 +825,8 @@ func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt
 			// this race honestly (fencing mismatch) rather than silently
 			// overwriting whatever this decided — the same safety net
 			// every other settlement path in this ADR relies on.
-			if failErr := execAttemptStore.FailAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, execFencingGen, reason); failErr != nil {
-				r.log(node.ID, models.LogLevelWarning, "failed to settle timed-out remote instance %s: %v", instanceKey, failErr)
+			if failErr := execAttemptStore.FailAttempt(r.run.ID, nodeID, instanceKey, nodeAttempt, execFencingGen, reason); failErr != nil {
+				r.log(nodeID, models.LogLevelWarning, "failed to settle timed-out remote instance %s: %v", instanceKey, failErr)
 			}
 			return nil, fmt.Errorf("%s", reason)
 		case <-ticker.C:
