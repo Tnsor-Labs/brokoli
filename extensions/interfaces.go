@@ -495,9 +495,9 @@ type InstanceWorkOrder struct {
 	// Script is the node's executable script body, mirroring
 	// models.Node.Config["script"].
 	Script string `json:"script,omitempty"`
-	// Config is the node's config with script/expansion (engine-dispatch-
-	// only metadata) already stripped — mirrors
-	// engine.runCodeExpansion's own configForScript.
+	// Config is the node-specific execution config. Code expansion dispatch
+	// strips script/expansion metadata before populating it; source_api page
+	// dispatch carries the request/response config needed to parse one page.
 	Config map[string]interface{} `json:"config,omitempty"`
 	// ItemColumns/ItemRow is this instance's one-row input dataset (a
 	// dynamic-expansion item).
