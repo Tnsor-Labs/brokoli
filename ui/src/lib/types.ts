@@ -70,6 +70,32 @@ export interface PipelineVersion {
   created_at: string;
 }
 
+export interface PhysicalWorkUnit {
+  logical_node_id: string;
+  node_type: string;
+  kind: string;
+  instance_key_template: string;
+  static_instance_count: number;
+  runtime_resolved: boolean;
+  retry_scope: string;
+  concurrency_group?: string;
+  max_concurrency?: number;
+  explain: string;
+}
+
+export interface PhysicalStage {
+  index: number;
+  work_units: PhysicalWorkUnit[];
+}
+
+export interface PhysicalPlan {
+  pipeline_id: string;
+  ir_version?: string;
+  stages: PhysicalStage[];
+  static_instance_count: number;
+  dynamic_nodes: number;
+}
+
 export type NodeType =
   | "source_file"
   | "source_api"
