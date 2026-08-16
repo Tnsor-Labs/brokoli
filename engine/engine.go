@@ -745,6 +745,18 @@ func hasTriggerOn(sum *models.PipelineDepSummary, upstreamID string) bool {
 // The pipeline runs in a background goroutine. Use WebSocket events or polling to track status.
 // If a JobQueue is configured, the run is enqueued for distributed execution instead.
 func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string) (string, error) {
+	return e.runPipelineAsync(true, pipelineID, params...)
+}
+
+// RunPipelineAsyncLocal starts a background run in this process even when a
+// pipeline-level JobQueue is configured. Enterprise WorkPool orchestration
+// uses this mode so the control-plane engine can dispatch physical WorkOrders
+// to the pool instead of handing the entire pipeline to one worker.
+func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]string) (string, error) {
+	return e.runPipelineAsync(false, pipelineID, params...)
+}
+
+func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, params ...map[string]string) (string, error) {
 	if e.closing() {
 		return "", ErrEngineClosed
 	}
@@ -801,7 +813,7 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 	runID := common.NewID()
 
 	// If job queue is available, enqueue for distributed execution
-	if e.JobQueue != nil {
+	if useJobQueue && e.JobQueue != nil {
 		accepted := &models.Run{
 			ID:              runID,
 			PipelineID:      pipelineID,
