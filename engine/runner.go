@@ -996,6 +996,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 
 		if err == nil {
 			// ── Success ──
+			r.saveNodeProfile(node.ID, output, outputRef)
 			rowCount := 0
 			if output != nil {
 				rowCount = len(output.Rows)
@@ -1268,6 +1269,42 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		return nil, fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return conditionDecision, nil
+}
+
+// saveNodeProfile makes runtime schema and profile evidence available to
+// lineage consumers. Profiling is intentionally bounded to a sample so a
+// large successful node cannot turn observability into a second full scan.
+func (r *Runner) saveNodeProfile(nodeID string, output *common.DataSet, outputRef *artifact.DatasetRef) {
+	profiles, ok := r.store.(store.NodeProfileStore)
+	if !ok || r.dryRun {
+		return
+	}
+	var profile *DataProfile
+	if output != nil {
+		sample := *output
+		if len(sample.Rows) > 10000 {
+			sample.Rows = sample.Rows[:10000]
+		}
+		profile = ProfileDataSet(&sample)
+		profile.RowCount = len(output.Rows)
+	} else if outputRef != nil {
+		profile = &DataProfile{RowCount: int(outputRef.RowCount), ColumnCount: len(outputRef.Columns)}
+		for _, column := range outputRef.Columns {
+			profile.Columns = append(profile.Columns, ColumnProfile{Name: column, Type: "unknown"})
+		}
+	}
+	if profile == nil {
+		return
+	}
+	schema := ExtractSchema(profile)
+	profileJSON, profileErr := json.Marshal(profile)
+	schemaJSON, schemaErr := json.Marshal(schema)
+	if profileErr != nil || schemaErr != nil {
+		return
+	}
+	if err := profiles.SaveNodeProfile(r.run.ID, nodeID, string(profileJSON), string(schemaJSON), "[]"); err != nil {
+		r.logWithTrace(nodeID, models.LogLevelDebug, "", 0, nil, "lineage profile unavailable: %v", err)
+	}
 }
 
 // renewAttemptLease keeps a node attempt's short execution-attempt lease
