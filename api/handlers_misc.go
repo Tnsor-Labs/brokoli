@@ -808,7 +808,28 @@ func lineageHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		graph := engine.BuildLineageGraph(pipelines)
+		profiles := make(map[string]engine.LineageProfile)
+		if profileStore, ok := s.(store.NodeProfileStore); ok {
+			for _, pipeline := range pipelines {
+				for _, node := range pipeline.Nodes {
+					profileJSON, schemaJSON, profileErr := profileStore.GetLatestNodeProfile(pipeline.ID, node.ID)
+					if profileErr != nil {
+						continue
+					}
+					var profile engine.DataProfile
+					if json.Unmarshal([]byte(profileJSON), &profile) != nil || len(profile.Columns) == 0 {
+						continue
+					}
+					var schema engine.SchemaSnapshot
+					_ = json.Unmarshal([]byte(schemaJSON), &schema)
+					profiles[pipeline.ID+":"+node.ID] = engine.LineageProfile{
+						Profile: &profile,
+						Schema:  &schema,
+					}
+				}
+			}
+		}
+		graph := engine.BuildLineageGraphWithProfiles(pipelines, profiles)
 		writeJSON(w, http.StatusOK, graph)
 	}
 }
