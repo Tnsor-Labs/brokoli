@@ -242,6 +242,13 @@ else:
 // For datasets > 10K rows, uses CSV temp files instead of JSON stdin/stdout for 5-10x speed.
 // Auto-detects pyarrow/pandas for even faster transfers.
 func ExecuteCodeNode(script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
+	return ExecuteCodeNodeContext(context.Background(), script, input, nodeConfig, runParams, timeoutSec)
+}
+
+// ExecuteCodeNodeContext is ExecuteCodeNode with caller-controlled cancellation.
+// The context is combined with the node's own timeout so remote workers can
+// terminate an in-flight code WorkOrder when its run is cancelled.
+func ExecuteCodeNodeContext(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
 	if script == "" {
 		return nil, "", fmt.Errorf("code node requires a 'script' in config")
 	}
@@ -328,7 +335,7 @@ func ExecuteCodeNode(script string, input *common.DataSet, nodeConfig map[string
 	}
 
 	// Execute
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
 	cmd := exec.CommandContext(ctx, pythonPath, scriptFile)

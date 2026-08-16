@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
@@ -26,6 +27,32 @@ func TestExecuteInstanceWorkOrder_RunsTheScript(t *testing.T) {
 	}
 	if len(result.Rows) != 1 || result.Rows[0]["doubled"] != float64(42) {
 		t.Errorf("result rows = %v, want one row with doubled=42", result.Rows)
+	}
+}
+
+func TestExecuteInstanceWorkOrderContext_CancelsCodeProcess(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := ExecuteInstanceWorkOrderContext(ctx, &extensions.InstanceWorkOrder{
+			NodeType:       "code",
+			Script:         "import time; time.sleep(30)",
+			TimeoutSeconds: 60,
+		})
+		done <- err
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancellation error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("code process did not stop after cancellation")
 	}
 }
 

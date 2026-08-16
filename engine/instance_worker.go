@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -25,25 +26,39 @@ import (
 // different node type finds out immediately rather than getting a wrong
 // result.
 func ExecuteInstanceWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+	return ExecuteInstanceWorkOrderContext(context.Background(), wo)
+}
+
+// ExecuteInstanceWorkOrderContext runs a WorkOrder until it completes or the
+// caller cancels it. Code nodes propagate the context to their subprocess;
+// other node types still observe cancellation before and after their fetch.
+func ExecuteInstanceWorkOrderContext(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	if wo == nil {
 		return nil, fmt.Errorf("execute instance work order: nil work order")
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	switch wo.NodeType {
 	case string(models.NodeTypeCode):
-		return executeCodeWorkOrder(wo)
+		return executeCodeWorkOrder(ctx, wo)
 	case string(models.NodeTypeSourceAPI):
-		return executeSourceAPIPageWorkOrder(wo)
+		result, err := executeSourceAPIPageWorkOrder(wo)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		return result, err
 	default:
 		return nil, fmt.Errorf("execute instance work order: unsupported node type %q", wo.NodeType)
 	}
 }
 
-func executeCodeWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	itemDS := &common.DataSet{Columns: wo.ItemColumns}
 	if wo.ItemRow != nil {
 		itemDS.Rows = []common.DataRow{common.DataRow(wo.ItemRow)}
 	}
-	result, _, err := ExecuteCodeNode(wo.Script, itemDS, wo.Config, wo.RunParams, wo.TimeoutSeconds)
+	result, _, err := ExecuteCodeNodeContext(ctx, wo.Script, itemDS, wo.Config, wo.RunParams, wo.TimeoutSeconds)
 	// wo's stderr is deliberately dropped here, not logged: this function
 	// has no Runner (and so no run-scoped log sink) to attribute it to —
 	// see ExecuteInstanceJob below, which is the layer that actually knows

@@ -11,6 +11,12 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Remote WorkOrder cancellation** — workers now observe durable run
+  cancellation and terminate in-flight code-node processes instead of
+  continuing physical instance execution or settling late results.
+
 ## [0.10.43] - 2026-08-16
 
 ### Added
