@@ -4,10 +4,8 @@
   import { api } from "../../lib/api";
   import Panel from "./Panel.svelte";
 
-  // A full year, in whole weeks so the grid has no ragged last column.
-  // 91 days filled about a sixth of the full-width panel it sits in, which
-  // wasted the space and made the panel read as empty. 52 columns fill it,
-  // and a year is the window where weekly and seasonal patterns show up.
+  // A full year makes the contribution grid legible at dashboard width and
+  // preserves weekly and seasonal patterns.
   export let days = 364;
 
   let data: CalendarDay[] = [];
@@ -95,8 +93,8 @@
   expandable={false}
   maxHeight="none"
 >
-  <!-- Fixed height by content: the grid is always 91 days, so there is
-       nothing to cap or expand. -->
+  <!-- Fixed height by content: the grid is always a year of whole weeks, so
+       there is nothing to cap or expand. -->
   <div class="board">
     <div class="months">
       {#each weeks as w}
@@ -132,15 +130,14 @@
     overflow-x: auto;
   }
 
-  /* Columns flex to fill the panel instead of sitting at a fixed 11px and
-     leaving most of the width blank, but cap out so cells stay square-ish
-     rather than becoming slabs on a wide monitor. */
+  /* Columns flex to use the dashboard width while keeping the cells close to
+     square on wide monitors. */
   .months, .weeks { display: flex; gap: 3px; }
 
   .month {
     flex: 1 1 0;
     min-width: 6px;
-    max-width: 18px;
+    max-width: 26px;
     font-size: 0.5625rem;
     color: var(--text-dim);
     font-family: var(--font-mono);
@@ -154,7 +151,7 @@
     gap: 3px;
     flex: 1 1 0;
     min-width: 6px;
-    max-width: 18px;
+    max-width: 26px;
   }
 
   .cell {
