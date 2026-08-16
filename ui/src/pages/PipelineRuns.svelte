@@ -21,6 +21,7 @@
     RunEvent,
     PhysicalInstance,
     PhysicalPlan,
+    PhysicalWorkUnit,
   } from "../lib/types";
 
   export let params: { id?: string } = {};
@@ -34,6 +35,12 @@
   let logs: LogEntry[] = [];
   let events: RunEvent[] = [];
   let instances: PhysicalInstance[] = [];
+  let chronicleExpanded = false;
+  let chronicleFilter = "all";
+  let selectedChronicleEvent: RunEvent | null = null;
+  let planExpanded = false;
+  let expandedPlanStage: number | null = null;
+  let selectedPlanUnit: PhysicalWorkUnit | null = null;
   let loading = true;
   let expandedRunId: string | null = null;
   let previewNodeId: string | null = null;
@@ -182,6 +189,8 @@
       expandedRunId = null;
       selectedRun = null;
       events = [];
+      chronicleExpanded = false;
+      selectedChronicleEvent = null;
       instances = [];
       logsUnsub?.();
       logsUnsub = null;
@@ -190,6 +199,9 @@
     }
     expandedRunId = run.id;
     events = [];
+    chronicleExpanded = false;
+    selectedChronicleEvent = null;
+    chronicleFilter = "all";
     previewNodeId = null;
     profileNodeId = null;
     profileData = null;
@@ -407,6 +419,15 @@
     return "immutable execution fact recorded";
   }
 
+  function chronicleMatches(event: RunEvent): boolean {
+    if (chronicleFilter === "run") return !event.node_id;
+    if (chronicleFilter === "attempt") return Boolean(event.node_id);
+    if (chronicleFilter === "recovery") return event.event_type.includes("recovery");
+    return true;
+  }
+
+  $: chronicleEvents = events.filter(chronicleMatches);
+
   interface DayRuns {
     date: string;
     label: string;
@@ -564,40 +585,73 @@
 
   {#if plan}
     <section class="plan-section">
-      <div class="plan-header">
-        <div>
+      <button class="disclosure-header plan-disclosure" on:click={() => (planExpanded = !planExpanded)} aria-expanded={planExpanded}>
+        <span class="disclosure-icon" class:open={planExpanded}>›</span>
+        <span class="disclosure-copy">
           <span class="eyebrow">Nodus planner</span>
-          <h2>Execution plan</h2>
-          <p>What Brokoli will place before runtime data resolves.</p>
-        </div>
-        <div class="plan-summary">
-          <strong>{plan.static_instance_count}+</strong>
-          <span>known instances</span>
+          <strong>Execution plan</strong>
+          <small>How Brokoli will place work before runtime data resolves.</small>
+        </span>
+        <span class="plan-summary">
+          <b>{plan.stages.length}</b><small>stages</small>
+          <b>{plan.static_instance_count}+</b><small>known</small>
           {#if plan.dynamic_nodes > 0}
-            <strong>{plan.dynamic_nodes}</strong>
-            <span>runtime fan-outs</span>
+            <b>{plan.dynamic_nodes}</b><small>fan-outs</small>
           {/if}
-        </div>
-      </div>
-      <div class="plan-stages">
-        {#each plan.stages as stage}
-          <div class="plan-stage">
-            <span class="stage-index">Stage {stage.index + 1}</span>
-            <div class="stage-units">
-              {#each stage.work_units as unit}
-                <div class="plan-unit">
-                  <div class="plan-unit-top">
-                    <strong>{unit.logical_node_id}</strong>
-                    <span>{unit.kind}</span>
-                  </div>
-                  <p>{unit.explain}</p>
-                  <small>Retry scope: {unit.retry_scope}</small>
-                </div>
-              {/each}
-            </div>
+        </span>
+      </button>
+      {#if planExpanded}
+        <div class="plan-explorer">
+          <div class="plan-stage-list">
+            {#each plan.stages as stage}
+              <button
+                class="plan-stage-button"
+                class:active={expandedPlanStage === stage.index}
+                on:click={() => {
+                  expandedPlanStage = expandedPlanStage === stage.index ? null : stage.index;
+                  selectedPlanUnit = null;
+                }}
+              >
+                <span class="stage-index">{String(stage.index + 1).padStart(2, "0")}</span>
+                <span><strong>Stage {stage.index + 1}</strong><small>{stage.work_units.length} work unit{stage.work_units.length === 1 ? "" : "s"}</small></span>
+                <span class="disclosure-icon small" class:open={expandedPlanStage === stage.index}>›</span>
+              </button>
+            {/each}
           </div>
-        {/each}
-      </div>
+          <div class="plan-detail">
+            {#if expandedPlanStage !== null}
+              {@const activeStage = plan.stages.find((stage) => stage.index === expandedPlanStage)}
+              {#if activeStage}
+                <div class="plan-detail-heading">
+                  <div><span class="eyebrow">Stage {activeStage.index + 1}</span><h3>Placement units</h3></div>
+                  <span>{activeStage.work_units.length} units</span>
+                </div>
+                <div class="stage-units">
+                  {#each activeStage.work_units as unit}
+                    <button class="plan-unit" class:selected={selectedPlanUnit?.logical_node_id === unit.logical_node_id} on:click={() => (selectedPlanUnit = unit)}>
+                      <div class="plan-unit-top"><strong>{unit.logical_node_id}</strong><span>{unit.kind}</span></div>
+                      <small>{unit.runtime_resolved ? "Runtime-resolved" : `${unit.static_instance_count} static instance${unit.static_instance_count === 1 ? "" : "s"}`}</small>
+                    </button>
+                  {/each}
+                </div>
+                {#if selectedPlanUnit}
+                  <div class="plan-unit-detail">
+                    <div class="plan-unit-top"><strong>{selectedPlanUnit.logical_node_id}</strong><span>{selectedPlanUnit.node_type}</span></div>
+                    <p>{selectedPlanUnit.explain}</p>
+                    <div class="plan-facts">
+                      <span><b>Retry</b>{selectedPlanUnit.retry_scope}</span>
+                      <span><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code></span>
+                      {#if selectedPlanUnit.concurrency_group}<span><b>Pool</b>{selectedPlanUnit.concurrency_group}</span>{/if}
+                    </div>
+                  </div>
+                {/if}
+              {/if}
+            {:else}
+              <div class="plan-empty"><strong>Select a stage</strong><span>See what Nodus will place and why.</span></div>
+            {/if}
+          </div>
+        </div>
+      {/if}
     </section>
   {/if}
 
@@ -792,46 +846,53 @@
                 {/if}
                 </div>
 
-                <!-- Chronicle: the durable explanation for how this run reached its state. -->
                 <div class="detail-section chronicle-section">
-                  <div class="chronicle-header">
-                    <div>
+                  <button class="disclosure-header chronicle-disclosure" on:click={() => (chronicleExpanded = !chronicleExpanded)} aria-expanded={chronicleExpanded}>
+                    <span class="disclosure-icon" class:open={chronicleExpanded}>›</span>
+                    <span class="disclosure-copy">
                       <span class="chronicle-eyebrow">Chronicle</span>
-                      <h3>Run provenance</h3>
-                      <p>Immutable facts from creation through execution, retry, recovery, and outcome.</p>
-                    </div>
-                    <span class="physical-count">{events.length} fact{events.length === 1 ? "" : "s"}</span>
-                  </div>
-                  <div class="chronicle-identity">
-                    <span><b>Run</b> <code>{selectedRun.id}</code></span>
-                    {#if selectedRun.pipeline_version}
-                      <span><b>Pipeline version</b> <code>v{selectedRun.pipeline_version}</code></span>
-                    {/if}
-                    {#if selectedRun.trace_id}
-                      <span><b>Trace</b> <code>{selectedRun.trace_id}</code></span>
-                    {/if}
-                    {#if selectedRun.resumed_from_run_id}
-                      <span><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span>
-                    {/if}
-                  </div>
-                  {#if events.length > 0}
-                    <div class="chronicle-list">
-                      {#each events as event (event.id || event.created_at + event.event_type)}
-                        <article class="chronicle-event">
-                          <span class="chronicle-dot"></span>
-                          <div class="chronicle-event-body">
-                            <div class="chronicle-event-top">
-                              <strong>{chronicleLabel(event)}</strong>
-                              <time>{formatFullTime(event.created_at)}</time>
-                            </div>
-                            <div class="chronicle-event-scope mono">{chronicleScope(event)}</div>
-                            <p>{chronicleDetail(event)}</p>
+                      <strong>Run provenance</strong>
+                      <small>Understand why this run reached its outcome.</small>
+                    </span>
+                    <span class="chronicle-summary"><b>{events.length}</b><small>durable facts</small><b>{events.filter((event) => event.node_id).length}</b><small>attempts</small></span>
+                  </button>
+                  {#if chronicleExpanded}
+                    <div class="chronicle-explorer">
+                      <div class="chronicle-identity">
+                        <span><b>Run</b> <code>{selectedRun.id}</code></span>
+                        {#if selectedRun.pipeline_version}<span><b>Pipeline</b> <code>v{selectedRun.pipeline_version}</code></span>{/if}
+                        {#if selectedRun.trace_id}<span><b>Trace</b> <code>{selectedRun.trace_id}</code></span>{/if}
+                        {#if selectedRun.resumed_from_run_id}<span><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span>{/if}
+                      </div>
+                      <div class="chronicle-toolbar">
+                        <span>Show</span>
+                        {#each [["all", "All facts"], ["run", "Run"], ["attempt", "Attempts"], ["recovery", "Recovery"]] as filter}
+                          <button class:active={chronicleFilter === filter[0]} on:click={() => (chronicleFilter = filter[0])}>{filter[1]}</button>
+                        {/each}
+                      </div>
+                      {#if chronicleEvents.length > 0}
+                        <div class="chronicle-list">
+                          {#each chronicleEvents as event, eventIndex (event.id || event.created_at + event.event_type + eventIndex)}
+                            <button class="chronicle-event" class:selected={selectedChronicleEvent?.id === event.id && selectedChronicleEvent?.created_at === event.created_at} on:click={() => (selectedChronicleEvent = event)}>
+                              <span class="chronicle-dot"></span>
+                              <span class="chronicle-event-body">
+                                <span class="chronicle-event-top"><strong>{chronicleLabel(event)}</strong><time>{formatFullTime(event.created_at)}</time></span>
+                                <span class="chronicle-event-scope mono">{chronicleScope(event)}</span>
+                                <span class="chronicle-event-detail">{chronicleDetail(event)}</span>
+                              </span>
+                            </button>
+                          {/each}
+                        </div>
+                        {#if selectedChronicleEvent}
+                          <div class="chronicle-evidence">
+                            <div><span class="eyebrow">Selected evidence</span><strong>{chronicleLabel(selectedChronicleEvent)}</strong></div>
+                            <code>{JSON.stringify(selectedChronicleEvent.payload || {}, null, 2)}</code>
                           </div>
-                        </article>
-                      {/each}
+                        {/if}
+                      {:else}
+                        <div class="chronicle-empty">No facts match this view.</div>
+                      {/if}
                     </div>
-                  {:else}
-                    <div class="chronicle-empty">No durable Chronicle facts were recorded for this run.</div>
                   {/if}
                 </div>
 
@@ -1828,6 +1889,258 @@
     color: var(--text-secondary);
     font-size: 0.75rem;
     line-height: 1.4;
+  }
+
+  .disclosure-header {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .disclosure-icon {
+    width: 20px;
+    color: var(--accent);
+    font-size: 1.5rem;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform 150ms ease;
+  }
+  .disclosure-icon.open {
+    transform: rotate(90deg);
+  }
+  .disclosure-icon.small {
+    width: auto;
+    margin-left: auto;
+    font-size: 1.15rem;
+  }
+  .disclosure-copy {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .disclosure-copy strong {
+    font-size: 0.9375rem;
+  }
+  .disclosure-copy small {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .plan-disclosure,
+  .chronicle-disclosure {
+    min-height: 44px;
+  }
+  .plan-summary,
+  .chronicle-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+    white-space: nowrap;
+  }
+  .plan-summary b,
+  .chronicle-summary b {
+    margin-left: 8px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+  }
+  .plan-summary b:first-child,
+  .chronicle-summary b:first-child {
+    margin-left: 0;
+  }
+  .plan-explorer {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1fr);
+    gap: var(--space-md);
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .plan-stage-list {
+    display: grid;
+    align-content: start;
+    gap: 5px;
+  }
+  .plan-stage-button {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .plan-stage-button:hover,
+  .plan-stage-button.active {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .plan-stage-button > span:nth-child(2) {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .plan-stage-button small {
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-detail {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-primary) 70%, transparent);
+  }
+  .plan-detail-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    margin-bottom: 9px;
+  }
+  .plan-detail-heading h3 {
+    margin: 2px 0 0;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .plan-detail-heading > span {
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-unit {
+    width: 100%;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .plan-unit:hover,
+  .plan-unit.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+  }
+  .plan-unit-detail {
+    margin-top: 9px;
+    padding: 10px;
+    border-left: 2px solid var(--accent);
+    background: var(--bg-secondary);
+  }
+  .plan-unit-detail p {
+    margin: 6px 0 9px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+  .plan-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-facts span {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .plan-facts b {
+    color: var(--text-secondary);
+  }
+  .plan-empty {
+    display: flex;
+    min-height: 110px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+  .plan-empty span {
+    font-size: 0.6875rem;
+  }
+  .chronicle-explorer {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .chronicle-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .chronicle-toolbar button {
+    padding: 4px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.625rem;
+  }
+  .chronicle-toolbar button:hover,
+  .chronicle-toolbar button.active {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .chronicle-event {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .chronicle-event:hover,
+  .chronicle-event.selected {
+    border-radius: var(--radius-sm);
+    background: var(--accent-glow);
+  }
+  .chronicle-event-detail {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-evidence {
+    display: grid;
+    gap: 8px;
+    margin-top: 9px;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+  }
+  .chronicle-evidence > div {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .chronicle-evidence code {
+    max-height: 140px;
+    overflow: auto;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    white-space: pre-wrap;
   }
 
   /* ── Run History Grid ── */
