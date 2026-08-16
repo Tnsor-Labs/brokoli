@@ -11,6 +11,29 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.42] - 2026-08-16
+
+### Added
+
+- **Durable physical-instance dispatch** (#236) — @hc12r. Enterprise
+  WorkPool and core workers can now execute dynamic-expansion instances as
+  fenced WorkOrders while the control plane keeps orchestration and artifact
+  settlement. Whole-pipeline queue execution remains compatible.
+
+- **Eligible pagination pages as physical instances** (#143) — @hc12r.
+  Offset and numbered `source_api` pages with dataset-visible termination can
+  be dispatched concurrently to workers, retried independently, and settled
+  through execution-attempt fencing. Metadata-driven termination,
+  checkpointed pagination, rate limiting, artifact responses, and unsupported
+  strategies retain the existing in-process path.
+
+### Behaviour Changes To Read Before Upgrading
+
+- With instance dispatch enabled, eligible offset and numbered pagination
+  pages run on WorkPool or JobQueue workers rather than the API process. Page
+  configurations using response metadata, checkpoints, rate limiting, or
+  artifact responses continue to use the existing local pagination path.
+
 ## [0.10.41] - 2026-08-15
 
 ### Added
