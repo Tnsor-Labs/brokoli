@@ -46,7 +46,7 @@ say "launching parallel security scans (gosec / govulncheck / licenses)"
   if command -v docker >/dev/null 2>&1; then
     docker run --rm -v "$PWD":/src -w /src \
       ghcr.io/securego/gosec@sha256:4342ad119a7c69f3f4e4ce78d81ba183dc774a70a7a4c6eeb15fe9e511f214f0 \
-      -no-fail -fmt=json -out=/src/$LOGDIR/gosec.json ./... >/dev/null 2>&1
+      -no-fail -fmt=json -out=/src/$LOGDIR/gosec.json -exclude-dir=.preflight ./... >/dev/null 2>&1
     findings=$(jq '[.Issues[]] | length' "$LOGDIR/gosec.json")
     baseline=$(jq -r '.issues' security/gosec-baseline.json)
     echo "gosec findings: $findings (baseline: $baseline)" > "$LOGDIR/gosec.verdict"

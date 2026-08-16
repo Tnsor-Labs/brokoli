@@ -98,6 +98,33 @@ func TestRunPipelineAsyncPersistsQueuedRunIdentity(t *testing.T) {
 	}
 }
 
+func TestRunPipelineAsyncLocalBypassesPipelineQueue(t *testing.T) {
+	queue := &recordingJobQueue{}
+	eng, s, pipelineID := newQueuedRunTestEngine(t, queue)
+
+	runID, err := eng.RunPipelineAsyncLocal(pipelineID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.jobs) != 0 {
+		t.Fatalf("queued jobs = %d, want local execution to bypass pipeline queue", len(queue.jobs))
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		run, getErr := s.GetRun(runID)
+		if getErr == nil && run.Status == models.RunStatusSuccess {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	run, err := s.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("local run status = %s, want success", run.Status)
+}
+
 func TestExecuteQueuedRunUsesAcceptedIDAndDeduplicatesDelivery(t *testing.T) {
 	queue := &recordingJobQueue{}
 	eng, s, pipelineID := newQueuedRunTestEngine(t, queue)
