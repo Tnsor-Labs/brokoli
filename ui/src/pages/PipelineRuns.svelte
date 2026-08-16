@@ -13,13 +13,21 @@
   import DataPreview from "../components/DataPreview.svelte";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
   import Pagination from "../components/Pagination.svelte";
-  import type { Pipeline, Run, LogEntry, RunStatus, PhysicalInstance } from "../lib/types";
+  import type {
+    Pipeline,
+    Run,
+    LogEntry,
+    RunStatus,
+    PhysicalInstance,
+    PhysicalPlan,
+  } from "../lib/types";
 
   export let params: { id?: string } = {};
   let runPage = 1;
   let runPageSize = 25;
 
   let pipeline: Pipeline | null = null;
+  let plan: PhysicalPlan | null = null;
   let runs: Run[] = [];
   let selectedRun: Run | null = null;
   let logs: LogEntry[] = [];
@@ -123,8 +131,16 @@
   onMount(async () => {
     if (!params.id) return;
     try {
-      pipeline = await api.pipelines.get(params.id);
-      runs = await api.runs.listByPipeline(params.id);
+      [pipeline, runs] = await Promise.all([
+        api.pipelines.get(params.id),
+        api.runs.listByPipeline(params.id),
+      ]);
+      try {
+        plan = await api.pipelines.plan(params.id);
+      } catch {
+        // Older servers may not expose physical planning yet.
+        plan = null;
+      }
     } catch (e) {
       notify.error("Failed to load");
     } finally {
@@ -501,6 +517,45 @@
         <span>Latest duration</span><strong class="mono">{formatDuration(latestRun)}</strong><small
           >{relativeTime(latestRun.started_at, now)}</small
         >
+      </div>
+    </section>
+  {/if}
+
+  {#if plan}
+    <section class="plan-section">
+      <div class="plan-header">
+        <div>
+          <span class="eyebrow">Nodus planner</span>
+          <h2>Execution plan</h2>
+          <p>What Brokoli will place before runtime data resolves.</p>
+        </div>
+        <div class="plan-summary">
+          <strong>{plan.static_instance_count}+</strong>
+          <span>known instances</span>
+          {#if plan.dynamic_nodes > 0}
+            <strong>{plan.dynamic_nodes}</strong>
+            <span>runtime fan-outs</span>
+          {/if}
+        </div>
+      </div>
+      <div class="plan-stages">
+        {#each plan.stages as stage}
+          <div class="plan-stage">
+            <span class="stage-index">Stage {stage.index + 1}</span>
+            <div class="stage-units">
+              {#each stage.work_units as unit}
+                <div class="plan-unit">
+                  <div class="plan-unit-top">
+                    <strong>{unit.logical_node_id}</strong>
+                    <span>{unit.kind}</span>
+                  </div>
+                  <p>{unit.explain}</p>
+                  <small>Retry scope: {unit.retry_scope}</small>
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/each}
       </div>
     </section>
   {/if}
@@ -1484,6 +1539,11 @@
     .backfill-panel {
       flex-wrap: wrap;
     }
+    .plan-header {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
     .run-header {
       flex-wrap: wrap;
       gap: var(--space-sm);
@@ -1491,6 +1551,97 @@
     .run-rows {
       margin-left: 0;
     }
+  }
+
+  .plan-section {
+    margin-bottom: var(--space-lg);
+    padding: var(--space-lg);
+    background: linear-gradient(135deg, var(--bg-secondary), rgba(13, 148, 136, 0.05));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  .plan-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-md);
+  }
+  .plan-header h2 {
+    margin: 3px 0 0;
+  }
+  .plan-header p {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .plan-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    white-space: nowrap;
+  }
+  .plan-summary strong {
+    margin-left: 8px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1rem;
+  }
+  .plan-summary strong:first-child {
+    margin-left: 0;
+  }
+  .plan-stages {
+    display: grid;
+    gap: var(--space-sm);
+  }
+  .plan-stage {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    gap: var(--space-sm);
+    align-items: start;
+  }
+  .stage-index {
+    padding-top: 9px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+  }
+  .stage-units {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: var(--space-sm);
+  }
+  .plan-unit {
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+  }
+  .plan-unit-top {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+  .plan-unit-top strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .plan-unit-top span,
+  .plan-unit small {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .plan-unit p {
+    min-height: 2.2em;
+    margin: 6px 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.4;
   }
 
   /* ── Run History Grid ── */

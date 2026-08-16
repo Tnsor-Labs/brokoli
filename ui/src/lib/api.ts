@@ -1,6 +1,7 @@
 import type {
   Pipeline,
   PipelineVersion,
+  PhysicalPlan,
   PipelineTemplate,
   Run,
   RunEvent,
@@ -130,6 +131,7 @@ export const api = {
       request<DependencyGraph>(`/pipelines/dependency-graph`),
     versions: (id: string) =>
       request<PipelineVersion[]>(`/pipelines/${id}/versions`),
+    plan: (id: string) => request<PhysicalPlan>(`/pipelines/${id}/plan`),
     rollback: (id: string, version: number) =>
       request<Pipeline>(`/pipelines/${id}/rollback`, {
         method: "POST",
