@@ -98,6 +98,21 @@ func TestRunPipelineAsyncPersistsQueuedRunIdentity(t *testing.T) {
 	}
 }
 
+func TestRunPipelineAsyncWithCapabilitiesCarriesPlacementRequirements(t *testing.T) {
+	queue := &recordingJobQueue{}
+	eng, _, pipelineID := newQueuedRunTestEngine(t, queue)
+
+	if _, err := eng.RunPipelineAsyncWithCapabilities(pipelineID, []string{"gpu", "linux"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(queue.jobs) != 1 {
+		t.Fatalf("queued jobs = %d, want 1", len(queue.jobs))
+	}
+	if got := queue.jobs[0].RequiredCapabilities; len(got) != 2 || got[0] != "gpu" || got[1] != "linux" {
+		t.Fatalf("required capabilities = %v, want [gpu linux]", got)
+	}
+}
+
 func TestRunPipelineAsyncLocalBypassesPipelineQueue(t *testing.T) {
 	queue := &recordingJobQueue{}
 	eng, s, pipelineID := newQueuedRunTestEngine(t, queue)

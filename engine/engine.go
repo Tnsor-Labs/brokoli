@@ -745,7 +745,14 @@ func hasTriggerOn(sum *models.PipelineDepSummary, upstreamID string) bool {
 // The pipeline runs in a background goroutine. Use WebSocket events or polling to track status.
 // If a JobQueue is configured, the run is enqueued for distributed execution instead.
 func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(true, pipelineID, params...)
+	return e.runPipelineAsync(true, pipelineID, nil, params...)
+}
+
+// RunPipelineAsyncWithCapabilities starts a queued run whose workers must
+// advertise every requested capability. It is used by Enterprise Nodus when
+// a whole-pipeline fallback still needs placement constraints.
+func (e *Engine) RunPipelineAsyncWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
+	return e.runPipelineAsync(true, pipelineID, requiredCapabilities, params...)
 }
 
 // RunPipelineAsyncLocal starts a background run in this process even when a
@@ -753,10 +760,17 @@ func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string
 // uses this mode so the control-plane engine can dispatch physical WorkOrders
 // to the pool instead of handing the entire pipeline to one worker.
 func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(false, pipelineID, params...)
+	return e.runPipelineAsync(false, pipelineID, nil, params...)
 }
 
-func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, params ...map[string]string) (string, error) {
+// RunPipelineAsyncLocalWithCapabilities starts a control-plane run whose
+// physical WorkOrders must be placed on workers advertising every requested
+// capability.
+func (e *Engine) RunPipelineAsyncLocalWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
+	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, params...)
+}
+
+func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
 	if e.closing() {
 		return "", ErrEngineClosed
 	}
@@ -885,6 +899,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, params ..
 		if len(params) > 0 && params[0] != nil {
 			job.Params = params[0]
 		}
+		job.RequiredCapabilities = append([]string(nil), requiredCapabilities...)
 		if err := e.JobQueue.Enqueue(job); err != nil {
 			now := time.Now().UTC()
 			accepted.Status = models.RunStatusFailed
@@ -915,7 +930,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, params ..
 	}
 
 	// Default: run in-process (current behavior)
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue, requiredCapabilities)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore

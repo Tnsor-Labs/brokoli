@@ -428,8 +428,11 @@ type RunJob struct {
 	RunID      string            `json:"run_id"`
 	OrgID      string            `json:"org_id"`
 	Params     map[string]string `json:"params,omitempty"`
-	Priority   int               `json:"priority"`
-	EnqueuedAt time.Time         `json:"enqueued_at"`
+	// RequiredCapabilities restricts delivery to workers advertising every
+	// listed capability. Empty means any eligible worker may claim the job.
+	RequiredCapabilities []string  `json:"required_capabilities,omitempty"`
+	Priority             int       `json:"priority"`
+	EnqueuedAt           time.Time `json:"enqueued_at"`
 
 	// NodeID is empty for pipeline-level jobs (today's only kind).
 	NodeID string `json:"node_id,omitempty"`

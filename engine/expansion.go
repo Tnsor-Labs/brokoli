@@ -766,8 +766,9 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 		ID: common.NewID(), PipelineID: r.pipe.ID, RunID: r.run.ID, OrgID: r.pipe.OrgID,
 		NodeID: nodeID, InstanceKey: instanceKey, Attempt: nodeAttempt,
 		IdempotencyKey: idempotencyKey, FencingGeneration: execFencingGen,
-		EnqueuedAt: time.Now().UTC(),
-		WorkOrder:  workOrder,
+		EnqueuedAt:           time.Now().UTC(),
+		RequiredCapabilities: append([]string(nil), r.requiredCapabilities...),
+		WorkOrder:            workOrder,
 	}
 	if err := r.instanceJobQueue.Enqueue(job); err != nil {
 		return nil, fmt.Errorf("enqueue remote instance dispatch for %s: %w", instanceKey, err)

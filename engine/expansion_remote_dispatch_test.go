@@ -133,6 +133,47 @@ func TestPipeline_ExpandRemoteDispatch_Succeeds(t *testing.T) {
 	}
 }
 
+func TestPipeline_ExpandRemoteDispatchCarriesRequiredCapabilities(t *testing.T) {
+	realStore := newExpansionTestStore(t, "expand-remote-capabilities")
+	real := realStore.(*store.SQLiteStore)
+	dir := t.TempDir()
+	pipeline := remoteDispatchTestPipeline("expand-remote-capabilities-pipeline")
+	pipeline.Nodes[0].Config["path"] = writeCSV(t, dir, "files.csv", "path\na.csv\n")
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			if len(job.RequiredCapabilities) != 2 || job.RequiredCapabilities[0] != "gpu" || job.RequiredCapabilities[1] != "linux" {
+				t.Errorf("required capabilities = %v, want [gpu linux]", job.RequiredCapabilities)
+			}
+			return []string{"path"}, []common.DataRow{{"path": "a.csv"}}, ""
+		},
+	}
+
+	runID, err := eng.RunPipelineAsyncLocalWithCapabilities(pipeline.ID, []string{"gpu", "linux"})
+	if err != nil {
+		t.Fatalf("RunPipelineAsyncLocalWithCapabilities: %v", err)
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		run, getErr := real.GetRun(runID)
+		if getErr == nil && run.Status == models.RunStatusSuccess {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	run, err := real.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Fatalf("run status = %s, want success", run.Status)
+}
+
 func TestPipeline_ExpandRemoteDispatch_WorkerFailureFailsTheRun(t *testing.T) {
 	realStore := newExpansionTestStore(t, "expand-remote-fail")
 	real := realStore.(*store.SQLiteStore)

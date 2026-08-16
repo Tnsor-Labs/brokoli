@@ -68,6 +68,9 @@ type Runner struct {
 	// nil by default — see that field's doc comment. Non-nil opts dynamic-
 	// expansion instances into remote dispatch instead of local execution.
 	instanceJobQueue extensions.JobQueue
+	// requiredCapabilities is copied onto every physical WorkOrder emitted by
+	// this run so Nodus can place it only on compatible workers.
+	requiredCapabilities []string
 
 	// expansionResults caches a dynamic-expansion item's successful output
 	// across that same expansion node's own retry attempts within this run
@@ -165,8 +168,8 @@ type nodeExecutionResult struct {
 }
 
 // NewRunner creates a runner for the given pipeline.
-func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string, instanceJobQueue extensions.JobQueue) *Runner {
-	return &Runner{
+func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string, instanceJobQueue extensions.JobQueue, requiredCapabilities ...[]string) *Runner {
+	r := &Runner{
 		varStore:         vs,
 		connResolver:     cr,
 		executors:        execs,
@@ -177,6 +180,10 @@ func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline
 		instanceID:       instanceID,
 		instanceJobQueue: instanceJobQueue,
 	}
+	if len(requiredCapabilities) > 0 {
+		r.requiredCapabilities = append([]string(nil), requiredCapabilities[0]...)
+	}
+	return r
 }
 
 // Cancel stops a running pipeline. Safe to call at any point in the

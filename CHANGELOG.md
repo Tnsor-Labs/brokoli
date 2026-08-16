@@ -11,6 +11,15 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.43] - 2026-08-16
+
+### Added
+
+- **Capability-aware physical placement** (#236) — @hc12r. Placement
+  requirements now travel from the run trigger through core WorkOrders and
+  JobQueue jobs, allowing Nodus to deliver physical instances only to
+  workers advertising the requested capabilities.
+
 ## [0.10.42] - 2026-08-16
 
 ### Added
