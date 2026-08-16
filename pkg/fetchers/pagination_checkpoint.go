@@ -60,3 +60,10 @@ type CheckpointingFetcher interface {
 	// equivalent to Fetch — resume/resumeRecords/onCheckpoint are unused.
 	FetchPaginatedResumable(source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error)
 }
+
+// PageFetcher executes exactly one already-planned pagination request. The
+// engine uses this narrow contract for a source_api page WorkOrder so a remote
+// worker does not need to recreate the coordinator's pagination loop.
+type PageFetcher interface {
+	FetchPage(source string, options map[string]interface{}, pageURL string, pageParams map[string]string) (*common.DataSet, error)
+}

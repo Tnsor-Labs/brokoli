@@ -478,11 +478,9 @@ type RunJob struct {
 // physical instance without already having the full pipeline definition
 // in hand — RFC §18.5's "worker lease" sketch (connector/runtime, input
 // references, config, checkpoint, resource policy, progress endpoint,
-// cancellation token), scoped for now to exactly what a dynamic-expansion
-// item needs: the first, and currently only, kind of instance with
-// durable per-instance claim/lease wiring (engine/expansion.go's
-// executeExpansionInstance, Tnsor-Labs/brokoli#149). Nothing populates or
-// reads this yet — RunJob.WorkOrder is nil on every job today.
+// cancellation token), scoped to the physical work units currently dispatched
+// by the engine: dynamic-expansion items and eligible source_api pagination
+// pages.
 //
 // ItemColumns/ItemRow inline common.DataSet's shape as plain JSON-safe
 // types rather than importing pkg/common here: this package deliberately
@@ -513,6 +511,15 @@ type InstanceWorkOrder struct {
 	// remote claimant's own lease duration should be derived from (see
 	// that function's claim-duration comment).
 	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+
+	// SourceURL/SourceType/PageURL/PageParams describe one source_api page.
+	// They are populated only when NodeType is "source_api"; code expansion
+	// WorkOrders continue to use ItemColumns/ItemRow above. PageParams are
+	// merged with the source node's configured params by the worker.
+	SourceURL  string            `json:"source_url,omitempty"`
+	SourceType string            `json:"source_type,omitempty"`
+	PageURL    string            `json:"page_url,omitempty"`
+	PageParams map[string]string `json:"page_params,omitempty"`
 }
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.

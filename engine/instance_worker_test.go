@@ -2,6 +2,8 @@ package engine
 
 import (
 	"database/sql"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -28,9 +30,36 @@ func TestExecuteInstanceWorkOrder_RunsTheScript(t *testing.T) {
 }
 
 func TestExecuteInstanceWorkOrder_RejectsUnsupportedNodeType(t *testing.T) {
-	_, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{NodeType: "source_api"})
+	_, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{NodeType: "unsupported"})
 	if err == nil {
 		t.Fatal("expected an error for a node type that doesn't dispatch remotely")
+	}
+}
+
+func TestExecuteInstanceWorkOrder_FetchesSourceAPIPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("offset"); got != "4" {
+			t.Errorf("offset = %q, want 4", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[{"id":5}]}`))
+	}))
+	defer server.Close()
+
+	result, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{
+		NodeType:   "source_api",
+		SourceURL:  server.URL,
+		SourceType: "rest",
+		Config: map[string]interface{}{
+			"records": "results",
+		},
+		PageParams: map[string]string{"offset": "4", "limit": "2"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteInstanceWorkOrder: %v", err)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["id"] != float64(5) {
+		t.Fatalf("result = %+v, want one API row", result)
 	}
 }
 

@@ -170,6 +170,14 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		r.log(node.ID, models.LogLevelWarning, "source_api execution.retry_scope=%q is not a recognized value for source_api pagination (only \"page\" applies here) — ignoring", v)
 	}
 
+	if ds, handled, remoteErr := r.runSourceAPIRemotePages(node, source, sourceType, paginationCfg, execCfg); handled {
+		if remoteErr != nil {
+			return nil, fmt.Errorf("fetch %s: %w", source, remoteErr)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Fetched %d rows from %s through remote pagination instances", len(ds.Rows), source)
+		return ds, nil
+	}
+
 	ds, err := r.fetchSourceAPI(node, fetcher, source, hasPagination, execCfg)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
