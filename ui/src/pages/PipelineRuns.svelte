@@ -18,6 +18,7 @@
     Run,
     LogEntry,
     RunStatus,
+    RunEvent,
     PhysicalInstance,
     PhysicalPlan,
   } from "../lib/types";
@@ -31,6 +32,7 @@
   let runs: Run[] = [];
   let selectedRun: Run | null = null;
   let logs: LogEntry[] = [];
+  let events: RunEvent[] = [];
   let instances: PhysicalInstance[] = [];
   let loading = true;
   let expandedRunId: string | null = null;
@@ -96,6 +98,7 @@
       try {
         selectedRun = await api.runs.get(expandedRunId);
         instances = await api.runs.instances(expandedRunId);
+        events = await api.runs.events(expandedRunId);
       } catch {
         /* ignore */
       }
@@ -178,6 +181,7 @@
     if (expandedRunId === run.id) {
       expandedRunId = null;
       selectedRun = null;
+      events = [];
       instances = [];
       logsUnsub?.();
       logsUnsub = null;
@@ -185,6 +189,7 @@
       return;
     }
     expandedRunId = run.id;
+    events = [];
     previewNodeId = null;
     profileNodeId = null;
     profileData = null;
@@ -196,6 +201,12 @@
         api.runs.getLogs(run.id),
         api.runs.instances(run.id),
       ]);
+      try {
+        events = await api.runs.events(run.id);
+      } catch {
+        // Keep older servers usable while making durable evidence visible when available.
+        events = [];
+      }
     } catch (e) {
       notify.error("Failed to load run");
     }
@@ -364,6 +375,36 @@
         timeZoneName: "short",
       })
     );
+  }
+
+  function chronicleLabel(event: RunEvent): string {
+    return event.event_type
+      .replace(/^run\./, "")
+      .replace(/^attempt\./, "attempt ")
+      .replace(/^retry\./, "retry ")
+      .replace(/_/g, " ");
+  }
+
+  function chronicleScope(event: RunEvent): string {
+    if (!event.node_id) return "run scope";
+    return `${event.node_id}${event.attempt !== undefined ? ` · attempt ${event.attempt}` : ""}`;
+  }
+
+  function chronicleDetail(event: RunEvent): string {
+    const payload = event.payload || {};
+    const status = typeof payload.status === "string" ? payload.status : "";
+    const error = typeof payload.error === "string" ? payload.error : "";
+    const backoff = typeof payload.backoff_ms === "number" ? payload.backoff_ms : 0;
+    if (error) return error;
+    if (backoff > 0) return `backoff ${backoff}ms before the next attempt`;
+    if (status) return `outcome recorded as ${status}`;
+    if (event.event_type === "run.recovery_started") {
+      return "startup recovery began evaluating the durable event history";
+    }
+    if (event.event_type === "run.recovery_completed") {
+      return "startup recovery reconciled the run projection";
+    }
+    return "immutable execution fact recorded";
   }
 
   interface DayRuns {
@@ -749,7 +790,50 @@
                     <span class="summary-value">{selectedRun.error.slice(0, 100)}</span>
                   </div>
                 {/if}
-              </div>
+                </div>
+
+                <!-- Chronicle: the durable explanation for how this run reached its state. -->
+                <div class="detail-section chronicle-section">
+                  <div class="chronicle-header">
+                    <div>
+                      <span class="chronicle-eyebrow">Chronicle</span>
+                      <h3>Run provenance</h3>
+                      <p>Immutable facts from creation through execution, retry, recovery, and outcome.</p>
+                    </div>
+                    <span class="physical-count">{events.length} fact{events.length === 1 ? "" : "s"}</span>
+                  </div>
+                  <div class="chronicle-identity">
+                    <span><b>Run</b> <code>{selectedRun.id}</code></span>
+                    {#if selectedRun.pipeline_version}
+                      <span><b>Pipeline version</b> <code>v{selectedRun.pipeline_version}</code></span>
+                    {/if}
+                    {#if selectedRun.trace_id}
+                      <span><b>Trace</b> <code>{selectedRun.trace_id}</code></span>
+                    {/if}
+                    {#if selectedRun.resumed_from_run_id}
+                      <span><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span>
+                    {/if}
+                  </div>
+                  {#if events.length > 0}
+                    <div class="chronicle-list">
+                      {#each events as event (event.id || event.created_at + event.event_type)}
+                        <article class="chronicle-event">
+                          <span class="chronicle-dot"></span>
+                          <div class="chronicle-event-body">
+                            <div class="chronicle-event-top">
+                              <strong>{chronicleLabel(event)}</strong>
+                              <time>{formatFullTime(event.created_at)}</time>
+                            </div>
+                            <div class="chronicle-event-scope mono">{chronicleScope(event)}</div>
+                            <p>{chronicleDetail(event)}</p>
+                          </div>
+                        </article>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="chronicle-empty">No durable Chronicle facts were recorded for this run.</div>
+                  {/if}
+                </div>
 
               {#if instances.length > 0}
                 <div class="detail-section">
@@ -1205,6 +1289,108 @@
     color: var(--text-muted);
     font-size: 0.75rem;
     white-space: nowrap;
+  }
+  .chronicle-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  .chronicle-header h3 {
+    margin: 2px 0 0;
+  }
+  .chronicle-header p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .chronicle-eyebrow {
+    color: var(--accent);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .chronicle-identity {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-bottom: var(--space-sm);
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-identity code {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+  .chronicle-list {
+    position: relative;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+  }
+  .chronicle-list::before {
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    left: 21px;
+    width: 1px;
+    background: var(--border);
+    content: "";
+  }
+  .chronicle-event {
+    position: relative;
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .chronicle-dot {
+    z-index: 1;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    margin: 4px 0 0 5px;
+    border: 2px solid var(--bg-secondary);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .chronicle-event-body {
+    min-width: 0;
+    flex: 1;
+  }
+  .chronicle-event-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+  }
+  .chronicle-event-top time {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+  }
+  .chronicle-event-scope {
+    margin-top: 2px;
+    color: var(--accent);
+    font-size: 0.625rem;
+  }
+  .chronicle-event-body p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-empty {
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
   }
   .physical-table-wrap {
     overflow-x: auto;

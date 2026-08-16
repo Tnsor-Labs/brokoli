@@ -232,6 +232,8 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   trace_id?: string;
+  pipeline_version?: number;
+  resumed_from_run_id?: string;
   node_runs: NodeRun[];
 }
 
