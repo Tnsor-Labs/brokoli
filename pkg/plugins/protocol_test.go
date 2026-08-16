@@ -81,6 +81,45 @@ func TestProgress_RoundTrip(t *testing.T) {
 	})
 }
 
+// TestWorkUnit_RoundTrip locks the `plan` wire format (ADR-013 M3): a
+// WorkUnit survives EncodeLine → DecodeStream unchanged, including a
+// nested Params map a plugin would later expect back verbatim via
+// ReadParams.Unit.
+func TestWorkUnit_RoundTrip(t *testing.T) {
+	in := WorkUnit{
+		UnitID: "page-6",
+		Params: map[string]interface{}{"offset": float64(3000), "limit": float64(500)},
+		Label:  "page 6 of ~unknown",
+	}
+
+	var buf bytes.Buffer
+	if err := EncodeLine(&buf, NewWorkUnit(in)); err != nil {
+		t.Fatalf("EncodeLine: %v", err)
+	}
+
+	var got *WorkUnit
+	if err := DecodeStream(&buf, func(m Message) error {
+		if m.Type == MsgWorkUnit {
+			got = m.WorkUnit
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("DecodeStream: %v", err)
+	}
+	if got == nil {
+		t.Fatal("no MsgWorkUnit decoded")
+	}
+	if got.UnitID != "page-6" {
+		t.Errorf("UnitID: got %q, want %q", got.UnitID, "page-6")
+	}
+	if got.Label != "page 6 of ~unknown" {
+		t.Errorf("Label: got %q, want %q", got.Label, "page 6 of ~unknown")
+	}
+	if got.Params["offset"] != float64(3000) || got.Params["limit"] != float64(500) {
+		t.Errorf("Params not preserved: %+v", got.Params)
+	}
+}
+
 // TestDecodeStream_UnknownTypeIgnored guards the compatibility rule
 // MsgProgress relies on: a host must ignore message types it does not
 // know rather than failing the stream. Without this, adding any future

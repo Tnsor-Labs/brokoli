@@ -276,6 +276,104 @@ func TestManager_Runner_Discover(t *testing.T) {
 	}
 }
 
+// ─── plan / ReadUnit (Tnsor-Labs/brokoli#39 M3) ───────────────────
+
+// TestManager_Runner_Plan covers the new `plan` command end to end
+// against the hello-plugin fixture, which declares
+// NodeTypeDecl.SupportsPlan and breaks its "greetings" stream into two
+// work units.
+func TestManager_Runner_Plan(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	man := mgr.Get("hello")
+	if man == nil {
+		t.Fatal("hello plugin not loaded")
+	}
+	if !man.NodeTypes[0].SupportsPlan {
+		t.Fatal("manifest fixture should declare supports_plan: true on source_hello")
+	}
+
+	runner := NewRunner(man, 10*time.Second)
+	units, err := runner.Plan(context.Background(), Config{}, "greetings")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(units) != 2 {
+		t.Fatalf("expected 2 work units, got %d (%+v)", len(units), units)
+	}
+	if units[0].UnitID != "batch-1" || units[0].Params["offset"] != float64(0) {
+		t.Errorf("units[0]: got %+v", units[0])
+	}
+	if units[1].UnitID != "batch-2" || units[1].Params["offset"] != float64(2) {
+		t.Errorf("units[1]: got %+v", units[1])
+	}
+}
+
+// TestManager_Runner_ReadUnit proves the round trip that makes `plan`
+// useful: a WorkUnit.Params returned by Plan reaches the plugin's next
+// `read` call, unchanged, via ReadParams.Unit. The fixture's read case
+// echoes the offset it received as a log line when a unit is present.
+func TestManager_Runner_ReadUnit(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runner := NewRunner(mgr.Get("hello"), 10*time.Second)
+
+	units, err := runner.Plan(context.Background(), Config{}, "greetings")
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+
+	var logs []string
+	runner.LogHandler = func(_ LogLevel, msg string) { logs = append(logs, msg) }
+
+	res, err := runner.ReadUnit(context.Background(), Config{}, "greetings", nil, units[1].Params)
+	if err != nil {
+		t.Fatalf("ReadUnit: %v", err)
+	}
+	if len(res.Records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(res.Records))
+	}
+	if len(logs) == 0 || logs[0] != "reading unit at offset 2" {
+		t.Fatalf("expected the plugin to echo the unit's offset first, got logs: %v", logs)
+	}
+}
+
+// TestManager_Runner_Read_WithoutPlan_IsUnaffected proves the
+// compatibility rule ReadParams.Unit exists to protect: calling Read
+// (not ReadUnit) never sets Unit, so a stream read without planning it
+// first behaves exactly as it always has, no "reading unit at offset"
+// log line and no unit field on the wire at all.
+func TestManager_Runner_Read_WithoutPlan_IsUnaffected(t *testing.T) {
+	dir := setupTestPluginDir(t)
+	mgr, err := NewManager(dir)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	runner := NewRunner(mgr.Get("hello"), 10*time.Second)
+
+	var logs []string
+	runner.LogHandler = func(_ LogLevel, msg string) { logs = append(logs, msg) }
+
+	res, err := runner.Read(context.Background(), Config{}, "greetings", nil)
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if len(res.Records) != 3 {
+		t.Fatalf("expected 3 records, got %d", len(res.Records))
+	}
+	for _, l := range logs {
+		if contains(l, "reading unit at offset") {
+			t.Fatalf("Read (no plan) must not carry a unit; got log: %q", l)
+		}
+	}
+}
+
 // TestManager_DeclaredCapabilities locks in the extensions.NodeKindDeclarer
 // contract (Tnsor-Labs/brokoli#62): a manifest's declared Kind for
 // source_hello/sink_hello must translate into the matching capability
