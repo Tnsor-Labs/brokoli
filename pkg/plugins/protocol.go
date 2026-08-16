@@ -61,6 +61,16 @@ const (
 	// StreamMessage per stream.
 	CmdDiscover Command = "discover"
 
+	// CmdPlan breaks one already-discovered stream into independent
+	// work units the host can schedule, retry, and track separately
+	// (ADR-013 M3) — a page range, a file list, a table's partitions,
+	// whatever fits that connector. Optional: only meaningful for a
+	// node type whose manifest sets NodeTypeDecl.SupportsPlan. A plugin
+	// that doesn't implement it is read whole, exactly as before this
+	// command existed. Reads PlanParams from stdin, emits one
+	// WorkUnitMessage per unit.
+	CmdPlan Command = "plan"
+
 	// CmdRead emits records from a source stream. Reads config from
 	// stdin, emits RecordMessages and optional StateMessages on stdout.
 	CmdRead Command = "read"
@@ -104,6 +114,14 @@ const (
 	// §17 describes (current/total/unit, rows, bytes, rate) so a UI can
 	// render a real progress bar instead of parsing log lines.
 	MsgProgress MessageType = "progress"
+
+	// MsgWorkUnit is one independent, schedulable piece of a stream's
+	// work, emitted by `plan` (ADR-013 M3) - the typed counterpart to
+	// MsgStream's "here is a stream" for "here is one piece of a
+	// stream's work". A plugin that never implements `plan` never
+	// emits this; every plugin that only implements read-the-whole-
+	// stream is unaffected.
+	MsgWorkUnit MessageType = "work_unit"
 )
 
 // Message is a single JSONL line on a plugin's stdout stream. The
@@ -120,6 +138,7 @@ type Message struct {
 	Message    string                 `json:"message,omitempty"`    // MsgLog, MsgError, MsgStatus
 	StatusCode string                 `json:"status,omitempty"`     // MsgStatus: "ok" or "error"
 	Progress   *Progress              `json:"progress,omitempty"`   // MsgProgress: the progress report
+	WorkUnit   *WorkUnit              `json:"work_unit,omitempty"`  // MsgWorkUnit: the declared unit
 }
 
 // LogLevel mirrors Brokoli's run log levels so plugin logs can be
@@ -157,6 +176,28 @@ type Stream struct {
 type StreamColumn struct {
 	Name string `json:"name"`
 	Type string `json:"type,omitempty"` // "string" | "int" | "float" | "bool" | "timestamp" | "json"
+}
+
+// WorkUnit is one independent, schedulable piece of a stream's work
+// (MsgWorkUnit), returned by `plan` (ADR-013 M3).
+//
+// UnitID is the plugin's own stable name for this piece within the
+// stream ("page-1", "2024-01.csv", ...). The host derives its own
+// durable instance key from it rather than the plugin dictating that
+// key directly — the same separation MsgState already draws between
+// "what the plugin knows" (the cursor value) and "what the host owns"
+// (persisting and replaying it).
+//
+// Params is opaque to the host: whatever the plugin needs on a later
+// `read` call to fetch exactly this piece (a page offset, a file path,
+// a partition predicate) and nothing more. The host passes it back
+// unchanged via ReadParams.Unit.
+type WorkUnit struct {
+	UnitID string                 `json:"unit_id"`
+	Params map[string]interface{} `json:"params,omitempty"`
+	// Label is optional human-readable detail for logs/UI ("page 6 of
+	// ~unknown"), the same role Progress.Message plays.
+	Label string `json:"label,omitempty"`
 }
 
 // Progress carries a structured progress report from a running plugin
@@ -209,6 +250,12 @@ type ReadParams struct {
 	Config Config                 `json:"config"`
 	Stream string                 `json:"stream"`
 	State  map[string]interface{} `json:"state,omitempty"`
+	// Unit carries a WorkUnit.Params from a prior `plan` call, when the
+	// host is reading one planned piece of the stream rather than the
+	// whole thing at once. Empty for every plugin that doesn't
+	// implement `plan` — reading a stream without planning it first
+	// behaves exactly as it always has.
+	Unit map[string]interface{} `json:"unit,omitempty"`
 }
 
 // WriteParams is the stdin header for a `write` invocation. The host
@@ -227,6 +274,14 @@ type CheckParams struct {
 // DiscoverParams is the stdin payload for `discover`.
 type DiscoverParams struct {
 	Config Config `json:"config"`
+}
+
+// PlanParams is the stdin payload for `plan`. Same shape as
+// DiscoverParams plus a stream name: planning is always scoped to one
+// already-discovered stream, never the whole connector at once.
+type PlanParams struct {
+	Config Config `json:"config"`
+	Stream string `json:"stream"`
 }
 
 // EncodeLine writes a Message as a single JSON line with a trailing
@@ -329,6 +384,12 @@ func NewProgress(p Progress) Message {
 	}
 
 	return Message{Type: MsgProgress, Progress: &p}
+}
+
+// NewWorkUnit constructs a MsgWorkUnit Message. Used by SDK helpers and
+// reference plugins that implement `plan` in Go rather than shell.
+func NewWorkUnit(u WorkUnit) Message {
+	return Message{Type: MsgWorkUnit, WorkUnit: &u}
 }
 
 // IsProtocolVersionSupported returns true if the host can speak the
