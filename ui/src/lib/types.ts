@@ -70,6 +70,32 @@ export interface PipelineVersion {
   created_at: string;
 }
 
+export interface PhysicalWorkUnit {
+  logical_node_id: string;
+  node_type: string;
+  kind: string;
+  instance_key_template: string;
+  static_instance_count: number;
+  runtime_resolved: boolean;
+  retry_scope: string;
+  concurrency_group?: string;
+  max_concurrency?: number;
+  explain: string;
+}
+
+export interface PhysicalStage {
+  index: number;
+  work_units: PhysicalWorkUnit[];
+}
+
+export interface PhysicalPlan {
+  pipeline_id: string;
+  ir_version?: string;
+  stages: PhysicalStage[];
+  static_instance_count: number;
+  dynamic_nodes: number;
+}
+
 export type NodeType =
   | "source_file"
   | "source_api"
@@ -206,7 +232,22 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   trace_id?: string;
+  pipeline_version?: number;
+  resumed_from_run_id?: string;
   node_runs: NodeRun[];
+}
+
+export interface PhysicalInstance {
+  logical_node_id: string;
+  kind: "single" | "expansion" | string;
+  instance_key: string;
+  index: number;
+  status: RunStatus;
+  row_count: number;
+  started_at?: string | null;
+  duration_ms: number;
+  error?: string;
+  attempt: number;
 }
 
 export interface NodeRun {

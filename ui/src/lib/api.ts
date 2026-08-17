@@ -1,9 +1,11 @@
 import type {
   Pipeline,
   PipelineVersion,
+  PhysicalPlan,
   PipelineTemplate,
   Run,
   RunEvent,
+  PhysicalInstance,
   LogEntry,
   AlertsResponse,
   DLQEntry,
@@ -129,6 +131,7 @@ export const api = {
       request<DependencyGraph>(`/pipelines/dependency-graph`),
     versions: (id: string) =>
       request<PipelineVersion[]>(`/pipelines/${id}/versions`),
+    plan: (id: string) => request<PhysicalPlan>(`/pipelines/${id}/plan`),
     rollback: (id: string, version: number) =>
       request<Pipeline>(`/pipelines/${id}/rollback`, {
         method: "POST",
@@ -144,6 +147,7 @@ export const api = {
     listByPipeline: (pipelineId: string) =>
       request<Run[]>(`/pipelines/${pipelineId}/runs`),
     get: (id: string) => request<Run>(`/runs/${id}`),
+    instances: (id: string) => request<PhysicalInstance[]>(`/runs/${id}/instances`),
     getLogs: (id: string) => request<LogEntry[]>(`/runs/${id}/logs`),
     backfill: (pipelineId: string, startDate: string, endDate: string) =>
       request<{ runs: string[]; count: number }>(`/pipelines/${pipelineId}/backfill`, {

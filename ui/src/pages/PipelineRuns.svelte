@@ -13,16 +13,33 @@
   import DataPreview from "../components/DataPreview.svelte";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
   import Pagination from "../components/Pagination.svelte";
-  import type { Pipeline, Run, LogEntry, RunStatus } from "../lib/types";
+  import type {
+    Pipeline,
+    Run,
+    LogEntry,
+    RunStatus,
+    RunEvent,
+    PhysicalInstance,
+    PhysicalPlan,
+    PhysicalWorkUnit,
+  } from "../lib/types";
 
   export let params: { id?: string } = {};
   let runPage = 1;
   let runPageSize = 25;
 
   let pipeline: Pipeline | null = null;
+  let plan: PhysicalPlan | null = null;
   let runs: Run[] = [];
   let selectedRun: Run | null = null;
   let logs: LogEntry[] = [];
+  let events: RunEvent[] = [];
+  let instances: PhysicalInstance[] = [];
+  let chronicleExpanded = false;
+  let chronicleFilter = "all";
+  let selectedChronicleEvent: RunEvent | null = null;
+  let planExpanded = false;
+  let selectedPlanUnit: PhysicalWorkUnit | null = null;
   let loading = true;
   let expandedRunId: string | null = null;
   let previewNodeId: string | null = null;
@@ -39,6 +56,53 @@
   let profileData: any = null;
   let loadingProfile = false;
   let profileRequest = 0;
+
+  type PlanGraphNode = {
+    unit: PhysicalWorkUnit;
+    stage: number;
+    x: number;
+    y: number;
+  };
+
+  type PlanGraphEdge = {
+    from: PlanGraphNode;
+    to: PlanGraphNode;
+  };
+
+  function buildPlanGraph(currentPlan: PhysicalPlan, currentPipeline: Pipeline) {
+    const nodes: PlanGraphNode[] = [];
+    const byLogicalID = new Map<string, PlanGraphNode>();
+    const columnWidth = 238;
+    const rowHeight = 112;
+    const nodeWidth = 202;
+
+    currentPlan.stages.forEach((stage, stageOrder) => {
+      stage.work_units.forEach((unit, row) => {
+        const node: PlanGraphNode = {
+          unit,
+          stage: stage.index,
+          x: 22 + stageOrder * columnWidth,
+          y: 42 + row * rowHeight,
+        };
+        nodes.push(node);
+        byLogicalID.set(unit.logical_node_id, node);
+      });
+    });
+
+    const edges: PlanGraphEdge[] = (currentPipeline.edges || [])
+      .map((edge) => ({ from: byLogicalID.get(edge.from), to: byLogicalID.get(edge.to) }))
+      .filter((edge): edge is PlanGraphEdge => Boolean(edge.from && edge.to));
+
+    return {
+      nodes,
+      edges,
+      width: Math.max(680, currentPlan.stages.length * columnWidth + 22),
+      height: Math.max(210, Math.max(0, ...nodes.map((node) => node.y)) + 98),
+      nodeWidth,
+    };
+  }
+
+  $: planGraph = plan && pipeline ? buildPlanGraph(plan, pipeline) : null;
 
   async function loadProfile(runId: string, nodeId: string) {
     const request = ++profileRequest;
@@ -83,9 +147,24 @@
     } catch {
       /* ignore */
     }
-    if (expandedRunId) {
+    const runId = expandedRunId;
+    if (runId) {
       try {
-        selectedRun = await api.runs.get(expandedRunId);
+        // Parallel, matching selectRun's initial fetch — this refresh fires
+        // repeatedly during live run activity, so three sequential round
+        // trips here (vs. one parallel batch on first expand) would make
+        // the panel visibly laggier to update than opening it fresh does.
+        const [nextSelectedRun, nextInstances, nextEvents] = await Promise.all([
+          api.runs.get(runId),
+          api.runs.instances(runId),
+          api.runs.events(runId),
+        ]);
+        // The user may have switched to a different run (or collapsed this
+        // one) while this refresh was in flight.
+        if (expandedRunId !== runId) return;
+        selectedRun = nextSelectedRun;
+        instances = nextInstances;
+        events = nextEvents;
       } catch {
         /* ignore */
       }
@@ -120,14 +199,24 @@
 
   onMount(async () => {
     if (!params.id) return;
+    // plan depends only on params.id, not on pipeline/runs — fire it
+    // alongside them instead of after, so an older server without physical
+    // planning (caught below) doesn't cost this page an extra serialized
+    // round trip on every visit.
+    const planPromise = api.pipelines.plan(params.id).catch(() => null);
     try {
-      pipeline = await api.pipelines.get(params.id);
-      runs = await api.runs.listByPipeline(params.id);
+      [pipeline, runs] = await Promise.all([
+        api.pipelines.get(params.id),
+        api.runs.listByPipeline(params.id),
+      ]);
     } catch (e) {
       notify.error("Failed to load");
     } finally {
       loading = false;
     }
+    // Older servers may not expose physical planning yet — planPromise
+    // already turned that into a resolved null above.
+    plan = await planPromise;
 
     // Tripwire on dashboard.default — when ANY run state changes in this
     // org, debounce-refetch our run list. The dashboard changes for any
@@ -160,27 +249,66 @@
     if (expandedRunId === run.id) {
       expandedRunId = null;
       selectedRun = null;
+      events = [];
+      chronicleExpanded = false;
+      selectedChronicleEvent = null;
+      instances = [];
       logsUnsub?.();
       logsUnsub = null;
       logs = [];
       return;
     }
-    expandedRunId = run.id;
+    const runId = run.id;
+    expandedRunId = runId;
+    // Reset every piece of the previous selection's state before the new
+    // fetch resolves — leaving `instances` (or any of these) behind lets a
+    // just-collapsed run's stale data render under the newly expanded run
+    // until the fetch below completes, or indefinitely if it fails.
+    selectedRun = null;
+    logs = [];
+    events = [];
+    instances = [];
+    chronicleExpanded = false;
+    selectedChronicleEvent = null;
+    chronicleFilter = "all";
     previewNodeId = null;
     profileNodeId = null;
     profileData = null;
     loadingProfile = false;
     profileRequest += 1;
+
+    // get/getLogs are essential to the run-detail view — a failure there
+    // still surfaces the error and aborts, as before. instances/events are
+    // each independently best-effort (older or degraded servers, a 403 from
+    // a store that doesn't support physical-instance projection, etc.) and
+    // must not blank the rest of the panel just because one of them failed.
+    const corePromise = Promise.all([api.runs.get(runId), api.runs.getLogs(runId)]);
+    const instancesPromise = api.runs.instances(runId).catch(() => [] as PhysicalInstance[]);
+    const eventsPromise = api.runs.events(runId).catch(() => [] as RunEvent[]);
+
+    let nextSelectedRun: Run, nextLogs: LogEntry[];
     try {
-      selectedRun = await api.runs.get(run.id);
-      logs = await api.runs.getLogs(run.id);
+      [nextSelectedRun, nextLogs] = await corePromise;
     } catch (e) {
-      notify.error("Failed to load run");
+      if (expandedRunId === runId) notify.error("Failed to load run");
+      return;
     }
+    const nextInstances = await instancesPromise;
+    const nextEvents = await eventsPromise;
+
+    // The user may have moved on to a different run (or collapsed this one)
+    // while these requests were in flight — a stale response arriving after
+    // must not overwrite whatever's now actually selected.
+    if (expandedRunId !== runId) return;
+    selectedRun = nextSelectedRun;
+    logs = nextLogs;
+    instances = nextInstances;
+    events = nextEvents;
+
     // Subscribe to live log streaming for this run. The initial REST fetch
     // above gives us any historical logs from the database; the SODP watch
     // takes over from here for new entries the engine emits.
-    subscribeLogs(run.id);
+    subscribeLogs(runId);
   }
 
   function addParam() {
@@ -344,6 +472,45 @@
     );
   }
 
+  function chronicleLabel(event: RunEvent): string {
+    return event.event_type
+      .replace(/^run\./, "")
+      .replace(/^attempt\./, "attempt ")
+      .replace(/^retry\./, "retry ")
+      .replace(/_/g, " ");
+  }
+
+  function chronicleScope(event: RunEvent): string {
+    if (!event.node_id) return "run scope";
+    return `${event.node_id}${event.attempt !== undefined ? ` · attempt ${event.attempt}` : ""}`;
+  }
+
+  function chronicleDetail(event: RunEvent): string {
+    const payload = event.payload || {};
+    const status = typeof payload.status === "string" ? payload.status : "";
+    const error = typeof payload.error === "string" ? payload.error : "";
+    const backoff = typeof payload.backoff_ms === "number" ? payload.backoff_ms : 0;
+    if (error) return error;
+    if (backoff > 0) return `backoff ${backoff}ms before the next attempt`;
+    if (status) return `outcome recorded as ${status}`;
+    if (event.event_type === "run.recovery_started") {
+      return "startup recovery began evaluating the durable event history";
+    }
+    if (event.event_type === "run.recovery_completed") {
+      return "startup recovery reconciled the run projection";
+    }
+    return "immutable execution fact recorded";
+  }
+
+  function chronicleMatches(event: RunEvent): boolean {
+    if (chronicleFilter === "run") return !event.node_id;
+    if (chronicleFilter === "attempt") return Boolean(event.node_id);
+    if (chronicleFilter === "recovery") return event.event_type.includes("recovery");
+    return true;
+  }
+
+  $: chronicleEvents = events.filter(chronicleMatches);
+
   interface DayRuns {
     date: string;
     label: string;
@@ -496,6 +663,114 @@
           >{relativeTime(latestRun.started_at, now)}</small
         >
       </div>
+    </section>
+  {/if}
+
+  {#if plan}
+    <section class="plan-section">
+      <button
+        class="disclosure-header plan-disclosure"
+        on:click={() => (planExpanded = !planExpanded)}
+        aria-expanded={planExpanded}
+      >
+        <span class="disclosure-icon" class:open={planExpanded}>›</span>
+        <span class="disclosure-copy">
+          <span class="eyebrow">Nodus planner</span>
+          <strong>Execution plan</strong>
+          <small>How Brokoli will place work before runtime data resolves.</small>
+        </span>
+        <span class="plan-summary">
+          <b>{plan.stages.length}</b><small>stages</small>
+          <b>{plan.static_instance_count}+</b><small>known</small>
+          {#if plan.dynamic_nodes > 0}
+            <b>{plan.dynamic_nodes}</b><small>fan-outs</small>
+          {/if}
+        </span>
+      </button>
+      {#if planExpanded}
+        <div class="plan-graph-explorer">
+          {#if planGraph}
+            <div class="plan-graph-legend">
+              <span><i class="legend-dot static"></i>Static placement</span>
+              <span><i class="legend-dot runtime"></i>Runtime-resolved</span>
+              <span class="graph-hint">Click a unit for placement details</span>
+            </div>
+            <div class="plan-graph-scroll">
+              <div
+                class="plan-graph-canvas"
+                style="width:{planGraph.width}px;height:{planGraph.height}px"
+              >
+                <svg
+                  class="plan-graph-lines"
+                  width={planGraph.width}
+                  height={planGraph.height}
+                  aria-hidden="true"
+                >
+                  <defs>
+                    <marker
+                      id="plan-arrow"
+                      markerWidth="8"
+                      markerHeight="8"
+                      refX="7"
+                      refY="4"
+                      orient="auto"
+                    >
+                      <path d="M0,0 L8,4 L0,8 z" fill="var(--accent)" />
+                    </marker>
+                  </defs>
+                  {#each planGraph.edges as edge}
+                    <path
+                      d={`M ${edge.from.x + planGraph.nodeWidth} ${edge.from.y + 38} C ${edge.from.x + planGraph.nodeWidth + 34} ${edge.from.y + 38}, ${edge.to.x - 34} ${edge.to.y + 38}, ${edge.to.x} ${edge.to.y + 38}`}
+                      marker-end="url(#plan-arrow)"
+                    />
+                  {/each}
+                </svg>
+                {#each planGraph.nodes as graphNode}
+                  <button
+                    class="plan-graph-node"
+                    class:selected={selectedPlanUnit?.logical_node_id ===
+                      graphNode.unit.logical_node_id}
+                    style="left:{graphNode.x}px;top:{graphNode.y}px"
+                    on:click={() => (selectedPlanUnit = graphNode.unit)}
+                  >
+                    <span class="graph-node-stage">Stage {graphNode.stage + 1}</span>
+                    <span class="graph-node-title"
+                      ><strong>{graphNode.unit.logical_node_id}</strong><i
+                        class:runtime={graphNode.unit.runtime_resolved}
+                      ></i></span
+                    >
+                    <span class="graph-node-meta"
+                      >{graphNode.unit.kind} · {graphNode.unit.runtime_resolved
+                        ? "runtime"
+                        : `${graphNode.unit.static_instance_count} instance${graphNode.unit.static_instance_count === 1 ? "" : "s"}`}</span
+                    >
+                  </button>
+                {/each}
+              </div>
+            </div>
+            {#if selectedPlanUnit}
+              <div class="plan-unit-detail graph-selection">
+                <div class="plan-unit-top">
+                  <strong>{selectedPlanUnit.logical_node_id}</strong><span
+                    >{selectedPlanUnit.node_type}</span
+                  >
+                </div>
+                <p>{selectedPlanUnit.explain}</p>
+                <div class="plan-facts">
+                  <span><b>Retry</b>{selectedPlanUnit.retry_scope}</span>
+                  <span
+                    ><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code
+                    ></span
+                  >
+                  {#if selectedPlanUnit.concurrency_group}<span
+                      ><b>Pool</b>{selectedPlanUnit.concurrency_group}</span
+                    >{/if}
+                </div>
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {/if}
     </section>
   {/if}
 
@@ -689,6 +964,129 @@
                   </div>
                 {/if}
               </div>
+
+              <div class="detail-section chronicle-section">
+                <button
+                  class="disclosure-header chronicle-disclosure"
+                  on:click={() => (chronicleExpanded = !chronicleExpanded)}
+                  aria-expanded={chronicleExpanded}
+                >
+                  <span class="disclosure-icon" class:open={chronicleExpanded}>›</span>
+                  <span class="disclosure-copy">
+                    <span class="chronicle-eyebrow">Chronicle</span>
+                    <strong>Run provenance</strong>
+                    <small>Understand why this run reached its outcome.</small>
+                  </span>
+                  <span class="chronicle-summary"
+                    ><b>{events.length}</b><small>durable facts</small><b
+                      >{events.filter((event) => event.node_id).length}</b
+                    ><small>attempts</small></span
+                  >
+                </button>
+                {#if chronicleExpanded}
+                  <div class="chronicle-explorer">
+                    <div class="chronicle-identity">
+                      <span><b>Run</b> <code>{selectedRun.id}</code></span>
+                      {#if selectedRun.pipeline_version}<span
+                          ><b>Pipeline</b> <code>v{selectedRun.pipeline_version}</code></span
+                        >{/if}
+                      {#if selectedRun.trace_id}<span
+                          ><b>Trace</b> <code>{selectedRun.trace_id}</code></span
+                        >{/if}
+                      {#if selectedRun.resumed_from_run_id}<span
+                          ><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span
+                        >{/if}
+                    </div>
+                    <div class="chronicle-toolbar">
+                      <span>Show</span>
+                      {#each [["all", "All facts"], ["run", "Run"], ["attempt", "Attempts"], ["recovery", "Recovery"]] as filter}
+                        <button
+                          class:active={chronicleFilter === filter[0]}
+                          on:click={() => (chronicleFilter = filter[0])}>{filter[1]}</button
+                        >
+                      {/each}
+                    </div>
+                    {#if chronicleEvents.length > 0}
+                      <div class="chronicle-list">
+                        {#each chronicleEvents as event, eventIndex (event.id || event.created_at + event.event_type + eventIndex)}
+                          <button
+                            class="chronicle-event"
+                            class:selected={selectedChronicleEvent?.id === event.id &&
+                              selectedChronicleEvent?.created_at === event.created_at}
+                            on:click={() => (selectedChronicleEvent = event)}
+                          >
+                            <span class="chronicle-dot"></span>
+                            <span class="chronicle-event-body">
+                              <span class="chronicle-event-top"
+                                ><strong>{chronicleLabel(event)}</strong><time
+                                  >{formatFullTime(event.created_at)}</time
+                                ></span
+                              >
+                              <span class="chronicle-event-scope mono">{chronicleScope(event)}</span
+                              >
+                              <span class="chronicle-event-detail">{chronicleDetail(event)}</span>
+                            </span>
+                          </button>
+                        {/each}
+                      </div>
+                      {#if selectedChronicleEvent}
+                        <div class="chronicle-evidence">
+                          <div>
+                            <span class="eyebrow">Selected evidence</span><strong
+                              >{chronicleLabel(selectedChronicleEvent)}</strong
+                            >
+                          </div>
+                          <code
+                            >{JSON.stringify(selectedChronicleEvent.payload || {}, null, 2)}</code
+                          >
+                        </div>
+                      {/if}
+                    {:else}
+                      <div class="chronicle-empty">No facts match this view.</div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              {#if instances.length > 0}
+                <div class="detail-section">
+                  <div class="physical-header">
+                    <div>
+                      <h3>Physical execution</h3>
+                      <p>Nodus instances produced from this logical run.</p>
+                    </div>
+                    <span class="physical-count"
+                      >{instances.length} instance{instances.length === 1 ? "" : "s"}</span
+                    >
+                  </div>
+                  <div class="physical-table-wrap">
+                    <table class="physical-table">
+                      <thead>
+                        <tr>
+                          <th>Node</th>
+                          <th>Instance</th>
+                          <th>Status</th>
+                          <th>Attempt</th>
+                          <th>Rows</th>
+                          <th>Duration</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {#each instances as instance (instance.logical_node_id + instance.instance_key + instance.attempt)}
+                          <tr>
+                            <td class="mono">{instance.logical_node_id}</td>
+                            <td class="mono">{instance.instance_key}</td>
+                            <td><StatusBadge status={instance.status} /></td>
+                            <td class="mono">{instance.attempt}</td>
+                            <td class="mono">{instance.row_count.toLocaleString()}</td>
+                            <td class="mono">{instance.duration_ms}ms</td>
+                          </tr>
+                        {/each}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              {/if}
 
               <!-- DAG with live status -->
               {#if pipeline && pipeline.nodes.length > 0}
@@ -1090,6 +1488,154 @@
     padding: 4px 8px;
   }
 
+  .physical-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  .physical-header p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .physical-count {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .chronicle-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-md);
+    margin-bottom: var(--space-sm);
+  }
+  .chronicle-header h3 {
+    margin: 2px 0 0;
+  }
+  .chronicle-header p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .chronicle-eyebrow {
+    color: var(--accent);
+    font-size: 0.625rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+  }
+  .chronicle-identity {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 14px;
+    margin-bottom: var(--space-sm);
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-identity code {
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+  }
+  .chronicle-list {
+    position: relative;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 8px 12px;
+  }
+  .chronicle-list::before {
+    position: absolute;
+    top: 18px;
+    bottom: 18px;
+    left: 21px;
+    width: 1px;
+    background: var(--border);
+    content: "";
+  }
+  .chronicle-event {
+    position: relative;
+    display: flex;
+    gap: 10px;
+    padding: 8px 0;
+  }
+  .chronicle-dot {
+    z-index: 1;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    margin: 4px 0 0 5px;
+    border: 2px solid var(--bg-secondary);
+    border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .chronicle-event-body {
+    min-width: 0;
+    flex: 1;
+  }
+  .chronicle-event-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+  }
+  .chronicle-event-top time {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+  }
+  .chronicle-event-scope {
+    margin-top: 2px;
+    color: var(--accent);
+    font-size: 0.625rem;
+  }
+  .chronicle-event-body p {
+    margin: 3px 0 0;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-empty {
+    border: 1px dashed var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+  .physical-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+  }
+  .physical-table {
+    width: 100%;
+    min-width: 620px;
+    border-collapse: collapse;
+    font-size: 0.75rem;
+  }
+  .physical-table th,
+  .physical-table td {
+    padding: 8px 10px;
+    text-align: left;
+    border-bottom: 1px solid var(--border-subtle);
+    white-space: nowrap;
+  }
+  .physical-table th {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .physical-table tr:last-child td {
+    border-bottom: 0;
+  }
+
   .expand-icon {
     color: var(--text-muted);
     font-size: 0.75rem;
@@ -1394,6 +1940,11 @@
     .backfill-panel {
       flex-wrap: wrap;
     }
+    .plan-header {
+      align-items: flex-start;
+      flex-direction: column;
+      gap: var(--space-sm);
+    }
     .run-header {
       flex-wrap: wrap;
       gap: var(--space-sm);
@@ -1401,6 +1952,462 @@
     .run-rows {
       margin-left: 0;
     }
+  }
+
+  .plan-section {
+    margin-bottom: var(--space-lg);
+    padding: var(--space-lg);
+    background: linear-gradient(135deg, var(--bg-secondary), rgba(13, 148, 136, 0.05));
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+  .plan-header {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: var(--space-lg);
+    margin-bottom: var(--space-md);
+  }
+  .plan-header p {
+    margin: 4px 0 0;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+  }
+  .plan-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+    white-space: nowrap;
+  }
+  .plan-summary strong {
+    margin-left: 8px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1rem;
+  }
+  .plan-summary strong:first-child {
+    margin-left: 0;
+  }
+  .plan-stages {
+    display: grid;
+    gap: var(--space-sm);
+  }
+  .plan-stage {
+    display: grid;
+    grid-template-columns: 72px 1fr;
+    gap: var(--space-sm);
+    align-items: start;
+  }
+  .stage-index {
+    padding-top: 9px;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    text-transform: uppercase;
+  }
+  .stage-units {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: var(--space-sm);
+  }
+  .plan-unit {
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+  }
+  .plan-unit-top {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-sm);
+  }
+  .plan-unit-top strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .plan-unit-top span,
+  .plan-unit small {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .plan-unit p {
+    min-height: 2.2em;
+    margin: 6px 0;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.4;
+  }
+
+  .disclosure-header {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    gap: var(--space-sm);
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .disclosure-icon {
+    width: 20px;
+    color: var(--accent);
+    font-size: 1.5rem;
+    line-height: 1;
+    transform: rotate(0deg);
+    transition: transform 150ms ease;
+  }
+  .disclosure-icon.open {
+    transform: rotate(90deg);
+  }
+  .disclosure-icon.small {
+    width: auto;
+    margin-left: auto;
+    font-size: 1.15rem;
+  }
+  .disclosure-copy {
+    display: flex;
+    min-width: 0;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .disclosure-copy strong {
+    font-size: 0.9375rem;
+  }
+  .disclosure-copy small {
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .plan-disclosure,
+  .chronicle-disclosure {
+    min-height: 44px;
+  }
+  .plan-summary,
+  .chronicle-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+    white-space: nowrap;
+  }
+  .plan-summary b,
+  .chronicle-summary b {
+    margin-left: 8px;
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 0.9375rem;
+  }
+  .plan-summary b:first-child,
+  .chronicle-summary b:first-child {
+    margin-left: 0;
+  }
+  .plan-explorer {
+    display: grid;
+    grid-template-columns: minmax(150px, 0.32fr) minmax(0, 1fr);
+    gap: var(--space-md);
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .plan-graph-explorer {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .plan-graph-legend {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-graph-legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .graph-hint {
+    margin-left: auto;
+    color: var(--text-dim);
+  }
+  .legend-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+  .legend-dot.runtime {
+    background: var(--warning);
+  }
+  .plan-graph-scroll {
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .plan-graph-canvas {
+    position: relative;
+    min-width: 680px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background:
+      linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent) 1px, transparent 1px)
+        0 0 / 238px 100%,
+      var(--bg-primary);
+  }
+  .plan-graph-lines {
+    position: absolute;
+    inset: 0;
+    overflow: visible;
+  }
+  .plan-graph-lines path {
+    fill: none;
+    stroke: color-mix(in srgb, var(--accent) 70%, var(--border));
+    stroke-width: 1.5;
+  }
+  .plan-graph-node {
+    position: absolute;
+    display: flex;
+    width: 202px;
+    height: 76px;
+    box-sizing: border-box;
+    align-items: flex-start;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    padding: 9px 11px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    cursor: pointer;
+    text-align: left;
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
+  }
+  .plan-graph-node:hover,
+  .plan-graph-node.selected {
+    border-color: var(--accent);
+    box-shadow:
+      0 0 0 2px var(--accent-glow),
+      0 8px 20px color-mix(in srgb, black 15%, transparent);
+    transform: translateY(-1px);
+  }
+  .graph-node-stage {
+    color: var(--accent);
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .graph-node-title {
+    display: flex;
+    width: 100%;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .graph-node-title strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    white-space: nowrap;
+  }
+  .graph-node-title i {
+    width: 7px;
+    height: 7px;
+    flex: 0 0 7px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .graph-node-title i.runtime {
+    background: var(--warning);
+  }
+  .graph-node-meta {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .graph-selection {
+    margin-top: 9px;
+  }
+  .plan-stage-list {
+    display: grid;
+    align-content: start;
+    gap: 5px;
+  }
+  .plan-stage-button {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    text-align: left;
+  }
+  .plan-stage-button:hover,
+  .plan-stage-button.active {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .plan-stage-button small {
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-detail {
+    min-width: 0;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: color-mix(in srgb, var(--bg-primary) 70%, transparent);
+  }
+  .plan-detail-heading {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    margin-bottom: 9px;
+  }
+  .plan-detail-heading h3 {
+    margin: 2px 0 0;
+    color: var(--text-primary);
+    font-size: 0.8125rem;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .plan-unit {
+    width: 100%;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .plan-unit:hover,
+  .plan-unit.selected {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-glow);
+  }
+  .plan-unit-detail {
+    margin-top: 9px;
+    padding: 10px;
+    border-left: 2px solid var(--accent);
+    background: var(--bg-secondary);
+  }
+  .plan-unit-detail p {
+    margin: 6px 0 9px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    line-height: 1.45;
+  }
+  .plan-facts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px 12px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .plan-facts span {
+    display: inline-flex;
+    gap: 4px;
+  }
+  .plan-facts b {
+    color: var(--text-secondary);
+  }
+  .plan-empty {
+    display: flex;
+    min-height: 110px;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 4px;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
+  }
+  .plan-empty span {
+    font-size: 0.6875rem;
+  }
+  .chronicle-explorer {
+    margin-top: var(--space-md);
+    padding-top: var(--space-md);
+    border-top: 1px solid var(--border-subtle);
+  }
+  .chronicle-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-bottom: 8px;
+    color: var(--text-muted);
+    font-size: 0.625rem;
+  }
+  .chronicle-toolbar button {
+    padding: 4px 7px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 999px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.625rem;
+  }
+  .chronicle-toolbar button:hover,
+  .chronicle-toolbar button.active {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+    color: var(--accent);
+  }
+  .chronicle-event {
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .chronicle-event:hover,
+  .chronicle-event.selected {
+    border-radius: var(--radius-sm);
+    background: var(--accent-glow);
+  }
+  .chronicle-event-detail {
+    display: block;
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 0.6875rem;
+  }
+  .chronicle-evidence {
+    display: grid;
+    gap: 8px;
+    margin-top: 9px;
+    padding: 10px;
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    background: var(--bg-secondary);
+  }
+  .chronicle-evidence > div {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .chronicle-evidence code {
+    max-height: 140px;
+    overflow: auto;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.625rem;
+    white-space: pre-wrap;
   }
 
   /* ── Run History Grid ── */
