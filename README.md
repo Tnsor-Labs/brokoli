@@ -28,12 +28,17 @@
   <a href="https://docs-brokoli.orkestri.site">Documentation</a> ·
   <a href="#quick-start">Quick Start</a> ·
   <a href="#features">Features</a> ·
-  <a href="#brokoli-cloud">Brokoli Cloud</a>
+  <a href="https://github.com/Tnsor-Labs/brokoli/tree/main/examples">Examples</a>
 </p>
 
 ---
 
-Brokoli is a data pipeline orchestrator that runs as a single ~30MB binary. Visual drag-and-drop editor, parallel DAG execution, built-in data quality and profiling, real-time monitoring, and a Python SDK — no infrastructure required beyond the binary itself.
+Brokoli is a data operations platform for building, running, and explaining data pipelines. It starts as a single ~30MB binary with a visual editor, parallel DAG execution, built-in data quality, real-time monitoring, and a Python SDK — no infrastructure required beyond the binary itself.
+
+The important part is the complete operating loop: define a pipeline, run it,
+see the physical plan and evidence behind the result, and trace the data that
+was affected. Start locally, then keep the same pipeline when you need more
+workers or stronger governance.
 
 ---
 
@@ -46,7 +51,9 @@ curl -fsSL https://raw.githubusercontent.com/Tnsor-Labs/brokoli/main/install.sh 
 brokoli serve
 ```
 
-Open `http://localhost:8080`, create your admin account, and build your first pipeline.
+Open `http://localhost:8080`, create your admin account, choose the **Hello World** template, and click **Run**. You should have a successful run, an output CSV, and an execution record in a few minutes.
+
+For the complete first-success path, see the [five-minute getting started guide](https://docs-brokoli.orkestri.site/docs/getting-started/get-started).
 
 ### Option B: Download Binary
 
@@ -82,6 +89,8 @@ with Pipeline("my_pipeline", schedule="0 6 * * *") as p:
 brokoli deploy my_pipeline.py --server http://localhost:8080
 ```
 
+The smallest working example is also in [`examples/hello-world.py`](examples/hello-world.py).
+
 ### From Source
 
 ```bash
@@ -101,7 +110,7 @@ go build -o brokoli . && ./brokoli serve
 
 **Parallel DAG execution.** Wave-based Kahn's algorithm, per-node retry with exponential backoff, resume from failure, cross-pipeline dependencies with trigger-mode chaining, condition branching.
 
-**Real-time monitoring.** Live run status and log streaming over WebSocket, interactive Gantt timeline, Slack alerts, SLA deadlines, run calendar heatmap, and cross-pipeline lineage graph.
+**Explainable operations.** Live run status and log streaming over WebSocket, physical execution plans, run evidence, artifacts, profiling, a run calendar heatmap, and cross-pipeline lineage.
 
 **Secrets and connections.** AES-256-GCM encryption at rest, 7 connection types (Postgres, MySQL, SQLite, HTTP, SFTP, S3, Generic), typed variables with `${var.key}` resolution in any config field.
 
