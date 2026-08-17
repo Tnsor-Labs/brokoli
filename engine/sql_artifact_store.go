@@ -110,10 +110,19 @@ func (s *SQLArtifactStore) ensureSchema() error {
 		columns_json TEXT NOT NULL,
 		data TEXT NOT NULL,
 		created_at TEXT NOT NULL,
+		attempt INTEGER NOT NULL DEFAULT 0,
+		fencing_generation INTEGER NOT NULL DEFAULT 0,
 		PRIMARY KEY (run_id, node_id, instance_key)
 	)`); err != nil {
 		return err
 	}
+	// Additive columns for installs whose artifacts table predates
+	// WriteArtifactFenced. Both dialects error on a duplicate column and
+	// both are fine to ignore: this runs on every boot, so "already
+	// exists" is the normal case, not a failure — the same pattern
+	// api.NewUserStore's own additive columns already use.
+	_, _ = s.db.Exec(`ALTER TABLE artifacts ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
+	_, _ = s.db.Exec(`ALTER TABLE artifacts ADD COLUMN fencing_generation INTEGER NOT NULL DEFAULT 0`)
 	_, err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts (run_id)`)
 	return err
 }
@@ -133,6 +142,29 @@ const (
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
 		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at`
+
+	// The WHERE clause is the fencing guard WriteArtifactFenced relies on:
+	// on conflict, the UPDATE (and so the write) only takes effect when no
+	// (attempt, fencing_generation) at least as high already owns this key
+	// — attempt is the primary ordering key (see FencedArtifactWriter's
+	// doc comment for why), fencing_generation only a tiebreaker within
+	// the same attempt. Per SQLite's and Postgres's own upsert semantics,
+	// a WHERE clause that evaluates false makes the whole statement a
+	// no-op — the existing row is left exactly as it was, not merely
+	// un-updated — so RowsAffected distinguishes "written" from "a newer
+	// attempt already owns this" for both the insert and the update path.
+	writeArtifactFencedPostgres = `INSERT INTO artifacts (run_id, node_id, instance_key, columns_json, data, created_at, attempt, fencing_generation)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
+		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at, attempt = excluded.attempt, fencing_generation = excluded.fencing_generation
+		WHERE artifacts.attempt < excluded.attempt
+		   OR (artifacts.attempt = excluded.attempt AND artifacts.fencing_generation <= excluded.fencing_generation)`
+	writeArtifactFencedSQLite = `INSERT INTO artifacts (run_id, node_id, instance_key, columns_json, data, created_at, attempt, fencing_generation)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT (run_id, node_id, instance_key) DO UPDATE
+		SET columns_json = excluded.columns_json, data = excluded.data, created_at = excluded.created_at, attempt = excluded.attempt, fencing_generation = excluded.fencing_generation
+		WHERE artifacts.attempt < excluded.attempt
+		   OR (artifacts.attempt = excluded.attempt AND artifacts.fencing_generation <= excluded.fencing_generation)`
 
 	readArtifactPostgres = `SELECT columns_json, data FROM artifacts WHERE run_id = $1 AND node_id = $2 AND instance_key = $3`
 	readArtifactSQLite   = `SELECT columns_json, data FROM artifacts WHERE run_id = ? AND node_id = ? AND instance_key = ?`
@@ -178,6 +210,46 @@ func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *
 		return fmt.Errorf("write artifact: %w", err)
 	}
 	return nil
+}
+
+// WriteArtifactFenced implements FencedArtifactWriter (see that interface's
+// doc comment for why this exists, including why ordering is
+// (attempt, fencingGeneration) rather than fencingGeneration alone).
+// Identical to WriteArtifact except the write is conditioned on that pair:
+// if an attempt/generation at least as high already owns
+// (runID, nodeID, instanceKey) — the row was last written by an attempt
+// this one has already been superseded by — the statement is a no-op and
+// written comes back false rather than clobbering that row.
+func (s *SQLArtifactStore) WriteArtifactFenced(runID, nodeID, instanceKey string, ds *common.DataSet, attempt int, fencingGeneration int64) (bool, error) {
+	if runID == "" || nodeID == "" {
+		return false, fmt.Errorf("write artifact: runID and nodeID are required")
+	}
+	var buf bytes.Buffer
+	if err := EncodeArrowJSON(&buf, ds); err != nil {
+		return false, fmt.Errorf("write artifact: encode: %w", err)
+	}
+	cols := []string{}
+	if ds != nil && ds.Columns != nil {
+		cols = ds.Columns
+	}
+	colsJSON, err := json.Marshal(cols)
+	if err != nil {
+		return false, fmt.Errorf("write artifact: encode columns: %w", err)
+	}
+
+	query := writeArtifactFencedSQLite
+	if s.dialect == "postgres" {
+		query = writeArtifactFencedPostgres
+	}
+	res, err := s.db.Exec(query, runID, nodeID, instanceKey, string(colsJSON), buf.String(), time.Now().UTC().Format(time.RFC3339Nano), attempt, fencingGeneration)
+	if err != nil {
+		return false, fmt.Errorf("write artifact: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("write artifact: rows affected: %w", err)
+	}
+	return n > 0, nil
 }
 
 // ReadArtifact implements ArtifactStore.

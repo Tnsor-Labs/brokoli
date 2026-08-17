@@ -302,6 +302,41 @@ type RefArtifactWriter interface {
 	WriteArtifactRef(runID, nodeID, instanceKey string, ref *artifact.DatasetRef) error
 }
 
+// FencedArtifactWriter is the optional capability an ArtifactStore may
+// support to guard an instance-level artifact write against a write from
+// an attempt that has already been superseded (ADR-017). Found live:
+// HandleReportInstanceResult/executeInstanceJobContext write the artifact
+// and only afterward settle the attempt through the fencing-checked store —
+// so a late report from an attempt already superseded by a retry (worker
+// stalled past the dispatcher's timeout, then finally delivers) reaches
+// WriteArtifact with nothing to stop it silently overwriting the winning
+// attempt's result. Only the attempt's status transition was ever
+// fencing-protected; the payload was not.
+//
+// Ordering is (attempt, fencingGeneration) lexicographic, not
+// fencingGeneration alone: store.ExecutionAttemptStore.ClaimAttempt's
+// fencing_generation is a per-(run, node, instanceKey, attempt) row
+// counter — it protects a single attempt against being double-claimed
+// after its own lease expires, and restarts near 1 for every new attempt
+// number, so attempt 0 and attempt 1 of the same instance both typically
+// carry fencing_generation 1 and are not orderable by that value alone.
+// attempt IS monotonic per instance (each retry is a strictly higher
+// attempt number — see pagination_remote.go/expansion.go's own retry
+// loops), so it is the primary key; fencingGeneration only breaks ties
+// within the same attempt (a reclaim after a lease timeout).
+//
+// WriteArtifactFenced returns written=false, nil when (attempt,
+// fencingGeneration) at least as high already owns this
+// (runID, nodeID, instanceKey) key — the same "settle this race honestly
+// rather than silently overwriting" rule FailAttempt/CompleteAttempt already
+// apply, extended to cover the data those calls guard the identity of. A
+// store without this capability falls back to plain WriteArtifact,
+// unprotected — today's behavior, unchanged for callers with no attempt
+// identity to check (whole-node writes, instanceKey == "").
+type FencedArtifactWriter interface {
+	WriteArtifactFenced(runID, nodeID, instanceKey string, ds *common.DataSet, attempt int, fencingGeneration int64) (written bool, err error)
+}
+
 // WriteArtifactRef implements RefArtifactWriter. The runner's spill blobs
 // and this store's artifact blobs are the same content-addressed store
 // under the same per-run namespace (see Blobs and Runner.newOutputs), so
