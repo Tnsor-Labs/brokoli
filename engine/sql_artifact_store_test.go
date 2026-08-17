@@ -120,6 +120,84 @@ func TestSQLArtifactStore_WriteArtifactOverwritesSameKey(t *testing.T) {
 	}
 }
 
+// TestSQLArtifactStore_WriteArtifactFencedRejectsStaleAttempt is the direct
+// regression test for the ADR-017 race FencedArtifactWriter exists to
+// close: a late report from an attempt already superseded by a retry must
+// not be able to overwrite the retry's result. Both attempts carry
+// fencing_generation 1 — each is claimed exactly once, the normal case, not
+// a lease-reclaim — which is exactly why ordering on fencing_generation
+// alone (see the interface doc comment) would have let this through:
+// attempt is what actually orders them here.
+func TestSQLArtifactStore_WriteArtifactFencedRejectsStaleAttempt(t *testing.T) {
+	s := newSQLArtifactTestStore(t)
+	winner := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(2)}}}
+	written, err := s.WriteArtifactFenced("run-1", "source", "page-0", winner, 1, 1)
+	if err != nil {
+		t.Fatalf("WriteArtifactFenced (attempt 1): %v", err)
+	}
+	if !written {
+		t.Fatal("expected the first write for this key to succeed")
+	}
+
+	stale := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(1)}}}
+	written, err = s.WriteArtifactFenced("run-1", "source", "page-0", stale, 0, 1)
+	if err != nil {
+		t.Fatalf("WriteArtifactFenced (stale attempt 0): %v", err)
+	}
+	if written {
+		t.Fatal("a lower attempt number must not overwrite a higher one, even with the same fencing_generation")
+	}
+
+	got, err := s.ReadArtifact("run-1", "source", "page-0")
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+		t.Fatalf("artifact = %+v, want the winning attempt's data untouched by the stale write", got)
+	}
+}
+
+// TestSQLArtifactStore_WriteArtifactFencedTiebreaksOnGenerationWithinAttempt
+// proves the fencing_generation tiebreak within the SAME attempt number: a
+// reclaim after a lease timeout bumps fencing_generation on that attempt's
+// own row, and only a report carrying a generation at least that high may
+// write, protecting against two workers both believing they hold the same
+// attempt.
+func TestSQLArtifactStore_WriteArtifactFencedTiebreaksOnGenerationWithinAttempt(t *testing.T) {
+	s := newSQLArtifactTestStore(t)
+	first := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(1)}}}
+	if written, err := s.WriteArtifactFenced("run-1", "source", "page-0", first, 0, 1); err != nil || !written {
+		t.Fatalf("WriteArtifactFenced (attempt 0, gen 1): written=%v err=%v", written, err)
+	}
+
+	stale := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(99)}}}
+	if written, err := s.WriteArtifactFenced("run-1", "source", "page-0", stale, 0, 1); err != nil {
+		t.Fatalf("WriteArtifactFenced (attempt 0, same gen 1): %v", err)
+	} else if !written {
+		t.Fatal("equal (attempt, generation) is the worker's own redelivery, must still write")
+	}
+
+	reclaimed := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(2)}}}
+	if written, err := s.WriteArtifactFenced("run-1", "source", "page-0", reclaimed, 0, 2); err != nil || !written {
+		t.Fatalf("WriteArtifactFenced (attempt 0, gen 2 — reclaimed): written=%v err=%v", written, err)
+	}
+
+	staleReclaim := &common.DataSet{Columns: []string{"n"}, Rows: []common.DataRow{{"n": float64(1)}}}
+	if written, err := s.WriteArtifactFenced("run-1", "source", "page-0", staleReclaim, 0, 1); err != nil {
+		t.Fatalf("WriteArtifactFenced (attempt 0, stale gen 1): %v", err)
+	} else if written {
+		t.Fatal("a lower fencing_generation within the same attempt must not overwrite a higher one")
+	}
+
+	got, err := s.ReadArtifact("run-1", "source", "page-0")
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+		t.Fatalf("artifact = %+v, want the reclaimed generation's data", got)
+	}
+}
+
 // TestSQLArtifactStore_DeleteRunArtifactsRemovesAllInstances proves
 // DeleteRunArtifacts clears every node/instance key belonging to a run,
 // not just one, matching LocalDiskArtifactStore's whole-directory-removal

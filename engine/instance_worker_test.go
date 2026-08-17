@@ -311,6 +311,101 @@ func TestExecuteInstanceJob_ScriptFailureSettlesAttemptFailedAndAcksJob(t *testi
 	}
 }
 
+// TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact is the
+// true end-to-end regression test for the ADR-017 race
+// FencedArtifactWriter closes: attempt 1 (a retry) completes and writes its
+// result first; attempt 0 (the original, slow to report — e.g. a worker
+// stalled past the dispatcher's timeout, then finally delivers) must not be
+// able to overwrite it, even though both attempts were each claimed
+// exactly once and so both carry fencing_generation 1 — only attempt is
+// what actually orders them (see FencedArtifactWriter's doc comment).
+func TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact(t *testing.T) {
+	dir := t.TempDir()
+	realStore, err := store.NewSQLiteStore(filepath.Join(dir, "stale-attempt.db"))
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { _ = realStore.Close() })
+	db, ok := realStore.RawDB().(*sql.DB)
+	if !ok {
+		t.Fatal("RawDB() did not return *sql.DB")
+	}
+	artifacts, err := NewSQLArtifactStore(db, "sqlite", t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLArtifactStore: %v", err)
+	}
+
+	now := time.Now().UTC()
+	if err := realStore.CreatePipeline(&models.Pipeline{ID: "pipe-stale", Name: "pipe-stale", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	if err := realStore.CreateRun(&models.Run{ID: "run-stale", PipelineID: "pipe-stale", Status: models.RunStatusRunning, StartedAt: &now}); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	claim := func(attempt int) int64 {
+		t.Helper()
+		if err := realStore.WithTx(func(tx *sql.Tx) error {
+			return realStore.CreateExecutionAttemptTx(tx, &models.ExecutionAttempt{
+				RunID: "run-stale", NodeID: "source", InstanceKey: "page-0", Attempt: attempt, Status: models.AttemptStatusQueued,
+			})
+		}); err != nil {
+			t.Fatalf("CreateExecutionAttemptTx(attempt=%d): %v", attempt, err)
+		}
+		gen, ok, err := realStore.ClaimAttempt("run-stale", "source", "page-0", attempt, "worker", time.Minute)
+		if err != nil || !ok {
+			t.Fatalf("ClaimAttempt(attempt=%d): ok=%v err=%v", attempt, ok, err)
+		}
+		return gen
+	}
+	gen0 := claim(0)
+	gen1 := claim(1)
+	if gen0 != gen1 {
+		t.Fatalf("gen0=%d gen1=%d, want equal — the scenario this test guards against is two attempts with the SAME fencing_generation", gen0, gen1)
+	}
+
+	runJob := func(attempt int, gen int64, script string) error {
+		t.Helper()
+		return executeInstanceJobContext(context.Background(), realStore, artifacts, extensions.RunJob{
+			ID: "job-stale", RunID: "run-stale", NodeID: "source", InstanceKey: "page-0",
+			Attempt: attempt, FencingGeneration: gen,
+			WorkOrder: &extensions.InstanceWorkOrder{NodeType: "code", Script: script, TimeoutSeconds: 5},
+		})
+	}
+
+	// Attempt 1 (the retry) completes first.
+	if err := runJob(1, gen1, `output_data = {"columns": ["n"], "rows": [{"n": 2}]}`); err != nil {
+		t.Fatalf("runJob(attempt=1): %v", err)
+	}
+	// Attempt 0 (stale) reports after, with different data.
+	if err := runJob(0, gen0, `output_data = {"columns": ["n"], "rows": [{"n": 1}]}`); err != nil {
+		t.Fatalf("runJob(attempt=0, stale): %v", err)
+	}
+
+	got, err := artifacts.ReadArtifact("run-stale", "source", "page-0")
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
+	}
+	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+		t.Fatalf("artifact = %+v, want attempt 1's data untouched by the stale attempt 0 report", got)
+	}
+
+	attempt1, err := realStore.GetExecutionAttempt("run-stale", "source", "page-0", 1)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(attempt=1): %v", err)
+	}
+	if attempt1.Status != models.AttemptStatusCompleted {
+		t.Errorf("attempt 1 status = %s, want completed", attempt1.Status)
+	}
+	attempt0, err := realStore.GetExecutionAttempt("run-stale", "source", "page-0", 0)
+	if err != nil {
+		t.Fatalf("GetExecutionAttempt(attempt=0): %v", err)
+	}
+	if attempt0.Status == models.AttemptStatusCompleted {
+		t.Error("attempt 0 lost the race and must not have been settled as completed")
+	}
+}
+
 func TestExecuteInstanceJob_CancellationStopsRunningWorkOrder(t *testing.T) {
 	realStore := newExpansionTestStore(t, "instance-job-cancel")
 	real := realStore.(*store.SQLiteStore)

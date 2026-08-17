@@ -149,7 +149,27 @@ func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts Art
 		}
 		return fmt.Errorf("%s", reason)
 	}
-	if writeErr := artifacts.WriteArtifact(job.RunID, job.NodeID, job.InstanceKey, result); writeErr != nil {
+	// Fenced when the store supports it (SQLArtifactStore — the store
+	// distributed instance dispatch actually runs with): a fencing
+	// generation at least as high already owning this key means a retry
+	// already completed while this attempt was still in flight, and this
+	// write must not clobber that result. See FencedArtifactWriter's own
+	// doc comment.
+	if fenced, ok := artifacts.(FencedArtifactWriter); ok {
+		written, writeErr := fenced.WriteArtifactFenced(job.RunID, job.NodeID, job.InstanceKey, result, job.Attempt, job.FencingGeneration)
+		if writeErr != nil {
+			reason := fmt.Sprintf("failed to persist instance result: %v", writeErr)
+			if failErr := attemptStore.FailAttempt(job.RunID, job.NodeID, job.InstanceKey, job.Attempt, job.FencingGeneration, reason); failErr != nil {
+				return fmt.Errorf("execute instance job: %s, and settling that failure also failed: %w", reason, failErr)
+			}
+			return fmt.Errorf("execute instance job: %s", reason)
+		}
+		if !written {
+			// Lost the race to a newer attempt. Not this call's failure to
+			// report — there is nothing left to settle.
+			return nil
+		}
+	} else if writeErr := artifacts.WriteArtifact(job.RunID, job.NodeID, job.InstanceKey, result); writeErr != nil {
 		reason := fmt.Sprintf("failed to persist instance result: %v", writeErr)
 		if failErr := attemptStore.FailAttempt(job.RunID, job.NodeID, job.InstanceKey, job.Attempt, job.FencingGeneration, reason); failErr != nil {
 			return fmt.Errorf("execute instance job: %s, and settling that failure also failed: %w", reason, failErr)
