@@ -464,6 +464,11 @@ func ParseToken(tokenStr string) (*jwt.MapClaims, error) {
 
 func LoginHandler(us *UserStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if PasswordLoginEnabledFunc != nil && !PasswordLoginEnabledFunc() {
+			writeError(w, http.StatusForbidden, "password login is disabled; use an enabled OAuth provider")
+			return
+		}
+
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
