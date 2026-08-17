@@ -1,7 +1,9 @@
 package engine
 
 import (
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 )
@@ -271,6 +273,92 @@ func TestExtractTableFromQuery(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("extractTableFromQuery(%q) = %q, want %q", tc.query, got, tc.want)
 		}
+	}
+}
+
+// TestBuildLineageGraphWithProfiles_PicksMostRecentBySharedAsset is the
+// regression test for attachLineageProfile's recency selection: a shared
+// asset written by two pipelines must show whichever profile was actually
+// observed most recently, not whichever happens to have more columns. The
+// older profile here deliberately has MORE columns (5) than the newer one
+// (3, e.g. a column was intentionally dropped) — a column-count heuristic
+// would keep the stale, wider schema.
+func TestBuildLineageGraphWithProfiles_PicksMostRecentBySharedAsset(t *testing.T) {
+	p1 := models.Pipeline{
+		ID:   "p1",
+		Name: "Writer",
+		Nodes: []models.Node{
+			{ID: "s1", Type: models.NodeTypeSourceFile, Name: "In", Config: map[string]interface{}{"path": "/raw.csv"}},
+			{ID: "o1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/shared.csv"}},
+		},
+		Edges: []models.Edge{{From: "s1", To: "o1"}},
+	}
+	p2 := models.Pipeline{
+		ID:   "p2",
+		Name: "Rewriter",
+		Nodes: []models.Node{
+			{ID: "s1", Type: models.NodeTypeSourceFile, Name: "In", Config: map[string]interface{}{"path": "/other.csv"}},
+			{ID: "o1", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/shared.csv"}},
+		},
+		Edges: []models.Edge{{From: "s1", To: "o1"}},
+	}
+
+	older := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	newer := time.Date(2026, 8, 15, 0, 0, 0, 0, time.UTC)
+	wideOldProfile := &DataProfile{ColumnCount: 5, Columns: []ColumnProfile{
+		{Name: "a"}, {Name: "b"}, {Name: "c"}, {Name: "d"}, {Name: "e"},
+	}}
+	narrowNewProfile := &DataProfile{ColumnCount: 3, Columns: []ColumnProfile{
+		{Name: "a"}, {Name: "b"}, {Name: "c"},
+	}}
+
+	profiles := map[string]LineageProfile{
+		"p1:o1": {Profile: wideOldProfile, ObservedAt: &older},
+		"p2:o1": {Profile: narrowNewProfile, ObservedAt: &newer},
+	}
+
+	graph := BuildLineageGraphWithProfiles([]models.Pipeline{p1, p2}, profiles)
+
+	var shared *LineageNode
+	for i := range graph.Nodes {
+		if graph.Nodes[i].Name == "shared.csv" {
+			shared = &graph.Nodes[i]
+		}
+	}
+	if shared == nil {
+		t.Fatal("shared.csv asset node not found")
+	}
+	if shared.Metadata == nil {
+		t.Fatal("shared.csv has no metadata attached")
+	}
+	if len(shared.Metadata.Columns) != 3 {
+		t.Fatalf("shared.csv columns = %d, want 3 (the newer, narrower profile) — got the stale wider one instead", len(shared.Metadata.Columns))
+	}
+	if shared.Metadata.ObservedAt == nil || !shared.Metadata.ObservedAt.Equal(newer) {
+		t.Fatalf("shared.csv ObservedAt = %v, want %v", shared.Metadata.ObservedAt, newer)
+	}
+}
+
+// TestLineageColumn_NullPctZeroSurvivesJSON guards against omitempty
+// hiding a genuinely clean column: a column with 0% nulls must still carry
+// an explicit null_pct field on the wire, indistinguishable from neither
+// "not profiled" (the column wouldn't be in the array at all) nor from a
+// column that happens to have nulls.
+func TestLineageColumn_NullPctZeroSurvivesJSON(t *testing.T) {
+	col := LineageColumn{Name: "id", Type: "int", NullPct: 0, UniquePct: 100}
+	data, err := json.Marshal(col)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]interface{}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := decoded["null_pct"]; !ok {
+		t.Errorf("null_pct missing from JSON entirely for a 0%% null column; got %s", data)
+	}
+	if _, ok := decoded["unique_pct"]; !ok {
+		t.Errorf("unique_pct missing from JSON for a 100%% unique column; got %s", data)
 	}
 }
 

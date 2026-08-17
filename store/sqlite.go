@@ -1875,6 +1875,66 @@ func (s *SQLiteStore) GetLatestNodeProfile(pipelineID, nodeID string) (string, s
 	return profile, schema, err
 }
 
+// GetLatestNodeProfilesForPipelines batch-fetches the latest profile for
+// every node of every given pipeline in one query, the same
+// ROW_NUMBER-per-partition shape GetLatestRunsByPipelineIDs already uses for
+// an analogous "latest per group" problem.
+func (s *SQLiteStore) GetLatestNodeProfilesForPipelines(pipelineIDs []string) (map[string]NodeProfileRecord, error) {
+	out := make(map[string]NodeProfileRecord, len(pipelineIDs))
+	uniq := make([]string, 0, len(pipelineIDs))
+	seen := make(map[string]bool, len(pipelineIDs))
+	for _, id := range pipelineIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(uniq))
+	args := make([]interface{}, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+
+	query := `
+		SELECT pipeline_id, node_id, profile, schema_snapshot, run_id, created_at
+		FROM (
+			SELECT r.pipeline_id AS pipeline_id, np.node_id AS node_id, np.profile AS profile,
+			       np.schema_snapshot AS schema_snapshot, np.run_id AS run_id, np.created_at AS created_at,
+			       ROW_NUMBER() OVER (
+			           PARTITION BY r.pipeline_id, np.node_id
+			           ORDER BY np.created_at DESC
+			       ) AS rank
+			FROM node_profiles np
+			JOIN runs r ON r.id = np.run_id
+			WHERE r.pipeline_id IN (` + strings.Join(placeholders, ",") + `)
+		)
+		WHERE rank = 1
+	`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, wrapStoreErr("GetLatestNodeProfilesForPipelines", "", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pipelineID, nodeID, profile, schema, runID, createdAt string
+		if err := rows.Scan(&pipelineID, &nodeID, &profile, &schema, &runID, &createdAt); err != nil {
+			return nil, wrapStoreErr("GetLatestNodeProfilesForPipelines", "", err)
+		}
+		observedAt, _ := time.Parse(timeFormat, createdAt)
+		out[pipelineID+":"+nodeID] = NodeProfileRecord{
+			ProfileJSON: profile, SchemaJSON: schema, RunID: runID, ObservedAt: observedAt,
+		}
+	}
+	return out, rows.Err()
+}
+
 // --- Pagination Counts ---
 
 func (s *SQLiteStore) CountPipelines(workspaceID string) (int, error) {

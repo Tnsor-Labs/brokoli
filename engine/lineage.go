@@ -28,13 +28,18 @@ type LineageMetadata struct {
 	RowCount    int             `json:"row_count,omitempty"`
 	ColumnCount int             `json:"column_count,omitempty"`
 	Columns     []LineageColumn `json:"columns,omitempty"`
+	ObservedAt  *time.Time      `json:"observed_at,omitempty"`
 }
 
 type LineageColumn struct {
-	Name      string  `json:"name"`
-	Type      string  `json:"type,omitempty"`
-	NullPct   float64 `json:"null_pct,omitempty"`
-	UniquePct float64 `json:"unique_pct,omitempty"`
+	Name string `json:"name"`
+	Type string `json:"type,omitempty"`
+	// NullPct and UniquePct are meaningfully zero (a column with no nulls,
+	// or no duplicate values, is real profiling data, not "unprofiled") —
+	// no omitempty, unlike the sibling string/slice fields where empty
+	// really does mean absent.
+	NullPct   float64 `json:"null_pct"`
+	UniquePct float64 `json:"unique_pct"`
 	MinVal    string  `json:"min_val,omitempty"`
 	MaxVal    string  `json:"max_val,omitempty"`
 }
@@ -232,14 +237,19 @@ func attachLineageProfile(nodes map[string]LineageNode, id, datasetID string, pr
 		return
 	}
 	metadata := metadataFromProfile(datasetID, profile)
-	if node.Metadata == nil || len(metadata.Columns) > len(node.Metadata.Columns) {
+	// A shared asset (e.g. a file two pipelines both write to) can carry a
+	// profile from each pipeline; keep whichever was actually observed most
+	// recently. Column count says nothing about recency — an older, wider
+	// schema must not beat a genuinely newer, narrower one.
+	if node.Metadata == nil || node.Metadata.ObservedAt == nil ||
+		(metadata.ObservedAt != nil && metadata.ObservedAt.After(*node.Metadata.ObservedAt)) {
 		node.Metadata = metadata
 	}
 	nodes[id] = node
 }
 
 func metadataFromProfile(datasetID string, profile LineageProfile) *LineageMetadata {
-	metadata := &LineageMetadata{Dataset: datasetID}
+	metadata := &LineageMetadata{Dataset: datasetID, ObservedAt: profile.ObservedAt}
 	if profile.Profile == nil {
 		return metadata
 	}

@@ -810,21 +810,26 @@ func lineageHandler(s store.Store) http.HandlerFunc {
 		}
 		profiles := make(map[string]engine.LineageProfile)
 		if profileStore, ok := s.(store.NodeProfileStore); ok {
-			for _, pipeline := range pipelines {
-				for _, node := range pipeline.Nodes {
-					profileJSON, schemaJSON, profileErr := profileStore.GetLatestNodeProfile(pipeline.ID, node.ID)
-					if profileErr != nil {
-						continue
-					}
+			pipelineIDs := make([]string, len(pipelines))
+			for i, pipeline := range pipelines {
+				pipelineIDs[i] = pipeline.ID
+			}
+			// One batched query for every pipeline's nodes, not one query
+			// per node — see GetLatestNodeProfilesForPipelines.
+			records, recordsErr := profileStore.GetLatestNodeProfilesForPipelines(pipelineIDs)
+			if recordsErr == nil {
+				for key, record := range records {
 					var profile engine.DataProfile
-					if json.Unmarshal([]byte(profileJSON), &profile) != nil || len(profile.Columns) == 0 {
+					if json.Unmarshal([]byte(record.ProfileJSON), &profile) != nil || len(profile.Columns) == 0 {
 						continue
 					}
 					var schema engine.SchemaSnapshot
-					_ = json.Unmarshal([]byte(schemaJSON), &schema)
-					profiles[pipeline.ID+":"+node.ID] = engine.LineageProfile{
-						Profile: &profile,
-						Schema:  &schema,
+					_ = json.Unmarshal([]byte(record.SchemaJSON), &schema)
+					profiles[key] = engine.LineageProfile{
+						Profile:    &profile,
+						Schema:     &schema,
+						RunID:      record.RunID,
+						ObservedAt: &record.ObservedAt,
 					}
 				}
 			}
