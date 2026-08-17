@@ -147,11 +147,24 @@
     } catch {
       /* ignore */
     }
-    if (expandedRunId) {
+    const runId = expandedRunId;
+    if (runId) {
       try {
-        selectedRun = await api.runs.get(expandedRunId);
-        instances = await api.runs.instances(expandedRunId);
-        events = await api.runs.events(expandedRunId);
+        // Parallel, matching selectRun's initial fetch — this refresh fires
+        // repeatedly during live run activity, so three sequential round
+        // trips here (vs. one parallel batch on first expand) would make
+        // the panel visibly laggier to update than opening it fresh does.
+        const [nextSelectedRun, nextInstances, nextEvents] = await Promise.all([
+          api.runs.get(runId),
+          api.runs.instances(runId),
+          api.runs.events(runId),
+        ]);
+        // The user may have switched to a different run (or collapsed this
+        // one) while this refresh was in flight.
+        if (expandedRunId !== runId) return;
+        selectedRun = nextSelectedRun;
+        instances = nextInstances;
+        events = nextEvents;
       } catch {
         /* ignore */
       }
@@ -186,22 +199,24 @@
 
   onMount(async () => {
     if (!params.id) return;
+    // plan depends only on params.id, not on pipeline/runs — fire it
+    // alongside them instead of after, so an older server without physical
+    // planning (caught below) doesn't cost this page an extra serialized
+    // round trip on every visit.
+    const planPromise = api.pipelines.plan(params.id).catch(() => null);
     try {
       [pipeline, runs] = await Promise.all([
         api.pipelines.get(params.id),
         api.runs.listByPipeline(params.id),
       ]);
-      try {
-        plan = await api.pipelines.plan(params.id);
-      } catch {
-        // Older servers may not expose physical planning yet.
-        plan = null;
-      }
     } catch (e) {
       notify.error("Failed to load");
     } finally {
       loading = false;
     }
+    // Older servers may not expose physical planning yet — planPromise
+    // already turned that into a resolved null above.
+    plan = await planPromise;
 
     // Tripwire on dashboard.default — when ANY run state changes in this
     // org, debounce-refetch our run list. The dashboard changes for any
@@ -243,8 +258,16 @@
       logs = [];
       return;
     }
-    expandedRunId = run.id;
+    const runId = run.id;
+    expandedRunId = runId;
+    // Reset every piece of the previous selection's state before the new
+    // fetch resolves — leaving `instances` (or any of these) behind lets a
+    // just-collapsed run's stale data render under the newly expanded run
+    // until the fetch below completes, or indefinitely if it fails.
+    selectedRun = null;
+    logs = [];
     events = [];
+    instances = [];
     chronicleExpanded = false;
     selectedChronicleEvent = null;
     chronicleFilter = "all";
@@ -253,25 +276,39 @@
     profileData = null;
     loadingProfile = false;
     profileRequest += 1;
+
+    // get/getLogs are essential to the run-detail view — a failure there
+    // still surfaces the error and aborts, as before. instances/events are
+    // each independently best-effort (older or degraded servers, a 403 from
+    // a store that doesn't support physical-instance projection, etc.) and
+    // must not blank the rest of the panel just because one of them failed.
+    const corePromise = Promise.all([api.runs.get(runId), api.runs.getLogs(runId)]);
+    const instancesPromise = api.runs.instances(runId).catch(() => [] as PhysicalInstance[]);
+    const eventsPromise = api.runs.events(runId).catch(() => [] as RunEvent[]);
+
+    let nextSelectedRun: Run, nextLogs: LogEntry[];
     try {
-      [selectedRun, logs, instances] = await Promise.all([
-        api.runs.get(run.id),
-        api.runs.getLogs(run.id),
-        api.runs.instances(run.id),
-      ]);
-      try {
-        events = await api.runs.events(run.id);
-      } catch {
-        // Keep older servers usable while making durable evidence visible when available.
-        events = [];
-      }
+      [nextSelectedRun, nextLogs] = await corePromise;
     } catch (e) {
-      notify.error("Failed to load run");
+      if (expandedRunId === runId) notify.error("Failed to load run");
+      return;
     }
+    const nextInstances = await instancesPromise;
+    const nextEvents = await eventsPromise;
+
+    // The user may have moved on to a different run (or collapsed this one)
+    // while these requests were in flight — a stale response arriving after
+    // must not overwrite whatever's now actually selected.
+    if (expandedRunId !== runId) return;
+    selectedRun = nextSelectedRun;
+    logs = nextLogs;
+    instances = nextInstances;
+    events = nextEvents;
+
     // Subscribe to live log streaming for this run. The initial REST fetch
     // above gives us any historical logs from the database; the SODP watch
     // takes over from here for new entries the engine emits.
-    subscribeLogs(run.id);
+    subscribeLogs(runId);
   }
 
   function addParam() {
@@ -631,7 +668,11 @@
 
   {#if plan}
     <section class="plan-section">
-      <button class="disclosure-header plan-disclosure" on:click={() => (planExpanded = !planExpanded)} aria-expanded={planExpanded}>
+      <button
+        class="disclosure-header plan-disclosure"
+        on:click={() => (planExpanded = !planExpanded)}
+        aria-expanded={planExpanded}
+      >
         <span class="disclosure-icon" class:open={planExpanded}>›</span>
         <span class="disclosure-copy">
           <span class="eyebrow">Nodus planner</span>
@@ -655,10 +696,25 @@
               <span class="graph-hint">Click a unit for placement details</span>
             </div>
             <div class="plan-graph-scroll">
-              <div class="plan-graph-canvas" style="width:{planGraph.width}px;height:{planGraph.height}px">
-                <svg class="plan-graph-lines" width={planGraph.width} height={planGraph.height} aria-hidden="true">
+              <div
+                class="plan-graph-canvas"
+                style="width:{planGraph.width}px;height:{planGraph.height}px"
+              >
+                <svg
+                  class="plan-graph-lines"
+                  width={planGraph.width}
+                  height={planGraph.height}
+                  aria-hidden="true"
+                >
                   <defs>
-                    <marker id="plan-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+                    <marker
+                      id="plan-arrow"
+                      markerWidth="8"
+                      markerHeight="8"
+                      refX="7"
+                      refY="4"
+                      orient="auto"
+                    >
                       <path d="M0,0 L8,4 L0,8 z" fill="var(--accent)" />
                     </marker>
                   </defs>
@@ -672,25 +728,43 @@
                 {#each planGraph.nodes as graphNode}
                   <button
                     class="plan-graph-node"
-                    class:selected={selectedPlanUnit?.logical_node_id === graphNode.unit.logical_node_id}
+                    class:selected={selectedPlanUnit?.logical_node_id ===
+                      graphNode.unit.logical_node_id}
                     style="left:{graphNode.x}px;top:{graphNode.y}px"
                     on:click={() => (selectedPlanUnit = graphNode.unit)}
                   >
                     <span class="graph-node-stage">Stage {graphNode.stage + 1}</span>
-                    <span class="graph-node-title"><strong>{graphNode.unit.logical_node_id}</strong><i class:runtime={graphNode.unit.runtime_resolved}></i></span>
-                    <span class="graph-node-meta">{graphNode.unit.kind} · {graphNode.unit.runtime_resolved ? "runtime" : `${graphNode.unit.static_instance_count} instance${graphNode.unit.static_instance_count === 1 ? "" : "s"}`}</span>
+                    <span class="graph-node-title"
+                      ><strong>{graphNode.unit.logical_node_id}</strong><i
+                        class:runtime={graphNode.unit.runtime_resolved}
+                      ></i></span
+                    >
+                    <span class="graph-node-meta"
+                      >{graphNode.unit.kind} · {graphNode.unit.runtime_resolved
+                        ? "runtime"
+                        : `${graphNode.unit.static_instance_count} instance${graphNode.unit.static_instance_count === 1 ? "" : "s"}`}</span
+                    >
                   </button>
                 {/each}
               </div>
             </div>
             {#if selectedPlanUnit}
               <div class="plan-unit-detail graph-selection">
-                <div class="plan-unit-top"><strong>{selectedPlanUnit.logical_node_id}</strong><span>{selectedPlanUnit.node_type}</span></div>
+                <div class="plan-unit-top">
+                  <strong>{selectedPlanUnit.logical_node_id}</strong><span
+                    >{selectedPlanUnit.node_type}</span
+                  >
+                </div>
                 <p>{selectedPlanUnit.explain}</p>
                 <div class="plan-facts">
                   <span><b>Retry</b>{selectedPlanUnit.retry_scope}</span>
-                  <span><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code></span>
-                  {#if selectedPlanUnit.concurrency_group}<span><b>Pool</b>{selectedPlanUnit.concurrency_group}</span>{/if}
+                  <span
+                    ><b>Key</b><code>{selectedPlanUnit.instance_key_template || "single"}</code
+                    ></span
+                  >
+                  {#if selectedPlanUnit.concurrency_group}<span
+                      ><b>Pool</b>{selectedPlanUnit.concurrency_group}</span
+                    >{/if}
                 </div>
               </div>
             {/if}
@@ -889,57 +963,90 @@
                     <span class="summary-value">{selectedRun.error.slice(0, 100)}</span>
                   </div>
                 {/if}
-                </div>
+              </div>
 
-                <div class="detail-section chronicle-section">
-                  <button class="disclosure-header chronicle-disclosure" on:click={() => (chronicleExpanded = !chronicleExpanded)} aria-expanded={chronicleExpanded}>
-                    <span class="disclosure-icon" class:open={chronicleExpanded}>›</span>
-                    <span class="disclosure-copy">
-                      <span class="chronicle-eyebrow">Chronicle</span>
-                      <strong>Run provenance</strong>
-                      <small>Understand why this run reached its outcome.</small>
-                    </span>
-                    <span class="chronicle-summary"><b>{events.length}</b><small>durable facts</small><b>{events.filter((event) => event.node_id).length}</b><small>attempts</small></span>
-                  </button>
-                  {#if chronicleExpanded}
-                    <div class="chronicle-explorer">
-                      <div class="chronicle-identity">
-                        <span><b>Run</b> <code>{selectedRun.id}</code></span>
-                        {#if selectedRun.pipeline_version}<span><b>Pipeline</b> <code>v{selectedRun.pipeline_version}</code></span>{/if}
-                        {#if selectedRun.trace_id}<span><b>Trace</b> <code>{selectedRun.trace_id}</code></span>{/if}
-                        {#if selectedRun.resumed_from_run_id}<span><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span>{/if}
-                      </div>
-                      <div class="chronicle-toolbar">
-                        <span>Show</span>
-                        {#each [["all", "All facts"], ["run", "Run"], ["attempt", "Attempts"], ["recovery", "Recovery"]] as filter}
-                          <button class:active={chronicleFilter === filter[0]} on:click={() => (chronicleFilter = filter[0])}>{filter[1]}</button>
+              <div class="detail-section chronicle-section">
+                <button
+                  class="disclosure-header chronicle-disclosure"
+                  on:click={() => (chronicleExpanded = !chronicleExpanded)}
+                  aria-expanded={chronicleExpanded}
+                >
+                  <span class="disclosure-icon" class:open={chronicleExpanded}>›</span>
+                  <span class="disclosure-copy">
+                    <span class="chronicle-eyebrow">Chronicle</span>
+                    <strong>Run provenance</strong>
+                    <small>Understand why this run reached its outcome.</small>
+                  </span>
+                  <span class="chronicle-summary"
+                    ><b>{events.length}</b><small>durable facts</small><b
+                      >{events.filter((event) => event.node_id).length}</b
+                    ><small>attempts</small></span
+                  >
+                </button>
+                {#if chronicleExpanded}
+                  <div class="chronicle-explorer">
+                    <div class="chronicle-identity">
+                      <span><b>Run</b> <code>{selectedRun.id}</code></span>
+                      {#if selectedRun.pipeline_version}<span
+                          ><b>Pipeline</b> <code>v{selectedRun.pipeline_version}</code></span
+                        >{/if}
+                      {#if selectedRun.trace_id}<span
+                          ><b>Trace</b> <code>{selectedRun.trace_id}</code></span
+                        >{/if}
+                      {#if selectedRun.resumed_from_run_id}<span
+                          ><b>Resumed from</b> <code>{selectedRun.resumed_from_run_id}</code></span
+                        >{/if}
+                    </div>
+                    <div class="chronicle-toolbar">
+                      <span>Show</span>
+                      {#each [["all", "All facts"], ["run", "Run"], ["attempt", "Attempts"], ["recovery", "Recovery"]] as filter}
+                        <button
+                          class:active={chronicleFilter === filter[0]}
+                          on:click={() => (chronicleFilter = filter[0])}>{filter[1]}</button
+                        >
+                      {/each}
+                    </div>
+                    {#if chronicleEvents.length > 0}
+                      <div class="chronicle-list">
+                        {#each chronicleEvents as event, eventIndex (event.id || event.created_at + event.event_type + eventIndex)}
+                          <button
+                            class="chronicle-event"
+                            class:selected={selectedChronicleEvent?.id === event.id &&
+                              selectedChronicleEvent?.created_at === event.created_at}
+                            on:click={() => (selectedChronicleEvent = event)}
+                          >
+                            <span class="chronicle-dot"></span>
+                            <span class="chronicle-event-body">
+                              <span class="chronicle-event-top"
+                                ><strong>{chronicleLabel(event)}</strong><time
+                                  >{formatFullTime(event.created_at)}</time
+                                ></span
+                              >
+                              <span class="chronicle-event-scope mono">{chronicleScope(event)}</span
+                              >
+                              <span class="chronicle-event-detail">{chronicleDetail(event)}</span>
+                            </span>
+                          </button>
                         {/each}
                       </div>
-                      {#if chronicleEvents.length > 0}
-                        <div class="chronicle-list">
-                          {#each chronicleEvents as event, eventIndex (event.id || event.created_at + event.event_type + eventIndex)}
-                            <button class="chronicle-event" class:selected={selectedChronicleEvent?.id === event.id && selectedChronicleEvent?.created_at === event.created_at} on:click={() => (selectedChronicleEvent = event)}>
-                              <span class="chronicle-dot"></span>
-                              <span class="chronicle-event-body">
-                                <span class="chronicle-event-top"><strong>{chronicleLabel(event)}</strong><time>{formatFullTime(event.created_at)}</time></span>
-                                <span class="chronicle-event-scope mono">{chronicleScope(event)}</span>
-                                <span class="chronicle-event-detail">{chronicleDetail(event)}</span>
-                              </span>
-                            </button>
-                          {/each}
-                        </div>
-                        {#if selectedChronicleEvent}
-                          <div class="chronicle-evidence">
-                            <div><span class="eyebrow">Selected evidence</span><strong>{chronicleLabel(selectedChronicleEvent)}</strong></div>
-                            <code>{JSON.stringify(selectedChronicleEvent.payload || {}, null, 2)}</code>
+                      {#if selectedChronicleEvent}
+                        <div class="chronicle-evidence">
+                          <div>
+                            <span class="eyebrow">Selected evidence</span><strong
+                              >{chronicleLabel(selectedChronicleEvent)}</strong
+                            >
                           </div>
-                        {/if}
-                      {:else}
-                        <div class="chronicle-empty">No facts match this view.</div>
+                          <code
+                            >{JSON.stringify(selectedChronicleEvent.payload || {}, null, 2)}</code
+                          >
+                        </div>
                       {/if}
-                    </div>
-                  {/if}
-                </div>
+                    {:else}
+                      <div class="chronicle-empty">No facts match this view.</div>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
 
               {#if instances.length > 0}
                 <div class="detail-section">
@@ -948,7 +1055,9 @@
                       <h3>Physical execution</h3>
                       <p>Nodus instances produced from this logical run.</p>
                     </div>
-                    <span class="physical-count">{instances.length} instance{instances.length === 1 ? "" : "s"}</span>
+                    <span class="physical-count"
+                      >{instances.length} instance{instances.length === 1 ? "" : "s"}</span
+                    >
                   </div>
                   <div class="physical-table-wrap">
                     <table class="physical-table">
@@ -2049,7 +2158,8 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-md);
     background:
-      linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent) 1px, transparent 1px) 0 0 / 238px 100%,
+      linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent) 1px, transparent 1px)
+        0 0 / 238px 100%,
       var(--bg-primary);
   }
   .plan-graph-lines {
@@ -2079,12 +2189,17 @@
     color: var(--text-primary);
     cursor: pointer;
     text-align: left;
-    transition: border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease;
+    transition:
+      border-color 120ms ease,
+      box-shadow 120ms ease,
+      transform 120ms ease;
   }
   .plan-graph-node:hover,
   .plan-graph-node.selected {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-glow), 0 8px 20px color-mix(in srgb, black 15%, transparent);
+    box-shadow:
+      0 0 0 2px var(--accent-glow),
+      0 8px 20px color-mix(in srgb, black 15%, transparent);
     transform: translateY(-1px);
   }
   .graph-node-stage {
