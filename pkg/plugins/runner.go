@@ -89,6 +89,12 @@ type RunResult struct {
 	// already uses. Nil if the plugin never reported progress.
 	LastProgress *Progress
 
+	// WorkUnits is populated by `plan` (ADR-013 M3) — the independent
+	// pieces of a stream's work the plugin declared. Nil for every
+	// other command, or for a plan call from a plugin that returns
+	// none.
+	WorkUnits []WorkUnit
+
 	Streams []Stream
 	Status  string // "ok" | "error" | ""
 	Message string // human-readable status detail
@@ -266,6 +272,10 @@ func (r *Runner) Run(ctx context.Context, cmd Command, stdinJSON []byte, extraSt
 			if m.Stream != nil {
 				result.Streams = append(result.Streams, *m.Stream)
 			}
+		case MsgWorkUnit:
+			if m.WorkUnit != nil {
+				result.WorkUnits = append(result.WorkUnits, *m.WorkUnit)
+			}
 		case MsgLog:
 			if r.LogHandler != nil {
 				level := m.Level
@@ -388,12 +398,47 @@ func (r *Runner) Discover(ctx context.Context, cfg Config) ([]Stream, error) {
 	return result.Streams, nil
 }
 
+// Plan runs the `plan` command for one already-discovered stream and
+// returns the independent work units the plugin says it can be broken
+// into (ADR-013 M3). Only meaningful for a node type whose manifest
+// sets NodeTypeDecl.SupportsPlan — calling it against a plugin that
+// doesn't implement `plan` fails the same way any other unrecognized
+// subcommand would (the plugin's own "unknown command" error), not a
+// special case handled here. The caller is expected to check
+// SupportsPlan first, same as it already resolves Kind before deciding
+// whether to Read or Write.
+func (r *Runner) Plan(ctx context.Context, cfg Config, stream string) ([]WorkUnit, error) {
+	payload, err := json.Marshal(PlanParams{Config: cfg, Stream: stream})
+	if err != nil {
+		return nil, fmt.Errorf("marshal plan params: %w", err)
+	}
+	result, err := r.Run(ctx, CmdPlan, payload, nil)
+	if err != nil {
+		return nil, err
+	}
+	return result.WorkUnits, nil
+}
+
 // Read runs the `read` command for a stream and collects records.
 // state is the incremental cursor from the previous run (may be nil
 // for full refresh or first run). The returned RunResult's State field
 // holds the advanced cursor the caller should persist.
 func (r *Runner) Read(ctx context.Context, cfg Config, stream string, state map[string]interface{}) (*RunResult, error) {
 	payload, err := json.Marshal(ReadParams{Config: cfg, Stream: stream, State: state})
+	if err != nil {
+		return nil, fmt.Errorf("marshal read params: %w", err)
+	}
+	return r.Run(ctx, CmdRead, payload, nil)
+}
+
+// ReadUnit runs the `read` command for one work unit a prior Plan call
+// returned, threading unit through ReadParams.Unit so the plugin knows
+// which piece of the stream to fetch. Identical to Read otherwise —
+// kept as a separate method rather than adding a parameter to Read so
+// every existing caller of Read (today, every source/sink plugin
+// invocation in the codebase) is untouched by this addition.
+func (r *Runner) ReadUnit(ctx context.Context, cfg Config, stream string, state map[string]interface{}, unit map[string]interface{}) (*RunResult, error) {
+	payload, err := json.Marshal(ReadParams{Config: cfg, Stream: stream, State: state, Unit: unit})
 	if err != nil {
 		return nil, fmt.Errorf("marshal read params: %w", err)
 	}

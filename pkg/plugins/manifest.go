@@ -177,6 +177,17 @@ type NodeTypeDecl struct {
 	// Icon is an optional icon identifier the UI can render next to
 	// the node. Interpreted client-side.
 	Icon string `json:"icon,omitempty"`
+
+	// SupportsPlan declares that this node type implements the `plan`
+	// command (ADR-013 M3): given a stream, it can break that stream's
+	// work into independent units the host schedules and tracks
+	// separately, instead of one blocking `read` for the whole stream.
+	// Optional, defaults to false — `plan` is a refinement a plugin
+	// author opts into per node type, not a requirement every source
+	// must satisfy (agreed on issue #39: "optional per-stream
+	// refinement step after discover"). Only meaningful for Kind ==
+	// KindSource; Validate rejects it set on a sink or transform.
+	SupportsPlan bool `json:"supports_plan,omitempty"`
 }
 
 // NodeKind categorizes what a plugin node type does at execution time.
@@ -259,6 +270,10 @@ func (m *Manifest) Validate() error {
 		case KindSource, KindSink, KindTransform:
 		default:
 			return fmt.Errorf("node_types[%d].kind must be source/sink/transform, got %q",
+				i, nt.Kind)
+		}
+		if nt.SupportsPlan && nt.Kind != KindSource {
+			return fmt.Errorf("node_types[%d].supports_plan is only valid for kind=source, got kind=%q",
 				i, nt.Kind)
 		}
 	}

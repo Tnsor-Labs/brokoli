@@ -9,7 +9,8 @@
       "type": "source_hello",
       "kind": "source",
       "display_name": "Hello Source",
-      "description": "Emits fixed greeting records for protocol verification"
+      "description": "Emits fixed greeting records for protocol verification",
+      "supports_plan": true
     },
     {
       "type": "sink_hello",
