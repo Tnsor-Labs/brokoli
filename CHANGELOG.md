@@ -11,6 +11,51 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.51] - 2026-08-17
+
+### Added
+
+- **Connector work-unit planning protocol** (#234) — @JefferMarcelino.
+  Protocol-layer slice of M3 (#39, ADR-013): a source plugin can now
+  optionally break an already-discovered stream into independent work
+  units via a new `plan` command (`CmdPlan`/`MsgWorkUnit`), instead of
+  one blocking `read` for the whole stream. `NodeTypeDecl.SupportsPlan`
+  opts a node type in; `Runner.ReadUnit` threads a planned unit's params
+  back through `read` via `ReadParams.Unit`. Wire format and host
+  plumbing only — no engine/scheduling wiring yet, and a plugin that
+  only implements `read` is completely unaffected.
+
+- **Physical run instances, pre-run plan, and Chronicle** (#239) —
+  @hc12r. The run details view now shows Nodus physical instances
+  beneath the logical run summary (node, instance key, status, attempt,
+  rows, duration), the pre-run physical execution plan, and Chronicle,
+  an exploratory view over a run's events.
+
+- **Lineage observed metadata and column mappings** (#242) — @hc12r.
+  The lineage graph now carries observed schema and statistics per node
+  (row count, column count, per-column null%/unique%/min/max) and
+  evidence-backed column mappings across shared assets, sourced from a
+  bounded runtime profile persisted after every successful node without
+  adding profiling latency to the run itself.
+
+- **Password login can be disabled by an enterprise integration**
+  (#241) — @hc12r. `api.PasswordLoginEnabledFunc`, an optional hook
+  (nil by default, matching every existing deployment) an EE
+  integration can set to require OAuth instead of local passwords.
+
+### Fixed
+
+- **Instance-level artifact writes were not fenced against stale
+  attempts** (#240) — @hc12r. ADR-017's instance dispatch wrote a
+  physical instance's artifact and only afterward settled the execution
+  attempt through fencing, so a worker that stalled past the
+  dispatcher's timeout and then finally delivered its result could
+  silently overwrite a retry's already-written, correct output.
+  `FencedArtifactWriter` guards the write with `(attempt, fencing
+  generation)` ordering, extending the same race protection
+  `CompleteAttempt`/`FailAttempt` already gave the attempt's status to
+  the data underneath it.
+
 ## [0.10.45] - 2026-08-16
 
 ### Fixed
