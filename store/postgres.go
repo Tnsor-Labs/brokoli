@@ -2588,6 +2588,59 @@ func (s *PostgresStore) GetLatestNodeProfile(pipelineID, nodeID string) (string,
 	return profile, schema, err
 }
 
+// GetLatestNodeProfilesForPipelines batch-fetches the latest profile for
+// every node of every given pipeline in one query, the same DISTINCT ON
+// shape GetLatestRunsByPipelineIDs already uses for an analogous "latest
+// per group" problem.
+func (s *PostgresStore) GetLatestNodeProfilesForPipelines(pipelineIDs []string) (map[string]NodeProfileRecord, error) {
+	out := make(map[string]NodeProfileRecord, len(pipelineIDs))
+	uniq := make([]string, 0, len(pipelineIDs))
+	seen := make(map[string]bool, len(pipelineIDs))
+	for _, id := range pipelineIDs {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+
+	placeholders := make([]string, len(uniq))
+	args := make([]interface{}, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+
+	query := `
+		SELECT DISTINCT ON (r.pipeline_id, np.node_id)
+		    r.pipeline_id, np.node_id, np.profile, np.schema_snapshot, np.run_id, np.created_at
+		FROM node_profiles np
+		JOIN runs r ON r.id = np.run_id
+		WHERE r.pipeline_id IN (` + strings.Join(placeholders, ",") + `)
+		ORDER BY r.pipeline_id, np.node_id, np.created_at DESC
+	`
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var pipelineID, nodeID, profile, schema, runID string
+		var observedAt time.Time
+		if err := rows.Scan(&pipelineID, &nodeID, &profile, &schema, &runID, &observedAt); err != nil {
+			return nil, err
+		}
+		out[pipelineID+":"+nodeID] = NodeProfileRecord{
+			ProfileJSON: profile, SchemaJSON: schema, RunID: runID, ObservedAt: observedAt,
+		}
+	}
+	return out, rows.Err()
+}
+
 // --- Settings ---
 
 func (s *PostgresStore) GetSetting(key string) (string, error) {

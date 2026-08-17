@@ -488,6 +488,25 @@ type NodeProfileStore interface {
 	SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, driftJSON string) error
 	GetNodeProfile(runID, nodeID string) (profileJSON, schemaJSON, driftJSON string, err error)
 	GetLatestNodeProfile(pipelineID, nodeID string) (profileJSON, schemaJSON string, err error)
+
+	// GetLatestNodeProfilesForPipelines batch-fetches the latest profile for
+	// every node of every given pipeline in one round trip, keyed by
+	// "pipelineID:nodeID" — the batched counterpart to calling
+	// GetLatestNodeProfile once per node, which turns lineage graph
+	// construction into an N+1 query. ObservedAt lets a caller merging
+	// profiles for the same shared asset across pipelines pick the
+	// genuinely most recent one rather than guessing from data shape.
+	GetLatestNodeProfilesForPipelines(pipelineIDs []string) (map[string]NodeProfileRecord, error)
+}
+
+// NodeProfileRecord is one row of GetLatestNodeProfilesForPipelines: the
+// latest profile for one (pipeline, node) pair, plus the identity of the
+// run that produced it.
+type NodeProfileRecord struct {
+	ProfileJSON string
+	SchemaJSON  string
+	RunID       string
+	ObservedAt  time.Time
 }
 
 // CalendarStore answers run-activity aggregation queries.
