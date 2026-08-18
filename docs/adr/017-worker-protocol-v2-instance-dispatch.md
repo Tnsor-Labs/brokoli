@@ -1,6 +1,6 @@
 # ADR-017: Worker protocol v2 — instance-level dispatch, lease, and fencing
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-12
 
 ## Context
@@ -555,3 +555,9 @@ an in-process integration test proves the *logic* is correct; it does
 not prove the *deployment* works, whenever real transports and real
 filesystem boundaries are involved. Both are worth having, but they
 prove different things, and this ADR now has both.
+
+## Update — 2026-08-18: gap 3 closed, promoted to accepted
+
+[#161](https://github.com/Tnsor-Labs/brokoli/issues/161) (the local-disk-only `ArtifactStore` gap named as the third real bug above, previously worked around with a shared hostPath volume) is closed: `engine.SQLArtifactStore` stores artifact data in the same SQL database every pod already connects to, so a remote-dispatched instance's result is readable back by the dispatcher pod without a shared volume. It activates alongside `BROKOLI_INSTANCE_DISPATCH=1`; every other deployment keeps the local-disk default (ADR-012's unchanged first backend).
+
+All three real bugs found deploying this are now fixed. Remaining open items are the ones already named above and not specific to this promotion: enterprise-side WorkPool transport verification (tracked in the enterprise repo), and the open co-design questions this ADR never resolved unilaterally (job-table shape, Redis/WorkPool claim-model convergence, real-network reclaim-latency budget, SODP-unification sequencing).

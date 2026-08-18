@@ -1,6 +1,6 @@
 # ADR-012: Artifact and dataset plane — start local-disk, reference-based, opt-in
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-04
 
 ## Context
@@ -106,3 +106,9 @@ Spilled outputs share the run's namespace with node artifacts, so `DeleteRunArti
 Deferred after M1–M4: a cloud-storage backend, Parquet, and retention beyond per-run deletion. M5 remains the stretch goal.
 
 **Unrelated finding, recorded because the next person will hit it:** `Engine` has no `Stop`/`Close`, so its background work — dependency trigger mode in particular — keeps running after a test returns and can write into a `t.TempDir()` while cleanup is removing it. The spill tests use a manually-cleaned directory to keep that flakiness out of their assertions. Giving `Engine` a shutdown is the real fix.
+
+## Update — 2026-08-18: promoted to accepted
+
+M1–M4 are shipped and load-bearing: reference types, `ArtifactStore`, threshold-based spill, and `response="artifact"` all ship the design this ADR describes, and ADR-017's remote-instance-dispatch work builds directly on top of it (its own 2026-08-12 updates name this ADR explicitly as the plane its output-delivery design reuses). A second backend — `engine.SQLArtifactStore`, added to close [#161](https://github.com/Tnsor-Labs/brokoli/issues/161) — proves the `ArtifactStore` interface itself was the right cut: adding a cross-pod-visible backend required no change to the reference types, the manifest format, or any caller.
+
+Still Deferred, and now scoped to their own future work rather than blocking this ADR: a cloud-storage (S3-compatible) backend, Parquet/Arrow dataset format, retention beyond per-run deletion, and any artifact-browsing UI.

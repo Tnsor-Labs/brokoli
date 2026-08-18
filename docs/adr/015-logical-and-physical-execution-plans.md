@@ -1,6 +1,6 @@
 # ADR-015: Persist logical and physical execution plans separately
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-09
 
 ## Context
@@ -84,3 +84,15 @@ Three storage prerequisites are part of this decision, because the plan model is
 - Add API and UI contracts for planner explanations and instance pagination, using the keyset cursor convention the run-history work established rather than a second pagination style.
 - Prove lost-worker recovery with the crash harness already in the repository — a worker killed mid-instance, fenced out, and its instance retried without disturbing successful siblings — as an acceptance gate for durable dispatch, not a follow-up.
 - Deliver instance-level progress on the established realtime pattern: the live channel is a change signal, the database is the source of record. Live state is evicted; at instance scale, treating it as truth would reproduce a bug this project has already fixed once.
+
+## Update — 2026-08-18: promoted to accepted
+
+The core decision — logical pipeline and per-run physical plan as separate, linked models — is shipped and load-bearing, not aspirational: `models.PhysicalPlan`/`PhysicalStage`/`PhysicalWorkUnit`/`PhysicalInstance` and `models.ExecutionAttempt` are real, persisted, and the identity scheme (deterministic instance keys, fencing generations) this ADR specified is what ADR-017's remote instance dispatch claims, leases, and settles against end-to-end — including a real multi-pod Kubernetes deployment, not just in-process tests (see ADR-017's own 2026-08-12 updates).
+
+Fencing correctness at the instance level specifically — a stale, previously-fenced-out attempt writing after a newer claim has taken over — is covered by `TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact` and by [#240](https://github.com/Tnsor-Labs/brokoli/pull/240) (fencing a gap in instance-level artifact writes found and fixed after this ADR's design was already in production). That is the safety property the Follow-ups' "crash harness" item cared about; a literal kill-a-real-worker-process integration test (as opposed to fencing-generation unit coverage of the same failure mode) remains open.
+
+Genuinely still open, tracked separately rather than blocking this ADR:
+- The literal crash-harness proof (kill a real worker process mid-instance) — the fencing-generation safety net this would exercise is unit-tested (above), but not proven with an actual killed process.
+- Cost-based optimization, operation fusion, and shuffle planning — explicitly out of scope for the first planner (Decision point 9).
+- The durable scheduler's fairness/tenant-quota/queue-priority ADR this document calls for — not yet written.
+- Streaming plans with unbounded work-unit discovery, and UI design for very large instance sets.
