@@ -113,6 +113,12 @@ export type NodeType =
   | "dbt"
   | "notify";
 
+export interface PaletteDrop {
+  type: NodeType;
+  clientX: number;
+  clientY: number;
+}
+
 export interface Position {
   x: number;
   y: number;

@@ -14,6 +14,7 @@
     Edge,
     NodeType,
     DependencyRule,
+    PaletteDrop,
   } from "../lib/types";
   import { notify } from "../lib/toast";
   import Skeleton from "../components/Skeleton.svelte";
@@ -41,9 +42,16 @@
   let previewing = false;
   let previewResults: Record<
     string,
-    { name?: string; columns: string[]; rows: Record<string, unknown>[]; status: string; error?: string }
+    {
+      name?: string;
+      columns: string[];
+      rows: Record<string, unknown>[];
+      status: string;
+      error?: string;
+    }
   > = {};
   let previewNodeId: string | null = null;
+  let canvas: PipelineCanvas;
 
   function markDirty() {
     dirty = true;
@@ -246,9 +254,17 @@
 
   function addNodeFromPalette(e: CustomEvent<string>) {
     const index = nodes.length;
-    addNode(new CustomEvent("addNode", { detail: { type: e.detail, x: 120 + (index % 3) * 230, y: 90 + Math.floor(index / 3) * 150 } }));
+    addNode(
+      new CustomEvent("addNode", {
+        detail: { type: e.detail, x: 120 + (index % 3) * 230, y: 90 + Math.floor(index / 3) * 150 },
+      }),
+    );
     showMobileLibrary = false;
     showMobileInspector = true;
+  }
+
+  function dropPaletteNode(e: CustomEvent<PaletteDrop>) {
+    canvas?.dropPaletteNode(e.detail);
   }
 
   function selectNode(e: CustomEvent<string | null>) {
@@ -292,9 +308,15 @@
   function onEdgeAdding() {
     pushUndo();
   }
-  function onEdgeChanged() { markDirty(); }
-  function onNodeMoveStart() { pushUndo(); }
-  function onNodeMoveEnd() { markDirty(); }
+  function onEdgeChanged() {
+    markDirty();
+  }
+  function onNodeMoveStart() {
+    pushUndo();
+  }
+  function onNodeMoveEnd() {
+    markDirty();
+  }
 
   // ── Save / Run ──────────────────────────────────────────────
   // Returns true only when the canvas was actually persisted. Callers that
@@ -345,7 +367,9 @@
     error = "";
     try {
       if (!(await save())) {
-        error = "Preview not run — the pipeline could not be saved: " + error.replace(/^Failed to save: /, "");
+        error =
+          "Preview not run — the pipeline could not be saved: " +
+          error.replace(/^Failed to save: /, "");
         return;
       }
       const res = await fetch(`/api/pipelines/${pipeline.id}/dry-run`, {
@@ -439,7 +463,12 @@
     codeText = fmt === "yaml" ? toYaml() : toJson();
   }
 
-  $: if (showCode) { nodes; edges; pipeline; codeText = codeFormat === "yaml" ? toYaml() : toJson(); }
+  $: if (showCode) {
+    nodes;
+    edges;
+    pipeline;
+    codeText = codeFormat === "yaml" ? toYaml() : toJson();
+  }
 
   $: if (pipeline && edges.some((edge) => edge.condition !== undefined)) {
     pipeline.ir_version = "2.1";
@@ -528,9 +557,20 @@
         </div>
       </div>
       <div class="toolbar-right">
-        <div class="save-state" class:unsaved={dirty}><i></i><span>{saving ? "Saving" : dirty ? "Unsaved" : lastSavedAt ? "Saved" : "Loaded"}</span></div>
-        <button class="btn-sm mobile-panel-button" on:click={() => (showMobileLibrary = !showMobileLibrary)}>Nodes</button>
-        <button class="btn-sm mobile-panel-button" on:click={() => (showMobileInspector = !showMobileInspector)} disabled={!selectedNode}>Configure</button>
+        <div class="save-state" class:unsaved={dirty}>
+          <i></i><span
+            >{saving ? "Saving" : dirty ? "Unsaved" : lastSavedAt ? "Saved" : "Loaded"}</span
+          >
+        </div>
+        <button
+          class="btn-sm mobile-panel-button"
+          on:click={() => (showMobileLibrary = !showMobileLibrary)}>Nodes</button
+        >
+        <button
+          class="btn-sm mobile-panel-button"
+          on:click={() => (showMobileInspector = !showMobileInspector)}
+          disabled={!selectedNode}>Configure</button
+        >
         <!-- Undo/Redo -->
         <button class="btn-icon-sm" on:click={undo} disabled={!canUndo} title="Undo (Ctrl+Z)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
@@ -703,8 +743,8 @@
                   <button
                     class="tag-remove"
                     on:click={() => {
-                    if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i);
-                    markDirty();
+                      if (pipeline) pipeline.tags = (pipeline.tags || []).filter((_, j) => j !== i);
+                      markDirty();
                     }}>x</button
                   >
                 </span>
@@ -919,7 +959,7 @@
 
     <div class="editor-body">
       <div class="palette-sidebar" class:mobile-open={showMobileLibrary}>
-        <NodePalette on:add={addNodeFromPalette} />
+        <NodePalette on:add={addNodeFromPalette} on:paletteDrop={dropPaletteNode} />
       </div>
 
       <div class="canvas-area">
@@ -964,6 +1004,7 @@
           </div>
         {:else}
           <PipelineCanvas
+            bind:this={canvas}
             bind:nodes
             bind:edges
             bind:selectedNodeId
@@ -1169,10 +1210,28 @@
     align-items: center;
     gap: 6px;
   }
-  .save-state { display: inline-flex; align-items: center; gap: 6px; color: var(--text-muted); font: 10px var(--font-mono); }
-  .save-state i { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
-  .save-state.unsaved { color: var(--warning); } .save-state.unsaved i { background: var(--warning); }
-  .mobile-panel-button { display: none; }
+  .save-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font: 10px var(--font-mono);
+  }
+  .save-state i {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--success);
+  }
+  .save-state.unsaved {
+    color: var(--warning);
+  }
+  .save-state.unsaved i {
+    background: var(--warning);
+  }
+  .mobile-panel-button {
+    display: none;
+  }
 
   .toolbar-sep {
     width: 1px;
@@ -1848,11 +1907,18 @@
       max-height: none;
       box-shadow: var(--shadow-lg);
     }
-    .palette-sidebar.mobile-open, .config-sidebar.mobile-open { display: flex; }
-    .canvas-area {
-      width: 100%; height: 100%; min-height: 360px;
+    .palette-sidebar.mobile-open,
+    .config-sidebar.mobile-open {
+      display: flex;
     }
-    .mobile-panel-button { display: inline-flex; }
+    .canvas-area {
+      width: 100%;
+      height: 100%;
+      min-height: 360px;
+    }
+    .mobile-panel-button {
+      display: inline-flex;
+    }
     .btn-sm span {
       display: none;
     }

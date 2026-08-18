@@ -59,6 +59,8 @@ jobs:
         working-directory: ui
         run: |
           npm ci
+          npx playwright install --with-deps chromium firefox
+          npm run test:e2e
           npm run build
 
       - name: Test
