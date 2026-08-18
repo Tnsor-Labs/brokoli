@@ -1,6 +1,6 @@
 # ADR-016: Plugin packaging, runtime resolution, and distribution
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-09
 
 Companion issue: [#104](https://github.com/Tnsor-Labs/brokoli/issues/104) —
@@ -252,3 +252,9 @@ unmet. The plugin ecosystem cannot grow past its authors this way.
 - Fix the runner's documented-but-absent SIGTERM grace (`exec.Cmd.Cancel`
   + `WaitDelay`) — found while writing this ADR; independent, small, and
   worth doing regardless.
+
+## Update — 2026-08-18: promoted to accepted
+
+All five Decision parts are shipped: `pkg/plugins/manifest.go` carries `packaging_version`/`Payloads`/runtime classes; `pkg/plugins/package.go` implements the `.bkg` archive format; `api/handlers_plugins.go` provides `List`/`Install`/`InstallByName`/`Remove`/`Archive`/`Index` (the install/UX API this ADR specified, including checksum verification and the archive endpoint ADR-005 deferred); `ui/src/pages/Plugins.svelte` is the UI page; `pkg/plugins/index.go` implements the curated static-index distribution model, defaulting to a `brokoli-plugins` GitHub Releases index with `BROKOLI_PLUGIN_INDEX` override, exactly as specified.
+
+Still Deferred, as originally scoped and not blocking this ADR: the `container` and WASM runtime classes, per-plugin venv/dependency provisioning for interpreted runtimes, cosign signature verification, and index moderation tooling beyond PR review.

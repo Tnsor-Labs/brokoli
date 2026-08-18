@@ -79,12 +79,12 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-009](./009-crash-recovery-baseline.md) | Crash-recovery baseline before durable orchestration | Accepted |
 | [ADR-010](./010-run-artifact-and-resume-semantics.md) | Run definition snapshots and durable artifact/resume semantics | Accepted |
 | [ADR-011](./011-postgres-scheduler-leader-election.md) | Postgres scheduler leader election via leased row + fencing generation | Accepted |
-| [ADR-012](./012-artifact-and-dataset-plane.md) | Artifact and dataset plane — start local-disk, reference-based, opt-in | Proposed |
+| [ADR-012](./012-artifact-and-dataset-plane.md) | Artifact and dataset plane — start local-disk, reference-based, opt-in | Accepted |
 | [ADR-013](./013-connector-protocol-partition-progress-cancellation.md) | Extend the plugin protocol with work-unit planning, structured progress, and cancellation | Proposed |
 | [ADR-014](./014-pipeline-ir-ownership-and-compatibility.md) | Core-owned pipeline IR and explicit compatibility negotiation | Proposed |
-| [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Proposed |
-| [ADR-016](./016-plugin-packaging-and-distribution.md) | Plugin packaging, runtime resolution, and distribution | Proposed |
-| [ADR-017](./017-worker-protocol-v2-instance-dispatch.md) | Worker protocol v2 — instance-level dispatch, lease, and fencing | Proposed |
+| [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Accepted |
+| [ADR-016](./016-plugin-packaging-and-distribution.md) | Plugin packaging, runtime resolution, and distribution | Accepted |
+| [ADR-017](./017-worker-protocol-v2-instance-dispatch.md) | Worker protocol v2 — instance-level dispatch, lease, and fencing | Accepted |
 | [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Proposed |
 | [ADR-019](./019-execution-segments-and-streaming.md) | Execution segments, streaming capabilities, and reference-passing dataflow | Accepted |
 
