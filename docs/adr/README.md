@@ -87,6 +87,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-017](./017-worker-protocol-v2-instance-dispatch.md) | Worker protocol v2 — instance-level dispatch, lease, and fencing | Proposed |
 | [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Proposed |
 | [ADR-019](./019-execution-segments-and-streaming.md) | Execution segments, streaming capabilities, and reference-passing dataflow | Accepted |
+| [ADR-020](./020-ecosystem-portfolio-phase-1.md) | Adopt the ecosystem framing — Phase 1 portfolio and OSS/Enterprise boundary | Proposed |
 
 ## How to add a new ADR
 
