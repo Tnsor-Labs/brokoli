@@ -8,10 +8,12 @@
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json",
+    "test:e2e": "playwright test",
     "format": "prettier --write 'src/**/*.{ts,svelte}'",
     "format:check": "prettier --check 'src/**/*.{ts,svelte}'"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@tsconfig/svelte": "^5.0.8",
     "@types/js-yaml": "^4.0.9",

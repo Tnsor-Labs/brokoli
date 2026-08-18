@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Node, Edge, RunStatus } from "../lib/types";
+  import type { Node, Edge, RunStatus, PaletteDrop } from "../lib/types";
   import { edgePath, outputPort, inputPort, NODE_WIDTH, NODE_HEIGHT, canConnect } from "../lib/dag";
   import NodeCard from "./NodeCard.svelte";
   import { createEventDispatcher, onMount, onDestroy } from "svelte";
@@ -322,17 +322,26 @@
     viewBox = viewBox;
   }
 
-  function onDrop(e: DragEvent) {
-    if (readonly) return;
-    e.preventDefault();
-    const nodeType = e.dataTransfer?.getData("text/plain");
-    if (!nodeType) return;
-    const pt = clientToSvg(e.clientX, e.clientY);
-    dispatch("addNode", { type: nodeType, x: pt.x - NODE_WIDTH / 2, y: pt.y - NODE_HEIGHT / 2 });
-  }
+  // Called by the parent editor with the pointer-drag payload the palette
+  // dispatches on drop (see NodePalette.svelte). Bounds-checks against the
+  // SVG's own rect since, unlike native HTML5 dragover/drop, a pointer
+  // drag's final position isn't inherently scoped to a drop target.
+  export function dropPaletteNode({ type, clientX, clientY }: PaletteDrop): boolean {
+    if (readonly || !svgEl) return false;
 
-  function onDragOver(e: DragEvent) {
-    e.preventDefault();
+    const bounds = svgEl.getBoundingClientRect();
+    if (
+      clientX < bounds.left ||
+      clientX > bounds.right ||
+      clientY < bounds.top ||
+      clientY > bounds.bottom
+    ) {
+      return false;
+    }
+
+    const pt = clientToSvg(clientX, clientY);
+    dispatch("addNode", { type, x: pt.x - NODE_WIDTH / 2, y: pt.y - NODE_HEIGHT / 2 });
+    return true;
   }
 
   function onDeleteEdge(fromId: string, toId: string) {
@@ -373,8 +382,6 @@
   viewBox="{viewBox.x} {viewBox.y} {viewBox.w} {viewBox.h}"
   on:click={onCanvasClick}
   on:mousedown={onCanvasMouseDown}
-  on:drop={onDrop}
-  on:dragover={onDragOver}
   on:keydown={() => {}}
 >
   <defs>
