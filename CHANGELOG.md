@@ -11,6 +11,34 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.52] - 2026-08-18
+
+### Changed
+
+- **`extensions.RunCancelRelay` renamed to `RunCancelBroadcaster`** (#244)
+  — @hc12r. Pure rename, no behavior change: `Registry.CancelRelay` →
+  `CancelBroadcaster`, `Engine.CancelRelay` → `CancelBroadcaster`. Frees
+  "Relay" as a product name ahead of the ecosystem strategy work below —
+  this mechanism is unrelated pub/sub run-cancellation, not the proposed
+  private-execution-gateway product. `CancelRelayedRun`/`BroadcastCancel`
+  keep their names.
+
+### Docs
+
+- **ADR-012, ADR-015, ADR-016, ADR-017 promoted from proposed to
+  accepted** (#245) — @hc12r. Each ADR's core decision is shipped and
+  load-bearing in production (artifact/dataset plane, physical
+  execution plans, plugin packaging/distribution, worker protocol v2
+  instance dispatch); each gets a dated Update section documenting what
+  shipped and what legitimately remains deferred.
+
+- **ADR-020: adopt the ecosystem framing, Phase 1 portfolio** (#246) —
+  @hc12r. New ADR formalizing the decidable slice of the "Brokoli
+  Ecosystem" strategy proposal: Phase 1 portfolio (Brokoli/Nodus/Relay/
+  Strata), the OSS/Enterprise boundary principle, and the rule that
+  productization follows architecture. Status: proposed — an open
+  decision, not self-approved.
+
 ## [0.10.51] - 2026-08-17
 
 ### Added
