@@ -53,12 +53,12 @@ type Engine struct {
 	// instance executes locally exactly as before, unconditionally.
 	InstanceJobQueue extensions.JobQueue
 
-	// CancelRelay broadcasts cancellation requests for runs executing in
-	// OTHER engine instances (see extensions.RunCancelRelay). Nil by
-	// default: a single-process deployment cancels every run locally and
+	// CancelBroadcaster broadcasts cancellation requests for runs executing
+	// in OTHER engine instances (see extensions.RunCancelBroadcaster). Nil
+	// by default: a single-process deployment cancels every run locally and
 	// needs no transport. When set, the process must also subscribe its
 	// transport to deliver received run IDs to CancelRelayedRun.
-	CancelRelay extensions.RunCancelRelay
+	CancelBroadcaster extensions.RunCancelBroadcaster
 
 	// ArtifactStore persists durable node-output artifacts so ResumeRun can
 	// restore a skipped node's real prior output (Tnsor-Labs/brokoli#8).
@@ -436,29 +436,29 @@ func (e *Engine) CancelRun(runID string) error {
 	}
 
 	// Case 3: the run executes in another engine instance. Broadcast when
-	// a relay is configured; the owning instance's CancelRelayedRun does
-	// the actual cancel (and, post-#203, finalizes the run as cancelled on
-	// every exit path). Without a relay this remains an error — better a
-	// loud "could not cancel" than silently doing nothing.
-	if e.CancelRelay != nil {
-		if bErr := e.CancelRelay.BroadcastCancel(runID); bErr != nil {
+	// a broadcaster is configured; the owning instance's CancelRelayedRun
+	// does the actual cancel (and, post-#203, finalizes the run as
+	// cancelled on every exit path). Without a broadcaster this remains an
+	// error — better a loud "could not cancel" than silently doing nothing.
+	if e.CancelBroadcaster != nil {
+		if bErr := e.CancelBroadcaster.BroadcastCancel(runID); bErr != nil {
 			return fmt.Errorf("broadcast cancel for run %s: %w", runID, bErr)
 		}
 		return nil
 	}
-	// No relay, but the durable intent is persisted: the owning Runner
-	// picks it up at its next wave boundary, so the cancel succeeds —
-	// with node-boundary latency instead of the relay's immediacy.
+	// No broadcaster, but the durable intent is persisted: the owning
+	// Runner picks it up at its next wave boundary, so the cancel succeeds
+	// — with node-boundary latency instead of the broadcaster's immediacy.
 	if intentPersisted {
 		return nil
 	}
 	return fmt.Errorf("run %s not found or already completed", runID)
 }
 
-// CancelRelayedRun delivers a relayed cancellation request (see
-// extensions.RunCancelRelay): it cancels runID if that run is executing in
-// this process and quietly ignores it otherwise — every instance receives
-// every broadcast, and only the owner acts.
+// CancelRelayedRun delivers a broadcast cancellation request (see
+// extensions.RunCancelBroadcaster): it cancels runID if that run is
+// executing in this process and quietly ignores it otherwise — every
+// instance receives every broadcast, and only the owner acts.
 func (e *Engine) CancelRelayedRun(runID string) {
 	e.cancelLocalRun(runID)
 }

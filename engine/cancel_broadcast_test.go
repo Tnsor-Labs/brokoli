@@ -12,25 +12,25 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
-// recordingCancelRelay is a fake extensions.RunCancelRelay that records
-// every broadcast instead of transporting it anywhere.
-type recordingCancelRelay struct {
+// recordingCancelBroadcaster is a fake extensions.RunCancelBroadcaster that
+// records every broadcast instead of transporting it anywhere.
+type recordingCancelBroadcaster struct {
 	mu         sync.Mutex
 	broadcasts []string
 }
 
-func (r *recordingCancelRelay) BroadcastCancel(runID string) error {
+func (r *recordingCancelBroadcaster) BroadcastCancel(runID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.broadcasts = append(r.broadcasts, runID)
 	return nil
 }
 
-func (r *recordingCancelRelay) SubscribeCancels(func(runID string)) error { return nil }
+func (r *recordingCancelBroadcaster) SubscribeCancels(func(runID string)) error { return nil }
 
-func (r *recordingCancelRelay) Close() error { return nil }
+func (r *recordingCancelBroadcaster) Close() error { return nil }
 
-func (r *recordingCancelRelay) recorded() []string {
+func (r *recordingCancelBroadcaster) recorded() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.broadcasts...)
@@ -91,9 +91,9 @@ func TestCancelRun_PendingRunCancelledAtomically(t *testing.T) {
 // TestCancelRun_RunningElsewhere_Broadcasts proves the distributed path: a
 // run that the store says is running but that has no Runner in this
 // process (it executes on another instance) is broadcast through the
-// configured relay instead of failing with "not found" — the exact live
+// configured broadcaster instead of failing with "not found" — the exact live
 // k3s failure where every API-pod cancel 404'd while the worker kept
-// executing. Without a relay the error remains, loudly.
+// executing. Without a broadcaster the error remains, loudly.
 func TestCancelRun_RunningElsewhere_Broadcasts(t *testing.T) {
 	eng, s := newExecCtxTestEngine(t)
 	seedCancelTestPipeline(t, s, "p-cancel-remote")
@@ -104,12 +104,12 @@ func TestCancelRun_RunningElsewhere_Broadcasts(t *testing.T) {
 		t.Fatalf("create running run: %v", err)
 	}
 
-	relay := &recordingCancelRelay{}
-	eng.CancelRelay = relay
+	broadcaster := &recordingCancelBroadcaster{}
+	eng.CancelBroadcaster = broadcaster
 	if err := eng.CancelRun(run.ID); err != nil {
-		t.Fatalf("CancelRun with relay: %v", err)
+		t.Fatalf("CancelRun with broadcaster: %v", err)
 	}
-	got := relay.recorded()
+	got := broadcaster.recorded()
 	if len(got) != 1 || got[0] != run.ID {
 		t.Fatalf("broadcasts = %v, want exactly [%s]", got, run.ID)
 	}
@@ -125,14 +125,14 @@ func TestCancelRun_RunningElsewhere_Broadcasts(t *testing.T) {
 }
 
 // TestCancelRun_TerminalRun_Errors proves terminal runs are never
-// re-cancelled or broadcast — a relay must not receive noise for runs
+// re-cancelled or broadcast — a broadcaster must not receive noise for runs
 // that already finished.
 func TestCancelRun_TerminalRun_Errors(t *testing.T) {
 	eng, s := newExecCtxTestEngine(t)
 	seedCancelTestPipeline(t, s, "p-cancel-terminal")
 
-	relay := &recordingCancelRelay{}
-	eng.CancelRelay = relay
+	broadcaster := &recordingCancelBroadcaster{}
+	eng.CancelBroadcaster = broadcaster
 
 	for _, status := range []models.RunStatus{models.RunStatusSuccess, models.RunStatusFailed, models.RunStatusCancelled} {
 		run := &models.Run{ID: "run-terminal-" + string(status), PipelineID: "p-cancel-terminal", Status: status}
@@ -143,13 +143,13 @@ func TestCancelRun_TerminalRun_Errors(t *testing.T) {
 			t.Fatalf("CancelRun on %s run should error", status)
 		}
 	}
-	if got := relay.recorded(); len(got) != 0 {
-		t.Fatalf("terminal-run cancels reached the relay: %v", got)
+	if got := broadcaster.recorded(); len(got) != 0 {
+		t.Fatalf("terminal-run cancels reached the broadcaster: %v", got)
 	}
 }
 
 // TestCancelRelayedRun_CancelsLocalRun proves the receiving side of the
-// relay: a broadcast delivered to the instance that owns the run cancels
+// broadcaster: a broadcast delivered to the instance that owns the run cancels
 // it exactly like a direct CancelRun — the in-flight executor observes
 // context.Canceled and the run finalizes as cancelled. A relayed ID this
 // instance does not own is a quiet no-op.
@@ -261,7 +261,7 @@ func (x *tallyExecutor) count() int {
 }
 
 // TestCancelRun_DurableIntent_NoRelay proves a cancel for a run executing
-// in another process succeeds WITHOUT a relay, via the durable
+// in another process succeeds WITHOUT a broadcaster, via the durable
 // cancel_requested flag: intent is persisted, CancelRun reports success,
 // and the owning Runner converges at its next wave boundary (proven
 // separately below). Before the flag existed this path was a hard error.
@@ -276,7 +276,7 @@ func TestCancelRun_DurableIntent_NoRelay(t *testing.T) {
 	}
 
 	if err := eng.CancelRun(run.ID); err != nil {
-		t.Fatalf("CancelRun without relay should succeed via durable intent: %v", err)
+		t.Fatalf("CancelRun without broadcaster should succeed via durable intent: %v", err)
 	}
 	stored, err := s.GetRun(run.ID)
 	if err != nil {
@@ -293,7 +293,7 @@ func TestCancelRun_DurableIntent_NoRelay(t *testing.T) {
 
 // TestRunner_HonorsDurableCancelIntentAtWaveBoundary proves the
 // convergence half: a Runner whose run has cancel_requested set — a lost
-// relay broadcast, or a cancel issued while no process owned the run —
+// broadcast, or a cancel issued while no process owned the run —
 // cancels at the next wave boundary. The downstream node never executes
 // and the run finalizes as cancelled.
 func TestRunner_HonorsDurableCancelIntentAtWaveBoundary(t *testing.T) {
@@ -490,7 +490,7 @@ func TestRunnerCancelBeforeExecuteIsDurable(t *testing.T) {
 
 // TestRunner_CancelIntentWatcherFiresMidNode is the live-found regression:
 // a single-node pipeline mid-execution has no wave boundary, so when the
-// relay transport is down (a Redis restart used to kill every subscriber
+// broadcaster transport is down (a Redis restart used to kill every subscriber
 // permanently), a durably-recorded cancel was never observed and the run
 // completed. The watcher polls the flag DURING execution: the gate node
 // here never finishes on its own — only the watcher can end this run.
@@ -526,7 +526,7 @@ func TestRunner_CancelIntentWatcherFiresMidNode(t *testing.T) {
 	}
 
 	// Simulate the dead-transport scenario: intent lands durably, nothing
-	// delivers it — no relay, no CancelRun, just the flag.
+	// delivers it — no broadcaster, no CancelRun, just the flag.
 	if requested, rErr := s.RequestRunCancel(runID); rErr != nil || !requested {
 		t.Fatalf("RequestRunCancel = %v, %v", requested, rErr)
 	}
