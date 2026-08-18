@@ -376,23 +376,23 @@ type JobQueueRenewer interface {
 	RenewClaim(jobID string) error
 }
 
-// RunCancelRelay broadcasts run-cancellation requests across engine
+// RunCancelBroadcaster broadcasts run-cancellation requests across engine
 // instances. Engine.CancelRun can only cancel a run whose Runner lives in
 // its own process; in a distributed deployment (API pods and worker pods
 // sharing one store and JobQueue) the instance that receives
 // POST /runs/{id}/cancel is almost never the instance executing the run.
-// Without a relay such cancels fail with "not found or already completed"
-// while the run keeps executing on its worker.
+// Without a broadcaster such cancels fail with "not found or already
+// completed" while the run keeps executing on its worker.
 //
 // The transport is enterprise-provided, mirroring JobQueue. Wiring: every
-// engine instance sets Engine.CancelRelay and subscribes its transport to
-// deliver received run IDs to Engine.CancelRelayedRun, which cancels
+// engine instance sets Engine.CancelBroadcaster and subscribes its transport
+// to deliver received run IDs to Engine.CancelRelayedRun, which cancels
 // locally-executing runs and quietly ignores the rest. Delivery is
 // best-effort fan-out — publishing to every instance and letting the owner
 // react avoids tracking run ownership in the transport, and a lost message
 // degrades to today's behavior (the run completes), never to a wrong
 // terminal status.
-type RunCancelRelay interface {
+type RunCancelBroadcaster interface {
 	// BroadcastCancel publishes a cancellation request for runID to all
 	// engine instances, including the caller's own.
 	BroadcastCancel(runID string) error
@@ -404,7 +404,7 @@ type RunCancelRelay interface {
 	// goroutine until Close.
 	SubscribeCancels(handler func(runID string)) error
 
-	// Close shuts down the relay and its subscription.
+	// Close shuts down the broadcaster and its subscription.
 	Close() error
 }
 

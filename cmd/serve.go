@@ -187,18 +187,18 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		// Wire the run-cancel relay from extensions (enterprise distributed
-		// mode). Every instance both broadcasts (CancelRun falls back to it
-		// for runs it doesn't own) and subscribes (so a broadcast reaches
-		// the instance that DOES own the run). Wired independently of the
-		// job queue: an API pod in scheduler mode never dequeues jobs but
-		// must still relay and receive cancels.
-		if Extensions != nil && Extensions.CancelRelay != nil {
-			eng.CancelRelay = Extensions.CancelRelay
-			if err := Extensions.CancelRelay.SubscribeCancels(eng.CancelRelayedRun); err != nil {
-				log.Printf("WARNING: run-cancel relay subscription failed: %v (cross-instance cancels degraded)", err)
+		// Wire the run-cancel broadcaster from extensions (enterprise
+		// distributed mode). Every instance both broadcasts (CancelRun falls
+		// back to it for runs it doesn't own) and subscribes (so a broadcast
+		// reaches the instance that DOES own the run). Wired independently
+		// of the job queue: an API pod in scheduler mode never dequeues jobs
+		// but must still broadcast and receive cancels.
+		if Extensions != nil && Extensions.CancelBroadcaster != nil {
+			eng.CancelBroadcaster = Extensions.CancelBroadcaster
+			if err := Extensions.CancelBroadcaster.SubscribeCancels(eng.CancelRelayedRun); err != nil {
+				log.Printf("WARNING: run-cancel broadcaster subscription failed: %v (cross-instance cancels degraded)", err)
 			} else {
-				log.Printf("Run-cancel relay enabled (mode: %s)", RunMode)
+				log.Printf("Run-cancel broadcaster enabled (mode: %s)", RunMode)
 			}
 		}
 
