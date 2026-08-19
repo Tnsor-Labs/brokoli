@@ -103,7 +103,7 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "webhook not configured for this pipeline")
 			return
 		}
-		if token != p.WebhookToken {
+		if !engine.ValidateWebhookToken(token, p.WebhookToken) {
 			writeError(w, http.StatusUnauthorized, "invalid webhook token")
 			return
 		}
