@@ -5,21 +5,21 @@
 <h1 align="center">Brokoli</h1>
 
 <p align="center">
-  Self-hosted data pipeline orchestration. Single binary, visual editor, built-in data quality.
+  The open-source data platform for building, running, and explaining data pipelines.
 </p>
 
 <p align="center">
   <a href="https://github.com/Tnsor-Labs/brokoli/releases/latest">
-    <img src="https://img.shields.io/github/v/release/Tnsor-Labs/brokoli?color=0066cc&labelColor=0a0a0a" alt="Latest release" />
+    <img src="https://img.shields.io/github/v/release/Tnsor-Labs/brokoli?color=10B866&labelColor=0B1114" alt="Latest release" />
   </a>
   <a href="https://github.com/Tnsor-Labs/brokoli/stargazers">
-    <img src="https://img.shields.io/github/stars/Tnsor-Labs/brokoli?color=0066cc&labelColor=0a0a0a" alt="Stars" />
+    <img src="https://img.shields.io/github/stars/Tnsor-Labs/brokoli?color=10B866&labelColor=0B1114" alt="Stars" />
   </a>
   <a href="https://github.com/Tnsor-Labs/brokoli/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/license-Apache%202.0-0066cc?labelColor=0a0a0a" alt="Apache 2.0" />
+    <img src="https://img.shields.io/badge/license-Apache%202.0-10B866?labelColor=0B1114" alt="Apache 2.0" />
   </a>
   <a href="https://github.com/Tnsor-Labs/brokoli/pulse">
-    <img src="https://img.shields.io/github/commit-activity/m/Tnsor-Labs/brokoli?color=0066cc&labelColor=0a0a0a" alt="Commit activity" />
+    <img src="https://img.shields.io/github/commit-activity/m/Tnsor-Labs/brokoli?color=10B866&labelColor=0B1114" alt="Commit activity" />
   </a>
 </p>
 
@@ -33,7 +33,7 @@
 
 ---
 
-Brokoli is a data operations platform for building, running, and explaining data pipelines. It starts as a single ~30MB binary with a visual editor, parallel DAG execution, built-in data quality, real-time monitoring, and a Python SDK — no infrastructure required beyond the binary itself.
+It starts as a single ~30MB binary with a visual editor, parallel DAG execution, built-in data quality, real-time monitoring, and a Python SDK — no infrastructure required beyond the binary itself.
 
 The important part is the complete operating loop: define a pipeline, run it,
 see the physical plan and evidence behind the result, and trace the data that
