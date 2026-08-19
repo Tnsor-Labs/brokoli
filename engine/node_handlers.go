@@ -22,6 +22,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/quality"
 )
 
@@ -989,8 +990,13 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 		}
 	}
 
-	// Send in batches
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Send in batches. netguard.Default: sink_api's url is arbitrary
+	// pipeline-editor-supplied config, unlike a fetch's trusted
+	// self-reference case -- there is no legitimate reason for it to
+	// reach a loopback/private/link-local address, so this had no
+	// carve-out to preserve (previously this had no SSRF protection at
+	// all).
+	client := netguard.Default.Client(30 * time.Second)
 	totalSent := 0
 	totalBatches := (len(input.Rows) + batchSize - 1) / batchSize
 

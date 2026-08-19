@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 var (
@@ -43,50 +43,17 @@ const maxPaginationPages = 100000
 // mechanism (see PR notes on scope).
 const defaultPageRetries = 2
 
-// isBlockedHost returns true if the host resolves to a private, loopback, or
-// cloud metadata IP range. Prevents SSRF attacks that probe internal networks
-// or steal cloud credentials via the metadata endpoint.
-func isBlockedHost(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ErrInvalidURL
-	}
-	host := u.Hostname()
-
-	// Block cloud metadata endpoints by hostname.
-	blockedHosts := []string{
-		"169.254.169.254",
-		"metadata.google.internal",
-		"metadata.internal",
-	}
-	for _, b := range blockedHosts {
-		if strings.EqualFold(host, b) {
-			return ErrSSRFBlocked
-		}
-	}
-
-	// Resolve and check IP ranges.
-	ips, err := net.LookupHost(host)
-	if err != nil {
-		return nil // DNS failure will be caught by the HTTP client
-	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		// Block private ranges (10.x, 172.16-31.x, 192.168.x) and link-local.
-		// Allow loopback (127.x) because the fetcher uses it for self-referencing
-		// sample data URLs resolved via BROKOLI_SERVER_URL.
-		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return ErrSSRFBlocked
-		}
-	}
-	return nil
-}
-
 type RESTFetcher struct {
 	client *http.Client
+
+	// selfRefClient is used only for trustedSelfRef requests (see
+	// executeRequestContext) -- the one legitimate case that needs to
+	// reach a loopback/private-range address (the Brokoli server itself,
+	// which in k8s/docker deployments is typically a 10.x/172.16.x/
+	// ClusterIP address). Kept separate from client, which stays
+	// loopback-blocked for every externally-supplied URL a pipeline
+	// author configures.
+	selfRefClient *http.Client
 
 	// artifacts, when set, is where a response="artifact" body is stored so
 	// the node can return a reference to it rather than the bytes
@@ -169,15 +136,44 @@ func (f *RESTFetcher) FetchPageContext(ctx context.Context, source string, optio
 	return f.parseResponseContract(responseBody, options, headers.Get("Content-Type"))
 }
 
-func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
-	if f.client == nil {
-		f.client = &http.Client{
-			Timeout: 30 * time.Second, // Default timeout
-		}
-	}
+// outboundPolicy is the SSRF policy used for externally-supplied
+// source_api URLs. A package var, not a hardcoded netguard.Default,
+// solely so this package's own tests (which fetch from httptest.Server
+// -- i.e. loopback -- to simulate an external API, not to exercise the
+// SSRF guard itself) can relax it in TestMain; see fetchers_test.go.
+// Production always runs with the netguard.Default this is initialized
+// to.
+var outboundPolicy = netguard.Default
 
-	if timeout, ok := options["timeout"].(time.Duration); ok {
+// SetOutboundPolicyForTesting overrides the SSRF policy RESTFetcher uses
+// for external URLs, for the lifetime of a test binary. Exported (not
+// package-private) because Go's global state doesn't cross package
+// boundaries: a package like engine, whose own tests build pipelines
+// that exercise a real RESTFetcher against an httptest.Server -- i.e.
+// loopback, to simulate an external API rather than to test the SSRF
+// guard itself -- needs this from its own TestMain, not just this
+// package's. Not for use outside tests; production always runs with
+// this var's real initializer (netguard.Default).
+func SetOutboundPolicyForTesting(p netguard.Policy) (restore func()) {
+	prev := outboundPolicy
+	outboundPolicy = p
+	return func() { outboundPolicy = prev }
+}
+
+func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
+	timeout := 30 * time.Second // Default timeout
+	if t, ok := options["timeout"].(time.Duration); ok {
+		timeout = t
+	}
+	if f.client == nil {
+		f.client = outboundPolicy.Client(timeout)
+	} else {
 		f.client.Timeout = timeout
+	}
+	if f.selfRefClient == nil {
+		f.selfRefClient = netguard.Policy{AllowLoopback: true}.Client(timeout)
+	} else {
+		f.selfRefClient.Timeout = timeout
 	}
 }
 
@@ -240,11 +236,12 @@ func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]b
 func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, options RequestOptions) ([]byte, http.Header, error) {
 	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the
 	// Brokoli server. A relative path is an implicit self-reference to the
-	// trusted server, so the SSRF guard must not block it — in k8s/docker
-	// deployments BROKOLI_SERVER_URL typically resolves to a private cluster
-	// IP (10.x / 172.16.x / ClusterIP), which is exactly what isBlockedHost
-	// rejects. Track whether the URL originated as relative so we can skip
-	// the SSRF check for trusted self-references only.
+	// trusted server — in k8s/docker deployments BROKOLI_SERVER_URL
+	// typically resolves to a private cluster IP (10.x / 172.16.x /
+	// ClusterIP) or loopback, which netguard.Default would otherwise
+	// block. Track whether the URL originated as relative so the request
+	// below can use selfRefClient (AllowLoopback: true) instead of the
+	// loopback-blocked client every externally-supplied URL goes through.
 	trustedSelfRef := strings.HasPrefix(rawURL, "/")
 	resolvedURL := rawURL
 	if trustedSelfRef {
@@ -270,14 +267,6 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 		}
 		parsed.RawQuery = q.Encode()
 		resolvedURL = parsed.String()
-	}
-
-	// SSRF protection: block requests to private networks and cloud metadata.
-	// Skip for trusted self-references to the Brokoli server itself.
-	if !trustedSelfRef {
-		if err := isBlockedHost(resolvedURL); err != nil {
-			return nil, nil, fmt.Errorf("%w: %v", ErrSSRFBlocked, err)
-		}
 	}
 
 	req, err := http.NewRequest(options.Method, resolvedURL, nil)
@@ -317,8 +306,15 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 		req.SetBasicAuth(options.AuthUser, options.AuthPassword)
 	}
 
-	resp, err := f.client.Do(req)
+	client := f.client
+	if trustedSelfRef {
+		client = f.selfRefClient
+	}
+	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, netguard.ErrBlockedTarget) {
+			return nil, nil, fmt.Errorf("%w: %v", ErrSSRFBlocked, err)
+		}
 		return nil, nil, fmt.Errorf("%w: %v", ErrHTTPRequestFailed, err)
 	}
 	defer resp.Body.Close()
