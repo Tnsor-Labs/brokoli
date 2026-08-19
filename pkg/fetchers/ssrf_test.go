@@ -1,10 +1,14 @@
 package fetchers
 
 import (
+	"context"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
@@ -38,5 +42,36 @@ func TestRESTFetcher_BlocksLoopback_WhenPolicyIsDefault(t *testing.T) {
 	_, err := f.Fetch(srv.URL, map[string]interface{}{})
 	if err == nil {
 		t.Fatal("expected a loopback target to be blocked under the real default policy, got nil error")
+	}
+}
+
+// TestRESTFetcher_SelfRefClient_PermitsClusterIP is a regression guard for
+// the production incident where the bundled sample-data pipeline broke:
+// trustedSelfRef resolves a relative URL (e.g. /api/samples/data/x.json)
+// against BROKOLI_SERVER_URL, which in a k8s deployment is the in-cluster
+// Service DNS name -- it resolves to a ClusterIP, a private address that
+// is NOT loopback. selfRefClient originally only set AllowLoopback: true,
+// so that ClusterIP was still rejected even though this is exactly the
+// one destination trustedSelfRef exists to reach.
+//
+// This dials a private, non-loopback IP directly through selfRefClient's
+// own Transport (same technique as netguard's own DialContext test) --
+// there's no listener at that address, so the dial itself will fail, but
+// what matters is *how*: it must fail with a real network error (refused/
+// timeout/unreachable), never netguard.ErrBlockedTarget, which would mean
+// the policy rejected it before ever attempting to connect.
+func TestRESTFetcher_SelfRefClient_PermitsClusterIP(t *testing.T) {
+	f := &RESTFetcher{}
+	f.ensureClientInitialized(nil)
+
+	transport := f.selfRefClient.Transport.(*http.Transport)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	_, err := transport.DialContext(ctx, "tcp", net.JoinHostPort("10.43.13.252", "8080"))
+	if err == nil {
+		t.Fatal("expected the dial to fail (nothing listening), but it should fail on the network, not the policy")
+	}
+	if errors.Is(err, netguard.ErrBlockedTarget) {
+		t.Fatalf("selfRefClient rejected a private ClusterIP-shaped address at the policy level: %v", err)
 	}
 }

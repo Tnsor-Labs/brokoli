@@ -34,13 +34,25 @@ var blockedHostnames = []string{
 // Policy controls what a Client built from it will and won't dial.
 type Policy struct {
 	// AllowLoopback opts into reaching 127.0.0.0/8 and ::1. Off by
-	// default: the one known legitimate case (a source_api node
-	// self-referencing the Brokoli server for sample data) is handled by
-	// pkg/fetchers' trustedSelfRef path, which resolves and dials the
-	// server directly and never calls into netguard at all -- it doesn't
-	// need this policy to allow loopback generally. Turn it on only for a
-	// caller with its own equally narrow, equally deliberate reason.
+	// default. Turn it on only for a caller with its own narrow,
+	// deliberate reason.
 	AllowLoopback bool
+
+	// AllowPrivate opts into reaching RFC1918/link-local addresses
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16).
+	// Off by default.
+	//
+	// The one known legitimate case for either of these two flags
+	// together is pkg/fetchers' trustedSelfRef path (a source_api node
+	// self-referencing the Brokoli server for sample data): in a plain
+	// docker/bare-metal deployment BROKOLI_SERVER_URL resolves to
+	// loopback, but in k8s it's the in-cluster Service DNS name, which
+	// resolves to a ClusterIP -- a private address, not a loopback one.
+	// Both flags are needed to cover both deployment shapes for that
+	// one resolved, operator-controlled destination. Turn this on
+	// elsewhere only for a caller with its own equally narrow, equally
+	// deliberate reason.
+	AllowPrivate bool
 }
 
 func (p Policy) checkIP(ip net.IP) error {
@@ -54,6 +66,9 @@ func (p Policy) checkIP(ip net.IP) error {
 		return fmt.Errorf("%w: %s (loopback)", ErrBlockedTarget, ip)
 	}
 	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if p.AllowPrivate {
+			return nil
+		}
 		return fmt.Errorf("%w: %s (private/link-local)", ErrBlockedTarget, ip)
 	}
 	return nil

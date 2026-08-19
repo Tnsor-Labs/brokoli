@@ -171,7 +171,7 @@ func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
 		f.client.Timeout = timeout
 	}
 	if f.selfRefClient == nil {
-		f.selfRefClient = netguard.Policy{AllowLoopback: true}.Client(timeout)
+		f.selfRefClient = netguard.Policy{AllowLoopback: true, AllowPrivate: true}.Client(timeout)
 	} else {
 		f.selfRefClient.Timeout = timeout
 	}

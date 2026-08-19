@@ -51,6 +51,34 @@ func TestClient_AllowLoopback_PermitsIt(t *testing.T) {
 	}
 }
 
+func TestChecker_AllowPrivate_PermitsPrivateRanges(t *testing.T) {
+	// Regression guard: BROKOLI_SERVER_URL in a k8s deployment resolves to
+	// a ClusterIP (private, not loopback), so trustedSelfRef's client
+	// needs both AllowLoopback and AllowPrivate to actually reach it --
+	// AllowLoopback alone (the pre-fix state) still blocked this.
+	policy := Policy{AllowLoopback: true, AllowPrivate: true}
+	cases := []string{"10.43.13.252", "172.16.0.1", "192.168.1.1"}
+	for _, ipStr := range cases {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			t.Fatalf("test bug: %q didn't parse", ipStr)
+		}
+		if err := policy.checkIP(ip); err != nil {
+			t.Errorf("checkIP(%s) with AllowPrivate: true = %v, want nil", ipStr, err)
+		}
+	}
+}
+
+func TestChecker_AllowPrivate_DoesNotImplicitlyAllowLoopback(t *testing.T) {
+	// AllowPrivate and AllowLoopback gate distinct ranges -- Go's
+	// net.IP.IsLoopback() and IsPrivate() are mutually exclusive, so
+	// AllowPrivate alone must not let a loopback address through.
+	policy := Policy{AllowPrivate: true}
+	if err := policy.checkIP(net.ParseIP("127.0.0.1")); err == nil {
+		t.Fatal("expected loopback to still be blocked when only AllowPrivate is set")
+	}
+}
+
 func TestClient_BlocksCloudMetadataHostname(t *testing.T) {
 	client := Default.Client(2 * time.Second)
 	req, _ := http.NewRequest(http.MethodGet, "http://metadata.google.internal/computeMetadata/v1/", nil)
