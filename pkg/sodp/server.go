@@ -469,6 +469,23 @@ func (srv *Server) handleCall(sess *Session, f Frame) {
 		return
 	}
 
+	// Broadcast before acking: sendFrame only enqueues onto sess.Send —
+	// actual delivery to this caller happens later, on writePump's own
+	// goroutine. Broadcasting first guarantees that by the time the
+	// caller sees its RESULT (meaning the enqueue plus a full round trip
+	// through writePump already happened), every subscriber watching
+	// this key at that moment has already received the delta too. Acking
+	// first left a real window under scheduler contention: a caller that
+	// acts on its RESULT by immediately subscribing to the same key
+	// (a client resubscribing right after its own write is a realistic
+	// pattern) could join the subscriber list before this BroadcastAll
+	// ran, then receive it as if it were a new, current change, seconds
+	// after the fact — found via a flaky test that read a "surprise"
+	// version-1 delta where a version-2 one was expected.
+	if delta != nil {
+		srv.Fanout.BroadcastAll(*delta, sess.ID, sess.OrgID)
+	}
+
 	// RESULT in @sodp/client format: { call_id, success, data }
 	resultData := map[string]any{}
 	if delta != nil {
@@ -484,10 +501,6 @@ func (srv *Server) handleCall(sess *Session, f Frame) {
 			"data":    resultData,
 		},
 	})
-
-	if delta != nil {
-		srv.Fanout.BroadcastAll(*delta, sess.ID, sess.OrgID)
-	}
 }
 
 // handleResume replays missed deltas or falls back to STATE_INIT.
