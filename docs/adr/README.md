@@ -88,6 +88,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Proposed |
 | [ADR-019](./019-execution-segments-and-streaming.md) | Execution segments, streaming capabilities, and reference-passing dataflow | Accepted |
 | [ADR-020](./020-ecosystem-portfolio-phase-1.md) | Adopt the ecosystem framing — Phase 1 portfolio and OSS/Enterprise boundary | Proposed |
+| [ADR-021](./021-cli-browser-login.md) | Browser-based login for the CLI and SDK (`brokoli auth login`) | Proposed |
 
 ## How to add a new ADR
 
