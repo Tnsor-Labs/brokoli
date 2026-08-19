@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -55,6 +56,27 @@ func validateFilePath(path string) error {
 		}
 	}
 	return fmt.Errorf("file path %q outside allowed directories (%s); set BROKOLI_DATA_DIRS to allow additional paths", path, strings.Join(allowedDataDirs, ", "))
+}
+
+// redactURI returns uri with any embedded userinfo password replaced by
+// url.URL.Redacted()'s "xxxxx" placeholder, for logging a connection
+// string without leaking the credential it carries. Connection.BuildURI()
+// builds these via url.UserPassword(...).String(), which embeds the
+// plaintext password -- Redacted() is Go's own answer to exactly this
+// (net/url's doc comment: "for cases such as logging"). Uses of this
+// value are never for anything but display: the real, unredacted uri is
+// what QueryDatabase/GenerateSQL/ExecuteSQL actually connect with.
+//
+// A uri that doesn't parse as a URL (SQLite's BuildURI returns a bare
+// file path, not a URL) has no userinfo component for Redacted() to
+// find in the first place, so it comes back unchanged -- this is a
+// no-op for that case, not a failure.
+func redactURI(uri string) string {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return uri
+	}
+	return u.Redacted()
 }
 
 // runCondition evaluates a condition and returns its decision separately from
@@ -1095,7 +1117,8 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	}
 	createTable, _ := node.Config["create_table"].(bool)
 
-	r.log(node.ID, models.LogLevelInfo, "Migration: %s → %s.%s (chunk size: %d)", sourceURI[:min(40, len(sourceURI))], destTable, dialect, chunkSize)
+	redactedSourceURI := redactURI(sourceURI)
+	r.log(node.ID, models.LogLevelInfo, "Migration: %s → %s.%s (chunk size: %d)", redactedSourceURI[:min(40, len(redactedSourceURI))], destTable, dialect, chunkSize)
 
 	// Read all from source (for now — chunked read requires LIMIT/OFFSET rewriting)
 	r.log(node.ID, models.LogLevelInfo, "Reading from source...")
