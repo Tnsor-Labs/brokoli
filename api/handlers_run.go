@@ -123,6 +123,15 @@ func runPageSize(r *http.Request) int {
 // COUNT (Tnsor-Labs/brokoli#79).
 func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
+
+	// Verify pipeline belongs to user's org
+	if p, err := h.store.GetPipeline(pipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
+
 	q := r.URL.Query()
 	limit := runPageSize(r)
 
@@ -171,13 +180,18 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 }
 
 // populateRunErrors normalises a run listing for the wire: never nil, so
-// clients get [] rather than null, and each run's structured error filled in.
+// clients get [] rather than null, each run's structured error filled
+// in, and connection strings/filesystem paths scrubbed from the message
+// the same way Get already does for a single run -- a listing is not a
+// narrower audience than the single-run endpoint, so it shouldn't be a
+// wider disclosure surface.
 func populateRunErrors(runs []models.Run) []models.Run {
 	if runs == nil {
 		return []models.Run{}
 	}
 	for i := range runs {
 		runs[i].PopulateError()
+		runs[i].Error = sanitizeRunError(runs[i].Error)
 	}
 	return runs
 }
@@ -381,6 +395,18 @@ func (h *RunHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
+
+	// Verify pipeline belongs to user's org -- Backfill actually executes
+	// runs (h.engine.Backfill below), so this is not just a read-scoping
+	// check: without it, a caller in a different org could trigger real
+	// execution against this pipeline's live connections.
+	if p, err := h.store.GetPipeline(pipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
+
 	var req struct {
 		StartDate string `json:"start_date"`
 		EndDate   string `json:"end_date"`
@@ -409,6 +435,13 @@ func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
 	pipe, err := h.store.GetPipeline(pipelineID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
+		return
+	}
+	// DryRun actually executes the pipeline for real (up to 10 rows,
+	// unpersisted) -- same reasoning as Backfill above, not just a read
+	// check.
+	if !ValidateOrgAccess(r, pipe.OrgID) {
+		DenyOrgAccess(w)
 		return
 	}
 
@@ -513,6 +546,14 @@ func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 // GET /api/pipelines/{id}/node-stats?runs=10
 func (h *RunHandler) NodeStats(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
+
+	// Verify pipeline belongs to user's org
+	if p, err := h.store.GetPipeline(pipelineID); err == nil {
+		if !ValidateOrgAccess(r, p.OrgID) {
+			DenyOrgAccess(w)
+			return
+		}
+	}
 
 	numRuns := 10
 	if n := r.URL.Query().Get("runs"); n != "" {
