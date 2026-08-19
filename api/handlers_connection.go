@@ -4,17 +4,18 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
@@ -396,13 +397,6 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	url := c.BuildURI()
 
-	if err := validateExternalURL(url); err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "blocked: " + err.Error(),
-		}
-	}
-
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return map[string]interface{}{
@@ -427,9 +421,15 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 		}
 	}
 
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := netguard.Default.Client(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
+		if errors.Is(err, netguard.ErrBlockedTarget) {
+			return map[string]interface{}{
+				"success": false,
+				"error":   "blocked: " + err.Error(),
+			}
+		}
 		return map[string]interface{}{
 			"success": false,
 			"error":   fmt.Sprintf("Request failed: %v", err),
@@ -575,9 +575,15 @@ func testGeneric(ctx context.Context, c *models.Connection, extra map[string]int
 			}
 			req.Header.Set("Content-Type", "application/json")
 
-			client := &http.Client{Timeout: 5 * time.Second}
+			client := netguard.Default.Client(5 * time.Second)
 			resp, err := client.Do(req)
 			if err != nil {
+				if errors.Is(err, netguard.ErrBlockedTarget) {
+					return map[string]interface{}{
+						"success": false,
+						"error":   "blocked: " + err.Error(),
+					}
+				}
 				return map[string]interface{}{
 					"success": false,
 					"error":   fmt.Sprintf("Webhook request failed: %v", err),
@@ -690,36 +696,6 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"host", "port", "login", "password", "extra"}},
 	}
 	writeJSON(w, http.StatusOK, types)
-}
-
-// validateExternalURL blocks requests to private networks, loopback, and
-// cloud metadata endpoints. Prevents SSRF via connection testing.
-func validateExternalURL(rawURL string) error {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL")
-	}
-	host := u.Hostname()
-	blocked := []string{"169.254.169.254", "metadata.google.internal", "metadata.internal"}
-	for _, b := range blocked {
-		if strings.EqualFold(host, b) {
-			return fmt.Errorf("internal network address blocked")
-		}
-	}
-	ips, err := net.LookupHost(host)
-	if err != nil {
-		return nil
-	}
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
-		if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-			return fmt.Errorf("internal network address blocked")
-		}
-	}
-	return nil
 }
 
 // maskRef returns the credential ref with the sensitive portion masked.

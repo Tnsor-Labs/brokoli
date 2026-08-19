@@ -14,6 +14,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"go.opentelemetry.io/otel/attribute"
@@ -1968,7 +1969,10 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// netguard.Default: hook.URL is arbitrary pipeline-editor-supplied
+	// config (models.Pipeline.Hooks) -- there was no SSRF protection
+	// here at all previously.
+	client := netguard.Default.Client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		r.log("", models.LogLevelWarning, "Hook %s: request failed: %v", hookName, err)
