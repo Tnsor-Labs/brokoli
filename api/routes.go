@@ -83,6 +83,26 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		}
 	}
 
+	// requireStrictPerm behaves exactly like requirePerm in Enterprise
+	// mode (delegates to Team's real per-workspace RBAC), but its OSS
+	// fallback requires actual admin/superadmin instead of requirePerm's
+	// "anything but viewer" default. requirePerm's default conflates
+	// editor with admin, which is fine for ordinary pipeline/connection
+	// edits but not for operations with host-wide blast radius: plugin
+	// install runs arbitrary code in this process, system/purge mass-
+	// deletes run history, and notification config controls where
+	// outbound alerts go. requireAdmin already exists for exactly this
+	// reason (see its doc comment / the templates routes above) -- this
+	// extends the same treatment to the other operations that needed it.
+	requireStrictPerm := func(perm models.Permission) func(http.Handler) http.Handler {
+		if ext != nil && ext.Team != nil && ext.Team.Enabled() {
+			if mw := ext.Team.PermissionMiddleware(string(perm)); mw != nil {
+				return mw.(func(http.Handler) http.Handler)
+			}
+		}
+		return requireAdmin
+	}
+
 	r.Route("/api", func(r chi.Router) {
 		// Sample data for the built-in pipeline templates (public, no auth
 		// required — see AuthMiddleware/WorkspaceMiddleware's "/api/samples/"
@@ -124,9 +144,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// digest). Node types hot-reload on install/remove.
 		r.Get("/plugins", plugh.List)
 		r.Get("/plugins/index", plugh.Index)
-		r.With(requirePerm(models.PermSettingsEdit)).Post("/plugins/index/{name}", plugh.InstallByName)
-		r.With(requirePerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
-		r.With(requirePerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins/index/{name}", plugh.InstallByName)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
 		r.Get("/plugins/{name}/archive", plugh.Archive)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
 
@@ -165,7 +185,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Dead Letter Queue
 		r.Get("/pipelines/{id}/dlq", dlqListHandler(s))
-		r.Post("/pipelines/{id}/dlq/{dlqId}/resolve", dlqResolveHandler(s))
+		r.With(requirePerm(models.PermRunsResume)).Post("/pipelines/{id}/dlq/{dlqId}/resolve", dlqResolveHandler(s))
 
 		// Webhook trigger
 		r.Post("/pipelines/{id}/webhook", webhookTriggerHandler(s, e))
@@ -207,9 +227,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// Notifications / Slack config
 		nh := NewNotificationSettingsHandler(s, ext)
 		r.Get("/settings/notifications", nh.Get)
-		r.With(requirePerm(models.PermSettingsEdit)).Put("/settings/notifications", nh.Update)
-		r.With(requirePerm(models.PermSettingsEdit)).Post("/settings/notifications/test", nh.Test)
-		r.With(requirePerm(models.PermSettingsEdit)).Delete("/settings/notifications", nh.Delete)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Put("/settings/notifications", nh.Update)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/settings/notifications/test", nh.Test)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/settings/notifications", nh.Delete)
 
 		// Pipeline list with last run status (single query)
 		r.Get("/pipelines/summary", pipelineSummaryHandler(s))
@@ -228,7 +248,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Post("/test-connection", rh.TestConnection)
 		r.Get("/system/info", systemInfo(s, e))
 		r.Get("/capabilities", CapabilitiesHandler)
-		r.With(requirePerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s, e))
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s, e))
 
 		// WebSocket (SODP binary protocol)
 		r.Get("/ws", ws.HandleWS)
