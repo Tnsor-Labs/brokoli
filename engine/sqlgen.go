@@ -44,6 +44,34 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 		cfg.Dialect = "generic"
 	}
 
+	// Every identifier that will reach quoteIdent -- the table name, every
+	// column, and (for upsert) the conflict-target key columns -- is
+	// validated up front, in the one place all of them pass through,
+	// rather than threading error returns through quoteIdent and every
+	// dialect method that calls it (createTable, insertBatch,
+	// upsertBatch). quoteIdent wraps an identifier in the dialect's quote
+	// character but never escapes an embedded occurrence of it, so an
+	// identifier containing that character breaks out of the quoted
+	// token into the surrounding SQL text. Column names in particular are
+	// not operator-authored config -- they come from ds.Columns, which
+	// for a CSV/Excel source is the file's own header row -- so this is a
+	// second-order injection: a pipeline builder who wrote a completely
+	// safe sink_db config is still exposed if the upstream file's headers
+	// aren't. Rejecting outright (not attempting a per-dialect escape) is
+	// deliberate: dialect-specific identifier escaping is easy to get
+	// subtly wrong, and no legitimate identifier needs a quote character
+	// or a statement terminator in it.
+	for _, id := range append([]string{cfg.Table}, ds.Columns...) {
+		if err := validateIdentifier(id); err != nil {
+			return "", fmt.Errorf("invalid identifier %q: %w", id, err)
+		}
+	}
+	for _, id := range cfg.KeyColumns {
+		if err := validateIdentifier(id); err != nil {
+			return "", fmt.Errorf("invalid key column %q: %w", id, err)
+		}
+	}
+
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
 	switch mode {
 	case "", ModeAppend, "replace", ModeOverwrite, ModeUpsert:
@@ -218,6 +246,31 @@ func (d dialect) quoteIdent(s string) string {
 		return "[" + s + "]"
 	}
 	return d.quoteChar + s + d.quoteChar
+}
+
+// identifierBreakoutChars are the characters that let an identifier break
+// out of quoteIdent's wrapping into the surrounding SQL text: every
+// dialect's own quote character (so this list is dialect-independent --
+// an identifier destined for one dialect can't smuggle another dialect's
+// quote char through either), plus the statement terminator ExecuteSQL
+// splits generated SQL text on (engine/database.go), which a naive split
+// doesn't understand quoting well enough to skip over even inside an
+// otherwise-safely-quoted identifier.
+const identifierBreakoutChars = "\"`[];\x00"
+
+// validateIdentifier rejects a table/column name that could break out of
+// quoteIdent's wrapping, or that's empty. Called once, up front in
+// GenerateSQL, for every identifier before any of it reaches a dialect
+// method -- see GenerateSQL's call site for why this is checked there
+// instead of inside quoteIdent itself.
+func validateIdentifier(s string) error {
+	if s == "" {
+		return fmt.Errorf("identifier cannot be empty")
+	}
+	if strings.ContainsAny(s, identifierBreakoutChars) {
+		return fmt.Errorf("identifier contains a character that cannot be used in a quoted SQL identifier")
+	}
+	return nil
 }
 
 func (d dialect) formatValue(v interface{}) string {
