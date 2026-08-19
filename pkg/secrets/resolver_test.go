@@ -150,6 +150,35 @@ func TestK8sResolver_InvalidChars(t *testing.T) {
 	}
 }
 
+// TestK8sResolver_RejectsLeadingHyphen pins the fix for ADR-022 finding
+// #8: secretName reaches kubectl as a bare positional argument, so a ref
+// whose secret name starts with '-' (a value k8sNameRE's charset alone
+// permits) could be parsed as a kubectl flag instead of a resource name
+// -- e.g. "--all-namespaces" is a valid, argument-free kubectl flag that
+// matches the charset and would bypass AllowedNamespaces entirely. Every
+// component must be rejected up front if it starts with '-', which also
+// matches how real Kubernetes object names are constrained (RFC 1123:
+// never a leading hyphen).
+func TestK8sResolver_RejectsLeadingHyphen(t *testing.T) {
+	r := NewK8sResolver()
+	r.AllowedNamespaces = map[string]bool{"brokoli": true, "--all-namespaces": true}
+
+	cases := []string{
+		"k8s://brokoli/--all-namespaces/key",
+		"k8s://--all-namespaces/secret/key",
+		"k8s://brokoli/secret/-key",
+	}
+	for _, ref := range cases {
+		_, err := r.Resolve(context.Background(), ref)
+		if err == nil {
+			t.Fatalf("Resolve(%q): expected error for leading-hyphen component, got nil", ref)
+		}
+		if !strings.Contains(err.Error(), "must not start with") {
+			t.Fatalf("Resolve(%q): error = %v, want it to explain the leading-hyphen rejection", ref, err)
+		}
+	}
+}
+
 func TestVaultResolver_PathTraversal(t *testing.T) {
 	v := &VaultResolver{
 		addr:   "http://localhost:8200",

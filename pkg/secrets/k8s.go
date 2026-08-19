@@ -64,15 +64,33 @@ func (k *K8sResolver) Resolve(ctx context.Context, ref string) (string, error) {
 	if !k8sNameRE.MatchString(namespace) || !k8sNameRE.MatchString(secretName) || !k8sNameRE.MatchString(key) {
 		return "", fmt.Errorf("secrets/k8s: invalid characters in ref components")
 	}
+	// k8sNameRE permits a leading '-', which real Kubernetes object names
+	// never have (RFC 1123). Reject it explicitly: secretName is passed
+	// to kubectl as a bare positional argument, and a value starting with
+	// '-' (e.g. "--all-namespaces", a valid no-argument kubectl flag that
+	// still matches k8sNameRE) gets parsed by kubectl as a flag instead
+	// of a resource name, letting a crafted ref inject kubectl flags that
+	// bypass AllowedNamespaces entirely.
+	if strings.HasPrefix(namespace, "-") || strings.HasPrefix(secretName, "-") || strings.HasPrefix(key, "-") {
+		return "", fmt.Errorf("secrets/k8s: ref components must not start with '-'")
+	}
 
 	if len(k.AllowedNamespaces) > 0 && !k.AllowedNamespaces[namespace] {
 		return "", fmt.Errorf("secrets/k8s: namespace %q not in allowed list", namespace)
 	}
 
+	// secretName is placed after "--" (end-of-flags) so kubectl always
+	// treats it as a positional resource name, never as a flag, no
+	// matter what the leading-hyphen check above misses in the future.
+	// namespace and key don't need the same treatment: namespace is
+	// always consumed as -n's value and key is embedded inside a single
+	// fixed-format jsonpath token, so neither can be reinterpreted as a
+	// separate flag regardless of its contents.
 	args := []string{
-		"get", "secret", secretName,
+		"get", "secret",
 		"-n", namespace,
 		"-o", fmt.Sprintf("jsonpath={.data.%s}", key),
+		"--", secretName,
 	}
 	if k.kubeconfig != "" {
 		args = append([]string{"--kubeconfig", k.kubeconfig}, args...)
