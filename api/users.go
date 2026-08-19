@@ -643,6 +643,18 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
+			// A static API key already authenticated this request (see
+			// APIKeyAuth, which runs first and stamps claims on success).
+			// That's a complete identity on its own -- don't additionally
+			// demand a JWT a static key was never going to produce, and
+			// don't block it behind the zero-users open-mode gate below
+			// either, since presenting a valid operator key is exactly
+			// what that gate exists to require in the first place.
+			if r.Context().Value("claims") != nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Open mode: if no users created yet, only allow auth setup and non-API routes
 			if us.UserCount() == 0 {
 				if strings.HasPrefix(r.URL.Path, "/api/auth/") || !strings.HasPrefix(r.URL.Path, "/api/") {

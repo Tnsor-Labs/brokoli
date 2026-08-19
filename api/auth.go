@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // AuthConfig holds the authentication configuration.
@@ -74,6 +76,20 @@ func (a *AuthConfig) ValidateKey(key string) bool {
 	return false
 }
 
+// Describe returns the registered description for a valid key (its
+// AddKey label, e.g. "CLI-provided key"), or "" if the key doesn't match.
+// Constant-time for the same reason ValidateKey is.
+func (a *AuthConfig) Describe(key string) string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for k, desc := range a.Keys {
+		if subtle.ConstantTimeCompare([]byte(k), []byte(key)) == 1 {
+			return desc
+		}
+	}
+	return ""
+}
+
 // GenerateKey creates a cryptographically secure API key.
 func GenerateKey() (string, error) {
 	b := make([]byte, 24)
@@ -139,7 +155,27 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			// A validated static key is a complete identity on its own --
+			// stamp admin-equivalent claims into the context so JWTAuth
+			// (the next middleware in the chain) recognizes the request as
+			// already authenticated instead of demanding a JWT that a
+			// static key was never going to produce. Without this, the
+			// static key only ever unlocked /api/auth/* (to bootstrap the
+			// first user); every real resource route -- /api/pipelines,
+			// /api/runs, deploy, everything the SDK's Client(api_key=...)
+			// exists for -- required a JWT regardless, once JWTAuth's own
+			// user-count gate was satisfied.
+			desc := auth.Describe(key)
+			if desc == "" {
+				desc = "api-key"
+			}
+			claims := jwt.MapClaims{
+				"sub":      "apikey:" + desc,
+				"username": desc,
+				"role":     string(RoleAdmin),
+			}
+			ctx := contextWithClaims(r.Context(), &claims)
+			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
