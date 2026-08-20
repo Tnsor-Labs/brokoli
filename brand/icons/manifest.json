@@ -1,6 +1,16 @@
 {
   "source": "brokoli-visual-identity-v1.4.html",
   "count": 35,
+  "marks": {
+    "source": "brokoli-visual-identity-v1.5.html",
+    "note": "Fixed-color (#10B866 literal) brand marks, not currentColor sprite symbols -- consumed as standalone <img>/inline SVG, not via BrandIcon's sprite <use> mechanism, and intentionally not added to sprite.svg.",
+    "files": [
+      {
+        "name": "brokoli-symbol-micro.svg",
+        "purpose": "Optically reinforced (heavier stroke/terminal weight than the master mark) for product chrome at <=24px, e.g. the sidebar brand tile. Do not use above 24px -- use the master mark (favicon.svg) instead."
+      }
+    ]
+  },
   "icons": [
     "bk-dashboard",
     "bk-pipelines",

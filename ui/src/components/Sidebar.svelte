@@ -99,7 +99,7 @@
   <div class="brand-zone">
     <div class="logo">
       <div class="logo-mark" title="Brokoli · v0.1.0">
-        <img src="/favicon.svg" alt="" width="18" height="24" />
+        <img src="/brand/icons/brokoli-symbol-micro.svg" alt="" width="18" height="24" />
       </div>
       <div class="logo-text">
         <span class="logo-name">Brokoli</span>
@@ -297,6 +297,7 @@
     align-items: center;
     justify-content: center;
     background: var(--brand-tile);
+    border: 1px solid var(--bk-brand-tile-border);
     border-radius: 8px;
     flex-shrink: 0;
   }
@@ -305,7 +306,6 @@
     width: 18px;
     height: 24px;
     object-fit: contain;
-    filter: brightness(0) invert(1);
   }
   .logo-text {
     display: flex;
