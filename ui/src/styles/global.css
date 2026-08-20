@@ -19,31 +19,94 @@
  * keeps the exact typography offline — see Tnsor-Labs/brokoli#82.
  */
 
+/* ============ THEME ROLE TOKENS (v1.5) ============
+ *
+ * Introduced in the v1.5 identity revision: a genuine theme-role token
+ * layer, scoped symmetrically via [data-theme="dark"|"light"] (safe
+ * because ui/index.html's inline head script sets data-theme
+ * synchronously before first paint -- there's no window where these
+ * rules apply without the attribute present, so no FOUC risk).
+ *
+ * These extend the --bk-* prefix already used for the base palette in
+ * brand/tokens.css. Dark theme's existing semantic tokens below (--bg-*,
+ * --border*, --text-*, --shadow-card*) are re-pointed to alias these --
+ * they were generic, untuned values (zinc-scale grays) with no
+ * accessibility work behind them, so replacing them outright is a clear
+ * improvement. Light theme's existing semantic tokens are NOT
+ * blanket-aliased to these: they carry documented, contrast-verified
+ * tuning (see the big comment above the light theme block below) that
+ * v1.5 doesn't ask to change, and several of the new light role-token
+ * values (--bk-border-strong, --bk-surface-2 in particular) are
+ * meaningfully different from the current hand-tuned equivalents.
+ * New v1.5-native UI (PageHeader.svelte and friends) reads --bk-* here
+ * directly; only the one confirmed light-theme bug (--brand-tile, see
+ * below) is fixed in place.
+ */
+:root[data-theme="dark"] {
+  --bk-canvas: #090d0c;
+  --bk-shell: #0d1211;
+  --bk-surface-1: #121817;
+  --bk-surface-2: #171e1c;
+  --bk-surface-3: #1d2623;
+  --bk-border: #25302c;
+  --bk-border-strong: #34403b;
+  --bk-text-primary: #f2f6f4;
+  --bk-text-secondary: #a4b0ab;
+  --bk-text-tertiary: #71807a;
+  --bk-disabled: #49534f;
+  --bk-brand-signal: var(--bk-brand);
+  --bk-brand-soft: #0a3023;
+  --bk-brand-hover: #0d3b2b;
+  --bk-action-primary-bg: var(--bk-brand);
+  --bk-action-primary-fg: var(--bk-ink);
+  --bk-brand-tile-border: #14513a;
+}
+
+:root[data-theme="light"] {
+  --bk-canvas: #f4f7f5;
+  --bk-shell: #ffffff;
+  --bk-surface-1: #ffffff;
+  --bk-surface-2: #f8faf9;
+  --bk-surface-3: #eef3f0;
+  --bk-border: #dde5e1;
+  --bk-border-strong: #c8d3ce;
+  --bk-text-primary: #0b1114;
+  --bk-text-secondary: #4e5c58;
+  --bk-text-tertiary: #75817d;
+  --bk-disabled: #a9b2ae;
+  --bk-brand-signal: var(--bk-brand-deep);
+  --bk-brand-soft: #e8f7ee;
+  --bk-brand-hover: var(--bk-brand-mint);
+  --bk-action-primary-bg: var(--bk-brand-deep);
+  --bk-action-primary-fg: #ffffff;
+  --bk-brand-tile-border: #c8e8d5;
+}
+
 :root {
   /* Background */
-  --bg-primary: #000000;
-  --bg-secondary: #18181b;
-  --bg-tertiary: #27272a;
-  --bg-sidebar: #111114;
-  --bg-canvas: #000000;
+  --bg-primary: var(--bk-canvas);
+  --bg-secondary: var(--bk-surface-1);
+  --bg-tertiary: var(--bk-surface-2);
+  --bg-sidebar: var(--bk-shell);
+  --bg-canvas: var(--bk-canvas);
   --bg-code: #0c0c0f;
   --bg-code-line: #0a0a0d;
-  --bg-input: #000000;
-  --bg-card-hover: #1c1c24;
+  --bg-input: var(--bk-canvas);
+  --bg-card-hover: var(--bk-surface-3);
   --bg-overlay: rgba(0, 0, 0, 0.85);
 
   /* Borders */
-  --border: #3f3f46;
-  --border-hover: #52525b;
-  --border-subtle: #27272a;
+  --border: var(--bk-border);
+  --border-hover: var(--bk-border-strong);
+  --border-subtle: var(--bk-surface-2);
   --border-sidebar: #1e1e26;
 
   /* Text */
-  --text-primary: #fafafa;
-  --text-secondary: #a1a1aa;
-  --text-muted: #71717a;
-  --text-dim: #a1a1aa;
-  --text-ghost: #52525b;
+  --text-primary: var(--bk-text-primary);
+  --text-secondary: var(--bk-text-secondary);
+  --text-muted: var(--bk-text-tertiary);
+  --text-dim: var(--bk-text-tertiary);
+  --text-ghost: var(--bk-disabled);
 
   /* Accent */
   --accent: var(--bk-brand);
@@ -51,7 +114,7 @@
   --accent-glow: rgba(16, 184, 102, 0.08);
   --accent-glow-strong: rgba(16, 184, 102, 0.16);
   --accent-text: #d4d4d8;
-  --brand-tile: var(--bk-brand-deep);
+  --brand-tile: #0a3327;
   --nav-active-bg: #0b2b24;
   --nav-hover-bg: #1c1c24;
   --nav-active-text: #edf7f2;
@@ -108,21 +171,25 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.3);
-  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(255, 255, 255, 0.03) inset;
-  --shadow-card-hover: 0 4px 16px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
+  /* No shadows in dark mode (v1.5): depth comes from the surface-1/2/3
+     step, not from a shadow -- see the theme-role token comment above. */
+  --shadow-card: none;
+  --shadow-card-hover: none;
 
   /* Spacing */
   --space-xs: 0.25rem;
   --space-sm: 0.5rem;
   --space-md: 1rem;
+  --space-lg-sm: 1.25rem; /* 20px, new in v1.5, between --space-md and --space-lg */
   --space-lg: 1.5rem;
   --space-xl: 2rem;
 
   /* Radii */
   --radius-sm: 4px;
-  --radius-md: 6px;
+  --radius-md: 7px; /* was 6px; v1.5 fixes the "6-10px" control-radius range to 7px */
   --radius-lg: 10px;
   --radius-xl: 14px;
+  --radius-2xl: 12px; /* new in v1.5: "major region radius" (page-header card, etc.) */
 
   /* Fonts */
   --font-ui: "Inter", system-ui, -apple-system, sans-serif;
@@ -202,7 +269,7 @@
   --nav-active-text: var(--bk-brand-deep);
   --nav-active-icon: var(--bk-brand-deep);
   --account-bg: var(--bk-brand-mint);
-  --brand-tile: var(--bk-brand);
+  --brand-tile: var(--bk-brand-mint); /* was var(--bk-brand) -- v1.5: too vivid for a persistent chrome tile */
 
   /* Borders carry the edges the old theme was missing */
   --border: var(--bk-line); /* 1.62:1 on card */
