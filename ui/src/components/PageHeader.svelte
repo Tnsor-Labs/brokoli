@@ -8,6 +8,7 @@
   export let actionLabel: string = "";
   export let actionHref: string = "";
   export let actionVariant: "primary" | "secondary" = "primary";
+  export let actionDisabled: boolean = false;
 </script>
 
 <!--
@@ -39,7 +40,7 @@
         {#if actionLabel && actionHref}
           <a href={actionHref} class="ui-btn {actionVariant}">{actionLabel}</a>
         {:else if actionLabel}
-          <button type="button" class="ui-btn {actionVariant}" on:click
+          <button type="button" class="ui-btn {actionVariant}" disabled={actionDisabled} on:click
             ><slot name="action">{actionLabel}</slot></button
           >
         {/if}
@@ -134,6 +135,10 @@
   }
   .ui-btn:hover {
     opacity: 0.9;
+  }
+  .ui-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
   .ui-btn.primary {
     background: var(--bk-action-primary-bg);
