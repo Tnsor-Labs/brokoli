@@ -747,7 +747,7 @@
     align-items: center;
     text-align: center;
     padding: 48px 24px 40px;
-    background: radial-gradient(ellipse at 50% 0%, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
+    background: radial-gradient(ellipse at 50% 0%, var(--surface-wash) 0%, transparent 60%);
     border-radius: var(--radius-xl, 14px);
     margin: -8px -8px 0;
   }
@@ -795,11 +795,11 @@
   }
   .quick-card:hover {
     border-color: var(--accent);
-    background: linear-gradient(135deg, var(--accent-glow) 0%, var(--bg-secondary) 100%);
+    background: linear-gradient(135deg, var(--surface-wash) 0%, var(--bg-secondary) 100%);
     transform: translateY(-4px);
     box-shadow:
       var(--shadow-card-hover),
-      0 0 20px var(--accent-glow);
+      0 0 20px var(--surface-wash);
   }
   .qc-step {
     position: absolute;
@@ -809,17 +809,19 @@
     width: 26px;
     height: 26px;
     border-radius: 50%;
-    background: linear-gradient(135deg, var(--accent), var(--accent-hover));
-    color: white;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-hover);
+    color: var(--text-secondary);
     font-size: 12px;
     font-weight: 700;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 2px 10px rgba(13, 148, 136, 0.4);
   }
   .qc-step.done {
     background: linear-gradient(135deg, #22c55e, #16a34a);
+    border-color: transparent;
+    color: white;
     box-shadow: 0 2px 10px rgba(34, 197, 94, 0.4);
   }
   .quick-card.done {
@@ -867,7 +869,7 @@
   .progress-pct {
     font-size: 12px;
     font-weight: 700;
-    color: var(--accent);
+    color: var(--text-secondary);
     font-family: var(--font-mono);
   }
   .progress-track {

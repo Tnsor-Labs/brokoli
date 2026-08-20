@@ -43,13 +43,17 @@
  * below) is fixed in place.
  */
 :root[data-theme="dark"] {
-  --bk-canvas: #090d0c;
-  --bk-shell: #0d1211;
-  --bk-surface-1: #121817;
-  --bk-surface-2: #171e1c;
-  --bk-surface-3: #1d2623;
-  --bk-border: #25302c;
-  --bk-border-strong: #34403b;
+  /* v1.6: pushed a step darker per direct user feedback on the live
+     product ("more darker black") -- the previous ramp read as
+     charcoal/green-tinted rather than black next to how much green
+     chrome sits on top of it. */
+  --bk-canvas: #050807;
+  --bk-shell: #080c0b;
+  --bk-surface-1: #0d1110;
+  --bk-surface-2: #111715;
+  --bk-surface-3: #171e1c;
+  --bk-border: #1f2925;
+  --bk-border-strong: #2c3632;
   --bk-text-primary: #f2f6f4;
   --bk-text-secondary: #a4b0ab;
   --bk-text-tertiary: #71807a;
@@ -113,10 +117,15 @@
   --accent-hover: var(--bk-status-success);
   --accent-glow: rgba(16, 184, 102, 0.08);
   --accent-glow-strong: rgba(16, 184, 102, 0.16);
+  /* v1.6: large-surface gradient washes (hero cards, modals) are a
+     light-mode-only device -- see brokoli-visual-identity-v1.6.html
+     page 08. Small-signal uses of --accent-glow (hover tints, focus
+     rings, badges) are unaffected and keep working in both themes. */
+  --surface-wash: transparent;
   --accent-text: #d4d4d8;
   --brand-tile: #0a3327;
   --nav-active-bg: #0b2b24;
-  --nav-hover-bg: #1c1c24;
+  --nav-hover-bg: var(--bk-surface-2);
   --nav-active-text: #edf7f2;
   --nav-active-icon: #14c978;
   --account-bg: #0b211d;
@@ -288,6 +297,7 @@
   --accent-hover: #075c32;
   --accent-glow: rgba(10, 125, 68, 0.09);
   --accent-glow-strong: rgba(10, 125, 68, 0.18);
+  --surface-wash: var(--accent-glow);
   --accent-text: var(--bk-brand-deep);
 
   /* Status — all >= 4.5:1 on card, tertiary and canvas */

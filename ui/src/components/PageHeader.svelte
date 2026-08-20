@@ -103,9 +103,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bk-brand-soft);
-    color: var(--bk-brand-signal);
-    border: 1px solid var(--bk-brand-tile-border);
+    background: var(--bk-surface-2);
+    color: var(--bk-text-secondary);
+    border: 1px solid var(--bk-border-strong);
   }
   .header-text {
     min-width: 0;
@@ -114,7 +114,7 @@
   .hk {
     display: block;
     margin-bottom: 3px;
-    color: var(--bk-brand-signal);
+    color: var(--bk-text-tertiary);
     font: 650 9px var(--font-mono);
     letter-spacing: 0.14em;
     text-transform: uppercase;

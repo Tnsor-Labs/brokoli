@@ -1858,7 +1858,7 @@ assertions:
     max-height: calc(100dvh - 32px);
     overflow-y: auto;
     background:
-      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 30%), var(--bg-secondary);
+      radial-gradient(circle at 4% 0%, var(--surface-wash), transparent 30%), var(--bg-secondary);
     box-shadow:
       0 36px 100px rgba(0, 0, 0, 0.65),
       inset 0 1px 0 rgba(255, 255, 255, 0.035);

@@ -425,9 +425,20 @@
     outline-offset: -2px;
   }
   .nav-item.active {
+    position: relative;
     color: var(--nav-active-text);
-    background: var(--nav-active-bg);
+    background: var(--nav-hover-bg);
     font-weight: 700;
+  }
+  .nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 6px;
+    bottom: 6px;
+    width: 2px;
+    border-radius: 2px;
+    background: var(--bk-brand-signal);
   }
   .nav-item.active :global(.nav-icon) {
     color: var(--nav-active-icon);
@@ -477,7 +488,7 @@
     gap: 8px;
     padding: 6px 7px;
     border-radius: 7px;
-    background: var(--account-bg);
+    background: var(--nav-hover-bg);
   }
   .user-avatar {
     width: 28px;
