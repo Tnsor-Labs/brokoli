@@ -450,8 +450,8 @@
       await loadPipelines();
       notify.success("Pipeline created");
       // Navigate to editor if template has nodes
-      if (tmpl.nodes.length > 0) {
-        window.location.hash = `#/pipelines/${created.id}`;
+       if (tmpl.nodes.length > 0) {
+         window.location.hash = `#/pipelines/${created.id}/edit`;
       }
     } catch (e) {
       notify.error("Failed to create pipeline");
@@ -631,19 +631,23 @@
         {@const health = statusLabel(pipeline)}
         <tr class:selected={selectedIds.has(pipeline.id)}>
           <td class="pipeline-cell">
-            <button class="enable-toggle" class:on={pipeline.enabled} role="switch" aria-checked={pipeline.enabled} aria-label={pipeline.enabled ? `Pause ${pipeline.name}` : `Enable ${pipeline.name}`} on:click={() => toggleEnabled(pipeline)}><i></i></button>
-            <span class="pipeline-identity"><a href="#/pipelines/{pipeline.id}/edit">{pipeline.name}</a><small>{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small></span>
+             <button class="enable-toggle" class:on={pipeline.enabled} role="switch" aria-checked={pipeline.enabled} aria-label={pipeline.enabled ? `Pause ${pipeline.name}` : `Enable ${pipeline.name}`} on:click={() => toggleEnabled(pipeline)}><i></i></button>
+             <span class="pipeline-identity">
+               <a class="pipeline-name" href="#/pipelines/{pipeline.id}" aria-label="View runs for {pipeline.name}">{pipeline.name}</a>
+               <small>{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small>
+             </span>
           </td>
           <td><span class="result-badge {health.tone}">{health.tone === "success" ? "✓" : health.tone === "failed" ? "×" : health.tone === "running" ? "◷" : "Ⅱ"} {health.label}</span></td>
           <td><div class="run-bars" aria-label="Recent run history">{#each Array(5) as _, i}<i class={pipeline.run_history?.[i] || "never"}></i>{/each}</div></td>
           <td><span class:cron={pipeline.schedule} class="muted">{formatSchedule(pipeline.schedule)}</span></td>
           <td>{#if lastRun?.started_at}<span class="timestamp"><strong>{relativeTime(lastRun.started_at)}</strong><small>{new Date(lastRun.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span>{:else}<span class="muted">—<small>Never run</small></span>{/if}</td>
           <td><span class="muted">{si?.next_run ? formatNextRun(si.next_run) : "—"}</span></td>
-          <td class="nodes-cell">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</td>
-          <td class="row-actions">
-            <button class="act-btn" title="Trigger run" disabled={pipeline.enabled === false || lastRun?.status === "running"} on:click|stopPropagation={() => triggerRun(pipeline.id)}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} fill="currentColor" /></svg>
-            </button>
+           <td class="nodes-cell">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</td>
+           <td class="row-actions">
+             <button class="act-btn run-action" title="Run pipeline" aria-label="Run {pipeline.name}" disabled={pipeline.enabled === false || lastRun?.status === "running"} on:click|stopPropagation={() => triggerRun(pipeline.id)}>
+               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} fill="currentColor" /></svg>
+               <span>Run</span>
+             </button>
             <div class="action-menu-wrap"><button class="act-btn" aria-label="More actions for {pipeline.name}" on:click|stopPropagation={(event) => toggleActionMenu(event, pipeline.id)}>···</button>
               {#if openMenuId === pipeline.id}<div class="action-menu" style:top="{actionMenuPosition.top}px" style:left="{actionMenuPosition.left}px">
                 <button on:click={() => { toggleEnabled(pipeline); openMenuId = null; }}>{pipeline.enabled ? "Pause" : "Enable"}</button>
@@ -735,18 +739,17 @@
     justify-content: space-between;
     align-items: center;
     gap: 28px;
-    min-height: 154px;
-    margin-bottom: 0;
-    padding: 28px 30px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px 12px 0 0;
-    background:
-      radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 36%),
-      linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 60%);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
-  }
-  .page-header::after { content: ""; position: absolute; inset: auto 30px 0; height: 1px; background: linear-gradient(90deg, var(--accent), transparent 72%); opacity: .55; }
+     min-height: 0;
+     margin-bottom: 16px;
+     padding: 0 0 14px;
+     overflow: visible;
+     border: 0;
+     border-bottom: 1px solid var(--border-subtle);
+     border-radius: 0;
+     background: transparent;
+     box-shadow: none;
+   }
+   .page-header::after { display: none; }
   .header-copy { position: relative; z-index: 1; max-width: 660px; }
   .page-header h1 {
     font-size: clamp(1.75rem, 3vw, 2.35rem);
@@ -985,10 +988,10 @@
   .hint { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-xs); }
 
   /* Empty hero with template picker */
-  .empty-hero {
+   .empty-hero {
     display: flex; flex-direction: column; align-items: center;
     text-align: center; padding: 48px 24px 40px;
-    background: radial-gradient(ellipse at 50% 0%, rgba(13, 148, 136, 0.08) 0%, transparent 60%);
+     background: radial-gradient(ellipse at 50% 0%, rgba(255, 255, 255, 0.025) 0%, transparent 60%);
     border-radius: var(--radius-xl, 14px);
     margin: -8px -8px 0;
   }
@@ -1006,15 +1009,15 @@
     transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: var(--shadow-card);
   }
-  .template-card:hover {
-    border-color: var(--accent);
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-card-hover), 0 0 20px var(--accent-glow);
-  }
+   .template-card:hover {
+     border-color: var(--border-hover);
+     transform: translateY(-3px);
+     box-shadow: var(--shadow-card-hover);
+   }
   .template-card.active {
     border-color: var(--accent); background: var(--accent-glow);
   }
-  .tmpl-icon { color: var(--accent); }
+   .tmpl-icon { color: var(--text-secondary); }
   .tmpl-name { font-size: 14px; font-weight: 600; }
   .tmpl-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
   @media (max-width: 768px) {
@@ -1139,11 +1142,11 @@
   .health-strip button:last-child { border-right: 0; }
   .health-strip button:disabled { cursor: default; }
   .health-strip button::after { content: ""; position: absolute; inset: auto 18px 0; height: 2px; background: var(--accent); opacity: 0; transform: scaleX(.4); transition: opacity 150ms ease, transform 150ms ease; }
-  .health-strip button:hover, .health-strip button.active { background: linear-gradient(180deg, color-mix(in srgb, var(--accent), transparent 95%), transparent); }
+   .health-strip button:hover, .health-strip button.active { background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent); }
   .health-strip button.active::after { opacity: 1; transform: scaleX(1); }
   .health-strip span { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; font-size: 11px; }
   .health-strip strong { color: var(--text-primary); font-size: 20px; font-weight: 650; }
-  .metric-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent), transparent 70%); border-radius: 50%; background: var(--accent-glow); color: var(--accent); font-style: normal; font-size: 18px; }
+   .metric-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-tertiary); color: var(--text-secondary); font-style: normal; font-size: 18px; }
   .metric-icon.enabled { border-color: color-mix(in srgb, var(--success), transparent 70%); background: var(--success-bg); color: var(--success); }
   .metric-icon.paused { border-color: color-mix(in srgb, var(--warning), transparent 70%); background: var(--warning-bg); color: var(--warning); }
   .metric-icon.failed { border-color: color-mix(in srgb, var(--failed), transparent 70%); background: var(--failed-bg); color: var(--failed); }
@@ -1158,7 +1161,7 @@
   .table-scroll { min-height: 0; overflow: auto; }
   .table-scroll table { width: 100%; min-width: 1120px; border-collapse: collapse; table-layout: fixed; }
   .table-scroll th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
-  .table-scroll th:nth-child(1) { width: 30%; padding-left: 16px; } .table-scroll th:nth-child(2) { width: 12%; } .table-scroll th:nth-child(3) { width: 16%; } .table-scroll th:nth-child(4) { width: 10%; } .table-scroll th:nth-child(5) { width: 12%; } .table-scroll th:nth-child(6) { width: 9%; } .table-scroll th:nth-child(7) { width: 5%; text-align: center; } .table-scroll th:nth-child(8) { width: 7%; text-align: center; }
+   .table-scroll th:nth-child(1) { width: 28%; padding-left: 16px; } .table-scroll th:nth-child(2) { width: 12%; } .table-scroll th:nth-child(3) { width: 16%; } .table-scroll th:nth-child(4) { width: 10%; } .table-scroll th:nth-child(5) { width: 12%; } .table-scroll th:nth-child(6) { width: 8%; } .table-scroll th:nth-child(7) { width: 5%; text-align: center; } .table-scroll th:nth-child(8) { width: 9%; text-align: center; }
   .table-scroll td { height: 44px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
   .table-scroll table.comfortable td { height: 56px; }
   .table-scroll tr:hover td, .table-scroll tr.selected td { background: var(--bg-card-hover); }
@@ -1167,7 +1170,8 @@
   .enable-toggle i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-dim); transition: transform 150ms ease; }
   .enable-toggle.on { border-color: var(--accent); background: var(--accent-glow-strong); } .enable-toggle.on i { background: var(--accent); transform: translateX(13px); }
   .pipeline-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-  .pipeline-identity a { overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; } .pipeline-identity a:hover { color: var(--accent); }
+   .pipeline-name { overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; text-decoration: none; white-space: nowrap; }
+   .pipeline-name:hover { color: var(--accent); text-decoration: underline; }
   .pipeline-identity small, .timestamp small, .muted small { display: block; overflow: hidden; color: var(--text-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
   .result-badge { display: inline-flex; height: 25px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 10px; font-weight: 600; }
   .result-badge.success { border-color: color-mix(in srgb, var(--success), transparent 75%); background: var(--success-bg); color: var(--success); } .result-badge.failed { border-color: color-mix(in srgb, var(--failed), transparent 75%); background: var(--failed-bg); color: var(--failed); } .result-badge.running { border-color: color-mix(in srgb, var(--warning), transparent 75%); background: var(--warning-bg); color: var(--warning); }
@@ -1175,7 +1179,8 @@
   .cron { color: var(--text-secondary); font: 10px var(--font-mono); } .muted { color: var(--text-muted); }
   .timestamp { display: flex; flex-direction: column; gap: 2px; } .timestamp strong { color: var(--text-primary); font-weight: 500; }
   .nodes-cell { text-align: center; } .row-actions { display: flex; align-items: center; justify-content: center; gap: 3px; overflow: visible; }
-  .act-btn { min-width: 28px; width: auto; padding: 0 7px; } .act-btn:disabled { opacity: .35; cursor: not-allowed; }
+   .act-btn { min-width: 28px; width: auto; padding: 0 7px; } .act-btn:disabled { opacity: .35; cursor: not-allowed; }
+   .run-action { gap: 4px; color: var(--accent-text); font-size: 10px; font-weight: 600; }
   .action-menu-wrap { position: relative; }
   .action-menu { position: fixed; z-index: 1000; width: 160px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-secondary); box-shadow: var(--shadow-lg); }
   .action-menu button { display: block; width: 100%; padding: 7px 9px; border-radius: 4px; color: var(--text-secondary); font-size: 11px; text-align: left; }
@@ -1194,7 +1199,7 @@
     overflow: hidden;
     border-radius: 0 0 9px 9px;
     background:
-      radial-gradient(circle at 50% 8%, color-mix(in srgb, var(--accent), transparent 88%), transparent 34%),
+       radial-gradient(circle at 50% 8%, rgba(255, 255, 255, 0.02), transparent 34%),
       linear-gradient(180deg, color-mix(in srgb, var(--bg-secondary), white 1.5%), var(--bg-secondary));
   }
   .inventory .empty-hero::before {
@@ -1204,12 +1209,12 @@
     left: 50%;
     width: 440px;
     height: 1px;
-    background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--accent), transparent 55%), transparent);
+     background: linear-gradient(90deg, transparent, var(--border), transparent);
     transform: translateX(-50%);
   }
   .empty-kicker {
     margin-bottom: 10px;
-    color: var(--accent);
+     color: var(--text-muted);
     font: 650 10px var(--font-mono);
     letter-spacing: .14em;
     text-transform: uppercase;
@@ -1255,23 +1260,23 @@
     transition: color 160ms ease, transform 160ms ease;
   }
   .inventory .template-card:hover {
-    border-color: color-mix(in srgb, var(--accent), transparent 38%);
-    background:
-      linear-gradient(145deg, color-mix(in srgb, var(--accent), transparent 91%), transparent 62%),
-      var(--bg-secondary);
-    box-shadow: 0 14px 30px rgba(0,0,0,.22), inset 0 0 0 1px color-mix(in srgb, var(--accent), transparent 88%);
+     border-color: var(--border-hover);
+     background:
+       linear-gradient(145deg, rgba(255, 255, 255, 0.025), transparent 62%),
+       var(--bg-secondary);
+     box-shadow: 0 14px 30px rgba(0,0,0,.22);
     transform: translateY(-3px);
   }
-  .inventory .template-card:hover::after { color: var(--accent); transform: translateX(3px); }
+   .inventory .template-card:hover::after { color: var(--text-primary); transform: translateX(3px); }
   .inventory .tmpl-icon {
     display: grid;
     width: 42px;
     height: 42px;
     place-items: center;
-    border: 1px solid color-mix(in srgb, var(--accent), transparent 68%);
+     border: 1px solid var(--border);
     border-radius: 9px;
-    background: var(--accent-glow);
-    color: var(--accent);
+     background: var(--bg-tertiary);
+     color: var(--text-secondary);
   }
   .inventory .tmpl-name { color: var(--text-primary); font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
   .inventory .tmpl-desc { max-width: calc(100% - 22px); color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }

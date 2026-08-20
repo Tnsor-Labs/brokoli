@@ -1,6 +1,7 @@
 <script lang="ts">
   import { nodeTypeConfig } from "../lib/dag";
-  import { icons, nodeTypeIcon } from "../lib/icons";
+  import { icons, brandNodeIcon } from "../lib/icons";
+  import BrandIcon from "./BrandIcon.svelte";
   import { createEventDispatcher } from "svelte";
   import type { NodeType, PaletteDrop } from "../lib/types";
 
@@ -11,7 +12,7 @@
     { title: "Sources", types: ["source_file", "source_api", "source_db"] },
     { title: "Processing", types: ["transform", "code", "join", "quality_check", "sql_generate"] },
     { title: "Outputs", types: ["sink_file", "sink_db", "sink_api"] },
-    { title: "Integrations", types: ["dbt", "notify"] },
+    { title: "Extensions", types: ["dbt", "notify"] },
     { title: "Migration", types: ["migrate"] },
     { title: "Flow Control", types: ["condition"] },
   ];
@@ -142,11 +143,10 @@
   </div>
 
   {#each visibleCategories as cat}
-    <div class="category">
+    <div class="category" style={`--family-color: ${nodeTypeConfig[cat.types[0]].color}`}>
       <span class="cat-title">{cat.title}</span>
       {#each cat.types as type}
         {@const config = nodeTypeConfig[type]}
-        {@const iconDef = icons[nodeTypeIcon(type)]}
         <button
           type="button"
           class="palette-item"
@@ -159,16 +159,8 @@
           on:click={() => onItemClick(type)}
           title="Add {config.label} node"
         >
-          <div class="item-icon">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-              <path
-                d={iconDef.d}
-                stroke={config.color}
-                stroke-width="1.5"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-              />
-            </svg>
+          <div class="item-icon" style={`color: ${config.color}`}>
+            <BrandIcon name={brandNodeIcon(type)} size={16} />
           </div>
           <span class="item-label">{config.label}</span>
         </button>
@@ -233,7 +225,7 @@
 
   .cat-title {
     font-size: 10px;
-    color: var(--text-dim);
+    color: var(--family-color);
     text-transform: uppercase;
     letter-spacing: 0.1em;
     font-weight: 600;
@@ -277,7 +269,7 @@
     align-items: center;
     justify-content: center;
     border-radius: 6px;
-    background: transparent;
+    background: color-mix(in srgb, var(--family-color) 10%, transparent);
     flex-shrink: 0;
   }
 

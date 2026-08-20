@@ -1,5 +1,8 @@
 <script lang="ts">
+  import BrandIcon from "./BrandIcon.svelte";
+
   export let icon: string = "";
+  export let brandIcon: string = "";
   export let title: string = "Nothing here yet";
   export let description: string = "";
   export let ctaLabel: string = "";
@@ -7,11 +10,15 @@
 </script>
 
 <div class="empty-block">
-  {#if icon}
+  {#if icon || brandIcon}
     <div class="empty-icon">
-      <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-        <path d={icon} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
+      {#if brandIcon}
+        <BrandIcon name={brandIcon} size={28} />
+      {:else}
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+          <path d={icon} stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      {/if}
     </div>
   {/if}
   <h3 class="empty-title">{title}</h3>
@@ -34,7 +41,7 @@
     width: 56px; height: 56px; border-radius: 14px;
     background: var(--bg-secondary); border: 1px solid var(--border-subtle);
     display: flex; align-items: center; justify-content: center;
-    color: var(--text-dim); margin-bottom: 20px;
+    color: var(--text-muted); margin-bottom: 20px;
   }
   .empty-title {
     font-size: 15px; font-weight: 600; color: var(--text-primary);

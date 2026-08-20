@@ -356,19 +356,11 @@
       <button on:click={loadDashboard}>Try again</button>
     </div>
   {:else if !onboardingComplete}
-    <!-- Welcome hero for new users -->
-    <div class="welcome-hero">
-      <div class="welcome-icon">
-        <svg width="56" height="56" viewBox="0 0 32 32" fill="none">
-          <path d="M16 19v9" stroke="var(--accent)" stroke-width="2.5" stroke-linecap="round"/>
-          <circle cx="16" cy="11" r="4.5" fill="var(--accent)"/>
-          <circle cx="9" cy="7" r="3.5" fill="#16a34a"/>
-          <circle cx="23" cy="7" r="3.5" fill="#16a34a"/>
-          <circle cx="6" cy="2" r="2.5" fill="#22c55e"/>
-          <circle cx="16" cy="2" r="3" fill="#22c55e"/>
-          <circle cx="26" cy="2" r="2.5" fill="#22c55e"/>
-        </svg>
-      </div>
+      <!-- Welcome hero for new users -->
+      <div class="welcome-hero">
+        <div class="welcome-icon">
+        <img src="/favicon.svg" width="40" height="49" alt="Brokoli" />
+        </div>
       <h2 class="welcome-title">Let's build your first pipeline</h2>
       <p class="welcome-sub">Brokoli lets you build, schedule, and monitor data pipelines visually. Follow the steps below to get running in minutes.</p>
 
@@ -520,8 +512,8 @@
     min-width: 0;
   }
 
-  .page-header { position: relative; display: flex; min-height: 154px; align-items: center; justify-content: space-between; gap: 28px; padding: 28px 30px; overflow: hidden; border: 1px solid var(--border-subtle); border-radius: 12px; background: radial-gradient(circle at 86% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 38%), linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 62%); box-shadow: inset 0 1px 0 rgba(255,255,255,.035), var(--shadow-card); }
-  .page-header::after { content: ""; position: absolute; inset: auto 30px 0; height: 1px; background: linear-gradient(90deg, var(--accent), transparent 72%); opacity: .55; }
+  .page-header { position: relative; display: flex; min-height: 0; align-items: center; justify-content: space-between; gap: 28px; padding: 0 0 14px; overflow: visible; border: 0; border-bottom: 1px solid var(--border-subtle); border-radius: 0; background: transparent; box-shadow: none; }
+  .page-header::after { display: none; }
   .header-left { position: relative; z-index: 1; display: flex; max-width: 680px; flex-direction: column; align-items: flex-start; gap: 0; }
   .eyebrow { margin-bottom: 7px; color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
   .page-header h1 { font-size: clamp(1.75rem, 3vw, 2.35rem); font-weight: 650; letter-spacing: -0.045em; }
@@ -688,7 +680,7 @@
     opacity: 0.7;
   }
   .quick-card.done .qc-title { text-decoration: line-through; color: var(--text-muted); }
-  .qc-icon { color: var(--accent); opacity: 0.85; }
+  .qc-icon { color: var(--text-secondary); opacity: 0.9; }
   .quick-card:hover .qc-icon { opacity: 1; }
   .qc-title { font-size: 14px; font-weight: 600; }
   .qc-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }

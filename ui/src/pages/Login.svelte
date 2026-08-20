@@ -69,29 +69,7 @@
 
 <div class="login-page">
   <div class="login-content animate-in">
-    <svg width="40" height="40" viewBox="0 0 32 32" fill="none" class="login-mark">
-      <path d="M16 19v9" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round" />
-      <path
-        d="M14 22l2-3 2 3"
-        stroke="#4ade80"
-        stroke-width="1.5"
-        stroke-linecap="round"
-        stroke-linejoin="round"
-        opacity="0.5"
-      />
-      <circle cx="16" cy="11" r="4.5" fill="#0d9488" />
-      <circle cx="9" cy="7" r="3.5" fill="#16a34a" />
-      <circle cx="23" cy="7" r="3.5" fill="#16a34a" />
-      <circle cx="6" cy="2" r="2.5" fill="#22c55e" />
-      <circle cx="16" cy="2" r="3" fill="#22c55e" />
-      <circle cx="26" cy="2" r="2.5" fill="#22c55e" />
-      <line x1="9" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4" />
-      <line x1="23" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4" />
-      <line x1="6" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-      <line x1="16" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-      <line x1="16" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-      <line x1="26" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-    </svg>
+    <img src="/favicon.svg" width="40" height="49" class="login-mark" alt="Brokoli" />
 
     <h1>{$needsSetup ? "Welcome to Brokoli" : "Log in to Brokoli"}</h1>
 

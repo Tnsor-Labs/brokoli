@@ -6,6 +6,7 @@
   import { icons } from "../lib/icons";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import BrandIcon from "../components/BrandIcon.svelte";
   import Skeleton from "../components/Skeleton.svelte";
 
   let plugins: Plugin[] = [];
@@ -217,7 +218,7 @@
     {:else if plugins.length === 0}
       <div class="empty-wrap">
         <EmptyState
-          icon={icons.plugin.d}
+          brandIcon="plugins"
           title="No plugins installed"
           description="Plugins add node types your pipelines can use. Install a signed .bkg package to add source, transform, or sink nodes."
           ctaLabel="+ Install Plugin"
@@ -288,7 +289,7 @@
     </div>
     {#if indexLoading}
       <div class="catalog-state loading-state">
-        <span class="catalog-glyph">IDX</span>
+         <span class="catalog-glyph"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>Connecting to the plugin index</strong>
           <p>The curated catalog will stay here while availability is checked.</p>
@@ -299,7 +300,7 @@
       </div>
     {:else if !indexAvailable}
       <div class="catalog-state">
-        <span class="catalog-glyph unavailable">IDX</span>
+         <span class="catalog-glyph unavailable"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>Catalog unavailable</strong>
           <p>
@@ -311,7 +312,7 @@
       </div>
     {:else if indexEntries.length === 0}
       <div class="catalog-state">
-        <span class="catalog-glyph">IDX</span>
+         <span class="catalog-glyph"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>The catalog is connected but empty</strong>
           <p>
@@ -710,12 +711,14 @@
     min-height: 190px;
     align-items: center;
     justify-content: center;
+    flex-direction: column;
     gap: 14px;
     padding: 28px;
-    text-align: left;
+    text-align: center;
   }
   .catalog-state div {
     max-width: 500px;
+    text-align: center;
   }
   .catalog-state p {
     margin-top: 5px;
@@ -746,7 +749,7 @@
   .catalog-glyph.unavailable {
     border-color: var(--border);
     background: var(--bg-tertiary);
-    color: var(--text-dim);
+    color: var(--text-muted);
   }
   .loading-state {
     min-height: 94px;

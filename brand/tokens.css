@@ -1,0 +1,29 @@
+:root {
+  /* Brand channel */
+  --bk-brand: #10b866;
+  --bk-brand-deep: #0a7d44;
+  --bk-brand-mint: #e9f8ef;
+
+  /* Neutral channel */
+  --bk-ink: #0b1114;
+  --bk-graphite: #3f4a50;
+  --bk-slate: #68757c;
+  --bk-line: #dce3e0;
+  --bk-cloud: #f7faf8;
+
+  /* Editor taxonomy channel */
+  --bk-tax-source: #78a6e8;
+  --bk-tax-processing: #d0a56c;
+  --bk-tax-output: #d58caf;
+  --bk-tax-integration: #a49ad8;
+  --bk-tax-migration: #72b2b2;
+  --bk-tax-control: #cf8585;
+
+  /* Runtime channel */
+  --bk-status-success: #26d07c;
+  --bk-status-running: #53c4e5;
+  --bk-status-warning: #f2b84b;
+  --bk-status-failure: #ef747b;
+  --bk-status-queued: #a8b0b5;
+  --bk-status-cancelled: #a78bfa;
+}

@@ -555,8 +555,20 @@
             title="Cron expression, e.g. 0 2 * * * (daily at 2am)"
           />
         </div>
+        <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d={icons.play.d} fill="currentColor" />
+          </svg>
+          Run
+        </button>
       </div>
       <div class="toolbar-right">
+        <a class="btn-sm" href="#/pipelines/{params?.id}/runs" title="View runs for this pipeline">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d={icons.history.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+          <span>View Runs</span>
+        </a>
         <div class="save-state" class:unsaved={dirty}>
           <i></i><span
             >{saving ? "Saving" : dirty ? "Unsaved" : lastSavedAt ? "Saved" : "Loaded"}</span
@@ -683,12 +695,6 @@
         </button>
         <button class="btn-sm btn-save" on:click={save} disabled={saving}>
           {saving ? "Saving..." : "Save"}
-        </button>
-        <button class="btn-sm btn-run" on:click={triggerRun}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
-            <path d={icons.play.d} fill="currentColor" />
-          </svg>
-          Run
         </button>
       </div>
     </div>

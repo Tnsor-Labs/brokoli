@@ -1,5 +1,7 @@
 /* Brokoli Design System */
 
+@import "../../../brand/tokens.css";
+
 /* No webfont import here on purpose.
  *
  * This used to `@import` Inter and JetBrains Mono from fonts.googleapis.com
@@ -40,28 +42,34 @@
   --text-primary: #fafafa;
   --text-secondary: #a1a1aa;
   --text-muted: #71717a;
-  --text-dim: #52525b;
-  --text-ghost: #3f3f46;
+  --text-dim: #a1a1aa;
+  --text-ghost: #52525b;
 
   /* Accent */
-  --accent: #0d9488;
-  --accent-hover: #14b8a6;
-  --accent-glow: rgba(13, 148, 136, 0.15);
-  --accent-glow-strong: rgba(13, 148, 136, 0.3);
+  --accent: var(--bk-brand);
+  --accent-hover: var(--bk-status-success);
+  --accent-glow: rgba(16, 184, 102, 0.08);
+  --accent-glow-strong: rgba(16, 184, 102, 0.16);
   --accent-text: #d4d4d8;
+  --brand-tile: var(--bk-brand-deep);
+  --nav-active-bg: #0b2b24;
+  --nav-hover-bg: #1c1c24;
+  --nav-active-text: #edf7f2;
+  --nav-active-icon: #14c978;
+  --account-bg: #0b211d;
 
   /* Status */
-  --success: #22c55e;
-  --success-bg: rgba(34, 197, 94, 0.1);
-  --success-glow: rgba(34, 197, 94, 0.4);
-  --running: #3b82f6;
-  --running-bg: rgba(59, 130, 246, 0.1);
-  --failed: #ef4444;
-  --failed-bg: rgba(239, 68, 68, 0.1);
-  --warning: #f59e0b;
-  --warning-bg: rgba(245, 158, 11, 0.1);
-  --pending: #71717a;
-  --pending-bg: rgba(113, 113, 122, 0.1);
+  --success: var(--bk-status-success);
+  --success-bg: rgba(38, 208, 124, 0.1);
+  --success-glow: rgba(38, 208, 124, 0.4);
+  --running: var(--bk-status-running);
+  --running-bg: rgba(83, 196, 229, 0.1);
+  --failed: var(--bk-status-failure);
+  --failed-bg: rgba(239, 116, 123, 0.1);
+  --warning: var(--bk-status-warning);
+  --warning-bg: rgba(242, 184, 75, 0.1);
+  --pending: var(--bk-status-queued);
+  --pending-bg: rgba(168, 176, 181, 0.1);
 
   /* Code highlight */
   --code-comment: #4a4a5a;
@@ -78,22 +86,22 @@
   --code-accent: #eab308;
 
   /* Node colors — these don't change between themes */
-  --node-source-file: #3b82f6;
-  --node-source-api: #8b5cf6;
-  --node-source-db: #06b6d4;
-  --node-code: #eab308;
-  --node-join: #14b8a6;
-  --node-transform: #f59e0b;
-  --node-quality: #22c55e;
-  --node-sql: #6366f1;
-  --node-sink-file: #ec4899;
-  --node-sink-db: #f97316;
+  --node-source-file: var(--bk-tax-source);
+  --node-source-api: var(--bk-tax-source);
+  --node-source-db: var(--bk-tax-source);
+  --node-code: var(--bk-tax-processing);
+  --node-join: var(--bk-tax-processing);
+  --node-transform: var(--bk-tax-processing);
+  --node-quality: var(--bk-tax-processing);
+  --node-sql: var(--bk-tax-processing);
+  --node-sink-file: var(--bk-tax-output);
+  --node-sink-db: var(--bk-tax-output);
 
   /* Canvas */
   --canvas-dot: #27272a;
   --canvas-dot-large: #3f3f46;
   --canvas-edge: #3f3f46;
-  --canvas-edge-hover: #ef4444;
+  --canvas-edge-hover: #169985;
 
   /* Shadows & Depth */
   --shadow-node: rgba(0, 0, 0, 0.3);
@@ -126,7 +134,7 @@
   --transition-slow: 300ms ease;
 
   /* Sidebar */
-  --sidebar-width: 240px;
+  --sidebar-width: 220px;
 }
 
 /* User-collapsed sidebar rail (data-sidebar set by lib/sidebar.ts, the
@@ -179,48 +187,54 @@
  */
 :root[data-theme="light"] {
   /* Surfaces, lightest = most elevated */
-  --bg-primary: #e2e7f0; /* page canvas, and recessed areas on cards */
+  --bg-primary: var(--bk-cloud); /* page canvas, and recessed areas on cards */
   --bg-secondary: #ffffff; /* cards/panels — the raised surface */
-  --bg-tertiary: #eef1f6; /* row hover, table headers */
-  --bg-sidebar: #dbe2ed;
-  --bg-canvas: #e2e7f0; /* pipeline editor canvas */
-  --bg-code: #f1f4f9;
-  --bg-code-line: #e8ecf2;
+  --bg-tertiary: #edf4ef; /* row hover, table headers */
+  --bg-sidebar: #eef6f1;
+  --bg-canvas: var(--bk-cloud); /* pipeline editor canvas */
+  --bg-code: #f1f7f3;
+  --bg-code-line: #e7f0ea;
   --bg-input: #ffffff;
-  --bg-card-hover: #f2f5f9;
-  --bg-overlay: rgba(16, 24, 40, 0.4);
+  --bg-card-hover: #f1f8f3;
+  --bg-overlay: rgba(11, 17, 20, 0.4);
+  --nav-active-bg: var(--bk-brand-mint);
+  --nav-hover-bg: #edf4ef;
+  --nav-active-text: var(--bk-brand-deep);
+  --nav-active-icon: var(--bk-brand-deep);
+  --account-bg: var(--bk-brand-mint);
+  --brand-tile: var(--bk-brand);
 
   /* Borders carry the edges the old theme was missing */
-  --border: #c3ccda; /* 1.62:1 on card */
-  --border-hover: #8d98a8;
-  --border-subtle: #dde3ec; /* 1.29:1 on card — dividers inside panels */
-  --border-sidebar: #ccd4e1;
+  --border: var(--bk-line); /* 1.62:1 on card */
+  --border-hover: #9aaca2;
+  --border-subtle: #e7efea; /* 1.29:1 on card — dividers inside panels */
+  --border-sidebar: #d7e7dc;
 
-  --text-primary: #0f172a; /* 17.9:1 on card, 14.4 on canvas */
-  --text-secondary: #2f3b4d; /* 11.3:1 on card,  9.1 on canvas */
-  --text-muted: #45505f; /*  8.2:1 on card,  6.6 on canvas */
-  --text-dim: #54606f; /*  6.4:1 on card,  5.2 on canvas — 10px labels */
-  --text-ghost: #8d98a8; /*  decorative only, never text */
+  --text-primary: var(--bk-ink); /* 17.9:1 on card, 14.4 on canvas */
+  --text-secondary: var(--bk-graphite); /* 11.3:1 on card,  9.1 on canvas */
+  --text-muted: var(--bk-slate); /*  8.2:1 on card,  6.6 on canvas */
+  --text-dim: #60716a; /*  6.4:1 on card,  5.2 on canvas — 10px labels */
+  --text-ghost: #9aaca2; /*  decorative only, never text */
 
   /* Teal accent */
-  --accent: #0e6f68;
-  --accent-hover: #0b5852;
-  --accent-glow: rgba(14, 111, 104, 0.09);
-  --accent-glow-strong: rgba(14, 111, 104, 0.18);
-  --accent-text: #0e6f68;
+  --accent: var(--bk-brand-deep);
+  --accent-hover: #075c32;
+  --accent-glow: rgba(10, 125, 68, 0.09);
+  --accent-glow-strong: rgba(10, 125, 68, 0.18);
+  --accent-text: var(--bk-brand-deep);
 
   /* Status — all >= 4.5:1 on card, tertiary and canvas */
-  --success: #046c4e;
-  --success-bg: rgba(4, 108, 78, 0.11);
-  --success-glow: rgba(4, 108, 78, 0.25);
-  --running: #1550c0;
-  --running-bg: rgba(21, 80, 192, 0.11);
-  --failed: #b91c1c;
-  --failed-bg: rgba(185, 28, 28, 0.11);
-  --warning: #a34405;
-  --warning-bg: rgba(163, 68, 5, 0.11);
-  --pending: #54606f;
-  --pending-bg: rgba(84, 96, 111, 0.11);
+  --success: #087a45;
+  --success-bg: rgba(8, 122, 69, 0.11);
+  --success-glow: rgba(8, 122, 69, 0.25);
+  --running: #16718b;
+  --running-bg: rgba(22, 113, 139, 0.11);
+  --failed: #b43b49;
+  --failed-bg: rgba(180, 59, 73, 0.11);
+  --warning: #98620a;
+  --warning-bg: rgba(152, 98, 10, 0.11);
+  --pending: #60716a;
+  --pending-bg: rgba(96, 113, 106, 0.11);
 
   /* Code — vivid on off-white */
   --code-comment: #54606f;
@@ -240,7 +254,7 @@
   --canvas-dot: #c3ccda;
   --canvas-dot-large: #8d98a8;
   --canvas-edge: #54606f;
-  --canvas-edge-hover: #b91c1c;
+  --canvas-edge-hover: #0e6f68;
 
   /* Light themes get depth from shadow rather than from a lighter fill,
      so these are stronger than the dark theme's equivalents. */
