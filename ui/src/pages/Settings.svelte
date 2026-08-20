@@ -3,6 +3,8 @@
   import { notify } from "../lib/toast";
   import { authHeaders, authUser } from "../lib/auth";
   import { icons } from "../lib/icons";
+  import PageHeader from "../components/PageHeader.svelte";
+  import BrandIcon from "../components/BrandIcon.svelte";
   import Stepper from "../components/Stepper.svelte";
 
   interface UserInfo {
@@ -112,28 +114,32 @@
   type Tab = "general" | "users" | "notifications" | "integrations" | "api";
   let activeTab: Tab = "general";
 
-  const tabs: { id: Tab; label: string; description: string; icon: string }[] = [
-    {
-      id: "general",
-      label: "General",
-      description: "Runtime & maintenance",
-      icon: icons.settings.d,
-    },
-    { id: "users", label: "Users", description: "Access & credentials", icon: icons.user.d },
-    {
-      id: "notifications",
-      label: "Alerts & SLA",
-      description: "Delivery & monitoring",
-      icon: icons.bell.d,
-    },
-    {
-      id: "integrations",
-      label: "Integrations",
-      description: "Python & lineage",
-      icon: icons.connection.d,
-    },
-    { id: "api", label: "API & CLI", description: "Endpoints & automation", icon: icons.code.d },
-  ];
+  // brandIcon is the migrated bk-* sprite name; icon (legacy path data) is
+  // only kept as a fallback for "notifications" -- no bell/notification
+  // symbol exists in the v1.4/v1.5 icon set.
+  const tabs: { id: Tab; label: string; description: string; brandIcon?: string; icon?: string }[] =
+    [
+      {
+        id: "general",
+        label: "General",
+        description: "Runtime & maintenance",
+        brandIcon: "settings",
+      },
+      { id: "users", label: "Users", description: "Access & credentials", brandIcon: "account" },
+      {
+        id: "notifications",
+        label: "Alerts & SLA",
+        description: "Delivery & monitoring",
+        icon: icons.bell.d,
+      },
+      {
+        id: "integrations",
+        label: "Integrations",
+        description: "Python & lineage",
+        brandIcon: "lineage",
+      },
+      { id: "api", label: "API & CLI", description: "Endpoints & automation", brandIcon: "api" },
+    ];
 
   onMount(async () => {
     try {
@@ -328,16 +334,13 @@
 </script>
 
 <div class="settings-page animate-in">
-  <header class="identity-header">
-    <div class="identity-main">
-      <div class="workspace-mark" aria-hidden="true">B</div>
-      <div class="header-copy">
-        <span class="eyebrow">Organization control center</span>
-        <h1>Brokoli workspace</h1>
-        <p>Runtime, access, delivery, and automation in one operational view.</p>
-      </div>
-    </div>
-    <dl class="identity-stats" aria-label="System summary">
+  <PageHeader
+    brandIcon="settings"
+    kicker="Organization control center"
+    title="Brokoli workspace"
+    description="Runtime, access, delivery, and automation in one operational view."
+  >
+    <dl slot="kpi-rail" class="identity-stats" aria-label="System summary">
       <div>
         <dt>Edition</dt>
         <dd>Community</dd>
@@ -355,7 +358,7 @@
         <dd>{sysInfoLoaded ? (sysInfo?.active_runs ?? "Unavailable") : "--"}</dd>
       </div>
     </dl>
-  </header>
+  </PageHeader>
 
   <nav class="tab-bar" aria-label="Organization settings">
     {#each tabs as tab}
@@ -367,15 +370,19 @@
         on:click={() => (activeTab = tab.id)}
       >
         <span class="tab-icon" aria-hidden="true">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
-            <path
-              d={tab.icon}
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          {#if tab.brandIcon}
+            <BrandIcon name={tab.brandIcon} size={15} />
+          {:else}
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none">
+              <path
+                d={tab.icon}
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              />
+            </svg>
+          {/if}
         </span>
         <span class="tab-copy"><strong>{tab.label}</strong><small>{tab.description}</small></span>
         <span class="tab-arrow" aria-hidden="true">›</span>
@@ -1030,78 +1037,10 @@ assertions:
     flex-direction: column;
     gap: 18px;
   }
-  .identity-header {
-    position: relative;
-    display: grid;
-    grid-template-columns: minmax(300px, 1.15fr) minmax(480px, 1fr);
-    overflow: hidden;
-    border: 1px solid var(--border);
-    border-radius: 13px;
-    background:
-      radial-gradient(circle at 4% 0%, var(--accent-glow), transparent 36%), var(--bg-secondary);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
-  }
-  .identity-header::after {
-    position: absolute;
-    top: 0;
-    right: 0;
-    width: 34%;
-    height: 2px;
-    background: linear-gradient(90deg, transparent, var(--accent));
-    content: "";
-    opacity: 0.7;
-  }
-  .identity-main {
-    display: flex;
-    min-width: 0;
-    align-items: center;
-    gap: 16px;
-    padding: 24px 26px;
-  }
-  .workspace-mark {
-    display: grid;
-    width: 52px;
-    height: 52px;
-    flex: 0 0 auto;
-    place-items: center;
-    border: 1px solid color-mix(in srgb, var(--accent), transparent 56%);
-    border-radius: 12px;
-    background: var(--accent-glow);
-    box-shadow: 0 0 28px color-mix(in srgb, var(--accent), transparent 88%);
-    color: var(--accent);
-    font: 700 20px var(--font-mono);
-  }
-  .header-copy {
-    min-width: 0;
-  }
-  .eyebrow {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .header-copy h1 {
-    overflow: hidden;
-    margin: 5px 0 3px;
-    color: var(--text-primary);
-    font-size: clamp(1.35rem, 2.4vw, 1.8rem);
-    font-weight: 680;
-    letter-spacing: -0.04em;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .header-copy p {
-    margin: 0;
-    color: var(--text-dim);
-    font-size: 10px;
-  }
   .identity-stats {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     margin: 0;
-    border-left: 1px solid var(--border-subtle);
     background: color-mix(in srgb, var(--bg-primary), transparent 52%);
   }
   .identity-stats div {
@@ -1110,11 +1049,20 @@ assertions:
     flex-direction: column;
     justify-content: center;
     gap: 5px;
-    padding: 18px 14px;
-    border-left: 1px solid var(--border-subtle);
+    padding: 14px;
+    border-right: 1px solid var(--border-subtle);
   }
-  .identity-stats div:first-child {
-    border-left: 0;
+  .identity-stats div:last-child {
+    border-right: 0;
+  }
+  /* Used inside the reset-password modal header ("Administrative access") */
+  .eyebrow {
+    display: block;
+    margin-bottom: 5px;
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
   }
   .identity-stats dt {
     color: var(--text-dim);
@@ -1134,11 +1082,18 @@ assertions:
     color: var(--accent);
   }
 
-  /* ── Tab Bar ── */
+  /* ── Tab Bar ──
+   * v1.5: "Tabs: text + 2px active underline. Do not turn tabs into a
+   * row of green pills." This used to be a grid of individually
+   * bordered cards with a gradient fill + inset shadow on the active
+   * one -- replaced with a flat strip (one shared bottom border) and a
+   * 2px underline + brand-signal text/icon color on the active tab.
+   */
   .tab-bar {
     display: grid;
     grid-template-columns: repeat(5, minmax(0, 1fr));
-    gap: 8px;
+    gap: 4px;
+    border-bottom: 1px solid var(--border);
   }
   .tab-btn {
     display: grid;
@@ -1147,25 +1102,20 @@ assertions:
     gap: 9px;
     min-width: 0;
     padding: 10px 11px;
-    border: 1px solid var(--border-subtle);
-    border-radius: 8px;
-    background: color-mix(in srgb, var(--bg-secondary), transparent 18%);
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
     color: inherit;
     text-align: left;
     transition:
-      border-color 150ms ease,
       background 150ms ease,
-      transform 150ms ease;
+      border-color 150ms ease;
   }
   .tab-btn:hover {
-    border-color: var(--border-hover);
-    background: var(--bg-secondary);
-    transform: translateY(-1px);
+    background: var(--bg-tertiary);
   }
   .tab-btn.active {
-    border-color: color-mix(in srgb, var(--accent), transparent 38%);
-    background: linear-gradient(110deg, var(--accent-glow), var(--bg-secondary) 65%);
-    box-shadow: inset 0 1px 0 color-mix(in srgb, var(--accent), transparent 80%);
+    border-bottom-color: var(--bk-brand-signal);
   }
   .tab-icon {
     display: grid;
@@ -1178,8 +1128,8 @@ assertions:
     color: var(--text-muted);
   }
   .tab-btn.active .tab-icon {
-    border-color: color-mix(in srgb, var(--accent), transparent 58%);
-    color: var(--accent);
+    border-color: color-mix(in srgb, var(--bk-brand-signal), transparent 58%);
+    color: var(--bk-brand-signal);
   }
   .tab-copy {
     display: flex;
@@ -1195,6 +1145,9 @@ assertions:
     text-overflow: ellipsis;
     white-space: nowrap;
   }
+  .tab-btn.active .tab-copy strong {
+    color: var(--bk-brand-signal);
+  }
   .tab-copy small {
     overflow: hidden;
     color: var(--text-dim);
@@ -1207,7 +1160,7 @@ assertions:
     font-size: 17px;
   }
   .tab-btn.active .tab-arrow {
-    color: var(--accent);
+    color: var(--bk-brand-signal);
   }
 
   .tab-content {
@@ -2023,13 +1976,6 @@ assertions:
   }
 
   @media (max-width: 1100px) {
-    .identity-header {
-      grid-template-columns: 1fr;
-    }
-    .identity-stats {
-      border-top: 1px solid var(--border-subtle);
-      border-left: 0;
-    }
     .tab-bar {
       grid-template-columns: repeat(3, minmax(0, 1fr));
     }
@@ -2090,17 +2036,6 @@ assertions:
   @media (max-width: 520px) {
     .settings-page {
       gap: 12px;
-    }
-    .identity-main {
-      padding: 18px;
-    }
-    .workspace-mark {
-      width: 42px;
-      height: 42px;
-      font-size: 17px;
-    }
-    .header-copy p {
-      display: none;
     }
     .identity-stats {
       grid-template-columns: repeat(2, minmax(0, 1fr));
