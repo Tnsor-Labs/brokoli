@@ -21,7 +21,7 @@
   KPI rail underneath it.
 -->
 <div class="page-header-card">
-  <header class="std-header">
+  <header class="std-header" class:has-kpi-rail={$$slots["kpi-rail"]}>
     <div class="header-icon" aria-hidden="true">
       <BrandIcon name={brandIcon} size={20} />
     </div>
@@ -47,7 +47,11 @@
       </slot>
     </div>
   </header>
-  <slot name="kpi-rail" />
+  {#if $$slots["kpi-rail"]}
+    <div class="kpi-rail-clip">
+      <slot name="kpi-rail" />
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -55,7 +59,14 @@
     border-radius: var(--radius-2xl);
     border: 1px solid var(--bk-border);
     background: var(--bk-surface-1);
-    overflow: hidden;
+    /* No overflow:hidden here -- it used to clip anything positioned
+       absolutely inside the header row (e.g. AlertDrawer's dropdown
+       panel, meant to hang below the header), cutting it off instead
+       of letting it float over the page. Corner-radius clipping is
+       handled per-section below instead: .std-header gets its own
+       top radius (it's always the top element), and .kpi-rail-clip
+       (below the header, only ever containing static content, never
+       an overlay) clips its own bottom corners. */
   }
   .std-header {
     position: relative;
@@ -65,6 +76,14 @@
     min-height: 92px;
     padding: 14px 16px;
     background: var(--bk-surface-1);
+    border-radius: var(--radius-2xl);
+  }
+  .std-header.has-kpi-rail {
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  }
+  .kpi-rail-clip {
+    border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+    overflow: hidden;
   }
   .std-header::before {
     content: "";
