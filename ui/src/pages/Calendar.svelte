@@ -224,7 +224,7 @@
 <div class="calendar-page animate-in">
   <PageHeader
     brandIcon="calendar"
-    kicker="Observability"
+    kicker="Organization control center"
     title="Run Calendar"
     description="A year-wide operating record of execution volume, reliability, and active days."
   >
