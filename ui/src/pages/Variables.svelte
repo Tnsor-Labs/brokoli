@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
+  import PageHeader from "../components/PageHeader.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -135,26 +136,15 @@
 </script>
 
 <div class="variables-page animate-in">
-  <header class="identity-hero">
-    <div class="hero-main">
-      <div class="hero-mark" aria-hidden="true">{"{ }"}</div>
-      <div class="header-copy">
-        <span class="eyebrow">Organization control center / Runtime configuration</span>
-        <h1>Variables</h1>
-        <p>Centralize reusable values and protected secrets for every pipeline.</p>
-      </div>
-      <button class="btn-primary" on:click={openCreate}
-        ><svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.plus.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          /></svg
-        >New Variable</button
-      >
-    </div>
-    <div class="status-summary" aria-label="Variable summary">
+  <PageHeader
+    brandIcon="variables"
+    kicker="Organization control center / Runtime configuration"
+    title="Variables"
+    description="Centralize reusable values and protected secrets for every pipeline."
+    actionLabel="New Variable"
+    on:click={openCreate}
+  >
+    <div slot="kpi-rail" class="status-summary" aria-label="Variable summary">
       <div class="status-segment accent">
         <span>Total variables</span><strong>{loading || loadError ? "—" : variables.length}</strong
         ><small>available references</small>
@@ -168,7 +158,7 @@
         ><small>structured configuration</small>
       </div>
     </div>
-  </header>
+  </PageHeader>
 
   <section class="inventory" aria-label="Variable inventory">
     <div class="inventory-heading">
@@ -240,7 +230,7 @@
     {:else if variables.length === 0}
       <div class="empty-wrap">
         <EmptyState
-          icon={icons.variable.d}
+          brandIcon="variables"
           title="No variables configured"
           description="Variables let you store reusable values like file paths, API endpoints, or secrets that pipelines can reference."
           ctaLabel="+ New Variable"
@@ -465,42 +455,6 @@
   .variables-page {
     width: 100%;
     min-width: 0;
-  }
-  .identity-hero {
-    margin-bottom: 18px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 11px;
-    background:
-      linear-gradient(
-        120deg,
-        color-mix(in srgb, var(--accent-glow), transparent 22%),
-        transparent 52%
-      ),
-      var(--bg-secondary);
-    box-shadow: var(--shadow-card);
-  }
-  .hero-main {
-    display: flex;
-    min-height: 112px;
-    align-items: center;
-    gap: 15px;
-    padding: 20px;
-  }
-  .hero-mark {
-    display: grid;
-    width: 48px;
-    height: 48px;
-    flex: none;
-    place-items: center;
-    border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
-    border-radius: 10px;
-    background: var(--accent-glow);
-    color: var(--accent);
-    font: 700 12px var(--font-mono);
-  }
-  .hero-main .header-copy {
-    flex: 1;
   }
   .status-summary {
     display: grid;
@@ -768,7 +722,7 @@
     font-weight: 500;
     background: var(--accent);
     border: 1px solid var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     transition: all 150ms ease;
   }
   .btn-primary:hover {
@@ -913,29 +867,6 @@
     margin-top: var(--space-lg);
   }
 
-  /* Refined configuration inventory */
-  .header-copy {
-    min-width: 0;
-  }
-  .eyebrow {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .identity-hero h1 {
-    color: var(--text-primary);
-    font-size: 24px;
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .header-copy p {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
   .btn-primary,
   .btn-secondary {
     display: inline-flex;
@@ -947,7 +878,7 @@
     border: 1px solid var(--accent);
     border-radius: 6px;
     background: var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     font-size: 11px;
     font-weight: 550;
     transition: all 150ms ease;
@@ -961,6 +892,7 @@
   .inventory {
     display: flex;
     min-height: 520px;
+    margin-top: 18px;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border-subtle);
@@ -1350,9 +1282,6 @@
   }
 
   @media (max-width: 768px) {
-    .hero-main {
-      align-items: flex-start;
-    }
     .inventory-toolbar {
       grid-template-columns: 1fr;
     }
@@ -1394,21 +1323,6 @@
     }
   }
   @media (max-width: 520px) {
-    .hero-main {
-      flex-wrap: wrap;
-      padding: 16px;
-    }
-    .hero-mark {
-      width: 40px;
-      height: 40px;
-    }
-    .hero-main .header-copy {
-      width: calc(100% - 56px);
-      flex: none;
-    }
-    .hero-main .btn-primary {
-      width: 100%;
-    }
     .status-summary {
       grid-template-columns: 1fr;
     }

@@ -4,8 +4,10 @@
   import type { Plugin, PluginIndexEntry } from "../lib/types";
   import { notify } from "../lib/toast";
   import { icons } from "../lib/icons";
+  import PageHeader from "../components/PageHeader.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import EmptyState from "../components/EmptyState.svelte";
+  import BrandIcon from "../components/BrandIcon.svelte";
   import Skeleton from "../components/Skeleton.svelte";
 
   let plugins: Plugin[] = [];
@@ -130,19 +132,16 @@
 </script>
 
 <div class="plugins-page animate-in">
-  <header class="identity-hero">
-    <div class="hero-main">
-      <div class="hero-mark" aria-hidden="true">PKG</div>
-      <div class="header-copy">
-        <span class="eyebrow">Organization control center / Extension catalog</span>
-        <h1>Plugins</h1>
-        <p>Install and manage signed node packages for your pipelines.</p>
-      </div>
-      <button class="btn-primary" on:click={pickFile} disabled={installing}>
-        {installing ? "Installing…" : "+ Install Plugin"}
-      </button>
-    </div>
-    <div class="status-summary" aria-label="Plugin summary">
+  <PageHeader
+    brandIcon="plugins"
+    kicker="Organization control center / Extension catalog"
+    title="Plugins"
+    description="Install and manage signed node packages for your pipelines."
+    actionLabel={installing ? "Installing…" : "Install Plugin"}
+    actionDisabled={installing}
+    on:click={pickFile}
+  >
+    <div slot="kpi-rail" class="status-summary" aria-label="Plugin summary">
       <div class="status-segment accent">
         <span>Installed packages</span><strong
           >{loading || loadError || pluginSupportUnavailable ? "—" : plugins.length}</strong
@@ -168,14 +167,14 @@
         ><small>curated package index</small>
       </div>
     </div>
-    <input
-      bind:this={fileInput}
-      type="file"
-      accept=".bkg"
-      class="hidden-file"
-      on:change={onFileChosen}
-    />
-  </header>
+  </PageHeader>
+  <input
+    bind:this={fileInput}
+    type="file"
+    accept=".bkg"
+    class="hidden-file"
+    on:change={onFileChosen}
+  />
 
   <section class="inventory" aria-label="Installed plugin inventory">
     <div class="inventory-heading">
@@ -217,7 +216,7 @@
     {:else if plugins.length === 0}
       <div class="empty-wrap">
         <EmptyState
-          icon={icons.plugin.d}
+          brandIcon="plugins"
           title="No plugins installed"
           description="Plugins add node types your pipelines can use. Install a signed .bkg package to add source, transform, or sink nodes."
           ctaLabel="+ Install Plugin"
@@ -288,7 +287,7 @@
     </div>
     {#if indexLoading}
       <div class="catalog-state loading-state">
-        <span class="catalog-glyph">IDX</span>
+        <span class="catalog-glyph"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>Connecting to the plugin index</strong>
           <p>The curated catalog will stay here while availability is checked.</p>
@@ -299,7 +298,7 @@
       </div>
     {:else if !indexAvailable}
       <div class="catalog-state">
-        <span class="catalog-glyph unavailable">IDX</span>
+        <span class="catalog-glyph unavailable"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>Catalog unavailable</strong>
           <p>
@@ -311,7 +310,7 @@
       </div>
     {:else if indexEntries.length === 0}
       <div class="catalog-state">
-        <span class="catalog-glyph">IDX</span>
+        <span class="catalog-glyph"><BrandIcon name="api" size={20} /></span>
         <div>
           <strong>The catalog is connected but empty</strong>
           <p>
@@ -369,43 +368,6 @@
     width: 100%;
     min-width: 0;
   }
-  .identity-hero {
-    margin-bottom: 18px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 11px;
-    background:
-      linear-gradient(
-        120deg,
-        color-mix(in srgb, var(--accent-glow), transparent 22%),
-        transparent 52%
-      ),
-      var(--bg-secondary);
-    box-shadow: var(--shadow-card);
-  }
-  .hero-main {
-    display: flex;
-    min-height: 112px;
-    align-items: center;
-    gap: 15px;
-    padding: 20px;
-  }
-  .hero-mark {
-    display: grid;
-    width: 48px;
-    height: 48px;
-    flex: none;
-    place-items: center;
-    border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
-    border-radius: 10px;
-    background: var(--accent-glow);
-    color: var(--accent);
-    font: 700 9px var(--font-mono);
-    letter-spacing: 0.08em;
-  }
-  .hero-main .header-copy {
-    flex: 1;
-  }
   .status-summary {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -456,46 +418,27 @@
     color: var(--text-dim);
     font-size: 9px;
   }
-  .header-copy {
-    min-width: 0;
-  }
-  .eyebrow {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .identity-hero h1 {
-    font-size: 24px;
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .header-copy p {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-  .btn-primary,
+  /* v1.5: "Secondary button: neutral surface + strong border. Do not
+     tint every action green." This used to share the primary button's
+     solid-green fill. */
   .btn-secondary {
     display: inline-flex;
     min-height: 34px;
     align-items: center;
     justify-content: center;
     padding: 0 14px;
-    border: 1px solid var(--accent);
+    border: 1px solid var(--bk-border-strong);
     border-radius: 6px;
-    background: var(--accent);
-    color: white;
+    background: var(--bk-surface-2);
+    color: var(--text-primary);
     font-size: 11px;
     font-weight: 550;
     transition: all 150ms ease;
   }
-  .btn-primary:hover:not(:disabled) {
-    background: var(--accent-hover);
+  .btn-secondary:hover:not(:disabled) {
+    background: var(--bg-card-hover);
   }
-  .btn-primary:disabled {
+  .btn-secondary:disabled {
     opacity: 0.55;
     cursor: default;
   }
@@ -511,6 +454,7 @@
   .inventory {
     display: flex;
     min-height: 280px;
+    margin-top: 18px;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border-subtle);
@@ -710,12 +654,14 @@
     min-height: 190px;
     align-items: center;
     justify-content: center;
+    flex-direction: column;
     gap: 14px;
     padding: 28px;
-    text-align: left;
+    text-align: center;
   }
   .catalog-state div {
     max-width: 500px;
+    text-align: center;
   }
   .catalog-state p {
     margin-top: 5px;
@@ -746,7 +692,7 @@
   .catalog-glyph.unavailable {
     border-color: var(--border);
     background: var(--bg-tertiary);
-    color: var(--text-dim);
+    color: var(--text-muted);
   }
   .loading-state {
     min-height: 94px;
@@ -783,9 +729,6 @@
     cursor: default;
   }
   @media (max-width: 768px) {
-    .hero-main {
-      align-items: flex-start;
-    }
     .status-summary {
       grid-template-columns: repeat(2, 1fr);
     }
@@ -838,21 +781,6 @@
     }
   }
   @media (max-width: 520px) {
-    .hero-main {
-      flex-wrap: wrap;
-      padding: 16px;
-    }
-    .hero-mark {
-      width: 40px;
-      height: 40px;
-    }
-    .hero-main .header-copy {
-      width: calc(100% - 56px);
-      flex: none;
-    }
-    .hero-main .btn-primary {
-      width: 100%;
-    }
     .status-summary {
       grid-template-columns: 1fr;
     }

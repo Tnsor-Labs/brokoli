@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Node, RunStatus } from "../lib/types";
   import { NODE_WIDTH, NODE_HEIGHT, nodeTypeConfig, nodePortConfig } from "../lib/dag";
-  import { icons, nodeTypeIcon } from "../lib/icons";
+  import { brandNodeIcon } from "../lib/icons";
+  import BrandIcon from "./BrandIcon.svelte";
   import { createEventDispatcher } from "svelte";
 
   export let node: Node;
@@ -13,7 +14,6 @@
 
   $: config = nodeTypeConfig[node.type] || { label: node.type, color: "#71717a" };
   $: portConfig = nodePortConfig[node.type] ?? { hasInput: true, hasOutput: true, maxInputs: 1 };
-  $: icon = icons[nodeTypeIcon(node.type)] || icons.file;
 
   let hovered = false;
   let dragging = false;
@@ -58,7 +58,7 @@
   }
 
   function statusColor(s: RunStatus | null): string {
-    if (!s) return config.color;
+    if (!s) return "var(--text-muted)";
     const map: Record<string, string> = {
       pending: "var(--pending)",
       running: "var(--running)",
@@ -67,7 +67,7 @@
       cancelled: "var(--pending)",
       skipped: "var(--text-muted)",
     };
-    return map[s] || config.color;
+    return map[s] || "var(--text-muted)";
   }
 
   function statusLabel(s: RunStatus | null): string {
@@ -75,10 +75,10 @@
     const map: Record<string, string> = {
       pending: "PENDING",
       running: "RUNNING",
-      success: "OK",
+      success: "SUCCESS",
       failed: "FAILED",
-      cancelled: "CANCEL",
-      skipped: "SKIP",
+      cancelled: "CANCELLED",
+      skipped: "SKIPPED",
     };
     return map[s] || "";
   }
@@ -111,46 +111,32 @@
   <!-- Card body -->
   <rect class="card-bg" x="0" y="0" width={NODE_WIDTH} height={NODE_HEIGHT} rx="8" />
 
-  <!-- Left accent bar — full height, clipped to card shape -->
+  <!-- Family rail stays independent from runtime status. -->
   <clipPath id="left-bar-{node.id}">
-    <rect x="0" y="0" width="36" height={NODE_HEIGHT} rx="8" />
+    <rect x="0" y="0" width="8" height={NODE_HEIGHT} rx="8" />
   </clipPath>
   <rect
     x="0"
     y="0"
-    width="36"
+    width="4"
     height={NODE_HEIGHT}
     fill={config.color}
-    opacity="0.08"
     clip-path="url(#left-bar-{node.id})"
-  />
-  <rect
-    x="0"
-    y="0"
-    width="3"
-    height={NODE_HEIGHT}
-    fill={statusColor(status)}
-    clip-path="url(#left-bar-{node.id})"
-    class="stripe"
   />
 
-  <!-- Icon — clean, no background -->
-  <g transform="translate(12, {NODE_HEIGHT / 2 - 9}) scale(0.75)">
-    <path
-      d={icon.d}
-      fill="none"
-      stroke={config.color}
-      stroke-width="1.5"
-      stroke-linecap="round"
-      stroke-linejoin="round"
-    />
+  <!-- 28px family tile keeps taxonomy local to the icon. -->
+  <g class="icon-tile" transform="translate(8, {NODE_HEIGHT / 2 - 14})" color={config.color}>
+    <rect width="28" height="28" rx="6" fill={config.color} opacity="0.1" />
+    <g transform="translate(5, 5)">
+      <BrandIcon name={brandNodeIcon(node.type)} size={18} />
+    </g>
   </g>
 
   <!-- Separator line -->
   <line
-    x1="36"
+    x1="40"
     y1="8"
-    x2="36"
+    x2="40"
     y2={NODE_HEIGHT - 8}
     stroke={config.color}
     opacity="0.15"
@@ -158,18 +144,18 @@
   />
 
   <!-- Name -->
-  <text x="44" y={NODE_HEIGHT / 2 - 5} class="node-name">
+  <text x="48" y={NODE_HEIGHT / 2 - 5} class="node-name">
     {(node.name || config.label).length > 18
       ? (node.name || config.label).slice(0, 17) + "…"
       : node.name || config.label}
   </text>
 
   <!-- Type label -->
-  <text x="44" y={NODE_HEIGHT / 2 + 10} class="node-type">
+  <text x="48" y={NODE_HEIGHT / 2 + 10} class="node-type">
     {config.label}
   </text>
 
-  <!-- Status badge (top-right) -->
+  <!-- Runtime status remains an explicit, independent marker. -->
   {#if status}
     <g class="status-badge">
       <rect
@@ -268,14 +254,6 @@
     stroke: var(--accent);
     stroke-width: 1.5;
   }
-  .running .card-bg {
-    animation: running-glow 2s ease-in-out infinite;
-  }
-
-  .stripe {
-    transition: fill 200ms ease;
-  }
-
   .node-name {
     fill: var(--text-primary);
     font-family: "Inter", system-ui, sans-serif;
@@ -314,7 +292,7 @@
 
   .port-visual {
     fill: var(--bg-primary);
-    stroke: var(--accent);
+    stroke: var(--border-hover);
     stroke-width: 1.5;
     transition: all 150ms ease;
     pointer-events: none;
@@ -325,7 +303,7 @@
   }
 
   .port-dot {
-    fill: var(--accent);
+    fill: var(--border-hover);
     pointer-events: none;
     transition: all 150ms ease;
   }
@@ -339,17 +317,5 @@
     font-size: 8px;
     letter-spacing: 0.04em;
     opacity: 0.6;
-  }
-
-  @keyframes running-glow {
-    0%,
-    100% {
-      stroke: var(--running);
-      stroke-opacity: 0.8;
-    }
-    50% {
-      stroke: var(--running);
-      stroke-opacity: 0.3;
-    }
   }
 </style>

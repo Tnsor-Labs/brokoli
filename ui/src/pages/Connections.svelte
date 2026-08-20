@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
+  import PageHeader from "../components/PageHeader.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import Pagination from "../components/Pagination.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -251,27 +252,15 @@
 </script>
 
 <div class="connections-page animate-in">
-  <header class="identity-hero">
-    <div class="hero-main">
-      <div class="hero-mark" aria-hidden="true">CX</div>
-      <div class="header-copy">
-        <span class="eyebrow">Organization control center / Resource catalog</span>
-        <h1>Connections</h1>
-        <p>Manage the external systems and credentials used by your pipelines.</p>
-      </div>
-      <button class="btn-primary" on:click={openCreate}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-          ><path
-            d={icons.plus.d}
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-          /></svg
-        >
-        New Connection
-      </button>
-    </div>
-    <div class="status-summary" aria-label="Connection summary">
+  <PageHeader
+    brandIcon="connections"
+    kicker="Organization control center / Resource catalog"
+    title="Connections"
+    description="Manage the external systems and credentials used by your pipelines."
+    actionLabel="New Connection"
+    on:click={openCreate}
+  >
+    <div slot="kpi-rail" class="status-summary" aria-label="Connection summary">
       <div class="status-segment accent">
         <span>Total connections</span><strong
           >{loading || loadError ? "—" : connections.length}</strong
@@ -287,7 +276,7 @@
         ><small>with a host configured</small>
       </div>
     </div>
-  </header>
+  </PageHeader>
 
   <section class="inventory" aria-label="Connection inventory">
     <div class="inventory-heading">
@@ -350,7 +339,7 @@
     {:else if connections.length === 0}
       <div class="empty-wrap">
         <EmptyState
-          icon={icons.connection.d}
+          brandIcon="connections"
           title="No connections configured"
           description="Connections store credentials for databases, APIs, and other external services your pipelines use."
           ctaLabel="+ New Connection"
@@ -715,42 +704,6 @@
     width: 100%;
     min-width: 0;
   }
-  .identity-hero {
-    margin-bottom: 18px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 11px;
-    background:
-      linear-gradient(
-        120deg,
-        color-mix(in srgb, var(--accent-glow), transparent 22%),
-        transparent 52%
-      ),
-      var(--bg-secondary);
-    box-shadow: var(--shadow-card);
-  }
-  .hero-main {
-    display: flex;
-    min-height: 112px;
-    align-items: center;
-    gap: 15px;
-    padding: 20px;
-  }
-  .hero-mark {
-    display: grid;
-    width: 48px;
-    height: 48px;
-    flex: none;
-    place-items: center;
-    border: 1px solid color-mix(in srgb, var(--accent), transparent 60%);
-    border-radius: 10px;
-    background: var(--accent-glow);
-    color: var(--accent);
-    font: 700 11px var(--font-mono);
-  }
-  .hero-main .header-copy {
-    flex: 1;
-  }
   .status-summary {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -891,28 +844,6 @@
   .unavailable-state button {
     margin-top: 8px;
   }
-  .header-copy {
-    min-width: 0;
-  }
-  .eyebrow {
-    display: block;
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .identity-hero h1 {
-    color: var(--text-primary);
-    font-size: 24px;
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .header-copy p {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
   .btn-primary,
   .btn-secondary {
     display: inline-flex;
@@ -924,7 +855,7 @@
     border: 1px solid var(--accent);
     border-radius: 6px;
     background: var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     font-size: 11px;
     font-weight: 550;
     transition: all 150ms ease;
@@ -946,6 +877,7 @@
   .inventory {
     display: flex;
     min-height: 520px;
+    margin-top: 18px;
     flex-direction: column;
     overflow: hidden;
     border: 1px solid var(--border-subtle);
@@ -1488,9 +1420,6 @@
   }
 
   @media (max-width: 768px) {
-    .hero-main {
-      align-items: flex-start;
-    }
     .inventory-toolbar {
       grid-template-columns: 1fr;
     }
@@ -1532,21 +1461,6 @@
     }
   }
   @media (max-width: 520px) {
-    .hero-main {
-      flex-wrap: wrap;
-      padding: 16px;
-    }
-    .hero-mark {
-      width: 40px;
-      height: 40px;
-    }
-    .hero-main .header-copy {
-      width: calc(100% - 56px);
-      flex: none;
-    }
-    .hero-main .btn-primary {
-      width: 100%;
-    }
     .status-summary {
       grid-template-columns: 1fr;
     }

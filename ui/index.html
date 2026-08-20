@@ -8,15 +8,15 @@
     <script>
       // Sync splash background with saved theme to prevent flash
       (function() {
-        var t = localStorage.getItem('broked-theme');
+        var t = localStorage.getItem('brokoli-theme');
         var light = t === 'light';
         document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
         var s = document.createElement('style');
-        var bg = light ? '#ffffff' : '#09090b';
-        var border = light ? '#e4e7ec' : '#27272a';
+        var bg = light ? '#f4f7f5' : '#090d0c';
+        var border = light ? '#dde5e1' : '#25302c';
         s.textContent = 'body{margin:0;background:' + bg + '}'
           + '#app-loader{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;background:' + bg + '}'
-          + '#app-loader .spinner{width:28px;height:28px;border:3px solid ' + border + ';border-top-color:#0d9488;border-radius:50%;animation:spin .7s linear infinite}'
+          + '#app-loader .spinner{width:28px;height:28px;border:3px solid ' + border + ';border-top-color:#10b866;border-radius:50%;animation:spin .7s linear infinite}'
           + '@keyframes spin{to{transform:rotate(360deg)}}';
         document.head.appendChild(s);
       })();

@@ -1,0 +1,51 @@
+{
+  "source": "brokoli-visual-identity-v1.4.html",
+  "count": 35,
+  "marks": {
+    "source": "brokoli-visual-identity-v1.5.html",
+    "note": "Fixed-color (#10B866 literal) brand marks, not currentColor sprite symbols -- consumed as standalone <img>/inline SVG, not via BrandIcon's sprite <use> mechanism, and intentionally not added to sprite.svg.",
+    "files": [
+      {
+        "name": "brokoli-symbol-micro.svg",
+        "purpose": "Optically reinforced (heavier stroke/terminal weight than the master mark) for product chrome at <=24px, e.g. the sidebar brand tile. Do not use above 24px -- use the master mark (favicon.svg) instead."
+      }
+    ]
+  },
+  "icons": [
+    "bk-dashboard",
+    "bk-pipelines",
+    "bk-calendar",
+    "bk-lineage",
+    "bk-dependencies",
+    "bk-variables",
+    "bk-connections",
+    "bk-plugins",
+    "bk-workspaces",
+    "bk-workers",
+    "bk-audit-log",
+    "bk-git-sync",
+    "bk-organization",
+    "bk-api",
+    "bk-support",
+    "bk-get-started",
+    "bk-settings",
+    "bk-account",
+    "bk-sign-out",
+    "bk-collapse",
+    "bk-node-file-source",
+    "bk-node-api-source",
+    "bk-node-database-source",
+    "bk-node-transform",
+    "bk-node-python-code",
+    "bk-node-join",
+    "bk-node-quality-check",
+    "bk-node-sql-generate",
+    "bk-node-file-output",
+    "bk-node-database-sink",
+    "bk-node-api-sink",
+    "bk-node-integration",
+    "bk-node-notify",
+    "bk-node-db-migration",
+    "bk-node-if-else"
+  ]
+}

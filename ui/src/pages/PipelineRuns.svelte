@@ -5,6 +5,7 @@
   import { authHeaders, dashboardKey } from "../lib/auth";
   import { notify } from "../lib/toast";
   import { getSodpClient } from "../lib/sodp";
+  import BrandIcon from "../components/BrandIcon.svelte";
   import StatusBadge from "../components/StatusBadge.svelte";
   import GanttChart from "../components/GanttChart.svelte";
   import LogStream from "../components/LogStream.svelte";
@@ -600,15 +601,7 @@
           <span class="btn-label">Backfill</span>
         </button>
         <button class="btn-sm" on:click={openParamsModal} title="Run with Params">
-          <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
-            ><path
-              d={icons.settings.d}
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            /></svg
-          >
+          <BrandIcon name="settings" size={14} className="btn-icon" />
           <span class="btn-label">Run with Params</span>
         </button>
         <button class="btn-sm btn-run" on:click={triggerRun} title="Run Now">
@@ -1347,7 +1340,7 @@
   }
   .btn-primary {
     background: var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     font-weight: 500;

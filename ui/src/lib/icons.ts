@@ -280,3 +280,25 @@ export function nodeTypeIcon(type: string): string {
   };
   return map[type] || "file";
 }
+
+/** Get the v1.4 brand sprite symbol for a node type. */
+export function brandNodeIcon(type: string): string {
+  const map: Record<string, string> = {
+    source_file: "bk-node-file-source",
+    source_api: "bk-node-api-source",
+    source_db: "bk-node-database-source",
+    transform: "bk-node-transform",
+    code: "bk-node-python-code",
+    join: "bk-node-join",
+    quality_check: "bk-node-quality-check",
+    sql_generate: "bk-node-sql-generate",
+    sink_file: "bk-node-file-output",
+    sink_db: "bk-node-database-sink",
+    sink_api: "bk-node-api-sink",
+    dbt: "bk-node-integration",
+    notify: "bk-node-notify",
+    migrate: "bk-node-db-migration",
+    condition: "bk-node-if-else",
+  };
+  return map[type] || "bk-node-file-source";
+}

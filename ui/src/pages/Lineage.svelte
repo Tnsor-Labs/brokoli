@@ -3,6 +3,7 @@
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
   import { theme } from "../lib/theme";
+  import PageHeader from "../components/PageHeader.svelte";
   import Skeleton from "../components/Skeleton.svelte";
 
   interface LineageNode {
@@ -380,8 +381,14 @@
   $: isDark = $theme === "dark";
   $: gridDot = isDark ? "rgba(39,39,42,0.5)" : "rgba(208,213,221,0.6)";
   $: gridDotLg = isDark ? "rgba(63,63,70,0.3)" : "rgba(152,162,179,0.35)";
-  $: edgeStroke = isDark ? "#3f3f46" : "#98a2b3";
-  $: edgeHover = isDark ? "#6366f1" : "#0d9488";
+  // Matches --canvas-edge/--canvas-edge-hover from global.css (SVG
+  // presentation attributes can't resolve CSS custom properties reactively
+  // here, so these mirror the token values directly -- same pattern
+  // PipelineCanvas.svelte uses for its own edge colors). Previously this
+  // page had its own hardcoded gray + indigo/teal pair, mismatched from
+  // both the design system and PipelineCanvas's brand-teal treatment.
+  $: edgeStroke = isDark ? "#3f3f46" : "#54606f";
+  $: edgeHover = isDark ? "#169985" : "#0e6f68";
 
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
   $: selectedColumnEdges = selectedNodeId
@@ -390,13 +397,13 @@
 </script>
 
 <div class="lineage-page animate-in">
-  <header class="page-header">
-    <div class="header-left">
-      <p class="eyebrow">Observability</p>
-      <h1>Data Lineage</h1>
-      <p class="page-subtitle">Trace assets and transformations across every pipeline.</p>
-    </div>
-    <div class="header-right">
+  <PageHeader
+    brandIcon="lineage"
+    kicker="Observability"
+    title="Data Lineage"
+    description="Trace assets and transformations across every pipeline."
+  >
+    <svelte:fragment slot="extra-action">
       <button class="btn-sm" on:click={fitToView} title="Reset layout">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
           <path
@@ -409,8 +416,8 @@
         </svg>
         Reset Layout
       </button>
-    </div>
-  </header>
+    </svelte:fragment>
+  </PageHeader>
 
   {#if loading}
     <div class="state-card loading-state" aria-label="Loading data lineage">
@@ -436,10 +443,10 @@
       <div class="workspace-toolbar">
         <span class="workspace-title">Lineage map</span>
         <div class="workspace-meta">
-            <span>{nodes.filter((n) => n.type !== "processing").length} assets</span>
-            <span>{nodes.filter((n) => n.type === "processing").length} steps</span>
-            <span>{edges.length} connections</span>
-            <span>{columnEdges.length} column mappings</span>
+          <span>{nodes.filter((n) => n.type !== "processing").length} assets</span>
+          <span>{nodes.filter((n) => n.type === "processing").length} steps</span>
+          <span>{edges.length} connections</span>
+          <span>{columnEdges.length} column mappings</span>
           <span class="workspace-hint">Drag nodes · Scroll to zoom</span>
         </div>
       </div>
@@ -647,7 +654,13 @@
               </div>
               <div class="metadata-stats">
                 <span><strong>{selectedNode.metadata.row_count ?? 0}</strong> rows</span>
-                <span><strong>{selectedNode.metadata.column_count ?? selectedNode.metadata.columns?.length ?? 0}</strong> columns</span>
+                <span
+                  ><strong
+                    >{selectedNode.metadata.column_count ??
+                      selectedNode.metadata.columns?.length ??
+                      0}</strong
+                  > columns</span
+                >
               </div>
               {#if selectedNode.metadata.columns && selectedNode.metadata.columns.length > 0}
                 <div class="column-list">
@@ -655,7 +668,9 @@
                     <div class="column-row">
                       <code>{column.name}</code>
                       <span>{column.type || "unknown"}</span>
-                      {#if column.null_pct !== undefined}<small>{column.null_pct.toFixed(1)}% null</small>{/if}
+                      {#if column.null_pct !== undefined}<small
+                          >{column.null_pct.toFixed(1)}% null</small
+                        >{/if}
                     </div>
                   {/each}
                 </div>
@@ -677,7 +692,9 @@
                     <code>{edge.from_column}</code>
                     <span>→</span>
                     <code>{edge.to_column}</code>
-                    <small title={edge.mapping_reason}>{Math.round(edge.confidence * 100)}% inferred</small>
+                    <small title={edge.mapping_reason}
+                      >{Math.round(edge.confidence * 100)}% inferred</small
+                    >
                   </div>
                 {/each}
               </div>
@@ -757,42 +774,11 @@
   .lineage-page {
     display: flex;
     flex-direction: column;
+    gap: 18px;
     height: 100%;
     min-height: 0;
   }
 
-  .page-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: flex-end;
-    gap: var(--space-lg);
-    margin-bottom: 18px;
-    flex-shrink: 0;
-  }
-  .header-left {
-    min-width: 0;
-  }
-  .eyebrow {
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .page-header h1 {
-    font-size: 24px;
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .page-subtitle {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
-  .header-right {
-    display: flex;
-    gap: 8px;
-  }
   .btn-sm {
     display: flex;
     align-items: center;
@@ -1230,18 +1216,6 @@
     .lineage-page {
       height: auto;
       min-height: calc(100dvh - 102px);
-    }
-    .page-header {
-      align-items: stretch;
-      flex-direction: column;
-      gap: 12px;
-    }
-    .header-right,
-    .btn-sm {
-      width: 100%;
-    }
-    .btn-sm {
-      justify-content: center;
     }
     .workspace-toolbar {
       align-items: flex-start;

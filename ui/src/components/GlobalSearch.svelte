@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from "svelte";
   import { icons } from "../lib/icons";
   import { authHeaders } from "../lib/auth";
+  import BrandIcon from "./BrandIcon.svelte";
 
   let visible = false;
   let query = "";
@@ -16,21 +17,77 @@
     id: string;
     name: string;
     description: string;
-    icon: string;
+    icon: string; // bk-* BrandIcon name
     href: string;
     meta?: string;
   }
 
   // Static pages for navigation
   const pages: SearchResult[] = [
-    { type: "page", id: "dash", name: "Dashboard", description: "Overview and metrics", icon: icons.dashboard.d, href: "#/" },
-    { type: "page", id: "pipe", name: "Pipelines", description: "Manage pipelines", icon: icons.pipeline.d, href: "#/pipelines" },
-    { type: "page", id: "cal", name: "Calendar", description: "Run activity heatmap", icon: icons.calendar.d, href: "#/calendar" },
-    { type: "page", id: "lin", name: "Lineage", description: "Data lineage graph", icon: icons.lineage.d, href: "#/lineage" },
-    { type: "page", id: "var", name: "Variables", description: "Manage variables", icon: icons.variable.d, href: "#/variables" },
-    { type: "page", id: "conn", name: "Connections", description: "Manage connections", icon: icons.connection.d, href: "#/connections" },
-    { type: "page", id: "plug", name: "Plugins", description: "Install and manage plugins", icon: icons.plugin.d, href: "#/plugins" },
-    { type: "page", id: "set", name: "Settings", description: "System configuration", icon: icons.settings.d, href: "#/settings" },
+    {
+      type: "page",
+      id: "dash",
+      name: "Dashboard",
+      description: "Overview and metrics",
+      icon: "dashboard",
+      href: "#/",
+    },
+    {
+      type: "page",
+      id: "pipe",
+      name: "Pipelines",
+      description: "Manage pipelines",
+      icon: "pipelines",
+      href: "#/pipelines",
+    },
+    {
+      type: "page",
+      id: "cal",
+      name: "Calendar",
+      description: "Run activity heatmap",
+      icon: "calendar",
+      href: "#/calendar",
+    },
+    {
+      type: "page",
+      id: "lin",
+      name: "Lineage",
+      description: "Data lineage graph",
+      icon: "lineage",
+      href: "#/lineage",
+    },
+    {
+      type: "page",
+      id: "var",
+      name: "Variables",
+      description: "Manage variables",
+      icon: "variables",
+      href: "#/variables",
+    },
+    {
+      type: "page",
+      id: "conn",
+      name: "Connections",
+      description: "Manage connections",
+      icon: "connections",
+      href: "#/connections",
+    },
+    {
+      type: "page",
+      id: "plug",
+      name: "Plugins",
+      description: "Install and manage plugins",
+      icon: "plugins",
+      href: "#/plugins",
+    },
+    {
+      type: "page",
+      id: "set",
+      name: "Settings",
+      description: "System configuration",
+      icon: "settings",
+      href: "#/settings",
+    },
   ];
 
   // Cache fetched data
@@ -67,13 +124,17 @@
 
     // Pipelines
     for (const p of pipelines) {
-      if (p.name?.toLowerCase().includes(s) || p.description?.toLowerCase().includes(s) || (p.tags || []).some((t: string) => t.toLowerCase().includes(s))) {
+      if (
+        p.name?.toLowerCase().includes(s) ||
+        p.description?.toLowerCase().includes(s) ||
+        (p.tags || []).some((t: string) => t.toLowerCase().includes(s))
+      ) {
         matched.push({
           type: "pipeline",
           id: p.id,
           name: p.name,
           description: p.description || "",
-          icon: icons.pipeline.d,
+          icon: "pipelines",
           href: `#/pipelines/${p.id}/edit`,
           meta: p.schedule || "manual",
         });
@@ -82,13 +143,17 @@
 
     // Connections
     for (const c of connections) {
-      if (c.conn_id?.toLowerCase().includes(s) || c.type?.toLowerCase().includes(s) || c.description?.toLowerCase().includes(s)) {
+      if (
+        c.conn_id?.toLowerCase().includes(s) ||
+        c.type?.toLowerCase().includes(s) ||
+        c.description?.toLowerCase().includes(s)
+      ) {
         matched.push({
           type: "connection",
           id: c.id || c.conn_id,
           name: c.conn_id,
           description: `${c.type} — ${c.description || c.host || ""}`,
-          icon: icons.connection.d,
+          icon: "connections",
           href: "#/connections",
           meta: c.type,
         });
@@ -103,7 +168,7 @@
           id: v.key,
           name: v.key,
           description: v.description || v.type,
-          icon: icons.variable.d,
+          icon: "variables",
           href: "#/variables",
           meta: v.type,
         });
@@ -153,24 +218,44 @@
   function handleKeydown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
       e.preventDefault();
-      if (visible) close(); else open();
+      if (visible) close();
+      else open();
       return;
     }
     if (!visible) return;
 
-    if (e.key === "Escape") { close(); return; }
-    if (e.key === "ArrowDown") { e.preventDefault(); selectedIndex = Math.min(selectedIndex + 1, results.length - 1); return; }
-    if (e.key === "ArrowUp") { e.preventDefault(); selectedIndex = Math.max(selectedIndex - 1, 0); return; }
-    if (e.key === "Enter" && results[selectedIndex]) { navigate(results[selectedIndex]); return; }
+    if (e.key === "Escape") {
+      close();
+      return;
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      selectedIndex = Math.min(selectedIndex + 1, results.length - 1);
+      return;
+    }
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      selectedIndex = Math.max(selectedIndex - 1, 0);
+      return;
+    }
+    if (e.key === "Enter" && results[selectedIndex]) {
+      navigate(results[selectedIndex]);
+      return;
+    }
   }
 
   function typeColor(type: string): string {
     switch (type) {
-      case "pipeline": return "var(--accent)";
-      case "connection": return "#22c55e";
-      case "variable": return "#f59e0b";
-      case "page": return "var(--text-muted)";
-      default: return "var(--text-muted)";
+      case "pipeline":
+        return "var(--accent)";
+      case "connection":
+        return "var(--bk-tax-integration)";
+      case "variable":
+        return "var(--bk-status-warning)";
+      case "page":
+        return "var(--text-muted)";
+      default:
+        return "var(--text-muted)";
     }
   }
 </script>
@@ -184,7 +269,13 @@
     <div class="search-modal" on:click|stopPropagation on:keydown={() => {}}>
       <div class="search-input-wrap">
         <svg class="search-icon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-          <path d={icons.search.d} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+          <path
+            d={icons.search.d}
+            stroke="currentColor"
+            stroke-width="1.5"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
         </svg>
         <input
           bind:this={inputEl}
@@ -208,12 +299,12 @@
               class="search-result"
               class:selected={i === selectedIndex}
               on:click={() => navigate(result)}
-              on:mouseenter={() => selectedIndex = i}
+              on:mouseenter={() => (selectedIndex = i)}
               on:keydown={() => {}}
             >
-              <svg class="result-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" style="color: {typeColor(result.type)}">
-                <path d={result.icon} stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
-              </svg>
+              <span style="color: {typeColor(result.type)}; flex-shrink: 0;">
+                <BrandIcon name={result.icon} size={16} className="result-icon" />
+              </span>
               <div class="result-content">
                 <span class="result-name">{result.name}</span>
                 {#if result.description}
@@ -224,7 +315,9 @@
                 {#if result.meta}
                   <span class="result-meta-text">{result.meta}</span>
                 {/if}
-                <span class="result-type" style="color: {typeColor(result.type)}">{result.type}</span>
+                <span class="result-type" style="color: {typeColor(result.type)}"
+                  >{result.type}</span
+                >
               </div>
             </div>
           {/each}
@@ -242,87 +335,142 @@
 
 <style>
   .search-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
     z-index: 9999;
-    display: flex; justify-content: center;
+    display: flex;
+    justify-content: center;
     padding-top: 15vh;
   }
   .search-modal {
-    width: 560px; max-width: 95vw;
+    width: 560px;
+    max-width: 95vw;
     max-height: 480px;
     background: var(--bg-secondary);
     border: 1px solid var(--border);
     border-radius: 12px;
     overflow: hidden;
-    display: flex; flex-direction: column;
-    box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.4);
   }
 
   .search-input-wrap {
-    display: flex; align-items: center; gap: 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
     padding: 14px 18px;
     border-bottom: 1px solid var(--border);
   }
-  .search-icon { color: var(--text-ghost); flex-shrink: 0; }
-  .search-input {
-    flex: 1; border: none; background: none;
-    font-size: 15px; color: var(--text-primary);
-    outline: none; font-family: var(--font-ui);
+  .search-icon {
+    color: var(--text-ghost);
+    flex-shrink: 0;
   }
-  .search-input::placeholder { color: var(--text-ghost); }
+  .search-input {
+    flex: 1;
+    border: none;
+    background: none;
+    font-size: 15px;
+    color: var(--text-primary);
+    outline: none;
+    font-family: var(--font-ui);
+  }
+  .search-input::placeholder {
+    color: var(--text-ghost);
+  }
   .search-kbd {
-    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
-    padding: 2px 6px; border-radius: 4px;
-    background: var(--bg-tertiary); color: var(--text-ghost);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    color: var(--text-ghost);
     border: 1px solid var(--border-subtle);
   }
 
   .search-results {
-    flex: 1; overflow-y: auto;
+    flex: 1;
+    overflow-y: auto;
     padding: 6px;
   }
   .search-empty {
-    padding: 24px; text-align: center;
-    color: var(--text-dim); font-size: 13px;
+    padding: 24px;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 13px;
   }
   .search-result {
-    display: flex; align-items: center; gap: 10px;
-    padding: 8px 12px; border-radius: 8px;
-    cursor: pointer; transition: background 80ms ease;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 80ms ease;
   }
-  .search-result.selected { background: var(--bg-tertiary); }
-  .result-icon { flex-shrink: 0; opacity: 0.7; }
-  .result-content { flex: 1; min-width: 0; }
+  .search-result.selected {
+    background: var(--bg-tertiary);
+  }
+  .result-icon {
+    flex-shrink: 0;
+    opacity: 0.7;
+  }
+  .result-content {
+    flex: 1;
+    min-width: 0;
+  }
   .result-name {
-    display: block; font-size: 13px; font-weight: 500;
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
     color: var(--text-primary);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .result-desc {
-    display: block; font-size: 11px; color: var(--text-dim);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: block;
+    font-size: 11px;
+    color: var(--text-dim);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .result-meta {
-    display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
   }
   .result-meta-text {
-    font-size: 10px; color: var(--text-ghost); font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-ghost);
+    font-family: var(--font-mono);
   }
   .result-type {
-    font-size: 9px; font-weight: 600; text-transform: uppercase;
+    font-size: 9px;
+    font-weight: 600;
+    text-transform: uppercase;
     letter-spacing: 0.06em;
   }
 
   .search-footer {
-    display: flex; gap: 16px; padding: 8px 18px;
+    display: flex;
+    gap: 16px;
+    padding: 8px 18px;
     border-top: 1px solid var(--border);
-    font-size: 11px; color: var(--text-ghost);
+    font-size: 11px;
+    color: var(--text-ghost);
   }
   .search-footer kbd {
-    font-family: var(--font-mono); font-size: 10px;
-    padding: 1px 4px; border-radius: 3px;
-    background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
     margin-right: 3px;
   }
 </style>

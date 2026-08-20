@@ -37,9 +37,9 @@
   $: dotColor = isDark ? "rgba(39,39,42,0.5)" : "rgba(208,213,221,0.6)";
   $: dotLargeColor = isDark ? "rgba(63,63,70,0.3)" : "rgba(152,162,179,0.35)";
   $: edgeColor = isDark ? "#3f3f46" : "#667085";
-  $: edgeHoverColor = isDark ? "#ef4444" : "#f04438";
-  $: accentColor = isDark ? "#6366f1" : "#0d9488";
-  $: flowColor = isDark ? "#3b82f6" : "#2563eb";
+  $: edgeHoverColor = isDark ? "#169985" : "#0e6f68";
+  $: accentColor = isDark ? "#10b866" : "#0a7d44";
+  $: flowColor = isDark ? "#53c4e5" : "#16718b";
 
   // --- Coordinate conversion using SVG native API ---
   function clientToSvg(clientX: number, clientY: number): { x: number; y: number } {

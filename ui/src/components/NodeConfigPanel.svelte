@@ -1,7 +1,8 @@
 <script lang="ts">
   import type { Node, NodeType } from "../lib/types";
   import { nodeTypeConfig } from "../lib/dag";
-  import { icons, nodeTypeIcon } from "../lib/icons";
+  import { icons, brandNodeIcon } from "../lib/icons";
+  import BrandIcon from "./BrandIcon.svelte";
   import TransformRuleEditor from "./TransformRuleEditor.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
   import { createEventDispatcher } from "svelte";
@@ -19,7 +20,10 @@
   async function testConnection() {
     if (!node) return;
     const uri = node.config["uri"] as string;
-    if (!uri) { notify.warning("Enter a URI first"); return; }
+    if (!uri) {
+      notify.warning("Enter a URI first");
+      return;
+    }
     testingConnection = true;
     try {
       const res = await fetch("/api/test-connection", {
@@ -58,7 +62,10 @@
   // Quality check rules
   function getQualityRules(): any[] {
     if (!node) return [];
-    return ((node.config["rules"] as any[]) || []).map((rule) => ({ ...rule, params: { ...(rule.params || {}) } }));
+    return ((node.config["rules"] as any[]) || []).map((rule) => ({
+      ...rule,
+      params: { ...(rule.params || {}) },
+    }));
   }
   function addQualityRule() {
     const rules = getQualityRules();
@@ -97,10 +104,13 @@
   }
 
   $: typeConfig = node ? nodeTypeConfig[node.type] : null;
-  $: iconDef = node ? icons[nodeTypeIcon(node.type)] : null;
 
   // Load connections for conn_id selector
-  interface ConnOption { conn_id: string; type: string; description: string; }
+  interface ConnOption {
+    conn_id: string;
+    type: string;
+    description: string;
+  }
   let availableConnections: ConnOption[] = [];
   import { onMount } from "svelte";
   onMount(async () => {
@@ -109,18 +119,37 @@
       if (res.ok) {
         availableConnections = await res.json();
       }
-    } catch { /* ignore */ }
+    } catch {
+      /* ignore */
+    }
   });
 
   function connTypeFilter(nodeType: string): string[] {
     switch (nodeType) {
-      case "source_db": case "sink_db": return ["postgres", "mysql", "sqlite", "snowflake", "redshift", "bigquery", "databricks", "oracle", "mssql", "generic"];
-      case "source_api": return ["http", "generic"];
-      default: return [];
+      case "source_db":
+      case "sink_db":
+        return [
+          "postgres",
+          "mysql",
+          "sqlite",
+          "snowflake",
+          "redshift",
+          "bigquery",
+          "databricks",
+          "oracle",
+          "mssql",
+          "generic",
+        ];
+      case "source_api":
+        return ["http", "generic"];
+      default:
+        return [];
     }
   }
 
-  $: filteredConns = node ? availableConnections.filter(c => connTypeFilter(node!.type).includes(c.type)) : [];
+  $: filteredConns = node
+    ? availableConnections.filter((c) => connTypeFilter(node!.type).includes(c.type))
+    : [];
   $: usingConnection = node?.config["conn_id"] ? true : false;
 
   const qualityRuleTypes = [
@@ -165,17 +194,12 @@
 <div class="config-panel">
   {#if node}
     <div class="panel-header">
-      <div class="panel-icon" style="--node-color: {typeConfig?.color || '#71717a'}">
-        {#if iconDef}
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-            <path
-              d={iconDef.d}
-              stroke={typeConfig?.color || '#71717a'}
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+      <div
+        class="panel-icon"
+        style="--node-color: {typeConfig?.color || 'var(--bk-text-tertiary)'}"
+      >
+        {#if node}
+          <BrandIcon name={brandNodeIcon(node.type)} size={16} />
         {/if}
       </div>
       <div class="panel-header-text">
@@ -200,11 +224,18 @@
     {#if node.type === "source_file"}
       <div class="field">
         <label>File Path</label>
-        <input value={node.config["path"] || ""} on:input={(e) => updateConfig("path", e.currentTarget.value)} placeholder="/data/input.csv" />
+        <input
+          value={node.config["path"] || ""}
+          on:input={(e) => updateConfig("path", e.currentTarget.value)}
+          placeholder="/data/input.csv"
+        />
       </div>
       <div class="field">
         <label>Format</label>
-        <select value={node.config["format"] || "auto"} on:change={(e) => updateConfig("format", e.currentTarget.value)}>
+        <select
+          value={node.config["format"] || "auto"}
+          on:change={(e) => updateConfig("format", e.currentTarget.value)}
+        >
           <option value="auto">Auto-detect</option>
           <option value="csv">CSV</option>
           <option value="json">JSON</option>
@@ -218,11 +249,17 @@
       {#if filteredConns.length > 0}
         <div class="field">
           <label>Connection</label>
-          <select value={node.config["conn_id"] || ""} on:change={(e) => {
-            const val = e.currentTarget.value;
-            if (val) { updateConfig("conn_id", val); }
-            else { updateConfig("conn_id", ""); }
-          }}>
+          <select
+            value={node.config["conn_id"] || ""}
+            on:change={(e) => {
+              const val = e.currentTarget.value;
+              if (val) {
+                updateConfig("conn_id", val);
+              } else {
+                updateConfig("conn_id", "");
+              }
+            }}
+          >
             <option value="">Manual URL</option>
             {#each filteredConns as c}
               <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
@@ -231,17 +268,26 @@
         </div>
         {#if node.config["conn_id"]}
           <div class="field">
-            <div class="conn-badge">Base URL from connection: <strong>{node.config["conn_id"]}</strong></div>
+            <div class="conn-badge">
+              Base URL from connection: <strong>{node.config["conn_id"]}</strong>
+            </div>
           </div>
         {/if}
       {/if}
       <div class="field">
         <label>URL</label>
-        <input value={node.config["url"] || ""} on:input={(e) => updateConfig("url", e.currentTarget.value)} placeholder="https://api.example.com/data" />
+        <input
+          value={node.config["url"] || ""}
+          on:input={(e) => updateConfig("url", e.currentTarget.value)}
+          placeholder="https://api.example.com/data"
+        />
       </div>
       <div class="field">
         <label>Method</label>
-        <select value={node.config["method"] || "GET"} on:change={(e) => updateConfig("method", e.currentTarget.value)}>
+        <select
+          value={node.config["method"] || "GET"}
+          on:change={(e) => updateConfig("method", e.currentTarget.value)}
+        >
           <option value="GET">GET</option>
           <option value="POST">POST</option>
           <option value="PUT">PUT</option>
@@ -250,27 +296,47 @@
       </div>
       <div class="field">
         <label>Response Path (JSON path to data array)</label>
-        <input value={node.config["response_path"] || ""} on:input={(e) => updateConfig("response_path", e.currentTarget.value)} placeholder="data.items" />
+        <input
+          value={node.config["response_path"] || ""}
+          on:input={(e) => updateConfig("response_path", e.currentTarget.value)}
+          placeholder="data.items"
+        />
       </div>
       {#if node.config["method"] === "POST" || node.config["method"] === "PUT"}
         <div class="field">
           <label>Request Body (JSON)</label>
-          <textarea class="code-input" rows="3" value={node.config["body"] || ""} on:input={(e) => updateConfig("body", e.currentTarget.value)} placeholder="JSON body"></textarea>
+          <textarea
+            class="code-input"
+            rows="3"
+            value={node.config["body"] || ""}
+            on:input={(e) => updateConfig("body", e.currentTarget.value)}
+            placeholder="JSON body"
+          ></textarea>
         </div>
       {/if}
       <div class="field-group">
         <span class="group-title">Headers</span>
         {#each Object.entries(getHeaders()) as [hKey, hVal], i}
           <div class="header-row">
-            <input class="header-key" value={hKey} placeholder="Header name" on:input={(e) => {
-              const h = getHeaders();
-              delete h[hKey];
-              h[e.currentTarget.value] = hVal;
-              updateConfig("headers", h);
-            }} />
-            <input class="header-val" value={hVal} placeholder="Value" on:input={(e) => {
-              updateHeader(hKey, e.currentTarget.value);
-            }} />
+            <input
+              class="header-key"
+              value={hKey}
+              placeholder="Header name"
+              on:input={(e) => {
+                const h = getHeaders();
+                delete h[hKey];
+                h[e.currentTarget.value] = hVal;
+                updateConfig("headers", h);
+              }}
+            />
+            <input
+              class="header-val"
+              value={hVal}
+              placeholder="Value"
+              on:input={(e) => {
+                updateHeader(hKey, e.currentTarget.value);
+              }}
+            />
           </div>
         {/each}
         <button class="btn-add-sm" on:click={addHeader}>+ Add Header</button>
@@ -281,16 +347,23 @@
     {#if node.type === "source_db"}
       <div class="field">
         <label>Connection</label>
-        <select value={node.config["conn_id"] || ""} on:change={(e) => {
-          const val = e.currentTarget.value;
-          if (val) { updateConfig("conn_id", val); updateConfig("uri", ""); }
-          else { updateConfig("conn_id", ""); }
-        }}>
+        <select
+          value={node.config["conn_id"] || ""}
+          on:change={(e) => {
+            const val = e.currentTarget.value;
+            if (val) {
+              updateConfig("conn_id", val);
+              updateConfig("uri", "");
+            } else {
+              updateConfig("conn_id", "");
+            }
+          }}
+        >
           <option value="">Manual URI</option>
           {#each filteredConns as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
-          {#if node.config["conn_id"] && !filteredConns.find(c => c.conn_id === node.config["conn_id"])}
+          {#if node.config["conn_id"] && !filteredConns.find((c) => c.conn_id === node.config["conn_id"])}
             <option value={node.config["conn_id"]}>{node.config["conn_id"]} (not found)</option>
           {/if}
         </select>
@@ -298,7 +371,11 @@
       {#if !usingConnection}
         <div class="field">
           <label>Connection URI</label>
-          <input value={node.config["uri"] || ""} on:input={(e) => updateConfig("uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/db" />
+          <input
+            value={node.config["uri"] || ""}
+            on:input={(e) => updateConfig("uri", e.currentTarget.value)}
+            placeholder="postgres://user:pass@host/db"
+          />
         </div>
       {:else}
         <div class="field">
@@ -307,7 +384,13 @@
       {/if}
       <div class="field">
         <label>SQL Query</label>
-        <textarea class="code-input" rows="4" value={node.config["query"] || ""} on:input={(e) => updateConfig("query", e.currentTarget.value)} placeholder="SELECT * FROM users WHERE active = true"></textarea>
+        <textarea
+          class="code-input"
+          rows="4"
+          value={node.config["query"] || ""}
+          on:input={(e) => updateConfig("query", e.currentTarget.value)}
+          placeholder="SELECT * FROM users WHERE active = true"
+        ></textarea>
       </div>
       <div class="field" style="padding-top: 0">
         <button class="btn-test-conn" on:click={testConnection} disabled={testingConnection}>
@@ -331,28 +414,49 @@
     {#if node.type === "code"}
       <div class="field">
         <label>Python Path</label>
-        <input value={node.config["python_path"] || ""} on:input={(e) => updateConfig("python_path", e.currentTarget.value)} placeholder="python3 (default, or /path/to/venv/bin/python)" />
+        <input
+          value={node.config["python_path"] || ""}
+          on:input={(e) => updateConfig("python_path", e.currentTarget.value)}
+          placeholder="python3 (default, or /path/to/venv/bin/python)"
+        />
       </div>
       <div class="field">
         <label>Timeout (seconds)</label>
-        <Stepper value={node.config["timeout"] || 30} min={1} max={600} step={5} on:change={(e) => updateConfig("timeout", e.detail)} />
+        <Stepper
+          value={node.config["timeout"] || 30}
+          min={1}
+          max={600}
+          step={5}
+          on:change={(e) => updateConfig("timeout", e.detail)}
+        />
       </div>
       <div class="field-group">
         <span class="group-title">Python Script</span>
-        <button class="btn-open-editor" on:click={() => codeEditorVisible = true}>
+        <button class="btn-open-editor" on:click={() => (codeEditorVisible = true)}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d={icons.code.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.code.d}
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           Open Full Editor
         </button>
         {#if node.config["script"]}
-          <pre class="code-preview">{(node.config["script"] as string).split("\n").slice(0, 6).join("\n")}{(node.config["script"] as string).split("\n").length > 6 ? "\n..." : ""}</pre>
+          <pre class="code-preview">{(node.config["script"] as string)
+              .split("\n")
+              .slice(0, 6)
+              .join("\n")}{(node.config["script"] as string).split("\n").length > 6
+              ? "\n..."
+              : ""}</pre>
         {:else}
           <div class="code-empty">No script defined yet</div>
         {/if}
       </div>
       <CodeEditorModal
-        script={node.config["script"] as string || ""}
+        script={(node.config["script"] as string) || ""}
         bind:visible={codeEditorVisible}
         on:save={(e) => updateConfig("script", e.detail)}
       />
@@ -362,7 +466,10 @@
     {#if node.type === "join"}
       <div class="field">
         <label>Join Type</label>
-        <select value={node.config["join_type"] || "inner"} on:change={(e) => updateConfig("join_type", e.currentTarget.value)}>
+        <select
+          value={node.config["join_type"] || "inner"}
+          on:change={(e) => updateConfig("join_type", e.currentTarget.value)}
+        >
           <option value="inner">Inner Join</option>
           <option value="left">Left Join</option>
           <option value="right">Right Join</option>
@@ -371,11 +478,19 @@
       </div>
       <div class="field">
         <label>Left Key Column</label>
-        <input value={node.config["left_key"] || ""} on:input={(e) => updateConfig("left_key", e.currentTarget.value)} placeholder="customer_id" />
+        <input
+          value={node.config["left_key"] || ""}
+          on:input={(e) => updateConfig("left_key", e.currentTarget.value)}
+          placeholder="customer_id"
+        />
       </div>
       <div class="field">
         <label>Right Key Column</label>
-        <input value={node.config["right_key"] || ""} on:input={(e) => updateConfig("right_key", e.currentTarget.value)} placeholder="id" />
+        <input
+          value={node.config["right_key"] || ""}
+          on:input={(e) => updateConfig("right_key", e.currentTarget.value)}
+          placeholder="id"
+        />
       </div>
     {/if}
 
@@ -387,16 +502,25 @@
           <div class="quality-rule">
             <div class="qr-header">
               <span class="qr-num">#{i + 1}</span>
-              <button class="btn-remove" on:click={() => removeQualityRule(i)} title="Remove rule">&times;</button>
+              <button class="btn-remove" on:click={() => removeQualityRule(i)} title="Remove rule"
+                >&times;</button
+              >
             </div>
             <div class="qr-fields">
               <div class="qr-field">
                 <label>Column</label>
-                <input value={rule.column || ""} on:input={(e) => updateQualityRule(i, "column", e.currentTarget.value)} placeholder="column_name" />
+                <input
+                  value={rule.column || ""}
+                  on:input={(e) => updateQualityRule(i, "column", e.currentTarget.value)}
+                  placeholder="column_name"
+                />
               </div>
               <div class="qr-field">
                 <label>Check</label>
-                <select value={rule.rule || "not_null"} on:change={(e) => updateQualityRule(i, "rule", e.currentTarget.value)}>
+                <select
+                  value={rule.rule || "not_null"}
+                  on:change={(e) => updateQualityRule(i, "rule", e.currentTarget.value)}
+                >
                   {#each qualityRuleTypes as rt}
                     <option value={rt.value}>{rt.label}</option>
                   {/each}
@@ -404,7 +528,10 @@
               </div>
               <div class="qr-field">
                 <label>On Failure</label>
-                <select value={rule.on_failure || "block"} on:change={(e) => updateQualityRule(i, "on_failure", e.currentTarget.value)}>
+                <select
+                  value={rule.on_failure || "block"}
+                  on:change={(e) => updateQualityRule(i, "on_failure", e.currentTarget.value)}
+                >
                   <option value="block">Block (fail pipeline)</option>
                   <option value="warn">Warn (continue)</option>
                 </select>
@@ -413,7 +540,11 @@
                 {#each rulesWithParams[rule.rule] as paramKey}
                   <div class="qr-field">
                     <label>{paramKey}</label>
-                    <input value={rule.params?.[paramKey] || ""} on:input={(e) => updateQualityRuleParam(i, paramKey, e.currentTarget.value)} placeholder={paramKey} />
+                    <input
+                      value={rule.params?.[paramKey] || ""}
+                      on:input={(e) => updateQualityRuleParam(i, paramKey, e.currentTarget.value)}
+                      placeholder={paramKey}
+                    />
                   </div>
                 {/each}
               {/if}
@@ -428,11 +559,18 @@
     {#if node.type === "sql_generate"}
       <div class="field">
         <label>Table Name</label>
-        <input value={node.config["table"] || ""} on:input={(e) => updateConfig("table", e.currentTarget.value)} placeholder="my_table" />
+        <input
+          value={node.config["table"] || ""}
+          on:input={(e) => updateConfig("table", e.currentTarget.value)}
+          placeholder="my_table"
+        />
       </div>
       <div class="field">
         <label>Dialect</label>
-        <select value={node.config["dialect"] || "postgres"} on:change={(e) => updateConfig("dialect", e.currentTarget.value)}>
+        <select
+          value={node.config["dialect"] || "postgres"}
+          on:change={(e) => updateConfig("dialect", e.currentTarget.value)}
+        >
           <option value="postgres">PostgreSQL</option>
           <option value="mysql">MySQL</option>
           <option value="sqlite">SQLite</option>
@@ -442,11 +580,21 @@
       </div>
       <div class="field">
         <label>Batch Size</label>
-        <Stepper value={node.config["batch_size"] || 100} min={1} max={10000} step={50} on:change={(e) => updateConfig("batch_size", e.detail)} />
+        <Stepper
+          value={node.config["batch_size"] || 100}
+          min={1}
+          max={10000}
+          step={50}
+          on:change={(e) => updateConfig("batch_size", e.detail)}
+        />
       </div>
       <div class="field">
         <label class="toggle">
-          <input type="checkbox" checked={!!node.config["create_table"]} on:change={(e) => updateConfig("create_table", e.currentTarget.checked)} />
+          <input
+            type="checkbox"
+            checked={!!node.config["create_table"]}
+            on:change={(e) => updateConfig("create_table", e.currentTarget.checked)}
+          />
           <span class="toggle-label">Create Table (CREATE TABLE IF NOT EXISTS)</span>
         </label>
       </div>
@@ -456,11 +604,18 @@
     {#if node.type === "sink_file"}
       <div class="field">
         <label>Output Path</label>
-        <input value={node.config["path"] || ""} on:input={(e) => updateConfig("path", e.currentTarget.value)} placeholder="/output/result.csv" />
+        <input
+          value={node.config["path"] || ""}
+          on:input={(e) => updateConfig("path", e.currentTarget.value)}
+          placeholder="/output/result.csv"
+        />
       </div>
       <div class="field">
         <label>Format</label>
-        <select value={node.config["format"] || "csv"} on:change={(e) => updateConfig("format", e.currentTarget.value)}>
+        <select
+          value={node.config["format"] || "csv"}
+          on:change={(e) => updateConfig("format", e.currentTarget.value)}
+        >
           <option value="csv">CSV</option>
           <option value="json">JSON</option>
           <option value="sql">SQL</option>
@@ -472,16 +627,23 @@
     {#if node.type === "sink_db"}
       <div class="field">
         <label>Connection</label>
-        <select value={node.config["conn_id"] || ""} on:change={(e) => {
-          const val = e.currentTarget.value;
-          if (val) { updateConfig("conn_id", val); updateConfig("uri", ""); }
-          else { updateConfig("conn_id", ""); }
-        }}>
+        <select
+          value={node.config["conn_id"] || ""}
+          on:change={(e) => {
+            const val = e.currentTarget.value;
+            if (val) {
+              updateConfig("conn_id", val);
+              updateConfig("uri", "");
+            } else {
+              updateConfig("conn_id", "");
+            }
+          }}
+        >
           <option value="">Manual URI</option>
           {#each filteredConns as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
-          {#if node.config["conn_id"] && !filteredConns.find(c => c.conn_id === node.config["conn_id"])}
+          {#if node.config["conn_id"] && !filteredConns.find((c) => c.conn_id === node.config["conn_id"])}
             <option value={node.config["conn_id"]}>{node.config["conn_id"]} (not found)</option>
           {/if}
         </select>
@@ -489,7 +651,11 @@
       {#if !node.config["conn_id"]}
         <div class="field">
           <label>Connection URI</label>
-          <input value={node.config["uri"] || ""} on:input={(e) => updateConfig("uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/db" />
+          <input
+            value={node.config["uri"] || ""}
+            on:input={(e) => updateConfig("uri", e.currentTarget.value)}
+            placeholder="postgres://user:pass@host/db"
+          />
         </div>
       {:else}
         <div class="field">
@@ -508,11 +674,17 @@
       {#if filteredConns.length > 0}
         <div class="field">
           <label>Connection</label>
-          <select value={node.config["conn_id"] || ""} on:change={(e) => {
-            const val = e.currentTarget.value;
-            if (val) { updateConfig("conn_id", val); }
-            else { updateConfig("conn_id", ""); }
-          }}>
+          <select
+            value={node.config["conn_id"] || ""}
+            on:change={(e) => {
+              const val = e.currentTarget.value;
+              if (val) {
+                updateConfig("conn_id", val);
+              } else {
+                updateConfig("conn_id", "");
+              }
+            }}
+          >
             <option value="">Manual URL</option>
             {#each filteredConns as c}
               <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
@@ -522,11 +694,18 @@
       {/if}
       <div class="field">
         <label>URL</label>
-        <input value={node.config["url"] || ""} on:input={(e) => updateConfig("url", e.currentTarget.value)} placeholder="https://api.example.com/ingest" />
+        <input
+          value={node.config["url"] || ""}
+          on:input={(e) => updateConfig("url", e.currentTarget.value)}
+          placeholder="https://api.example.com/ingest"
+        />
       </div>
       <div class="field">
         <label>Method</label>
-        <select value={node.config["method"] || "POST"} on:change={(e) => updateConfig("method", e.currentTarget.value)}>
+        <select
+          value={node.config["method"] || "POST"}
+          on:change={(e) => updateConfig("method", e.currentTarget.value)}
+        >
           <option value="POST">POST</option>
           <option value="PUT">PUT</option>
           <option value="PATCH">PATCH</option>
@@ -534,7 +713,13 @@
       </div>
       <div class="field">
         <label>Batch Size</label>
-        <Stepper value={node.config["batch_size"] || 100} min={1} max={10000} step={50} on:change={(e) => updateConfig("batch_size", e.detail)} />
+        <Stepper
+          value={node.config["batch_size"] || 100}
+          min={1}
+          max={10000}
+          step={50}
+          on:change={(e) => updateConfig("batch_size", e.detail)}
+        />
       </div>
     {/if}
 
@@ -542,13 +727,20 @@
     {#if node.type === "migrate"}
       <div class="field">
         <label>Source Connection</label>
-        <select value={node.config["source_conn_id"] || ""} on:change={(e) => {
-          const val = e.currentTarget.value;
-          if (val) { updateConfig("source_conn_id", val); updateConfig("source_uri", ""); }
-          else { updateConfig("source_conn_id", ""); }
-        }}>
+        <select
+          value={node.config["source_conn_id"] || ""}
+          on:change={(e) => {
+            const val = e.currentTarget.value;
+            if (val) {
+              updateConfig("source_conn_id", val);
+              updateConfig("source_uri", "");
+            } else {
+              updateConfig("source_conn_id", "");
+            }
+          }}
+        >
           <option value="">Manual URI</option>
-          {#each availableConnections.filter(c => ["postgres","mysql","sqlite","generic"].includes(c.type)) as c}
+          {#each availableConnections.filter( (c) => ["postgres", "mysql", "sqlite", "generic"].includes(c.type), ) as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
         </select>
@@ -556,24 +748,43 @@
       {#if !node.config["source_conn_id"]}
         <div class="field">
           <label>Source URI</label>
-          <input value={node.config["source_uri"] || ""} on:input={(e) => updateConfig("source_uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/source_db" />
+          <input
+            value={node.config["source_uri"] || ""}
+            on:input={(e) => updateConfig("source_uri", e.currentTarget.value)}
+            placeholder="postgres://user:pass@host/source_db"
+          />
         </div>
       {:else}
-        <div class="field"><div class="conn-badge">Source: <strong>{node.config["source_conn_id"]}</strong></div></div>
+        <div class="field">
+          <div class="conn-badge">Source: <strong>{node.config["source_conn_id"]}</strong></div>
+        </div>
       {/if}
       <div class="field">
         <label>Source Query</label>
-        <textarea class="code-input" rows="3" value={node.config["source_query"] || ""} on:input={(e) => updateConfig("source_query", e.currentTarget.value)} placeholder="SELECT * FROM users"></textarea>
+        <textarea
+          class="code-input"
+          rows="3"
+          value={node.config["source_query"] || ""}
+          on:input={(e) => updateConfig("source_query", e.currentTarget.value)}
+          placeholder="SELECT * FROM users"
+        ></textarea>
       </div>
       <div class="field">
         <label>Destination Connection</label>
-        <select value={node.config["dest_conn_id"] || ""} on:change={(e) => {
-          const val = e.currentTarget.value;
-          if (val) { updateConfig("dest_conn_id", val); updateConfig("dest_uri", ""); }
-          else { updateConfig("dest_conn_id", ""); }
-        }}>
+        <select
+          value={node.config["dest_conn_id"] || ""}
+          on:change={(e) => {
+            const val = e.currentTarget.value;
+            if (val) {
+              updateConfig("dest_conn_id", val);
+              updateConfig("dest_uri", "");
+            } else {
+              updateConfig("dest_conn_id", "");
+            }
+          }}
+        >
           <option value="">Manual URI</option>
-          {#each availableConnections.filter(c => ["postgres","mysql","sqlite","generic"].includes(c.type)) as c}
+          {#each availableConnections.filter( (c) => ["postgres", "mysql", "sqlite", "generic"].includes(c.type), ) as c}
             <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
           {/each}
         </select>
@@ -581,18 +792,31 @@
       {#if !node.config["dest_conn_id"]}
         <div class="field">
           <label>Destination URI</label>
-          <input value={node.config["dest_uri"] || ""} on:input={(e) => updateConfig("dest_uri", e.currentTarget.value)} placeholder="postgres://user:pass@host/dest_db" />
+          <input
+            value={node.config["dest_uri"] || ""}
+            on:input={(e) => updateConfig("dest_uri", e.currentTarget.value)}
+            placeholder="postgres://user:pass@host/dest_db"
+          />
         </div>
       {:else}
-        <div class="field"><div class="conn-badge">Destination: <strong>{node.config["dest_conn_id"]}</strong></div></div>
+        <div class="field">
+          <div class="conn-badge">Destination: <strong>{node.config["dest_conn_id"]}</strong></div>
+        </div>
       {/if}
       <div class="field">
         <label>Destination Table</label>
-        <input value={node.config["dest_table"] || ""} on:input={(e) => updateConfig("dest_table", e.currentTarget.value)} placeholder="users_migrated" />
+        <input
+          value={node.config["dest_table"] || ""}
+          on:input={(e) => updateConfig("dest_table", e.currentTarget.value)}
+          placeholder="users_migrated"
+        />
       </div>
       <div class="field">
         <label>Dialect</label>
-        <select value={node.config["dialect"] || "postgres"} on:change={(e) => updateConfig("dialect", e.currentTarget.value)}>
+        <select
+          value={node.config["dialect"] || "postgres"}
+          on:change={(e) => updateConfig("dialect", e.currentTarget.value)}
+        >
           <option value="postgres">PostgreSQL</option>
           <option value="mysql">MySQL</option>
           <option value="sqlite">SQLite</option>
@@ -601,11 +825,21 @@
       </div>
       <div class="field">
         <label>Chunk Size</label>
-        <Stepper value={node.config["chunk_size"] || 5000} min={100} max={100000} step={500} on:change={(e) => updateConfig("chunk_size", e.detail)} />
+        <Stepper
+          value={node.config["chunk_size"] || 5000}
+          min={100}
+          max={100000}
+          step={500}
+          on:change={(e) => updateConfig("chunk_size", e.detail)}
+        />
       </div>
       <div class="field">
         <label class="toggle">
-          <input type="checkbox" checked={!!node.config["create_table"]} on:change={(e) => updateConfig("create_table", e.currentTarget.checked)} />
+          <input
+            type="checkbox"
+            checked={!!node.config["create_table"]}
+            on:change={(e) => updateConfig("create_table", e.currentTarget.checked)}
+          />
           <span class="toggle-label">Create Table</span>
         </label>
       </div>
@@ -618,7 +852,7 @@
         <input
           value={node.config["expression"] || ""}
           on:input={(e) => updateConfig("expression", e.currentTarget.value)}
-          placeholder='row_count > 0'
+          placeholder="row_count > 0"
         />
       </div>
       <div class="field-hint">
@@ -638,14 +872,12 @@
         <div class="field">
           <label>Command</label>
           <div class="select-cards">
-            {#each [
-              { val: "run", label: "Run", desc: "Execute SQL models" },
-              { val: "test", label: "Test", desc: "Validate data" },
-              { val: "build", label: "Build", desc: "Run + Test" },
-              { val: "seed", label: "Seed", desc: "Load CSVs" },
-            ] as cmd}
-              <button class="select-card" class:active={( node.config["command"] || "run") === cmd.val}
-                on:click={() => updateConfig("command", cmd.val)}>
+            {#each [{ val: "run", label: "Run", desc: "Execute SQL models" }, { val: "test", label: "Test", desc: "Validate data" }, { val: "build", label: "Build", desc: "Run + Test" }, { val: "seed", label: "Seed", desc: "Load CSVs" }] as cmd}
+              <button
+                class="select-card"
+                class:active={(node.config["command"] || "run") === cmd.val}
+                on:click={() => updateConfig("command", cmd.val)}
+              >
                 <strong>{cmd.label}</strong>
                 <span>{cmd.desc}</span>
               </button>
@@ -654,7 +886,11 @@
         </div>
         <div class="field">
           <label>Select Models</label>
-          <input value={node.config["select"] || ""} on:input={(e) => updateConfig("select", e.currentTarget.value)} placeholder="model_name, +tag:daily, path:marts/*" />
+          <input
+            value={node.config["select"] || ""}
+            on:input={(e) => updateConfig("select", e.currentTarget.value)}
+            placeholder="model_name, +tag:daily, path:marts/*"
+          />
           <span class="field-hint">Leave blank to run all models. Use dbt selection syntax.</span>
         </div>
       </div>
@@ -663,17 +899,29 @@
         <span class="group-title">Project</span>
         <div class="field">
           <label>Project Directory</label>
-          <input value={node.config["project_dir"] || ""} on:input={(e) => updateConfig("project_dir", e.currentTarget.value)} placeholder="/path/to/dbt/project" />
-          <span class="field-hint">Path to your dbt project root (where dbt_project.yml lives).</span>
+          <input
+            value={node.config["project_dir"] || ""}
+            on:input={(e) => updateConfig("project_dir", e.currentTarget.value)}
+            placeholder="/path/to/dbt/project"
+          />
+          <span class="field-hint"
+            >Path to your dbt project root (where dbt_project.yml lives).</span
+          >
         </div>
         <div class="field">
           <label>Target Environment</label>
-          <input value={node.config["target"] || ""} on:input={(e) => updateConfig("target", e.currentTarget.value)} placeholder="dev" />
-          <span class="field-hint">Which profile target to use (dev, staging, prod). Leave blank for default.</span>
+          <input
+            value={node.config["target"] || ""}
+            on:input={(e) => updateConfig("target", e.currentTarget.value)}
+            placeholder="dev"
+          />
+          <span class="field-hint"
+            >Which profile target to use (dev, staging, prod). Leave blank for default.</span
+          >
         </div>
       </div>
 
-      <button class="toggle-advanced" on:click={() => showAdvanced = !showAdvanced}>
+      <button class="toggle-advanced" on:click={() => (showAdvanced = !showAdvanced)}>
         {showAdvanced ? "Hide" : "Show"} advanced options
       </button>
       {#if showAdvanced}
@@ -681,11 +929,21 @@
           <span class="group-title">Advanced</span>
           <div class="field">
             <label>Profiles Directory</label>
-            <input value={node.config["profiles_dir"] || ""} on:input={(e) => updateConfig("profiles_dir", e.currentTarget.value)} placeholder="~/.dbt" />
+            <input
+              value={node.config["profiles_dir"] || ""}
+              on:input={(e) => updateConfig("profiles_dir", e.currentTarget.value)}
+              placeholder="~/.dbt"
+            />
           </div>
           <div class="field">
             <label>Variables</label>
-            <textarea rows="2" class="code-input" value={node.config["vars"] || ""} on:input={(e) => updateConfig("vars", e.currentTarget.value)} placeholder="date: 2024-01-01"></textarea>
+            <textarea
+              rows="2"
+              class="code-input"
+              value={node.config["vars"] || ""}
+              on:input={(e) => updateConfig("vars", e.currentTarget.value)}
+              placeholder="date: 2024-01-01"
+            ></textarea>
             <span class="field-hint">YAML format. Passed as --vars to dbt.</span>
           </div>
         </div>
@@ -699,12 +957,12 @@
         <div class="field">
           <label>Send via</label>
           <div class="select-cards">
-            {#each [
-              { val: "slack", label: "Slack", desc: "Post to a channel" },
-              { val: "webhook", label: "Webhook", desc: "HTTP POST to any URL" },
-            ] as opt}
-              <button class="select-card" class:active={(node.config["notify_type"] || "webhook") === opt.val}
-                on:click={() => updateConfig("notify_type", opt.val)}>
+            {#each [{ val: "slack", label: "Slack", desc: "Post to a channel" }, { val: "webhook", label: "Webhook", desc: "HTTP POST to any URL" }] as opt}
+              <button
+                class="select-card"
+                class:active={(node.config["notify_type"] || "webhook") === opt.val}
+                on:click={() => updateConfig("notify_type", opt.val)}
+              >
                 <strong>{opt.label}</strong>
                 <span>{opt.desc}</span>
               </button>
@@ -712,14 +970,27 @@
           </div>
         </div>
         <div class="field">
-          <label>{(node.config["notify_type"] || "webhook") === "slack" ? "Slack Webhook URL" : "Webhook URL"}</label>
-          <input value={node.config["webhook_url"] || ""} on:input={(e) => updateConfig("webhook_url", e.currentTarget.value)}
-            placeholder={(node.config["notify_type"] || "webhook") === "slack" ? "https://hooks.slack.com/services/T.../B.../..." : "https://api.example.com/webhook"} />
+          <label
+            >{(node.config["notify_type"] || "webhook") === "slack"
+              ? "Slack Webhook URL"
+              : "Webhook URL"}</label
+          >
+          <input
+            value={node.config["webhook_url"] || ""}
+            on:input={(e) => updateConfig("webhook_url", e.currentTarget.value)}
+            placeholder={(node.config["notify_type"] || "webhook") === "slack"
+              ? "https://hooks.slack.com/services/T.../B.../..."
+              : "https://api.example.com/webhook"}
+          />
         </div>
         {#if (node.config["notify_type"] || "webhook") === "slack"}
           <div class="field">
             <label>Channel</label>
-            <input value={node.config["channel"] || ""} on:input={(e) => updateConfig("channel", e.currentTarget.value)} placeholder="#data-alerts" />
+            <input
+              value={node.config["channel"] || ""}
+              on:input={(e) => updateConfig("channel", e.currentTarget.value)}
+              placeholder="#data-alerts"
+            />
             <span class="field-hint">Optional. Override the default channel set in Slack.</span>
           </div>
         {/if}
@@ -728,10 +999,15 @@
         <span class="group-title">Message</span>
         <div class="field">
           <label>Template</label>
-          <textarea rows="3" value={node.config["message"] || ""} on:input={(e) => updateConfig("message", e.currentTarget.value)}
-            placeholder="Pipeline completed successfully with {{rows}} rows processed."></textarea>
+          <textarea
+            rows="3"
+            value={node.config["message"] || ""}
+            on:input={(e) => updateConfig("message", e.currentTarget.value)}
+            placeholder="Pipeline completed successfully with {{ rows }} rows processed."
+          ></textarea>
           <span class="field-hint">
-            Available variables: <code>{"{{pipeline}}"}</code> <code>{"{{run_id}}"}</code> <code>{"{{rows}}"}</code>
+            Available variables: <code>{"{{pipeline}}"}</code> <code>{"{{run_id}}"}</code>
+            <code>{"{{rows}}"}</code>
           </span>
         </div>
       </div>
@@ -743,18 +1019,31 @@
       <div class="field-row">
         <div class="field compact">
           <label>Retries</label>
-          <Stepper value={node.config["max_retries"] || 0} min={0} max={10} on:change={(e) => updateConfig("max_retries", e.detail)} />
+          <Stepper
+            value={node.config["max_retries"] || 0}
+            min={0}
+            max={10}
+            on:change={(e) => updateConfig("max_retries", e.detail)}
+          />
         </div>
         <div class="field compact">
           <label>Delay (ms)</label>
-          <Stepper value={node.config["retry_delay"] || 1000} min={0} max={60000} step={500} on:change={(e) => updateConfig("retry_delay", e.detail)} />
+          <Stepper
+            value={node.config["retry_delay"] || 1000}
+            min={0}
+            max={60000}
+            step={500}
+            on:change={(e) => updateConfig("retry_delay", e.detail)}
+          />
         </div>
       </div>
     </div>
 
     <div class="panel-footer">
       <div class="footer-actions">
-        <button class="btn-duplicate" on:click={() => dispatch("duplicate", node.id)}>Duplicate (D)</button>
+        <button class="btn-duplicate" on:click={() => dispatch("duplicate", node.id)}
+          >Duplicate (D)</button
+        >
         <button class="btn-danger" on:click={deleteNode}>Delete</button>
       </div>
     </div>
@@ -782,45 +1071,92 @@
     background: var(--bg-tertiary);
   }
   .panel-icon {
-    width: 28px; height: 28px;
-    display: flex; align-items: center; justify-content: center;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     border-radius: 6px;
     background: color-mix(in srgb, var(--node-color) 10%, transparent);
+    color: var(--node-color);
     flex-shrink: 0;
   }
-  .panel-header-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .panel-title { font-weight: 600; font-size: 0.875rem; }
-  .panel-desc { font-size: 11px; color: var(--text-dim); line-height: 1.4; }
+  .panel-header-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+  .panel-title {
+    font-weight: 600;
+    font-size: 0.875rem;
+  }
+  .panel-desc {
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.4;
+  }
 
   /* Select cards — visual option picker */
-  .select-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; }
+  .select-cards {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 6px;
+  }
   .select-card {
-    display: flex; flex-direction: column; gap: 2px;
-    padding: 8px 10px; border: 1px solid var(--border);
-    border-radius: 8px; background: none; cursor: pointer;
-    text-align: left; color: var(--text-secondary);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: none;
+    cursor: pointer;
+    text-align: left;
+    color: var(--text-secondary);
     transition: all 150ms ease;
   }
-  .select-card:hover { border-color: var(--border-hover); }
+  .select-card:hover {
+    border-color: var(--border-hover);
+  }
   .select-card.active {
-    border-color: var(--accent); background: var(--accent-glow);
+    border-color: var(--accent);
+    background: var(--accent-glow);
     color: var(--text-primary);
   }
-  .select-card strong { font-size: 12px; font-weight: 600; }
-  .select-card span { font-size: 10px; color: var(--text-dim); }
-  .select-card.active span { color: var(--text-muted); }
+  .select-card strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  .select-card span {
+    font-size: 10px;
+    color: var(--text-dim);
+  }
+  .select-card.active span {
+    color: var(--text-muted);
+  }
 
   /* Advanced toggle */
   .toggle-advanced {
-    display: block; width: 100%; padding: 8px;
-    font-size: 11px; color: var(--text-dim); background: none;
-    border: none; border-top: 1px solid var(--border-subtle);
-    cursor: pointer; text-align: center;
+    display: block;
+    width: 100%;
+    padding: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-top: 1px solid var(--border-subtle);
+    cursor: pointer;
+    text-align: center;
     transition: color 150ms ease;
   }
-  .toggle-advanced:hover { color: var(--accent); }
+  .toggle-advanced:hover {
+    color: var(--accent);
+  }
 
-  .field { padding: var(--space-sm) var(--space-lg); }
+  .field {
+    padding: var(--space-sm) var(--space-lg);
+  }
   .field label {
     display: block;
     font-size: 0.6875rem;
@@ -829,7 +1165,9 @@
     letter-spacing: 0.08em;
     margin-bottom: var(--space-xs);
   }
-  .field input, .field select, .field textarea {
+  .field input,
+  .field select,
+  .field textarea {
     width: 100%;
   }
   .field select {
@@ -863,7 +1201,8 @@
     font-size: 0.875rem;
   }
   .toggle input[type="checkbox"] {
-    width: 16px; height: 16px;
+    width: 16px;
+    height: 16px;
     accent-color: var(--accent);
   }
   .toggle-label {
@@ -875,11 +1214,17 @@
 
   .field-hint {
     padding: 0 var(--space-lg) var(--space-sm);
-    font-size: 10px; color: var(--text-ghost); line-height: 1.6;
+    font-size: 10px;
+    color: var(--text-ghost);
+    line-height: 1.6;
   }
   .field-hint code {
-    font-family: var(--font-mono); font-size: 10px; color: var(--accent);
-    background: var(--bg-tertiary); padding: 0 3px; border-radius: 2px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--accent);
+    background: var(--bg-tertiary);
+    padding: 0 3px;
+    border-radius: 2px;
   }
   .field-group {
     padding: var(--space-sm) var(--space-lg);
@@ -895,17 +1240,31 @@
     font-weight: 600;
     margin-bottom: var(--space-sm);
   }
-  .field-row { display: flex; gap: var(--space-sm); }
-  .field.compact { padding: 0; flex: 1; }
-  .field.compact input { width: 100%; }
+  .field-row {
+    display: flex;
+    gap: var(--space-sm);
+  }
+  .field.compact {
+    padding: 0;
+    flex: 1;
+  }
+  .field.compact input {
+    width: 100%;
+  }
 
   .btn-open-editor {
-    display: flex; align-items: center; gap: 6px;
-    width: 100%; padding: 8px 12px; border-radius: 6px;
-    font-size: 12px; font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
     background: rgba(234, 179, 8, 0.06);
     border: 1px solid rgba(234, 179, 8, 0.2);
-    color: var(--node-code); transition: all 150ms ease;
+    color: var(--node-code);
+    transition: all 150ms ease;
     margin-bottom: 8px;
   }
   .btn-open-editor:hover {
@@ -914,27 +1273,43 @@
   }
 
   .code-preview {
-    font-family: var(--font-mono); font-size: 10px; line-height: 1.5;
-    color: var(--text-dim); background: var(--bg-code-line);
-    border: 1px solid var(--border-sidebar); border-radius: 6px;
-    padding: 8px 10px; margin: 0; overflow: hidden;
-    white-space: pre; max-height: 100px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    background: var(--bg-code-line);
+    border: 1px solid var(--border-sidebar);
+    border-radius: 6px;
+    padding: 8px 10px;
+    margin: 0;
+    overflow: hidden;
+    white-space: pre;
+    max-height: 100px;
   }
   .code-empty {
-    font-size: 11px; color: var(--text-ghost); padding: 12px;
-    text-align: center; background: var(--bg-code-line);
-    border: 1px dashed var(--border-sidebar); border-radius: 6px;
+    font-size: 11px;
+    color: var(--text-ghost);
+    padding: 12px;
+    text-align: center;
+    background: var(--bg-code-line);
+    border: 1px dashed var(--border-sidebar);
+    border-radius: 6px;
   }
 
   .btn-test-conn {
-    width: 100%; padding: 5px;
+    width: 100%;
+    padding: 5px;
     border-radius: var(--radius-md);
-    font-size: 0.75rem; font-weight: 500;
+    font-size: 0.75rem;
+    font-weight: 500;
     background: rgba(6, 182, 212, 0.08);
     border: 1px solid rgba(6, 182, 212, 0.3);
-    color: var(--node-source-db); transition: all 150ms ease;
+    color: var(--node-source-db);
+    transition: all 150ms ease;
   }
-  .btn-test-conn:hover { background: rgba(6, 182, 212, 0.15); }
+  .btn-test-conn:hover {
+    background: rgba(6, 182, 212, 0.15);
+  }
 
   /* Quality rule editor */
   .quality-rule {
@@ -945,77 +1320,139 @@
     margin-bottom: 8px;
   }
   .qr-header {
-    display: flex; justify-content: space-between; align-items: center;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
     margin-bottom: 6px;
   }
   .qr-num {
-    font-family: var(--font-mono); font-size: 10px; color: var(--text-dim); font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-dim);
+    font-weight: 600;
   }
   .btn-remove {
-    width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;
-    border-radius: 4px; font-size: 14px; color: var(--text-dim);
+    width: 20px;
+    height: 20px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    font-size: 14px;
+    color: var(--text-dim);
     transition: all 150ms ease;
   }
-  .btn-remove:hover { color: var(--failed); background: var(--failed-bg); }
-
-  .qr-fields { display: flex; flex-direction: column; gap: 4px; }
-  .qr-field label {
-    font-size: 9px; color: var(--text-dim); text-transform: uppercase;
-    letter-spacing: 0.06em; margin-bottom: 1px; display: block;
+  .btn-remove:hover {
+    color: var(--failed);
+    background: var(--failed-bg);
   }
-  .qr-field input, .qr-field select {
-    width: 100%; font-size: 12px; padding: 4px 8px;
+
+  .qr-fields {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .qr-field label {
+    font-size: 9px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 1px;
+    display: block;
+  }
+  .qr-field input,
+  .qr-field select {
+    width: 100%;
+    font-size: 12px;
+    padding: 4px 8px;
   }
 
   /* Header editor */
   .header-row {
-    display: flex; gap: 4px; margin-bottom: 4px;
+    display: flex;
+    gap: 4px;
+    margin-bottom: 4px;
   }
-  .header-key, .header-val {
-    flex: 1; font-size: 11px; padding: 4px 6px;
+  .header-key,
+  .header-val {
+    flex: 1;
+    font-size: 11px;
+    padding: 4px 6px;
     font-family: var(--font-mono);
   }
-  .header-key { max-width: 40%; }
+  .header-key {
+    max-width: 40%;
+  }
 
   .btn-add-sm {
-    display: block; width: 100%; padding: 6px;
-    border-radius: 4px; font-size: 11px; font-weight: 500;
-    background: var(--accent-glow); border: 1px dashed var(--border);
-    color: var(--accent-text); transition: all 150ms ease;
+    display: block;
+    width: 100%;
+    padding: 6px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--accent-glow);
+    border: 1px dashed var(--border);
+    color: var(--accent-text);
+    transition: all 150ms ease;
     margin-top: 4px;
   }
-  .btn-add-sm:hover { background: var(--accent-glow-strong); border-color: var(--accent); }
+  .btn-add-sm:hover {
+    background: var(--accent-glow-strong);
+    border-color: var(--accent);
+  }
 
   .panel-footer {
     margin-top: auto;
     padding: var(--space-md) var(--space-lg);
     border-top: 1px solid var(--border);
   }
-  .footer-actions { display: flex; gap: 8px; }
+  .footer-actions {
+    display: flex;
+    gap: 8px;
+  }
   .btn-duplicate {
-    flex: 1; padding: var(--space-sm);
+    flex: 1;
+    padding: var(--space-sm);
     border-radius: var(--radius-md);
-    background: var(--bg-tertiary); color: var(--text-secondary);
-    font-weight: 500; font-size: 12px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-weight: 500;
+    font-size: 12px;
     transition: all 150ms ease;
   }
-  .btn-duplicate:hover { background: var(--accent-glow); color: var(--accent); }
-  .btn-danger {
-    flex: 1; padding: var(--space-sm);
-    border-radius: var(--radius-md);
-    background: var(--failed-bg); color: var(--failed);
-    font-weight: 500; transition: background var(--transition-fast);
+  .btn-duplicate:hover {
+    background: var(--accent-glow);
+    color: var(--accent);
   }
-  .btn-danger:hover { background: rgba(239, 68, 68, 0.2); }
+  .btn-danger {
+    flex: 1;
+    padding: var(--space-sm);
+    border-radius: var(--radius-md);
+    background: var(--failed-bg);
+    color: var(--failed);
+    font-weight: 500;
+    transition: background var(--transition-fast);
+  }
+  .btn-danger:hover {
+    background: rgba(239, 68, 68, 0.2);
+  }
 
   .conn-badge {
-    font-size: 11px; color: var(--accent-text);
-    background: var(--accent-glow); padding: 6px 10px;
-    border-radius: 4px; border: 1px solid rgba(99,102,241,0.2);
+    font-size: 11px;
+    color: var(--accent-text);
+    background: var(--accent-glow);
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid rgba(99, 102, 241, 0.2);
   }
 
   .empty-panel {
-    display: flex; align-items: center; justify-content: center;
-    height: 100%; color: var(--text-muted); font-size: 0.875rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-muted);
+    font-size: 0.875rem;
   }
 </style>

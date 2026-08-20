@@ -1,7 +1,7 @@
 <script lang="ts">
   import Sidebar from "./Sidebar.svelte";
+  import BrandIcon from "./BrandIcon.svelte";
   import RunIndicator from "./RunIndicator.svelte";
-  import { icons } from "../lib/icons";
 
   let currentPath = window.location.hash.replace("#", "") || "/";
 
@@ -16,11 +16,11 @@
   }
 
   const mobileNav = [
-    { path: "/", label: "Home", icon: icons.dashboard.d },
-    { path: "/pipelines", label: "Pipelines", icon: icons.pipeline.d },
-    { path: "/connections", label: "Connect", icon: icons.connection.d },
-    { path: "/variables", label: "Variables", icon: icons.variable.d },
-    { path: "/settings", label: "Settings", icon: icons.settings.d },
+    { path: "/", label: "Home", icon: "dashboard" },
+    { path: "/pipelines", label: "Pipelines", icon: "pipelines" },
+    { path: "/connections", label: "Connect", icon: "connections" },
+    { path: "/variables", label: "Variables", icon: "variables" },
+    { path: "/settings", label: "Settings", icon: "settings" },
   ];
 </script>
 
@@ -40,15 +40,7 @@
 <nav class="mobile-nav">
   {#each mobileNav as item}
     <a href="#{item.path}" class="mobile-nav-item" class:active={isRouteActive(item.path)}>
-      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-        <path
-          d={item.icon}
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+        <BrandIcon name={item.icon} size={20} />
       <span>{item.label}</span>
     </a>
   {/each}

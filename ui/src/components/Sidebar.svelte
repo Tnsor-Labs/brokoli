@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { icons } from "../lib/icons";
+  import BrandIcon from "./BrandIcon.svelte";
   import { theme, toggleTheme } from "../lib/theme";
   import { authUser, logout, userLabel } from "../lib/auth";
   import { wsConnected } from "../lib/sodp";
@@ -18,20 +18,33 @@
       id: "core",
       label: "",
       items: [
-        { path: "/", label: "Dashboard", icon: icons.dashboard },
-        { path: "/pipelines", label: "Pipelines", icon: icons.pipeline },
-        { path: "/calendar", label: "Calendar", icon: icons.calendar },
-        { path: "/lineage", label: "Lineage", icon: icons.lineage },
-        { path: "/dependencies", label: "Dependencies", icon: icons.dependency },
+        { path: "/", label: "Dashboard" },
+        { path: "/pipelines", label: "Pipelines" },
+        { path: "/calendar", label: "Calendar" },
+        { path: "/lineage", label: "Lineage" },
+        { path: "/dependencies", label: "Dependencies" },
       ],
     },
     {
       id: "data",
       label: "Data",
       items: [
-        { path: "/variables", label: "Variables", icon: icons.variable },
-        { path: "/connections", label: "Connections", icon: icons.connection },
-        { path: "/plugins", label: "Plugins", icon: icons.plugin },
+        { path: "/variables", label: "Variables" },
+        { path: "/connections", label: "Connections" },
+        { path: "/plugins", label: "Plugins" },
+      ],
+    },
+    {
+      id: "platform",
+      label: "Platform",
+      items: [
+        { path: "/workspaces", label: "Workspaces", disabled: true },
+        { path: "/workers", label: "Workers", disabled: true },
+        { path: "/audit-log", label: "Audit Log", badge: "PRO", disabled: true },
+        { path: "/git-sync", label: "Git Sync", badge: "PRO", disabled: true },
+        { path: "/organization", label: "Organization", disabled: true },
+        { path: "/api", label: "API", disabled: true },
+        { path: "/support", label: "Support", disabled: true },
       ],
     },
   ];
@@ -59,36 +72,34 @@
   function groupExpanded(id: string, groups: Record<string, boolean>) {
     return groups[id] !== false;
   }
+
+  function navIconName(path: string) {
+    const names: Record<string, string> = {
+      "/": "dashboard",
+      "/pipelines": "pipelines",
+      "/calendar": "calendar",
+      "/lineage": "lineage",
+      "/dependencies": "dependencies",
+      "/variables": "variables",
+      "/connections": "connections",
+      "/plugins": "plugins",
+      "/workspaces": "workspaces",
+      "/workers": "workers",
+      "/audit-log": "audit-log",
+      "/git-sync": "git-sync",
+      "/organization": "organization",
+      "/api": "api",
+      "/support": "support",
+    };
+    return names[path] || "dashboard";
+  }
 </script>
 
 <aside class="sidebar" class:collapsed>
   <div class="brand-zone">
     <div class="logo">
       <div class="logo-mark" title="Brokoli · v0.1.0">
-        <!-- Brokoli logo — broccoli floret as data node graph -->
-        <svg width="22" height="22" viewBox="0 0 32 32" fill="none">
-          <path d="M16 19v9" stroke="#4ade80" stroke-width="2.5" stroke-linecap="round" />
-          <path
-            d="M14 22l2-3 2 3"
-            stroke="#4ade80"
-            stroke-width="1.5"
-            stroke-linecap="round"
-            stroke-linejoin="round"
-            opacity="0.5"
-          />
-          <circle cx="16" cy="11" r="4.5" fill="#0d9488" />
-          <circle cx="9" cy="7" r="3.5" fill="#16a34a" />
-          <circle cx="23" cy="7" r="3.5" fill="#16a34a" />
-          <circle cx="6" cy="2" r="2.5" fill="#22c55e" />
-          <circle cx="16" cy="2" r="3" fill="#22c55e" />
-          <circle cx="26" cy="2" r="2.5" fill="#22c55e" />
-          <line x1="9" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4" />
-          <line x1="23" y1="7" x2="16" y2="11" stroke="#0d9488" stroke-width="1" opacity="0.4" />
-          <line x1="6" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-          <line x1="16" y1="2" x2="9" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-          <line x1="16" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-          <line x1="26" y1="2" x2="23" y2="7" stroke="#16a34a" stroke-width="1" opacity="0.3" />
-        </svg>
+        <img src="/brand/icons/brokoli-symbol-micro.svg" alt="" width="18" height="24" />
       </div>
       <div class="logo-text">
         <span class="logo-name">Brokoli</span>
@@ -153,22 +164,18 @@
         {#if collapsed || !section.label || groupExpanded(section.id, $sidebarGroups)}
           {#each section.items as item (item.path)}
             <a
-              href="#{item.path}"
+              href={item.disabled ? undefined : `#${item.path}`}
               class="nav-item"
+              class:disabled={item.disabled}
               class:active={isRouteActive(item.path)}
               title={item.label}
               aria-label={item.label}
+              aria-disabled={item.disabled ? "true" : undefined}
+              on:click={(event) => item.disabled && event.preventDefault()}
             >
-              <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-                <path
-                  d={item.icon.d}
-                  stroke="currentColor"
-                  stroke-width="1.5"
-                  stroke-linecap="round"
-                  stroke-linejoin="round"
-                />
-              </svg>
+              <BrandIcon name={navIconName(item.path)} size={18} className="nav-icon" />
               <span class="nav-label">{item.label}</span>
+              {#if item.badge}<span class="item-badge">{item.badge}</span>{/if}
             </a>
           {/each}
         {/if}
@@ -177,6 +184,10 @@
   </nav>
 
   <div class="sidebar-footer">
+    <a href="#/" class="nav-item utility-link" title="Get started" aria-label="Get started">
+      <BrandIcon name="get-started" size={18} className="nav-icon" />
+      <span class="nav-label">Get started</span>
+    </a>
     <a
       href="#/settings"
       class="nav-item utility-link"
@@ -184,45 +195,21 @@
       title="Settings"
       aria-label="Settings"
     >
-      <svg class="nav-icon" width="18" height="18" viewBox="0 0 24 24" fill="none">
-        <path
-          d={icons.settings.d}
-          stroke="currentColor"
-          stroke-width="1.5"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        />
-      </svg>
+      <BrandIcon name="settings" size={18} className="nav-icon" />
       <span class="nav-label">Settings</span>
     </a>
 
     {#if $authUser}
       <div class="user-info">
         <div class="user-avatar">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.user.d}
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <BrandIcon name="account" size={14} />
         </div>
         <div class="user-details">
           <span class="user-name">{userLabel($authUser)}</span>
           <span class="user-role">{$authUser.role}</span>
         </div>
         <button class="logout-btn" on:click={logout} title="Sign out" aria-label="Sign out">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.logout.d}
-              stroke="currentColor"
-              stroke-width="1.5"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
+          <BrandIcon name="sign-out" size={14} />
         </button>
       </div>
     {:else}
@@ -309,9 +296,16 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--accent-glow);
+    background: var(--brand-tile);
+    border: 1px solid var(--bk-brand-tile-border);
     border-radius: 8px;
     flex-shrink: 0;
+  }
+  .logo-mark img {
+    display: block;
+    width: 18px;
+    height: 24px;
+    object-fit: contain;
   }
   .logo-text {
     display: flex;
@@ -321,13 +315,16 @@
   .logo-name {
     font-size: 15px;
     font-weight: 700;
-    color: var(--text-primary);
+    color: #ffffff;
     letter-spacing: -0.02em;
     line-height: 1;
   }
+  :global(:root[data-theme="light"]) .logo-name {
+    color: var(--text-primary);
+  }
   .logo-sub {
     font-size: 9px;
-    color: var(--text-dim);
+    color: #566168;
     text-transform: uppercase;
     letter-spacing: 0.12em;
     margin-top: 2px;
@@ -375,7 +372,7 @@
     justify-content: space-between;
     width: 100%;
     padding: 10px 12px 4px;
-    color: var(--text-dim);
+    color: #566168;
     font-size: 10px;
     font-weight: 600;
     text-transform: uppercase;
@@ -413,34 +410,54 @@
     gap: 10px;
     padding: 9px 12px;
     border-radius: 6px;
-    color: var(--text-muted);
+    color: #768188;
     font-size: 13px;
     font-weight: 500;
     transition: all 150ms ease;
     text-decoration: none;
   }
   .nav-item:hover {
-    color: var(--text-secondary);
-    background: var(--bg-tertiary);
+    color: #b6c0bc;
+    background: var(--nav-hover-bg);
   }
   .nav-item:focus-visible {
     outline: 2px solid var(--accent);
     outline-offset: -2px;
   }
   .nav-item.active {
-    color: var(--text-primary);
-    background: var(--accent-glow);
+    color: var(--nav-active-text);
+    background: var(--nav-active-bg);
+    font-weight: 700;
   }
-  .nav-item.active .nav-icon {
-    color: var(--accent);
+  .nav-item.active :global(.nav-icon) {
+    color: var(--nav-active-icon);
   }
-  .nav-icon {
+  .nav-item.disabled {
+    color: #566168;
+    opacity: 0.58;
+    cursor: default;
+  }
+  .nav-item.disabled:hover {
+    color: #566168;
+    background: transparent;
+  }
+  :global(.nav-icon) {
     flex-shrink: 0;
   }
   .nav-label {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+  .item-badge {
+    margin-left: auto;
+    padding: 2px 4px;
+    border-radius: 4px;
+    background: #22282c;
+    color: #7f898e;
+    font-size: 7px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
   }
 
   .sidebar-footer {
@@ -458,7 +475,9 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 6px 8px 6px 12px;
+    padding: 6px 7px;
+    border-radius: 7px;
+    background: var(--account-bg);
   }
   .user-avatar {
     width: 28px;
@@ -466,9 +485,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--accent-glow);
-    border-radius: 6px;
-    color: var(--accent);
+    background: #08382d;
+    border-radius: 7px;
+    color: #16ce7a;
     flex-shrink: 0;
   }
   .user-details {

@@ -8,21 +8,26 @@ export interface NodePortConfig {
 }
 
 export const nodePortConfig: Record<string, NodePortConfig> = {
-  source_file:   { hasInput: false, hasOutput: true,  maxInputs: 0 },
-  source_api:    { hasInput: false, hasOutput: true,  maxInputs: 0 },
-  source_db:     { hasInput: false, hasOutput: true,  maxInputs: 0 },
-  dbt:           { hasInput: false, hasOutput: true,  maxInputs: 0 },
-  migrate:       { hasInput: false, hasOutput: false, maxInputs: 0 },
-  transform:     { hasInput: true,  hasOutput: true,  maxInputs: 1 },
-  code:          { hasInput: true,  hasOutput: true,  maxInputs: 1 },
-  quality_check: { hasInput: true,  hasOutput: true,  maxInputs: 1 },
-  sql_generate:  { hasInput: true,  hasOutput: true,  maxInputs: 1 },
-  condition:     { hasInput: true,  hasOutput: true,  maxInputs: 1 },
-  join:          { hasInput: true,  hasOutput: true,  maxInputs: 2, inputWarning: "Join requires exactly 2 inputs" },
-  sink_file:     { hasInput: true,  hasOutput: false, maxInputs: 1 },
-  sink_db:       { hasInput: true,  hasOutput: false, maxInputs: 1 },
-  sink_api:      { hasInput: true,  hasOutput: false, maxInputs: 1 },
-  notify:        { hasInput: true,  hasOutput: false, maxInputs: 1 },
+  source_file: { hasInput: false, hasOutput: true, maxInputs: 0 },
+  source_api: { hasInput: false, hasOutput: true, maxInputs: 0 },
+  source_db: { hasInput: false, hasOutput: true, maxInputs: 0 },
+  dbt: { hasInput: false, hasOutput: true, maxInputs: 0 },
+  migrate: { hasInput: false, hasOutput: false, maxInputs: 0 },
+  transform: { hasInput: true, hasOutput: true, maxInputs: 1 },
+  code: { hasInput: true, hasOutput: true, maxInputs: 1 },
+  quality_check: { hasInput: true, hasOutput: true, maxInputs: 1 },
+  sql_generate: { hasInput: true, hasOutput: true, maxInputs: 1 },
+  condition: { hasInput: true, hasOutput: true, maxInputs: 1 },
+  join: {
+    hasInput: true,
+    hasOutput: true,
+    maxInputs: 2,
+    inputWarning: "Join requires exactly 2 inputs",
+  },
+  sink_file: { hasInput: true, hasOutput: false, maxInputs: 1 },
+  sink_db: { hasInput: true, hasOutput: false, maxInputs: 1 },
+  sink_api: { hasInput: true, hasOutput: false, maxInputs: 1 },
+  notify: { hasInput: true, hasOutput: false, maxInputs: 1 },
 };
 
 export function canConnect(
@@ -33,7 +38,7 @@ export function canConnect(
   toNodeId: string,
 ): boolean {
   const from = nodePortConfig[fromType];
-  const to   = nodePortConfig[toType];
+  const to = nodePortConfig[toType];
   if (!from?.hasOutput || !to?.hasInput) return false;
   if (to.maxInputs !== -1) {
     const currentInputs = existingEdges.filter((e) => e.to === toNodeId).length;
@@ -42,10 +47,11 @@ export function canConnect(
   return true;
 }
 
-/** Compute a cubic bezier path between two points */
+/** Compute an orthogonal route that terminates exactly on both ports. */
 export function edgePath(from: Position, to: Position): string {
-  const dx = Math.abs(to.x - from.x) * 0.5;
-  return `M ${from.x} ${from.y} C ${from.x + dx} ${from.y}, ${to.x - dx} ${to.y}, ${to.x} ${to.y}`;
+  if (from.y === to.y) return `M ${from.x} ${from.y} H ${to.x}`;
+  const midX = from.x + (to.x - from.x) * 0.5;
+  return `M ${from.x} ${from.y} H ${midX} V ${to.y} H ${to.x}`;
 }
 
 /** Default node dimensions */
@@ -129,21 +135,21 @@ export function autoLayout(nodes: Node[], edges: Edge[]): Node[] {
 
 /** Node type display config */
 export const nodeTypeConfig: Record<string, { label: string; color: string }> = {
-  source_file: { label: "File Source", color: "#3b82f6" },
-  source_api: { label: "API Source", color: "#8b5cf6" },
-  source_db: { label: "Database Source", color: "#06b6d4" },
-  code: { label: "Python Code", color: "#eab308" },
-  join: { label: "Join", color: "#14b8a6" },
-  transform: { label: "Transform", color: "#f59e0b" },
-  quality_check: { label: "Quality Check", color: "#22c55e" },
-  sql_generate: { label: "SQL Generate", color: "#6366f1" },
-  sink_file: { label: "File Output", color: "#ec4899" },
-  sink_db: { label: "Database Sink", color: "#f97316" },
-  sink_api: { label: "API Sink", color: "#a855f7" },
-  migrate: { label: "DB Migration", color: "#0ea5e9" },
-  condition: { label: "If/Else", color: "#f43f5e" },
-  dbt: { label: "dbt", color: "#ff694a" },
-  notify: { label: "Notify", color: "#8b5cf6" },
+  source_file: { label: "File Source", color: "var(--bk-tax-source)" },
+  source_api: { label: "API Source", color: "var(--bk-tax-source)" },
+  source_db: { label: "Database Source", color: "var(--bk-tax-source)" },
+  code: { label: "Python Code", color: "var(--bk-tax-processing)" },
+  join: { label: "Join", color: "var(--bk-tax-processing)" },
+  transform: { label: "Transform", color: "var(--bk-tax-processing)" },
+  quality_check: { label: "Quality Check", color: "var(--bk-tax-processing)" },
+  sql_generate: { label: "SQL Generate", color: "var(--bk-tax-processing)" },
+  sink_file: { label: "File Output", color: "var(--bk-tax-output)" },
+  sink_db: { label: "Database Sink", color: "var(--bk-tax-output)" },
+  sink_api: { label: "API Sink", color: "var(--bk-tax-output)" },
+  migrate: { label: "DB Migration", color: "var(--bk-tax-migration)" },
+  condition: { label: "If/Else", color: "var(--bk-tax-control)" },
+  dbt: { label: "dbt", color: "var(--bk-tax-integration)" },
+  notify: { label: "Notify", color: "var(--bk-tax-integration)" },
 };
 
 /** Generate a unique node ID */
