@@ -6,11 +6,18 @@
   import { dashboardKey } from "../lib/auth";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
+  import PageHeader from "../components/PageHeader.svelte";
   import ConfirmDialog from "../components/ConfirmDialog.svelte";
   import DeletePipelineDialog from "../components/DeletePipelineDialog.svelte";
   import Skeleton from "../components/Skeleton.svelte";
   import type { Pipeline, PipelineTemplate, Run } from "../lib/types";
-  type SummaryRun = Run & { last_run_status?: string; _total?: number; _success?: number; _failed?: number; _running?: number };
+  type SummaryRun = Run & {
+    last_run_status?: string;
+    _total?: number;
+    _success?: number;
+    _failed?: number;
+    _running?: number;
+  };
 
   let confirmDelete = false;
   let deleteTargetId = "";
@@ -43,7 +50,11 @@
       // Text search
       if (searchQuery) {
         const s = searchQuery.toLowerCase();
-        if (!p.name.toLowerCase().includes(s) && !(p.description || "").toLowerCase().includes(s) && !(p.tags || []).some((t: string) => t.toLowerCase().includes(s)))
+        if (
+          !p.name.toLowerCase().includes(s) &&
+          !(p.description || "").toLowerCase().includes(s) &&
+          !(p.tags || []).some((t: string) => t.toLowerCase().includes(s))
+        )
           return false;
       }
       // Status filter
@@ -53,7 +64,8 @@
         const runs = pipelineRuns.get(p.id) || [];
         const lastStatus = String(runs[0]?.status || runs[0]?.last_run_status || "");
         if (statusFilter === "failed" && lastStatus !== "failed") return false;
-        if (statusFilter === "success" && lastStatus !== "success" && lastStatus !== "completed") return false;
+        if (statusFilter === "success" && lastStatus !== "success" && lastStatus !== "completed")
+          return false;
         if (statusFilter === "running" && lastStatus !== "running") return false;
         if (statusFilter === "never" && lastStatus) return false;
       }
@@ -71,16 +83,22 @@
   $: paginatedPipelines = filteredPipelines.slice((pgPage - 1) * pgSize, pgPage * pgSize);
   $: totalPages = Math.max(1, Math.ceil(filteredPipelines.length / pgSize));
   $: if (searchQuery || statusFilter || tagFilter) pgPage = 1;
-  $: healthCounts = $pipelines.reduce((counts: any, p: any) => {
-    counts.all++;
-    if (p.enabled === false) { counts.paused++; return counts; }
-    counts.enabled++;
-    const status = pipelineRuns.get(p.id)?.[0]?.status || p.last_run_status;
-    if (status === "success" || status === "completed") counts.success++;
-    if (status === "failed") counts.failed++;
-    if (status === "running") counts.running++;
-    return counts;
-  }, { all: 0, enabled: 0, success: 0, failed: 0, running: 0, paused: 0 });
+  $: healthCounts = $pipelines.reduce(
+    (counts: any, p: any) => {
+      counts.all++;
+      if (p.enabled === false) {
+        counts.paused++;
+        return counts;
+      }
+      counts.enabled++;
+      const status = pipelineRuns.get(p.id)?.[0]?.status || p.last_run_status;
+      if (status === "success" || status === "completed") counts.success++;
+      if (status === "failed") counts.failed++;
+      if (status === "running") counts.running++;
+      return counts;
+    },
+    { all: 0, enabled: 0, success: 0, failed: 0, running: 0, paused: 0 },
+  );
   let selectedIds: Set<string> = new Set();
 
   function toggleSelect(id: string) {
@@ -127,12 +145,19 @@
     try {
       const saved = JSON.parse(localStorage.getItem("brokoli-pipeline-view") || "null");
       if (saved) {
-        if (["", "enabled", "paused", "success", "failed", "running", "never"].includes(saved.statusFilter)) statusFilter = saved.statusFilter;
+        if (
+          ["", "enabled", "paused", "success", "failed", "running", "never"].includes(
+            saved.statusFilter,
+          )
+        )
+          statusFilter = saved.statusFilter;
         if (["name", "last_run", "nodes"].includes(saved.sortBy)) sortBy = saved.sortBy;
         if (["compact", "comfortable"].includes(saved.density)) density = saved.density;
         if (typeof saved.tagFilter === "string") tagFilter = saved.tagFilter;
       }
-    } catch { /* Ignore invalid saved views. */ }
+    } catch {
+      /* Ignore invalid saved views. */
+    }
     await Promise.all([loadPipelines(), loadTemplates()]);
 
     // Subscribe to the dashboard.{org} state key. Every time a run state
@@ -186,7 +211,12 @@
     try {
       // Single request: pipelines + last run status + run counts
       const [summaryRes, schedRes] = await Promise.all([
-        fetch("/api/pipelines/summary", { headers: { ...authHeaders(), "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default" } }),
+        fetch("/api/pipelines/summary", {
+          headers: {
+            ...authHeaders(),
+            "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default",
+          },
+        }),
         fetch("/api/scheduler/status", { headers: authHeaders() }),
       ]);
 
@@ -198,12 +228,20 @@
         // Build run map from embedded data (no extra requests)
         for (const p of list) {
           if (p.last_run_status) {
-            pipelineRuns.set(p.id, [{
-              id: "", pipeline_id: p.id, status: p.last_run_status,
-              started_at: p.last_run_at, finished_at: null, node_runs: [],
-              _total: p.runs_total, _success: p.runs_success,
-              _failed: p.runs_failed, _running: p.runs_running,
-            }]);
+            pipelineRuns.set(p.id, [
+              {
+                id: "",
+                pipeline_id: p.id,
+                status: p.last_run_status,
+                started_at: p.last_run_at,
+                finished_at: null,
+                node_runs: [],
+                _total: p.runs_total,
+                _success: p.runs_success,
+                _failed: p.runs_failed,
+                _running: p.runs_running,
+              },
+            ]);
           }
         }
         pipelineRuns = new Map(pipelineRuns);
@@ -234,7 +272,9 @@
       const full = await api.pipelines.get(pipeline.id);
       full.enabled = newEnabled;
       await api.pipelines.update(pipeline.id, full);
-      pipelines.update(list => list.map(p => p.id === pipeline.id ? { ...p, enabled: newEnabled } : p));
+      pipelines.update((list) =>
+        list.map((p) => (p.id === pipeline.id ? { ...p, enabled: newEnabled } : p)),
+      );
       notify.success(newEnabled ? `${pipeline.name} enabled` : `${pipeline.name} paused`);
     } catch {
       notify.error("Failed to toggle pipeline");
@@ -279,11 +319,11 @@
       await api.pipelines.delete(id, resolve);
       if (resolve === "cascade") {
         // Also drop any cascaded dependents from the local list.
-        const cascadedIds = new Set([id, ...conflictDependents.map(d => d.id)]);
-        pipelines.update(list => list.filter(p => !cascadedIds.has(p.id)));
+        const cascadedIds = new Set([id, ...conflictDependents.map((d) => d.id)]);
+        pipelines.update((list) => list.filter((p) => !cascadedIds.has(p.id)));
         notify.success(`Deleted pipeline and ${conflictDependents.length} dependent(s)`);
       } else {
-        pipelines.update(list => list.filter(p => p.id !== id));
+        pipelines.update((list) => list.filter((p) => p.id !== id));
         notify.success("Pipeline deleted");
       }
       conflictDependents = [];
@@ -298,7 +338,11 @@
   }
 
   function handleConflictResolve(e: CustomEvent<{ mode: "abort" | "cascade" | "decouple" }>) {
-    if (e.detail.mode === "abort") { conflictDialogVisible = false; conflictDependents = []; return; }
+    if (e.detail.mode === "abort") {
+      conflictDialogVisible = false;
+      conflictDependents = [];
+      return;
+    }
     deletePipeline(deleteTargetId, e.detail.mode);
   }
 
@@ -314,7 +358,8 @@
   function statusLabel(pipeline: any): { label: string; tone: string } {
     if (pipeline.enabled === false) return { label: "Paused", tone: "paused" };
     const status = getLastRun(pipeline.id)?.status || pipeline.last_run_status;
-    if (status === "success" || status === "completed") return { label: "Healthy", tone: "success" };
+    if (status === "success" || status === "completed")
+      return { label: "Healthy", tone: "success" };
     if (status === "failed") return { label: "Failed", tone: "failed" };
     if (status === "running") return { label: "Running", tone: "running" };
     return { label: "Never run", tone: "neutral" };
@@ -330,24 +375,42 @@
   }
 
   function saveView() {
-    localStorage.setItem("brokoli-pipeline-view", JSON.stringify({ statusFilter, tagFilter, sortBy, density }));
+    localStorage.setItem(
+      "brokoli-pipeline-view",
+      JSON.stringify({ statusFilter, tagFilter, sortBy, density }),
+    );
     notify.success("Pipeline view saved");
   }
 
-  function selectStatus(status: string) { statusFilter = statusFilter === status ? "" : status; }
-  function handlePageKeydown(event: KeyboardEvent) { if (event.key === "Escape") openMenuId = null; }
+  function selectStatus(status: string) {
+    statusFilter = statusFilter === status ? "" : status;
+  }
+  function handlePageKeydown(event: KeyboardEvent) {
+    if (event.key === "Escape") openMenuId = null;
+  }
   function toggleActionMenu(event: MouseEvent, pipelineId: string) {
-    if (openMenuId === pipelineId) { openMenuId = null; return; }
+    if (openMenuId === pipelineId) {
+      openMenuId = null;
+      return;
+    }
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
     const menuHeight = 158;
     actionMenuPosition = {
-      top: window.innerHeight - rect.bottom > menuHeight + 8 ? rect.bottom + 4 : rect.top - menuHeight - 4,
+      top:
+        window.innerHeight - rect.bottom > menuHeight + 8
+          ? rect.bottom + 4
+          : rect.top - menuHeight - 4,
       left: Math.max(8, rect.right - 160),
     };
     openMenuId = pipelineId;
   }
 
-  function getRunCounts(pipelineId: string): { success: number; failed: number; running: number; total: number } {
+  function getRunCounts(pipelineId: string): {
+    success: number;
+    failed: number;
+    running: number;
+    total: number;
+  } {
     const runs = pipelineRuns.get(pipelineId) || [];
     // Use pre-computed counts from summary endpoint if available
     if (runs.length > 0 && runs[0]._total !== undefined) {
@@ -359,9 +422,9 @@
       };
     }
     return {
-      success: runs.filter(r => r.status === "success").length,
-      failed: runs.filter(r => r.status === "failed").length,
-      running: runs.filter(r => r.status === "running").length,
+      success: runs.filter((r) => r.status === "success").length,
+      failed: runs.filter((r) => r.status === "failed").length,
+      running: runs.filter((r) => r.status === "running").length,
       total: runs.length,
     };
   }
@@ -434,7 +497,10 @@
   async function createFromTemplate() {
     if (!newName.trim()) return;
     const tmpl = templates[selectedTemplate];
-    if (!tmpl) { notify.error("Select a template before creating a pipeline"); return; }
+    if (!tmpl) {
+      notify.error("Select a template before creating a pipeline");
+      return;
+    }
     try {
       const created = await api.pipelines.create({
         name: newName,
@@ -450,8 +516,8 @@
       await loadPipelines();
       notify.success("Pipeline created");
       // Navigate to editor if template has nodes
-       if (tmpl.nodes.length > 0) {
-         window.location.hash = `#/pipelines/${created.id}/edit`;
+      if (tmpl.nodes.length > 0) {
+        window.location.hash = `#/pipelines/${created.id}/edit`;
       }
     } catch (e) {
       notify.error("Failed to create pipeline");
@@ -466,7 +532,7 @@
       });
       if (!res.ok) throw new Error();
       const clone = await res.json();
-      pipelines.update(list => [clone, ...list]);
+      pipelines.update((list) => [clone, ...list]);
       notify.success(`Cloned as "${clone.name}"`);
     } catch {
       notify.error("Failed to clone pipeline");
@@ -494,176 +560,398 @@
 <svelte:window on:keydown={handlePageKeydown} />
 
 <div class="pipelines-page animate-in">
-  <input type="file" accept=".yaml,.yml,.json" bind:this={fileInput} on:change={handleFileUpload} style="display:none" />
+  <input
+    type="file"
+    accept=".yaml,.yml,.json"
+    bind:this={fileInput}
+    on:change={handleFileUpload}
+    style="display:none"
+  />
 
-  <header class="page-header">
-    <div class="header-copy"><p class="eyebrow">Organization control center</p><h1>Pipelines</h1><p class="page-subtitle">Build, schedule, and monitor every data workflow from one operational inventory.</p></div>
-    <div class="header-actions">
-      <button class="btn-secondary" on:click={importYaml}>Import</button>
-      <button class="btn-primary" on:click={() => (showCreateModal = true)}>
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.plus.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
-        New Pipeline
-      </button>
-    </div>
-  </header>
+  <PageHeader
+    brandIcon="pipelines"
+    kicker="Organization control center"
+    title="Pipelines"
+    description="Build, schedule, and monitor every data workflow from one operational inventory."
+  >
+    <button class="btn-secondary" on:click={importYaml}>Import</button>
+    <button class="btn-primary" on:click={() => (showCreateModal = true)}>New Pipeline</button>
+  </PageHeader>
 
   <section class="health-strip" aria-label="Pipeline health filters">
-    <button disabled={loading || !!loadError} class:active={!statusFilter} on:click={() => (statusFilter = "")}><i class="metric-icon all">☷</i><span>All pipelines<strong>{loading || loadError ? "—" : healthCounts.all}</strong></span></button>
-    <button disabled={loading || !!loadError} class:active={statusFilter === "enabled"} on:click={() => selectStatus("enabled")}><i class="metric-icon enabled">✓</i><span>Enabled<strong>{loading || loadError ? "—" : healthCounts.enabled}</strong></span></button>
-    <button disabled={loading || !!loadError} class:active={statusFilter === "paused"} on:click={() => selectStatus("paused")}><i class="metric-icon paused">Ⅱ</i><span>Paused<strong>{loading || loadError ? "—" : healthCounts.paused}</strong></span></button>
-    <button disabled={loading || !!loadError} class:active={statusFilter === "failed"} on:click={() => selectStatus("failed")}><i class="metric-icon failed">×</i><span>Needs attention<strong>{loading || loadError ? "—" : healthCounts.failed}</strong></span></button>
+    <button
+      disabled={loading || !!loadError}
+      class:active={!statusFilter}
+      on:click={() => (statusFilter = "")}
+      ><i class="metric-icon all">☷</i><span
+        >All pipelines<strong>{loading || loadError ? "—" : healthCounts.all}</strong></span
+      ></button
+    >
+    <button
+      disabled={loading || !!loadError}
+      class:active={statusFilter === "enabled"}
+      on:click={() => selectStatus("enabled")}
+      ><i class="metric-icon enabled">✓</i><span
+        >Enabled<strong>{loading || loadError ? "—" : healthCounts.enabled}</strong></span
+      ></button
+    >
+    <button
+      disabled={loading || !!loadError}
+      class:active={statusFilter === "paused"}
+      on:click={() => selectStatus("paused")}
+      ><i class="metric-icon paused">Ⅱ</i><span
+        >Paused<strong>{loading || loadError ? "—" : healthCounts.paused}</strong></span
+      ></button
+    >
+    <button
+      disabled={loading || !!loadError}
+      class:active={statusFilter === "failed"}
+      on:click={() => selectStatus("failed")}
+      ><i class="metric-icon failed">×</i><span
+        >Needs attention<strong>{loading || loadError ? "—" : healthCounts.failed}</strong></span
+      ></button
+    >
   </section>
 
   <section class="inventory" aria-label="Pipeline inventory">
-  <div class="filter-bar">
-    <div class="search-bar">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
-        <path d={icons.search.d} stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-      </svg>
-      <input
-        type="text"
-        class="search-input"
-        bind:value={searchQuery}
-        placeholder="Search pipelines..."
-      />
-      <span class="search-hint">Ctrl+K</span>
-    </div>
-    <div class="filter-controls">
-      <button class="toolbar-button" on:click={saveView}>▥ Save view</button>
-      <select class="filter-select" bind:value={statusFilter}>
-        <option value="">All Status</option>
-        <option value="success">Succeeded</option>
-        <option value="failed">Failed</option>
-        <option value="running">Running</option>
-        <option value="paused">Paused</option>
-        <option value="never">Never Run</option>
-        <option value="enabled">Enabled</option>
-      </select>
-      {#if allTags.length > 0}
-        <select class="filter-select" bind:value={tagFilter}>
-          <option value="">All Tags</option>
-          {#each allTags as tag}
-            <option value={tag}>{tag}</option>
-          {/each}
+    <div class="filter-bar">
+      <div class="search-bar">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
+          <path
+            d={icons.search.d}
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          />
+        </svg>
+        <input
+          type="text"
+          class="search-input"
+          bind:value={searchQuery}
+          placeholder="Search pipelines..."
+        />
+        <span class="search-hint">Ctrl+K</span>
+      </div>
+      <div class="filter-controls">
+        <button class="toolbar-button" on:click={saveView}>▥ Save view</button>
+        <select class="filter-select" bind:value={statusFilter}>
+          <option value="">All Status</option>
+          <option value="success">Succeeded</option>
+          <option value="failed">Failed</option>
+          <option value="running">Running</option>
+          <option value="paused">Paused</option>
+          <option value="never">Never Run</option>
+          <option value="enabled">Enabled</option>
         </select>
-      {/if}
-      <select class="filter-select" bind:value={sortBy}>
-        <option value="name">Sort: Name</option>
-        <option value="last_run">Sort: Last Run</option>
-        <option value="nodes">Sort: Nodes</option>
-      </select>
-      <select class="filter-select" bind:value={density}>
-        <option value="compact">☷ Compact</option>
-        <option value="comfortable">☰ Comfortable</option>
-      </select>
-      <span class="filter-count">Showing {filteredPipelines.length} of {$pipelines.length}</span>
-    </div>
-  </div>
-
-  {#if selectedIds.size > 0}
-    <div class="bulk-bar">
-      <span class="bulk-count">{selectedIds.size} selected</span>
-      <button class="btn-bulk" on:click={() => bulkAction("enable")}>Enable</button>
-      <button class="btn-bulk" on:click={() => bulkAction("disable")}>Disable</button>
-      <button class="btn-bulk danger" on:click={() => bulkAction("delete")}>Delete</button>
-      <button class="btn-bulk-cancel" on:click={() => selectedIds = new Set()}>Cancel</button>
-    </div>
-  {/if}
-
-  {#if loading}
-    <div class="loading-state" aria-live="polite">
-      <div class="state-heading"><span class="state-orbit"></span><div><strong>Loading pipeline inventory</strong><small>Collecting workflow status, schedules, and run history.</small></div></div>
-      <div class="skeleton-rows">
-      {#each Array(5) as _}
-        <Skeleton height="48px" width="100%" />
-      {/each}
+        {#if allTags.length > 0}
+          <select class="filter-select" bind:value={tagFilter}>
+            <option value="">All Tags</option>
+            {#each allTags as tag}
+              <option value={tag}>{tag}</option>
+            {/each}
+          </select>
+        {/if}
+        <select class="filter-select" bind:value={sortBy}>
+          <option value="name">Sort: Name</option>
+          <option value="last_run">Sort: Last Run</option>
+          <option value="nodes">Sort: Nodes</option>
+        </select>
+        <select class="filter-select" bind:value={density}>
+          <option value="compact">☷ Compact</option>
+          <option value="comfortable">☰ Comfortable</option>
+        </select>
+        <span class="filter-count">Showing {filteredPipelines.length} of {$pipelines.length}</span>
       </div>
     </div>
-  {:else if loadError}
-    <div class="state-card" role="alert">
-      <span class="state-kicker">Inventory unavailable</span>
-      <h2>We could not retrieve your pipelines</h2>
-      <p>{loadError} Your existing workflows have not been changed.</p>
-      <button class="btn-secondary" on:click={() => loadPipelines()}>Try again</button>
-    </div>
-  {:else if $pipelines.length === 0}
-    <div class="empty-hero">
-      <span class="empty-kicker">Start with a template</span>
-      <h2>Build your first pipeline</h2>
-      <p class="empty-hero-sub">Choose a production-ready pattern, name it, then tailor the nodes to your workflow.</p>
-      <div class="template-grid">
-        {#each templates as tmpl, i}
-          <button class="template-card" on:click={() => { selectedTemplate = i; showCreateModal = true; }}>
-            <div class="tmpl-icon">
-              {#if tmpl.icon === "plus"}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              {:else if tmpl.icon === "file"}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
-              {:else if tmpl.icon === "api"}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
-              {:else if tmpl.icon === "merge"}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M6 21v-4a6 6 0 0 1 12 0v4"/></svg>
-              {:else}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
-              {/if}
-            </div>
-            <span class="tmpl-name">{tmpl.name}</span>
-            <span class="tmpl-desc">{tmpl.description}</span>
-          </button>
-        {/each}
+
+    {#if selectedIds.size > 0}
+      <div class="bulk-bar">
+        <span class="bulk-count">{selectedIds.size} selected</span>
+        <button class="btn-bulk" on:click={() => bulkAction("enable")}>Enable</button>
+        <button class="btn-bulk" on:click={() => bulkAction("disable")}>Disable</button>
+        <button class="btn-bulk danger" on:click={() => bulkAction("delete")}>Delete</button>
+        <button class="btn-bulk-cancel" on:click={() => (selectedIds = new Set())}>Cancel</button>
       </div>
-    </div>
-  {:else if filteredPipelines.length === 0}
-    <div class="state-card filtered-empty">
-      <span class="state-kicker">No matching pipelines</span>
-      <h2>Your filters returned no results</h2>
-      <p>Adjust the search, status, or tag filters. No pipelines have been removed.</p>
-      <button class="btn-secondary" on:click={() => { searchQuery = ""; statusFilter = ""; tagFilter = ""; }}>Clear filters</button>
-    </div>
-  {:else}
-    <div class="table-scroll">
-      <table class:comfortable={density === "comfortable"}>
-        <thead><tr><th>Pipeline</th><th>Last result</th><th>Run history ⓘ</th><th>Schedule</th><th>Last run</th><th>Next run</th><th>Nodes</th><th>Actions</th></tr></thead>
-        <tbody>
-      {#each paginatedPipelines as pipeline}
-        {@const lastRun = getLastRun(pipeline.id)}
-        {@const si = scheduleInfo.get(pipeline.id)}
-        {@const health = statusLabel(pipeline)}
-        <tr class:selected={selectedIds.has(pipeline.id)}>
-          <td class="pipeline-cell">
-             <button class="enable-toggle" class:on={pipeline.enabled} role="switch" aria-checked={pipeline.enabled} aria-label={pipeline.enabled ? `Pause ${pipeline.name}` : `Enable ${pipeline.name}`} on:click={() => toggleEnabled(pipeline)}><i></i></button>
-             <span class="pipeline-identity">
-               <a class="pipeline-name" href="#/pipelines/{pipeline.id}" aria-label="View runs for {pipeline.name}">{pipeline.name}</a>
-               <small>{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small>
-             </span>
-          </td>
-          <td><span class="result-badge {health.tone}">{health.tone === "success" ? "✓" : health.tone === "failed" ? "×" : health.tone === "running" ? "◷" : "Ⅱ"} {health.label}</span></td>
-          <td><div class="run-bars" aria-label="Recent run history">{#each Array(5) as _, i}<i class={pipeline.run_history?.[i] || "never"}></i>{/each}</div></td>
-          <td><span class:cron={pipeline.schedule} class="muted">{formatSchedule(pipeline.schedule)}</span></td>
-          <td>{#if lastRun?.started_at}<span class="timestamp"><strong>{relativeTime(lastRun.started_at)}</strong><small>{new Date(lastRun.started_at).toLocaleString("en-US", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small></span>{:else}<span class="muted">—<small>Never run</small></span>{/if}</td>
-          <td><span class="muted">{si?.next_run ? formatNextRun(si.next_run) : "—"}</span></td>
-           <td class="nodes-cell">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</td>
-           <td class="row-actions">
-             <button class="act-btn run-action" title="Run pipeline" aria-label="Run {pipeline.name}" disabled={pipeline.enabled === false || lastRun?.status === "running"} on:click|stopPropagation={() => triggerRun(pipeline.id)}>
-               <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d={icons.play.d} fill="currentColor" /></svg>
-               <span>Run</span>
-             </button>
-            <div class="action-menu-wrap"><button class="act-btn" aria-label="More actions for {pipeline.name}" on:click|stopPropagation={(event) => toggleActionMenu(event, pipeline.id)}>···</button>
-              {#if openMenuId === pipeline.id}<div class="action-menu" style:top="{actionMenuPosition.top}px" style:left="{actionMenuPosition.left}px">
-                <button on:click={() => { toggleEnabled(pipeline); openMenuId = null; }}>{pipeline.enabled ? "Pause" : "Enable"}</button>
-                <button on:click={() => { clonePipeline(pipeline.id); openMenuId = null; }}>Clone</button>
-                <button on:click={() => { exportYaml(pipeline.id, pipeline.name); openMenuId = null; }}>Export YAML</button>
-                <button class="danger" on:click={() => { deleteTargetId = pipeline.id; deleteTargetName = pipeline.name; confirmDelete = true; openMenuId = null; }}>Delete</button>
-              </div>{/if}
-            </div>
-          </td>
-        </tr>
-      {/each}
-        </tbody>
-      </table>
-    </div>
-    <footer class="inventory-footer"><label>Rows per page <select bind:value={pgSize} on:change={() => (pgPage = 1)}><option value={15}>15</option><option value={25}>25</option><option value={50}>50</option></select></label><span>Showing {filteredPipelines.length} pipelines</span><button disabled={pgPage <= 1} on:click={() => pgPage--}>‹</button><strong>{pgPage}</strong><small>of {totalPages}</small><button disabled={pgPage >= totalPages} on:click={() => pgPage++}>›</button></footer>
-  {/if}
+    {/if}
+
+    {#if loading}
+      <div class="loading-state" aria-live="polite">
+        <div class="state-heading">
+          <span class="state-orbit"></span>
+          <div>
+            <strong>Loading pipeline inventory</strong><small
+              >Collecting workflow status, schedules, and run history.</small
+            >
+          </div>
+        </div>
+        <div class="skeleton-rows">
+          {#each Array(5) as _}
+            <Skeleton height="48px" width="100%" />
+          {/each}
+        </div>
+      </div>
+    {:else if loadError}
+      <div class="state-card" role="alert">
+        <span class="state-kicker">Inventory unavailable</span>
+        <h2>We could not retrieve your pipelines</h2>
+        <p>{loadError} Your existing workflows have not been changed.</p>
+        <button class="btn-secondary" on:click={() => loadPipelines()}>Try again</button>
+      </div>
+    {:else if $pipelines.length === 0}
+      <div class="empty-hero">
+        <span class="empty-kicker">Start with a template</span>
+        <h2>Build your first pipeline</h2>
+        <p class="empty-hero-sub">
+          Choose a production-ready pattern, name it, then tailor the nodes to your workflow.
+        </p>
+        <div class="template-grid">
+          {#each templates as tmpl, i}
+            <button
+              class="template-card"
+              on:click={() => {
+                selectedTemplate = i;
+                showCreateModal = true;
+              }}
+            >
+              <div class="tmpl-icon">
+                {#if tmpl.icon === "plus"}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    ><line x1="12" y1="5" x2="12" y2="19" /><line
+                      x1="5"
+                      y1="12"
+                      x2="19"
+                      y2="12"
+                    /></svg
+                  >
+                {:else if tmpl.icon === "file"}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    ><path
+                      d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"
+                    /><polyline points="14 2 14 8 20 8" /></svg
+                  >
+                {:else if tmpl.icon === "api"}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    ><circle cx="12" cy="12" r="10" /><line x1="2" y1="12" x2="22" y2="12" /><path
+                      d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"
+                    /></svg
+                  >
+                {:else if tmpl.icon === "merge"}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    ><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><circle
+                      cx="6"
+                      cy="18"
+                      r="3"
+                    /><path d="M6 21v-4a6 6 0 0 1 12 0v4" /></svg
+                  >
+                {:else}
+                  <svg
+                    width="20"
+                    height="20"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    ><polyline points="16 18 22 12 16 6" /><polyline points="8 6 2 12 8 18" /></svg
+                  >
+                {/if}
+              </div>
+              <span class="tmpl-name">{tmpl.name}</span>
+              <span class="tmpl-desc">{tmpl.description}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {:else if filteredPipelines.length === 0}
+      <div class="state-card filtered-empty">
+        <span class="state-kicker">No matching pipelines</span>
+        <h2>Your filters returned no results</h2>
+        <p>Adjust the search, status, or tag filters. No pipelines have been removed.</p>
+        <button
+          class="btn-secondary"
+          on:click={() => {
+            searchQuery = "";
+            statusFilter = "";
+            tagFilter = "";
+          }}>Clear filters</button
+        >
+      </div>
+    {:else}
+      <div class="table-scroll">
+        <table class:comfortable={density === "comfortable"}>
+          <thead
+            ><tr
+              ><th>Pipeline</th><th>Last result</th><th>Run history ⓘ</th><th>Schedule</th><th
+                >Last run</th
+              ><th>Next run</th><th>Nodes</th><th>Actions</th></tr
+            ></thead
+          >
+          <tbody>
+            {#each paginatedPipelines as pipeline}
+              {@const lastRun = getLastRun(pipeline.id)}
+              {@const si = scheduleInfo.get(pipeline.id)}
+              {@const health = statusLabel(pipeline)}
+              <tr class:selected={selectedIds.has(pipeline.id)}>
+                <td class="pipeline-cell">
+                  <button
+                    class="enable-toggle"
+                    class:on={pipeline.enabled}
+                    role="switch"
+                    aria-checked={pipeline.enabled}
+                    aria-label={pipeline.enabled
+                      ? `Pause ${pipeline.name}`
+                      : `Enable ${pipeline.name}`}
+                    on:click={() => toggleEnabled(pipeline)}><i></i></button
+                  >
+                  <span class="pipeline-identity">
+                    <a
+                      class="pipeline-name"
+                      href="#/pipelines/{pipeline.id}"
+                      aria-label="View runs for {pipeline.name}">{pipeline.name}</a
+                    >
+                    <small
+                      >{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small
+                    >
+                  </span>
+                </td>
+                <td
+                  ><span class="result-badge {health.tone}"
+                    >{health.tone === "success"
+                      ? "✓"
+                      : health.tone === "failed"
+                        ? "×"
+                        : health.tone === "running"
+                          ? "◷"
+                          : "Ⅱ"}
+                    {health.label}</span
+                  ></td
+                >
+                <td
+                  ><div class="run-bars" aria-label="Recent run history">
+                    {#each Array(5) as _, i}<i class={pipeline.run_history?.[i] || "never"}
+                      ></i>{/each}
+                  </div></td
+                >
+                <td
+                  ><span class:cron={pipeline.schedule} class="muted"
+                    >{formatSchedule(pipeline.schedule)}</span
+                  ></td
+                >
+                <td
+                  >{#if lastRun?.started_at}<span class="timestamp"
+                      ><strong>{relativeTime(lastRun.started_at)}</strong><small
+                        >{new Date(lastRun.started_at).toLocaleString("en-US", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}</small
+                      ></span
+                    >{:else}<span class="muted">—<small>Never run</small></span>{/if}</td
+                >
+                <td><span class="muted">{si?.next_run ? formatNextRun(si.next_run) : "—"}</span></td
+                >
+                <td class="nodes-cell">{pipeline.node_count ?? pipeline.nodes?.length ?? 0}</td>
+                <td class="row-actions">
+                  <button
+                    class="act-btn run-action"
+                    title="Run pipeline"
+                    aria-label="Run {pipeline.name}"
+                    disabled={pipeline.enabled === false || lastRun?.status === "running"}
+                    on:click|stopPropagation={() => triggerRun(pipeline.id)}
+                  >
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                      ><path d={icons.play.d} fill="currentColor" /></svg
+                    >
+                    <span>Run</span>
+                  </button>
+                  <div class="action-menu-wrap">
+                    <button
+                      class="act-btn"
+                      aria-label="More actions for {pipeline.name}"
+                      on:click|stopPropagation={(event) => toggleActionMenu(event, pipeline.id)}
+                      >···</button
+                    >
+                    {#if openMenuId === pipeline.id}<div
+                        class="action-menu"
+                        style:top="{actionMenuPosition.top}px"
+                        style:left="{actionMenuPosition.left}px"
+                      >
+                        <button
+                          on:click={() => {
+                            toggleEnabled(pipeline);
+                            openMenuId = null;
+                          }}>{pipeline.enabled ? "Pause" : "Enable"}</button
+                        >
+                        <button
+                          on:click={() => {
+                            clonePipeline(pipeline.id);
+                            openMenuId = null;
+                          }}>Clone</button
+                        >
+                        <button
+                          on:click={() => {
+                            exportYaml(pipeline.id, pipeline.name);
+                            openMenuId = null;
+                          }}>Export YAML</button
+                        >
+                        <button
+                          class="danger"
+                          on:click={() => {
+                            deleteTargetId = pipeline.id;
+                            deleteTargetName = pipeline.name;
+                            confirmDelete = true;
+                            openMenuId = null;
+                          }}>Delete</button
+                        >
+                      </div>{/if}
+                  </div>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <footer class="inventory-footer">
+        <label
+          >Rows per page <select bind:value={pgSize} on:change={() => (pgPage = 1)}
+            ><option value={15}>15</option><option value={25}>25</option><option value={50}
+              >50</option
+            ></select
+          ></label
+        ><span>Showing {filteredPipelines.length} pipelines</span><button
+          disabled={pgPage <= 1}
+          on:click={() => pgPage--}>‹</button
+        ><strong>{pgPage}</strong><small>of {totalPages}</small><button
+          disabled={pgPage >= totalPages}
+          on:click={() => pgPage++}>›</button
+        >
+      </footer>
+    {/if}
   </section>
 
   {#if showCreateModal}
@@ -672,8 +960,18 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="modal modal-wide" on:click|stopPropagation on:keydown={() => {}}>
         <header class="create-header">
-          <div class="create-heading"><span class="create-mark">+</span><div><h2>Create pipeline</h2><p>Choose a starting pattern and make it yours.</p></div></div>
-          <button class="modal-close" aria-label="Close create pipeline dialog" on:click={() => (showCreateModal = false)}>×</button>
+          <div class="create-heading">
+            <span class="create-mark">+</span>
+            <div>
+              <h2>Create pipeline</h2>
+              <p>Choose a starting pattern and make it yours.</p>
+            </div>
+          </div>
+          <button
+            class="modal-close"
+            aria-label="Close create pipeline dialog"
+            on:click={() => (showCreateModal = false)}>×</button
+          >
         </header>
 
         <div class="create-body">
@@ -681,11 +979,19 @@
             <legend>Choose a template</legend>
             <div class="template-grid">
               {#each templates as tmpl, i}
-                <button type="button" class="template-card" class:active={selectedTemplate === i} aria-pressed={selectedTemplate === i} on:click={() => selectedTemplate = i}>
+                <button
+                  type="button"
+                  class="template-card"
+                  class:active={selectedTemplate === i}
+                  aria-pressed={selectedTemplate === i}
+                  on:click={() => (selectedTemplate = i)}
+                >
                   <span class="modal-template-icon">
                     {#if tmpl.icon === "api"}◎{:else if tmpl.icon === "merge"}⌘{:else if tmpl.icon === "code"}‹›{:else}▤{/if}
                   </span>
-                  <span class="template-copy"><strong>{tmpl.name}</strong><small>{tmpl.description}</small></span>
+                  <span class="template-copy"
+                    ><strong>{tmpl.name}</strong><small>{tmpl.description}</small></span
+                  >
                   <span class="template-meta">{tmpl.nodes.length} nodes</span>
                   {#if selectedTemplate === i}<span class="selected-check">✓</span>{/if}
                 </button>
@@ -694,20 +1000,33 @@
           </fieldset>
 
           <div class="pipeline-details">
-            <div class="details-heading"><span>Pipeline details</span><small>You can change these later.</small></div>
+            <div class="details-heading">
+              <span>Pipeline details</span><small>You can change these later.</small>
+            </div>
             <div class="form-group">
               <label for="name">Name</label>
-              <input id="name" bind:value={newName} placeholder="e.g. daily-customer-sync" autocomplete="off" />
+              <input
+                id="name"
+                bind:value={newName}
+                placeholder="e.g. daily-customer-sync"
+                autocomplete="off"
+              />
             </div>
             <div class="form-group">
               <label for="desc">Description <span>Optional</span></label>
-              <input id="desc" bind:value={newDescription} placeholder="What does this pipeline do?" />
+              <input
+                id="desc"
+                bind:value={newDescription}
+                placeholder="What does this pipeline do?"
+              />
             </div>
           </div>
         </div>
         <footer class="modal-actions">
           <button class="btn-secondary" on:click={() => (showCreateModal = false)}>Cancel</button>
-          <button class="btn-primary" on:click={createFromTemplate} disabled={!newName.trim()}>Create pipeline <span>→</span></button>
+          <button class="btn-primary" on:click={createFromTemplate} disabled={!newName.trim()}
+            >Create pipeline <span>→</span></button
+          >
         </footer>
       </div>
     </div>
@@ -728,42 +1047,21 @@
   pipelineName={deleteTargetName}
   dependents={conflictDependents}
   on:resolve={handleConflictResolve}
-  on:cancel={() => { conflictDependents = []; }}
+  on:cancel={() => {
+    conflictDependents = [];
+  }}
 />
 
 <style>
-  .pipelines-page { width: 100%; min-width: 0; }
-  .page-header {
-    position: relative;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 28px;
-     min-height: 0;
-     margin-bottom: 16px;
-     padding: 0 0 14px;
-     overflow: visible;
-     border: 0;
-     border-bottom: 1px solid var(--border-subtle);
-     border-radius: 0;
-     background: transparent;
-     box-shadow: none;
-   }
-   .page-header::after { display: none; }
-  .header-copy { position: relative; z-index: 1; max-width: 660px; }
-  .page-header h1 {
-    font-size: clamp(1.75rem, 3vw, 2.35rem);
-    font-weight: 650;
-    letter-spacing: -0.045em;
-  }
-  .header-actions {
-    display: flex;
-    gap: var(--space-sm);
-    align-items: center;
+  .pipelines-page {
+    width: 100%;
+    min-width: 0;
   }
 
   .filter-bar {
-    display: flex; flex-direction: column; gap: 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
     margin-bottom: var(--space-md);
   }
   .search-bar {
@@ -777,23 +1075,39 @@
     color: var(--text-muted);
   }
   .search-hint {
-    font-size: 10px; color: var(--text-ghost); font-family: var(--font-mono);
-    padding: 2px 6px; border-radius: 4px;
-    background: var(--bg-tertiary); border: 1px solid var(--border-subtle);
+    font-size: 10px;
+    color: var(--text-ghost);
+    font-family: var(--font-mono);
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-subtle);
     flex-shrink: 0;
   }
   .filter-controls {
-    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
   }
   .filter-select {
-    padding: 5px 10px; border-radius: 6px; font-size: 12px;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    color: var(--text-secondary); font-family: var(--font-ui);
+    padding: 5px 10px;
+    border-radius: 6px;
+    font-size: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    font-family: var(--font-ui);
     cursor: pointer;
   }
-  .filter-select:focus { border-color: var(--accent); outline: none; }
+  .filter-select:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
   .filter-count {
-    font-size: 11px; color: var(--text-dim); font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
     margin-left: auto;
   }
   .search-input {
@@ -813,7 +1127,9 @@
     font-weight: 500;
     transition: background var(--transition-fast);
   }
-  .btn-primary:hover { background: var(--accent-hover); }
+  .btn-primary:hover {
+    background: var(--accent-hover);
+  }
 
   .btn-secondary {
     background: var(--bg-tertiary);
@@ -823,7 +1139,9 @@
     font-weight: 500;
     transition: background var(--transition-fast);
   }
-  .btn-secondary:hover { background: var(--border); }
+  .btn-secondary:hover {
+    background: var(--border);
+  }
 
   .btn-icon {
     padding: 4px 8px;
@@ -831,8 +1149,13 @@
     font-size: 0.75rem;
     transition: background var(--transition-fast);
   }
-  .btn-icon:hover { background: var(--bg-tertiary); }
-  .btn-icon.danger:hover { background: var(--failed-bg); color: var(--failed); }
+  .btn-icon:hover {
+    background: var(--bg-tertiary);
+  }
+  .btn-icon.danger:hover {
+    background: var(--failed-bg);
+    color: var(--failed);
+  }
 
   /* ── Airflow-style pipeline table ── */
   .table {
@@ -841,7 +1164,8 @@
     overflow: hidden;
     box-shadow: var(--shadow-card);
   }
-  .table-header, .table-row {
+  .table-header,
+  .table-row {
     display: grid;
     grid-template-columns: 42px 1fr 160px 100px 130px 130px 50px 90px;
     align-items: center;
@@ -850,8 +1174,11 @@
   }
   .table-header {
     background: transparent;
-    font-size: 11px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 600;
     border-bottom: 2px solid var(--border-subtle);
     min-height: 38px;
   }
@@ -859,124 +1186,318 @@
     border-bottom: 1px solid var(--border-subtle);
     transition: background 150ms ease;
   }
-  .table-row:last-child { border-bottom: none; }
-  .table-row:hover { background: rgba(255, 255, 255, 0.02); }
-  .table-row.selected { background: var(--accent-glow); }
+  .table-row:last-child {
+    border-bottom: none;
+  }
+  .table-row:hover {
+    background: rgba(255, 255, 255, 0.02);
+  }
+  .table-row.selected {
+    background: var(--accent-glow);
+  }
 
   /* Toggle switch */
-  .td-toggle, .th-toggle { display: flex; align-items: center; justify-content: center; }
-  .switch { position: relative; width: 28px; height: 16px; cursor: pointer; }
-  .switch input { opacity: 0; width: 0; height: 0; }
+  .td-toggle,
+  .th-toggle {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .switch {
+    position: relative;
+    width: 28px;
+    height: 16px;
+    cursor: pointer;
+  }
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
   .slider {
-    position: absolute; inset: 0;
-    background: var(--bg-tertiary); border-radius: 8px;
+    position: absolute;
+    inset: 0;
+    background: var(--bg-tertiary);
+    border-radius: 8px;
     border: 1px solid var(--border);
     transition: all 200ms ease;
   }
   .slider::after {
-    content: ""; position: absolute;
-    width: 10px; height: 10px; border-radius: 50%;
+    content: "";
+    position: absolute;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
     background: var(--text-dim);
-    top: 2px; left: 2px;
+    top: 2px;
+    left: 2px;
     transition: all 200ms ease;
   }
-  .slider.on { background: var(--accent-glow); border-color: var(--accent); }
-  .slider.on::after { transform: translateX(12px); background: var(--accent); }
+  .slider.on {
+    background: var(--accent-glow);
+    border-color: var(--accent);
+  }
+  .slider.on::after {
+    transform: translateX(12px);
+    background: var(--accent);
+  }
 
   /* Name */
-  .td-name { min-width: 0; padding: 6px 0; }
+  .td-name {
+    min-width: 0;
+    padding: 6px 0;
+  }
   .pipe-link {
-    font-weight: 600; font-size: 13px; display: block;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    font-weight: 600;
+    font-size: 13px;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
     color: var(--accent-text);
   }
-  .pipe-link:hover { text-decoration: underline; }
-  .tag-list { display: inline-flex; gap: 3px; margin-left: 6px; vertical-align: middle; }
+  .pipe-link:hover {
+    text-decoration: underline;
+  }
+  .tag-list {
+    display: inline-flex;
+    gap: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
   .tag {
-    font-size: 9px; padding: 1px 5px; border-radius: 3px;
-    background: var(--accent-glow); color: var(--accent-text);
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: var(--accent-glow);
+    color: var(--accent-text);
     font-family: var(--font-mono);
   }
 
   /* Run status circles (Airflow-style) */
-  .td-runs { display: flex; align-items: center; }
-  .status-circles { display: flex; gap: 6px; }
+  .td-runs {
+    display: flex;
+    align-items: center;
+  }
+  .status-circles {
+    display: flex;
+    gap: 6px;
+  }
   .circle {
-    width: 22px; height: 22px; border-radius: 50%;
-    display: flex; align-items: center; justify-content: center;
-    font-family: var(--font-mono); font-size: 10px; font-weight: 600;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
     border: 1.5px solid var(--border-subtle);
-    color: var(--text-ghost); background: none;
+    color: var(--text-ghost);
+    background: none;
     transition: all 150ms ease;
   }
-  .circle.has { cursor: pointer; }
-  .circle.circle-ok.has { border-color: var(--success); color: var(--success); }
-  .circle.circle-fail.has { border-color: var(--failed); color: var(--failed); }
-  .circle.circle-run.has { border-color: var(--running); color: var(--running); }
+  .circle.has {
+    cursor: pointer;
+  }
+  .circle.circle-ok.has {
+    border-color: var(--success);
+    color: var(--success);
+  }
+  .circle.circle-fail.has {
+    border-color: var(--failed);
+    color: var(--failed);
+  }
+  .circle.circle-run.has {
+    border-color: var(--running);
+    color: var(--running);
+  }
 
   /* Circle tooltip */
-  .circle { position: relative; }
+  .circle {
+    position: relative;
+  }
   .circle-tip {
     display: none;
-    position: absolute; bottom: calc(100% + 6px); left: 50%;
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
     transform: translateX(-50%);
-    background: var(--bg-primary); border: 1px solid var(--border);
+    background: var(--bg-primary);
+    border: 1px solid var(--border);
     color: var(--text-primary);
-    padding: 4px 8px; border-radius: 4px;
-    font-size: 10px; font-weight: 500; white-space: nowrap;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-size: 10px;
+    font-weight: 500;
+    white-space: nowrap;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
     z-index: 10;
     pointer-events: none;
   }
   .circle-tip::after {
-    content: ""; position: absolute;
-    top: 100%; left: 50%; transform: translateX(-50%);
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
     border: 4px solid transparent;
     border-top-color: var(--border);
   }
-  .circle:hover .circle-tip { display: block; }
+  .circle:hover .circle-tip {
+    display: block;
+  }
 
-  .td-runs { display: flex; align-items: center; gap: 8px; }
+  .td-runs {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .runs-link {
-    font-size: 9px; color: var(--text-dim); text-decoration: none;
+    font-size: 9px;
+    color: var(--text-dim);
+    text-decoration: none;
     font-family: var(--font-mono);
     transition: color 150ms ease;
   }
-  .runs-link:hover { color: var(--accent-text); text-decoration: underline; }
+  .runs-link:hover {
+    color: var(--accent-text);
+    text-decoration: underline;
+  }
 
   /* Schedule, timestamps */
-  .td-schedule, .td-lastrun, .td-nextrun { font-size: 12px; }
-  .mono { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
-  .ts { font-family: var(--font-mono); font-size: 11px; color: var(--text-secondary); }
-  .ts-ok { color: var(--success); }
-  .ts-fail { color: var(--failed); }
-  .ts-none { color: var(--text-ghost); font-size: 11px; }
+  .td-schedule,
+  .td-lastrun,
+  .td-nextrun {
+    font-size: 12px;
+  }
+  .mono {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+  .ts {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-secondary);
+  }
+  .ts-ok {
+    color: var(--success);
+  }
+  .ts-fail {
+    color: var(--failed);
+  }
+  .ts-none {
+    color: var(--text-ghost);
+    font-size: 11px;
+  }
 
   /* Node count */
-  .td-nodes { text-align: center; font-size: 12px; }
+  .td-nodes {
+    text-align: center;
+    font-size: 12px;
+  }
 
   /* Actions */
-  .td-actions, .th-actions { display: flex; gap: 4px; justify-content: flex-end; }
+  .td-actions,
+  .th-actions {
+    display: flex;
+    gap: 4px;
+    justify-content: flex-end;
+  }
   .act-btn {
-    width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
-    border-radius: 4px; color: var(--text-muted); font-size: 12px;
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
     transition: all 150ms ease;
   }
-  .act-btn:hover { color: var(--text-primary); background: var(--bg-tertiary); }
-  .act-danger:hover { color: var(--failed); background: var(--failed-bg); }
+  .act-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+  .act-danger:hover {
+    color: var(--failed);
+    background: var(--failed-bg);
+  }
 
-  .skeleton-rows { display: flex; flex-direction: column; gap: 8px; }
-  .loading-state { padding: 22px 14px; }
-  .state-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-  .state-heading div { display: flex; flex-direction: column; gap: 3px; }
-  .state-heading strong { color: var(--text-primary); font-size: 12px; }
-  .state-heading small { color: var(--text-muted); font-size: 10px; }
-  .state-orbit { width: 30px; height: 30px; border: 1px solid color-mix(in srgb, var(--accent), transparent 48%); border-top-color: var(--accent); border-radius: 50%; animation: state-spin 1s linear infinite; }
-  @keyframes state-spin { to { transform: rotate(360deg); } }
-  .state-card { display: grid; min-height: 360px; place-content: center; justify-items: center; padding: 42px 24px; text-align: center; background: radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--accent), transparent 92%), transparent 35%); }
-  .state-card h2 { margin-top: 7px; color: var(--text-primary); font-size: 19px; letter-spacing: -.025em; }
-  .state-card p { max-width: 480px; margin: 8px 0 20px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
-  .state-kicker { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
+  .skeleton-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .loading-state {
+    padding: 22px 14px;
+  }
+  .state-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .state-heading div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .state-heading strong {
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+  .state-heading small {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .state-orbit {
+    width: 30px;
+    height: 30px;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 48%);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: state-spin 1s linear infinite;
+  }
+  @keyframes state-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .state-card {
+    display: grid;
+    min-height: 360px;
+    place-content: center;
+    justify-items: center;
+    padding: 42px 24px;
+    text-align: center;
+    background: radial-gradient(
+      circle at 50% 35%,
+      color-mix(in srgb, var(--accent), transparent 92%),
+      transparent 35%
+    );
+  }
+  .state-card h2 {
+    margin-top: 7px;
+    color: var(--text-primary);
+    font-size: 19px;
+    letter-spacing: -0.025em;
+  }
+  .state-card p {
+    max-width: 480px;
+    margin: 8px 0 20px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .state-kicker {
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
   .empty-state {
     background: var(--bg-secondary);
     border: 1px solid var(--border);
@@ -985,110 +1506,236 @@
     text-align: center;
     color: var(--text-secondary);
   }
-  .hint { color: var(--text-muted); font-size: 0.875rem; margin-top: var(--space-xs); }
+  .hint {
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    margin-top: var(--space-xs);
+  }
 
   /* Empty hero with template picker */
-   .empty-hero {
-    display: flex; flex-direction: column; align-items: center;
-    text-align: center; padding: 48px 24px 40px;
-     background: radial-gradient(ellipse at 50% 0%, rgba(255, 255, 255, 0.025) 0%, transparent 60%);
+  .empty-hero {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    padding: 48px 24px 40px;
+    background: radial-gradient(ellipse at 50% 0%, rgba(255, 255, 255, 0.025) 0%, transparent 60%);
     border-radius: var(--radius-xl, 14px);
     margin: -8px -8px 0;
   }
-  .empty-hero h2 { font-size: 1.5rem; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.03em; }
-  .empty-hero-sub { font-size: 14px; color: var(--text-muted); margin-bottom: 36px; }
+  .empty-hero h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    margin-bottom: 8px;
+    letter-spacing: -0.03em;
+  }
+  .empty-hero-sub {
+    font-size: 14px;
+    color: var(--text-muted);
+    margin-bottom: 36px;
+  }
   .template-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 16px; width: 100%; max-width: 900px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    width: 100%;
+    max-width: 900px;
   }
   .template-card {
-    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
     padding: 40px 24px 32px;
-    background: var(--bg-secondary); border: 1px solid var(--border-subtle);
-    border-radius: var(--radius-xl, 14px); cursor: pointer; color: inherit;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-xl, 14px);
+    cursor: pointer;
+    color: inherit;
     transition: all 250ms cubic-bezier(0.16, 1, 0.3, 1);
     box-shadow: var(--shadow-card);
   }
-   .template-card:hover {
-     border-color: var(--border-hover);
-     transform: translateY(-3px);
-     box-shadow: var(--shadow-card-hover);
-   }
-  .template-card.active {
-    border-color: var(--accent); background: var(--accent-glow);
+  .template-card:hover {
+    border-color: var(--border-hover);
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-card-hover);
   }
-   .tmpl-icon { color: var(--text-secondary); }
-  .tmpl-name { font-size: 14px; font-weight: 600; }
-  .tmpl-desc { font-size: 11.5px; color: var(--text-muted); line-height: 1.5; }
+  .template-card.active {
+    border-color: var(--accent);
+    background: var(--accent-glow);
+  }
+  .tmpl-icon {
+    color: var(--text-secondary);
+  }
+  .tmpl-name {
+    font-size: 14px;
+    font-weight: 600;
+  }
+  .tmpl-desc {
+    font-size: 11.5px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
   @media (max-width: 768px) {
-    .template-grid { grid-template-columns: repeat(2, 1fr); }
+    .template-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
   }
 
   .modal-overlay {
-    position: fixed; inset: 0;
-    background: rgba(0, 0, 0, 0.7); backdrop-filter: blur(4px);
-    display: flex; align-items: center; justify-content: center; z-index: 100;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
     animation: overlay-in 150ms ease;
   }
-  @keyframes overlay-in { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes overlay-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
   .modal {
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    border-radius: var(--radius-xl, 14px); padding: 28px 32px;
-    width: 480px; max-width: 90vw;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl, 14px);
+    padding: 28px 32px;
+    width: 480px;
+    max-width: 90vw;
     box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
     animation: modal-in 200ms cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .modal-wide { width: 580px; }
+  .modal-wide {
+    width: 580px;
+  }
   @keyframes modal-in {
-    from { opacity: 0; transform: scale(0.96) translateY(8px); }
-    to { opacity: 1; transform: scale(1) translateY(0); }
+    from {
+      opacity: 0;
+      transform: scale(0.96) translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
   }
-  .modal h2 { font-size: 1.2rem; font-weight: 600; margin-bottom: 20px; letter-spacing: -0.01em; }
-  .form-group { margin-bottom: 16px; }
+  .modal h2 {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin-bottom: 20px;
+    letter-spacing: -0.01em;
+  }
+  .form-group {
+    margin-bottom: 16px;
+  }
   .form-group label {
-    display: block; font-size: 11px; color: var(--text-muted);
-    text-transform: uppercase; letter-spacing: 0.06em; margin-bottom: 6px; font-weight: 500;
+    display: block;
+    font-size: 11px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 6px;
+    font-weight: 500;
   }
-  .form-group input { width: 100%; }
+  .form-group input {
+    width: 100%;
+  }
   .modal-actions {
-    display: flex; justify-content: flex-end; gap: var(--space-sm); margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-sm);
+    margin-top: 20px;
   }
   .next-run {
     display: block;
-    font-size: 9px; color: var(--accent-text);
+    font-size: 9px;
+    color: var(--accent-text);
     margin-top: 1px;
   }
 
-  .col-check { flex: 0 0 28px; display: flex; align-items: center; }
-  .col-check input[type="checkbox"] { width: 14px; height: 14px; accent-color: var(--accent); }
-  .table-row.selected { background: var(--accent-glow); }
+  .col-check {
+    flex: 0 0 28px;
+    display: flex;
+    align-items: center;
+  }
+  .col-check input[type="checkbox"] {
+    width: 14px;
+    height: 14px;
+    accent-color: var(--accent);
+  }
+  .table-row.selected {
+    background: var(--accent-glow);
+  }
 
   .bulk-bar {
-    display: flex; align-items: center; gap: 8px;
-    padding: 8px 14px; background: var(--accent-glow);
-    border: 1px solid rgba(99,102,241,0.2); border-radius: var(--radius-md);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    background: var(--accent-glow);
+    border: 1px solid rgba(99, 102, 241, 0.2);
+    border-radius: var(--radius-md);
     margin-bottom: var(--space-sm);
   }
-  .bulk-count { font-size: 12px; font-weight: 600; color: var(--accent-text); margin-right: 4px; }
+  .bulk-count {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--accent-text);
+    margin-right: 4px;
+  }
   .bulk-bar .btn-bulk {
-    padding: 4px 10px; border-radius: 4px; font-size: 11px; font-weight: 500;
-    background: var(--bg-secondary); border: 1px solid var(--border);
-    color: var(--text-secondary); transition: all 150ms ease;
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    transition: all 150ms ease;
   }
-  .bulk-bar .btn-bulk:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-  .bulk-bar .btn-bulk.danger { color: var(--failed); border-color: rgba(239,68,68,0.3); }
-  .bulk-bar .btn-bulk.danger:hover { background: var(--failed-bg); }
+  .bulk-bar .btn-bulk:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .bulk-bar .btn-bulk.danger {
+    color: var(--failed);
+    border-color: rgba(239, 68, 68, 0.3);
+  }
+  .bulk-bar .btn-bulk.danger:hover {
+    background: var(--failed-bg);
+  }
   .btn-bulk-cancel {
-    margin-left: auto; font-size: 11px; color: var(--text-muted);
-    padding: 4px 8px; border-radius: 4px; transition: all 150ms ease;
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-muted);
+    padding: 4px 8px;
+    border-radius: 4px;
+    transition: all 150ms ease;
   }
-  .btn-bulk-cancel:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+  .btn-bulk-cancel:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
 
-  .tag-list { display: flex; gap: 3px; margin-top: 2px; flex-wrap: wrap; }
+  .tag-list {
+    display: flex;
+    gap: 3px;
+    margin-top: 2px;
+    flex-wrap: wrap;
+  }
   .tag {
-    font-size: 9px; padding: 1px 6px; border-radius: 3px;
-    background: var(--accent-glow); color: var(--accent-text);
-    font-family: var(--font-mono); letter-spacing: 0.02em;
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--accent-glow);
+    color: var(--accent-text);
+    font-family: var(--font-mono);
+    letter-spacing: 0.02em;
   }
 
   .modal-wide {
@@ -1135,59 +1782,427 @@
     margin-top: 2px;
   }
 
-  .eyebrow { display: block; margin-bottom: 7px; color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .14em; text-transform: uppercase; }
-  .page-subtitle { max-width: 620px; margin-top: 7px; color: var(--text-muted); font-size: 12px; line-height: 1.55; }
-  .health-strip { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0; margin-bottom: 16px; overflow: hidden; border: 1px solid var(--border-subtle); border-top: 0; border-radius: 0 0 10px 10px; background: var(--bg-secondary); box-shadow: var(--shadow-card); }
-  .health-strip button { position: relative; display: grid; min-height: 82px; grid-template-columns: 40px 1fr; align-items: center; gap: 12px; padding: 14px 18px; border-right: 1px solid var(--border-subtle); background: transparent; color: var(--text-muted); text-align: left; }
-  .health-strip button:last-child { border-right: 0; }
-  .health-strip button:disabled { cursor: default; }
-  .health-strip button::after { content: ""; position: absolute; inset: auto 18px 0; height: 2px; background: var(--accent); opacity: 0; transform: scaleX(.4); transition: opacity 150ms ease, transform 150ms ease; }
-   .health-strip button:hover, .health-strip button.active { background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent); }
-  .health-strip button.active::after { opacity: 1; transform: scaleX(1); }
-  .health-strip span { display: flex; align-items: flex-start; flex-direction: column; gap: 3px; font-size: 11px; }
-  .health-strip strong { color: var(--text-primary); font-size: 20px; font-weight: 650; }
-   .metric-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--border); border-radius: 50%; background: var(--bg-tertiary); color: var(--text-secondary); font-style: normal; font-size: 18px; }
-  .metric-icon.enabled { border-color: color-mix(in srgb, var(--success), transparent 70%); background: var(--success-bg); color: var(--success); }
-  .metric-icon.paused { border-color: color-mix(in srgb, var(--warning), transparent 70%); background: var(--warning-bg); color: var(--warning); }
-  .metric-icon.failed { border-color: color-mix(in srgb, var(--failed), transparent 70%); background: var(--failed-bg); color: var(--failed); }
-  .inventory { display: flex; min-height: 610px; flex-direction: column; overflow: visible; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-secondary); box-shadow: var(--shadow-card); }
-  .inventory .filter-bar { display: grid; grid-template-columns: minmax(280px, 1fr) auto; align-items: center; gap: 10px; margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--border-subtle); }
-  .inventory .search-bar { padding: 6px 10px; border-radius: 6px; background: var(--bg-primary); }
-  .inventory .filter-controls { flex-wrap: nowrap; }
-  .toolbar-button { height: 32px; padding: 0 11px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; white-space: nowrap; }
-  .toolbar-button:hover { border-color: var(--accent); color: var(--accent); }
-  .inventory .filter-select { height: 32px; padding: 0 28px 0 10px; }
-  .inventory .filter-count { display: none; }
-  .table-scroll { min-height: 0; overflow: auto; }
-  .table-scroll table { width: 100%; min-width: 1120px; border-collapse: collapse; table-layout: fixed; }
-  .table-scroll th { height: 42px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; font-weight: 500; letter-spacing: .04em; text-align: left; text-transform: uppercase; }
-   .table-scroll th:nth-child(1) { width: 28%; padding-left: 16px; } .table-scroll th:nth-child(2) { width: 12%; } .table-scroll th:nth-child(3) { width: 16%; } .table-scroll th:nth-child(4) { width: 10%; } .table-scroll th:nth-child(5) { width: 12%; } .table-scroll th:nth-child(6) { width: 8%; } .table-scroll th:nth-child(7) { width: 5%; text-align: center; } .table-scroll th:nth-child(8) { width: 9%; text-align: center; }
-  .table-scroll td { height: 44px; padding: 0 12px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); font-size: 11px; }
-  .table-scroll table.comfortable td { height: 56px; }
-  .table-scroll tr:hover td, .table-scroll tr.selected td { background: var(--bg-card-hover); }
-  .pipeline-cell { display: flex; align-items: center; gap: 11px; padding-left: 16px !important; }
-  .enable-toggle { position: relative; width: 30px; height: 17px; flex: none; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-tertiary); }
-  .enable-toggle i { position: absolute; top: 2px; left: 2px; width: 11px; height: 11px; border-radius: 50%; background: var(--text-dim); transition: transform 150ms ease; }
-  .enable-toggle.on { border-color: var(--accent); background: var(--accent-glow-strong); } .enable-toggle.on i { background: var(--accent); transform: translateX(13px); }
-  .pipeline-identity { display: flex; min-width: 0; flex-direction: column; gap: 2px; }
-   .pipeline-name { overflow: hidden; color: var(--text-primary); font-size: 12px; font-weight: 600; text-overflow: ellipsis; text-decoration: none; white-space: nowrap; }
-   .pipeline-name:hover { color: var(--accent); text-decoration: underline; }
-  .pipeline-identity small, .timestamp small, .muted small { display: block; overflow: hidden; color: var(--text-dim); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
-  .result-badge { display: inline-flex; height: 25px; align-items: center; gap: 5px; padding: 0 9px; border: 1px solid var(--border-subtle); border-radius: 5px; font-size: 10px; font-weight: 600; }
-  .result-badge.success { border-color: color-mix(in srgb, var(--success), transparent 75%); background: var(--success-bg); color: var(--success); } .result-badge.failed { border-color: color-mix(in srgb, var(--failed), transparent 75%); background: var(--failed-bg); color: var(--failed); } .result-badge.running { border-color: color-mix(in srgb, var(--warning), transparent 75%); background: var(--warning-bg); color: var(--warning); }
-  .run-bars { display: flex; gap: 7px; } .run-bars i { width: 26px; height: 9px; border-radius: 3px; background: var(--border); } .run-bars .succeeded, .run-bars .success, .run-bars .completed { background: var(--success); } .run-bars .failed { background: var(--failed); } .run-bars .running { background: var(--warning); }
-  .cron { color: var(--text-secondary); font: 10px var(--font-mono); } .muted { color: var(--text-muted); }
-  .timestamp { display: flex; flex-direction: column; gap: 2px; } .timestamp strong { color: var(--text-primary); font-weight: 500; }
-  .nodes-cell { text-align: center; } .row-actions { display: flex; align-items: center; justify-content: center; gap: 3px; overflow: visible; }
-   .act-btn { min-width: 28px; width: auto; padding: 0 7px; } .act-btn:disabled { opacity: .35; cursor: not-allowed; }
-   .run-action { gap: 4px; color: var(--accent-text); font-size: 10px; font-weight: 600; }
-  .action-menu-wrap { position: relative; }
-  .action-menu { position: fixed; z-index: 1000; width: 160px; padding: 5px; border: 1px solid var(--border); border-radius: 7px; background: var(--bg-secondary); box-shadow: var(--shadow-lg); }
-  .action-menu button { display: block; width: 100%; padding: 7px 9px; border-radius: 4px; color: var(--text-secondary); font-size: 11px; text-align: left; }
-  .action-menu button:hover { color: var(--text-primary); background: var(--bg-tertiary); } .action-menu button.danger { color: var(--failed); }
-  .inventory-footer { display: flex; height: 48px; align-items: center; gap: 10px; margin-top: auto; padding: 0 14px; border-top: 1px solid var(--border-subtle); color: var(--text-muted); font-size: 10px; }
-  .inventory-footer label { display: flex; align-items: center; gap: 8px; } .inventory-footer select { height: 29px; padding: 0 22px 0 8px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg-tertiary); color: var(--text-secondary); }
-  .inventory-footer > span { margin-left: auto; } .inventory-footer button { width: 28px; height: 28px; color: var(--text-muted); } .inventory-footer button:disabled { opacity: .3; } .inventory-footer strong { display: grid; width: 34px; height: 29px; place-items: center; border-radius: 5px; background: var(--accent); color: #031514; }
+  .health-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0;
+    margin: 16px 0;
+    overflow: hidden;
+    border: 1px solid var(--border-subtle);
+    border-radius: 10px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .health-strip button {
+    position: relative;
+    display: grid;
+    min-height: 82px;
+    grid-template-columns: 40px 1fr;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 18px;
+    border-right: 1px solid var(--border-subtle);
+    background: transparent;
+    color: var(--text-muted);
+    text-align: left;
+  }
+  .health-strip button:last-child {
+    border-right: 0;
+  }
+  .health-strip button:disabled {
+    cursor: default;
+  }
+  .health-strip button::after {
+    content: "";
+    position: absolute;
+    inset: auto 18px 0;
+    height: 2px;
+    background: var(--accent);
+    opacity: 0;
+    transform: scaleX(0.4);
+    transition:
+      opacity 150ms ease,
+      transform 150ms ease;
+  }
+  .health-strip button:hover,
+  .health-strip button.active {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+  }
+  .health-strip button.active::after {
+    opacity: 1;
+    transform: scaleX(1);
+  }
+  .health-strip span {
+    display: flex;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 3px;
+    font-size: 11px;
+  }
+  .health-strip strong {
+    color: var(--text-primary);
+    font-size: 20px;
+    font-weight: 650;
+  }
+  .metric-icon {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    font-style: normal;
+    font-size: 18px;
+  }
+  .metric-icon.enabled {
+    border-color: color-mix(in srgb, var(--success), transparent 70%);
+    background: var(--success-bg);
+    color: var(--success);
+  }
+  .metric-icon.paused {
+    border-color: color-mix(in srgb, var(--warning), transparent 70%);
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+  .metric-icon.failed {
+    border-color: color-mix(in srgb, var(--failed), transparent 70%);
+    background: var(--failed-bg);
+    color: var(--failed);
+  }
+  .inventory {
+    display: flex;
+    min-height: 610px;
+    flex-direction: column;
+    overflow: visible;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-card);
+  }
+  .inventory .filter-bar {
+    display: grid;
+    grid-template-columns: minmax(280px, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    margin: 0;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .inventory .search-bar {
+    padding: 6px 10px;
+    border-radius: 6px;
+    background: var(--bg-primary);
+  }
+  .inventory .filter-controls {
+    flex-wrap: nowrap;
+  }
+  .toolbar-button {
+    height: 32px;
+    padding: 0 11px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .toolbar-button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .inventory .filter-select {
+    height: 32px;
+    padding: 0 28px 0 10px;
+  }
+  .inventory .filter-count {
+    display: none;
+  }
+  .table-scroll {
+    min-height: 0;
+    overflow: auto;
+  }
+  .table-scroll table {
+    width: 100%;
+    min-width: 1120px;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+  .table-scroll th {
+    height: 42px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    text-align: left;
+    text-transform: uppercase;
+  }
+  .table-scroll th:nth-child(1) {
+    width: 28%;
+    padding-left: 16px;
+  }
+  .table-scroll th:nth-child(2) {
+    width: 12%;
+  }
+  .table-scroll th:nth-child(3) {
+    width: 16%;
+  }
+  .table-scroll th:nth-child(4) {
+    width: 10%;
+  }
+  .table-scroll th:nth-child(5) {
+    width: 12%;
+  }
+  .table-scroll th:nth-child(6) {
+    width: 8%;
+  }
+  .table-scroll th:nth-child(7) {
+    width: 5%;
+    text-align: center;
+  }
+  .table-scroll th:nth-child(8) {
+    width: 9%;
+    text-align: center;
+  }
+  .table-scroll td {
+    height: 44px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+  .table-scroll table.comfortable td {
+    height: 56px;
+  }
+  .table-scroll tr:hover td,
+  .table-scroll tr.selected td {
+    background: var(--bg-card-hover);
+  }
+  .pipeline-cell {
+    display: flex;
+    align-items: center;
+    gap: 11px;
+    padding-left: 16px !important;
+  }
+  .enable-toggle {
+    position: relative;
+    width: 30px;
+    height: 17px;
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    background: var(--bg-tertiary);
+  }
+  .enable-toggle i {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    transition: transform 150ms ease;
+  }
+  .enable-toggle.on {
+    border-color: var(--accent);
+    background: var(--accent-glow-strong);
+  }
+  .enable-toggle.on i {
+    background: var(--accent);
+    transform: translateX(13px);
+  }
+  .pipeline-identity {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .pipeline-name {
+    overflow: hidden;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .pipeline-name:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .pipeline-identity small,
+  .timestamp small,
+  .muted small {
+    display: block;
+    overflow: hidden;
+    color: var(--text-dim);
+    font-size: 9px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .result-badge {
+    display: inline-flex;
+    height: 25px;
+    align-items: center;
+    gap: 5px;
+    padding: 0 9px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 5px;
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .result-badge.success {
+    border-color: color-mix(in srgb, var(--success), transparent 75%);
+    background: var(--success-bg);
+    color: var(--success);
+  }
+  .result-badge.failed {
+    border-color: color-mix(in srgb, var(--failed), transparent 75%);
+    background: var(--failed-bg);
+    color: var(--failed);
+  }
+  .result-badge.running {
+    border-color: color-mix(in srgb, var(--warning), transparent 75%);
+    background: var(--warning-bg);
+    color: var(--warning);
+  }
+  .run-bars {
+    display: flex;
+    gap: 7px;
+  }
+  .run-bars i {
+    width: 26px;
+    height: 9px;
+    border-radius: 3px;
+    background: var(--border);
+  }
+  .run-bars .succeeded,
+  .run-bars .success,
+  .run-bars .completed {
+    background: var(--success);
+  }
+  .run-bars .failed {
+    background: var(--failed);
+  }
+  .run-bars .running {
+    background: var(--warning);
+  }
+  .cron {
+    color: var(--text-secondary);
+    font: 10px var(--font-mono);
+  }
+  .muted {
+    color: var(--text-muted);
+  }
+  .timestamp {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .timestamp strong {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+  .nodes-cell {
+    text-align: center;
+  }
+  .row-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    overflow: visible;
+  }
+  .act-btn {
+    min-width: 28px;
+    width: auto;
+    padding: 0 7px;
+  }
+  .act-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+  }
+  .run-action {
+    gap: 4px;
+    color: var(--accent-text);
+    font-size: 10px;
+    font-weight: 600;
+  }
+  .action-menu-wrap {
+    position: relative;
+  }
+  .action-menu {
+    position: fixed;
+    z-index: 1000;
+    width: 160px;
+    padding: 5px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow-lg);
+  }
+  .action-menu button {
+    display: block;
+    width: 100%;
+    padding: 7px 9px;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 11px;
+    text-align: left;
+  }
+  .action-menu button:hover {
+    color: var(--text-primary);
+    background: var(--bg-tertiary);
+  }
+  .action-menu button.danger {
+    color: var(--failed);
+  }
+  .inventory-footer {
+    display: flex;
+    height: 48px;
+    align-items: center;
+    gap: 10px;
+    margin-top: auto;
+    padding: 0 14px;
+    border-top: 1px solid var(--border-subtle);
+    color: var(--text-muted);
+    font-size: 10px;
+  }
+  .inventory-footer label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .inventory-footer select {
+    height: 29px;
+    padding: 0 22px 0 8px;
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+  }
+  .inventory-footer > span {
+    margin-left: auto;
+  }
+  .inventory-footer button {
+    width: 28px;
+    height: 28px;
+    color: var(--text-muted);
+  }
+  .inventory-footer button:disabled {
+    opacity: 0.3;
+  }
+  .inventory-footer strong {
+    display: grid;
+    width: 34px;
+    height: 29px;
+    place-items: center;
+    border-radius: 5px;
+    background: var(--accent);
+    color: #031514;
+  }
 
   .inventory .empty-hero {
     position: relative;
@@ -1199,8 +2214,12 @@
     overflow: hidden;
     border-radius: 0 0 9px 9px;
     background:
-       radial-gradient(circle at 50% 8%, rgba(255, 255, 255, 0.02), transparent 34%),
-      linear-gradient(180deg, color-mix(in srgb, var(--bg-secondary), white 1.5%), var(--bg-secondary));
+      radial-gradient(circle at 50% 8%, rgba(255, 255, 255, 0.02), transparent 34%),
+      linear-gradient(
+        180deg,
+        color-mix(in srgb, var(--bg-secondary), white 1.5%),
+        var(--bg-secondary)
+      );
   }
   .inventory .empty-hero::before {
     content: "";
@@ -1209,18 +2228,29 @@
     left: 50%;
     width: 440px;
     height: 1px;
-     background: linear-gradient(90deg, transparent, var(--border), transparent);
+    background: linear-gradient(90deg, transparent, var(--border), transparent);
     transform: translateX(-50%);
   }
   .empty-kicker {
     margin-bottom: 10px;
-     color: var(--text-muted);
+    color: var(--text-muted);
     font: 650 10px var(--font-mono);
-    letter-spacing: .14em;
+    letter-spacing: 0.14em;
     text-transform: uppercase;
   }
-  .inventory .empty-hero h2 { margin: 0; font-size: 24px; font-weight: 650; letter-spacing: -.035em; }
-  .inventory .empty-hero-sub { max-width: 540px; margin: 8px auto 32px; color: var(--text-muted); font-size: 12px; line-height: 1.6; }
+  .inventory .empty-hero h2 {
+    margin: 0;
+    font-size: 24px;
+    font-weight: 650;
+    letter-spacing: -0.035em;
+  }
+  .inventory .empty-hero-sub {
+    max-width: 540px;
+    margin: 8px auto 32px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.6;
+  }
   .inventory .template-grid {
     display: grid;
     width: min(920px, 100%);
@@ -1242,13 +2272,22 @@
     border: 1px solid var(--border-subtle);
     border-radius: 10px;
     background:
-      linear-gradient(145deg, color-mix(in srgb, var(--bg-tertiary), transparent 28%), transparent 58%),
+      linear-gradient(
+        145deg,
+        color-mix(in srgb, var(--bg-tertiary), transparent 28%),
+        transparent 58%
+      ),
       var(--bg-secondary);
     color: inherit;
     text-align: left;
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.025), 0 8px 22px rgba(0,0,0,.12);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.025),
+      0 8px 22px rgba(0, 0, 0, 0.12);
     transform: none;
-    transition: border-color 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+    transition:
+      border-color 160ms ease,
+      transform 160ms ease,
+      box-shadow 160ms ease;
   }
   .inventory .template-card::after {
     content: "→";
@@ -1257,31 +2296,48 @@
     bottom: 14px;
     color: var(--text-dim);
     font-size: 15px;
-    transition: color 160ms ease, transform 160ms ease;
+    transition:
+      color 160ms ease,
+      transform 160ms ease;
   }
   .inventory .template-card:hover {
-     border-color: var(--border-hover);
-     background:
-       linear-gradient(145deg, rgba(255, 255, 255, 0.025), transparent 62%),
-       var(--bg-secondary);
-     box-shadow: 0 14px 30px rgba(0,0,0,.22);
+    border-color: var(--border-hover);
+    background:
+      linear-gradient(145deg, rgba(255, 255, 255, 0.025), transparent 62%), var(--bg-secondary);
+    box-shadow: 0 14px 30px rgba(0, 0, 0, 0.22);
     transform: translateY(-3px);
   }
-   .inventory .template-card:hover::after { color: var(--text-primary); transform: translateX(3px); }
+  .inventory .template-card:hover::after {
+    color: var(--text-primary);
+    transform: translateX(3px);
+  }
   .inventory .tmpl-icon {
     display: grid;
     width: 42px;
     height: 42px;
     place-items: center;
-     border: 1px solid var(--border);
+    border: 1px solid var(--border);
     border-radius: 9px;
-     background: var(--bg-tertiary);
-     color: var(--text-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
   }
-  .inventory .tmpl-name { color: var(--text-primary); font-size: 13px; font-weight: 650; letter-spacing: -.01em; }
-  .inventory .tmpl-desc { max-width: calc(100% - 22px); color: var(--text-muted); font-size: 10.5px; line-height: 1.5; }
+  .inventory .tmpl-name {
+    color: var(--text-primary);
+    font-size: 13px;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+  }
+  .inventory .tmpl-desc {
+    max-width: calc(100% - 22px);
+    color: var(--text-muted);
+    font-size: 10.5px;
+    line-height: 1.5;
+  }
 
-  .modal-overlay { background: rgba(0, 4, 6, .78); backdrop-filter: blur(8px) saturate(.8); }
+  .modal-overlay {
+    background: rgba(0, 4, 6, 0.78);
+    backdrop-filter: blur(8px) saturate(0.8);
+  }
   .modal.modal-wide {
     width: min(720px, calc(100vw - 32px));
     max-width: 720px;
@@ -1290,19 +2346,85 @@
     border-color: color-mix(in srgb, var(--border), white 8%);
     border-radius: 12px;
     background: var(--bg-secondary);
-    box-shadow: 0 32px 90px rgba(0,0,0,.62), inset 0 1px 0 rgba(255,255,255,.035);
+    box-shadow:
+      0 32px 90px rgba(0, 0, 0, 0.62),
+      inset 0 1px 0 rgba(255, 255, 255, 0.035);
   }
-  .create-header { display: flex; align-items: center; justify-content: space-between; padding: 20px 22px; border-bottom: 1px solid var(--border-subtle); }
-  .create-heading { display: flex; align-items: center; gap: 12px; }
-  .create-mark { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid color-mix(in srgb, var(--accent), transparent 65%); border-radius: 9px; background: var(--accent-glow); color: var(--accent); font-size: 22px; font-weight: 300; }
-  .modal .create-heading h2 { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 650; letter-spacing: -.015em; }
-  .create-heading p { margin-top: 3px; color: var(--text-muted); font-size: 10.5px; }
-  .modal-close { display: grid; width: 32px; height: 32px; place-items: center; border-radius: 6px; color: var(--text-muted); font-size: 20px; font-weight: 300; }
-  .modal-close:hover { background: var(--bg-tertiary); color: var(--text-primary); }
-  .create-body { display: flex; flex-direction: column; gap: 24px; padding: 22px; }
-  .template-picker { min-width: 0; border: 0; }
-  .template-picker legend { margin-bottom: 10px; color: var(--text-secondary); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
-  .modal .template-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px; width: 100%; margin: 0; }
+  .create-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 20px 22px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+  .create-heading {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .create-mark {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid color-mix(in srgb, var(--accent), transparent 65%);
+    border-radius: 9px;
+    background: var(--accent-glow);
+    color: var(--accent);
+    font-size: 22px;
+    font-weight: 300;
+  }
+  .modal .create-heading h2 {
+    margin: 0;
+    color: var(--text-primary);
+    font-size: 15px;
+    font-weight: 650;
+    letter-spacing: -0.015em;
+  }
+  .create-heading p {
+    margin-top: 3px;
+    color: var(--text-muted);
+    font-size: 10.5px;
+  }
+  .modal-close {
+    display: grid;
+    width: 32px;
+    height: 32px;
+    place-items: center;
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 20px;
+    font-weight: 300;
+  }
+  .modal-close:hover {
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .create-body {
+    display: flex;
+    flex-direction: column;
+    gap: 24px;
+    padding: 22px;
+  }
+  .template-picker {
+    min-width: 0;
+    border: 0;
+  }
+  .template-picker legend {
+    margin-bottom: 10px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .modal .template-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 9px;
+    width: 100%;
+    margin: 0;
+  }
   .modal .template-card {
     position: relative;
     display: grid;
@@ -1313,61 +2435,249 @@
     padding: 13px;
     border: 1px solid var(--border-subtle);
     border-radius: 8px;
-    background: linear-gradient(135deg, color-mix(in srgb, var(--bg-tertiary), transparent 48%), transparent), var(--bg-secondary);
+    background:
+      linear-gradient(135deg, color-mix(in srgb, var(--bg-tertiary), transparent 48%), transparent),
+      var(--bg-secondary);
     color: inherit;
     text-align: left;
     box-shadow: none;
     transform: none;
   }
-  .modal .template-card:hover { border-color: var(--border-hover); background: var(--bg-tertiary); transform: none; box-shadow: none; }
-  .modal .template-card.active { border-color: color-mix(in srgb, var(--accent), transparent 25%); background: var(--accent-glow); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%); }
-  .modal-template-icon { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-primary); color: var(--text-muted); font: 17px var(--font-mono); }
-  .template-card.active .modal-template-icon { border-color: color-mix(in srgb, var(--accent), transparent 55%); background: color-mix(in srgb, var(--accent-glow), var(--bg-primary) 45%); color: var(--accent); }
-  .template-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
-  .template-copy strong { color: var(--text-primary); font-size: 11.5px; font-weight: 620; }
-  .template-copy small { overflow: hidden; color: var(--text-muted); font-size: 9.5px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
-  .modal .template-meta { align-self: end; color: var(--text-dim); font: 8.5px var(--font-mono); white-space: nowrap; }
-  .selected-check { position: absolute; top: 7px; right: 8px; color: var(--accent); font-size: 10px; }
-  .pipeline-details { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 20px; border-top: 1px solid var(--border-subtle); }
-  .details-heading { display: flex; grid-column: 1 / -1; align-items: baseline; justify-content: space-between; }
-  .details-heading span { color: var(--text-secondary); font-size: 10px; font-weight: 650; letter-spacing: .08em; text-transform: uppercase; }
-  .details-heading small { color: var(--text-dim); font-size: 9px; }
-  .modal .form-group { margin: 0; }
-  .modal .form-group label { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: var(--text-secondary); font-size: 10px; font-weight: 550; letter-spacing: 0; text-transform: none; }
-  .modal .form-group label span { color: var(--text-dim); font-size: 8.5px; font-weight: 400; }
-  .modal .form-group input { height: 38px; padding: 0 11px; border-color: var(--border); border-radius: 6px; background: var(--bg-primary); font-size: 11px; }
-  .modal .form-group input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-glow); }
-  .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin: 0; padding: 14px 22px; border-top: 1px solid var(--border-subtle); background: color-mix(in srgb, var(--bg-primary), transparent 45%); }
-  .modal .modal-actions button { min-height: 34px; padding-inline: 14px; font-size: 11px; }
-  .modal .modal-actions .btn-primary { gap: 9px; }
-  .modal .modal-actions .btn-primary:disabled { opacity: .45; cursor: not-allowed; }
+  .modal .template-card:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-tertiary);
+    transform: none;
+    box-shadow: none;
+  }
+  .modal .template-card.active {
+    border-color: color-mix(in srgb, var(--accent), transparent 25%);
+    background: var(--accent-glow);
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent), transparent 82%);
+  }
+  .modal-template-icon {
+    display: grid;
+    width: 38px;
+    height: 38px;
+    place-items: center;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-primary);
+    color: var(--text-muted);
+    font: 17px var(--font-mono);
+  }
+  .template-card.active .modal-template-icon {
+    border-color: color-mix(in srgb, var(--accent), transparent 55%);
+    background: color-mix(in srgb, var(--accent-glow), var(--bg-primary) 45%);
+    color: var(--accent);
+  }
+  .template-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .template-copy strong {
+    color: var(--text-primary);
+    font-size: 11.5px;
+    font-weight: 620;
+  }
+  .template-copy small {
+    overflow: hidden;
+    color: var(--text-muted);
+    font-size: 9.5px;
+    line-height: 1.35;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .modal .template-meta {
+    align-self: end;
+    color: var(--text-dim);
+    font: 8.5px var(--font-mono);
+    white-space: nowrap;
+  }
+  .selected-check {
+    position: absolute;
+    top: 7px;
+    right: 8px;
+    color: var(--accent);
+    font-size: 10px;
+  }
+  .pipeline-details {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-subtle);
+  }
+  .details-heading {
+    display: flex;
+    grid-column: 1 / -1;
+    align-items: baseline;
+    justify-content: space-between;
+  }
+  .details-heading span {
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 650;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+  .details-heading small {
+    color: var(--text-dim);
+    font-size: 9px;
+  }
+  .modal .form-group {
+    margin: 0;
+  }
+  .modal .form-group label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 7px;
+    color: var(--text-secondary);
+    font-size: 10px;
+    font-weight: 550;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .modal .form-group label span {
+    color: var(--text-dim);
+    font-size: 8.5px;
+    font-weight: 400;
+  }
+  .modal .form-group input {
+    height: 38px;
+    padding: 0 11px;
+    border-color: var(--border);
+    border-radius: 6px;
+    background: var(--bg-primary);
+    font-size: 11px;
+  }
+  .modal .form-group input:focus {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-glow);
+  }
+  .modal .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin: 0;
+    padding: 14px 22px;
+    border-top: 1px solid var(--border-subtle);
+    background: color-mix(in srgb, var(--bg-primary), transparent 45%);
+  }
+  .modal .modal-actions button {
+    min-height: 34px;
+    padding-inline: 14px;
+    font-size: 11px;
+  }
+  .modal .modal-actions .btn-primary {
+    gap: 9px;
+  }
+  .modal .modal-actions .btn-primary:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
 
   @media (max-width: 768px) {
-    .page-header { min-height: 0; align-items: flex-start; flex-direction: column; gap: 18px; padding: 24px 20px; }
-    .header-actions { width: 100%; } .header-actions button { flex: 1; justify-content: center; }
-    .search-bar { width: 100%; }
-    .table-header { display: none; }
-    .table-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 10px; }
-    .td-name { flex: 1; min-width: 60%; }
-    .td-schedule, .td-nodes, .td-runs, .td-next { font-size: 10px; }
-    .health-strip { grid-template-columns: repeat(2, 1fr); }
-    .health-strip button:nth-child(2) { border-right: 0; } .health-strip button:nth-child(-n+2) { border-bottom: 1px solid var(--border-subtle); }
-    .inventory { min-height: 520px; }
-    .inventory .filter-bar { display: flex; align-items: stretch; padding: 12px; } .inventory .filter-controls { width: 100%; overflow-x: auto; padding-bottom: 3px; scrollbar-width: thin; }
-    .inventory .filter-select, .toolbar-button { flex: 0 0 auto; }
-    .table-scroll { overscroll-behavior-x: contain; scrollbar-color: var(--accent) var(--bg-tertiary); }
-    .table-scroll table { min-width: 980px; }
-    .table-scroll th:first-child, .table-scroll td:first-child { position: sticky; left: 0; z-index: 2; background: var(--bg-secondary); box-shadow: 1px 0 0 var(--border-subtle); }
-    .table-scroll tr:hover td:first-child, .table-scroll tr.selected td:first-child { background: var(--bg-card-hover); }
-    .inventory-footer > span { display: none; }
-    .inventory .template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); max-width: 520px; }
-    .inventory .empty-hero { padding-inline: 20px; }
-    .pipeline-details { grid-template-columns: 1fr; } .details-heading { grid-column: 1; }
+    .search-bar {
+      width: 100%;
+    }
+    .table-header {
+      display: none;
+    }
+    .table-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 10px;
+    }
+    .td-name {
+      flex: 1;
+      min-width: 60%;
+    }
+    .td-schedule,
+    .td-nodes,
+    .td-runs,
+    .td-next {
+      font-size: 10px;
+    }
+    .health-strip {
+      grid-template-columns: repeat(2, 1fr);
+    }
+    .health-strip button:nth-child(2) {
+      border-right: 0;
+    }
+    .health-strip button:nth-child(-n + 2) {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .inventory {
+      min-height: 520px;
+    }
+    .inventory .filter-bar {
+      display: flex;
+      align-items: stretch;
+      padding: 12px;
+    }
+    .inventory .filter-controls {
+      width: 100%;
+      overflow-x: auto;
+      padding-bottom: 3px;
+      scrollbar-width: thin;
+    }
+    .inventory .filter-select,
+    .toolbar-button {
+      flex: 0 0 auto;
+    }
+    .table-scroll {
+      overscroll-behavior-x: contain;
+      scrollbar-color: var(--accent) var(--bg-tertiary);
+    }
+    .table-scroll table {
+      min-width: 980px;
+    }
+    .table-scroll th:first-child,
+    .table-scroll td:first-child {
+      position: sticky;
+      left: 0;
+      z-index: 2;
+      background: var(--bg-secondary);
+      box-shadow: 1px 0 0 var(--border-subtle);
+    }
+    .table-scroll tr:hover td:first-child,
+    .table-scroll tr.selected td:first-child {
+      background: var(--bg-card-hover);
+    }
+    .inventory-footer > span {
+      display: none;
+    }
+    .inventory .template-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      max-width: 520px;
+    }
+    .inventory .empty-hero {
+      padding-inline: 20px;
+    }
+    .pipeline-details {
+      grid-template-columns: 1fr;
+    }
+    .details-heading {
+      grid-column: 1;
+    }
   }
   @media (max-width: 520px) {
-    .inventory .template-grid { grid-template-columns: minmax(0, 320px); }
-    .inventory .template-card { min-height: 145px; }
-    .modal .template-grid { grid-template-columns: 1fr; }
-    .create-body { max-height: 70vh; overflow-y: auto; }
+    .inventory .template-grid {
+      grid-template-columns: minmax(0, 320px);
+    }
+    .inventory .template-card {
+      min-height: 145px;
+    }
+    .modal .template-grid {
+      grid-template-columns: 1fr;
+    }
+    .create-body {
+      max-height: 70vh;
+      overflow-y: auto;
+    }
   }
 </style>
