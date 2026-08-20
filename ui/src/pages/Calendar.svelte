@@ -2,6 +2,7 @@
   import { onMount, tick } from "svelte";
   import { notify } from "../lib/toast";
   import { authHeaders } from "../lib/auth";
+  import PageHeader from "../components/PageHeader.svelte";
   import Skeleton from "../components/Skeleton.svelte";
 
   interface CalendarDay {
@@ -221,14 +222,20 @@
 </script>
 
 <div class="calendar-page animate-in">
-  <header class="page-header">
-    <div class="header-left">
-      <p class="eyebrow">Organization control center</p>
-      <h1>Run Calendar</h1>
-      <p class="page-subtitle">A year-wide operating record of execution volume, reliability, and active days.</p>
-    </div>
-    <span class="meta">{loading ? "Loading execution record" : loadError ? "Execution record unavailable" : `${totalRuns} runs · ${activeDays} active days`}</span>
-  </header>
+  <PageHeader
+    brandIcon="calendar"
+    kicker="Observability"
+    title="Run Calendar"
+    description="A year-wide operating record of execution volume, reliability, and active days."
+  >
+    <span slot="extra-action" class="meta"
+      >{loading
+        ? "Loading execution record"
+        : loadError
+          ? "Execution record unavailable"
+          : `${totalRuns} runs · ${activeDays} active days`}</span
+    >
+  </PageHeader>
 
   <section class="stats-bar" aria-label="Calendar metrics">
     <div class="stat">
@@ -238,12 +245,16 @@
     </div>
     <div class="stat">
       <span class="stat-marker success"></span>
-      <span class="stat-value" style="color: var(--cal-ok)">{loading || loadError ? "—" : totalSuccess}</span>
+      <span class="stat-value" style="color: var(--cal-ok)"
+        >{loading || loadError ? "—" : totalSuccess}</span
+      >
       <span class="stat-label">Succeeded</span>
     </div>
     <div class="stat">
       <span class="stat-marker failed"></span>
-      <span class="stat-value" style="color: var(--cal-fail)">{loading || loadError ? "—" : totalFailed}</span>
+      <span class="stat-value" style="color: var(--cal-fail)"
+        >{loading || loadError ? "—" : totalFailed}</span
+      >
       <span class="stat-label">Failed</span>
     </div>
     <div class="stat">
@@ -258,7 +269,7 @@
         style="color: {successRate >= 95
           ? 'var(--cal-ok)'
           : successRate >= 70
-            ? '#c79a52'
+            ? 'var(--cal-warning)'
             : successRate > 0
               ? 'var(--cal-fail)'
               : 'var(--text-dim)'}"
@@ -271,7 +282,11 @@
 
   {#if loading}
     <div class="loading-card" aria-live="polite">
-      <div><strong>Building the execution record</strong><span>Aggregating 365 days of run outcomes.</span></div>
+      <div>
+        <strong>Building the execution record</strong><span
+          >Aggregating 365 days of run outcomes.</span
+        >
+      </div>
       <Skeleton height="40px" /><Skeleton height="220px" />
     </div>
   {:else if loadError}
@@ -457,7 +472,11 @@
           {/if}
           <span
             class="detail-stat rate"
-            style:color={sr >= 95 ? "var(--cal-ok)" : sr >= 70 ? "#c79a52" : "var(--cal-fail)"}
+            style:color={sr >= 95
+              ? "var(--cal-ok)"
+              : sr >= 70
+                ? "var(--cal-warning)"
+                : "var(--cal-fail)"}
           >
             <strong>{sr.toFixed(0)}%</strong> success rate
           </span>
@@ -486,46 +505,9 @@
     --cal-ok: #4f9d6c;
     --cal-fail: #c4736e;
     --cal-run: #6c8ec4;
+    --cal-warning: #c1974f; /* same muted family as ok/fail/run above; was a bare inline #c79a52 literal in two places */
   }
 
-  .page-header {
-    position: relative;
-    display: flex;
-    min-height: 154px;
-    align-items: center;
-    justify-content: space-between;
-    gap: 24px;
-    margin-bottom: -18px;
-    padding: 28px 30px 46px;
-    overflow: hidden;
-    border: 1px solid var(--border-subtle);
-    border-radius: 12px 12px 0 0;
-    background:
-      radial-gradient(circle at 88% 0%, color-mix(in srgb, var(--accent), transparent 78%), transparent 38%),
-      linear-gradient(125deg, color-mix(in srgb, var(--bg-tertiary), transparent 12%), var(--bg-secondary) 62%);
-    box-shadow: inset 0 1px 0 rgba(255,255,255,.035);
-  }
-  .header-left {
-    min-width: 0;
-  }
-  .eyebrow {
-    margin-bottom: 5px;
-    color: var(--accent);
-    font: 650 9px var(--font-mono);
-    letter-spacing: 0.14em;
-    text-transform: uppercase;
-  }
-  .page-header h1 {
-    color: var(--text-primary);
-    font-size: clamp(1.75rem, 3vw, 2.35rem);
-    font-weight: 650;
-    letter-spacing: -0.035em;
-  }
-  .page-subtitle {
-    margin-top: 4px;
-    color: var(--text-muted);
-    font-size: 12px;
-  }
   .meta {
     flex: none;
     padding-bottom: 2px;
@@ -560,7 +542,9 @@
       var(--bg-secondary);
     box-shadow: none;
   }
-  .stat:last-child { border-right: 0; }
+  .stat:last-child {
+    border-right: 0;
+  }
   .stat-marker {
     position: absolute;
     inset: 0 auto 0 0;
@@ -601,16 +585,72 @@
     font-size: 13px;
     box-shadow: var(--shadow-card);
   }
-  .empty-card h2 { margin: 7px 0 6px; color: var(--text-primary); font-size: 19px; letter-spacing: -.025em; }
-  .empty-card p { max-width: 500px; margin: 0 auto; line-height: 1.6; }
-  .empty-card a, .empty-card button { display: inline-flex; min-height: 34px; align-items: center; margin-top: 18px; padding: 0 14px; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); font-size: 11px; }
-  .empty-card a:hover, .empty-card button:hover { border-color: var(--accent); color: var(--accent); }
-  .empty-kicker { color: var(--accent); font: 650 9px var(--font-mono); letter-spacing: .13em; text-transform: uppercase; }
-  .error-card { background: radial-gradient(circle at 50% 25%, color-mix(in srgb, var(--failed), transparent 92%), transparent 38%), var(--bg-secondary); }
-  .loading-card { display: flex; flex-direction: column; gap: 8px; padding: 18px; border: 1px solid var(--border-subtle); border-radius: 9px; background: var(--bg-secondary); }
-  .loading-card > div { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; }
-  .loading-card strong { color: var(--text-primary); font-size: 12px; }
-  .loading-card span { color: var(--text-muted); font-size: 10px; }
+  .empty-card h2 {
+    margin: 7px 0 6px;
+    color: var(--text-primary);
+    font-size: 19px;
+    letter-spacing: -0.025em;
+  }
+  .empty-card p {
+    max-width: 500px;
+    margin: 0 auto;
+    line-height: 1.6;
+  }
+  .empty-card a,
+  .empty-card button {
+    display: inline-flex;
+    min-height: 34px;
+    align-items: center;
+    margin-top: 18px;
+    padding: 0 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text-secondary);
+    font-size: 11px;
+  }
+  .empty-card a:hover,
+  .empty-card button:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .empty-kicker {
+    color: var(--accent);
+    font: 650 9px var(--font-mono);
+    letter-spacing: 0.13em;
+    text-transform: uppercase;
+  }
+  .error-card {
+    background:
+      radial-gradient(
+        circle at 50% 25%,
+        color-mix(in srgb, var(--failed), transparent 92%),
+        transparent 38%
+      ),
+      var(--bg-secondary);
+  }
+  .loading-card {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 18px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 9px;
+    background: var(--bg-secondary);
+  }
+  .loading-card > div {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    margin-bottom: 8px;
+  }
+  .loading-card strong {
+    color: var(--text-primary);
+    font-size: 12px;
+  }
+  .loading-card span {
+    color: var(--text-muted);
+    font-size: 10px;
+  }
 
   /* ── Sparkline trend strip ───────────────────────────────────── */
   .trend-card {
@@ -975,25 +1015,22 @@
     .calendar-page {
       gap: 14px;
     }
-    .page-header {
-      align-items: flex-start;
-      flex-direction: column;
-      gap: 14px;
-      margin-bottom: -14px;
-      padding: 24px 20px 42px;
-    }
-    .page-header h1 {
-      font-size: 20px;
-    }
     .meta {
       padding: 0;
     }
     .stats-bar {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    .stat { border-bottom: 1px solid var(--border-subtle); }
-    .stat:nth-child(2n) { border-right: 0; }
-    .stat:last-child { grid-column: 1 / -1; border-bottom: 0; }
+    .stat {
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .stat:nth-child(2n) {
+      border-right: 0;
+    }
+    .stat:last-child {
+      grid-column: 1 / -1;
+      border-bottom: 0;
+    }
     .stat {
       min-height: 70px;
     }
