@@ -1121,7 +1121,7 @@
 
   .btn-primary {
     background: var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     padding: var(--space-sm) var(--space-md);
     border-radius: var(--radius-md);
     font-weight: 500;

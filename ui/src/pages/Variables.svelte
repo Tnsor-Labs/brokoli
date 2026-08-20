@@ -722,7 +722,7 @@
     font-weight: 500;
     background: var(--accent);
     border: 1px solid var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     transition: all 150ms ease;
   }
   .btn-primary:hover {
@@ -878,7 +878,7 @@
     border: 1px solid var(--accent);
     border-radius: 6px;
     background: var(--accent);
-    color: white;
+    color: var(--bk-action-primary-fg);
     font-size: 11px;
     font-weight: 550;
     transition: all 150ms ease;
