@@ -11,6 +11,141 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.57] - 2026-08-21
+
+### Fixed
+
+- **Dark mode restraint pass: gradient washes, decorative green, and a
+  green-tinted "neutral" ramp** (#263) — @hc12r. Direct user feedback on
+  the live product ("green eating the whole screen," "hard to read")
+  surfaced three separate problems the v1.4/v1.5 identity pass had
+  missed by never validating against the running app: large-surface
+  gradients built from `--accent-glow` (a token with no light/dark
+  distinction) reading as haze on a near-black canvas; individually-
+  small decorative green touches (kicker text, icon tiles, step
+  badges, a sidebar pill) stacking into visual noise across one view;
+  and, once those were fixed, a deeper issue — every foundational dark
+  surface still carried a faint green component in its own RGB ratio,
+  which reads as a cast across a full screen even with zero "green UI"
+  on it. Introduces `--surface-wash` (transparent in dark, light-only
+  elsewhere) for the first problem, a functional/decorative split for
+  the second, and adopts a genuinely neutral (no hue identity) surface
+  ramp plus dedicated `--bk-brand-field`/`--bk-selected` tokens for the
+  third, per `brokoli-visual-identity-v1.6-neutral-dark.html`.
+
+## [0.10.56] - 2026-08-20
+
+### Changed
+
+- **Apply Brokoli visual identity v1.4 + v1.5** (#261) — @hc12r.
+  Introduces the v1.5 theme-role token layer (`--bk-canvas/-shell/-
+  surface-1/2/3/-border[-strong]/-text-*/-brand-*`), re-points dark
+  theme's semantic tokens to alias it, and rolls out the new
+  `PageHeader` standard header component across the app in place of
+  three inconsistent treatments (a gradient hero, a free-floating
+  title, and card-based headers). Fixes two real bugs found along the
+  way: dark theme's canvas/input backgrounds were literally
+  `#000000`, and dark theme cards still cast a real box-shadow despite
+  the spec calling for none. Also fixes the FOUC-prevention script,
+  which read a `localStorage` key that theme.ts never wrote to, so the
+  anti-flash guard never actually worked.
+
+### Fixed
+
+- **PageHeader clipping absolutely-positioned overlays** (#262) —
+  @hc12r. `AlertDrawer`'s dropdown panel (meant to float below the
+  header) was silently clipped by `overflow:hidden` on the header
+  card, introduced by the v1.4/v1.5 rollout. Removes the blanket
+  clip in favor of per-section corner rounding, so header content can
+  round its own corners without cutting off anything positioned
+  absolutely inside the header row.
+
+## [0.10.55] - 2026-08-19
+
+### Fixed
+
+- **SSRF-hardening regression: self-referential sample data broken on
+  k8s** (#260) — @hc12r. The SSRF fix in #253 rejected a legitimate
+  self-referential sample-data request pattern under Kubernetes
+  networking, where a pod reaching its own service IP looks identical
+  to an SSRF attempt from the outside. Narrows the check to distinguish
+  the two cases instead of blocking both.
+
+## [0.10.54] - 2026-08-19
+
+Note: `v0.10.53` was tagged but its release build failed on a flaky
+timing-sensitive test (`TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers`
+in `engine`, unrelated to the commits it carried) and was never
+published. Every change it would have shipped is included here,
+along with what merged immediately after.
+
+### Security
+
+A targeted audit (5 parallel passes: multi-tenant scoping, injection/
+traversal, secrets, SSRF, RBAC completeness) across core and EE found
+9 concrete issues. Read together they weren't nine unrelated bugs —
+two systemic gaps (ownership checks and outbound-URL safety
+implemented per-handler, by hand, with no enforcement point that fails
+closed when a handler forgets) wearing nine symptoms. ADR-022 (below)
+is the design record; these are the direct fixes:
+
+- **SSRF: `sink_api`, pipeline hooks, and connection test had zero
+  protection** (#253) — @hc12r. Introduces `pkg/netguard`, the single
+  sanctioned SSRF-safe HTTP client, and requires it at every outbound
+  call site this audit found unprotected.
+- **Org-scoping gap in run handlers and OSS RBAC role conflation**
+  (#254) — @hc12r. Run handlers were missing an org-ownership check
+  present elsewhere in the codebase; OSS's RBAC model conflated two
+  roles that EE keeps distinct.
+- **Second-order SQL injection via unescaped identifiers** (#256) —
+  @hc12r.
+- **Plaintext source password leaking into migrate-node run logs**
+  (#257) — @hc12r.
+- **Webhook token comparison not actually constant-time** (#258) —
+  @hc12r. A correct constant-time-compare helper already existed
+  elsewhere in the codebase; this call site wasn't using it.
+- **Kubectl argument injection in k8s secret ref resolution** (#259)
+  — @hc12r.
+- **Static API key auth never actually worked past bootstrap** (#251)
+  — @hc12r. Found via local end-to-end SDK testing, not code review:
+  `APIKeyAuth` and `JWTAuth` are independent stacked middlewares, and a
+  validated static key produced no signal `JWTAuth` could recognize —
+  every `Client(api_key=...)` call beyond initial admin bootstrap
+  silently required a JWT a static key was never going to produce.
+  `APIKeyAuth` now stamps admin-equivalent claims into the request
+  context on success, in the same shape a real JWT produces.
+
+### Added
+
+- **Drag-and-drop node placement from the palette to the canvas**
+  (#247) — @hc12r.
+
+### Fixed
+
+- **CI hang: drop `--with-deps` from playwright install, add job
+  timeouts** (#248) — @hc12r.
+- **sodp: broadcast a mutation's delta before acking it, not after**
+  (#249) — @hc12r. Ordering bug found while chasing an apparently-flaky
+  test; the delta broadcast and the ack were sequenced against spec
+  §8.3.
+
+### Changed
+
+- **Apply official brand identity to README and favicon** (#250) —
+  @hc12r. Replaces the old placeholder favicon (unrelated shape,
+  unrelated colors) with the official Forked-B mark, and recolors
+  README badges from an arbitrary blue to the official brand green.
+
+### Docs
+
+- **ADR-021: browser-based login for the CLI and SDK** (`brokoli auth
+  login`) (#252) — @hc12r.
+- **ADR-022: enforce tenant isolation and outbound-request safety
+  structurally** (#255) — @hc12r. Design record for the systemic
+  pattern behind the security batch above — status: proposed, since
+  the structural store-layer scoping decision is a larger migration
+  than the direct fixes already shipped.
+
 ## [0.10.52] - 2026-08-18
 
 ### Changed
