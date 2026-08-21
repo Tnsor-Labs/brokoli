@@ -427,7 +427,7 @@
   .nav-item.active {
     position: relative;
     color: var(--nav-active-text);
-    background: var(--nav-hover-bg);
+    background: var(--nav-active-bg);
     font-weight: 700;
   }
   .nav-item.active::before {

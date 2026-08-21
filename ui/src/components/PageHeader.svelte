@@ -104,7 +104,7 @@
     align-items: center;
     justify-content: center;
     background: var(--bk-surface-2);
-    color: var(--bk-text-secondary);
+    color: var(--bk-brand-signal);
     border: 1px solid var(--bk-border-strong);
   }
   .header-text {
@@ -114,7 +114,7 @@
   .hk {
     display: block;
     margin-bottom: 3px;
-    color: var(--bk-text-tertiary);
+    color: var(--bk-brand-signal);
     font: 650 9px var(--font-mono);
     letter-spacing: 0.14em;
     text-transform: uppercase;
