@@ -1950,7 +1950,7 @@
   .plan-section {
     margin-bottom: var(--space-lg);
     padding: var(--space-lg);
-    background: linear-gradient(135deg, var(--bg-secondary), rgba(13, 148, 136, 0.05));
+    background: linear-gradient(135deg, var(--bg-secondary), var(--surface-wash));
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
   }

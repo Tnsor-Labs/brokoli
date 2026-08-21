@@ -43,40 +43,57 @@
  * below) is fixed in place.
  */
 :root[data-theme="dark"] {
-  --bk-canvas: #090d0c;
-  --bk-shell: #0d1211;
-  --bk-surface-1: #121817;
-  --bk-surface-2: #171e1c;
-  --bk-surface-3: #1d2623;
-  --bk-border: #25302c;
-  --bk-border-strong: #34403b;
-  --bk-text-primary: #f2f6f4;
-  --bk-text-secondary: #a4b0ab;
-  --bk-text-tertiary: #71807a;
-  --bk-disabled: #49534f;
+  /* v1.6 neutral-dark (brokoli-visual-identity-v1.6-neutral-dark.html):
+     the previous darker ramp still had a green component baked into
+     every foundational surface -- across a full screen that reads as a
+     cast, not decoration, and is the deeper cause behind "green eating
+     the screen" that no amount of removing individual green UI touches
+     could fix on its own. These values are genuinely neutral/cool, with
+     no hue identity of their own; --bk-brand-signal stays the one real
+     green in the system. */
+  --bk-canvas: #07090c;
+  --bk-shell: #0b0e12;
+  --bk-surface-1: #11151b;
+  --bk-surface-2: #171c23;
+  --bk-surface-3: #1d232b;
+  --bk-border: #252c36;
+  --bk-border-strong: #343d49;
+  --bk-text-primary: #f4f6f8;
+  --bk-text-secondary: #aab2be;
+  --bk-text-tertiary: #76808d;
+  --bk-disabled: #4c5562;
   --bk-brand-signal: var(--bk-brand);
   --bk-brand-soft: #0a3023;
   --bk-brand-hover: #0d3b2b;
+  /* Neutral field for persistent brand chrome (sidebar logo tile): the
+     mark itself carries the green, not the tile behind it -- "product
+     chrome != launcher icon" per the spec. */
+  --bk-brand-field: #161b22;
+  /* Neutral selected/active field, distinct from --bk-surface-2 in
+     intent even though the value matches today: active state is
+     communicated by the 2px rail + icon color, not a tinted fill. */
+  --bk-selected: #171c23;
   --bk-action-primary-bg: var(--bk-brand);
   --bk-action-primary-fg: var(--bk-ink);
-  --bk-brand-tile-border: #14513a;
+  --bk-brand-tile-border: var(--bk-border);
 }
 
 :root[data-theme="light"] {
-  --bk-canvas: #f4f7f5;
+  --bk-canvas: #f5f6f8;
   --bk-shell: #ffffff;
   --bk-surface-1: #ffffff;
-  --bk-surface-2: #f8faf9;
-  --bk-surface-3: #eef3f0;
-  --bk-border: #dde5e1;
-  --bk-border-strong: #c8d3ce;
-  --bk-text-primary: #0b1114;
-  --bk-text-secondary: #4e5c58;
-  --bk-text-tertiary: #75817d;
-  --bk-disabled: #a9b2ae;
+  --bk-surface-2: #f7f8fa;
+  --bk-surface-3: #eef1f4;
+  --bk-border: #dde1e7;
+  --bk-border-strong: #c7cdd6;
+  --bk-text-primary: #11141a;
+  --bk-text-secondary: #505866;
+  --bk-text-tertiary: #75808d;
+  --bk-disabled: #a8afb8;
   --bk-brand-signal: var(--bk-brand-deep);
   --bk-brand-soft: #e8f7ee;
   --bk-brand-hover: var(--bk-brand-mint);
+  --bk-selected: #f0f2f5;
   --bk-action-primary-bg: var(--bk-brand-deep);
   --bk-action-primary-fg: #ffffff;
   --bk-brand-tile-border: #c8e8d5;
@@ -113,12 +130,17 @@
   --accent-hover: var(--bk-status-success);
   --accent-glow: rgba(16, 184, 102, 0.08);
   --accent-glow-strong: rgba(16, 184, 102, 0.16);
+  /* v1.6: large-surface gradient washes (hero cards, modals) are a
+     light-mode-only device -- see brokoli-visual-identity-v1.6.html
+     page 08. Small-signal uses of --accent-glow (hover tints, focus
+     rings, badges) are unaffected and keep working in both themes. */
+  --surface-wash: transparent;
   --accent-text: #d4d4d8;
-  --brand-tile: #0a3327;
-  --nav-active-bg: #0b2b24;
-  --nav-hover-bg: #1c1c24;
+  --brand-tile: var(--bk-brand-field);
+  --nav-active-bg: var(--bk-selected);
+  --nav-hover-bg: var(--bk-surface-2);
   --nav-active-text: #edf7f2;
-  --nav-active-icon: #14c978;
+  --nav-active-icon: var(--bk-brand-signal);
   --account-bg: #0b211d;
 
   /* Status */
@@ -264,7 +286,7 @@
   --bg-input: #ffffff;
   --bg-card-hover: #f1f8f3;
   --bg-overlay: rgba(11, 17, 20, 0.4);
-  --nav-active-bg: var(--bk-brand-mint);
+  --nav-active-bg: var(--bk-selected);
   --nav-hover-bg: #edf4ef;
   --nav-active-text: var(--bk-brand-deep);
   --nav-active-icon: var(--bk-brand-deep);
@@ -288,6 +310,7 @@
   --accent-hover: #075c32;
   --accent-glow: rgba(10, 125, 68, 0.09);
   --accent-glow-strong: rgba(10, 125, 68, 0.18);
+  --surface-wash: var(--accent-glow);
   --accent-text: var(--bk-brand-deep);
 
   /* Status — all >= 4.5:1 on card, tertiary and canvas */

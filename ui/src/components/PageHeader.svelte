@@ -103,9 +103,9 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: var(--bk-brand-soft);
+    background: var(--bk-surface-2);
     color: var(--bk-brand-signal);
-    border: 1px solid var(--bk-brand-tile-border);
+    border: 1px solid var(--bk-border-strong);
   }
   .header-text {
     min-width: 0;

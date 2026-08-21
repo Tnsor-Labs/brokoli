@@ -331,7 +331,6 @@ curl -X POST ${baseUrl}/api/pipelines/PIPELINE_ID/webhook \\
     </div>
   </section>
 </div>
-padding: 7px 10px 0; border-inline: 1px solid var(--border-subtle); background: var(--bg-secondary);
 
 <style>
   .page {
@@ -346,7 +345,7 @@ padding: 7px 10px 0; border-inline: 1px solid var(--border-subtle); background: 
     background:
       linear-gradient(
         120deg,
-        color-mix(in srgb, var(--accent-glow), transparent 22%),
+        color-mix(in srgb, var(--surface-wash), transparent 22%),
         transparent 52%
       ),
       var(--bg-secondary);
@@ -536,7 +535,7 @@ padding: 7px 10px 0; border-inline: 1px solid var(--border-subtle); background: 
   }
   .connect-card:hover {
     border-color: color-mix(in srgb, var(--accent), transparent 45%);
-    background: linear-gradient(145deg, var(--accent-glow), transparent 55%), var(--bg-secondary);
+    background: linear-gradient(145deg, var(--surface-wash), transparent 55%), var(--bg-secondary);
     transform: translateY(-1px);
   }
   .card-index {
