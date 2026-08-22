@@ -711,7 +711,35 @@ func renewJobClaim(ctx context.Context, renewer extensions.JobQueueRenewer, jobI
 // with headroom for the SIGTERM-to-SIGKILL race: a job still running past
 // this point is abandoned to the execution-attempt lease/recovery system
 // (Tnsor-Labs/brokoli#6/#7/#9) rather than blocking shutdown indefinitely.
-const workerShutdownGracePeriod = 25 * time.Second
+var workerShutdownGracePeriod = defaultWorkerDrainTimeout()
+
+// defaultWorkerDrainTimeout resolves how long the dequeue loop waits for
+// in-flight jobs on SIGTERM.
+//
+// 25 seconds fits inside Kubernetes' default 30s
+// terminationGracePeriodSeconds, but it is far shorter than a real
+// pipeline: measured on the lab cluster, a job of 56 seconds was
+// abandoned by every graceful eviction — a KEDA scale-down, a node
+// drain, an ordinary rolling deploy — and recovery then failed the run
+// with "interrupted mid-execution" rather than retrying it. An
+// autoscaling fleet therefore kills work every time it shrinks.
+//
+// BROKOLI_WORKER_DRAIN_TIMEOUT lets an operator match the window to
+// their longest run. It only helps alongside a matching
+// terminationGracePeriodSeconds — the kernel's SIGKILL is not
+// negotiable — so the chart sets both from one value.
+func defaultWorkerDrainTimeout() time.Duration {
+	if v := os.Getenv("BROKOLI_WORKER_DRAIN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		log.Printf("WARNING: ignoring BROKOLI_WORKER_DRAIN_TIMEOUT=%q: expected a duration like 5m or a number of seconds", v)
+	}
+	return 25 * time.Second
+}
 
 // drainWorkerSlots waits for every in-flight worker job to finish, up to
 // timeout, and reports whether it fully drained in time.
