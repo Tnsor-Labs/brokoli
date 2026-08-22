@@ -1799,6 +1799,25 @@ func (s *PostgresStore) CountRunsByPipeline(pipelineID string) (int, error) {
 	return count, err
 }
 
+// CountRunsByStatus totals runs per status in one pass, for /metrics.
+func (s *PostgresStore) CountRunsByStatus() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT status, COUNT(*) FROM runs GROUP BY status`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, err
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
+}
+
 // --- Maintenance ---
 
 func (s *PostgresStore) PurgeRunsOlderThan(days int) (int64, error) {
