@@ -3,6 +3,7 @@ package api
 import (
 	"fmt"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -103,6 +104,23 @@ func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine, sched *engin
 		fmt.Fprintf(w, "# HELP brokoli_http_request_duration_avg_ms Average request duration in ms.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_http_request_duration_avg_ms gauge\n")
 		fmt.Fprintf(w, "brokoli_http_request_duration_avg_ms %.2f\n", avgDuration)
+		fmt.Fprintf(w, "# HELP brokoli_runs_by_status Runs per status across the deployment, from the store.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_runs_by_status gauge\n")
+
+		// Fleet-wide run totals, read from the store.
+		//
+		// The counters below this are per-process: runs execute on
+		// workers, so this endpoint on the API — the stable scrape
+		// target, and the only one that survives autoscaling — reported
+		// zero for every run metric while the fleet was busy, and a
+		// worker's own counts disappeared with the pod when KEDA scaled
+		// it away. These are derived from the runs table instead, so
+		// they describe the deployment rather than whichever process
+		// answered the scrape.
+		for status, count := range cachedRunCounts(s) {
+			fmt.Fprint(w, sprintfRunStatus(status, count))
+		}
+
 		fmt.Fprintf(w, "# HELP brokoli_pipeline_runs_total Total pipeline runs triggered.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_pipeline_runs_total counter\n")
 		fmt.Fprintf(w, "brokoli_pipeline_runs_total %d\n", e.RunsTotal)
@@ -190,4 +208,48 @@ func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine, sched *engin
 			fmt.Fprintf(w, "brokoli_leader_election_failures_total %d\n", sched.LeaderElectionFailures())
 		}
 	}
+}
+
+// runCountCache holds the last store-derived run totals so a scrape does
+// not become a database query every time. Prometheus scrapes on a fixed
+// interval, often from several replicas at once, and this is a GROUP BY
+// over the runs table.
+var runCountCache struct {
+	sync.Mutex
+	at     time.Time
+	counts map[string]int
+}
+
+// runCountCacheTTL is short enough that the numbers track reality
+// between scrapes and long enough that a burst of scrapes costs one
+// query. A package variable so tests do not have to wait it out.
+var runCountCacheTTL = 10 * time.Second
+
+// cachedRunCounts returns run totals per status, refreshing at most once
+// per TTL. On a query error it serves whatever it has rather than
+// dropping the series: a blip in the database should not look like the
+// fleet going idle.
+func cachedRunCounts(s store.Store) map[string]int {
+	runCountCache.Lock()
+	defer runCountCache.Unlock()
+
+	if time.Since(runCountCache.at) < runCountCacheTTL && runCountCache.counts != nil {
+		return runCountCache.counts
+	}
+	counts, err := s.CountRunsByStatus()
+	if err != nil {
+		if runCountCache.counts != nil {
+			return runCountCache.counts
+		}
+		return map[string]int{}
+	}
+	runCountCache.at = time.Now()
+	runCountCache.counts = counts
+	return counts
+}
+
+// sprintfRunStatus renders one run-status series line. Extracted so the
+// exposition format is testable without standing up an HTTP handler.
+func sprintfRunStatus(status string, count int) string {
+	return fmt.Sprintf("brokoli_runs_by_status{status=%q} %d\n", status, count)
 }

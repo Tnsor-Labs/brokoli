@@ -559,6 +559,14 @@ type CountStore interface {
 	CountConnections(workspaceID string) (int, error)
 	CountVariables(workspaceID string) (int, error)
 	CountRunsByPipeline(pipelineID string) (int, error)
+
+	// CountRunsByStatus totals runs per status across the whole
+	// deployment, for the metrics endpoint. In-process counters cannot
+	// answer this: runs execute on workers, so the API — the stable
+	// scrape target — reports zero for every run metric while the fleet
+	// is busy, and a worker's own counters vanish when autoscaling
+	// removes the pod.
+	CountRunsByStatus() (map[string]int, error)
 }
 
 // MaintenanceStore owns retention and size introspection. ADR-015 makes
