@@ -11,6 +11,26 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.60] - 2026-08-22
+
+### Fixed
+
+- **One-sided `range` quality checks were inverted** (#274) — @hc12r.
+  `min` and `max` each defaulted to `0`, so a check written as
+  `{"rule":"range","params":{"min":0}}` evaluated as `[0, 0]` and
+  reported every positive value as a violation — a blocking gate
+  asserting the opposite of its intent. An omitted bound now means
+  unbounded on that side, and a range check with neither bound is
+  reported as misconfigured rather than passing silently.
+
+- **Schema-qualified sink tables never resolved** (#274) — @hc12r.
+  `quoteIdent` wrapped a dotted name in a single pair of quotes, so a
+  sink writing to `analytics.daily_revenue` asked for a table whose
+  name contains a dot and failed with `relation does not exist` while
+  that relation existed. Each part is now quoted separately, with the
+  injection guard still applied across the whole identifier and empty
+  parts rejected.
+
 ## [0.10.59] - 2026-08-22
 
 ### Added
