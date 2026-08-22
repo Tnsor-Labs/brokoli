@@ -242,10 +242,23 @@ func getDialect(name string) dialect {
 }
 
 func (d dialect) quoteIdent(s string) string {
-	if d.quoteChar == "[" {
-		return "[" + s + "]"
+	// A dotted name is schema-qualified ("analytics.daily_revenue") and
+	// has to be quoted part by part. Wrapping the whole string in one
+	// pair of quotes asks the database for a table whose *name* contains
+	// a dot, in the default schema — so a sink pointed at another schema
+	// failed with "relation does not exist" while that relation plainly
+	// existed. Each part still goes through validateIdentifier upstream,
+	// which is what keeps the split safe: no part can carry a quote
+	// character or terminator.
+	parts := strings.Split(s, ".")
+	for i, part := range parts {
+		if d.quoteChar == "[" {
+			parts[i] = "[" + part + "]"
+		} else {
+			parts[i] = d.quoteChar + part + d.quoteChar
+		}
 	}
-	return d.quoteChar + s + d.quoteChar
+	return strings.Join(parts, ".")
 }
 
 // identifierBreakoutChars are the characters that let an identifier break
@@ -269,6 +282,17 @@ func validateIdentifier(s string) error {
 	}
 	if strings.ContainsAny(s, identifierBreakoutChars) {
 		return fmt.Errorf("identifier contains a character that cannot be used in a quoted SQL identifier")
+	}
+	// A dotted identifier is schema-qualified and quoteIdent will quote
+	// each part separately, so every part has to stand on its own: an
+	// empty one ("a..b", ".t", "t.") would produce an empty quoted
+	// token rather than a name.
+	if strings.Contains(s, ".") {
+		for _, part := range strings.Split(s, ".") {
+			if part == "" {
+				return fmt.Errorf("qualified identifier has an empty part")
+			}
+		}
 	}
 	return nil
 }
