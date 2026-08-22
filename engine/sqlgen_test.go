@@ -131,12 +131,29 @@ func TestGenerateSQL_NullHandling(t *testing.T) {
 			{"id": "2", "name": ""},
 		},
 	}
+	// nil is NULL. An empty string is an empty string: a database source
+	// distinguishes the two, and collapsing them here destroyed that.
+	// File sources, where the distinction genuinely does not exist, now
+	// resolve it at the loader (an empty CSV field arrives as nil), and
+	// EmptyStringAsNull restores the old behaviour for anyone who wants
+	// it at the sink.
 	sql, err := GenerateSQL(SQLGenConfig{Table: "t"}, ds)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(sql, "NULL") != 2 {
-		t.Errorf("expected 2 NULLs, got %d", strings.Count(sql, "NULL"))
+	if got := strings.Count(sql, "NULL"); got != 1 {
+		t.Errorf("expected 1 NULL (the nil), got %d in:\n%s", got, sql)
+	}
+	if !strings.Contains(sql, "''") {
+		t.Errorf("expected the empty string to survive as an empty literal:\n%s", sql)
+	}
+
+	sql, err = GenerateSQL(SQLGenConfig{Table: "t", EmptyStringAsNull: true}, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(sql, "NULL"); got != 2 {
+		t.Errorf("with EmptyStringAsNull, expected 2 NULLs, got %d", got)
 	}
 }
 
