@@ -143,7 +143,7 @@ func (f *RESTFetcher) FetchPageContext(ctx context.Context, source string, optio
 // SSRF guard itself) can relax it in TestMain; see fetchers_test.go.
 // Production always runs with the netguard.Default this is initialized
 // to.
-var outboundPolicy = netguard.Default
+var outboundPolicy = netguard.FromEnv()
 
 // SetOutboundPolicyForTesting overrides the SSRF policy RESTFetcher uses
 // for external URLs, for the lifetime of a test binary. Exported (not
