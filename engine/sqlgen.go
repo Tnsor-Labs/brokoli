@@ -204,6 +204,13 @@ type dialect struct {
 	boolTrue   string
 	boolFalse  string
 	typeMap    map[string]string
+
+	// tsLayout is how a time.Time is rendered for this dialect, and
+	// tsUTC says the dialect's literal carries no zone — those are
+	// converted to UTC first so the instant survives instead of being
+	// silently reinterpreted in the session's timezone.
+	tsLayout string
+	tsUTC    bool
 }
 
 func getDialect(name string) dialect {
@@ -212,31 +219,36 @@ func getDialect(name string) dialect {
 		return dialect{
 			name: "postgres", quoteChar: `"`, strQuote: "'", terminator: ";",
 			boolTrue: "TRUE", boolFalse: "FALSE",
-			typeMap: map[string]string{"INTEGER": "INTEGER", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
+			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
+			tsLayout: "2006-01-02 15:04:05.999999-07:00", tsUTC: false,
 		}
 	case "mysql":
 		return dialect{
 			name: "mysql", quoteChar: "`", strQuote: "'", terminator: ";",
 			boolTrue: "TRUE", boolFalse: "FALSE",
-			typeMap: map[string]string{"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
+			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
+			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
 		}
 	case "sqlite":
 		return dialect{
 			name: "sqlite", quoteChar: `"`, strQuote: "'", terminator: ";",
 			boolTrue: "1", boolFalse: "0",
-			typeMap: map[string]string{"INTEGER": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER", "TEXT": "TEXT", "TIMESTAMP": "TEXT"},
+			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER", "TEXT": "TEXT", "TIMESTAMP": "TEXT"},
+			tsLayout: "2006-01-02T15:04:05.999999Z07:00", tsUTC: false,
 		}
 	case "sqlserver", "mssql":
 		return dialect{
 			name: "sqlserver", quoteChar: "[", strQuote: "'", terminator: ";",
 			boolTrue: "1", boolFalse: "0",
-			typeMap: map[string]string{"INTEGER": "INT", "FLOAT": "FLOAT", "BOOLEAN": "BIT", "TEXT": "NVARCHAR(MAX)", "TIMESTAMP": "DATETIME2"},
+			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "FLOAT", "BOOLEAN": "BIT", "TEXT": "NVARCHAR(MAX)", "TIMESTAMP": "DATETIME2"},
+			tsLayout: "2006-01-02 15:04:05.9999999", tsUTC: true,
 		}
 	default:
 		return dialect{
 			name: "generic", quoteChar: `"`, strQuote: "'", terminator: ";",
 			boolTrue: "TRUE", boolFalse: "FALSE",
-			typeMap: map[string]string{"INTEGER": "INTEGER", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
+			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
+			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
 		}
 	}
 }
@@ -301,6 +313,26 @@ func (d dialect) formatValue(v interface{}) string {
 	if v == nil {
 		return "NULL"
 	}
+
+	// time.Time must be rendered in a layout the database parses.
+	// Falling through to %v produced Go's own format
+	// ("2026-08-22 00:00:00 +0000 UTC"), which every dialect rejects —
+	// so any pipeline carrying a DATE or TIMESTAMP column from a
+	// database source into a database sink failed on the write.
+	switch t := v.(type) {
+	case time.Time:
+		return d.formatTime(t)
+	case *time.Time:
+		if t == nil {
+			return "NULL"
+		}
+		return d.formatTime(*t)
+	case []byte:
+		// Several drivers hand back text columns as bytes; %v would
+		// render the byte values instead of the string.
+		v = string(t)
+	}
+
 	s := fmt.Sprintf("%v", v)
 	if s == "" {
 		return "NULL"
@@ -321,6 +353,18 @@ func (d dialect) formatValue(v interface{}) string {
 	// String — escape single quotes
 	escaped := strings.ReplaceAll(s, "'", "''")
 	return d.strQuote + escaped + d.strQuote
+}
+
+// formatTime renders an instant as a quoted literal for this dialect.
+func (d dialect) formatTime(t time.Time) string {
+	layout := d.tsLayout
+	if layout == "" {
+		layout = "2006-01-02 15:04:05.999999"
+	}
+	if d.tsUTC {
+		t = t.UTC()
+	}
+	return d.strQuote + t.Format(layout) + d.strQuote
 }
 
 func (d dialect) createTable(table string, columns []string, types map[string]string) string {
