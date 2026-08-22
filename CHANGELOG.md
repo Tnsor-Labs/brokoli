@@ -11,6 +11,26 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.59] - 2026-08-22
+
+### Added
+
+- **S3 stores accept a credentials provider** (#272) — @hc12r.
+  `S3StoreConfig` could only express a static access-key pair, so
+  credentials that expire and are re-minted — an STS session behind
+  `aws.CredentialsCache`, for instance — could not be passed in at all.
+  The new `CredentialsProvider` field is additive and wins over the
+  static pair when both are set; leaving it nil keeps the previous
+  behavior exactly, which the new tests pin alongside the two new
+  paths.
+
+### Fixed
+
+- **Sidebar nav array is typed** (#272) — @hc12r. The bare literal made
+  TypeScript infer a union whose narrower members lack `disabled` and
+  `badge`, making every read of those properties in the markup an
+  error. No behavior change.
+
 ## [0.10.58] - 2026-08-22
 
 ### Added
