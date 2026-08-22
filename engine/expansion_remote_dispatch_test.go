@@ -403,11 +403,25 @@ func TestPipeline_ExpandRemoteDispatch_InstancesDispatchConcurrently(t *testing.
 	mu.Lock()
 	observedMaxInFlight := maxInFlight
 	mu.Unlock()
+	// maxInFlight is the direct evidence: if dispatch were sequential it
+	// could never exceed 1, whatever the machine's speed.
 	if observedMaxInFlight < 2 {
 		t.Errorf("max concurrent in-flight instances = %d, want >1 — dispatch is still sequential", observedMaxInFlight)
 	}
-	if elapsed >= itemCount*perItemDelay {
-		t.Errorf("elapsed = %s, want well under %s (%d items x %s) — dispatch does not appear concurrent", elapsed, itemCount*perItemDelay, itemCount, perItemDelay)
+
+	// Wall clock is a backstop, not the proof, and it needs real slack:
+	// the measurement spans the whole run — store writes, the
+	// dispatcher's poll loop, engine setup — not just the simulated item
+	// delays. This failed in CI at 2.74s against a 2.4s bound while
+	// reporting all 8 items concurrently in flight, i.e. the thing it
+	// exists to catch was working and a loaded runner tripped it anyway.
+	// A genuine regression to sequential dispatch would take at least
+	// the full serial time on top of that overhead, so compare against
+	// double the serial bound and let maxInFlight carry the real
+	// assertion.
+	if elapsed >= 2*itemCount*perItemDelay {
+		t.Errorf("elapsed = %s, want well under %s (%d items x %s, doubled for fixed overhead) — dispatch does not appear concurrent",
+			elapsed, 2*itemCount*perItemDelay, itemCount, perItemDelay)
 	}
 	t.Logf("%d items, %s each, ran in %s (max %d concurrent)", itemCount, perItemDelay, elapsed, observedMaxInFlight)
 }
