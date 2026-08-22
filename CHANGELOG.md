@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.66] - 2026-08-23
+
+### Fixed
+
+- **Cursor pagination accepts the parameter name it hands out** (#296)
+  — @hc12r. Responses return the next position as `cursor` and the
+  endpoints read only `after`, so a client feeding the response's own
+  cursor back had it ignored, got page one again with `has_next` still
+  true, and looped forever hammering the server with no way to tell.
+  Against a pipeline with 110 runs, walking by `cursor` produced 1000
+  rows over 40 pages, 975 of them duplicates; it now terminates after 5
+  pages with 110 unique ids. `after` still works and wins if both are
+  given.
+
+- **The outbound allowlist covers every path a pipeline uses** (#297) —
+  @hc12r. `BROKOLI_OUTBOUND_ALLOW_CIDRS` reached only the API fetcher,
+  so `sink_api` and webhook hooks stayed on the closed default: an
+  operator who allowlisted their internal range could read from an
+  internal service but not post back to it, with an error that gave no
+  hint the allowlist did not cover that path. All three now resolve the
+  same policy.
+
 ## [0.10.65] - 2026-08-23
 
 ### Fixed
