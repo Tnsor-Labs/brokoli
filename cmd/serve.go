@@ -414,12 +414,12 @@ var serveCmd = &cobra.Command{
 				// allocating yet, so a bare headroom check alone doesn't
 				// prevent two jobs landing back-to-back before the first
 				// one's memory footprint becomes visible.
-				if !hasMemoryHeadroom() || time.Since(lastAdmission) < memoryBackpressureSettleDelay {
+				if admit, wait := admissionDecision(lastAdmission); !admit {
 					select {
 					case sig := <-quit:
 						shutdownDraining(sig)
 						return nil
-					case <-time.After(memoryBackpressureRecheckInterval):
+					case <-time.After(wait):
 					}
 					continue
 				}
