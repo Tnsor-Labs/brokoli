@@ -13,7 +13,18 @@
   // these literals to verify the overlay copy carries every core route.
   // Settings lives in the footer utility cluster, not this array; its
   // drift-check literal is this comment: path: "/settings"
-  const navSections = [
+  // Typed explicitly: without it TypeScript infers a union from the
+  // literal, and the members that omit `disabled`/`badge` make every
+  // `item.disabled` / `item.badge` read below an error.
+  type NavItem = {
+    path: string;
+    label: string;
+    disabled?: boolean;
+    badge?: string;
+  };
+  type NavSection = { id: string; label: string; items: NavItem[] };
+
+  const navSections: NavSection[] = [
     {
       id: "core",
       label: "",
