@@ -2,6 +2,7 @@ package quality
 
 import (
 	"fmt"
+	"math"
 	"net/mail"
 	"regexp"
 	"strconv"
@@ -144,8 +145,21 @@ func checkMax(check Check, ds *common.DataSet) CheckResult {
 }
 
 func checkRange(check Check, ds *common.DataSet) CheckResult {
-	minVal := getParamFloat(check.Params, "min", 0)
-	maxVal := getParamFloat(check.Params, "max", 0)
+	// An omitted bound means "unbounded on that side", not zero. Both
+	// used to default to 0, which quietly inverted every one-sided
+	// check: {"rule":"range","params":{"min":0}} on a revenue column
+	// read as [0, 0] and flagged every positive row as a violation. A
+	// quality gate that reports the opposite of what it was asked is
+	// worse than no gate, so the bounds are now explicit.
+	_, hasMin := check.Params["min"]
+	_, hasMax := check.Params["max"]
+	if !hasMin && !hasMax {
+		// Neither bound: the check can never fail, which is a
+		// misconfiguration rather than a pass.
+		return CheckResult{Check: check, Passed: false, Message: "range check requires a 'min' and/or 'max' param"}
+	}
+	minVal := getParamFloat(check.Params, "min", math.Inf(-1))
+	maxVal := getParamFloat(check.Params, "max", math.Inf(1))
 	violations := 0
 	for _, row := range ds.Rows {
 		if f, ok := toFloat(row[check.Column]); ok {
@@ -154,12 +168,26 @@ func checkRange(check Check, ds *common.DataSet) CheckResult {
 			}
 		}
 	}
-	passed := violations == 0
 	return CheckResult{
 		Check:   check,
-		Passed:  passed,
-		Message: fmt.Sprintf("column %q: %d values outside range [%.2f, %.2f]", check.Column, violations, minVal, maxVal),
+		Passed:  violations == 0,
+		Message: fmt.Sprintf("column %q: %d values outside range %s", check.Column, violations, describeBounds(minVal, maxVal)),
 		Value:   violations,
+	}
+}
+
+// describeBounds renders a range for humans, leaving an unbounded side
+// open rather than printing an infinity.
+func describeBounds(minVal, maxVal float64) string {
+	switch {
+	case math.IsInf(minVal, -1) && math.IsInf(maxVal, 1):
+		return "(unbounded)"
+	case math.IsInf(minVal, -1):
+		return fmt.Sprintf("<= %.2f", maxVal)
+	case math.IsInf(maxVal, 1):
+		return fmt.Sprintf(">= %.2f", minVal)
+	default:
+		return fmt.Sprintf("[%.2f, %.2f]", minVal, maxVal)
 	}
 }
 
