@@ -97,6 +97,56 @@ func memoryBackpressureDisabled() bool {
 // a strict addition to existing admission control, never a replacement for
 // it; an environment this can't reason about must behave exactly as it did
 // before this existed, not fail closed and refuse all work.
+// memoryBackpressureComfortMultiple is how many times the safety margin
+// of free memory counts as "comfortable": enough that admitting one more
+// job cannot plausibly tip the pod over before that job's own usage
+// becomes visible in the cgroup reading.
+//
+// The settle delay below exists because a cgroup reading cannot see a job
+// admitted a moment ago. That reasoning holds when the worker is near its
+// ceiling; it does not when most of the limit is free, and applying the
+// delay unconditionally cost far more than it protected. Measured on a
+// worker with ~75% of its limit free: eight short runs across two workers
+// took 11.7s wall for 1.8s of actual work, because each worker sat out
+// three seconds between admissions. That is a throughput ceiling of one
+// run per settle delay per worker, independent of how small the runs are.
+var memoryBackpressureComfortMultiple = 3.0
+
+// admissionDecision reports whether a worker may claim another job now,
+// and when it may not, how long to wait before asking again.
+//
+// Three states: genuinely tight on memory (wait and re-check), close
+// enough that a just-admitted job could still tip the balance (wait out
+// the remainder of the settle delay, not a fixed re-check interval), or
+// comfortable (admit immediately).
+func admissionDecision(lastAdmission time.Time) (admit bool, wait time.Duration) {
+	if memoryBackpressureDisabled() {
+		return true, 0
+	}
+	limit, current, ok := cgroupMemoryUsage()
+	if !ok || limit <= 0 {
+		return true, 0
+	}
+
+	margin := int64(float64(limit) * memoryBackpressureSafetyMarginFraction)
+	if margin < memoryBackpressureMinMarginBytes {
+		margin = memoryBackpressureMinMarginBytes
+	}
+	headroom := limit - current
+
+	if headroom <= margin {
+		return false, memoryBackpressureRecheckInterval
+	}
+	if float64(headroom) < float64(margin)*memoryBackpressureComfortMultiple {
+		if since := time.Since(lastAdmission); since < memoryBackpressureSettleDelay {
+			// Sleep exactly what is left rather than a flat re-check
+			// interval, which rounded a 3s delay up to 4s in practice.
+			return false, memoryBackpressureSettleDelay - since
+		}
+	}
+	return true, 0
+}
+
 func hasMemoryHeadroom() bool {
 	if memoryBackpressureDisabled() {
 		return true
