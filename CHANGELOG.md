@@ -11,6 +11,59 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.61] - 2026-08-22
+
+Found by running realistic pipelines — migrations, parallel extraction,
+incremental loads, failure injection — against real databases and a
+k3s cluster, rather than by reading the code.
+
+### Fixed
+
+- **Timestamps reached databases in Go's own format** (#276) — @hc12r.
+  `formatValue` fell through to `%v` for a `time.Time`, emitting
+  `2026-08-22 00:00:00 +0000 UTC`, which no dialect parses. Every
+  pipeline carrying a DATE or TIMESTAMP column from a database source
+  into a database sink failed on the write. Each dialect now declares
+  its layout, and dialects whose literal carries no zone get the value
+  in UTC rather than reinterpreted in the session timezone.
+
+- **Sinks reported zero rows** (#281) — @hc12r. `row_count` came from a
+  node's output, and sinks are terminal, so the run summary answered
+  "how many rows did we load?" with 0 for every sink. Terminal nodes now
+  report what they consumed.
+
+### Changed
+
+- **Node parallelism scales with the worker** (#277) — @hc12r. It was
+  the constant 4: with six independent extracts, two waited about 3.5
+  seconds for a slot while their database sat idle. The default now
+  derives from CPUs and is clamped by the memory budget, with
+  `BROKOLI_MAX_PARALLEL_NODES` overriding.
+
+- **Admission backpressure applies only under memory pressure** (#278)
+  — @hc12r. A worker waited 3 seconds after every admission whatever its
+  memory situation, capping throughput at roughly one run per four
+  seconds per worker. Measured on a queue that stayed full with 75% of
+  memory free: 20 runs took 39.3s before, 12.6s after — 3.1x. The guard
+  is unchanged where memory is genuinely tight.
+
+### Added
+
+- **Oversized query results fail instead of killing the worker** (#279)
+  — @hc12r. A result too large for the pod took the whole process down
+  with an OOM kill, losing every co-running run, and was reported 27
+  seconds later as "interrupted mid-execution" with no mention of
+  memory. The scan now measures rows against a budget (30% of the
+  memory limit, `BROKOLI_DATASET_MEMORY_BUDGET` to override) and fails
+  that one run in about a second, naming the size, the budget and the
+  remedies.
+
+- **Outbound allowlist for self-hosted deployments** (#280) — @hc12r.
+  `source_api` blocked all private addresses with no production
+  override, so an on-premise install could not reach its own internal
+  APIs. `BROKOLI_OUTBOUND_ALLOW_CIDRS` permits named ranges (preferred),
+  `BROKOLI_OUTBOUND_ALLOW_PRIVATE` opens all of them. Default unchanged.
+
 ## [0.10.60] - 2026-08-22
 
 ### Fixed
