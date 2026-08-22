@@ -88,3 +88,66 @@ func TestAuditEntryKeepsItsOtherFields(t *testing.T) {
 		t.Fatalf("before/after lost: %+v", e)
 	}
 }
+
+// Routes outside the enterprise org middleware — pipelines,
+// connections, variables — have no org in context. The signed session
+// token carries one, and using it is what makes those entries visible
+// in the org-filtered audit query.
+func TestAuditFallsBackToTheTokenOrg(t *testing.T) {
+	cap := &captureLogger{}
+	prev := auditLogger
+	auditLogger = cap
+	defer func() { auditLogger = prev }()
+
+	r := httptest.NewRequest(http.MethodPost, "/api/connections", nil)
+	claims := &jwt.MapClaims{"sub": "user-1", "username": "alice", "org_id": "org-from-token"}
+	r = r.WithContext(context.WithValue(r.Context(), "claims", claims))
+
+	AuditLog(r, "create", "connection", "shop_pg", nil, nil)
+
+	if got := cap.entries[0].Metadata["org_id"]; got != "org-from-token" {
+		t.Fatalf("org_id = %v, want the token's org", got)
+	}
+}
+
+// The server-resolved context wins over the token when both are present.
+func TestAuditPrefersTheContextOrg(t *testing.T) {
+	cap := &captureLogger{}
+	prev := auditLogger
+	auditLogger = cap
+	defer func() { auditLogger = prev }()
+
+	r := httptest.NewRequest(http.MethodPost, "/api/connections", nil)
+	claims := &jwt.MapClaims{"sub": "user-1", "org_id": "org-from-token"}
+	ctx := context.WithValue(r.Context(), "claims", claims)
+	ctx = context.WithValue(ctx, OrgIDContextKey{}, "org-from-context")
+
+	AuditLog(r.WithContext(ctx), "create", "connection", "c1", nil, nil)
+
+	if got := cap.entries[0].Metadata["org_id"]; got != "org-from-context" {
+		t.Fatalf("org_id = %v, want the context org", got)
+	}
+}
+
+// With neither, the resolver maps the user to their org.
+func TestAuditFallsBackToTheOrgResolver(t *testing.T) {
+	cap := &captureLogger{}
+	prev := auditLogger
+	auditLogger = cap
+	defer func() { auditLogger = prev }()
+
+	prevResolver := OrgResolverFunc
+	OrgResolverFunc = func(userID string) string {
+		if userID == "user-1" {
+			return "org-from-resolver"
+		}
+		return ""
+	}
+	defer func() { OrgResolverFunc = prevResolver }()
+
+	AuditLog(requestWithOrgAndUser(""), "create", "variable", "k", nil, nil)
+
+	if got := cap.entries[0].Metadata["org_id"]; got != "org-from-resolver" {
+		t.Fatalf("org_id = %v, want the resolver's org", got)
+	}
+}

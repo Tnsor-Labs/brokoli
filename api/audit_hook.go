@@ -53,8 +53,40 @@ func AuditLog(r *http.Request, action, resource, resourceID string, before, afte
 		After:      after,
 		IP:         ip,
 	}
-	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+	if orgID := auditOrgID(r, userID); orgID != "" {
 		entry.Metadata = map[string]interface{}{"org_id": orgID}
 	}
 	auditLogger.Log(entry)
+}
+
+// auditOrgID resolves the tenant to label an audit entry with, trying
+// three sources in order of authority.
+//
+// The request context is the server-resolved answer, but only routes
+// behind the enterprise org middleware have it — the pipeline,
+// connection and variable handlers do not, which is why stamping from
+// the context alone still left their entries tenant-less and therefore
+// invisible to the org-filtered audit query.
+//
+// The session token is the next best source: it is signed by this
+// server and already carries org_id for exactly this kind of labelling.
+// Failing both, the org resolver maps the user to their org directly.
+//
+// This is a label on a record of something that already happened, not
+// an authorization decision — the audit query keeps deriving the
+// caller's own org server-side, so a token cannot widen what its holder
+// can read.
+func auditOrgID(r *http.Request, userID string) string {
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		return orgID
+	}
+	if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok && claims != nil {
+		if orgID, ok := (*claims)["org_id"].(string); ok && orgID != "" {
+			return orgID
+		}
+	}
+	if OrgResolverFunc != nil && userID != "" {
+		return OrgResolverFunc(userID)
+	}
+	return ""
 }
