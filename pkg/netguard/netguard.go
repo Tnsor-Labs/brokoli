@@ -13,8 +13,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,6 +56,70 @@ type Policy struct {
 	// elsewhere only for a caller with its own equally narrow, equally
 	// deliberate reason.
 	AllowPrivate bool
+
+	// AllowedCIDRs permits specific private ranges without opening all
+	// of them. A self-hosted deployment whose APIs live on the internal
+	// network needs to reach 10.20.0.0/16; it does not need to reach
+	// the cloud metadata endpoint or every other pod in its cluster,
+	// and AllowPrivate cannot express that difference.
+	//
+	// A range listed here is allowed even when AllowPrivate is off, so
+	// this is the narrow tool: name what you need, leave the rest
+	// blocked. Loopback still requires AllowLoopback, and the blocked
+	// hostname list still applies by name.
+	AllowedCIDRs []*net.IPNet
+}
+
+// allowedByCIDR reports whether an address falls inside one of the
+// explicitly permitted ranges.
+func (p Policy) allowedByCIDR(ip net.IP) bool {
+	for _, n := range p.AllowedCIDRs {
+		if n != nil && n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// FromEnv builds the outbound policy an operator configured.
+//
+// Default is the safe one: nothing private, nothing loopback. Two
+// environment variables widen it, because a self-hosted install whose
+// source systems sit on the internal network otherwise cannot reach
+// them at all, and the only alternative was a test-only override.
+//
+//	BROKOLI_OUTBOUND_ALLOW_CIDRS=10.20.0.0/16,192.168.5.0/24
+//	    Permit exactly these ranges. Preferred: it states what the
+//	    deployment actually talks to.
+//	BROKOLI_OUTBOUND_ALLOW_PRIVATE=true
+//	    Permit every RFC1918 and link-local address. Blunt, and unsafe
+//	    on a multi-tenant instance where a pipeline author is not
+//	    necessarily trusted with the cluster's internal network.
+//
+// An unparseable CIDR is skipped with a warning rather than silently
+// widening or narrowing what the operator asked for.
+func FromEnv() Policy {
+	p := Default
+	if v := os.Getenv("BROKOLI_OUTBOUND_ALLOW_PRIVATE"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			p.AllowPrivate = b
+		}
+	}
+	if v := os.Getenv("BROKOLI_OUTBOUND_ALLOW_CIDRS"); v != "" {
+		for _, raw := range strings.Split(v, ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			_, network, err := net.ParseCIDR(raw)
+			if err != nil {
+				log.Printf("netguard: ignoring invalid CIDR %q in BROKOLI_OUTBOUND_ALLOW_CIDRS: %v", raw, err)
+				continue
+			}
+			p.AllowedCIDRs = append(p.AllowedCIDRs, network)
+		}
+	}
+	return p
 }
 
 func (p Policy) checkIP(ip net.IP) error {
@@ -66,7 +133,7 @@ func (p Policy) checkIP(ip net.IP) error {
 		return fmt.Errorf("%w: %s (loopback)", ErrBlockedTarget, ip)
 	}
 	if ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
-		if p.AllowPrivate {
+		if p.AllowPrivate || p.allowedByCIDR(ip) {
 			return nil
 		}
 		return fmt.Errorf("%w: %s (private/link-local)", ErrBlockedTarget, ip)
