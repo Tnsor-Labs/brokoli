@@ -55,6 +55,17 @@ type AuditEntry struct {
 	Before     map[string]interface{} `json:"before,omitempty"` // state before change
 	After      map[string]interface{} `json:"after,omitempty"`  // state after change
 	IP         string                 `json:"ip"`
+
+	// Metadata carries contextual fields that do not warrant their own
+	// column — today, the tenant the action happened in.
+	//
+	// This matters because the enterprise audit query filters by org:
+	// an entry recorded without one is stored and then unreachable
+	// through the API. Everything core records (pipelines, connections,
+	// variables, runs) had nowhere to put a tenant, so it all
+	// disappeared from the audit view — on a live instance, 66 of 67
+	// stored entries could not be read back.
+	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
 
 // AuditFilter for querying audit logs.

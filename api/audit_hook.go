@@ -33,7 +33,16 @@ func AuditLog(r *http.Request, action, resource, resourceID string, before, afte
 		ip = fwd
 	}
 
-	auditLogger.Log(extensions.AuditEntry{
+	// Stamp the tenant onto every entry. The audit query filters by the
+	// caller's org — that is the isolation boundary and it is applied
+	// server-side — so an entry written without one can never be read
+	// back through the API. Everything recorded from here (pipelines,
+	// connections, variables, runs) was landing in the table with no
+	// org and disappearing from the audit view: on a live instance, 66
+	// of 67 stored entries were unreachable, leaving "who changed this
+	// connection?" unanswerable by the product while the row sat in the
+	// database. Enterprise handlers already set this; core did not.
+	entry := extensions.AuditEntry{
 		Timestamp:  time.Now(),
 		UserID:     userID,
 		Username:   username,
@@ -43,5 +52,9 @@ func AuditLog(r *http.Request, action, resource, resourceID string, before, afte
 		Before:     before,
 		After:      after,
 		IP:         ip,
-	})
+	}
+	if orgID := GetOrgIDFromRequest(r); orgID != "" {
+		entry.Metadata = map[string]interface{}{"org_id": orgID}
+	}
+	auditLogger.Log(entry)
 }
