@@ -11,6 +11,23 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.64] - 2026-08-23
+
+### Fixed
+
+- **Audit entries record which tenant an action happened in** (#291) —
+  @hc12r. The enterprise audit query filters by the caller's org, and
+  core's hook had nowhere to put one: `extensions.AuditEntry` had no
+  metadata field, so every entry core records — pipelines, connections,
+  variables, runs — was written without a tenant and could never be
+  read back. A live instance held 67 entries and returned 1. The 66
+  invisible ones were every pipeline and connection change on the
+  system, leaving "who changed this connection?" unanswerable through
+  the product while the row sat in the database. `AuditEntry` gains an
+  additive `Metadata` map and `api.AuditLog` stamps the request's org
+  into it; single-tenant deployments record no org rather than an empty
+  one. Entries written before this keep their empty metadata.
+
 ## [0.10.63] - 2026-08-23
 
 ### Fixed
