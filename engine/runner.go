@@ -1009,10 +1009,21 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
 			rowCount := 0
-			if output != nil {
+			switch {
+			case output != nil:
 				rowCount = len(output.Rows)
-			} else if outputRef != nil {
+			case outputRef != nil:
 				rowCount = int(outputRef.RowCount)
+			case input != nil:
+				// A terminal node — every sink — produces no dataset, so
+				// deriving the count from the output reported 0 rows for
+				// the one node an operator most wants a number from:
+				// "how many rows did we actually load?" answered by the
+				// run summary as zero, for every sink, always. What a
+				// sink consumed is what it wrote, so report that.
+				rowCount = len(input.Rows)
+			case inputRef != nil:
+				rowCount = int(inputRef.RowCount)
 			}
 			rowsPerSec := float64(0)
 			if duration > 0 && rowCount > 0 {
