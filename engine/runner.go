@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -344,8 +349,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	// whole run — see nodeOutputs and Tnsor-Labs/brokoli#38.
 	outputs := r.newOutputs()
 
-	// Max parallelism semaphore (default 4, configurable later)
-	maxParallel := 4
+	maxParallel := defaultMaxParallelNodes(r)
 	sem := make(chan struct{}, maxParallel)
 
 	var runErr error
@@ -1981,3 +1985,69 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	resp.Body.Close()
 	r.log("", models.LogLevelInfo, "Hook %s fired: HTTP %d", hookName, resp.StatusCode)
 }
+
+// defaultMaxParallelNodes decides how many of a run's nodes may execute
+// at once.
+//
+// This used to be the constant 4, which is not a production number: with
+// six independent extracts, two of them sat waiting for a slot for
+// seconds while the database they were querying was idle. Extract and
+// load nodes are overwhelmingly I/O-bound, so the useful ceiling is set
+// by how much data the run can hold at once, not by core count.
+//
+// The default therefore scales with the CPUs the process was given and
+// is then clamped by the memory budget, using the same reasoning as the
+// spill threshold: a node holds at most that much dataset in memory
+// before it spills to the artifact store, so the budget divided by the
+// threshold is how many nodes can be resident together. A worker sized
+// for real work lands at the cap; a deliberately tiny pod lands low
+// instead of being told it can run four.
+//
+// BROKOLI_MAX_PARALLEL_NODES overrides all of it.
+func defaultMaxParallelNodes(r *Runner) int {
+	if v := os.Getenv("BROKOLI_MAX_PARALLEL_NODES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		if r != nil {
+			r.log("", models.LogLevelWarning, "ignoring BROKOLI_MAX_PARALLEL_NODES=%q: expected a positive integer", v)
+		}
+	}
+
+	n := 4 * runtime.GOMAXPROCS(0)
+	if n < minMaxParallelNodes {
+		n = minMaxParallelNodes
+	}
+	if n > maxMaxParallelNodes {
+		n = maxMaxParallelNodes
+	}
+
+	// Memory clamp. debug.SetMemoryLimit(-1) reports the live limit
+	// without changing it — cmd sets it from the container's cgroup at
+	// startup, so this picks up the real budget rather than re-reading
+	// cgroup files from here.
+	if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
+		perNode := int64(DefaultSpillThresholdBytes)
+		if r != nil && r.spillThreshold > 0 {
+			perNode = r.spillThreshold
+		}
+		if perNode > 0 {
+			if byMemory := int(limit / perNode); byMemory < n {
+				n = byMemory
+			}
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+const (
+	// minMaxParallelNodes keeps a small machine from serialising a run
+	// that is mostly waiting on network I/O.
+	minMaxParallelNodes = 8
+	// maxMaxParallelNodes bounds the fan-out so one run cannot open an
+	// unbounded number of database connections at once.
+	maxMaxParallelNodes = 64
+)
