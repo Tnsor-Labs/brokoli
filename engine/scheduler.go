@@ -103,9 +103,86 @@ func (s *Scheduler) Start() error {
 
 	s.cron.Start()
 	go s.runReclaimSweep()
+	go s.runScheduleSync()
 	common.SLog().Info("scheduler started", "pipelines_scheduled", registered)
 
 	return nil
+}
+
+// scheduleSyncInterval is how often the scheduler reconciles its cron
+// entries against the pipelines actually in the store.
+//
+// Start() registers what exists at boot, and SyncPipeline keeps an
+// in-process scheduler current — but in distributed mode the scheduler
+// runs in its own pod and SyncPipeline is called from the API's process,
+// which is a different one. Nothing carried the change across, and
+// nothing re-read the store, so a pipeline created after the scheduler
+// pod started never ran: no error, no missed-run warning, just silence
+// until someone restarted the pod. Found by deploying a "* * * * *"
+// pipeline and watching it not fire for three minutes while an older
+// one on "*/5 * * * *" kept firing beside it.
+//
+// A package variable so a test can shrink it rather than wait out a
+// real interval.
+var scheduleSyncInterval = 30 * time.Second
+
+// runScheduleSync periodically reconciles registered cron entries with
+// the store: pipelines added since boot get registered, ones that were
+// disabled, rescheduled or deleted get updated or dropped.
+//
+// Deliberately not gated on leadership. Every scheduler instance should
+// know about every schedule so that a failover has nothing to catch up
+// on; firing is already leader-gated inside the cron job itself, so
+// keeping followers current costs a periodic read and buys an instant
+// handover.
+func (s *Scheduler) runScheduleSync() {
+	ticker := time.NewTicker(scheduleSyncInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-s.stopReclaim:
+			return
+		case <-ticker.C:
+			s.syncSchedulesFromStore()
+		}
+	}
+}
+
+// syncSchedulesFromStore brings the cron entries in line with the store
+// in one pass: register or update everything that should be scheduled,
+// then drop anything registered that should not be.
+func (s *Scheduler) syncSchedulesFromStore() {
+	pipelines, err := s.store.ListPipelines()
+	if err != nil {
+		common.SLog().Warn("scheduler: could not reload pipelines", "error", err)
+		return
+	}
+
+	live := make(map[string]struct{}, len(pipelines))
+	for _, p := range pipelines {
+		if p.Enabled && p.Schedule != "" {
+			live[p.ID] = struct{}{}
+		}
+		// SyncPipeline is idempotent: re-registering an unchanged
+		// schedule replaces the entry with an equivalent one, and a
+		// disabled or unscheduled pipeline is unregistered.
+		s.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled, p.ScheduleTimezone)
+	}
+
+	// A pipeline deleted from the store is in neither list above, so
+	// drop whatever is registered but no longer live.
+	s.mu.Lock()
+	stale := make([]string, 0)
+	for pid := range s.entries {
+		if _, ok := live[pid]; !ok {
+			stale = append(stale, pid)
+		}
+	}
+	s.mu.Unlock()
+	for _, pid := range stale {
+		s.Unregister(pid)
+	}
 }
 
 // reclaimSweepInterval is how often the current leader re-runs
