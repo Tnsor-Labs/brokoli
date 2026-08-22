@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -24,6 +25,13 @@ type SQLGenConfig struct {
 	CreateTable bool     `json:"create_table"`
 	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
 	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
+
+	// EmptyStringAsNull writes "" as NULL instead of an empty literal.
+	// Off by default: a database source distinguishes the two already,
+	// and collapsing them loses information the source took care to
+	// carry. It exists for file sources, where an empty field is
+	// genuinely ambiguous and a numeric target column cannot accept ''.
+	EmptyStringAsNull bool `json:"empty_string_as_null"`
 }
 
 // GenerateSQL produces SQL statements from a DataSet. The statements are
@@ -80,6 +88,7 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 	}
 
 	d := getDialect(cfg.Dialect)
+	d.emptyStringAsNull = cfg.EmptyStringAsNull
 	var sb strings.Builder
 
 	if cfg.CreateTable {
@@ -211,6 +220,11 @@ type dialect struct {
 	// silently reinterpreted in the session's timezone.
 	tsLayout string
 	tsUTC    bool
+
+	// emptyStringAsNull mirrors SQLGenConfig.EmptyStringAsNull; set by
+	// GenerateSQL rather than getDialect, since it is a per-write choice
+	// and not a property of the dialect.
+	emptyStringAsNull bool
 }
 
 func getDialect(name string) dialect {
@@ -309,17 +323,28 @@ func validateIdentifier(s string) error {
 	return nil
 }
 
+// formatValue renders one value as a SQL literal.
+//
+// The decision is driven by the value's Go type, not by re-parsing its
+// rendered text. Guessing from text silently corrupted ordinary data,
+// because a string that happens to look like something else was emitted
+// as that something else:
+//
+//	"00123"            -> 00123     a zip code or account number,
+//	                                stored as 123
+//	"4111111111111111" -> unquoted  a card number, stored as a numeric
+//	"1.50"             -> 1.50      stored as 1.5
+//	"true"             -> TRUE      a text column handed a boolean,
+//	                                which Postgres rejects outright
+//	""                 -> NULL      empty and unknown collapsed together
+//
+// Quoting a string is safe for non-text targets: every dialect here
+// coerces a quoted literal into a numeric, boolean or date column. The
+// reverse — emitting a bare token into a text column — is what breaks.
 func (d dialect) formatValue(v interface{}) string {
-	if v == nil {
-		return "NULL"
-	}
-
-	// time.Time must be rendered in a layout the database parses.
-	// Falling through to %v produced Go's own format
-	// ("2026-08-22 00:00:00 +0000 UTC"), which every dialect rejects —
-	// so any pipeline carrying a DATE or TIMESTAMP column from a
-	// database source into a database sink failed on the write.
 	switch t := v.(type) {
+	case nil:
+		return "NULL"
 	case time.Time:
 		return d.formatTime(t)
 	case *time.Time:
@@ -327,32 +352,35 @@ func (d dialect) formatValue(v interface{}) string {
 			return "NULL"
 		}
 		return d.formatTime(*t)
-	case []byte:
-		// Several drivers hand back text columns as bytes; %v would
-		// render the byte values instead of the string.
-		v = string(t)
-	}
-
-	s := fmt.Sprintf("%v", v)
-	if s == "" {
-		return "NULL"
-	}
-	lower := strings.ToLower(s)
-	if lower == "true" {
-		return d.boolTrue
-	}
-	if lower == "false" {
+	case bool:
+		if t {
+			return d.boolTrue
+		}
 		return d.boolFalse
+	case []byte:
+		return d.quoteString(string(t))
+	case string:
+		if t == "" && d.emptyStringAsNull {
+			return "NULL"
+		}
+		return d.quoteString(t)
+	case int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return fmt.Sprintf("%v", t)
+	case json.Number:
+		return t.String()
+	default:
+		// Anything else (a struct a driver handed back, say) is rendered
+		// and quoted rather than emitted bare.
+		return d.quoteString(fmt.Sprintf("%v", t))
 	}
-	if _, err := strconv.ParseInt(s, 10, 64); err == nil {
-		return s
-	}
-	if _, err := strconv.ParseFloat(s, 64); err == nil {
-		return s
-	}
-	// String — escape single quotes
-	escaped := strings.ReplaceAll(s, "'", "''")
-	return d.strQuote + escaped + d.strQuote
+}
+
+// quoteString wraps a value in the dialect's string quote, doubling any
+// embedded quote character.
+func (d dialect) quoteString(s string) string {
+	return d.strQuote + strings.ReplaceAll(s, d.strQuote, d.strQuote+d.strQuote) + d.strQuote
 }
 
 // formatTime renders an instant as a quoted literal for this dialect.

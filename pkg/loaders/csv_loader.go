@@ -44,6 +44,18 @@ func (l *CSVLoader) Load(filePath string) (*common.DataSet, error) {
 		row := make(common.DataRow)
 		for i, value := range record {
 			if i < len(headers) {
+				if value == "" {
+					// An empty CSV field carries no type information —
+					// "" and "missing" are the same three characters of
+					// nothing in the file — so it becomes NULL here,
+					// where the ambiguity actually lives. The SQL writer
+					// used to make this call instead, by turning every
+					// empty string into NULL regardless of where it came
+					// from, which also silently destroyed genuinely
+					// empty strings arriving from a database.
+					row[headers[i]] = nil
+					continue
+				}
 				row[headers[i]] = value
 			}
 		}
