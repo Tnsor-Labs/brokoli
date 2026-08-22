@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -144,6 +148,16 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 		return nil, fmt.Errorf("columns: %w", err)
 	}
 
+	// Guard the in-memory dataset against the worker's memory budget.
+	// Without this, a query returning more than the pod can hold takes
+	// the whole process down with an OOM kill — losing every other run
+	// on that worker and leaving this one to be failed later by
+	// recovery with "interrupted mid-execution", which tells the author
+	// nothing about what actually went wrong.
+	budget := datasetMemoryBudget()
+	var sampledBytes int64
+	var maxRows int
+
 	var dataRows []common.DataRow
 	for rows.Next() {
 		// Create scan targets
@@ -167,6 +181,28 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 			row[col] = v
 		}
 		dataRows = append(dataRows, row)
+
+		if budget > 0 {
+			// Size the first rows, then compare a count — estimating
+			// every row would cost more than the guard is worth.
+			if len(dataRows) <= datasetSampleRows {
+				sampledBytes += estimateRowBytes(row)
+				if len(dataRows) == datasetSampleRows {
+					avg := sampledBytes / int64(datasetSampleRows)
+					if avg < 1 {
+						avg = 1
+					}
+					maxRows = int(budget / avg)
+				}
+			} else if maxRows > 0 && len(dataRows) > maxRows {
+				avg := sampledBytes / int64(datasetSampleRows)
+				return nil, fmt.Errorf(
+					"query result is too large to hold in memory: stopped after %d rows at about %s (budget %s, roughly %d bytes per row). "+
+						"Narrow the query with a WHERE clause or LIMIT, split it across runs, or give the worker more memory "+
+						"(BROKOLI_DATASET_MEMORY_BUDGET overrides the budget)",
+					len(dataRows), humanBytes(int64(len(dataRows))*avg), humanBytes(budget), avg)
+			}
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -270,4 +306,70 @@ func splitStatements(sql string) []string {
 		stmts = append(stmts, s)
 	}
 	return stmts
+}
+
+const (
+	// datasetSampleRows is how many rows are measured to derive an
+	// average row size. Large enough to be representative of a result
+	// set, small enough that the measuring itself is free.
+	datasetSampleRows = 200
+
+	// datasetBudgetFraction is the share of the process memory limit a
+	// single materialised dataset may occupy. Deliberately well under
+	// half: a node holds its input while building its output, the sink
+	// encodes another copy on the way out, and the Go allocator does not
+	// hand memory back promptly. A third leaves room for all three.
+	datasetBudgetFraction = 0.30
+)
+
+// datasetMemoryBudget reports how many bytes one materialised dataset may
+// occupy, or 0 when no limit is known — on a bare host with no memory
+// limit set, behaviour is exactly as it was before this guard existed.
+func datasetMemoryBudget() int64 {
+	if v := os.Getenv("BROKOLI_DATASET_MEMORY_BUDGET"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit == math.MaxInt64 {
+		return 0
+	}
+	return int64(float64(limit) * datasetBudgetFraction)
+}
+
+// estimateRowBytes approximates a row's resident size: the data itself
+// plus the per-entry cost of holding it in a map of interfaces, which for
+// narrow rows dominates the values.
+func estimateRowBytes(row common.DataRow) int64 {
+	const perEntryOverhead = 48 // map bucket slot + interface header + key header
+	var n int64
+	for k, v := range row {
+		n += int64(len(k)) + perEntryOverhead
+		switch t := v.(type) {
+		case string:
+			n += int64(len(t))
+		case []byte:
+			n += int64(len(t))
+		case nil:
+			// nothing beyond the entry itself
+		default:
+			n += 16
+		}
+	}
+	return n
+}
+
+// humanBytes renders a byte count the way an operator reads it.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MiB", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KiB", float64(n)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
 }
