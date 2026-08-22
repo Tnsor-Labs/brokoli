@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 // WebhookPayload is the JSON sent to webhook URLs on pipeline events.
@@ -35,7 +35,7 @@ func SendWebhook(url string, payload WebhookPayload) {
 		return
 	}
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := netguard.Default.Client(10 * time.Second)
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		log.Printf("webhook: POST %s failed: %v", url, err)

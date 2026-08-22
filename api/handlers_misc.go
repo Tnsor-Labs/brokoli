@@ -12,6 +12,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 )
@@ -778,7 +779,8 @@ func (h *NotificationSettingsHandler) Test(w http.ResponseWriter, r *http.Reques
 		payload["channel"] = channel
 	}
 	data, _ := json.Marshal(payload)
-	resp, err := http.Post(webhook, "application/json", strings.NewReader(string(data)))
+	client := netguard.Default.Client(10 * time.Second)
+	resp, err := client.Post(webhook, "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "webhook request failed: "+err.Error())
 		return

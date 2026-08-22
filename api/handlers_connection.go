@@ -532,7 +532,7 @@ func testS3(ctx context.Context, extra map[string]interface{}) map[string]interf
 	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
 
 	req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := netguard.Default.Client(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		return map[string]interface{}{
