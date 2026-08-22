@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.62] - 2026-08-22
+
+### Fixed
+
+- **The scheduler never picked up pipelines created after it started**
+  (#284) — @hc12r. `Start()` registers what exists at boot and
+  `SyncPipeline` keeps an in-process scheduler current, but in
+  distributed mode the scheduler is its own pod while `SyncPipeline` is
+  called from the API's process. Nothing carried the change across and
+  nothing re-read the store, so a scheduled pipeline created after the
+  scheduler pod started simply never ran — no error, no missed-run
+  warning, nothing in the run list, until someone restarted the pod.
+  The scheduler now reconciles its cron entries against the store every
+  30 seconds, picking up additions and applying disables, reschedules
+  and deletions. Found by deploying a `* * * * *` pipeline and watching
+  it not fire while an older one kept firing beside it.
+
+- **`S3StoreConfig.CredentialsProvider` was declared twice** (#285) —
+  @hc12r. #271 and #272 added the same field independently and both
+  merged, leaving `main` unable to compile. One declaration remains,
+  documenting the precedence the code already implements.
+
 ## [0.10.61] - 2026-08-22
 
 Found by running realistic pipelines — migrations, parallel extraction,
