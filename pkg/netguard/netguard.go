@@ -19,6 +19,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -79,6 +80,24 @@ func (p Policy) allowedByCIDR(ip net.IP) bool {
 		}
 	}
 	return false
+}
+
+var (
+	outboundOnce   sync.Once
+	outboundPolicy Policy
+)
+
+// Outbound is the operator-configured policy for traffic a pipeline
+// causes: fetching from an API, posting to one, calling a webhook.
+//
+// Resolved once from the environment. Every one of those paths has to
+// agree — an allowlist that lets a pipeline read from an internal
+// service but not write back to it is a confusing half-permission, and
+// that is what happened when only the fetcher consulted the
+// environment while the sink and webhook paths used the closed default.
+func Outbound() Policy {
+	outboundOnce.Do(func() { outboundPolicy = FromEnv() })
+	return outboundPolicy
 }
 
 // FromEnv builds the outbound policy an operator configured.
@@ -215,3 +234,10 @@ func (p Policy) Client(timeout time.Duration) *http.Client {
 // caller should use unless it has its own narrow, documented reason not
 // to (see AllowLoopback's doc comment).
 var Default = Policy{AllowLoopback: false}
+
+// resetOutboundForTest clears the memoised policy so a test can resolve
+// it again under different environment settings.
+func resetOutboundForTest() {
+	outboundOnce = sync.Once{}
+	outboundPolicy = Policy{}
+}
