@@ -1987,7 +1987,7 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	// netguard.Default: hook.URL is arbitrary pipeline-editor-supplied
 	// config (models.Pipeline.Hooks) -- there was no SSRF protection
 	// here at all previously.
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		r.log("", models.LogLevelWarning, "Hook %s: request failed: %v", hookName, err)

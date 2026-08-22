@@ -1018,7 +1018,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 	// reach a loopback/private/link-local address, so this had no
 	// carve-out to preserve (previously this had no SSRF protection at
 	// all).
-	client := netguard.Default.Client(30 * time.Second)
+	client := netguard.Outbound().Client(30 * time.Second)
 	totalSent := 0
 	totalBatches := (len(input.Rows) + batchSize - 1) / batchSize
 
