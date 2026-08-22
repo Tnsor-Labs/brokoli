@@ -47,8 +47,20 @@ type S3StoreConfig struct {
 	// empty falls back to the AWS SDK's default credential chain (env
 	// vars, shared config, IAM role, ...) — the right default for AWS
 	// itself; most S3-compatible providers require the static pair.
+	// Ignored when CredentialsProvider is set.
 	AccessKeyID     string
 	SecretAccessKey string
+
+	// CredentialsProvider, when set, takes precedence over AccessKeyID/
+	// SecretAccessKey and the default credential chain alike. This is a
+	// standard AWS SDK extension point, not a tenant-awareness feature —
+	// it exists so a caller that already has its own aws.CredentialsProvider
+	// (an STS-minted, auto-refreshing session, for instance) can hand it
+	// straight through instead of this package re-deriving credentials on
+	// its own. What a caller does with that provider — including scoping
+	// it per tenant — is entirely up to the caller; this type has no
+	// opinion on it.
+	CredentialsProvider aws.CredentialsProvider
 
 	// UsePathStyle addresses objects as "endpoint/bucket/key" instead of
 	// "bucket.endpoint/key". Most S3-compatible providers other than AWS
@@ -91,7 +103,10 @@ func NewS3Store(ctx context.Context, cfg S3StoreConfig) (*S3Store, error) {
 	if cfg.Region != "" {
 		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Region))
 	}
-	if cfg.AccessKeyID != "" {
+	switch {
+	case cfg.CredentialsProvider != nil:
+		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(cfg.CredentialsProvider))
+	case cfg.AccessKeyID != "":
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		))
