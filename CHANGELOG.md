@@ -11,6 +11,32 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.65] - 2026-08-23
+
+### Fixed
+
+- **Audit entries find their tenant even outside the org middleware**
+  (#293) — @hc12r. #291 stamped the org from the request context, which
+  only the enterprise-middleware routes have; pipeline, connection and
+  variable entries were still written tenant-less and stayed invisible
+  to the org-filtered audit query. The org is now resolved from the
+  context, then the signed session token, then the org resolver.
+  Verified on a cluster: connection changes now appear in the audit API
+  where they were previously recorded and unreachable.
+
+### Added
+
+- **Run totals describe the deployment, not one process** (#294) —
+  @hc12r. `/metrics` exposed counters held in whichever process
+  answered, and runs execute on workers — so the API, the stable scrape
+  target, reported zero runs and zero successes while the fleet was
+  busy, and a worker's own counters disappeared when autoscaling
+  removed the pod. `brokoli_runs_by_status{status=...}` is derived from
+  the runs table and cached for ten seconds; a query error serves the
+  last known numbers rather than reporting an idle fleet. The
+  per-process counters are unchanged. `store.Store` gains
+  `CountRunsByStatus`.
+
 ## [0.10.64] - 2026-08-23
 
 ### Fixed
