@@ -11,6 +11,37 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.63] - 2026-08-23
+
+### Fixed
+
+- **A literal is decided by the value's type, not its printed text**
+  (#287) — @hc12r. `formatValue` rendered everything with `%v` and then
+  guessed the type back out of that text, so any string that looked
+  like something else was written as that something else: `"00123"`
+  stored as `123`, a card number stored as a numeric, `"1.50"` as
+  `1.5`, `"true"` rejected outright by a text column, and `""`
+  collapsed into NULL. Found by round-tripping a table of awkward
+  values and diffing it against the source — two of ten rows came back
+  wrong, with nothing failing. Strings are now always quoted, which
+  every dialect coerces correctly into numeric, boolean and date
+  columns. Empty strings resolve where the ambiguity actually lives:
+  the CSV loader emits nil for an empty field (so CSV to database is
+  unchanged end to end) and the writer keeps `""` as an empty literal,
+  with `EmptyStringAsNull` restoring the old writer behaviour.
+
+### Added
+
+- **The worker's shutdown drain window is configurable** (#288) —
+  @hc12r. It was a fixed 25 seconds, which fits Kubernetes' default
+  grace period but not real pipelines: a 56-second job was abandoned by
+  every graceful eviction — a KEDA scale-down, a node drain, a rolling
+  deploy — and the run was then failed rather than retried. With worker
+  autoscaling on, the fleet destroyed work every time it shrank.
+  `BROKOLI_WORKER_DRAIN_TIMEOUT` accepts a duration or bare seconds;
+  the enterprise chart derives it and `terminationGracePeriodSeconds`
+  from one value so they cannot drift apart.
+
 ## [0.10.62] - 2026-08-22
 
 ### Fixed
