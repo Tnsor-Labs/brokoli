@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.58] - 2026-08-22
+
+### Added
+
+- **S3-compatible `artifact.Store` backend** (#269) — @hc12r. Closes #268
+  (M1) and the "cloud-storage backend" item `ADR-012` has carried as
+  deferred since it was first accepted. A third `artifact.Store`
+  implementation alongside `LocalDiskStore`/`SQLArtifactStore`'s blob
+  store — content-addressed, namespace-scoped, no tenant or
+  multi-bucket awareness — working against any S3-compatible provider
+  via a configurable endpoint and path-style addressing. Writes stream
+  through a real multipart uploader in bounded, part-sized chunks
+  rather than buffering the whole value, verified by a test that
+  tracks the largest single read request the SDK ever makes against a
+  24MiB payload rather than relying on code review alone. Reads verify
+  their checksum incrementally as the caller consumes the stream,
+  rather than eagerly before returning any bytes, to avoid the same
+  buffering cost on the read side. Does not include a full
+  `engine.ArtifactStore` wrapper — that manifest/fencing layer is a
+  separate, larger design decision left for whoever builds on this,
+  per the ADR-012 update landing alongside it.
+
 ## [0.10.57] - 2026-08-21
 
 ### Fixed
