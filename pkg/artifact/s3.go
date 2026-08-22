@@ -54,6 +54,19 @@ type S3StoreConfig struct {
 	// "bucket.endpoint/key". Most S3-compatible providers other than AWS
 	// itself require this.
 	UsePathStyle bool
+
+	// CredentialsProvider supplies credentials that cannot be expressed
+	// as a static key pair — most importantly ones that expire and are
+	// re-minted, such as STS sessions wrapped in aws.CredentialsCache.
+	// Callers that hold a long-lived key pair should keep using
+	// AccessKeyID/SecretAccessKey; this exists for callers that mint
+	// short-lived, scoped credentials per tenant and need the SDK to
+	// refresh them mid-flight.
+	//
+	// Takes precedence over AccessKeyID/SecretAccessKey when both are
+	// set, since a caller that went to the trouble of building a
+	// provider means it. Nil keeps the previous behavior exactly.
+	CredentialsProvider aws.CredentialsProvider
 }
 
 // S3Store keeps blobs in an S3-compatible bucket.
@@ -91,7 +104,10 @@ func NewS3Store(ctx context.Context, cfg S3StoreConfig) (*S3Store, error) {
 	if cfg.Region != "" {
 		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Region))
 	}
-	if cfg.AccessKeyID != "" {
+	switch {
+	case cfg.CredentialsProvider != nil:
+		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(cfg.CredentialsProvider))
+	case cfg.AccessKeyID != "":
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
 		))
