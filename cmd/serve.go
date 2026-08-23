@@ -299,10 +299,26 @@ var serveCmd = &cobra.Command{
 				log.Printf("WARNING: user store init failed: %v", err)
 			} else {
 				userStore = us
-				if userStore.UserCount() == 0 {
-					log.Println("No users configured — running in open mode (create first user via API or UI)")
+				// Account lockout lives in the store layer, which owns the
+				// login_attempts schema and writes it correctly for both
+				// dialects. UserStore used to reimplement it against a raw
+				// *sql.DB and got the Postgres column types wrong, so no
+				// attempt was ever recorded and no account was ever locked.
+				if la, ok := s.(store.LoginAttemptStore); ok {
+					userStore.UseLoginAttemptStore(la)
 				} else {
-					log.Printf("User authentication enabled (%d users)", userStore.UserCount())
+					log.Printf("WARNING: this store does not implement LoginAttemptStore — account lockout after repeated failed logins is DISABLED")
+				}
+				switch count, cerr := userStore.UserCountErr(); {
+				case cerr != nil:
+					// Not fatal: the middleware refuses requests while the
+					// count is unavailable, so the server is safe to start
+					// and will recover when the database does.
+					log.Printf("WARNING: cannot determine user count at startup (%v) — API requests will be refused until the database responds", cerr)
+				case count == 0:
+					log.Println("No users configured — running in open mode (create first user via API or UI)")
+				default:
+					log.Printf("User authentication enabled (%d users)", count)
 				}
 			}
 		}
