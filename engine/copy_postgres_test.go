@@ -57,6 +57,25 @@ func TestCopyEscapePreservesStringsVerbatim(t *testing.T) {
 	}
 }
 
+// COPY text format ends its stream at a line containing only `\.`, and
+// reads `\N` as NULL. Both are reachable from ordinary data, so neither
+// may survive escaping as itself. Verified end to end against Postgres:
+// all of these round-trip as the string they started as, while a real
+// nil still arrives as NULL.
+func TestCopyEscapeNeutralisesCopyFraming(t *testing.T) {
+	cases := map[string]string{
+		`\.`:   `\\.`,    // end-of-data marker
+		`\N`:   `\\N`,    // NULL sentinel, as a literal string
+		`\.\n`: `\\.\\n`, // marker followed by a literal backslash-n
+		`\`:    `\\`,     // a bare backslash
+	}
+	for in, want := range cases {
+		if got := copyEscape(in); got != want {
+			t.Errorf("copyEscape(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestCopyEscapeRendersTimeAndNumbers(t *testing.T) {
 	ts := time.Date(2026, 8, 23, 14, 30, 5, 0, time.UTC)
 	if got := copyEscape(ts); !strings.HasPrefix(got, "2026-08-23 14:30:05") {
