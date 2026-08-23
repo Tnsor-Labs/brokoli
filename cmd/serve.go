@@ -203,7 +203,18 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Wire job queue from extensions (enterprise distributed mode)
-		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
+		distributed := Extensions != nil && Extensions.JobQueue != nil && RunMode != "all"
+
+		// File nodes read and write whichever worker executes them. That is
+		// unambiguous in a single process and a hazard once work is
+		// dispatched to separate workers, so the engine is told which of the
+		// two this is — see engine/file_storage.go.
+		engine.SetDistributedWorkers(distributed)
+		if w := engine.FileStorageWarning(); w != "" {
+			log.Printf("WARNING: %s", w)
+		}
+
+		if distributed {
 			eng.JobQueue = Extensions.JobQueue
 			log.Printf("Job queue enabled (mode: %s)", RunMode)
 

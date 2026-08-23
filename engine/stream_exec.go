@@ -764,5 +764,11 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 			"Streamed %s to %s (%.0f KB, %d rows, never materialized)", format, filepath.Base(path), float64(written)/1024, rows)
 	}
 	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
+	if unsharedFileStorage() {
+		host, _ := os.Hostname()
+		r.log(node.ID, models.LogLevelWarning,
+			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
+			host)
+	}
 	return nodeExecutionResult{}, nil
 }
