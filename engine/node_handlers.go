@@ -26,35 +26,13 @@ import (
 	"github.com/Tnsor-Labs/brokoli/quality"
 )
 
-// allowedDataDirs defines directories where source/sink file nodes may read/write.
-// Configurable via BROKOLI_DATA_DIRS environment variable (colon-separated).
-var allowedDataDirs = func() []string {
-	dirs := os.Getenv("BROKOLI_DATA_DIRS")
-	if dirs == "" {
-		return []string{"/data", "/tmp", "."}
-	}
-	return strings.Split(dirs, ":")
-}()
-
-// validateFilePath ensures the path is within allowed directories and has no traversal.
+// validateFilePath ensures the path is within the configured data
+// directories and has no traversal. Delegates to common.PathAllowed so
+// the engine and the loaders cannot disagree about which directories are
+// usable — they used to, and /data was reachable according to one and
+// refused by the other.
 func validateFilePath(path string) error {
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("path traversal not allowed")
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("invalid path")
-	}
-	for _, dir := range allowedDataDirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		if strings.HasPrefix(absPath, absDir+string(filepath.Separator)) || absPath == absDir {
-			return nil
-		}
-	}
-	return fmt.Errorf("file path %q outside allowed directories (%s); set BROKOLI_DATA_DIRS to allow additional paths", path, strings.Join(allowedDataDirs, ", "))
+	return common.PathAllowed(path)
 }
 
 // redactURI returns uri with any embedded userinfo password replaced by

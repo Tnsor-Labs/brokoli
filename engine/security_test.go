@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,10 +15,7 @@ func TestValidateFilePath_AllowedPaths(t *testing.T) {
 	dataDir := filepath.Join(tmpDir, "data")
 	os.MkdirAll(dataDir, 0o755)
 
-	// Save and restore allowedDataDirs
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{dataDir, os.TempDir(), "."}
-	defer func() { allowedDataDirs = origDirs }()
+	t.Setenv("BROKOLI_DATA_DIRS", strings.Join([]string{dataDir, os.TempDir(), "."}, ":"))
 
 	tests := []struct {
 		name string
@@ -38,9 +36,7 @@ func TestValidateFilePath_AllowedPaths(t *testing.T) {
 
 func TestValidateFilePath_RelativePaths(t *testing.T) {
 	// With "." in allowed dirs, relative paths under cwd should be allowed
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{"."}
-	defer func() { allowedDataDirs = origDirs }()
+	t.Setenv("BROKOLI_DATA_DIRS", strings.Join([]string{"."}, ":"))
 
 	tests := []struct {
 		name string
@@ -61,9 +57,7 @@ func TestValidateFilePath_RelativePaths(t *testing.T) {
 
 func TestValidateFilePath_BlockedPaths(t *testing.T) {
 	// Set allowed dirs to only /data and /tmp
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{"/data", "/tmp"}
-	defer func() { allowedDataDirs = origDirs }()
+	t.Setenv("BROKOLI_DATA_DIRS", strings.Join([]string{"/data", "/tmp"}, ":"))
 
 	blockedPaths := []struct {
 		name string
@@ -118,9 +112,7 @@ func TestValidateFilePath_TraversalErrorMessage(t *testing.T) {
 }
 
 func TestValidateFilePath_OutsideAllowedDirsErrorMessage(t *testing.T) {
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{"/data", "/tmp"}
-	defer func() { allowedDataDirs = origDirs }()
+	t.Setenv("BROKOLI_DATA_DIRS", strings.Join([]string{"/data", "/tmp"}, ":"))
 
 	err := validateFilePath("/etc/passwd")
 	if err == nil {
@@ -132,24 +124,27 @@ func TestValidateFilePath_OutsideAllowedDirsErrorMessage(t *testing.T) {
 	}
 }
 
-func TestValidateFilePath_EmptyAllowedDirs(t *testing.T) {
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{}
-	defer func() { allowedDataDirs = origDirs }()
+func TestValidateFilePath_EmptySettingFallsBackToDefaults(t *testing.T) {
+	// An empty BROKOLI_DATA_DIRS means "not configured", not "allow
+	// nothing". Unset and empty are indistinguishable to most tooling —
+	// a chart rendering `value: "{{ .Values.dataDirs }}"` with nothing
+	// set produces an empty string — and reading that as "disable every
+	// file node" would break a deployment silently. Restricting access
+	// means naming the directories that are allowed.
+	t.Setenv("BROKOLI_DATA_DIRS", "")
 
-	// With no allowed dirs, everything should be blocked
-	err := validateFilePath("/data/file.csv")
-	if err == nil {
-		t.Error("with no allowed dirs, all paths should be blocked")
+	if err := validateFilePath("/data/file.csv"); err != nil {
+		t.Errorf("an empty setting should fall back to the defaults: %v", err)
+	}
+	if err := validateFilePath("/etc/passwd"); err == nil {
+		t.Error("falling back to the defaults must not allow everything")
 	}
 }
 
 func TestValidateFilePath_CustomBROKOLI_DATA_DIRS(t *testing.T) {
 	// Test that the allowed dirs list can be expanded
 	customDir := t.TempDir()
-	origDirs := allowedDataDirs
-	allowedDataDirs = []string{customDir}
-	defer func() { allowedDataDirs = origDirs }()
+	t.Setenv("BROKOLI_DATA_DIRS", strings.Join([]string{customDir}, ":"))
 
 	err := validateFilePath(filepath.Join(customDir, "file.csv"))
 	if err != nil {

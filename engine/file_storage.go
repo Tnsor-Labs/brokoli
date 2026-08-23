@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 // Where file nodes actually put their files, and who can see them.
@@ -76,7 +78,7 @@ func FileStorageWarning() string {
 			"A file written by one run is visible only to the pod that ran it, so a later run reading it will fail — or read a stale copy left by an older run and succeed with wrong data. "+
 			"Mount shared storage (an RWX volume) at %s on every worker and set BROKOLI_DATA_DIRS_SHARED=1 to confirm it. "+
 			"Pipelines that write and read a file within a single run are unaffected.",
-		strings.Join(allowedDataDirs, ", "))
+		strings.Join(common.DataDirs(), ", "))
 }
 
 // describeMissingFile appends the likely cause to a failed read when the
