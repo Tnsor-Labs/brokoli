@@ -658,7 +658,7 @@ func TestMergeValues(t *testing.T) {
 func TestBridgeRunLifecycle(t *testing.T) {
 	srv := NewServer()
 	ch := make(chan BridgeEvent, 16)
-	Bridge(srv, ch)
+	done := Bridge(srv, ch)
 
 	now := time.Now()
 
@@ -669,7 +669,7 @@ func TestBridgeRunLifecycle(t *testing.T) {
 	ch <- BridgeEvent{Type: "run.completed", RunID: "r1", PipelineID: "p1", Timestamp: now}
 
 	close(ch)
-	time.Sleep(50 * time.Millisecond)
+	waitDrained(t, done)
 
 	val, ver := srv.State.Get("runs.r1")
 	if ver == 0 {
@@ -702,13 +702,13 @@ func TestBridgeRunLifecycle(t *testing.T) {
 func TestBridgeRunFailed(t *testing.T) {
 	srv := NewServer()
 	ch := make(chan BridgeEvent, 4)
-	Bridge(srv, ch)
+	done := Bridge(srv, ch)
 
 	now := time.Now()
 	ch <- BridgeEvent{Type: "run.started", RunID: "r2", PipelineID: "p1", Timestamp: now}
 	ch <- BridgeEvent{Type: "run.failed", RunID: "r2", Error: "boom", Status: "cancelled", Timestamp: now}
 	close(ch)
-	time.Sleep(50 * time.Millisecond)
+	waitDrained(t, done)
 
 	val, _ := srv.State.Get("runs.r2")
 	m := val.(map[string]any)
@@ -720,10 +720,23 @@ func TestBridgeRunFailed(t *testing.T) {
 	}
 }
 
+// waitDrained blocks until the bridge has applied every event, so an
+// assertion cannot race the goroutine applying them. A deadline rather
+// than an unbounded wait, so a genuinely stuck bridge fails the test
+// instead of hanging the suite.
+func waitDrained(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("bridge did not drain its events within 30s")
+	}
+}
+
 func TestBridgeLogAppendPerformance(t *testing.T) {
 	srv := NewServer()
 	ch := make(chan BridgeEvent, 512)
-	Bridge(srv, ch)
+	done := Bridge(srv, ch)
 
 	now := time.Now()
 	// Simulate high-frequency log events
@@ -738,7 +751,7 @@ func TestBridgeLogAppendPerformance(t *testing.T) {
 		}
 	}
 	close(ch)
-	time.Sleep(100 * time.Millisecond)
+	waitDrained(t, done)
 
 	val, _ := srv.State.Get("runs.r1.logs")
 	logs, ok := val.([]any)
@@ -859,7 +872,7 @@ func TestEvictCompleted(t *testing.T) {
 func TestBridgeDashboardSnapshot(t *testing.T) {
 	srv := NewServer()
 	ch := make(chan BridgeEvent, 8)
-	Bridge(srv, ch)
+	done := Bridge(srv, ch)
 
 	now := time.Now().UTC()
 	// One run that succeeds, one that fails, one that's still running.
@@ -869,7 +882,7 @@ func TestBridgeDashboardSnapshot(t *testing.T) {
 	ch <- BridgeEvent{Type: "run.failed", RunID: "fail-1", PipelineID: "p2", Error: "boom", Timestamp: now}
 	ch <- BridgeEvent{Type: "run.started", RunID: "active-1", PipelineID: "p1", Timestamp: now}
 	close(ch)
-	time.Sleep(50 * time.Millisecond)
+	waitDrained(t, done)
 
 	val, ver := srv.State.Get("dashboard.default")
 	if ver == 0 {
@@ -908,13 +921,13 @@ func TestBridgeDashboardSnapshot(t *testing.T) {
 func TestBridgeDashboardOrgScoped(t *testing.T) {
 	srv := NewServer()
 	ch := make(chan BridgeEvent, 4)
-	Bridge(srv, ch)
+	done := Bridge(srv, ch)
 
 	now := time.Now().UTC()
 	ch <- BridgeEvent{Type: "run.started", RunID: "acme-1", OrgID: "acme", Timestamp: now}
 	ch <- BridgeEvent{Type: "run.started", RunID: "widgets-1", OrgID: "widgets", Timestamp: now}
 	close(ch)
-	time.Sleep(50 * time.Millisecond)
+	waitDrained(t, done)
 
 	// Each org gets its own dashboard key
 	acme, ver := srv.State.Get("dashboard.acme")

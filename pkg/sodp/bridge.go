@@ -59,12 +59,28 @@ type BridgeEvent struct {
 // We do NOT recompute on log events: they're high-frequency and don't change
 // any aggregate counter. The Dashboard watches dashboard.{org}, the per-run
 // detail page watches runs.{run_id}.logs directly.
-func Bridge(srv *Server, events <-chan BridgeEvent) {
+// Bridge forwards events onto the server's state until events is closed.
+//
+// The returned channel is closed once the last event has been applied, so
+// a caller can tell "the bridge has caught up" from "the bridge is still
+// working". Ignoring it is fine and is what the server does — it runs for
+// the process lifetime.
+//
+// It exists because there was no way to observe that. Tests fed the
+// channel, closed it, slept a fixed 50-100ms and asserted, which held on
+// an idle machine and failed under load with results that looked like
+// real bugs: 192 of 200 log entries, a dashboard snapshot missing its
+// most recent run. Both were the assertion winning the race, not the code
+// being wrong (Tnsor-Labs/brokoli#308).
+func Bridge(srv *Server, events <-chan BridgeEvent) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		for ev := range events {
 			bridgeEvent(srv, ev)
 		}
 	}()
+	return done
 }
 
 func bridgeEvent(srv *Server, ev BridgeEvent) {
