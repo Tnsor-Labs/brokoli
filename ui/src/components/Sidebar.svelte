@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import BrandIcon from "./BrandIcon.svelte";
   import { theme, toggleTheme } from "../lib/theme";
-  import { authUser, logout, userLabel } from "../lib/auth";
+  import { authHeaders, authUser, logout, userLabel } from "../lib/auth";
   import { wsConnected } from "../lib/sodp";
   import { sidebarCollapsed, sidebarGroups, toggleSidebar, toggleGroup } from "../lib/sidebar";
   export let currentPath: string = "/";
@@ -64,7 +64,27 @@
   // the stored preference only applies on wide viewports, and the toggle
   // control hides while the rail is forced.
   let viewportNarrow = false;
+
+  // Asked of the server rather than baked in at build time, because the
+  // question the label answers is "what is this deployment running",
+  // and a build-time constant answers "what was this bundle built from"
+  // — which is how the sidebar came to print a hardcoded v0.1.0 on every
+  // release. Empty until it arrives, so a failed or slow fetch shows no
+  // version rather than a wrong one.
+  let serverVersion = "";
+  async function loadVersion() {
+    try {
+      const res = await fetch("/api/system/info", { headers: authHeaders() });
+      if (!res.ok) return;
+      const info = await res.json();
+      if (typeof info?.version === "string") serverVersion = info.version;
+    } catch {
+      // Leave it blank; the sidebar is not the place to report this.
+    }
+  }
+
   onMount(() => {
+    loadVersion();
     const mq = window.matchMedia("(max-width: 1024px)");
     viewportNarrow = mq.matches;
     const onChange = (e: MediaQueryListEvent) => (viewportNarrow = e.matches);
@@ -109,12 +129,12 @@
 <aside class="sidebar" class:collapsed>
   <div class="brand-zone">
     <div class="logo">
-      <div class="logo-mark" title="Brokoli · v0.1.0">
+      <div class="logo-mark" title={serverVersion ? `Brokoli · ${serverVersion}` : "Brokoli"}>
         <img src="/brand/icons/brokoli-symbol-micro.svg" alt="" width="18" height="24" />
       </div>
       <div class="logo-text">
         <span class="logo-name">Brokoli</span>
-        <span class="logo-sub">orchestrator · v0.1.0</span>
+        <span class="logo-sub">orchestrator{serverVersion ? ` · ${serverVersion}` : ""}</span>
       </div>
     </div>
     {#if !viewportNarrow}
