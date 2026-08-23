@@ -1,10 +1,14 @@
 package engine
 
 import (
+	"strings"
 	"testing"
 )
 
-func TestDetectDriver(t *testing.T) {
+// Scheme-to-driver mapping, independent of whether the driver is compiled in.
+// DetectDriver adds that second check on top; this covers the mapping itself,
+// including the schemes only the unsupported-type error path reaches.
+func TestDetectDriverSchemeMapping(t *testing.T) {
 	tests := []struct {
 		uri        string
 		wantDriver string
@@ -25,9 +29,9 @@ func TestDetectDriver(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.uri, func(t *testing.T) {
-			driver, dsn, err := DetectDriver(tt.uri)
+			driver, dsn, err := detectDriver(tt.uri)
 			if err != nil {
-				t.Fatalf("DetectDriver(%q) error: %v", tt.uri, err)
+				t.Fatalf("detectDriver(%q) error: %v", tt.uri, err)
 			}
 			if driver != tt.wantDriver {
 				t.Errorf("driver = %q, want %q", driver, tt.wantDriver)
@@ -36,5 +40,48 @@ func TestDetectDriver(t *testing.T) {
 				t.Errorf("dsn = %q, want %q", dsn, tt.wantDSN)
 			}
 		})
+	}
+}
+
+// The connection catalog offers more database types than this build has
+// drivers for. That is a product limitation, not a defect, and the error has
+// to say so: database/sql's own message for an unregistered driver is
+// "unknown driver \"snowflake\" (forgotten import?)", which sends an operator
+// looking for a broken build.
+func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
+	supported := []struct{ uri, driver string }{
+		{"postgres://u:p@h:5432/d", "pgx"},
+		{"postgresql://u:p@h:5432/d", "pgx"},
+		{"redshift://u:p@h:5439/d", "pgx"},
+		{"mysql://u:p@tcp(h:3306)/d", "mysql"},
+		{"sqlite:///data/app.db", "sqlite"},
+	}
+	for _, tc := range supported {
+		got, _, err := DetectDriver(tc.uri)
+		if err != nil {
+			t.Errorf("%s: %v", tc.uri, err)
+			continue
+		}
+		if got != tc.driver {
+			t.Errorf("%s: driver = %q, want %q", tc.uri, got, tc.driver)
+		}
+	}
+
+	for _, uri := range []string{
+		"snowflake://u:p@acct/db",
+		"sqlserver://u:p@h:1433?database=d",
+		"mssql://u:p@h:1433?database=d",
+	} {
+		_, _, err := DetectDriver(uri)
+		if err == nil {
+			t.Errorf("%s: expected an unsupported-type error, got none", uri)
+			continue
+		}
+		if !strings.Contains(err.Error(), "not supported by this build") {
+			t.Errorf("%s: error does not name the limitation: %v", uri, err)
+		}
+		if strings.Contains(err.Error(), ":p@") {
+			t.Errorf("%s: error leaks the password: %v", uri, err)
+		}
 	}
 }

@@ -19,7 +19,6 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DetectDriver returns the Go sql driver name for a connection URI.
 // dialectForURI maps a connection URI to the SQL dialect name GenerateSQL
 // understands, via the same scheme detection DetectDriver uses. Snowflake
 // and anything unrecognized fall back to "generic" — append/overwrite work
@@ -43,7 +42,47 @@ func dialectForURI(uri string) string {
 	}
 }
 
+// DetectDriver returns the Go sql driver name and DSN for a connection URI.
+//
+// A scheme this recognizes is not the same as a scheme this build can open:
+// the connection catalog offers Snowflake, SQL Server, Oracle, BigQuery, and
+// Databricks, but only pgx, mysql, and sqlite drivers are compiled in. Naming
+// a driver that was never registered gets database/sql's "unknown driver
+// (forgotten import?)", which reads like a build defect rather than an
+// unsupported connection type, so check first and say which it is.
 func DetectDriver(uri string) (string, string, error) {
+	driver, dsn, err := detectDriver(uri)
+	if err != nil {
+		return "", "", err
+	}
+	if !driverRegistered(driver) {
+		return "", "", fmt.Errorf(
+			"connection type %q is not supported by this build: no %q driver is compiled in (available: %s)",
+			schemeOf(uri), driver, strings.Join(sql.Drivers(), ", "))
+	}
+	return driver, dsn, nil
+}
+
+// driverRegistered reports whether database/sql can open this driver name.
+func driverRegistered(name string) bool {
+	for _, d := range sql.Drivers() {
+		if d == name {
+			return true
+		}
+	}
+	return false
+}
+
+// schemeOf names the connection type in an error message without echoing the
+// URI, which carries the password.
+func schemeOf(uri string) string {
+	if i := strings.Index(uri, "://"); i > 0 {
+		return uri[:i]
+	}
+	return "unknown"
+}
+
+func detectDriver(uri string) (string, string, error) {
 	switch {
 	case strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://"):
 		return "pgx", uri, nil
