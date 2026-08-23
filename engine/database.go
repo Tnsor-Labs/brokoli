@@ -68,50 +68,6 @@ func DetectDriver(uri string) (string, string, error) {
 	}
 }
 
-// BuildConnectionURI constructs a URI from connection fields for various database types.
-func BuildConnectionURI(connType, host string, port int, schema, login, password, extra string) string {
-	switch connType {
-	case "postgres", "redshift":
-		scheme := "postgres"
-		if connType == "redshift" {
-			scheme = "redshift"
-		}
-		if port == 0 {
-			if connType == "redshift" {
-				port = 5439
-			} else {
-				port = 5432
-			}
-		}
-		return fmt.Sprintf("%s://%s:%s@%s:%d/%s?sslmode=require", scheme, login, password, host, port, schema)
-	case "snowflake":
-		// Snowflake DSN: user:password@account/database/schema?warehouse=X
-		warehouse := "COMPUTE_WH"
-		if extra != "" {
-			// Try to parse warehouse from extra JSON
-			var ex map[string]string
-			if err := parseJSON(extra, &ex); err == nil {
-				if w, ok := ex["warehouse"]; ok {
-					warehouse = w
-				}
-			}
-		}
-		return fmt.Sprintf("snowflake://%s:%s@%s/%s?warehouse=%s", login, password, host, schema, warehouse)
-	case "mysql":
-		if port == 0 {
-			port = 3306
-		}
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", login, password, host, port, schema)
-	case "mssql", "sqlserver":
-		if port == 0 {
-			port = 1433
-		}
-		return fmt.Sprintf("sqlserver://%s:%s@%s:%d?database=%s", login, password, host, port, schema)
-	default:
-		return host
-	}
-}
-
 func parseJSON(s string, v interface{}) error {
 	return json.Unmarshal([]byte(s), v)
 }
