@@ -11,6 +11,195 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.67] - 2026-08-23
+
+### Security
+
+- **Two authentication controls that silently disabled themselves**
+  (#306) — @hc12r. Both were found by watching a running deployment
+  rather than by reading code.
+
+  `UserCount()` discarded its query error and returned `0`. Zero users
+  means "fresh install", and a fresh install serves every `/api/auth/*`
+  path without authentication so the first admin can be created. So any
+  transient database failure — a restarting server, an exhausted pool, a
+  network blip — presented a live system as an unconfigured one, and
+  while it lasted `JWTAuth` waved requests through, `CreateUserHandler`
+  skipped its admin check, and the account it created was forced to
+  `admin`. An unauthenticated `POST /api/auth/users` during that window
+  creates an administrator. Observed happening on its own, twice, while a
+  Postgres backend was being OOM-killed under load; it needs no attacker
+  to cause the outage, only to be present during one. `UserCountErr` now
+  reports the failure and every caller refuses rather than assuming zero;
+  `UserCount` keeps its signature but returns `-1`, deliberately not `0`,
+  so a missed caller cannot read a failure as "unconfigured".
+
+  Account lockout never worked on Postgres. The store layer implements
+  `LoginAttemptStore` correctly for both dialects and nothing called it —
+  `UserStore` had its own copy written against a raw `*sql.DB`, which had
+  to guess the column types the store had already chosen and guessed
+  wrong: an integer into a `boolean success`, an RFC3339 string into a
+  `timestamptz attempted_at`. Every error on that path was discarded, and
+  `IsLocked` reports "not locked" when its count fails, so five wrong
+  passwords locked nothing on any Postgres deployment. Confirmed on a
+  live instance before fixing: `login_attempts` present, **0 rows after
+  thousands of logins**. `UserStore` now delegates to the store and no
+  longer creates the table; `IsLocked` treats an unreadable count as
+  locked, which costs nothing because the count only fails when the
+  database is unreachable and authentication needs the same database.
+
+### Added
+
+- **Sources and sinks stream, so dataset size is bounded by disk rather
+  than worker memory** (#307, closes #304) — @hc12r. The streaming
+  executor covered `code` and `transform` only, so every run materialised
+  the whole source result before anything downstream could stream it, and
+  a query larger than the memory budget failed with no configuration that
+  helped — raising the budget moved the wall, raising it far enough
+  brought back the OOM kill it was added to prevent. `source_db` now
+  flushes NDJSON batches into the blob store and returns a reference,
+  `sink_db` pulls batches into `COPY`, and `sink_file` writes csv and
+  json incrementally (`sql` keeps the batch path: it reads one cell from
+  the first row). Measured on a worker capped at 460 MiB: 200k rows and
+  106 MB of CSV went from an OOM kill to a 12.5s success, and 1,000,000
+  rows writing 528 MB completed in 60s with 11 MiB of live heap.
+  Equivalence is asserted rather than assumed — the streamed and
+  materialising query paths share one row scanner and are compared over
+  5000 rows across seven columns against a real Postgres, and the
+  streamed file writer is compared byte-for-byte with the buffered one at
+  five batch sizes.
+
+- **`sink_db` takes `truncate`** (#312, closes #299) — @hc12r. An
+  overwrite clears with `DELETE`, which leaves one dead tuple per removed
+  row, so a table replaced on every run sits at a multiple of its live
+  size and each clear scans the leftovers. Ten overwrite cycles of a
+  50,000-row table: `DELETE` 7013ms / 500,000 dead tuples / 137 MB
+  against `TRUNCATE` 2591ms / 0 / 13 MB. Off by default and deliberately
+  so: `TRUNCATE` takes an `ACCESS EXCLUSIVE` lock, so anything reading
+  the table blocks for the whole load where `DELETE` lets readers keep
+  seeing the previous contents. Right for a staging table nothing queries
+  mid-load, wrong for one backing a dashboard, and the platform cannot
+  tell which it is looking at. Ignored on SQLite, which has no `TRUNCATE`
+  and already optimises a whole-table `DELETE` into the same thing.
+
+- **File nodes say when they are on storage the next run cannot see**
+  (#309, closes #305) — @hc12r. `source_file` and `sink_file` read and
+  write the filesystem of whichever worker runs them, so with more than
+  one replica each pod has its own copy. Within a run that is fine; every
+  node of a run executes on one worker. Across runs it is a coin flip,
+  and the quiet outcome is the dangerous one: the later run lands on a
+  pod holding an older copy, reads it, and succeeds against stale data.
+  Demonstrated with two workers holding different files at one path — a
+  green run, and whichever pod dispatch picked decided the contents.
+  Brokoli cannot make a local filesystem shared, so it now reports the
+  hazard at startup, at pipeline validation, and on a failed read, and
+  records which pod and how old the file was on every read and write. A
+  deployment with one worker, or with `BROKOLI_DATA_DIRS_SHARED=1` set
+  over real shared storage, is completely silent.
+
+### Fixed
+
+- **Postgres writes go through COPY instead of rendered SQL** (#300,
+  #302, closes #282) — @hc12r. The sink rendered every value into SQL
+  text: 25,000 rows of five columns became 1.9 MB of literals to ship and
+  parse a statement at a time. `COPY` carries them as data. The text
+  format is used rather than binary because the server parses a COPY text
+  field exactly as it parses a literal, so a string still lands correctly
+  in a numeric or timestamptz column — which is what every file and API
+  source produces. Reading the destination types from the catalogue and
+  coercing in Go was measured rather than assumed and lost: 240ms against
+  155ms on a table with a primary key, because the server's time goes to
+  index maintenance rather than parsing.
+
+  The encoders are buffered, which turned out to be the larger half.
+  `io.Pipe` hands each write straight to the reader goroutine and blocks
+  until consumed, so writing row by row cost one scheduler round-trip per
+  row — 25k rows spent ~490ms in handoffs, and the first cluster
+  comparison showed COPY and the old path within noise of each other. The
+  same pattern was in `EncodeArrowJSON`, which runs on every node output
+  artifact and every spilled dataset: 160ms to 70ms. Per sink node, end
+  to end: 25k rows 816ms to 228ms, 100k rows 2877ms to 680ms — about 91%
+  of what `psql` achieves loading the same rows inside the database
+  container with no network at all.
+
+- **Concurrent overwrites of the same table no longer collide** (#311)
+  — @hc12r. An overwrite says "this table's contents become exactly these
+  rows", and two of those at once have no defined outcome. Unserialised
+  they interleaved and failed two ways, both seen with four pipelines
+  writing one table: `deadlock detected`, and `duplicate key value
+  violates unique constraint` — the second because one transaction's
+  `DELETE` cannot see the other's uncommitted rows, so both insert the
+  same keys. Neither is something the pipeline author can fix. Overwrite
+  now takes an `EXCLUSIVE` lock inside its existing transaction: writers
+  wait for each other, readers keep seeing the previous contents until
+  the winner commits. 29/32 concurrent runs succeeded before, 112/112
+  after.
+
+- **The engine and the loaders agree on which directories are usable**
+  (#309) — @hc12r. There were two allowlists. The engine kept a
+  configurable one (`BROKOLI_DATA_DIRS`, defaulting to `/data`, `/tmp`
+  and the working directory) and checked a path before handing it to a
+  loader; the loader checked again against a hardcoded pair — the working
+  directory and the system temp directory — and refused anything else. So
+  they disagreed on their own defaults: `/data` was in the engine's list
+  and unreachable in practice, and configuring a new directory passed the
+  first check and failed the second with an error naming no directory and
+  no setting. Mounting shared storage at `/data` and configuring it
+  correctly failed every run until this.
+
+- **The event bridge says when it has caught up** (#313, closes #308) —
+  @hc12r. `Bridge` returned nothing, so nothing could tell "the bridge has
+  applied everything" from "the bridge is still working", and its tests
+  slept a fixed 50-100ms before asserting. Under load that produced
+  failures shaped exactly like real defects — 192 of 200 log entries, a
+  dashboard snapshot missing only its most recent run — and cost two
+  preflight runs before being recognised. It now returns a channel closed
+  once the last event is applied; every fixed sleep in those tests is
+  gone.
+
+- **Preflight reports which package failed** (#301) — @hc12r. The race
+  suite piped into `tail -5`, which throws away the `--- FAIL` lines and
+  the failing package name, so a failure showed as a bare `FAIL` with
+  nothing to act on and the only way to learn more was to re-run the
+  whole suite. Output now goes to a log in full.
+
+- **The `replace` mode alias is pinned by a test** (#303) — @hc12r.
+  `replace` is an alias for `overwrite` in two separate places on the COPY
+  path, and nothing asserted it. Dropping it from one would have turned a
+  replace into a silent append.
+
+### Behaviour Changes To Read Before Upgrading
+
+- Postgres `append` and `overwrite` writes now go through `COPY` rather
+  than generated `INSERT` statements. Values are carried as data and
+  parsed by the server exactly as literals were, so results are
+  unchanged; `BROKOLI_SINK_COPY=0` returns to the statement path without
+  a different build. Upsert and table creation keep the statement path.
+
+- `overwrite` takes an `EXCLUSIVE` table lock for the duration of its
+  transaction. Concurrent writers to the same table now wait instead of
+  interleaving. Readers are unaffected.
+
+- `api.UserCount()` returns `-1` when the count cannot be determined,
+  where it previously returned `0`. Any caller treating a non-positive
+  result as "no users configured" must be checked; prefer `UserCountErr`.
+
+- `sodp.Bridge` now returns a channel. Existing calls that ignore the
+  return value keep compiling and behave identically.
+
+- `BROKOLI_DATA_DIRS` is now honoured by the file loaders as well as the
+  engine, so a directory configured there becomes genuinely usable. An
+  empty value falls back to the defaults rather than allowing nothing,
+  because unset and empty are indistinguishable to most tooling and
+  reading empty as "disable every file node" would break a deployment
+  silently. To restrict access, name the directories that are allowed.
+
+- A deployment running more than one worker without shared storage for
+  the data directories now logs a warning at startup and warns on
+  pipelines that read a file they do not write. Set
+  `BROKOLI_DATA_DIRS_SHARED=1` once the directories are on shared storage
+  to confirm it and silence the warnings.
+
 ## [0.10.66] - 2026-08-23
 
 ### Fixed
