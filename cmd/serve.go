@@ -64,6 +64,8 @@ var rootCmd = &cobra.Command{
 //	brokoli v0.7.5 (abc123, 2026-04-13)
 func SetVersion(version, commit, date string) {
 	rootCmd.Version = version
+	// The UI asks the server what it is running, via /api/system/info.
+	api.SetBuildVersion(version)
 	rootCmd.SetVersionTemplate(fmt.Sprintf(
 		"brokoli %s (%s, %s)\n", version, shortCommit(commit), date,
 	))

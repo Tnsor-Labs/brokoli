@@ -380,10 +380,31 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	})
 }
 
+// buildVersion is the release this binary was built from, set by the
+// server at startup from the same ldflags value `--version` prints.
+//
+// It defaults to "dev" so a locally built binary says so rather than
+// claiming a release it is not. Nothing derives behaviour from it; it
+// exists to be reported.
+var buildVersion = "dev"
+
+// SetBuildVersion records the running version for /api/system/info.
+// Called once at startup, before the server accepts requests.
+func SetBuildVersion(v string) {
+	if v != "" {
+		buildVersion = v
+	}
+}
+
 func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		active, maxC := e.GetQueueInfo()
 		writeJSON(w, http.StatusOK, map[string]interface{}{
+			// The version the server is actually running. The UI had no
+			// way to ask: the sidebar printed a hardcoded literal and
+			// Settings read a field this endpoint never sent, so both
+			// showed the same wrong string on every build ever made.
+			"version":             buildVersion,
 			"active_runs":         active,
 			"max_concurrent_runs": maxC,
 		})
