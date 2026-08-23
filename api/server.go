@@ -137,8 +137,18 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))
 		r.Get("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
+			// A database outage is not a fresh install: answering
+			// "needs_setup: true" here would send a provisioned system's
+			// operators to the bootstrap screen.
+			count, err := userStore.UserCountErr()
+			if err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]interface{}{
+					"error": "cannot determine setup state",
+				})
+				return
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"needs_setup": userStore.UserCount() == 0,
+				"needs_setup": count == 0,
 			})
 		})
 		r.Get("/api/auth/methods", func(w http.ResponseWriter, r *http.Request) {
