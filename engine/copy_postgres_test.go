@@ -114,6 +114,9 @@ func TestCanCopyInsertScope(t *testing.T) {
 		{Dialect: "postgres", Mode: ModeAppend},
 		{Dialect: "postgres", Mode: ModeOverwrite},
 		{Dialect: "postgres", Mode: ""},
+		// "replace" is sqlgen's alias for overwrite; the COPY path has to
+		// keep clearing the table for it, not silently append.
+		{Dialect: "postgres", Mode: "replace"},
 	}
 	for _, cfg := range yes {
 		if !canCopyInsert(cfg) {
