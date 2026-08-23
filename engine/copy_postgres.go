@@ -167,6 +167,30 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 		defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 
 		if mode == ModeOverwrite || mode == "replace" {
+			// Serialize concurrent overwrites of the same table.
+			//
+			// An overwrite says "this table's contents become exactly
+			// these rows", and two of those running at once have no
+			// defined outcome. Without a lock they interleave and fail in
+			// two different ways, both observed on the lab cluster with
+			// four pipelines writing one table:
+			//
+			//   ERROR: deadlock detected (SQLSTATE 40P01)
+			//   ERROR: duplicate key value violates unique constraint
+			//
+			// the second because one transaction's DELETE cannot see the
+			// other's uncommitted rows, so both insert the same keys.
+			// Neither is a problem the pipeline author can fix, and both
+			// present as a hard run failure.
+			//
+			// EXCLUSIVE rather than ACCESS EXCLUSIVE: writers wait for
+			// each other, readers keep seeing the previous contents
+			// through MVCC until the winner commits, which is what an
+			// overwrite should look like from outside. The lock is
+			// released with the transaction.
+			if _, err := tx.Exec(ctx, "LOCK TABLE "+d.quoteIdent(cfg.Table)+" IN EXCLUSIVE MODE"); err != nil {
+				return fmt.Errorf("lock table for overwrite: %w", err)
+			}
 			if _, err := tx.Exec(ctx, "DELETE FROM "+d.quoteIdent(cfg.Table)); err != nil {
 				return fmt.Errorf("clear table: %w", err)
 			}
