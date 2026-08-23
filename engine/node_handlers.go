@@ -924,6 +924,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		Mode:        mode,
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
+		Truncate:    configBool(node.Config["truncate"]),
 	}
 	// Postgres appends and overwrites go through COPY, which carries the
 	// rows as data instead of rendering them into megabytes of SQL text

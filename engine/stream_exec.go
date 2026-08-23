@@ -633,6 +633,7 @@ func sinkStreamConfig(node models.Node) (string, SQLGenConfig, bool) {
 		Mode:        mode,
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
+		Truncate:    configBool(node.Config["truncate"]),
 	}
 	return uri, cfg, canCopyInsert(cfg)
 }
