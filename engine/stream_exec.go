@@ -737,6 +737,8 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 		return nodeExecutionResult{}, fmt.Errorf("sink_file format %q is not streamable (dispatch bug: eligibility should have caught this)", format)
 	}
 	if dir := filepath.Dir(path); dir != "" {
+		// #nosec G301 -- same mode runSinkFile creates it with; the two
+		// paths must not differ on where a file can be written.
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("create output directory: %w", err)
 		}

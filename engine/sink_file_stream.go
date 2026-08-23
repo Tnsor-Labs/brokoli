@@ -59,6 +59,11 @@ func sinkFileFormatStreams(format string) bool {
 // writeSinkFileStreamed writes rows pulled from next to path, holding one
 // batch at a time. Returns the rows and bytes written.
 func writeSinkFileStreamed(path, format string, columns []string, next func() (*common.DataSet, error)) (int64, int64, error) {
+	// #nosec G304,G302 -- path is the node's configured output and has
+	// already been through validateFilePath; 0644 is what runSinkFile's
+	// buffered write produces, and a streamed write landing with different
+	// permissions than a buffered one would be a worse defect than the
+	// permissive mode.
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return 0, 0, fmt.Errorf("write %s: %w", path, err)
