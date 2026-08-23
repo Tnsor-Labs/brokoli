@@ -179,6 +179,34 @@ type nodeExecutionResult struct {
 	outputRef *artifact.DatasetRef
 }
 
+// nodeRowCount is what a completed node reports as its row count.
+//
+// Order matters. A terminal node — every sink — produces no dataset, so
+// deriving the count from the output alone reported 0 rows for the one
+// node an operator most wants a number from: "how many rows did we
+// actually load?", answered by the run summary as zero, for every sink,
+// always. What a sink consumed is what it wrote, so the input is the
+// fallback.
+//
+// inputRef is checked before input because a streamed node has both: the
+// reference it actually read, and the empty placeholder executeNode
+// substitutes so non-source handlers never see a nil input. Checking
+// input first matched that placeholder and reported 0 rows for every
+// streamed sink.
+func nodeRowCount(output *common.DataSet, outputRef *artifact.DatasetRef, input *common.DataSet, inputRef *artifact.DatasetRef) int {
+	switch {
+	case output != nil:
+		return len(output.Rows)
+	case outputRef != nil:
+		return int(outputRef.RowCount)
+	case inputRef != nil:
+		return int(inputRef.RowCount)
+	case input != nil:
+		return len(input.Rows)
+	}
+	return 0
+}
+
 // NewRunner creates a runner for the given pipeline.
 func NewRunner(s store.Store, eventCh chan<- models.Event, pipe *models.Pipeline, vs VariableStore, cr *ConnectionResolver, execs []extensions.NodeExecutor, notifier extensions.NotificationProvider, instanceID string, instanceJobQueue extensions.JobQueue, requiredCapabilities ...[]string) *Runner {
 	r := &Runner{
@@ -1018,23 +1046,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		if err == nil {
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
-			rowCount := 0
-			switch {
-			case output != nil:
-				rowCount = len(output.Rows)
-			case outputRef != nil:
-				rowCount = int(outputRef.RowCount)
-			case input != nil:
-				// A terminal node — every sink — produces no dataset, so
-				// deriving the count from the output reported 0 rows for
-				// the one node an operator most wants a number from:
-				// "how many rows did we actually load?" answered by the
-				// run summary as zero, for every sink, always. What a
-				// sink consumed is what it wrote, so report that.
-				rowCount = len(input.Rows)
-			case inputRef != nil:
-				rowCount = int(inputRef.RowCount)
-			}
+			rowCount := nodeRowCount(output, outputRef, input, inputRef)
 			rowsPerSec := float64(0)
 			if duration > 0 && rowCount > 0 {
 				rowsPerSec = float64(rowCount) / (float64(duration) / 1000.0)
