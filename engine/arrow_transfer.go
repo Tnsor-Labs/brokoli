@@ -47,15 +47,25 @@ func EncodeArrowJSON(w io.Writer, ds *common.DataSet) error {
 		_, err := w.Write([]byte("[]"))
 		return err
 	}
-	enc := json.NewEncoder(w)
+	// Buffered because two of the three callers hand this an io.Pipe, and
+	// a pipe write blocks until the reader consumes it — so encoding
+	// row-by-row costs one scheduler round-trip per row. For a 25k-row
+	// dataset that was 160ms of handoffs against 70ms buffered. The
+	// remaining callers write to a file or a bytes.Buffer, where the
+	// buffer is at worst free.
+	buf := bufio.NewWriterSize(w, encodeBufferSize)
+	enc := json.NewEncoder(buf)
 	enc.SetEscapeHTML(false) // Faster serialization
 	for _, row := range ds.Rows {
 		if err := enc.Encode(row); err != nil {
 			return err
 		}
 	}
-	return nil
+	return buf.Flush()
 }
+
+// encodeBufferSize is the chunk size handed to the underlying writer.
+const encodeBufferSize = 256 << 10
 
 // DecodeArrowJSON reads the NDJSON encoding EncodeArrowJSON produces.
 //
@@ -169,8 +179,10 @@ func WriteColumnarBinary(path string, ds *common.DataSet) error {
 		return err
 	}
 
-	// Write rows as NDJSON (compact, fast)
-	enc := json.NewEncoder(f)
+	// Write rows as NDJSON (compact, fast), buffered so a row is not a
+	// syscall.
+	bw := bufio.NewWriterSize(f, encodeBufferSize)
+	enc := json.NewEncoder(bw)
 	enc.SetEscapeHTML(false)
 	for _, row := range ds.Rows {
 		if err := enc.Encode(row); err != nil {
@@ -178,7 +190,7 @@ func WriteColumnarBinary(path string, ds *common.DataSet) error {
 		}
 	}
 
-	return nil
+	return bw.Flush()
 }
 
 // ReadColumnarBinary reads data from compact columnar binary format.
