@@ -720,6 +720,16 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			streamable = inputRef != nil
 		case models.NodeTypeCode:
 			streamable = inputRef != nil || (activeInputs == 0 && input == nil)
+		case models.NodeTypeSourceDB:
+			// Produces a ref, consumes nothing.
+			streamable = activeInputs == 0
+		case models.NodeTypeSinkFile:
+			streamable = inputRef != nil
+		case models.NodeTypeSinkDB:
+			// Consumes a ref, produces nothing. A sink handed an inline
+			// input takes the batch path: the data already fits, and
+			// re-reading it off disk to stream it would be slower.
+			streamable = inputRef != nil
 		}
 	}
 
@@ -979,7 +989,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			var result nodeExecutionResult
 			var e error
 			if streamable {
-				result, e = r.runNodeStreamed(node, inputRef, outputs)
+				result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
 			} else {
 				result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
 			}

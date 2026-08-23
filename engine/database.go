@@ -159,26 +159,11 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 	var maxRows int
 
 	var dataRows []common.DataRow
+	scan := newRowScanner(columns)
 	for rows.Next() {
-		// Create scan targets
-		values := make([]interface{}, len(columns))
-		ptrs := make([]interface{}, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
-		}
-
-		row := make(common.DataRow, len(columns))
-		for i, col := range columns {
-			v := values[i]
-			// Convert []byte to string for readability
-			if b, ok := v.([]byte); ok {
-				v = string(b)
-			}
-			row[col] = v
+		row, err := scan.next(rows)
+		if err != nil {
+			return nil, err
 		}
 		dataRows = append(dataRows, row)
 
@@ -372,4 +357,120 @@ func humanBytes(n int64) string {
 	default:
 		return fmt.Sprintf("%d B", n)
 	}
+}
+
+// rowScanner turns *sql.Rows into DataRows. It exists so the materializing
+// and streaming query paths cannot drift apart on how a value is converted
+// — a difference there would mean the same query produced different data
+// depending on which path the planner chose, which is the kind of bug that
+// is invisible until someone diffs two loads of the same table.
+type rowScanner struct {
+	columns []string
+	values  []interface{}
+	ptrs    []interface{}
+}
+
+func newRowScanner(columns []string) *rowScanner {
+	s := &rowScanner{
+		columns: columns,
+		values:  make([]interface{}, len(columns)),
+		ptrs:    make([]interface{}, len(columns)),
+	}
+	for i := range s.values {
+		s.ptrs[i] = &s.values[i]
+	}
+	return s
+}
+
+func (s *rowScanner) next(rows *sql.Rows) (common.DataRow, error) {
+	if err := rows.Scan(s.ptrs...); err != nil {
+		return nil, fmt.Errorf("scan row: %w", err)
+	}
+	row := make(common.DataRow, len(s.columns))
+	for i, col := range s.columns {
+		v := s.values[i]
+		// Convert []byte to string for readability
+		if b, ok := v.([]byte); ok {
+			v = string(b)
+		}
+		row[col] = v
+	}
+	return row, nil
+}
+
+// StreamQueryDatabase runs a query and hands the rows to emit in batches,
+// never holding more than one batch.
+//
+// This is the counterpart of QueryDatabase for results that do not fit in
+// memory. QueryDatabase has to guess a ceiling and refuse anything above it
+// (see datasetMemoryBudget) because the whole result becomes one slice;
+// here there is no ceiling to enforce, since the resident set is one batch
+// regardless of how many rows the query returns. That is the point:
+// dataset size stops being bounded by worker memory.
+//
+// emit must not retain the batch after returning — the rows behind it are
+// reused. ctx governs the whole scan, so a cancelled run stops mid-result
+// instead of reading to the end of a large table first.
+func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, emit func(*common.DataSet) error) ([]string, int64, error) {
+	if batchSize <= 0 {
+		batchSize = streamBatchRows
+	}
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open %s: %w", driver, err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(ctx); err != nil {
+		return nil, 0, fmt.Errorf("ping %s: %w", driver, err)
+	}
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, 0, fmt.Errorf("columns: %w", err)
+	}
+
+	scan := newRowScanner(columns)
+	batch := &common.DataSet{Columns: columns, Rows: make([]common.DataRow, 0, batchSize)}
+	total := int64(0)
+	for rows.Next() {
+		// Checked per row rather than per batch: a cancelled run should
+		// stop at the next row, not at the next thousand.
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		row, err := scan.next(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		batch.Rows = append(batch.Rows, row)
+		if len(batch.Rows) >= batchSize {
+			total += int64(len(batch.Rows))
+			if err := emit(batch); err != nil {
+				return nil, 0, err
+			}
+			batch.Rows = batch.Rows[:0]
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("rows iteration: %w", err)
+	}
+	if len(batch.Rows) > 0 {
+		total += int64(len(batch.Rows))
+		if err := emit(batch); err != nil {
+			return nil, 0, err
+		}
+	}
+	return columns, total, nil
 }

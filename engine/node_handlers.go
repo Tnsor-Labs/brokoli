@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -794,6 +793,24 @@ func (r *Runner) runSQLGenerate(node models.Node, input *common.DataSet) (*commo
 	}, nil
 }
 
+// sinkFileFormat resolves a sink_file node's output format from its config
+// or, failing that, its path extension. Shared with the streamed path so
+// the two cannot disagree about what a ".csv" means.
+func sinkFileFormat(node models.Node) string {
+	if format, _ := node.Config["format"].(string); format != "" {
+		return format
+	}
+	path, _ := node.Config["path"].(string)
+	switch {
+	case strings.HasSuffix(path, ".csv") || strings.HasSuffix(path, ".tsv"):
+		return "csv"
+	case strings.HasSuffix(path, ".sql"):
+		return "sql"
+	default:
+		return "json"
+	}
+}
+
 func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_file node requires input data")
@@ -808,19 +825,7 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("sink_file: %w", err)
 	}
 
-	// Determine format from config or file extension
-	format, _ := node.Config["format"].(string)
-	if format == "" {
-		// Auto-detect from extension
-		switch {
-		case strings.HasSuffix(path, ".csv") || strings.HasSuffix(path, ".tsv"):
-			format = "csv"
-		case strings.HasSuffix(path, ".sql"):
-			format = "sql"
-		default:
-			format = "json"
-		}
-	}
+	format := sinkFileFormat(node)
 
 	// Ensure output directory exists
 	if dir := filepath.Dir(path); dir != "" {
@@ -877,23 +882,7 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 
 	// Rows
 	for _, row := range ds.Rows {
-		record := make([]string, len(ds.Columns))
-		for i, col := range ds.Columns {
-			if v, ok := row[col]; ok && v != nil {
-				switch val := v.(type) {
-				case float64:
-					// Remove floating point noise
-					if val == float64(int64(val)) {
-						record[i] = fmt.Sprintf("%d", int64(val))
-					} else {
-						record[i] = strconv.FormatFloat(val, 'f', -1, 64)
-					}
-				default:
-					record[i] = fmt.Sprintf("%v", v)
-				}
-			}
-		}
-		if err := w.Write(record); err != nil {
+		if err := w.Write(csvRecordFor(row, ds.Columns)); err != nil {
 			return nil, err
 		}
 	}

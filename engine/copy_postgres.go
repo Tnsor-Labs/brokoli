@@ -101,8 +101,25 @@ func canCopyInsert(cfg SQLGenConfig) bool {
 // copyRowsToPostgres writes a dataset with COPY, clearing the table
 // first for overwrite. The delete and the copy share one transaction, so
 // overwrite stays atomic exactly as the statement path made it.
+// copyRowsToPostgres writes a materialized dataset. It is the batch-path
+// entry point; copyBatchesToPostgres is the streaming one, and both share
+// the implementation below so the two cannot drift.
 func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64, error) {
-	for _, id := range append([]string{cfg.Table}, ds.Columns...) {
+	sent := false
+	return copyBatchesToPostgres(context.Background(), uri, cfg, ds.Columns, func() (*common.DataSet, error) {
+		if sent {
+			return nil, io.EOF
+		}
+		sent = true
+		return ds, nil
+	})
+}
+
+// copyBatchesToPostgres writes rows pulled from next, which returns batches
+// until io.EOF. Nothing larger than one batch is ever held, so this is what
+// lets a sink write a table that does not fit in worker memory.
+func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, columns []string, next func() (*common.DataSet, error)) (int64, error) {
+	for _, id := range append([]string{cfg.Table}, columns...) {
 		if err := validateIdentifier(id); err != nil {
 			return 0, fmt.Errorf("invalid identifier %q: %w", id, err)
 		}
@@ -118,7 +135,7 @@ func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 
 	conn, err := db.Conn(ctx)
@@ -129,8 +146,8 @@ func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64
 
 	d := getDialect("postgres")
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	quotedCols := make([]string, len(ds.Columns))
-	for i, c := range ds.Columns {
+	quotedCols := make([]string, len(columns))
+	for i, c := range columns {
 		quotedCols[i] = d.quoteIdent(c)
 	}
 	copyStmt := fmt.Sprintf("COPY %s (%s) FROM STDIN", d.quoteIdent(cfg.Table), strings.Join(quotedCols, ", "))
@@ -155,7 +172,7 @@ func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64
 			}
 		}
 
-		tag, err := pgxConn.PgConn().CopyFrom(ctx, copyReader(ds), copyStmt)
+		tag, err := pgxConn.PgConn().CopyFrom(ctx, copyReader(columns, next), copyStmt)
 		if err != nil {
 			return fmt.Errorf("copy: %w", err)
 		}
@@ -172,8 +189,10 @@ func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64
 // copyReader streams the dataset in COPY's text format so the rows are
 // not all materialised as one string on top of the dataset already in
 // memory.
-// copyReader streams the dataset as COPY text so the rows never exist as
-// one big buffer — a 10M-row write costs the same memory as a 10-row one.
+// copyReader streams rows pulled from next as COPY text, so they never
+// exist as one big buffer — a 10M-row write costs the same memory as a
+// 10-row one, whether next yields one materialized dataset or a thousand
+// batches read off the blob store.
 //
 // The bufio.Writer is not an optimisation detail, it is the difference
 // between a fast path and a slow one. io.Pipe hands every Write directly
@@ -181,7 +200,7 @@ func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64
 // row-by-row costs one scheduler round-trip per row: 25k rows spent
 // ~490ms in handoffs alone, which swamped the COPY it was meant to
 // accelerate. Batching into 256 KiB chunks turns 25k handoffs into ~8.
-func copyReader(ds *common.DataSet) io.Reader {
+func copyReader(columns []string, next func() (*common.DataSet, error)) io.Reader {
 	pr, pw := io.Pipe()
 	go func() {
 		// bufio.Writer keeps the first write error and returns it from
@@ -189,16 +208,26 @@ func copyReader(ds *common.DataSet) io.Reader {
 		// deliberately unchecked and the row terminator and Flush carry
 		// the check for the whole row.
 		buf := bufio.NewWriterSize(pw, copyStreamBufferSize)
-		for _, row := range ds.Rows {
-			for i, col := range ds.Columns {
-				if i > 0 {
-					_ = buf.WriteByte('\t')
-				}
-				_, _ = buf.WriteString(copyEscape(row[col]))
+		for {
+			batch, err := next()
+			if err == io.EOF {
+				break
 			}
-			if err := buf.WriteByte('\n'); err != nil {
+			if err != nil {
 				pw.CloseWithError(err)
 				return
+			}
+			for _, row := range batch.Rows {
+				for i, col := range columns {
+					if i > 0 {
+						_ = buf.WriteByte('\t')
+					}
+					_, _ = buf.WriteString(copyEscape(row[col]))
+				}
+				if err := buf.WriteByte('\n'); err != nil {
+					pw.CloseWithError(err)
+					return
+				}
 			}
 		}
 		if err := buf.Flush(); err != nil {
