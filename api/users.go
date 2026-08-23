@@ -754,6 +754,27 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 	}
 }
 
+// openModeCtxKey marks a request that JWTAuth deliberately let through
+// because the system has no users yet and is waiting to be set up.
+//
+// It exists because "no claims" is ambiguous: it is what an open-mode
+// request looks like, and equally what a request looks like when the
+// authentication middleware was never mounted — which NewServer does
+// whenever the user store could not be built. Reading the first meaning
+// into the second served every permission-gated route to anyone.
+type openModeCtxKey struct{}
+
+func withOpenMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, openModeCtxKey{}, true)
+}
+
+// IsOpenMode reports whether JWTAuth passed this request through as an
+// unconfigured system awaiting its first user.
+func IsOpenMode(r *http.Request) bool {
+	v, _ := r.Context().Value(openModeCtxKey{}).(bool)
+	return v
+}
+
 // JWTAuth middleware — checks Bearer token. Skips if no users exist (open mode).
 func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -787,7 +808,13 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 			}
 			if userCount == 0 {
 				if strings.HasPrefix(r.URL.Path, "/api/auth/") || !strings.HasPrefix(r.URL.Path, "/api/") {
-					next.ServeHTTP(w, r)
+					// Mark the request as deliberately unauthenticated.
+					// HasPermission used to infer this from the absence of
+					// claims, which is also what a request that never met
+					// this middleware looks like — so a server started
+					// without JWTAuth answered permission-gated routes to
+					// anyone. Absence is not a decision; this is.
+					next.ServeHTTP(w, r.WithContext(withOpenMode(r.Context())))
 					return
 				}
 				// Block other API access in open mode
