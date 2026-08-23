@@ -305,35 +305,43 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Setup user accounts
-		var userStore *api.UserStore
-		if rawDB, ok := s.RawDB().(*sql.DB); ok {
-			us, err := api.NewUserStore(rawDB)
-			if err != nil {
-				log.Printf("WARNING: user store init failed: %v", err)
-			} else {
-				userStore = us
-				// Account lockout lives in the store layer, which owns the
-				// login_attempts schema and writes it correctly for both
-				// dialects. UserStore used to reimplement it against a raw
-				// *sql.DB and got the Postgres column types wrong, so no
-				// attempt was ever recorded and no account was ever locked.
-				if la, ok := s.(store.LoginAttemptStore); ok {
-					userStore.UseLoginAttemptStore(la)
-				} else {
-					log.Printf("WARNING: this store does not implement LoginAttemptStore — account lockout after repeated failed logins is DISABLED")
-				}
-				switch count, cerr := userStore.UserCountErr(); {
-				case cerr != nil:
-					// Not fatal: the middleware refuses requests while the
-					// count is unavailable, so the server is safe to start
-					// and will recover when the database does.
-					log.Printf("WARNING: cannot determine user count at startup (%v) — API requests will be refused until the database responds", cerr)
-				case count == 0:
-					log.Println("No users configured — running in open mode (create first user via API or UI)")
-				default:
-					log.Printf("User authentication enabled (%d users)", count)
-				}
-			}
+		// A user store that cannot be built is fatal, not a warning.
+		//
+		// NewServer mounts JWTAuth only when this is non-nil, so carrying
+		// on without one starts a server with no authentication at all,
+		// on a database that may be full of users — previously marked by
+		// nothing but the WARNING below. A database that is still coming
+		// up produces exactly this, and the honest response is to fail
+		// and be restarted, not to serve everything to everyone in the
+		// meantime.
+		rawDB, ok := s.RawDB().(*sql.DB)
+		if !ok {
+			return fmt.Errorf("cannot set up user accounts: the store does not expose a *sql.DB, so authentication cannot be enforced")
+		}
+		userStore, err := api.NewUserStore(rawDB)
+		if err != nil {
+			return fmt.Errorf("user store init failed, refusing to start without authentication: %w", err)
+		}
+		// Account lockout lives in the store layer, which owns the
+		// login_attempts schema and writes it correctly for both
+		// dialects. UserStore used to reimplement it against a raw
+		// *sql.DB and got the Postgres column types wrong, so no
+		// attempt was ever recorded and no account was ever locked.
+		if la, ok := s.(store.LoginAttemptStore); ok {
+			userStore.UseLoginAttemptStore(la)
+		} else {
+			log.Printf("WARNING: this store does not implement LoginAttemptStore — account lockout after repeated failed logins is DISABLED")
+		}
+		switch count, cerr := userStore.UserCountErr(); {
+		case cerr != nil:
+			// Not fatal: the middleware refuses requests while the
+			// count is unavailable, so the server is safe to start
+			// and will recover when the database does.
+			log.Printf("WARNING: cannot determine user count at startup (%v) — API requests will be refused until the database responds", cerr)
+		case count == 0:
+			log.Println("No users configured — running in open mode (create first user via API or UI)")
+		default:
+			log.Printf("User authentication enabled (%d users)", count)
 		}
 
 		// Encryption for connection secrets
