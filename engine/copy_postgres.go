@@ -191,7 +191,7 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 			if _, err := tx.Exec(ctx, "LOCK TABLE "+d.quoteIdent(cfg.Table)+" IN EXCLUSIVE MODE"); err != nil {
 				return fmt.Errorf("lock table for overwrite: %w", err)
 			}
-			if _, err := tx.Exec(ctx, "DELETE FROM "+d.quoteIdent(cfg.Table)); err != nil {
+			if _, err := tx.Exec(ctx, d.clearTable(cfg.Table, cfg.Truncate)); err != nil {
 				return fmt.Errorf("clear table: %w", err)
 			}
 		}
