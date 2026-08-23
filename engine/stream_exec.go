@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -101,7 +102,11 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		putDone <- putResult{ref, err}
 	}()
 
-	enc := json.NewEncoder(pw)
+	// Buffered for the same reason as EncodeArrowJSON: pw is an io.Pipe,
+	// and an unbuffered write per batch costs a scheduler round-trip that
+	// the store on the other end is not waiting on.
+	encBuf := bufio.NewWriterSize(pw, encodeBufferSize)
+	enc := json.NewEncoder(encBuf)
 	enc.SetEscapeHTML(false) // match EncodeArrowJSON byte-for-byte
 	var outCols []string
 	rowCount := int64(0)
@@ -158,6 +163,13 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 				rowCount++
 				wroteAny = true
 			}
+		}
+	}
+	// Flush before the sentinel and before closing: whatever the encoder
+	// buffered is not in the pipe yet, and closing would discard it.
+	if streamErr == nil {
+		if err := encBuf.Flush(); err != nil {
+			streamErr = err
 		}
 	}
 	if streamErr == nil && !wroteAny {
