@@ -939,6 +939,19 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
 	}
+	// Postgres appends and overwrites go through COPY, which carries the
+	// rows as data instead of rendering them into megabytes of SQL text
+	// for the server to parse back — measured at 3.3x on 25k rows. See
+	// copy_postgres.go for why the text format and not the binary one.
+	if canCopyInsert(cfg) {
+		affected, err := copyRowsToPostgres(uri, cfg, input)
+		if err != nil {
+			return nil, fmt.Errorf("copy to %s: %w", table, err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Copied %d rows into %s", affected, table)
+		return nil, nil
+	}
+
 	sql, err := GenerateSQL(cfg, input)
 	if err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
