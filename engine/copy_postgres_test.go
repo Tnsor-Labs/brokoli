@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -98,7 +99,14 @@ func TestCopyReaderStreamsRows(t *testing.T) {
 			{"a": "x\ty", "b": "z"},
 		},
 	}
-	out, err := io.ReadAll(copyReader(ds))
+	sent := false
+	out, err := io.ReadAll(copyReader(ds.Columns, func() (*common.DataSet, error) {
+		if sent {
+			return nil, io.EOF
+		}
+		sent = true
+		return ds, nil
+	}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,5 +155,71 @@ func TestCopyFastPathCanBeDisabled(t *testing.T) {
 	t.Setenv("BROKOLI_SINK_COPY", "1")
 	if !canCopyInsert(SQLGenConfig{Dialect: "postgres", Mode: ModeAppend}) {
 		t.Fatal("BROKOLI_SINK_COPY=1 should keep the fast path")
+	}
+}
+
+// Batches are a transport detail, not a data one: the bytes on the wire
+// must be identical whether the rows arrive as one dataset or many. This
+// is what lets a sink write a table larger than memory.
+func TestCopyReaderJoinsBatchesSeamlessly(t *testing.T) {
+	cols := []string{"a", "b"}
+	all := []common.DataRow{
+		{"a": "1", "b": "x"}, {"a": "2", "b": "y"},
+		{"a": "3", "b": "z"}, {"a": "4", "b": nil},
+	}
+
+	whole := &common.DataSet{Columns: cols, Rows: all}
+	sent := false
+	oneShot, err := io.ReadAll(copyReader(cols, func() (*common.DataSet, error) {
+		if sent {
+			return nil, io.EOF
+		}
+		sent = true
+		return whole, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	i := 0
+	batched, err := io.ReadAll(copyReader(cols, func() (*common.DataSet, error) {
+		if i >= len(all) {
+			return nil, io.EOF
+		}
+		batch := &common.DataSet{Columns: cols, Rows: all[i : i+1]}
+		i++
+		return batch, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if string(oneShot) != string(batched) {
+		t.Fatalf("batching changed the stream:\n one-shot: %q\n batched:  %q", oneShot, batched)
+	}
+	if string(oneShot) != "1\tx\n2\ty\n3\tz\n4\t\\N\n" {
+		t.Fatalf("unexpected stream: %q", oneShot)
+	}
+}
+
+// A failure partway through the rows must reach the reader as an error
+// rather than as a short stream, which Postgres would accept as a
+// complete, silently truncated load.
+func TestCopyReaderPropagatesProducerError(t *testing.T) {
+	cols := []string{"a"}
+	calls := 0
+	r := copyReader(cols, func() (*common.DataSet, error) {
+		calls++
+		if calls == 1 {
+			return &common.DataSet{Columns: cols, Rows: []common.DataRow{{"a": "1"}}}, nil
+		}
+		return nil, errors.New("upstream blob read failed")
+	})
+	_, err := io.ReadAll(r)
+	if err == nil {
+		t.Fatal("expected the producer error to surface, got a clean EOF")
+	}
+	if !strings.Contains(err.Error(), "upstream blob read failed") {
+		t.Fatalf("error did not carry the cause: %v", err)
 	}
 }

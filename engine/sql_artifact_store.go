@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -185,6 +187,50 @@ const (
 // other two paths' io.Pipe pattern would fix. It is bounded in practice:
 // this method is called once per completed remote instance result
 // (ADR-017), not on the hot per-node spill path Blobs() exists for.
+// defaultSQLArtifactMaxBytes caps how large a resume artifact this store
+// will copy into the database.
+//
+// An artifact here is a value in a TEXT column, so writing one means
+// holding the whole encoded dataset in memory and handing it to the driver
+// as a single statement parameter. At 100 MB that killed both ends: the
+// worker (a 460 MiB pod doing io.ReadAll on the blob) and a Postgres
+// backend, which the kernel OOM-killed, taking the database into recovery
+// and failing every other run on the cluster with it.
+//
+// So there is a size past which writing the resume cache costs more than
+// the run it is meant to save. Past it this store declines, the runner
+// logs that a future resume of that node will fail loudly — which it
+// already does for any artifact write failure — and the run continues.
+// The data itself is never at risk: it lives in the blob store, and
+// downstream nodes read it from there.
+//
+// 32 MiB is chosen to sit well under a default Postgres backend's
+// comfortable allocation while still covering the artifacts real
+// pipelines produce. BROKOLI_SQL_ARTIFACT_MAX_BYTES overrides it; 0 or
+// negative removes the cap.
+const defaultSQLArtifactMaxBytes int64 = 32 << 20
+
+func sqlArtifactMaxBytes() int64 {
+	if v := os.Getenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return n
+		}
+	}
+	return defaultSQLArtifactMaxBytes
+}
+
+// errArtifactTooLarge explains a declined write in the terms an operator
+// can act on.
+func errArtifactTooLarge(nodeID string, size, limit int64) error {
+	return fmt.Errorf(
+		"resume artifact for node %s is %s, over the %s this store will copy into the database: "+
+			"an artifact is a single column value here, so writing it would hold the whole dataset in memory "+
+			"and send it as one statement parameter. The run is unaffected and its data is safe in the blob store; "+
+			"only resuming this node from a durable artifact is unavailable. "+
+			"Configure a shared blob store (S3) for large-artifact resume, or raise BROKOLI_SQL_ARTIFACT_MAX_BYTES",
+		nodeID, humanBytes(size), humanBytes(limit))
+}
+
 func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *common.DataSet) error {
 	if runID == "" || nodeID == "" {
 		return fmt.Errorf("write artifact: runID and nodeID are required")
@@ -192,6 +238,9 @@ func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *
 	var buf bytes.Buffer
 	if err := EncodeArrowJSON(&buf, ds); err != nil {
 		return fmt.Errorf("write artifact: encode: %w", err)
+	}
+	if limit := sqlArtifactMaxBytes(); limit > 0 && int64(buf.Len()) > limit {
+		return errArtifactTooLarge(nodeID, int64(buf.Len()), limit)
 	}
 	cols := []string{}
 	if ds != nil && ds.Columns != nil {
@@ -330,6 +379,12 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 	}
 	if ref == nil {
 		return fmt.Errorf("write artifact ref: nil ref")
+	}
+	// Checked before the blob is opened, because the point is not to read
+	// it: SizeBytes is the exact stored length, so an oversized artifact
+	// costs nothing to decline.
+	if limit := sqlArtifactMaxBytes(); limit > 0 && ref.SizeBytes > limit {
+		return errArtifactTooLarge(nodeID, ref.SizeBytes, limit)
 	}
 	rc, err := s.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
