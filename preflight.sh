@@ -135,7 +135,15 @@ pass ui-checks
 
 # ---- 5. tests — CI parity: -v -race ----
 stage "go test -race ./... (the long pole)"
-go test -race ./... 2>&1 | tail -5 | tee "$LOGDIR/test.tail"
+# Full output to a log, not just a tail: piping straight into `tail`
+# throws away the "--- FAIL" lines and the failing package name, which
+# left a failure showing as a bare "FAIL" with nothing to act on.
+if ! go test -race ./... > "$LOGDIR/tests.log" 2>&1; then
+  grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests.log" | head -20
+  fail tests "$LOGDIR/tests.log"
+  exit 1
+fi
+tail -3 "$LOGDIR/tests.log"
 pass tests
 
 # ---- 6. optional coverage pass (CI runs it; adds minutes; opt-in) ----
