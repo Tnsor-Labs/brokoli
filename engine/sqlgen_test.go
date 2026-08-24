@@ -267,8 +267,33 @@ func TestGenerateSQL_UpsertMySQL(t *testing.T) {
 	if !strings.Contains(sql, "ON DUPLICATE KEY UPDATE") {
 		t.Errorf("mysql upsert should use ON DUPLICATE KEY UPDATE:\n%s", sql)
 	}
-	if !strings.Contains(sql, "`name` = VALUES(`name`)") {
-		t.Errorf("should set columns from VALUES():\n%s", sql)
+	if !strings.Contains(sql, "AS brokoli_new ON DUPLICATE KEY UPDATE") {
+		t.Errorf("mysql upsert should use the row alias, not deprecated VALUES():\n%s", sql)
+	}
+	if !strings.Contains(sql, "`name` = brokoli_new.`name`") {
+		t.Errorf("should set columns from the row alias:\n%s", sql)
+	}
+	if strings.Contains(sql, "VALUES(`") {
+		t.Errorf("VALUES() is deprecated since MySQL 8.0.20 and must not be emitted:\n%s", sql)
+	}
+	// The key column is asserted, not updated.
+	if strings.Contains(sql, "`id` = brokoli_new.`id`") {
+		t.Error("must not update the key column itself")
+	}
+}
+
+func TestGenerateSQL_UpsertMySQLRequiresKeyColumns(t *testing.T) {
+	// MySQL merges on whatever unique index collides, so without
+	// key_columns there is nothing to validate the table against and the
+	// merge key would be whatever the schema happens to contain.
+	_, err := GenerateSQL(SQLGenConfig{
+		Dialect: "mysql", Table: "users", Mode: "upsert",
+	}, sqlDS())
+	if err == nil {
+		t.Fatal("mysql upsert without key_columns must error")
+	}
+	if !strings.Contains(err.Error(), "key_columns") {
+		t.Errorf("error should name key_columns: %v", err)
 	}
 }
 

@@ -926,6 +926,17 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		CreateTable: configBool(node.Config["create_table"]),
 		Truncate:    configBool(node.Config["truncate"]),
 	}
+	if cfg.Dialect == "mysql" && strings.EqualFold(cfg.Mode, ModeUpsert) {
+		others, err := validateMySQLUpsertKey(r.ctx, uri, table, cfg.KeyColumns)
+		if err != nil {
+			return nil, fmt.Errorf("sink_db: %w", err)
+		}
+		if len(others) > 0 {
+			r.log(node.ID, models.LogLevelWarning,
+				"MySQL merges on any unique index collision, not only key_columns: %s also has %s",
+				table, strings.Join(others, "; "))
+		}
+	}
 	// Postgres appends and overwrites go through COPY, which carries the
 	// rows as data instead of rendering them into megabytes of SQL text
 	// for the server to parse back — measured at 3.3x on 25k rows. See
@@ -1180,6 +1191,18 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Source: %d rows, %d columns", len(sourceDS.Rows), len(sourceDS.Columns))
+
+	if dialect == "mysql" && strings.EqualFold(mode, ModeUpsert) {
+		others, err := validateMySQLUpsertKey(r.ctx, destURI, destTable, keyColumns)
+		if err != nil {
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
+		if len(others) > 0 {
+			r.log(node.ID, models.LogLevelWarning,
+				"MySQL merges on any unique index collision, not only key_columns: %s also has %s",
+				destTable, strings.Join(others, "; "))
+		}
+	}
 
 	// Process in chunks
 	totalMigrated := 0

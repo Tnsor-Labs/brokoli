@@ -78,6 +78,17 @@ var driverOptionKeys = map[ConnectionType][]string{
 	ConnTypeMySQL: {
 		"tls", "charset", "collation", "parseTime", "loc",
 		"timeout", "readTimeout", "writeTimeout",
+		// interpolateParams trades a round trip per statement for
+		// client-side escaping (the driver refuses it under the multibyte
+		// charsets where that is unsafe); maxAllowedPacket is what a large
+		// batched INSERT runs into; clientFoundRows changes RowsAffected
+		// from rows-changed to rows-matched, which some callers need.
+		"interpolateParams", "maxAllowedPacket", "clientFoundRows",
+		// multiStatements is deliberately absent. Generated SQL is
+		// interpolated, not parameter-bound, so escaping carries the whole
+		// injection risk -- and multiStatements converts any escaping defect
+		// from a corrupted value into arbitrary statement execution. It
+		// stays out until parameters are bound.
 	},
 	ConnTypeMSSQL: {
 		"encrypt", "TrustServerCertificate", "hostNameInCertificate",
