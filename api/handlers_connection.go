@@ -426,7 +426,7 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 		}
 	}
 
-	client := netguard.Default.Client(5 * time.Second)
+	client := netguard.Outbound().Client(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		if errors.Is(err, netguard.ErrBlockedTarget) {
@@ -580,7 +580,7 @@ func testGeneric(ctx context.Context, c *models.Connection, extra map[string]int
 			}
 			req.Header.Set("Content-Type", "application/json")
 
-			client := netguard.Default.Client(5 * time.Second)
+			client := netguard.Outbound().Client(5 * time.Second)
 			resp, err := client.Do(req)
 			if err != nil {
 				if errors.Is(err, netguard.ErrBlockedTarget) {
