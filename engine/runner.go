@@ -776,6 +776,11 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			streamable = activeInputs == 0
 		case models.NodeTypeSinkFile:
 			streamable = inputRef != nil
+		case models.NodeTypeSinkAPI:
+			// Same rule as the other sinks: stream only from a reference. An
+			// inline input already fits, and re-reading it off disk to send
+			// it in the same batches would be slower for no gain.
+			streamable = inputRef != nil
 		case models.NodeTypeSinkDB:
 			// Consumes a ref, produces nothing. A sink handed an inline
 			// input takes the batch path: the data already fits, and

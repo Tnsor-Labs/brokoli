@@ -981,93 +981,146 @@ func configBool(v interface{}) bool {
 
 // ── Sink API ────────────────────────────────────────────────
 
-func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	if input == nil {
-		return nil, fmt.Errorf("sink_api node requires input data")
-	}
+// apiSinkConfig is everything runSinkAPI needs from a node, resolved once so
+// the materialising and streamed paths cannot disagree about what a node
+// meant.
+type apiSinkConfig struct {
+	url       string
+	method    string
+	headers   map[string]string
+	batchSize int
+	authUser  string
+	authPass  string
+}
 
-	url, _ := node.Config["url"].(string)
-	if url == "" {
-		return nil, fmt.Errorf("sink_api node requires 'url' config")
+func apiSinkConfigFrom(node models.Node) (apiSinkConfig, error) {
+	cfg := apiSinkConfig{batchSize: 100, method: "POST"}
+	cfg.url, _ = node.Config["url"].(string)
+	if cfg.url == "" {
+		return cfg, fmt.Errorf("sink_api node requires 'url' config")
 	}
-
-	method, _ := node.Config["method"].(string)
-	if method == "" {
-		method = "POST"
+	if m, _ := node.Config["method"].(string); m != "" {
+		cfg.method = m
 	}
-
-	batchSize := 100
 	if bs, ok := node.Config["batch_size"].(float64); ok && bs > 0 {
-		batchSize = int(bs)
+		cfg.batchSize = int(bs)
 	}
-
-	// Build headers
-	headers := make(map[string]string)
-	headers["Content-Type"] = "application/json"
+	cfg.headers = map[string]string{"Content-Type": "application/json"}
 	if h, ok := node.Config["headers"].(map[string]interface{}); ok {
 		for k, v := range h {
 			if sv, ok := v.(string); ok {
-				headers[k] = sv
+				cfg.headers[k] = sv
 			}
 		}
 	}
+	cfg.authUser, _ = node.Config["auth_user"].(string)
+	cfg.authPass, _ = node.Config["auth_password"].(string)
+	return cfg, nil
+}
 
-	// Send in batches. netguard.Default: sink_api's url is arbitrary
-	// pipeline-editor-supplied config, unlike a fetch's trusted
-	// self-reference case -- there is no legitimate reason for it to
-	// reach a loopback/private/link-local address, so this had no
-	// carve-out to preserve (previously this had no SSRF protection at
-	// all).
+// sendAPIBatches posts rows in batches, pulling them from next until it
+// returns io.EOF. Both sink_api paths go through here: the difference between
+// them is only where the rows come from, and sharing the sender is what keeps
+// a streamed run and a materialising one sending the same requests.
+//
+// totalBatches is 0 when the count is not known in advance, which is the
+// streamed case -- the log then counts batches as it goes rather than claiming
+// a denominator it cannot have.
+func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatches int, next func() (*common.DataSet, error)) (int, int, error) {
+	// netguard.Outbound(): sink_api's url is arbitrary pipeline-editor-supplied
+	// config, unlike a fetch's trusted self-reference case -- there is no
+	// legitimate reason for it to reach a loopback/private/link-local address,
+	// so this had no carve-out to preserve (previously this had no SSRF
+	// protection at all).
 	client := netguard.Outbound().Client(30 * time.Second)
-	totalSent := 0
-	totalBatches := (len(input.Rows) + batchSize - 1) / batchSize
+	totalSent, batchNum := 0, 0
 
-	for i := 0; i < len(input.Rows); i += batchSize {
+	for {
 		if r.ctx.Err() != nil {
-			return nil, fmt.Errorf("cancelled")
+			return totalSent, batchNum, fmt.Errorf("cancelled")
 		}
-
-		end := i + batchSize
-		if end > len(input.Rows) {
-			end = len(input.Rows)
+		batch, err := next()
+		if err == io.EOF {
+			break
 		}
-		batch := input.Rows[i:end]
-		batchNum := (i / batchSize) + 1
-
-		payload, err := json.Marshal(batch)
 		if err != nil {
-			return nil, fmt.Errorf("marshal batch %d: %w", batchNum, err)
+			return totalSent, batchNum, err
+		}
+		if batch == nil || len(batch.Rows) == 0 {
+			continue
+		}
+		batchNum++
+
+		payload, err := json.Marshal(batch.Rows)
+		if err != nil {
+			return totalSent, batchNum, fmt.Errorf("marshal batch %d: %w", batchNum, err)
 		}
 
-		req, err := http.NewRequestWithContext(r.ctx, method, url, strings.NewReader(string(payload)))
+		req, err := http.NewRequestWithContext(r.ctx, cfg.method, cfg.url, strings.NewReader(string(payload)))
 		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
+			return totalSent, batchNum, fmt.Errorf("create request: %w", err)
 		}
-		for k, v := range headers {
+		for k, v := range cfg.headers {
 			req.Header.Set(k, v)
 		}
-
-		// Basic auth
-		if user, _ := node.Config["auth_user"].(string); user != "" {
-			pass, _ := node.Config["auth_password"].(string)
-			req.SetBasicAuth(user, pass)
+		if cfg.authUser != "" {
+			req.SetBasicAuth(cfg.authUser, cfg.authPass)
 		}
 
 		resp, err := client.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("batch %d/%d failed: %w", batchNum, totalBatches, err)
+			return totalSent, batchNum, fmt.Errorf("batch %d%s failed: %w", batchNum, ofTotal(totalBatches), err)
 		}
 		resp.Body.Close()
-
 		if resp.StatusCode >= 400 {
-			return nil, fmt.Errorf("batch %d/%d: HTTP %d", batchNum, totalBatches, resp.StatusCode)
+			return totalSent, batchNum, fmt.Errorf("batch %d%s: HTTP %d", batchNum, ofTotal(totalBatches), resp.StatusCode)
 		}
 
-		totalSent += len(batch)
-		r.log(node.ID, models.LogLevelInfo, "Batch %d/%d sent: %d rows (HTTP %d)", batchNum, totalBatches, len(batch), resp.StatusCode)
+		totalSent += len(batch.Rows)
+		r.log(node.ID, models.LogLevelInfo, "Batch %d%s sent: %d rows (HTTP %d)",
+			batchNum, ofTotal(totalBatches), len(batch.Rows), resp.StatusCode)
+	}
+	return totalSent, batchNum, nil
+}
+
+// ofTotal renders the "/N" half of "batch 3/7", or nothing when the total is
+// not known ahead of time.
+func ofTotal(total int) string {
+	if total <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("/%d", total)
+}
+
+func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+	if input == nil {
+		return nil, fmt.Errorf("sink_api node requires input data")
+	}
+	cfg, err := apiSinkConfigFrom(node)
+	if err != nil {
+		return nil, err
 	}
 
-	r.log(node.ID, models.LogLevelInfo, "API sink complete: %d rows sent in %d batches to %s", totalSent, totalBatches, url)
+	totalBatches := (len(input.Rows) + cfg.batchSize - 1) / cfg.batchSize
+	i := 0
+	next := func() (*common.DataSet, error) {
+		if i >= len(input.Rows) {
+			return nil, io.EOF
+		}
+		end := i + cfg.batchSize
+		if end > len(input.Rows) {
+			end = len(input.Rows)
+		}
+		batch := &common.DataSet{Columns: input.Columns, Rows: input.Rows[i:end]}
+		i = end
+		return batch, nil
+	}
+
+	totalSent, batches, err := r.sendAPIBatches(node, cfg, totalBatches, next)
+	if err != nil {
+		return nil, err
+	}
+	r.log(node.ID, models.LogLevelInfo, "API sink complete: %d rows sent in %d batches to %s", totalSent, batches, cfg.url)
 	return nil, nil
 }
 

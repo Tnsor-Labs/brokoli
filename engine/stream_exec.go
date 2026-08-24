@@ -472,6 +472,11 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 		// has been read (see loaders.SupportsStreaming).
 		path, _ := node.Config["path"].(string)
 		return path != "" && loaders.SupportsStreaming(path)
+	case models.NodeTypeSinkAPI:
+		// A sink_api already sent in batches; what it did not do was let its
+		// input arrive in them. Nothing about posting rows needs the whole
+		// dataset, so this is eligible whenever the input is a reference.
+		return true
 	case models.NodeTypeSinkFile:
 		// csv and json write incrementally; sql reads one cell out of the
 		// first row and is never large enough to arrive as a reference.
@@ -528,6 +533,8 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 		return r.runSourceFileStreamed(ctx, node, outputs)
 	case models.NodeTypeSourceDB:
 		return r.runSourceDBStreamed(ctx, node, outputs)
+	case models.NodeTypeSinkAPI:
+		return r.runSinkAPIStreamed(node, inputRef, outputs)
 	case models.NodeTypeSinkFile:
 		return r.runSinkFileStreamed(node, inputRef, outputs)
 	case models.NodeTypeSinkDB:
@@ -859,5 +866,71 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
 			host)
 	}
+	return nodeExecutionResult{}, nil
+}
+
+// runSinkAPIStreamed posts a referenced input in batches without ever holding
+// it. The batches the reader yields are handed to the same sender the
+// materialising path uses, so the two cannot drift over what they send.
+func (r *Runner) runSinkAPIStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	if inputRef == nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_api streamed path requires a referenced input (dispatch bug)")
+	}
+	cfg, err := apiSinkConfigFrom(node)
+	if err != nil {
+		return nodeExecutionResult{}, err
+	}
+
+	batches, closer, err := outputs.OpenBatches(inputRef)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
+	}
+	defer closer.Close()
+
+	// The reader's batch size is the artifact store's, not the node's, so the
+	// batches are re-cut to the size the node asked for. A sink_api batch size
+	// is a contract with the receiving API -- how many records it is willing
+	// to take in one request -- and it must not change because the data
+	// arrived by reference.
+	var pending []common.DataRow
+	drained := false
+	next := func() (*common.DataSet, error) {
+		for len(pending) < cfg.batchSize && !drained {
+			b, err := batches.Next()
+			if err == io.EOF {
+				drained = true
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+			pending = append(pending, b.Rows...)
+		}
+		if len(pending) == 0 {
+			return nil, io.EOF
+		}
+		n := cfg.batchSize
+		if n > len(pending) {
+			n = len(pending)
+		}
+		out := &common.DataSet{Columns: inputRef.Columns, Rows: pending[:n]}
+		pending = pending[n:]
+		return out, nil
+	}
+
+	// The total is known here because the reference carries a row count, so
+	// the streamed path can still say "3/7" rather than counting blind.
+	totalBatches := 0
+	if cfg.batchSize > 0 {
+		totalBatches = int((inputRef.RowCount + int64(cfg.batchSize) - 1) / int64(cfg.batchSize))
+	}
+
+	totalSent, sentBatches, err := r.sendAPIBatches(node, cfg, totalBatches, next)
+	if err != nil {
+		return nodeExecutionResult{}, err
+	}
+	r.log(node.ID, models.LogLevelInfo,
+		"API sink complete: %d rows sent in %d batches to %s (streamed by reference, never materialized)",
+		totalSent, sentBatches, cfg.url)
 	return nodeExecutionResult{}, nil
 }
