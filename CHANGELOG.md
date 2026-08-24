@@ -11,6 +11,136 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.68] - 2026-08-24
+
+A pass over the connection subsystem and the authentication middleware.
+Nearly everything here shares one shape: something was true of the system
+and nothing said so — a connection that was not encrypted, a credential
+that had been destroyed, a request that had never been authenticated, a
+build that could not open the database type it offered.
+
+### Security
+
+- **A server could serve every permission-gated route with no
+  authentication at all** (#316) — @hc12r. `NewServer` mounts the
+  authentication middleware only `if userStore != nil`, and `serve.go`
+  left it nil on two paths: a store whose `RawDB()` is not a `*sql.DB`,
+  silently, and a `NewUserStore` error, behind a `WARNING` it then
+  continued past. Neither is exotic — `NewUserStore` fails when the users
+  table cannot be created, which is what a database still accepting no
+  connections produces, and this control database did it repeatedly under
+  load while the fix was being written.
+
+  With no middleware mounted, no request carries claims, and
+  `HasPermission` read a missing claim as open mode and returned `true`.
+  Demonstrated: an unauthenticated request through a `settings.edit` gate
+  returns `200`. Unlike the count bug in #306 this does not clear when the
+  database recovers — the middleware is never mounted, so the process
+  serves everything to everyone for its whole lifetime.
+
+  Fixed at both layers, either of which closes it. Open mode is now a mark
+  `JWTAuth` deliberately sets when it passes an unconfigured system
+  through, and `HasPermission` allows an unauthenticated request only when
+  that mark is present; a request that never met the middleware carries no
+  mark and is denied. Separately, a user store that cannot be built is
+  fatal — a container that exits gets restarted once the database is
+  ready, where one that starts without authentication stays that way until
+  somebody reads the log. A genuinely fresh install still bootstraps, which
+  is asserted by test alongside the bypass.
+
+- **Connection records could not require TLS, and did not say they were
+  not using it** (#317) — @hc12r. `BuildURI` emitted no query string, so
+  no `sslmode` was ever set and libpq's default applied: `prefer`, which
+  attempts TLS and falls back to an unencrypted connection without an
+  error if the server declines. Measured against a local Postgres with
+  `ssl = off`, a connection record came up with `encrypted=false` and
+  nothing in the product reported it. The `extra` field, which is where an
+  operator would look, was read for API connections and ignored for
+  database ones.
+
+  Driver options now come from `extra` for Postgres, Redshift, MySQL, SQL
+  Server, and Snowflake. The allowlist is over keys rather than values:
+  libpq accepts `host`, `dbname`, and `user` as connection parameters, and
+  honouring those from `extra` would let the field redirect a connection
+  away from the record it belongs to. Values reach the driver verbatim so
+  the driver validates them — a misspelled `sslmode` fails the connection
+  loudly instead of being dropped, because an option that vanishes quietly
+  leaves an operator believing they have encryption they do not have.
+
+  No default changed. An unconfigured connection still gets the driver's
+  own default; what is new is that the demand is expressible.
+
+### Fixed
+
+- **A REST read-modify-write destroyed connection credentials** (#317) —
+  @hc12r. `GET` a connection, change the host, `PUT` it back — the
+  ordinary way to use the API, and the way the docs describe it. Reads
+  mask encrypted refs as `encrypted://********`, and the update path
+  treated a non-empty ref as authoritative, so the mask was written back
+  as the credential and the real one was gone. Both the password and the
+  `extra` blob. The `PUT` returns `200` with the edit applied, so nothing
+  signals the loss; the connection fails at the next run with a decryption
+  error that points at the crypto layer rather than at the write that
+  caused it. What made it easy to miss is that the obvious sentinel was
+  already handled — the bare password had an explicit `!= "********"`
+  guard — and `maskRef` later introduced a second sentinel nothing
+  checked. Both are named constants now, normalised in one place.
+
+- **The connection test reported success for connections that ignored
+  their own options** (#317) — @hc12r. Found by driving a running server
+  rather than the package: a connection carrying `"sslmode": "require"`,
+  tested against a Postgres with TLS switched off, answered `Connected
+  successfully` for a session in the clear. The Test handler decrypted the
+  `extra` blob into a local map so the HTTP paths could read headers out
+  of it and left the encrypted value on the connection, and `BuildURI`
+  reads `c.Extra` — an encrypted blob parses as no options at all. The
+  runtime path was never affected, since the connection resolver puts
+  plaintext back before building the URI; the only thing misreporting was
+  the button whose purpose is to say whether the connection works.
+
+- **The connection test ignored the operator's outbound network policy**
+  (#317) — @hc12r. `netguard.Outbound()` reads
+  `BROKOLI_OUTBOUND_ALLOW_CIDRS` and `BROKOLI_OUTBOUND_ALLOW_PRIVATE`;
+  `netguard.Default` is hardcoded and reads neither. Pipeline nodes use
+  the first, the test button used the second. An operator whose internal
+  services sit on `10.20.0.0/16` could run pipelines against them while
+  the test button called the same connection unreachable.
+
+- **Connection types with no compiled driver blamed the build** (#317) —
+  @hc12r. The catalog offers Snowflake, BigQuery, Databricks, Oracle, and
+  SQL Server; only pgx, mysql, and sqlite are compiled in. That surfaced
+  as database/sql's `unknown driver "snowflake" (forgotten import?)`,
+  which reads as a defect rather than a product limitation. The error now
+  names the limitation and lists the drivers that are available, and it
+  names the scheme rather than the URI, which carries the password.
+
+### Changed
+
+- **One connection URI builder instead of two** (#317) — @hc12r. The
+  engine carried a second builder that handled Redshift, Snowflake, and
+  SQL Server and pinned `sslmode=require`. It had a table test asserting
+  exactly that, and it had never been called — so the suite read as though
+  Brokoli required TLS to Postgres while the live path asked for nothing,
+  and those three connection types fell through to `return c.Host`. A
+  `conn_id` pointing at a Redshift cluster injected a bare hostname as the
+  node's `uri`, dropping the port, database, and credentials, and reached
+  the Postgres driver as a malformed DSN whose error named neither the
+  connection nor the reason.
+
+  The two are now one, built through `net/url` rather than `fmt.Sprintf` —
+  the dead builder interpolated credentials into a format string, so a
+  password containing `@` or `/` changed which host the URI pointed at.
+  `BuildsURI` reports whether a type has an engine driver at all, and the
+  resolver no longer fabricates a URI for the six that do not.
+
+### Added
+
+- **The server reports which version it is running** (#315) — @hc12r.
+  `/api/system/info` returns the build version, and the UI shows it in the
+  sidebar and in Settings. Answering "what is actually deployed here"
+  previously meant reading the image tag from outside the product, which
+  is a different question and can disagree.
+
 ## [0.10.67] - 2026-08-23
 
 ### Security
