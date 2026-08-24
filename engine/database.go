@@ -249,6 +249,111 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 	return totalAffected, nil
 }
 
+// validateMySQLUpsertKey checks that key_columns names a unique index of the
+// target table before an upsert runs.
+//
+// MySQL's ON DUPLICATE KEY UPDATE merges on whichever unique index the
+// inserted row collides with; the statement cannot name one. So key_columns
+// is an assertion about the table, and this is where it is checked: the named
+// columns must be exactly the column set of some unique index (PRIMARY
+// included, order and case ignored, as ON CONFLICT ignores them too).
+// Refusing costs the run an error message; not checking lets rows merge on a
+// key the user never configured, which rewrites data silently.
+//
+// The returned list names the table's other unique indexes, if any. They are
+// not an error -- the configured key is real -- but a row can still collide
+// on one of them and merge there instead, so the caller surfaces them as a
+// warning rather than this function pretending the check makes that
+// impossible.
+func validateMySQLUpsertKey(ctx context.Context, uri, table string, keyCols []string) ([]string, error) {
+	if len(keyCols) == 0 {
+		return nil, fmt.Errorf("upsert requires key_columns for mysql (the unique index the merge keys on)")
+	}
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		return nil, err
+	}
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", driver, err)
+	}
+	defer db.Close()
+
+	// The table may arrive schema-qualified; otherwise it lives in the
+	// connection's default schema.
+	schema, tbl := "", table
+	if i := strings.IndexByte(table, '.'); i >= 0 {
+		schema, tbl = table[:i], table[i+1:]
+	}
+	query := `SELECT index_name, column_name
+		FROM information_schema.statistics
+		WHERE table_schema = DATABASE() AND table_name = ? AND non_unique = 0
+		ORDER BY index_name, seq_in_index`
+	args := []interface{}{tbl}
+	if schema != "" {
+		query = strings.Replace(query, "DATABASE()", "?", 1)
+		args = []interface{}{schema, tbl}
+	}
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("inspect unique indexes on %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	indexCols := map[string][]string{}
+	var indexOrder []string
+	for rows.Next() {
+		var idx, col string
+		if err := rows.Scan(&idx, &col); err != nil {
+			return nil, err
+		}
+		if _, seen := indexCols[idx]; !seen {
+			indexOrder = append(indexOrder, idx)
+		}
+		indexCols[idx] = append(indexCols[idx], col)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(indexCols) == 0 {
+		return nil, fmt.Errorf(
+			"upsert into %s: the table has no unique index, so MySQL's ON DUPLICATE KEY UPDATE can never merge -- every row would insert",
+			table)
+	}
+
+	want := map[string]bool{}
+	for _, k := range keyCols {
+		want[strings.ToLower(k)] = true
+	}
+	sameSet := func(cols []string) bool {
+		if len(cols) != len(want) {
+			return false
+		}
+		for _, c := range cols {
+			if !want[strings.ToLower(c)] {
+				return false
+			}
+		}
+		return true
+	}
+
+	matched := ""
+	var others []string
+	for _, idx := range indexOrder {
+		if matched == "" && sameSet(indexCols[idx]) {
+			matched = idx
+			continue
+		}
+		others = append(others, fmt.Sprintf("%s (%s)", idx, strings.Join(indexCols[idx], ", ")))
+	}
+	if matched == "" {
+		return nil, fmt.Errorf(
+			"upsert into %s: key_columns (%s) does not match any unique index; the table's unique indexes are: %s",
+			table, strings.Join(keyCols, ", "), strings.Join(others, "; "))
+	}
+	return others, nil
+}
+
 // splitStatements splits SQL text on semicolons, respecting quoted strings.
 func splitStatements(sql string) []string {
 	var stmts []string
