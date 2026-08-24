@@ -267,20 +267,28 @@ var comparisonOps = []string{">=", "<=", "!=", "==", "=", ">", "<"}
 // silent pass-through was a data-quality footgun (brokoli-sdk#14): a
 // condition like "id > 100" against a matcher that didn't know ">" kept
 // every row with no error.
-func matchesCondition(cond string, row common.DataRow) (bool, error) {
-	// Set membership: "column in [val1, val2, ...]"
+// parsedCondition is the shared parse of a filter condition. Both backends —
+// the Go matcher below and the SQL compiler in transform_sql.go — read it, so
+// they cannot disagree about which column, operator, and target a condition
+// names. Only evaluation can differ, and that is what the differential tests
+// check.
+type parsedCondition struct {
+	Column string
+	Op     string   // "in", "=", "==", "!=", ">", "<", ">=", "<="
+	Target string   // everything except "in"
+	Set    []string // "in" only, already trimmed of quotes and spaces
+}
+
+func parseCondition(cond string) (parsedCondition, error) {
 	if strings.Contains(cond, " in ") {
 		parts := strings.SplitN(cond, " in ", 2)
-		col := strings.TrimSpace(parts[0])
 		valuesStr := strings.Trim(strings.TrimSpace(parts[1]), "[]")
-		values := strings.Split(valuesStr, ",")
-		colVal := fmt.Sprintf("%v", row[col])
-		for _, v := range values {
-			if strings.Trim(v, " '\"") == colVal {
-				return true, nil
-			}
+		raw := strings.Split(valuesStr, ",")
+		set := make([]string, 0, len(raw))
+		for _, v := range raw {
+			set = append(set, strings.Trim(v, " '\""))
 		}
-		return false, nil
+		return parsedCondition{Column: strings.TrimSpace(parts[0]), Op: "in", Set: set}, nil
 	}
 
 	// Find the leftmost operator; at a tie, the longest wins so a two-char
@@ -294,16 +302,36 @@ func matchesCondition(cond string, row common.DataRow) (bool, error) {
 		}
 	}
 	if bestIdx == -1 {
-		return false, fmt.Errorf(
+		return parsedCondition{}, fmt.Errorf(
 			"unrecognized condition %q: expected \"column <op> value\" with op one of "+
 				"in, =, ==, !=, >, <, >=, <=", cond)
 	}
+	return parsedCondition{
+		Column: strings.TrimSpace(cond[:bestIdx]),
+		Op:     bestOp,
+		Target: strings.Trim(strings.TrimSpace(cond[bestIdx+len(bestOp):]), "'\""),
+	}, nil
+}
 
-	col := strings.TrimSpace(cond[:bestIdx])
-	target := strings.Trim(strings.TrimSpace(cond[bestIdx+len(bestOp):]), "'\"")
-	left := fmt.Sprintf("%v", row[col])
+func matchesCondition(cond string, row common.DataRow) (bool, error) {
+	pc, err := parseCondition(cond)
+	if err != nil {
+		return false, err
+	}
+	if pc.Op == "in" {
+		colVal := fmt.Sprintf("%v", row[pc.Column])
+		for _, v := range pc.Set {
+			if v == colVal {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 
-	switch bestOp {
+	target := pc.Target
+	left := fmt.Sprintf("%v", row[pc.Column])
+
+	switch pc.Op {
 	case "=", "==":
 		return left == target, nil
 	case "!=":
@@ -325,7 +353,7 @@ func matchesCondition(cond string, row common.DataRow) (bool, error) {
 			}
 		}
 	}
-	switch bestOp {
+	switch pc.Op {
 	case ">":
 		return cmp > 0, nil
 	case "<":
@@ -335,7 +363,7 @@ func matchesCondition(cond string, row common.DataRow) (bool, error) {
 	case "<=":
 		return cmp <= 0, nil
 	}
-	return false, fmt.Errorf("unrecognized operator %q", bestOp) // unreachable
+	return false, fmt.Errorf("unrecognized operator %q", pc.Op) // unreachable
 }
 
 func applyFunction(r TransformRule, ds *common.DataSet) error {

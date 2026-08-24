@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"os"
@@ -118,8 +119,7 @@ func TestTransformSQLPrefixDifferential(t *testing.T) {
 		{
 			name:         "filter numeric",
 			rules:        []TransformRule{{Type: "filter_rows", Condition: "amount > 99"}},
-			wantCompiled: false,
-			why:          "Go stringifies then compares numerically only if BOTH sides parse; SQL compares a numeric column numerically regardless, and NULL rows drop out silently instead of comparing against \"<nil>\"",
+			wantCompiled: true,
 		},
 		{
 			name:         "filter on text that looks numeric",
@@ -128,10 +128,9 @@ func TestTransformSQLPrefixDifferential(t *testing.T) {
 			why:          "city is text; Go parses '10' as a number and compares numerically, SQL compares by collation, so 9 vs 10 order differently",
 		},
 		{
-			name:         "filter equality",
+			name:         "filter equality on text",
 			rules:        []TransformRule{{Type: "filter_rows", Condition: "name = alice"}},
-			wantCompiled: false,
-			why:          "a NULL name renders as \"<nil>\" in Go and is never equal; in SQL the comparison is NULL, which is also not true, but the two agree only by accident and not for !=",
+			wantCompiled: true,
 		},
 		{
 			name:         "apply_function upper",
@@ -155,6 +154,28 @@ func TestTransformSQLPrefixDifferential(t *testing.T) {
 		},
 	}
 
+	extra := []struct {
+		name         string
+		rules        []TransformRule
+		wantCompiled bool
+		why          string
+	}{
+		{"filter inequality on text", []TransformRule{{Type: "filter_rows", Condition: "name != alice"}}, true, ""},
+		{"filter numeric >=", []TransformRule{{Type: "filter_rows", Condition: "amount >= 100"}}, true, ""},
+		{"filter numeric <", []TransformRule{{Type: "filter_rows", Condition: "amount < 10"}}, true, ""},
+		{"filter text ordered", []TransformRule{{Type: "filter_rows", Condition: "city > Faro"}}, true, ""},
+		{"filter equality on numeric column", []TransformRule{{Type: "filter_rows", Condition: "amount = 100"}}, true, ""},
+		{"filter after a rename follows the new name", []TransformRule{
+			{Type: "rename_columns", Mapping: map[string]string{"amount": "value"}},
+			{Type: "filter_rows", Condition: "value > 99"},
+		}, true, ""},
+		{"filter on a boolean column is refused", []TransformRule{{Type: "filter_rows", Condition: "flag = true"}}, false,
+			"boolean is unclassified: Go renders it \"true\" and SQL would need a cast whose spelling has to be shown to agree"},
+		{"filter with in is refused", []TransformRule{{Type: "filter_rows", Condition: "city in [Lisbon, Faro]"}}, false,
+			"set membership compares rendered text; the rendering of a non-text column has not been demonstrated for every member"},
+	}
+	cases = append(cases, extra...)
+
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			plan, ok := planTransformRules(tc.rules)
@@ -163,7 +184,11 @@ func TestTransformSQLPrefixDifferential(t *testing.T) {
 			}
 
 			srcCols := []string{"id", "name", "city", "amount", "note", "flag"}
-			compiled, gotCompiled := compilePrefixToSQL(plan.prefix, srcQuery, srcCols, "postgres")
+			kinds, err := describeQueryColumns(context.Background(), uri, srcQuery)
+			if err != nil {
+				t.Fatalf("describe columns: %v", err)
+			}
+			compiled, gotCompiled := compilePrefixToSQLTyped(plan.prefix, srcQuery, srcCols, "postgres", kinds)
 
 			if gotCompiled != tc.wantCompiled {
 				if tc.wantCompiled {
