@@ -3,10 +3,15 @@ package api
 import (
 	"bytes"
 	"crypto/rand"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
@@ -211,5 +216,97 @@ func TestCredentialRotationStillApplies(t *testing.T) {
 	}
 	if got := decryptRefForTest(t, h, after.ExtraRef); got != `{"sslmode":"verify-full"}` {
 		t.Errorf("rotation did not apply: extra = %q", got)
+	}
+}
+
+// The Test handler decrypts the extra blob so the HTTP paths can read headers
+// out of it. It used to leave the encrypted value on the connection itself,
+// and BuildURI reads c.Extra for driver options -- an encrypted blob parses as
+// no options at all. So a connection carrying "sslmode": "require", tested
+// against a server with TLS switched off, reported:
+//
+//	{"success": true, "message": "Connected successfully (pgx)"}
+//
+// for a session that was in the clear. A test button that confirms a
+// guarantee the connection is not honouring is worse than one that does not
+// exist, and it is the same false assurance the sslmode option is there to
+// prevent.
+//
+// Needs a real server, because the whole failure is that a real driver was
+// never told to demand TLS. Point BROKOLI_TEST_POSTGRES_URL at a Postgres
+// with ssl off.
+func TestConnectionTestAppliesDriverOptions(t *testing.T) {
+	uri := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
+	if uri == "" {
+		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		t.Fatalf("BROKOLI_TEST_POSTGRES_URL is not a URI: %v", err)
+	}
+	port := 5432
+	if p := u.Port(); p != "" {
+		port, _ = strconv.Atoi(p)
+	}
+	pw, _ := u.User.Password()
+
+	h, _ := connRoundTripEnv(t)
+	r := routeConn(h)
+	r.Post("/api/connections/{connId}/test", h.Test)
+
+	base := map[string]interface{}{
+		"type": "postgres", "host": u.Hostname(), "port": port,
+		"schema": strings.TrimPrefix(u.Path, "/"),
+		"login":  u.User.Username(), "password": pw,
+	}
+
+	testConn := func(t *testing.T, id string, extra string) map[string]interface{} {
+		t.Helper()
+		body := map[string]interface{}{"conn_id": id}
+		for k, v := range base {
+			body[k] = v
+		}
+		if extra != "" {
+			body["extra"] = extra
+		}
+		if w := doJSON(t, r, "POST", "/api/connections", body); w.Code != http.StatusOK && w.Code != http.StatusCreated {
+			t.Fatalf("create %s: %d %s", id, w.Code, w.Body.String())
+		}
+		w := doJSON(t, r, "POST", "/api/connections/"+id+"/test", nil)
+		var out map[string]interface{}
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatalf("test %s: %v (%s)", id, err, w.Body.String())
+		}
+		return out
+	}
+
+	plain := testConn(t, "opt-none", "")
+	sslOn, _ := plain["success"].(bool)
+	if !sslOn {
+		t.Fatalf("the plain connection must succeed or this test proves nothing: %v", plain)
+	}
+
+	// Whether requiring TLS should succeed depends on the server, so ask it.
+	db, err := sql.Open("pgx", uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var serverSSL string
+	if err := db.QueryRow("SHOW ssl").Scan(&serverSSL); err != nil {
+		t.Fatal(err)
+	}
+
+	required := testConn(t, "opt-require", `{"sslmode":"require"}`)
+	got, _ := required["success"].(bool)
+
+	if serverSSL == "on" {
+		if !got {
+			t.Errorf("server supports TLS but sslmode=require failed the test: %v", required)
+		}
+		return
+	}
+	if got {
+		t.Errorf("server has TLS off, yet the connection test reported success with sslmode=require — the option is not reaching the driver: %v", required)
 	}
 }

@@ -332,11 +332,18 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Decrypt extras for HTTP connections
+	// Decrypt extras. The plaintext goes back onto the connection as well as
+	// into the parsed map: the HTTP paths below take the map, but BuildURI
+	// reads c.Extra for driver options, and an encrypted blob there parses as
+	// nothing. That silently dropped sslmode, so testing a connection with
+	// "sslmode": "require" against a server with TLS switched off reported
+	// "Connected successfully" for a session that was in the clear -- the
+	// exact false assurance the option exists to prevent.
 	var extra map[string]interface{}
 	if c.Extra != "" {
 		dec, err := h.crypto.Decrypt(c.Extra)
 		if err == nil {
+			c.Extra = dec
 			json.Unmarshal([]byte(dec), &extra)
 		}
 	}
