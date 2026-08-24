@@ -45,6 +45,14 @@ type prefixSQL struct {
 // not split, because a half-pushed transform would need the engine to hold the
 // intermediate anyway.
 func compilePrefixToSQL(prefix []TransformRule, srcQuery string, srcColumns []string, dialect string) (prefixSQL, bool) {
+	return compilePrefixToSQLTyped(prefix, srcQuery, srcColumns, dialect, nil)
+}
+
+// compilePrefixToSQLTyped is compilePrefixToSQL with the source column types
+// the caller was able to learn. Rules that need to know whether a column is
+// text or numeric are compiled only when they are present; without them the
+// compiler behaves as it did before types existed and declines those rules.
+func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns []string, dialect string, kinds map[string]sqlColumnKind) (prefixSQL, bool) {
 	if srcQuery == "" || len(srcColumns) == 0 {
 		return prefixSQL{}, false
 	}
@@ -53,6 +61,8 @@ func compilePrefixToSQL(prefix []TransformRule, srcQuery string, srcColumns []st
 		// dialect means adding its differential run, not just its quoting.
 		return prefixSQL{}, false
 	}
+
+	var wheres []string
 
 	// projection maps output column name -> source column name.
 	type projected struct{ out, src string }
@@ -105,6 +115,25 @@ func compilePrefixToSQL(prefix []TransformRule, srcQuery string, srcColumns []st
 				}
 			}
 
+		case "filter_rows", "filter":
+			if rule.Condition == "" {
+				return prefixSQL{}, false
+			}
+			// The filter reads the columns as they stand at this point in the
+			// prefix, so its type lookup has to follow renames and drops
+			// rather than using the source names.
+			current := make(map[string]sqlColumnRef, len(cols))
+			for _, c := range cols {
+				if k, ok := kinds[c.src]; ok {
+					current[c.out] = sqlColumnRef{Ident: quoteIdentPG(c.src), Kind: k}
+				}
+			}
+			expr, ok := compileFilterToSQL(rule.Condition, current)
+			if !ok {
+				return prefixSQL{}, false
+			}
+			wheres = append(wheres, expr)
+
 		default:
 			// Not proven equivalent yet.
 			return prefixSQL{}, false
@@ -126,8 +155,15 @@ func compilePrefixToSQL(prefix []TransformRule, srcQuery string, srcColumns []st
 		out = append(out, c.out)
 	}
 
+	query := fmt.Sprintf("SELECT %s FROM (%s) AS brokoli_src", strings.Join(parts, ", "), srcQuery)
+	if len(wheres) > 0 {
+		// A filter partway through a prefix still applies to the whole
+		// projection: every rule before it is a projection change, none of
+		// which can remove a row, so ordering the WHERE last is equivalent.
+		query += " WHERE " + strings.Join(wheres, " AND ")
+	}
 	return prefixSQL{
-		Query:   fmt.Sprintf("SELECT %s FROM (%s) AS brokoli_src", strings.Join(parts, ", "), srcQuery),
+		Query:   query,
 		Columns: out,
 	}, true
 }
