@@ -90,6 +90,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-020](./020-ecosystem-portfolio-phase-1.md) | Adopt the ecosystem framing — Phase 1 portfolio and OSS/Enterprise boundary | Proposed |
 | [ADR-021](./021-cli-browser-login.md) | Session and token model — revocable sessions, refresh tokens, and browser-based CLI login | Proposed |
 | [ADR-022](./022-tenant-isolation-and-outbound-request-safety.md) | Enforce tenant isolation and outbound-request safety at the data/network layer, not per-handler | Proposed |
+| [ADR-023](./023-reference-kinds-and-the-data-plane.md) | Reference kinds, so the engine can stay out of the data path | Accepted |
 
 ## How to add a new ADR
 
