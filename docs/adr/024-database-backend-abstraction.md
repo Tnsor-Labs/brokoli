@@ -1,6 +1,6 @@
 # ADR-024: One place a database backend is described, and capabilities it has to earn
 
-**Status:** proposed
+**Status:** accepted — interfaces proven by the Postgres migration (#341); MySQL phases tracked in #342
 **Date:** 2026-08-24
 
 ## Context
