@@ -44,6 +44,23 @@ _output_ndjson = os.environ.get("BROKED_OUTPUT_NDJSON", "")
 _output_columns = os.environ.get("BROKED_OUTPUT_COLUMNS", "")
 _input_columns_env = os.environ.get("BROKED_INPUT_COLUMNS", "")
 
+# Journals outlive the passes that wrote them (they become the file later
+# passes read), so the last one is still needed when the script ends. Removing
+# them at exit keeps a long-running worker from accumulating one temp file per
+# mutating node execution.
+_journals = set()
+
+def _drop_journals():
+    for _p in list(_journals):
+        try:
+            os.remove(_p)
+        except OSError:
+            pass
+    _journals.clear()
+
+import atexit
+atexit.register(_drop_journals)
+
 class _MutationAfterPass(Exception):
     pass
 
@@ -168,7 +185,9 @@ class _LazyRows:
         old = self._owned
         self._path = jpath
         self._owned = jpath
+        _journals.add(jpath)
         if old and old != jpath:
+            _journals.discard(old)
             try:
                 os.remove(old)
             except OSError:

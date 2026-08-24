@@ -183,3 +183,51 @@ output_data = {"columns": columns, "rows": rows}
 		t.Errorf("the failure does not explain what happened: %v", err)
 	}
 }
+
+// A journal outlives the pass that wrote it, so it is still needed when the
+// script ends — which meant nothing ever deleted the last one. A worker
+// running many mutating nodes accumulated one temp file per execution.
+func TestLazyRowsJournalsAreCleanedUp(t *testing.T) {
+	before, _ := filepath.Glob(filepath.Join(os.TempDir(), "brokoli-rows-*"))
+
+	for i := 0; i < 3; i++ {
+		eng, s := newExecCtxTestEngine(t)
+		eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(t.TempDir(), "artifacts"))
+		eng.SpillThresholdBytes = 1
+		eng.StreamThresholdBytes = 1
+		out := filepath.Join(t.TempDir(), "o.csv")
+		p := &models.Pipeline{
+			ID: "p-leak", Name: "leak", Enabled: true,
+			Nodes: []models.Node{
+				{ID: "gen", Type: models.NodeTypeCode, Name: "g",
+					Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+					Config:       map[string]interface{}{"script": `output_data = {"columns": ["n"], "rows": [{"n": i} for i in range(500)]}`}},
+				{ID: "mid", Type: models.NodeTypeCode, Name: "m",
+					Config: map[string]interface{}{"script": "for r in rows:\n    r[\"n\"] = r[\"n\"] + 1\noutput_data = {\"columns\": columns, \"rows\": rows}\n"}},
+				{ID: "sink", Type: models.NodeTypeSinkFile, Name: "s",
+					Config: map[string]interface{}{"path": out, "format": "csv"}},
+			},
+			Edges: []models.Edge{{From: "gen", To: "mid"}, {From: "mid", To: "sink"}},
+		}
+		if err := s.CreatePipeline(p); err != nil {
+			t.Fatal(err)
+		}
+		run, err := eng.RunPipeline(p.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if run.Status != models.RunStatusSuccess {
+			t.Fatalf("run %d: %s %s", i, run.Status, run.Error)
+		}
+		b, _ := os.ReadFile(out)
+		if !strings.Contains(string(b), "500") {
+			t.Fatalf("run %d did not apply the edit:\n%s", i, string(b)[:80])
+		}
+	}
+
+	after, _ := filepath.Glob(filepath.Join(os.TempDir(), "brokoli-rows-*"))
+	if len(after) > len(before) {
+		t.Errorf("3 mutating runs leaked %d journal temp files (before %d, after %d)",
+			len(after)-len(before), len(before), len(after))
+	}
+}
