@@ -235,10 +235,6 @@ shared implementation.
 - Whether the k8s-secret-ref argv concern (Low, above) needs the
   `AllowedNamespaces` treatment or a different fix entirely depends on
   kubectl flag-parsing specifics not resolved in this ADR.
-- A lint rule / CI check that fails a build introducing a new
-  `&http.Client{}` outside `pkg/netguard` for outbound pipeline/hook
-  traffic — valuable belt-and-suspenders on top of Decision B, not
-  designed here.
 
 ## Alternatives considered
 
@@ -280,3 +276,27 @@ shared implementation.
   blocked-IP dial rejection, mid-redirect re-validation, and the
   loopback-default-blocked case, each as a real test against a local
   listener, not just unit-level URL-string checks.
+
+## Update — 2026-08-24: M1 outbound migration and regression guard
+
+The known remaining Decision B coverage gaps were migrated to `pkg/netguard`,
+including the S3 connection test, notification webhooks and alerts, and
+engine HTTP connector paths.
+
+A repository-local `go/analysis` analyzer now enforces the outbound HTTP
+policy in CI. It detects direct `net/http.Client` construction, including
+type aliases and `new(http.Client)`, as well as `http.DefaultClient` and
+the package-level `Get`, `Head`, `Post`, and `PostForm` helpers. The check
+runs across all Go packages, excluding the client-side CLI and
+`pkg/netguard` itself, and ignores test files.
+
+Intentional server-side exceptions require a local
+`//netguard:allow <justification>` directive immediately above the
+specific use. A directive must include a justification and is consumed
+by only one use. The current exceptions are the operator-configured
+Vault endpoint and plugin index/archive downloads, which intentionally
+support private services and mirrors.
+
+The deferred CI enforcement for Decision B is now implemented. The
+`AllowLoopback: true` audit and Decision A store-layer tenant scoping
+remain follow-up work.
