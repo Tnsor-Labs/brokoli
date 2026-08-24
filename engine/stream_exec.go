@@ -17,6 +17,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
 )
 
 // This file is docs/adr/019-execution-segments-and-streaming.md Milestone
@@ -463,6 +464,14 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 		// pipeline (#304). Its result goes to the blob store batch by
 		// batch instead of becoming one slice the worker has to hold.
 		return true
+	case models.NodeTypeSourceFile:
+		// Same win as source_db, on the format that can take it. A 108 MB
+		// CSV read whole peaked at 653 MiB resident and was OOM-killed at a
+		// 512 MiB cap; only csv streams, because JSON's column set is the
+		// union of keys across every object and is not known until the file
+		// has been read (see loaders.SupportsStreaming).
+		path, _ := node.Config["path"].(string)
+		return path != "" && loaders.SupportsStreaming(path)
 	case models.NodeTypeSinkFile:
 		// csv and json write incrementally; sql reads one cell out of the
 		// first row and is never large enough to arrive as a reference.
@@ -515,6 +524,8 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out (never materialized)",
 			len(rules), inRows, ref.RowCount)
 		return nodeExecutionResult{outputRef: ref}, nil
+	case models.NodeTypeSourceFile:
+		return r.runSourceFileStreamed(ctx, node, outputs)
 	case models.NodeTypeSourceDB:
 		return r.runSourceDBStreamed(ctx, node, outputs)
 	case models.NodeTypeSinkFile:
@@ -657,6 +668,83 @@ func sinkCanStream(node models.Node) bool {
 // []DataRow and is therefore bounded by datasetMemoryBudget, which no
 // configuration can raise past the worker's actual memory; here the
 // resident set is one batch and the limit is the blob store's.
+// runSourceFileStreamed reads a file into the blob store batch by batch and
+// returns a reference, so the worker never holds more than one batch. The
+// materialising path stays for formats that cannot stream; both are reached
+// through the same node type, and streamEligible decides which.
+func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	path, _ := node.Config["path"].(string)
+	if path == "" {
+		return nodeExecutionResult{}, fmt.Errorf("source_file node requires 'path' config")
+	}
+	if err := validateFilePath(path); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("source_file: %w", err)
+	}
+
+	var columns []string
+	var sample common.DataRow
+	ref, err := outputs.PutStream(
+		func(emit func(*common.DataSet) error) error {
+			cols, _, lerr := loaders.StreamBatches(ctx, path, 0, func(b *common.DataSet) error {
+				// One row kept for the sample log the materialising path
+				// prints. Holding a single row costs nothing and losing it
+				// would make the streamed path harder to eyeball than the
+				// path it replaces.
+				if sample == nil && len(b.Rows) > 0 {
+					sample = b.Rows[0]
+				}
+				return emit(b)
+			})
+			columns = cols
+			return lerr
+		},
+		func() []string { return columns },
+	)
+	if err != nil {
+		return nodeExecutionResult{}, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
+	}
+
+	fi, _ := os.Stat(path)
+	sizeStr := "unknown size"
+	if fi != nil {
+		if mb := float64(fi.Size()) / 1024 / 1024; mb >= 1 {
+			sizeStr = fmt.Sprintf("%.1f MB", mb)
+		} else {
+			sizeStr = fmt.Sprintf("%.0f KB", float64(fi.Size())/1024)
+		}
+	}
+	r.log(node.ID, models.LogLevelInfo,
+		"Streamed %d rows, %d columns from %s (%s) by reference (never materialized)",
+		ref.RowCount, len(ref.Columns), filepath.Base(path), sizeStr)
+	if sample != nil {
+		parts := make([]string, 0, len(ref.Columns))
+		for _, col := range ref.Columns {
+			v := fmt.Sprintf("%v", sample[col])
+			if len(v) > 30 {
+				v = v[:27] + "..."
+			}
+			parts = append(parts, col+"="+v)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Sample row: %s", strings.Join(parts, " | "))
+	}
+
+	// The same warning the materialising path emits: which pod read the file
+	// and how old it was are the two facts that separate a correct read from
+	// a stale one, and streaming does not change that.
+	if unsharedFileStorage() {
+		host, _ := os.Hostname()
+		age := "unknown age"
+		if fi != nil {
+			age = fmt.Sprintf("last written %s", fi.ModTime().UTC().Format(time.RFC3339))
+		}
+		r.log(node.ID, models.LogLevelWarning,
+			"Read from this worker's own filesystem (%s, %s); another worker may hold a different copy of %s. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
+			host, age, path)
+	}
+
+	return nodeExecutionResult{outputRef: ref}, nil
+}
+
 func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
