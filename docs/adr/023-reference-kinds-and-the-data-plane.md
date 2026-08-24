@@ -1,6 +1,6 @@
 # ADR-023: Reference kinds, so the engine can stay out of the data path
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-24
 
 ## Context
