@@ -90,7 +90,7 @@ func DecodeArrowJSON(r io.Reader, columns []string) (*common.DataSet, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	for dec.More() {
 		var row common.DataRow
-		if err := dec.Decode(&row); err != nil {
+		if err := decodeRow(dec, &row); err != nil {
 			break
 		}
 		rows = append(rows, row)
@@ -121,7 +121,7 @@ func ReadArrowJSON(path string) (*common.DataSet, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	for dec.More() {
 		var row common.DataRow
-		if err := dec.Decode(&row); err != nil {
+		if err := decodeRow(dec, &row); err != nil {
 			break
 		}
 		rows = append(rows, row)
@@ -229,7 +229,7 @@ func ReadColumnarBinary(path string) (*common.DataSet, error) {
 	dec := json.NewDecoder(bytes.NewReader(rowData))
 	for dec.More() {
 		var row common.DataRow
-		if err := dec.Decode(&row); err != nil {
+		if err := decodeRow(dec, &row); err != nil {
 			break
 		}
 		rows = append(rows, row)
@@ -303,7 +303,7 @@ func (b *NDJSONBatchReader) Next() (*common.DataSet, error) {
 			break
 		}
 		var row common.DataRow
-		if err := b.dec.Decode(&row); err != nil {
+		if err := decodeRow(b.dec, &row); err != nil {
 			b.done = true
 			return nil, fmt.Errorf("ndjson batch decode: %w", err)
 		}
@@ -323,3 +323,60 @@ func (b *NDJSONBatchReader) Next() (*common.DataSet, error) {
 // Columns reports the column order this reader is using — the caller's,
 // or the recovered one once the first batch has been read.
 func (b *NDJSONBatchReader) Columns() []string { return b.columns }
+
+// decodeRow reads one NDJSON row with numbers preserved as written.
+//
+// encoding/json decodes every JSON number into a float64 unless asked
+// otherwise, and a float64 rendered with %v is not the text that went in:
+// 1000000 comes back as "1e+06", and anything above 2^53 comes back changed.
+// A streamed pipeline therefore disagreed with a materialising one about what
+// an integer is — a bigint id crossing a streamed node boundary arrived at the
+// write as "1e+06" and Postgres rejected it, and a text destination accepted
+// it and stored the wrong value.
+//
+// UseNumber keeps the original text, and normalizeJSONNumbers then converts it
+// to the same Go type the materialising path produces: int64 for an integer,
+// float64 otherwise. Downstream code sees the types it already handled, and
+// the two paths agree about values, which is the property that matters.
+func decodeRow(dec *json.Decoder, row *common.DataRow) error {
+	dec.UseNumber()
+	if err := dec.Decode(row); err != nil {
+		return err
+	}
+	for k, v := range *row {
+		(*row)[k] = normalizeJSONNumbers(v)
+	}
+	return nil
+}
+
+// normalizeJSONNumbers replaces json.Number values with int64 or float64,
+// recursing into the maps and slices a JSON or array column decodes into so a
+// nested number is not left as a json.Number for a type switch to miss.
+func normalizeJSONNumbers(v interface{}) interface{} {
+	switch val := v.(type) {
+	case json.Number:
+		// Int64 first: an integer that fits stays exact, which is the whole
+		// point. Only a value that is not an integer, or does not fit, is
+		// allowed to become a float.
+		if i, err := val.Int64(); err == nil {
+			return i
+		}
+		if f, err := val.Float64(); err == nil {
+			return f
+		}
+		// Neither: keep the text rather than invent a number.
+		return val.String()
+	case map[string]interface{}:
+		for k, inner := range val {
+			val[k] = normalizeJSONNumbers(inner)
+		}
+		return val
+	case []interface{}:
+		for i, inner := range val {
+			val[i] = normalizeJSONNumbers(inner)
+		}
+		return val
+	default:
+		return v
+	}
+}
