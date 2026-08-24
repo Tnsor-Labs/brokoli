@@ -27,7 +27,7 @@ func TestTransformSQLAggregateDifferential(t *testing.T) {
 	const srcQuery = `SELECT id, name, city, amount, note, flag FROM ` + diffSrcTable
 	srcCols := []string{"id", "name", "city", "amount", "note", "flag"}
 
-	kinds, err := describeQueryColumns(context.Background(), uri, srcQuery)
+	kinds, err := describeQueryColumns(context.Background(), uri, srcQuery, pgDialect(t))
 	if err != nil {
 		t.Fatal(err)
 	}

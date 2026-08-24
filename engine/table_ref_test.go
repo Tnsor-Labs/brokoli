@@ -10,19 +10,19 @@ func TestSameServer(t *testing.T) {
 	const base = "postgres://u:p@db.internal:5432/analytics"
 
 	t.Run("identical is the same server", func(t *testing.T) {
-		if !sameServer(base, base) {
+		if !sameServer("postgres", base, base) {
 			t.Error("a URI is not the same server as itself")
 		}
 	})
 
 	t.Run("the default port is the same as writing it out", func(t *testing.T) {
-		if !sameServer("postgres://u:p@db.internal/analytics", base) {
+		if !sameServer("postgres", "postgres://u:p@db.internal/analytics", base) {
 			t.Error("an omitted port should default to 5432 on both sides")
 		}
 	})
 
 	t.Run("postgresql:// and postgres:// are the same scheme", func(t *testing.T) {
-		if !sameServer("postgresql://u:p@db.internal:5432/analytics", base) {
+		if !sameServer("postgres", "postgresql://u:p@db.internal:5432/analytics", base) {
 			t.Error("the two spellings of the Postgres scheme should agree")
 		}
 	})
@@ -47,34 +47,20 @@ func TestSameServer(t *testing.T) {
 			"a parameter that can change which server is actually reached"},
 	} {
 		t.Run(tc.name+" is refused", func(t *testing.T) {
-			if sameServer(base, tc.other) {
+			if sameServer("postgres", base, tc.other) {
 				t.Errorf("treated as the same server (%s): %s", tc.why, tc.other)
 			}
-			if sameServer(tc.other, base) {
+			if sameServer("postgres", tc.other, base) {
 				t.Errorf("asymmetric: reversed comparison said same server (%s)", tc.other)
 			}
 		})
 	}
 
 	t.Run("harmless parameters do not block it", func(t *testing.T) {
-		if !sameServer(base+"?sslmode=require", base+"?sslmode=require") {
+		if !sameServer("postgres", base+"?sslmode=require", base+"?sslmode=require") {
 			t.Error("sslmode does not change which database is reached")
 		}
 	})
-}
-
-func TestQuoteQualifiedIdentPG(t *testing.T) {
-	for in, want := range map[string]string{
-		"orders":             `"orders"`,
-		"public.orders":      `"public"."orders"`,
-		`we"ird`:             `"we""ird"`,
-		`a.b.c`:              `"a.b.c"`,
-		`x"; DROP TABLE y--`: `"x""; DROP TABLE y--"`,
-	} {
-		if got := quoteQualifiedIdentPG(in); got != want {
-			t.Errorf("quoteQualifiedIdentPG(%q) = %s, want %s", in, got, want)
-		}
-	}
 }
 
 func TestDataPlaneEscapeHatch(t *testing.T) {
@@ -91,5 +77,22 @@ func TestDataPlaneEscapeHatch(t *testing.T) {
 	t.Setenv("BROKOLI_DATA_PLANE", "something-else")
 	if dataPlaneInterpreted() {
 		t.Error("an unrecognised value should not silently change the data plane")
+	}
+}
+
+// The engine-level wrapper's own contract, separate from any backend's rules:
+// a dialect nobody knows, or one with no same-server rule, never pushes down.
+func TestSameServerRefusesUnknownAndIncapableDialects(t *testing.T) {
+	const pg = "postgres://u:p@db:5432/d"
+	if sameServer("nosuchdialect", pg, pg) {
+		t.Error("an unknown dialect must not be treated as same-server")
+	}
+	if sameServer("", pg, pg) {
+		t.Error("an empty dialect must not be treated as same-server")
+	}
+	// mysql has no Addresser yet; when it gains one this should be updated
+	// alongside a differential test, not silently.
+	if sameServer("mysql", "mysql://u:p@tcp(db:3306)/d", "mysql://u:p@tcp(db:3306)/d") {
+		t.Error("a dialect with no same-server rule must not push down")
 	}
 }

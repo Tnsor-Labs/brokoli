@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // Compiling a transform's row-wise prefix into SQL lets a source and sink on
@@ -59,9 +61,11 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 	if srcQuery == "" || len(srcColumns) == 0 {
 		return prefixSQL{}, false
 	}
-	if dialect != "postgres" {
-		// Only Postgres is verified against the Go executor so far. Adding a
-		// dialect means adding its differential run, not just its quoting.
+	d, ok := dbdialect.For(dialect)
+	if !ok {
+		// A backend claims a capability only when a differential test proves
+		// it against the reference path (ADR-024). An unknown dialect has no
+		// such proof, so the transform runs in the engine.
 		return prefixSQL{}, false
 	}
 
@@ -128,10 +132,10 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 			current := make(map[string]sqlColumnRef, len(cols))
 			for _, c := range cols {
 				if k, ok := kinds[c.src]; ok {
-					current[c.out] = sqlColumnRef{Ident: quoteIdentPG(c.src), Kind: k}
+					current[c.out] = sqlColumnRef{Ident: d.QuoteIdent(c.src), Kind: k}
 				}
 			}
-			expr, ok := compileFilterToSQL(rule.Condition, current)
+			expr, ok := compileFilterToSQL(rule.Condition, current, d)
 			if !ok {
 				return prefixSQL{}, false
 			}
@@ -151,9 +155,9 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 	out := make([]string, 0, len(cols))
 	for _, c := range cols {
 		if c.out == c.src {
-			parts = append(parts, quoteIdentPG(c.src))
+			parts = append(parts, d.QuoteIdent(c.src))
 		} else {
-			parts = append(parts, quoteIdentPG(c.src)+" AS "+quoteIdentPG(c.out))
+			parts = append(parts, d.QuoteIdent(c.src)+" AS "+d.QuoteIdent(c.out))
 		}
 		out = append(out, c.out)
 	}
@@ -174,12 +178,6 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 		Columns:  out,
 		SourceOf: sourceOf,
 	}, true
-}
-
-// quoteIdentPG double-quotes an identifier, doubling any embedded quote, so a
-// column name cannot terminate the identifier and inject SQL.
-func quoteIdentPG(name string) string {
-	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
 }
 
 // compilePlanToSQL compiles a whole transform plan -- the row-wise prefix and
@@ -204,6 +202,10 @@ func compilePlanToSQL(plan transformStreamPlan, srcQuery string, srcColumns []st
 	// After the prefix, a column is named by its output name and reachable in
 	// the outer query by that name, since the aggregate wraps the projection
 	// rather than sitting beside it.
+	d, ok := dbdialect.For(dialect)
+	if !ok {
+		return prefixSQL{}, false
+	}
 	visible := make(map[string]sqlColumnRef, len(base.Columns))
 	for _, c := range base.Columns {
 		kind := kindUnclassified
@@ -215,10 +217,10 @@ func compilePlanToSQL(plan transformStreamPlan, srcQuery string, srcColumns []st
 				kind = k
 			}
 		}
-		visible[c] = sqlColumnRef{Ident: quoteIdentPG(c), Kind: kind}
+		visible[c] = sqlColumnRef{Ident: d.QuoteIdent(c), Kind: kind}
 	}
 
-	selectList, groupBy, outCols, ok := compileAggregateToSQL(*plan.agg, visible)
+	selectList, groupBy, outCols, ok := compileAggregateToSQL(*plan.agg, visible, d)
 	if !ok {
 		return prefixSQL{}, false
 	}

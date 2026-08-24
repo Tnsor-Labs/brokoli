@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // ADR-023 in practice: a source_db hands its consumer a TableRef instead of
@@ -31,7 +32,14 @@ func (r *Runner) tableRefFromSourceDB(node models.Node) (*TableRef, bool) {
 	if uri == "" || query == "" {
 		return nil, false
 	}
-	if _, ok := parsePGTarget(uri); !ok {
+	dialectName := dialectForURI(uri)
+	d, ok := dbdialect.For(dialectName)
+	if !ok {
+		return nil, false
+	}
+	if _, ok := d.(dbdialect.Addresser); !ok {
+		// Without a same-server rule there is no way to know a write may read
+		// this query directly, so the segment stays in the engine.
 		return nil, false
 	}
 	// A node the pipeline reads more than once would have its query executed
@@ -41,7 +49,7 @@ func (r *Runner) tableRefFromSourceDB(node models.Node) (*TableRef, bool) {
 	if r.consumerCount(node.ID) != 1 {
 		return nil, false
 	}
-	order, err := queryColumnOrder(r.ctx, uri, query)
+	order, err := queryColumnOrder(r.ctx, uri, query, d)
 	if err != nil || len(order) == 0 {
 		return nil, false
 	}
@@ -49,6 +57,7 @@ func (r *Runner) tableRefFromSourceDB(node models.Node) (*TableRef, bool) {
 		ConnURI:  uri,
 		Query:    query,
 		Columns:  order,
+		Dialect:  dialectName,
 		Absorbed: []string{node.ID},
 	}
 
@@ -124,7 +133,7 @@ func (r *Runner) sinkAcceptsTableRef(node models.Node, in *TableRef) bool {
 	if uri == "" || table == "" || in == nil || len(in.Columns) == 0 {
 		return false
 	}
-	if !sameServer(uri, in.ConnURI) {
+	if !sameServer(in.Dialect, uri, in.ConnURI) {
 		return false
 	}
 	mode, _ := node.Config["mode"].(string)
@@ -170,11 +179,18 @@ func (r *Runner) composeTransformOntoTableRef(node models.Node, in *TableRef) (*
 	if !ok {
 		return nil, false
 	}
-	kinds, err := describeQueryColumns(r.ctx, in.ConnURI, in.Query)
+	d, ok := dbdialect.For(in.Dialect)
+	if !ok {
+		return nil, false
+	}
+	kinds, err := describeQueryColumns(r.ctx, in.ConnURI, in.Query, d)
 	if err != nil {
 		return nil, false
 	}
-	compiled, ok := compilePlanToSQL(plan, in.Query, in.Columns, "postgres", kinds)
+	// The dialect is the connection's, not a literal. It was threaded through
+	// this compiler from the start and every caller passed "postgres"
+	// (ADR-024).
+	compiled, ok := compilePlanToSQL(plan, in.Query, in.Columns, in.Dialect, kinds)
 	if !ok {
 		return nil, false
 	}
@@ -182,6 +198,7 @@ func (r *Runner) composeTransformOntoTableRef(node models.Node, in *TableRef) (*
 		ConnURI:  in.ConnURI,
 		Query:    compiled.Query,
 		Columns:  compiled.Columns,
+		Dialect:  in.Dialect,
 		Absorbed: append(append([]string{}, in.Absorbed...), node.ID),
 	}, true
 }
@@ -197,7 +214,7 @@ func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef) (int64, b
 	if uri == "" || table == "" {
 		return 0, false, nil
 	}
-	if !sameServer(uri, in.ConnURI) {
+	if !sameServer(in.Dialect, uri, in.ConnURI) {
 		return 0, false, nil
 	}
 	mode, _ := node.Config["mode"].(string)
@@ -208,10 +225,14 @@ func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef) (int64, b
 		return 0, false, nil
 	}
 
-	target := quoteQualifiedIdentPG(table)
+	d, ok := dbdialect.For(in.Dialect)
+	if !ok {
+		return 0, false, nil
+	}
+	target := d.QuoteQualifiedIdent(table)
 	cols := make([]string, 0, len(in.Columns))
 	for _, c := range in.Columns {
-		cols = append(cols, quoteIdentPG(c))
+		cols = append(cols, d.QuoteIdent(c))
 	}
 	if len(cols) == 0 {
 		return 0, false, nil
@@ -281,7 +302,7 @@ func (r *Runner) consumerCount(nodeID string) int {
 // queryColumnOrder returns a query's columns in order. describeQueryColumns
 // answers what type each column is but not their order, and the order is what
 // an INSERT column list has to agree with.
-func queryColumnOrder(ctx context.Context, uri, query string) ([]string, error) {
+func queryColumnOrder(ctx context.Context, uri, query string, d dbdialect.Dialect) ([]string, error) {
 	driver, dsn, err := DetectDriver(uri)
 	if err != nil {
 		return nil, err
@@ -291,7 +312,7 @@ func queryColumnOrder(ctx context.Context, uri, query string) ([]string, error) 
 		return nil, err
 	}
 	defer db.Close()
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM (%s) AS brokoli_probe LIMIT 0", query))
+	rows, err := db.QueryContext(ctx, d.ProbeColumnsSQL(query))
 	if err != nil {
 		return nil, err
 	}

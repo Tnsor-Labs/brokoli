@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // sqlColumnKind is as much as the prefix compiler needs to know about a
@@ -19,16 +20,17 @@ import (
 // compiled.
 type sqlColumnKind int
 
+// The kinds mirror dbdialect's, so a dialect's answer converts directly.
 const (
-	kindUnclassified sqlColumnKind = iota
-	kindText
-	kindNumeric
+	kindUnclassified = sqlColumnKind(dbdialect.KindUnclassified)
+	kindText         = sqlColumnKind(dbdialect.KindText)
+	kindNumeric      = sqlColumnKind(dbdialect.KindNumeric)
 )
 
 // describeQueryColumns asks the server what a query's columns are without
 // running it. LIMIT 0 returns the row description and no rows, so this costs a
 // round trip rather than the query.
-func describeQueryColumns(ctx context.Context, uri, query string) (map[string]sqlColumnKind, error) {
+func describeQueryColumns(ctx context.Context, uri, query string, d dbdialect.Dialect) (map[string]sqlColumnKind, error) {
 	driver, dsn, err := DetectDriver(uri)
 	if err != nil {
 		return nil, err
@@ -39,7 +41,7 @@ func describeQueryColumns(ctx context.Context, uri, query string) (map[string]sq
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, fmt.Sprintf("SELECT * FROM (%s) AS brokoli_probe LIMIT 0", query))
+	rows, err := db.QueryContext(ctx, d.ProbeColumnsSQL(query))
 	if err != nil {
 		return nil, fmt.Errorf("describe columns: %w", err)
 	}
@@ -51,29 +53,7 @@ func describeQueryColumns(ctx context.Context, uri, query string) (map[string]sq
 	}
 	out := make(map[string]sqlColumnKind, len(types))
 	for _, ct := range types {
-		out[ct.Name()] = classifyDatabaseType(ct.DatabaseTypeName())
+		out[ct.Name()] = sqlColumnKind(d.ClassifyType(ct.DatabaseTypeName()))
 	}
 	return out, rows.Err()
-}
-
-// classifyDatabaseType maps a driver's type name onto the only two categories
-// the compiler can reason about. Unknown names are left unclassified rather
-// than guessed: a wrong guess here produces rows that differ depending on
-// which backend ran, which is the failure this whole exercise exists to avoid.
-func classifyDatabaseType(name string) sqlColumnKind {
-	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "TEXT", "VARCHAR", "CHAR", "BPCHAR", "NAME":
-		return kindText
-	// CITEXT is deliberately absent. It compares case-insensitively under a
-	// non-deterministic collation, so SQL would match 'ALICE' against 'alice'
-	// where the Go matcher, comparing bytes, would not.
-	case "INT2", "INT4", "INT8", "SMALLINT", "INTEGER", "BIGINT",
-		"FLOAT4", "FLOAT8", "REAL", "DOUBLE PRECISION", "NUMERIC", "DECIMAL":
-		return kindNumeric
-	default:
-		// Dates, booleans, JSON, arrays, enums, and anything a driver reports
-		// under a name not listed here. Each would need its own demonstration
-		// that Go's rendering and SQL's comparison agree.
-		return kindUnclassified
-	}
 }
