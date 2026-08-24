@@ -113,6 +113,49 @@ engine applies where provably safe, not a setting on a node. An
 operator-level override exists for incidents — the shape of
 `BROKOLI_SINK_COPY=0` — but it is not a pipeline-authoring concept.
 
+### The second axis: whether the engine reads the payload
+
+Reference *kind* answers where the data is. It does not answer whether the
+engine has to look at it, and that is a separate question with its own cost.
+
+The measurement above is the argument. Twenty-two microseconds per row on a
+`source_file` to `sink_file` pipeline, and that pipeline transforms nothing:
+the engine decodes every row into a `map[string]interface{}` and re-encodes
+it while **no node between the two ever reads a field**. The entire cost is
+interpretation nobody asked for.
+
+For scale, a message streaming server that never interprets its payloads
+reports throughput three orders of magnitude above what we measured. That is
+not a fair comparison — it is a different job, and it can be fast precisely
+because it does not care what the bytes mean — but it does size what
+interpretation costs when it is not needed.
+
+So a reference carries a second property alongside its kind:
+
+- **interpreted** — the engine decodes rows, because something between the
+  producer and the consumer reads a column.
+- **opaque** — the engine moves framed bytes and never decodes them.
+
+**The engine can decide this statically.** Whether any operator in the segment
+reads a column is a property of the segment, known before the run starts, from
+the same plan that already decides streaming eligibility. It is not a hint and
+not a setting.
+
+What it unlocks, all of them cases that exist today and pay full interpretation
+cost for nothing:
+
+- `source_file` to `sink_file` in the same format with no transform between:
+  copy the bytes.
+- `source_db` to `sink_db` on *different* servers: `COPY TO STDOUT` piped into
+  `COPY FROM STDIN`. The worker is still in the data path — this is
+  unavoidable across servers — but it moves opaque frames at line rate instead
+  of parsing JSON.
+- an object in storage the destination can load natively: hand over the URI.
+
+The two axes are orthogonal and compose. A `TableRef` is inherently opaque —
+the engine never sees rows at all. A `BlobRef` can be either, and that is where
+the decision has teeth.
+
 **Equivalence is proven, not assumed.** A path that keeps data in the
 database must produce the same rows as the path that moves it through
 the engine, and that must be demonstrated by comparison against a live
@@ -140,6 +183,10 @@ one at a boundary that had looked obviously safe.
   on `BlobRef` — rather than something entangled with placement.
 - The reference already records `Columns` and `RowCount`, so a consumer
   can size and plan work without fetching, whichever kind it is.
+- Opaque passthrough removes the framing cost from the cases that never
+  needed it, without needing a faster encoding to do it. It is complementary
+  to a columnar format rather than an alternative: a columnar `BlobRef` makes
+  interpretation cheaper, opaque passthrough removes it.
 
 ### Negative
 
@@ -161,6 +208,21 @@ one at a boundary that had looked obviously safe.
   request leaves from the database and passes through nothing we
   control. ADR-022's outbound policy does not extend there, and this
   decision creates the first path where it needs to.
+- **Row counts stop being free.** The engine records `RowCount` on every
+  reference and logs it per node, and lineage and the run view both use it.
+  An opaque copy does not know how many rows it moved without parsing, which
+  is the thing being avoided. Either the format is framed in a way that allows
+  counting without decoding, or a run that took the opaque path reports an
+  unknown row count — and "faster, but the UI now says unknown" is a product
+  decision, not an implementation detail.
+
+- **Parsing is currently doing validation nobody declared.** A malformed row
+  fails the run today because something decodes it. An opaque copy moves
+  corrupt bytes through without noticing, and the failure surfaces later, in
+  the destination, detached from the pipeline that carried it. Anything
+  relying on that incidental validation — quality checks in particular — needs
+  to keep an interpreted path.
+
 - **The test matrix multiplies.** Every reference kind must be compared
   against `BlobRef` for every operator that can produce or consume it.
   That cost is the point, but it is a real cost.
@@ -175,6 +237,11 @@ one at a boundary that had looked obviously safe.
 - **Intra-node partitioning.** One node still runs in one worker over
   one stream. This decision makes partitioning expressible; it does not
   implement it (#330).
+- **How a format declares itself countable and framable.** Deciding whether
+  a given format can be moved opaquely, and whether rows can be counted
+  without decoding, is per-format work. NDJSON is trivially framed by
+  newlines; CSV is not, once quoting is involved.
+
 - **Which relation a `TableRef` names** — a real temporary table, an
   unlogged staging table, or a query held as text — is an
   implementation question with different lifetime and resume answers,
@@ -210,6 +277,13 @@ one at a boundary that had looked obviously safe.
   one part.
 - #327 — `sink_api` and `source_api` streaming, which stays a `BlobRef`
   story.
-- #330 — the per-row framing cost, and intra-node partitioning.
+- #330 — the per-row framing cost, and intra-node partitioning. Opaque
+  passthrough addresses the same measurement from the other side: a columnar
+  format makes interpretation cheaper, this removes it where it was never
+  needed. Both are worth having.
+- #325 — order-independent summation. Not obviously related, but it gates
+  #330's partitioning: splitting a source across workers makes aggregation
+  order depend on scheduling, so a `sum` that already varies with order would
+  stop being reproducible between runs over identical data.
 - ADR-010 and ADR-019 need an amendment once resume-from-`TableRef` is
   settled either way.
