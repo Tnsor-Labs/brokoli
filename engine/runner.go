@@ -1016,10 +1016,18 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			crashAt(crashPointBeforeNodeExecution, node.ID)
 			var result nodeExecutionResult
 			var e error
-			if streamable {
-				result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
-			} else {
-				result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+			// The plan gate is checked here, at the one point both
+			// execution paths pass through, rather than inside either of
+			// them. It used to live in runNodeLogic, which the streaming
+			// path does not call, so a gated node type executed anyway
+			// whenever its upstream produced a reference — the gate held
+			// only for as long as nothing upstream happened to stream.
+			if e = r.checkNodeTypeGate(node); e == nil {
+				if streamable {
+					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
+				} else {
+					result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+				}
 			}
 			resultCh <- nodeResult{result, e}
 		}()
@@ -1522,20 +1530,24 @@ func outputExecutionResult(output *common.DataSet, err error) (nodeExecutionResu
 	return nodeExecutionResult{output: output}, err
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
-	// Check if the org's plan allows this node type. Deliberately checked
-	// before the executor loop below, not after: a NodeExecutor can claim
-	// any node type string (a plugin-registered type, an enterprise K8s-
-	// dispatched type, etc.), and this gate is meant to apply uniformly to
-	// every node type regardless of which mechanism ultimately executes
-	// it — a gate that only fired for the built-in switch further down
-	// would silently never apply to executor-dispatched types at all.
-	if extensions.NodeTypeGateFunc != nil {
-		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
-			return nodeExecutionResult{}, fmt.Errorf("%s", msg)
-		}
+// checkNodeTypeGate reports whether the org's plan allows this node type.
+//
+// It applies to every node type regardless of which mechanism executes it: a
+// NodeExecutor can claim any node type string, and the streamed and
+// materialising paths are two more ways to reach a node, so the check belongs
+// at the dispatch point rather than inside one of the things being dispatched
+// to.
+func (r *Runner) checkNodeTypeGate(node models.Node) error {
+	if extensions.NodeTypeGateFunc == nil {
+		return nil
 	}
+	if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
 
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {

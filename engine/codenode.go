@@ -44,30 +44,186 @@ _output_ndjson = os.environ.get("BROKED_OUTPUT_NDJSON", "")
 _output_columns = os.environ.get("BROKED_OUTPUT_COLUMNS", "")
 _input_columns_env = os.environ.get("BROKED_INPUT_COLUMNS", "")
 
+# Journals outlive the passes that wrote them (they become the file later
+# passes read), so the last one is still needed when the script ends. Removing
+# them at exit keeps a long-running worker from accumulating one temp file per
+# mutating node execution.
+_journals = set()
+
+def _drop_journals():
+    for _p in list(_journals):
+        try:
+            os.remove(_p)
+        except OSError:
+            pass
+    _journals.clear()
+
+import atexit
+atexit.register(_drop_journals)
+
+class _MutationAfterPass(Exception):
+    pass
+
+class _Row(dict):
+    """A row that tells its pass when it is written to.
+
+    Reading is a plain dict. Writing marks the pass dirty so the edit is kept
+    instead of being discarded the next time the file is read.
+    """
+    __slots__ = ("_pass",)
+    def __init__(self, data, owner):
+        dict.__init__(self, data)
+        self._pass = owner
+    def __setitem__(self, k, v):
+        self._pass._touched(self); dict.__setitem__(self, k, v)
+    def __delitem__(self, k):
+        self._pass._touched(self); dict.__delitem__(self, k)
+    def update(self, *a, **kw):
+        self._pass._touched(self); return dict.update(self, *a, **kw)
+    def setdefault(self, k, d=None):
+        self._pass._touched(self); return dict.setdefault(self, k, d)
+    def pop(self, *a):
+        self._pass._touched(self); return dict.pop(self, *a)
+    def popitem(self):
+        self._pass._touched(self); return dict.popitem(self)
+    def clear(self):
+        self._pass._touched(self); return dict.clear(self)
+
+class _Pass:
+    """One iteration over the input file.
+
+    State lives here rather than on the view so that nested iteration --
+    for a in rows: for b in rows: -- gives each loop its own cursor instead of
+    the inner one trampling the outer one's position.
+    """
+    def __init__(self, view, src):
+        self.view = view
+        self.src = src
+        self.jf = None          # journal handle, opened on the first edit
+        self.jpath = None
+        self.live = None        # row currently yielded
+        self.live_at = None     # byte offset of that row's line
+        self.resume_at = 0      # byte offset just past the last settled row
+
+    def _touched(self, row):
+        if row is not self.live:
+            # The pass has moved past this row, so there is no correct place
+            # to put the edit. Refusing is the only honest answer available:
+            # writing it anywhere else would be inventing an ordering.
+            raise _MutationAfterPass()
+        if self.jf is None:
+            self._open_journal()
+
+    def _open_journal(self):
+        import tempfile
+        fd, jpath = tempfile.mkstemp(prefix="brokoli-rows-", suffix=".ndjson")
+        os.close(fd)
+        # Rows before the first edit are untouched, so copy their bytes rather
+        # than decoding and re-encoding them.
+        with open(self.src, "rb") as src, open(jpath, "wb") as dst:
+            left = self.live_at
+            while left > 0:
+                chunk = src.read(min(1 << 20, left))
+                if not chunk:
+                    break
+                dst.write(chunk); left -= len(chunk)
+        self.jf = open(jpath, "a")
+        self.jpath = jpath
+
+    def settle(self):
+        if self.jf is not None and self.live is not None:
+            self.jf.write(json.dumps(self.live) + "\n")
+        self.live = None
+
+    def finish(self):
+        if self.jf is None:
+            self.live = None
+            return
+        # A pass abandoned early (break) leaves rows unread. They are unchanged
+        # but still part of the dataset, so carry them over verbatim.
+        with open(self.src, "rb") as src:
+            src.seek(self.resume_at)
+            while True:
+                chunk = src.read(1 << 20)
+                if not chunk:
+                    break
+                self.jf.write(chunk.decode("utf-8"))
+        self.jf.close(); self.jf = None
+        self.view._adopt(self.jpath)
+        self.jpath = None
+
 class _LazyRows:
-    """ADR-019 Milestone 1.5: a disk-backed, RE-ITERABLE view of the input.
+    """A disk-backed, re-iterable, MUTABLE view of the input.
 
     Iterating streams the NDJSON file line by line in constant memory, and
-    every fresh iteration is a fresh pass over the file — so a script that
+    every fresh iteration is a fresh pass over the file -- so a script that
     loops over rows twice still works. len(rows), rows[i], and slicing
-    transparently materialize the whole list first: full backward
-    compatibility at the old memory cost, paid only by scripts that
-    actually need whole-dataset access."""
+    transparently materialize the whole list first.
+
+    Mutations survive. A row written to during a pass is journaled to disk as
+    the pass moves past it, and the journal becomes the file later passes
+    read, so the ordinary idiom
+
+        for r in rows:
+            r["name"] = r["name"].upper()
+        output_data = {"columns": columns, "rows": rows}
+
+    means what it says. It used to silently produce the ORIGINAL rows: the
+    mutated dicts were dropped at the end of the pass and the output re-read
+    the untouched file, with nothing reporting it.
+
+    The cost is disk, paid only by scripts that actually mutate -- a read-only
+    pass never opens a journal. Memory stays constant either way, which is the
+    point: the alternative is holding the whole dataset just to keep the edits.
+    """
     def __init__(self, path):
         self._path = path
         self._m = None
+        self._owned = None      # a journal this view created and may delete
+
+    def _adopt(self, jpath):
+        old = self._owned
+        self._path = jpath
+        self._owned = jpath
+        _journals.add(jpath)
+        if old and old != jpath:
+            _journals.discard(old)
+            try:
+                os.remove(old)
+            except OSError:
+                pass
+
     def __iter__(self):
         if self._m is not None:
             return iter(self._m)
-        def _gen():
-            with open(self._path, 'r') as f:
-                for line in f:
-                    if line.strip():
-                        yield json.loads(line)
-        return _gen()
+        return self._stream()
+
+    def _stream(self):
+        p = _Pass(self, self._path)
+        try:
+            with open(p.src, "r") as f:
+                while True:
+                    at = f.tell()
+                    line = f.readline()
+                    if not line:
+                        break
+                    if not line.strip():
+                        p.resume_at = f.tell()
+                        continue
+                    p.settle()
+                    p.resume_at = at
+                    row = _Row(json.loads(line), p)
+                    p.live, p.live_at = row, at
+                    yield row
+                    p.resume_at = f.tell()
+                p.settle()
+        finally:
+            p.settle()
+            p.finish()
+
     def _force(self):
         if self._m is None:
-            self._m = [r for r in self]
+            self._m = [dict(r) for r in self]
         return self._m
     def __len__(self):
         return len(self._force())
@@ -79,6 +235,18 @@ class _LazyRows:
         for _ in self:
             return True
         return False
+
+def _brokoli_excepthook(etype, value, tb):
+    if etype is _MutationAfterPass:
+        sys.stderr.write(
+            "BROKOLI_ERROR: a row was modified after the loop that read it had already moved on.\n"
+            "Rows stream from disk one at a time, so an edit has to be made while the row is the\n"
+            "one being handled. Edit it inside the loop body, or collect what you need into a new\n"
+            "list and output that instead. This is refused rather than ignored because applying it\n"
+            "would mean guessing where the row belongs.\n")
+        sys.exit(3)
+    sys.__excepthook__(etype, value, tb)
+sys.excepthook = _brokoli_excepthook
 _use_file = bool(_input_csv) or bool(_input_ndjson)
 
 # Try to use pyarrow/pandas for faster processing
