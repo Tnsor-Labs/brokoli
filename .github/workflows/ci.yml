@@ -44,6 +44,41 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # Several tests are only meaningful against a real server: what a string
+    # literal means, how a driver converts a value, whether a collation orders
+    # the way Go does. They skip unless these variables are set, which meant
+    # the differential tests gating streaming and pushdown correctness had
+    # never run in CI at all — only on a developer's machine.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: brokoli
+          POSTGRES_PASSWORD: brokoli
+          POSTGRES_DB: brokoli_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brokoli -d brokoli_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_USER: brokoli
+          MYSQL_PASSWORD: brokoli
+          MYSQL_DATABASE: brokoli_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
+          --health-interval 3s --health-timeout 5s --health-retries 30
+
+    env:
+      BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      BROKOLI_TEST_MYSQL_URL: mysql://brokoli:brokoli@tcp(localhost:3306)/brokoli_test
+
     steps:
       - uses: actions/checkout@v4
 
