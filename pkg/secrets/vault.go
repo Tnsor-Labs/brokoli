@@ -37,8 +37,9 @@ func NewVaultResolver() *VaultResolver {
 		return nil
 	}
 	return &VaultResolver{
-		addr:   strings.TrimRight(addr, "/"),
-		token:  os.Getenv("VAULT_TOKEN"),
+		addr:  strings.TrimRight(addr, "/"),
+		token: os.Getenv("VAULT_TOKEN"),
+		//netguard:allow VAULT_ADDR is operator-configured and may point to an internal Vault service
 		client: &http.Client{Timeout: 10 * time.Second},
 	}
 }

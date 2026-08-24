@@ -84,6 +84,7 @@ func DownloadArchive(ctx context.Context, url, expectedSHA256, destPath string, 
 	if err != nil {
 		return fmt.Errorf("build archive request: %w", err)
 	}
+	//netguard:allow plugin archive URLs come from the operator-selected index, including private mirrors
 	client := &http.Client{Timeout: archiveDownloadTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -137,6 +138,8 @@ func FetchIndex(ctx context.Context, url string) (*Index, error) {
 	// client.Do with a prepared request (not http.Get) so a config-driven
 	// URL is not a gosec G107 taint; the URL is admin-controlled by design
 	// (mirrors, private indexes).
+
+	//netguard:allow the plugin index is operator-configured and may use a private mirror
 	client := &http.Client{Timeout: indexFetchTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
