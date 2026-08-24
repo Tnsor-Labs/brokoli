@@ -255,6 +255,17 @@ type dialect struct {
 	tsLayout string
 	tsUTC    bool
 
+	// backslashEscapes says the dialect treats a backslash as an escape
+	// character inside a string literal, so one in a value has to be escaped
+	// to survive.
+	//
+	// MySQL does this unless NO_BACKSLASH_ESCAPES is set, which is not the
+	// default. Postgres does not, because standard_conforming_strings has
+	// been on since 9.1 — escaping there would corrupt the value in the other
+	// direction, turning one backslash into two. So this is a property of the
+	// dialect and not a safety measure to apply everywhere.
+	backslashEscapes bool
+
 	// emptyStringAsNull mirrors SQLGenConfig.EmptyStringAsNull; set by
 	// GenerateSQL rather than getDialect, since it is a per-write choice
 	// and not a property of the dialect.
@@ -273,7 +284,7 @@ func getDialect(name string) dialect {
 	case "mysql":
 		return dialect{
 			name: "mysql", quoteChar: "`", strQuote: "'", terminator: ";",
-			boolTrue: "TRUE", boolFalse: "FALSE",
+			boolTrue: "TRUE", boolFalse: "FALSE", backslashEscapes: true,
 			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
 			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
 		}
@@ -411,9 +422,20 @@ func (d dialect) formatValue(v interface{}) string {
 	}
 }
 
-// quoteString wraps a value in the dialect's string quote, doubling any
-// embedded quote character.
+// quoteString wraps a value in the dialect's string quote so that it arrives
+// as data rather than as SQL.
+//
+// Doubling the quote character is not sufficient on its own. On a dialect
+// where a backslash escapes, a value ending in one escapes the quote meant to
+// close the literal, and everything after it is parsed as SQL instead of
+// data — so a Windows path silently loses a character and a hostile value
+// escapes the literal entirely. Backslashes are therefore escaped first,
+// before the quote is doubled: doing it the other way round would escape the
+// backslash that the doubling introduced.
 func (d dialect) quoteString(s string) string {
+	if d.backslashEscapes {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+	}
 	return d.strQuote + strings.ReplaceAll(s, d.strQuote, d.strQuote+d.strQuote) + d.strQuote
 }
 

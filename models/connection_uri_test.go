@@ -179,3 +179,54 @@ func TestSSLModeLandsInTheQueryString(t *testing.T) {
 		t.Errorf("sslmode leaked into the database name: %q", u.Path)
 	}
 }
+
+// A MySQL DSN carries credentials verbatim, because the driver does not
+// unescape them. This is the pin: building it through net/url percent-encoded
+// the password, so an operator whose password contained a URI metacharacter
+// could not authenticate and had nothing in the error to suggest why.
+func TestMySQLURICarriesCredentialsVerbatim(t *testing.T) {
+	for _, tc := range []struct{ name, login, password, want string }{
+		{
+			name:  "an ordinary password is unchanged",
+			login: "root", password: "pw",
+			want: "mysql://root:pw@tcp(db:3306)/app",
+		},
+		{
+			name:  "URI metacharacters survive",
+			login: "etl", password: `p@ss:w/rd#1 x`,
+			want: `mysql://etl:p@ss:w/rd#1 x@tcp(db:3306)/app`,
+		},
+		{
+			name:  "a percent sign is not an escape",
+			login: "etl", password: `100%pw`,
+			want: `mysql://etl:100%pw@tcp(db:3306)/app`,
+		},
+		{
+			name: "no credentials at all",
+			want: "mysql://tcp(db:3306)/app",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Connection{Type: ConnTypeMySQL, Host: "db", Port: 3306, Schema: "app",
+				Login: tc.login, Password: tc.password}
+			if got := c.BuildURI(); got != tc.want {
+				t.Errorf("\n got %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Driver options keep their encoding, because the driver does unescape
+// parameters — the asymmetry is the driver's, and this records it so the two
+// halves are not "made consistent" later by someone who assumes it is a bug.
+func TestMySQLURIStillEncodesDriverOptions(t *testing.T) {
+	c := Connection{Type: ConnTypeMySQL, Host: "db", Port: 3306, Schema: "app",
+		Login: "u", Password: "p", Extra: `{"charset":"utf8mb4","tls":"true"}`}
+	got := c.BuildURI()
+	if !strings.Contains(got, "charset=utf8mb4") || !strings.Contains(got, "tls=true") {
+		t.Errorf("driver options missing from %q", got)
+	}
+	if !strings.Contains(got, "u:p@tcp(") {
+		t.Errorf("credentials should be verbatim in %q", got)
+	}
+}
