@@ -5,7 +5,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
+	"os"
+	"runtime"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,6 +177,34 @@ type nodeExecutionResult struct {
 	// most one of output/outputRef is set; every consumer of output in
 	// executeNode's success path has a ref-aware branch.
 	outputRef *artifact.DatasetRef
+}
+
+// nodeRowCount is what a completed node reports as its row count.
+//
+// Order matters. A terminal node — every sink — produces no dataset, so
+// deriving the count from the output alone reported 0 rows for the one
+// node an operator most wants a number from: "how many rows did we
+// actually load?", answered by the run summary as zero, for every sink,
+// always. What a sink consumed is what it wrote, so the input is the
+// fallback.
+//
+// inputRef is checked before input because a streamed node has both: the
+// reference it actually read, and the empty placeholder executeNode
+// substitutes so non-source handlers never see a nil input. Checking
+// input first matched that placeholder and reported 0 rows for every
+// streamed sink.
+func nodeRowCount(output *common.DataSet, outputRef *artifact.DatasetRef, input *common.DataSet, inputRef *artifact.DatasetRef) int {
+	switch {
+	case output != nil:
+		return len(output.Rows)
+	case outputRef != nil:
+		return int(outputRef.RowCount)
+	case inputRef != nil:
+		return int(inputRef.RowCount)
+	case input != nil:
+		return len(input.Rows)
+	}
+	return 0
 }
 
 // NewRunner creates a runner for the given pipeline.
@@ -344,8 +377,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	// whole run — see nodeOutputs and Tnsor-Labs/brokoli#38.
 	outputs := r.newOutputs()
 
-	// Max parallelism semaphore (default 4, configurable later)
-	maxParallel := 4
+	maxParallel := defaultMaxParallelNodes(r)
 	sem := make(chan struct{}, maxParallel)
 
 	var runErr error
@@ -716,6 +748,16 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			streamable = inputRef != nil
 		case models.NodeTypeCode:
 			streamable = inputRef != nil || (activeInputs == 0 && input == nil)
+		case models.NodeTypeSourceDB:
+			// Produces a ref, consumes nothing.
+			streamable = activeInputs == 0
+		case models.NodeTypeSinkFile:
+			streamable = inputRef != nil
+		case models.NodeTypeSinkDB:
+			// Consumes a ref, produces nothing. A sink handed an inline
+			// input takes the batch path: the data already fits, and
+			// re-reading it off disk to stream it would be slower.
+			streamable = inputRef != nil
 		}
 	}
 
@@ -975,7 +1017,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			var result nodeExecutionResult
 			var e error
 			if streamable {
-				result, e = r.runNodeStreamed(node, inputRef, outputs)
+				result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
 			} else {
 				result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
 			}
@@ -1004,12 +1046,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		if err == nil {
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
-			rowCount := 0
-			if output != nil {
-				rowCount = len(output.Rows)
-			} else if outputRef != nil {
-				rowCount = int(outputRef.RowCount)
-			}
+			rowCount := nodeRowCount(output, outputRef, input, inputRef)
 			rowsPerSec := float64(0)
 			if duration > 0 && rowCount > 0 {
 				rowsPerSec = float64(rowCount) / (float64(duration) / 1000.0)
@@ -1972,7 +2009,7 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	// netguard.Default: hook.URL is arbitrary pipeline-editor-supplied
 	// config (models.Pipeline.Hooks) -- there was no SSRF protection
 	// here at all previously.
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		r.log("", models.LogLevelWarning, "Hook %s: request failed: %v", hookName, err)
@@ -1981,3 +2018,69 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	resp.Body.Close()
 	r.log("", models.LogLevelInfo, "Hook %s fired: HTTP %d", hookName, resp.StatusCode)
 }
+
+// defaultMaxParallelNodes decides how many of a run's nodes may execute
+// at once.
+//
+// This used to be the constant 4, which is not a production number: with
+// six independent extracts, two of them sat waiting for a slot for
+// seconds while the database they were querying was idle. Extract and
+// load nodes are overwhelmingly I/O-bound, so the useful ceiling is set
+// by how much data the run can hold at once, not by core count.
+//
+// The default therefore scales with the CPUs the process was given and
+// is then clamped by the memory budget, using the same reasoning as the
+// spill threshold: a node holds at most that much dataset in memory
+// before it spills to the artifact store, so the budget divided by the
+// threshold is how many nodes can be resident together. A worker sized
+// for real work lands at the cap; a deliberately tiny pod lands low
+// instead of being told it can run four.
+//
+// BROKOLI_MAX_PARALLEL_NODES overrides all of it.
+func defaultMaxParallelNodes(r *Runner) int {
+	if v := os.Getenv("BROKOLI_MAX_PARALLEL_NODES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+		if r != nil {
+			r.log("", models.LogLevelWarning, "ignoring BROKOLI_MAX_PARALLEL_NODES=%q: expected a positive integer", v)
+		}
+	}
+
+	n := 4 * runtime.GOMAXPROCS(0)
+	if n < minMaxParallelNodes {
+		n = minMaxParallelNodes
+	}
+	if n > maxMaxParallelNodes {
+		n = maxMaxParallelNodes
+	}
+
+	// Memory clamp. debug.SetMemoryLimit(-1) reports the live limit
+	// without changing it — cmd sets it from the container's cgroup at
+	// startup, so this picks up the real budget rather than re-reading
+	// cgroup files from here.
+	if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
+		perNode := int64(DefaultSpillThresholdBytes)
+		if r != nil && r.spillThreshold > 0 {
+			perNode = r.spillThreshold
+		}
+		if perNode > 0 {
+			if byMemory := int(limit / perNode); byMemory < n {
+				n = byMemory
+			}
+		}
+	}
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
+
+const (
+	// minMaxParallelNodes keeps a small machine from serialising a run
+	// that is mostly waiting on network I/O.
+	minMaxParallelNodes = 8
+	// maxMaxParallelNodes bounds the fan-out so one run cannot open an
+	// unbounded number of database connections at once.
+	maxMaxParallelNodes = 64
+)

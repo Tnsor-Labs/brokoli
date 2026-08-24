@@ -11,7 +11,10 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/store"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -68,6 +71,65 @@ func (u *User) DisplayLabel() string {
 // UserStore handles user persistence. Uses the same DB connection.
 type UserStore struct {
 	db *sql.DB
+	// attempts is where failed-login state lives. It is the store layer's
+	// implementation rather than SQL written here: this type only has a
+	// raw *sql.DB, and writing lockout queries against it meant guessing
+	// the column types the store had already chosen. It guessed wrong on
+	// Postgres — an integer into a boolean column, an RFC3339 string into
+	// a timestamptz — and since every error on that path was discarded,
+	// the table sat at zero rows through thousands of logins while
+	// IsLocked cheerfully answered "not locked".
+	attempts store.LoginAttemptStore
+
+	// dialect is "postgres" or "sqlite", detected once at construction.
+	// This store writes its own SQL against whatever *sql.DB the server
+	// opened, so it has to know which one it got: SQLite DDL sent to a
+	// Postgres server does not create a table, it logs a syntax error
+	// nobody reads. That is how account lockout came to be silently
+	// disabled on every Postgres deployment.
+	dialect string
+}
+
+// Account lockout policy: 5 failed attempts within 15 minutes.
+const (
+	lockoutThreshold = 5
+	lockoutWindow    = 15 * time.Minute
+)
+
+// UseLoginAttemptStore wires the lockout backend. Without it the store
+// cannot enforce lockout, and says so rather than pretending.
+func (us *UserStore) UseLoginAttemptStore(a store.LoginAttemptStore) {
+	us.attempts = a
+}
+
+// detectUserStoreDialect asks the server rather than the connection
+// string, which the store never sees.
+func detectUserStoreDialect(db *sql.DB) string {
+	var one int
+	if err := db.QueryRow("SELECT 1::int").Scan(&one); err == nil {
+		return "postgres"
+	}
+	return "sqlite"
+}
+
+// q rewrites ? placeholders to $1, $2, ... on Postgres, and leaves them
+// alone on SQLite.
+func (us *UserStore) q(query string) string {
+	if us.dialect != "postgres" {
+		return query
+	}
+	var b strings.Builder
+	n := 1
+	for i := 0; i < len(query); i++ {
+		if query[i] == '?' {
+			b.WriteString("$")
+			b.WriteString(strconv.Itoa(n))
+			n++
+		} else {
+			b.WriteByte(query[i])
+		}
+	}
+	return b.String()
 }
 
 // NewUserStore creates a user store and ensures the table exists.
@@ -92,44 +154,67 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
 
-	// Login attempts table for account lockout
-	db.Exec(`CREATE TABLE IF NOT EXISTS login_attempts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		username TEXT NOT NULL, ip TEXT NOT NULL DEFAULT '',
-		success INTEGER NOT NULL DEFAULT 0, attempted_at TEXT NOT NULL)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_login_attempts ON login_attempts(username, attempted_at DESC)`)
+	us := &UserStore{db: db, dialect: detectUserStoreDialect(db)}
 
-	return &UserStore{db: db}, nil
+	// login_attempts is deliberately not created here. The store layer
+	// already owns that table and creates it correctly for both dialects
+	// (store/postgres.go, store/sqlite.go); a second creator racing it is
+	// how the schemas diverged in the first place — whichever ran first
+	// won, and on Postgres a CREATE with SQLite's AUTOINCREMENT is a
+	// syntax error that was discarded unchecked.
+
+	return us, nil
 }
 
 // RecordLoginAttempt records a login attempt for lockout tracking.
 func (us *UserStore) RecordLoginAttempt(username, ip string, success bool) {
-	successInt := 0
-	if success {
-		successInt = 1
+	if us.attempts == nil {
+		return // already warned at construction
 	}
-	us.db.Exec(`INSERT INTO login_attempts (username, ip, success, attempted_at) VALUES (?, ?, ?, ?)`,
-		username, ip, successInt, time.Now().Format(time.RFC3339))
+	if err := us.attempts.RecordLoginAttempt(username, ip, success); err != nil {
+		// Logged rather than returned: the caller is the login path, and a
+		// failure to record an attempt must not fail a valid login. It has
+		// to be visible though — silence here is what let lockout stay
+		// broken unnoticed.
+		log.Printf("WARNING: could not record login attempt for %q (account lockout will not count it): %v", username, err)
+	}
 }
 
-// IsLocked returns true if the account has 5+ failed attempts in the last 15 minutes.
+// IsLocked reports whether the account has 5+ failed attempts in the last
+// 15 minutes.
+//
+// A failed count reports locked, not unlocked. This is a rate limiter, so
+// the instinct is to fail open and let people in — but the count only
+// fails when the database is unreachable, and authentication needs the
+// same database, so nobody was logging in either way. Failing open costs
+// nothing during an outage and removes brute-force protection whenever
+// one can be induced.
 func (us *UserStore) IsLocked(username string) bool {
-	var count int
-	since := time.Now().Add(-15 * time.Minute).Format(time.RFC3339)
-	us.db.QueryRow(`SELECT COUNT(*) FROM login_attempts WHERE username = ? AND success = 0 AND attempted_at > ?`,
-		username, since).Scan(&count)
-	return count >= 5
+	if us.attempts == nil {
+		return false // already warned at construction; no lockout available
+	}
+	count, err := us.attempts.GetRecentFailedAttempts(username, time.Now().Add(-lockoutWindow))
+	if err != nil {
+		log.Printf("WARNING: could not check lockout state for %q, treating as locked: %v", username, err)
+		return true
+	}
+	return count >= lockoutThreshold
 }
 
 // ClearAttempts removes all login attempts for a user (called on successful login).
 func (us *UserStore) ClearAttempts(username string) {
-	us.db.Exec(`DELETE FROM login_attempts WHERE username = ?`, username)
+	if us.attempts == nil {
+		return
+	}
+	if err := us.attempts.ClearLoginAttempts(username); err != nil {
+		log.Printf("WARNING: could not clear login attempts for %q: %v", username, err)
+	}
 }
 
 // IsSuperAdmin checks whether the given user has the superadmin role.
 func (us *UserStore) IsSuperAdmin(userID string) bool {
 	var role string
-	us.db.QueryRow(`SELECT role FROM users WHERE id = ?`, userID).Scan(&role)
+	us.db.QueryRow(us.q(`SELECT role FROM users WHERE id = ?`), userID).Scan(&role)
 	if role == "" {
 		us.db.QueryRow(`SELECT role FROM users WHERE id = $1`, userID).Scan(&role)
 	}
@@ -140,7 +225,7 @@ func (us *UserStore) IsSuperAdmin(userID string) bool {
 func (us *UserStore) GetUserByID(id string) (*User, error) {
 	var u User
 	var createdAt string
-	err := us.db.QueryRow(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = ?`, id).
+	err := us.db.QueryRow(us.q(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = ?`), id).
 		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt)
 	if err != nil {
 		err = us.db.QueryRow(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = $1`, id).
@@ -166,7 +251,7 @@ func (us *UserStore) CreateUser(username, password string, role Role) (*User, er
 	id := generateID()
 	now := time.Now()
 	_, err = us.db.Exec(
-		`INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)`,
+		us.q(`INSERT INTO users (id, username, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)`),
 		id, username, string(hash), string(role), now.Format(time.RFC3339),
 	)
 	if err != nil {
@@ -194,7 +279,7 @@ func (us *UserStore) Authenticate(username, password string) (*User, error) {
 	var hash, createdAt string
 
 	err := us.db.QueryRow(
-		`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = ?`, username,
+		us.q(`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = ?`), username,
 	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &hash, &u.Role, &createdAt)
 	if err != nil {
 		// Try Postgres
@@ -240,7 +325,7 @@ func validatePassword(password string) error {
 
 func (us *UserStore) ChangePassword(userID, currentPassword, newPassword string) error {
 	var hash string
-	err := us.db.QueryRow(`SELECT password_hash FROM users WHERE id = ?`, userID).Scan(&hash)
+	err := us.db.QueryRow(us.q(`SELECT password_hash FROM users WHERE id = ?`), userID).Scan(&hash)
 	if err != nil {
 		err = us.db.QueryRow(`SELECT password_hash FROM users WHERE id = $1`, userID).Scan(&hash)
 	}
@@ -257,7 +342,7 @@ func (us *UserStore) ChangePassword(userID, currentPassword, newPassword string)
 	if err != nil {
 		return err
 	}
-	_, err = us.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, string(newHash), userID)
+	_, err = us.db.Exec(us.q(`UPDATE users SET password_hash = ? WHERE id = ?`), string(newHash), userID)
 	if err != nil {
 		_, err = us.db.Exec(`UPDATE users SET password_hash = $1 WHERE id = $2`, string(newHash), userID)
 	}
@@ -273,7 +358,7 @@ func (us *UserStore) AdminResetPassword(userID, newPassword string) error {
 	if err != nil {
 		return err
 	}
-	result, err := us.db.Exec(`UPDATE users SET password_hash = ? WHERE id = ?`, string(newHash), userID)
+	result, err := us.db.Exec(us.q(`UPDATE users SET password_hash = ? WHERE id = ?`), string(newHash), userID)
 	if err != nil {
 		result, err = us.db.Exec(`UPDATE users SET password_hash = $1 WHERE id = $2`, string(newHash), userID)
 	}
@@ -294,31 +379,28 @@ func (us *UserStore) AdminResetPassword(userID, newPassword string) error {
 //
 // The three cases are spelled out as literal statements rather than
 // assembled from fragments: there are only three, and a fixed string
-// per case keeps the SQL obviously parameterized.
+// per case keeps the SQL obviously parameterized. Placeholders are
+// rewritten for the dialect by q(); this used to run the ? form and
+// retry the $1 form on error, which worked but filled the Postgres log
+// with syntax errors on every profile update.
 func (us *UserStore) SetProfile(userID, displayName, email string) error {
-	var qmark, dollar string
+	var query string
 	var args []any
 	switch {
 	case displayName != "" && email != "":
-		qmark = `UPDATE users SET display_name = ?, email = ? WHERE id = ?`
-		dollar = `UPDATE users SET display_name = $1, email = $2 WHERE id = $3`
+		query = `UPDATE users SET display_name = ?, email = ? WHERE id = ?`
 		args = []any{displayName, email, userID}
 	case displayName != "":
-		qmark = `UPDATE users SET display_name = ? WHERE id = ?`
-		dollar = `UPDATE users SET display_name = $1 WHERE id = $2`
+		query = `UPDATE users SET display_name = ? WHERE id = ?`
 		args = []any{displayName, userID}
 	case email != "":
-		qmark = `UPDATE users SET email = ? WHERE id = ?`
-		dollar = `UPDATE users SET email = $1 WHERE id = $2`
+		query = `UPDATE users SET email = ? WHERE id = ?`
 		args = []any{email, userID}
 	default:
 		return nil
 	}
 
-	_, err := us.db.Exec(qmark, args...)
-	if err != nil {
-		_, err = us.db.Exec(dollar, args...)
-	}
+	_, err := us.db.Exec(us.q(query), args...)
 	return err
 }
 
@@ -367,9 +449,38 @@ func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 	return users, rows.Err()
 }
 
-func (us *UserStore) UserCount() int {
+// UserCountErr reports how many users exist, and whether that could be
+// determined at all.
+//
+// The distinction is a security boundary, not a nicety. Zero users means
+// "fresh install", and a fresh install runs in open mode so the first
+// admin can be created without credentials. UserCount used to discard the
+// scan error and return 0, so any transient database failure — a
+// restarting server, an exhausted pool, a network blip — presented a
+// fully provisioned system as an unconfigured one, and open mode let an
+// unauthenticated caller create an admin account. Observed happening on
+// its own under load, not merely in theory.
+//
+// Callers must treat an error as "cannot tell" and refuse, never as zero.
+func (us *UserStore) UserCountErr() (int, error) {
 	var count int
-	us.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
+	if err := us.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count users: %w", err)
+	}
+	return count, nil
+}
+
+// UserCount reports the number of users, or -1 if it cannot be determined.
+//
+// The sentinel is deliberately not 0: every guard in this package asks
+// whether the system is unconfigured, and a failure answering that
+// question must never be mistaken for "yes". Prefer UserCountErr in new
+// code.
+func (us *UserStore) UserCount() int {
+	count, err := us.UserCountErr()
+	if err != nil {
+		return -1
+	}
 	return count
 }
 
@@ -576,8 +687,17 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 		}
 
 		// If users already exist, require admin role to create new users.
-		// First user creation (setup) is allowed without auth.
-		if us.UserCount() > 0 {
+		// First user creation (setup) is allowed without auth — so a
+		// count that cannot be established has to refuse rather than
+		// assume a fresh install, or a database blip becomes a way to
+		// create an admin without credentials.
+		userCount, countErr := us.UserCountErr()
+		if countErr != nil {
+			log.Printf("CreateUser: refusing, user count unavailable: %v", countErr)
+			writeError(w, http.StatusServiceUnavailable, "cannot verify system state; try again")
+			return
+		}
+		if userCount > 0 {
 			claims := r.Context().Value("claims")
 			if claims == nil {
 				writeError(w, http.StatusUnauthorized, "authentication required")
@@ -597,7 +717,7 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 		}
 
 		// First user must be admin (prevent creating viewer-only accounts during setup)
-		if us.UserCount() == 0 {
+		if userCount == 0 {
 			role = RoleAdmin
 		}
 
@@ -634,6 +754,27 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 	}
 }
 
+// openModeCtxKey marks a request that JWTAuth deliberately let through
+// because the system has no users yet and is waiting to be set up.
+//
+// It exists because "no claims" is ambiguous: it is what an open-mode
+// request looks like, and equally what a request looks like when the
+// authentication middleware was never mounted — which NewServer does
+// whenever the user store could not be built. Reading the first meaning
+// into the second served every permission-gated route to anyone.
+type openModeCtxKey struct{}
+
+func withOpenMode(ctx context.Context) context.Context {
+	return context.WithValue(ctx, openModeCtxKey{}, true)
+}
+
+// IsOpenMode reports whether JWTAuth passed this request through as an
+// unconfigured system awaiting its first user.
+func IsOpenMode(r *http.Request) bool {
+	v, _ := r.Context().Value(openModeCtxKey{}).(bool)
+	return v
+}
+
 // JWTAuth middleware — checks Bearer token. Skips if no users exist (open mode).
 func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
@@ -655,10 +796,25 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Open mode: if no users created yet, only allow auth setup and non-API routes
-			if us.UserCount() == 0 {
+			// Open mode: if no users created yet, only allow auth setup and
+			// non-API routes. A count that cannot be established is not
+			// zero — answering "unconfigured" to a database outage would
+			// drop authentication on a live system.
+			userCount, countErr := us.UserCountErr()
+			if countErr != nil {
+				log.Printf("auth: refusing request, user count unavailable: %v", countErr)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "authentication is temporarily unavailable"})
+				return
+			}
+			if userCount == 0 {
 				if strings.HasPrefix(r.URL.Path, "/api/auth/") || !strings.HasPrefix(r.URL.Path, "/api/") {
-					next.ServeHTTP(w, r)
+					// Mark the request as deliberately unauthenticated.
+					// HasPermission used to infer this from the absence of
+					// claims, which is also what a request that never met
+					// this middleware looks like — so a server started
+					// without JWTAuth answered permission-gated routes to
+					// anyone. Absence is not a decision; this is.
+					next.ServeHTTP(w, r.WithContext(withOpenMode(r.Context())))
 					return
 				}
 				// Block other API access in open mode

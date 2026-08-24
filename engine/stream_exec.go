@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -101,7 +102,11 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		putDone <- putResult{ref, err}
 	}()
 
-	enc := json.NewEncoder(pw)
+	// Buffered for the same reason as EncodeArrowJSON: pw is an io.Pipe,
+	// and an unbuffered write per batch costs a scheduler round-trip that
+	// the store on the other end is not waiting on.
+	encBuf := bufio.NewWriterSize(pw, encodeBufferSize)
+	enc := json.NewEncoder(encBuf)
 	enc.SetEscapeHTML(false) // match EncodeArrowJSON byte-for-byte
 	var outCols []string
 	rowCount := int64(0)
@@ -158,6 +163,13 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 				rowCount++
 				wroteAny = true
 			}
+		}
+	}
+	// Flush before the sentinel and before closing: whatever the encoder
+	// buffered is not in the pipe yet, and closing would discard it.
+	if streamErr == nil {
+		if err := encBuf.Flush(); err != nil {
+			streamErr = err
 		}
 	}
 	if streamErr == nil && !wroteAny {
@@ -445,6 +457,23 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 		return false
 	}
 	switch node.Type {
+	case models.NodeTypeSourceDB:
+		// A source has no input to stream FROM; the win is its output
+		// side, which is what removes the memory ceiling on the whole
+		// pipeline (#304). Its result goes to the blob store batch by
+		// batch instead of becoming one slice the worker has to hold.
+		return true
+	case models.NodeTypeSinkFile:
+		// csv and json write incrementally; sql reads one cell out of the
+		// first row and is never large enough to arrive as a reference.
+		return sinkFileFormatStreams(sinkFileFormat(node))
+	case models.NodeTypeSinkDB:
+		// Only where the write itself can stream. The COPY path pulls
+		// batches; every other write path renders statements from a
+		// materialized dataset, and claiming eligibility for those would
+		// mean decoding the whole blob back into memory to build them —
+		// the ceiling this is meant to remove, moved rather than lifted.
+		return sinkCanStream(node)
 	case models.NodeTypeCode:
 		return !nodeHasExpansion(node)
 	case models.NodeTypeTransform:
@@ -463,7 +492,7 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 // after streamEligible plus the input-form checks passed, so the
 // preconditions (transform: inputRef non-nil; code: inputRef or no input)
 // hold by construction.
-func (r *Runner) runNodeStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	switch node.Type {
 	case models.NodeTypeTransform:
 		rules, err := parseNodeTransformRules(node)
@@ -486,6 +515,12 @@ func (r *Runner) runNodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out (never materialized)",
 			len(rules), inRows, ref.RowCount)
 		return nodeExecutionResult{outputRef: ref}, nil
+	case models.NodeTypeSourceDB:
+		return r.runSourceDBStreamed(ctx, node, outputs)
+	case models.NodeTypeSinkFile:
+		return r.runSinkFileStreamed(node, inputRef, outputs)
+	case models.NodeTypeSinkDB:
+		return r.runSinkDBStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeCode:
 		return r.runCodeStreamed(node, inputRef, outputs)
 	}
@@ -574,4 +609,167 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 		ds.Rows[i] = common.DataRow(row)
 	}
 	return nodeExecutionResult{output: ds}, nil
+}
+
+// sinkStreamConfig builds the same SQLGenConfig runSinkDB builds, and
+// reports whether this sink can be written by streaming.
+//
+// It deliberately mirrors runSinkDB rather than sharing a helper with it:
+// the two must agree, and a test asserts they do, but runSinkDB also has
+// to handle the sql_generate hand-off path that has no config to inspect.
+// Requiring a table here is what excludes that path — a sql_generate
+// upstream produces one row, which is inline rather than a ref, so it
+// never reaches this decision anyway.
+func sinkStreamConfig(node models.Node) (string, SQLGenConfig, bool) {
+	uri, _ := node.Config["uri"].(string)
+	table, _ := node.Config["table"].(string)
+	if uri == "" || table == "" {
+		return "", SQLGenConfig{}, false
+	}
+	mode, _ := node.Config["mode"].(string)
+	cfg := SQLGenConfig{
+		Dialect:     dialectForURI(uri),
+		Table:       table,
+		Mode:        mode,
+		KeyColumns:  configStringSlice(node.Config["key_columns"]),
+		CreateTable: configBool(node.Config["create_table"]),
+		Truncate:    configBool(node.Config["truncate"]),
+	}
+	return uri, cfg, canCopyInsert(cfg)
+}
+
+// sinkCanStream reports whether a sink_db node's write path can consume
+// batches rather than a materialized dataset.
+func sinkCanStream(node models.Node) bool {
+	_, _, ok := sinkStreamConfig(node)
+	return ok
+}
+
+// runSourceDBStreamed reads a query straight into the blob store, batch by
+// batch, and hands downstream a reference rather than a dataset.
+//
+// ctx is the attempt's context, so the node's configured timeout and a
+// cancelled run both stop the scan where it is. QueryDatabase cannot do
+// that — it uses a context of its own — so a cancelled run there reads to
+// the end of the result set before noticing.
+//
+// This is the half of #304 that lifts the ceiling. runSourceDB builds one
+// []DataRow and is therefore bounded by datasetMemoryBudget, which no
+// configuration can raise past the worker's actual memory; here the
+// resident set is one batch and the limit is the blob store's.
+func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	uri, _ := node.Config["uri"].(string)
+	query, _ := node.Config["query"].(string)
+	if uri == "" {
+		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'uri' config")
+	}
+	if query == "" {
+		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
+	}
+
+	var columns []string
+	ref, err := outputs.PutStream(
+		func(emit func(*common.DataSet) error) error {
+			cols, _, qerr := StreamQueryDatabase(ctx, uri, query, 0, emit)
+			columns = cols
+			return qerr
+		},
+		func() []string { return columns },
+	)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
+	}
+
+	r.log(node.ID, models.LogLevelInfo,
+		"Streamed %d rows, %d columns from database by reference (never materialized)",
+		ref.RowCount, len(ref.Columns))
+	return nodeExecutionResult{outputRef: ref}, nil
+}
+
+// runSinkDBStreamed writes a referenced input with COPY, pulling batches
+// off the blob store instead of decoding the whole thing first.
+func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	uri, cfg, ok := sinkStreamConfig(node)
+	if !ok {
+		return nodeExecutionResult{}, fmt.Errorf("sink_db node is not streamable (dispatch bug: eligibility should have caught this)")
+	}
+	if inputRef == nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_db streamed path requires a referenced input (dispatch bug)")
+	}
+
+	// Matches runSinkDB: an empty input writes nothing at all, and in
+	// particular does not clear the table an overwrite would have cleared.
+	if inputRef.RowCount == 0 {
+		r.log(node.ID, models.LogLevelInfo, "sink_db: no rows to write to %q", cfg.Table)
+		return nodeExecutionResult{}, nil
+	}
+
+	batches, closer, err := outputs.OpenBatches(inputRef)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
+	}
+	defer closer.Close()
+
+	affected, err := copyBatchesToPostgres(ctx, uri, cfg, inputRef.Columns, batches.Next)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("copy to %s: %w", cfg.Table, err)
+	}
+	r.log(node.ID, models.LogLevelInfo,
+		"Streamed %d rows into %s by reference (never materialized)", affected, cfg.Table)
+	return nodeExecutionResult{}, nil
+}
+
+// runSinkFileStreamed writes a referenced input straight to the file,
+// pulling batches off the blob store instead of decoding the whole thing
+// and then encoding a second full copy of it.
+func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	if inputRef == nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_file streamed path requires a referenced input (dispatch bug)")
+	}
+	path, _ := node.Config["path"].(string)
+	if path == "" {
+		return nodeExecutionResult{}, fmt.Errorf("sink_file node requires 'path' config")
+	}
+	if err := validateFilePath(path); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_file: %w", err)
+	}
+	format := sinkFileFormat(node)
+	if !sinkFileFormatStreams(format) {
+		return nodeExecutionResult{}, fmt.Errorf("sink_file format %q is not streamable (dispatch bug: eligibility should have caught this)", format)
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		// #nosec G301 -- same mode runSinkFile creates it with; the two
+		// paths must not differ on where a file can be written.
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nodeExecutionResult{}, fmt.Errorf("create output directory: %w", err)
+		}
+	}
+
+	batches, closer, err := outputs.OpenBatches(inputRef)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
+	}
+	defer closer.Close()
+
+	rows, written, err := writeSinkFileStreamed(path, format, inputRef.Columns, batches.Next)
+	if err != nil {
+		return nodeExecutionResult{}, err
+	}
+
+	mb := float64(written) / 1024 / 1024
+	if mb >= 1 {
+		r.log(node.ID, models.LogLevelInfo,
+			"Streamed %s to %s (%.1f MB, %d rows, never materialized)", format, filepath.Base(path), mb, rows)
+	} else {
+		r.log(node.ID, models.LogLevelInfo,
+			"Streamed %s to %s (%.0f KB, %d rows, never materialized)", format, filepath.Base(path), float64(written)/1024, rows)
+	}
+	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
+	if unsharedFileStorage() {
+		host, _ := os.Hostname()
+		r.log(node.ID, models.LogLevelWarning,
+			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
+			host)
+	}
+	return nodeExecutionResult{}, nil
 }

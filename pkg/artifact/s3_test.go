@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 )
@@ -327,6 +328,43 @@ func TestS3Store_HonoursContextCancellation(t *testing.T) {
 	}
 	if err := st.DeleteNamespace(ctx, "run-1"); err == nil {
 		t.Error("expected DeleteNamespace to fail with a cancelled context")
+	}
+}
+
+// A caller-supplied CredentialsProvider must take precedence over
+// AccessKeyID/SecretAccessKey — the whole point of exposing it is to let
+// a caller hand through credentials (e.g. an STS-minted, auto-refreshing
+// session) it already resolved itself, not have this package silently
+// prefer a static pair set alongside it by mistake.
+func TestNewS3Store_CredentialsProviderTakesPrecedence(t *testing.T) {
+	backend := s3mem.New()
+	faker := gofakes3.New(backend)
+	ts := httptest.NewServer(faker.Server())
+	defer ts.Close()
+	if err := backend.CreateBucket("bucket"); err != nil {
+		t.Fatalf("create test bucket: %v", err)
+	}
+
+	provider := credentials.NewStaticCredentialsProvider("from-provider", "from-provider-secret", "")
+	st, err := NewS3Store(context.Background(), S3StoreConfig{
+		Bucket:              "bucket",
+		Region:              "us-east-1",
+		Endpoint:            ts.URL,
+		UsePathStyle:        true,
+		AccessKeyID:         "from-static-fields",
+		SecretAccessKey:     "from-static-fields-secret",
+		CredentialsProvider: provider,
+	})
+	if err != nil {
+		t.Fatalf("NewS3Store: %v", err)
+	}
+
+	got, err := st.client.Options().Credentials.Retrieve(context.Background())
+	if err != nil {
+		t.Fatalf("retrieve resolved credentials: %v", err)
+	}
+	if got.AccessKeyID != "from-provider" {
+		t.Errorf("resolved AccessKeyID = %q, want %q (the injected CredentialsProvider, not the static fields)", got.AccessKeyID, "from-provider")
 	}
 }
 

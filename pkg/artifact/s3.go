@@ -47,26 +47,29 @@ type S3StoreConfig struct {
 	// empty falls back to the AWS SDK's default credential chain (env
 	// vars, shared config, IAM role, ...) — the right default for AWS
 	// itself; most S3-compatible providers require the static pair.
+	// Ignored when CredentialsProvider is set.
 	AccessKeyID     string
 	SecretAccessKey string
+
+	// CredentialsProvider, when set, takes precedence over AccessKeyID/
+	// SecretAccessKey and the default credential chain alike. This is a
+	// standard AWS SDK extension point, not a tenant-awareness feature —
+	// it exists so a caller that already has its own aws.CredentialsProvider
+	// (an STS-minted, auto-refreshing session, for instance) can hand it
+	// straight through instead of this package re-deriving credentials on
+	// its own. What a caller does with that provider — including scoping
+	// it per tenant — is entirely up to the caller; this type has no
+	// opinion on it.
+	//
+	// Takes precedence over AccessKeyID/SecretAccessKey when both are
+	// set, since a caller that went to the trouble of building a
+	// provider means it. Nil keeps the previous behaviour exactly.
+	CredentialsProvider aws.CredentialsProvider
 
 	// UsePathStyle addresses objects as "endpoint/bucket/key" instead of
 	// "bucket.endpoint/key". Most S3-compatible providers other than AWS
 	// itself require this.
 	UsePathStyle bool
-
-	// CredentialsProvider supplies credentials that cannot be expressed
-	// as a static key pair — most importantly ones that expire and are
-	// re-minted, such as STS sessions wrapped in aws.CredentialsCache.
-	// Callers that hold a long-lived key pair should keep using
-	// AccessKeyID/SecretAccessKey; this exists for callers that mint
-	// short-lived, scoped credentials per tenant and need the SDK to
-	// refresh them mid-flight.
-	//
-	// Takes precedence over AccessKeyID/SecretAccessKey when both are
-	// set, since a caller that went to the trouble of building a
-	// provider means it. Nil keeps the previous behavior exactly.
-	CredentialsProvider aws.CredentialsProvider
 }
 
 // S3Store keeps blobs in an S3-compatible bucket.

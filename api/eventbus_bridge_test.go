@@ -16,6 +16,25 @@ import (
 // SODP bridge channel, the bridge mutates state, and a watcher receives
 // the resulting delta. This is the path that distributed deployments rely
 // on for cross-pod event delivery.
+// waitForState blocks until key has been written, so an assertion cannot
+// race the goroutines writing it. A deadline rather than an unbounded
+// wait, so a genuinely broken path fails the test instead of hanging the
+// suite (Tnsor-Labs/brokoli#308).
+func waitForState(t *testing.T, srv *sodp.Server, key string) (any, uint64) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		val, ver := srv.State.Get(key)
+		if ver != 0 {
+			return val, ver
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state %q was never written", key)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 func TestEventBusBridge_ForwardsToSODP(t *testing.T) {
 	reg := extensions.DefaultRegistry()
 	if reg.EventBus == nil {
@@ -58,14 +77,10 @@ func TestEventBusBridge_ForwardsToSODP(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Give the bus → bridge → SODP path time to propagate.
-	time.Sleep(150 * time.Millisecond)
-
-	// Verify the run state was created in SODP from the bus event.
-	val, ver := srv.State.Get("runs.dist-run-1")
-	if ver == 0 {
-		t.Fatal("expected run state to be created from bus event")
-	}
+	// Wait for the bus → bridge → SODP path rather than guessing how
+	// long it takes; under load a fixed sleep asserts too early and the
+	// failure looks like the state was never written.
+	val, _ := waitForState(t, srv, "runs.dist-run-1")
 	m, ok := val.(map[string]any)
 	if !ok {
 		t.Fatalf("expected map, got %T", val)
@@ -77,11 +92,14 @@ func TestEventBusBridge_ForwardsToSODP(t *testing.T) {
 		t.Errorf("pipeline_id: got %v, want dist-pipe", m["pipeline_id"])
 	}
 
-	// Verify the watcher received a delta on dashboard.default
+	// Verify the watcher received a delta on dashboard.default. The delta and
+	// the state write are separate async hops, so waitForState returning does
+	// not mean the delta has landed yet -- a non-blocking check here asserts
+	// too early under load, which is the same mistake the wait above avoids.
 	select {
 	case <-subCh:
 		// expected
-	default:
+	case <-time.After(2 * time.Second):
 		t.Error("watcher should have received a dashboard delta from the bus-originated event")
 	}
 }
@@ -107,13 +125,8 @@ func TestEventBusBridge_OrgScopedChannel(t *testing.T) {
 	data, _ := json.Marshal(ev)
 	reg.EventBus.Publish("events:org:acme", data)
 
-	time.Sleep(150 * time.Millisecond)
-
 	// Run state should exist with org_id
-	val, ver := srv.State.Get("runs.acme-run-1")
-	if ver == 0 {
-		t.Fatal("expected run state from org-scoped bus event")
-	}
+	val, _ := waitForState(t, srv, "runs.acme-run-1")
 	m := val.(map[string]any)
 	if m["org_id"] != "acme" {
 		t.Errorf("org_id: got %v, want acme", m["org_id"])
@@ -162,10 +175,8 @@ func TestEventBusBridge_MalformedEventDoesNotCrash(t *testing.T) {
 	data, _ := json.Marshal(ev)
 	reg.EventBus.Publish("events:run", data)
 
-	time.Sleep(150 * time.Millisecond)
-
-	// The good event must still have been processed
-	if _, ver := srv.State.Get("runs.after-bad-1"); ver == 0 {
-		t.Error("subscriber should keep running after a malformed message")
-	}
+	// The good event must still have been processed. waitForState fails
+	// with a clear message if it never arrives, which is the actual
+	// assertion here: the subscriber survived the malformed message.
+	waitForState(t, srv, "runs.after-bad-1")
 }

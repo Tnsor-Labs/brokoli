@@ -107,7 +107,7 @@ func NewPipelineHandler(s store.Store, sched *engine.Scheduler, executors ...ext
 
 func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 	orgID := GetOrgIDFromRequest(r)
-	after := r.URL.Query().Get("after")
+	after := CursorParam(r)
 	limit := 25
 	if l := r.URL.Query().Get("limit"); l != "" {
 		if n, _ := strconv.Atoi(l); n > 0 && n <= 100 {

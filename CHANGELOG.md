@@ -11,6 +11,496 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.68] - 2026-08-24
+
+A pass over the connection subsystem and the authentication middleware.
+Nearly everything here shares one shape: something was true of the system
+and nothing said so — a connection that was not encrypted, a credential
+that had been destroyed, a request that had never been authenticated, a
+build that could not open the database type it offered.
+
+### Security
+
+- **A server could serve every permission-gated route with no
+  authentication at all** (#316) — @hc12r. `NewServer` mounts the
+  authentication middleware only `if userStore != nil`, and `serve.go`
+  left it nil on two paths: a store whose `RawDB()` is not a `*sql.DB`,
+  silently, and a `NewUserStore` error, behind a `WARNING` it then
+  continued past. Neither is exotic — `NewUserStore` fails when the users
+  table cannot be created, which is what a database still accepting no
+  connections produces, and this control database did it repeatedly under
+  load while the fix was being written.
+
+  With no middleware mounted, no request carries claims, and
+  `HasPermission` read a missing claim as open mode and returned `true`.
+  Demonstrated: an unauthenticated request through a `settings.edit` gate
+  returns `200`. Unlike the count bug in #306 this does not clear when the
+  database recovers — the middleware is never mounted, so the process
+  serves everything to everyone for its whole lifetime.
+
+  Fixed at both layers, either of which closes it. Open mode is now a mark
+  `JWTAuth` deliberately sets when it passes an unconfigured system
+  through, and `HasPermission` allows an unauthenticated request only when
+  that mark is present; a request that never met the middleware carries no
+  mark and is denied. Separately, a user store that cannot be built is
+  fatal — a container that exits gets restarted once the database is
+  ready, where one that starts without authentication stays that way until
+  somebody reads the log. A genuinely fresh install still bootstraps, which
+  is asserted by test alongside the bypass.
+
+- **Connection records could not require TLS, and did not say they were
+  not using it** (#317) — @hc12r. `BuildURI` emitted no query string, so
+  no `sslmode` was ever set and libpq's default applied: `prefer`, which
+  attempts TLS and falls back to an unencrypted connection without an
+  error if the server declines. Measured against a local Postgres with
+  `ssl = off`, a connection record came up with `encrypted=false` and
+  nothing in the product reported it. The `extra` field, which is where an
+  operator would look, was read for API connections and ignored for
+  database ones.
+
+  Driver options now come from `extra` for Postgres, Redshift, MySQL, SQL
+  Server, and Snowflake. The allowlist is over keys rather than values:
+  libpq accepts `host`, `dbname`, and `user` as connection parameters, and
+  honouring those from `extra` would let the field redirect a connection
+  away from the record it belongs to. Values reach the driver verbatim so
+  the driver validates them — a misspelled `sslmode` fails the connection
+  loudly instead of being dropped, because an option that vanishes quietly
+  leaves an operator believing they have encryption they do not have.
+
+  No default changed. An unconfigured connection still gets the driver's
+  own default; what is new is that the demand is expressible.
+
+### Fixed
+
+- **A REST read-modify-write destroyed connection credentials** (#317) —
+  @hc12r. `GET` a connection, change the host, `PUT` it back — the
+  ordinary way to use the API, and the way the docs describe it. Reads
+  mask encrypted refs as `encrypted://********`, and the update path
+  treated a non-empty ref as authoritative, so the mask was written back
+  as the credential and the real one was gone. Both the password and the
+  `extra` blob. The `PUT` returns `200` with the edit applied, so nothing
+  signals the loss; the connection fails at the next run with a decryption
+  error that points at the crypto layer rather than at the write that
+  caused it. What made it easy to miss is that the obvious sentinel was
+  already handled — the bare password had an explicit `!= "********"`
+  guard — and `maskRef` later introduced a second sentinel nothing
+  checked. Both are named constants now, normalised in one place.
+
+- **The connection test reported success for connections that ignored
+  their own options** (#317) — @hc12r. Found by driving a running server
+  rather than the package: a connection carrying `"sslmode": "require"`,
+  tested against a Postgres with TLS switched off, answered `Connected
+  successfully` for a session in the clear. The Test handler decrypted the
+  `extra` blob into a local map so the HTTP paths could read headers out
+  of it and left the encrypted value on the connection, and `BuildURI`
+  reads `c.Extra` — an encrypted blob parses as no options at all. The
+  runtime path was never affected, since the connection resolver puts
+  plaintext back before building the URI; the only thing misreporting was
+  the button whose purpose is to say whether the connection works.
+
+- **The connection test ignored the operator's outbound network policy**
+  (#317) — @hc12r. `netguard.Outbound()` reads
+  `BROKOLI_OUTBOUND_ALLOW_CIDRS` and `BROKOLI_OUTBOUND_ALLOW_PRIVATE`;
+  `netguard.Default` is hardcoded and reads neither. Pipeline nodes use
+  the first, the test button used the second. An operator whose internal
+  services sit on `10.20.0.0/16` could run pipelines against them while
+  the test button called the same connection unreachable.
+
+- **Connection types with no compiled driver blamed the build** (#317) —
+  @hc12r. The catalog offers Snowflake, BigQuery, Databricks, Oracle, and
+  SQL Server; only pgx, mysql, and sqlite are compiled in. That surfaced
+  as database/sql's `unknown driver "snowflake" (forgotten import?)`,
+  which reads as a defect rather than a product limitation. The error now
+  names the limitation and lists the drivers that are available, and it
+  names the scheme rather than the URI, which carries the password.
+
+### Changed
+
+- **One connection URI builder instead of two** (#317) — @hc12r. The
+  engine carried a second builder that handled Redshift, Snowflake, and
+  SQL Server and pinned `sslmode=require`. It had a table test asserting
+  exactly that, and it had never been called — so the suite read as though
+  Brokoli required TLS to Postgres while the live path asked for nothing,
+  and those three connection types fell through to `return c.Host`. A
+  `conn_id` pointing at a Redshift cluster injected a bare hostname as the
+  node's `uri`, dropping the port, database, and credentials, and reached
+  the Postgres driver as a malformed DSN whose error named neither the
+  connection nor the reason.
+
+  The two are now one, built through `net/url` rather than `fmt.Sprintf` —
+  the dead builder interpolated credentials into a format string, so a
+  password containing `@` or `/` changed which host the URI pointed at.
+  `BuildsURI` reports whether a type has an engine driver at all, and the
+  resolver no longer fabricates a URI for the six that do not.
+
+### Added
+
+- **The server reports which version it is running** (#315) — @hc12r.
+  `/api/system/info` returns the build version, and the UI shows it in the
+  sidebar and in Settings. Answering "what is actually deployed here"
+  previously meant reading the image tag from outside the product, which
+  is a different question and can disagree.
+
+## [0.10.67] - 2026-08-23
+
+### Security
+
+- **Two authentication controls that silently disabled themselves**
+  (#306) — @hc12r. Both were found by watching a running deployment
+  rather than by reading code.
+
+  `UserCount()` discarded its query error and returned `0`. Zero users
+  means "fresh install", and a fresh install serves every `/api/auth/*`
+  path without authentication so the first admin can be created. So any
+  transient database failure — a restarting server, an exhausted pool, a
+  network blip — presented a live system as an unconfigured one, and
+  while it lasted `JWTAuth` waved requests through, `CreateUserHandler`
+  skipped its admin check, and the account it created was forced to
+  `admin`. An unauthenticated `POST /api/auth/users` during that window
+  creates an administrator. Observed happening on its own, twice, while a
+  Postgres backend was being OOM-killed under load; it needs no attacker
+  to cause the outage, only to be present during one. `UserCountErr` now
+  reports the failure and every caller refuses rather than assuming zero;
+  `UserCount` keeps its signature but returns `-1`, deliberately not `0`,
+  so a missed caller cannot read a failure as "unconfigured".
+
+  Account lockout never worked on Postgres. The store layer implements
+  `LoginAttemptStore` correctly for both dialects and nothing called it —
+  `UserStore` had its own copy written against a raw `*sql.DB`, which had
+  to guess the column types the store had already chosen and guessed
+  wrong: an integer into a `boolean success`, an RFC3339 string into a
+  `timestamptz attempted_at`. Every error on that path was discarded, and
+  `IsLocked` reports "not locked" when its count fails, so five wrong
+  passwords locked nothing on any Postgres deployment. Confirmed on a
+  live instance before fixing: `login_attempts` present, **0 rows after
+  thousands of logins**. `UserStore` now delegates to the store and no
+  longer creates the table; `IsLocked` treats an unreadable count as
+  locked, which costs nothing because the count only fails when the
+  database is unreachable and authentication needs the same database.
+
+### Added
+
+- **Sources and sinks stream, so dataset size is bounded by disk rather
+  than worker memory** (#307, closes #304) — @hc12r. The streaming
+  executor covered `code` and `transform` only, so every run materialised
+  the whole source result before anything downstream could stream it, and
+  a query larger than the memory budget failed with no configuration that
+  helped — raising the budget moved the wall, raising it far enough
+  brought back the OOM kill it was added to prevent. `source_db` now
+  flushes NDJSON batches into the blob store and returns a reference,
+  `sink_db` pulls batches into `COPY`, and `sink_file` writes csv and
+  json incrementally (`sql` keeps the batch path: it reads one cell from
+  the first row). Measured on a worker capped at 460 MiB: 200k rows and
+  106 MB of CSV went from an OOM kill to a 12.5s success, and 1,000,000
+  rows writing 528 MB completed in 60s with 11 MiB of live heap.
+  Equivalence is asserted rather than assumed — the streamed and
+  materialising query paths share one row scanner and are compared over
+  5000 rows across seven columns against a real Postgres, and the
+  streamed file writer is compared byte-for-byte with the buffered one at
+  five batch sizes.
+
+- **`sink_db` takes `truncate`** (#312, closes #299) — @hc12r. An
+  overwrite clears with `DELETE`, which leaves one dead tuple per removed
+  row, so a table replaced on every run sits at a multiple of its live
+  size and each clear scans the leftovers. Ten overwrite cycles of a
+  50,000-row table: `DELETE` 7013ms / 500,000 dead tuples / 137 MB
+  against `TRUNCATE` 2591ms / 0 / 13 MB. Off by default and deliberately
+  so: `TRUNCATE` takes an `ACCESS EXCLUSIVE` lock, so anything reading
+  the table blocks for the whole load where `DELETE` lets readers keep
+  seeing the previous contents. Right for a staging table nothing queries
+  mid-load, wrong for one backing a dashboard, and the platform cannot
+  tell which it is looking at. Ignored on SQLite, which has no `TRUNCATE`
+  and already optimises a whole-table `DELETE` into the same thing.
+
+- **File nodes say when they are on storage the next run cannot see**
+  (#309, closes #305) — @hc12r. `source_file` and `sink_file` read and
+  write the filesystem of whichever worker runs them, so with more than
+  one replica each pod has its own copy. Within a run that is fine; every
+  node of a run executes on one worker. Across runs it is a coin flip,
+  and the quiet outcome is the dangerous one: the later run lands on a
+  pod holding an older copy, reads it, and succeeds against stale data.
+  Demonstrated with two workers holding different files at one path — a
+  green run, and whichever pod dispatch picked decided the contents.
+  Brokoli cannot make a local filesystem shared, so it now reports the
+  hazard at startup, at pipeline validation, and on a failed read, and
+  records which pod and how old the file was on every read and write. A
+  deployment with one worker, or with `BROKOLI_DATA_DIRS_SHARED=1` set
+  over real shared storage, is completely silent.
+
+### Fixed
+
+- **Postgres writes go through COPY instead of rendered SQL** (#300,
+  #302, closes #282) — @hc12r. The sink rendered every value into SQL
+  text: 25,000 rows of five columns became 1.9 MB of literals to ship and
+  parse a statement at a time. `COPY` carries them as data. The text
+  format is used rather than binary because the server parses a COPY text
+  field exactly as it parses a literal, so a string still lands correctly
+  in a numeric or timestamptz column — which is what every file and API
+  source produces. Reading the destination types from the catalogue and
+  coercing in Go was measured rather than assumed and lost: 240ms against
+  155ms on a table with a primary key, because the server's time goes to
+  index maintenance rather than parsing.
+
+  The encoders are buffered, which turned out to be the larger half.
+  `io.Pipe` hands each write straight to the reader goroutine and blocks
+  until consumed, so writing row by row cost one scheduler round-trip per
+  row — 25k rows spent ~490ms in handoffs, and the first cluster
+  comparison showed COPY and the old path within noise of each other. The
+  same pattern was in `EncodeArrowJSON`, which runs on every node output
+  artifact and every spilled dataset: 160ms to 70ms. Per sink node, end
+  to end: 25k rows 816ms to 228ms, 100k rows 2877ms to 680ms — about 91%
+  of what `psql` achieves loading the same rows inside the database
+  container with no network at all.
+
+- **Concurrent overwrites of the same table no longer collide** (#311)
+  — @hc12r. An overwrite says "this table's contents become exactly these
+  rows", and two of those at once have no defined outcome. Unserialised
+  they interleaved and failed two ways, both seen with four pipelines
+  writing one table: `deadlock detected`, and `duplicate key value
+  violates unique constraint` — the second because one transaction's
+  `DELETE` cannot see the other's uncommitted rows, so both insert the
+  same keys. Neither is something the pipeline author can fix. Overwrite
+  now takes an `EXCLUSIVE` lock inside its existing transaction: writers
+  wait for each other, readers keep seeing the previous contents until
+  the winner commits. 29/32 concurrent runs succeeded before, 112/112
+  after.
+
+- **The engine and the loaders agree on which directories are usable**
+  (#309) — @hc12r. There were two allowlists. The engine kept a
+  configurable one (`BROKOLI_DATA_DIRS`, defaulting to `/data`, `/tmp`
+  and the working directory) and checked a path before handing it to a
+  loader; the loader checked again against a hardcoded pair — the working
+  directory and the system temp directory — and refused anything else. So
+  they disagreed on their own defaults: `/data` was in the engine's list
+  and unreachable in practice, and configuring a new directory passed the
+  first check and failed the second with an error naming no directory and
+  no setting. Mounting shared storage at `/data` and configuring it
+  correctly failed every run until this.
+
+- **The event bridge says when it has caught up** (#313, closes #308) —
+  @hc12r. `Bridge` returned nothing, so nothing could tell "the bridge has
+  applied everything" from "the bridge is still working", and its tests
+  slept a fixed 50-100ms before asserting. Under load that produced
+  failures shaped exactly like real defects — 192 of 200 log entries, a
+  dashboard snapshot missing only its most recent run — and cost two
+  preflight runs before being recognised. It now returns a channel closed
+  once the last event is applied; every fixed sleep in those tests is
+  gone.
+
+- **Preflight reports which package failed** (#301) — @hc12r. The race
+  suite piped into `tail -5`, which throws away the `--- FAIL` lines and
+  the failing package name, so a failure showed as a bare `FAIL` with
+  nothing to act on and the only way to learn more was to re-run the
+  whole suite. Output now goes to a log in full.
+
+- **The `replace` mode alias is pinned by a test** (#303) — @hc12r.
+  `replace` is an alias for `overwrite` in two separate places on the COPY
+  path, and nothing asserted it. Dropping it from one would have turned a
+  replace into a silent append.
+
+### Behaviour Changes To Read Before Upgrading
+
+- Postgres `append` and `overwrite` writes now go through `COPY` rather
+  than generated `INSERT` statements. Values are carried as data and
+  parsed by the server exactly as literals were, so results are
+  unchanged; `BROKOLI_SINK_COPY=0` returns to the statement path without
+  a different build. Upsert and table creation keep the statement path.
+
+- `overwrite` takes an `EXCLUSIVE` table lock for the duration of its
+  transaction. Concurrent writers to the same table now wait instead of
+  interleaving. Readers are unaffected.
+
+- `api.UserCount()` returns `-1` when the count cannot be determined,
+  where it previously returned `0`. Any caller treating a non-positive
+  result as "no users configured" must be checked; prefer `UserCountErr`.
+
+- `sodp.Bridge` now returns a channel. Existing calls that ignore the
+  return value keep compiling and behave identically.
+
+- `BROKOLI_DATA_DIRS` is now honoured by the file loaders as well as the
+  engine, so a directory configured there becomes genuinely usable. An
+  empty value falls back to the defaults rather than allowing nothing,
+  because unset and empty are indistinguishable to most tooling and
+  reading empty as "disable every file node" would break a deployment
+  silently. To restrict access, name the directories that are allowed.
+
+- A deployment running more than one worker without shared storage for
+  the data directories now logs a warning at startup and warns on
+  pipelines that read a file they do not write. Set
+  `BROKOLI_DATA_DIRS_SHARED=1` once the directories are on shared storage
+  to confirm it and silence the warnings.
+
+## [0.10.66] - 2026-08-23
+
+### Fixed
+
+- **Cursor pagination accepts the parameter name it hands out** (#296)
+  — @hc12r. Responses return the next position as `cursor` and the
+  endpoints read only `after`, so a client feeding the response's own
+  cursor back had it ignored, got page one again with `has_next` still
+  true, and looped forever hammering the server with no way to tell.
+  Against a pipeline with 110 runs, walking by `cursor` produced 1000
+  rows over 40 pages, 975 of them duplicates; it now terminates after 5
+  pages with 110 unique ids. `after` still works and wins if both are
+  given.
+
+- **The outbound allowlist covers every path a pipeline uses** (#297) —
+  @hc12r. `BROKOLI_OUTBOUND_ALLOW_CIDRS` reached only the API fetcher,
+  so `sink_api` and webhook hooks stayed on the closed default: an
+  operator who allowlisted their internal range could read from an
+  internal service but not post back to it, with an error that gave no
+  hint the allowlist did not cover that path. All three now resolve the
+  same policy.
+
+## [0.10.65] - 2026-08-23
+
+### Fixed
+
+- **Audit entries find their tenant even outside the org middleware**
+  (#293) — @hc12r. #291 stamped the org from the request context, which
+  only the enterprise-middleware routes have; pipeline, connection and
+  variable entries were still written tenant-less and stayed invisible
+  to the org-filtered audit query. The org is now resolved from the
+  context, then the signed session token, then the org resolver.
+  Verified on a cluster: connection changes now appear in the audit API
+  where they were previously recorded and unreachable.
+
+### Added
+
+- **Run totals describe the deployment, not one process** (#294) —
+  @hc12r. `/metrics` exposed counters held in whichever process
+  answered, and runs execute on workers — so the API, the stable scrape
+  target, reported zero runs and zero successes while the fleet was
+  busy, and a worker's own counters disappeared when autoscaling
+  removed the pod. `brokoli_runs_by_status{status=...}` is derived from
+  the runs table and cached for ten seconds; a query error serves the
+  last known numbers rather than reporting an idle fleet. The
+  per-process counters are unchanged. `store.Store` gains
+  `CountRunsByStatus`.
+
+## [0.10.64] - 2026-08-23
+
+### Fixed
+
+- **Audit entries record which tenant an action happened in** (#291) —
+  @hc12r. The enterprise audit query filters by the caller's org, and
+  core's hook had nowhere to put one: `extensions.AuditEntry` had no
+  metadata field, so every entry core records — pipelines, connections,
+  variables, runs — was written without a tenant and could never be
+  read back. A live instance held 67 entries and returned 1. The 66
+  invisible ones were every pipeline and connection change on the
+  system, leaving "who changed this connection?" unanswerable through
+  the product while the row sat in the database. `AuditEntry` gains an
+  additive `Metadata` map and `api.AuditLog` stamps the request's org
+  into it; single-tenant deployments record no org rather than an empty
+  one. Entries written before this keep their empty metadata.
+
+## [0.10.63] - 2026-08-23
+
+### Fixed
+
+- **A literal is decided by the value's type, not its printed text**
+  (#287) — @hc12r. `formatValue` rendered everything with `%v` and then
+  guessed the type back out of that text, so any string that looked
+  like something else was written as that something else: `"00123"`
+  stored as `123`, a card number stored as a numeric, `"1.50"` as
+  `1.5`, `"true"` rejected outright by a text column, and `""`
+  collapsed into NULL. Found by round-tripping a table of awkward
+  values and diffing it against the source — two of ten rows came back
+  wrong, with nothing failing. Strings are now always quoted, which
+  every dialect coerces correctly into numeric, boolean and date
+  columns. Empty strings resolve where the ambiguity actually lives:
+  the CSV loader emits nil for an empty field (so CSV to database is
+  unchanged end to end) and the writer keeps `""` as an empty literal,
+  with `EmptyStringAsNull` restoring the old writer behaviour.
+
+### Added
+
+- **The worker's shutdown drain window is configurable** (#288) —
+  @hc12r. It was a fixed 25 seconds, which fits Kubernetes' default
+  grace period but not real pipelines: a 56-second job was abandoned by
+  every graceful eviction — a KEDA scale-down, a node drain, a rolling
+  deploy — and the run was then failed rather than retried. With worker
+  autoscaling on, the fleet destroyed work every time it shrank.
+  `BROKOLI_WORKER_DRAIN_TIMEOUT` accepts a duration or bare seconds;
+  the enterprise chart derives it and `terminationGracePeriodSeconds`
+  from one value so they cannot drift apart.
+
+## [0.10.62] - 2026-08-22
+
+### Fixed
+
+- **The scheduler never picked up pipelines created after it started**
+  (#284) — @hc12r. `Start()` registers what exists at boot and
+  `SyncPipeline` keeps an in-process scheduler current, but in
+  distributed mode the scheduler is its own pod while `SyncPipeline` is
+  called from the API's process. Nothing carried the change across and
+  nothing re-read the store, so a scheduled pipeline created after the
+  scheduler pod started simply never ran — no error, no missed-run
+  warning, nothing in the run list, until someone restarted the pod.
+  The scheduler now reconciles its cron entries against the store every
+  30 seconds, picking up additions and applying disables, reschedules
+  and deletions. Found by deploying a `* * * * *` pipeline and watching
+  it not fire while an older one kept firing beside it.
+
+- **`S3StoreConfig.CredentialsProvider` was declared twice** (#285) —
+  @hc12r. #271 and #272 added the same field independently and both
+  merged, leaving `main` unable to compile. One declaration remains,
+  documenting the precedence the code already implements.
+
+## [0.10.61] - 2026-08-22
+
+Found by running realistic pipelines — migrations, parallel extraction,
+incremental loads, failure injection — against real databases and a
+k3s cluster, rather than by reading the code.
+
+### Fixed
+
+- **Timestamps reached databases in Go's own format** (#276) — @hc12r.
+  `formatValue` fell through to `%v` for a `time.Time`, emitting
+  `2026-08-22 00:00:00 +0000 UTC`, which no dialect parses. Every
+  pipeline carrying a DATE or TIMESTAMP column from a database source
+  into a database sink failed on the write. Each dialect now declares
+  its layout, and dialects whose literal carries no zone get the value
+  in UTC rather than reinterpreted in the session timezone.
+
+- **Sinks reported zero rows** (#281) — @hc12r. `row_count` came from a
+  node's output, and sinks are terminal, so the run summary answered
+  "how many rows did we load?" with 0 for every sink. Terminal nodes now
+  report what they consumed.
+
+### Changed
+
+- **Node parallelism scales with the worker** (#277) — @hc12r. It was
+  the constant 4: with six independent extracts, two waited about 3.5
+  seconds for a slot while their database sat idle. The default now
+  derives from CPUs and is clamped by the memory budget, with
+  `BROKOLI_MAX_PARALLEL_NODES` overriding.
+
+- **Admission backpressure applies only under memory pressure** (#278)
+  — @hc12r. A worker waited 3 seconds after every admission whatever its
+  memory situation, capping throughput at roughly one run per four
+  seconds per worker. Measured on a queue that stayed full with 75% of
+  memory free: 20 runs took 39.3s before, 12.6s after — 3.1x. The guard
+  is unchanged where memory is genuinely tight.
+
+### Added
+
+- **Oversized query results fail instead of killing the worker** (#279)
+  — @hc12r. A result too large for the pod took the whole process down
+  with an OOM kill, losing every co-running run, and was reported 27
+  seconds later as "interrupted mid-execution" with no mention of
+  memory. The scan now measures rows against a budget (30% of the
+  memory limit, `BROKOLI_DATASET_MEMORY_BUDGET` to override) and fails
+  that one run in about a second, naming the size, the budget and the
+  remedies.
+
+- **Outbound allowlist for self-hosted deployments** (#280) — @hc12r.
+  `source_api` blocked all private addresses with no production
+  override, so an on-premise install could not reach its own internal
+  APIs. `BROKOLI_OUTBOUND_ALLOW_CIDRS` permits named ranges (preferred),
+  `BROKOLI_OUTBOUND_ALLOW_PRIVATE` opens all of them. Default unchanged.
+
 ## [0.10.60] - 2026-08-22
 
 ### Fixed

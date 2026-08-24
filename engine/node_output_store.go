@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -163,6 +165,99 @@ func (o *nodeOutputs) spill(ds *common.DataSet) (*artifact.DatasetRef, error) {
 	}, nil
 }
 
+// PutStream writes a node's output to the blob store as it is produced,
+// without the whole dataset ever existing.
+//
+// spill takes a *common.DataSet, which means the dataset had to fit in
+// memory before it could be got out of memory — fine for a node whose
+// result is already in hand, useless for a source reading a table larger
+// than the worker. produce is handed an emit function instead and calls it
+// per batch; the rows are encoded and streamed into the blob as they
+// arrive, so the resident set is one batch no matter how many rows pass
+// through.
+//
+// The returned ref carries the row count produce actually emitted, counted
+// here rather than trusted from the caller, since it is what every
+// downstream consumer reports as the node's row count. columns is called
+// after production finishes, because a source does not learn its column
+// list until the query has begun returning rows.
+func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) error, columns func() []string) (*artifact.DatasetRef, error) {
+	if !o.spillEnabled() {
+		return nil, fmt.Errorf("stream output: spilling is not enabled")
+	}
+
+	pr, pw := io.Pipe()
+	type produced struct {
+		rows int64
+		err  error
+	}
+	// The producer reports through a channel rather than shared variables:
+	// on the error path Put can return before the goroutine has finished,
+	// and reading its results then would be a data race.
+	done := make(chan produced, 1)
+	go func() {
+		// Buffered for the reason given on EncodeArrowJSON: pw is a pipe,
+		// and an unbuffered write per row costs a scheduler round-trip per
+		// row.
+		buf := bufio.NewWriterSize(pw, encodeBufferSize)
+		enc := json.NewEncoder(buf)
+		enc.SetEscapeHTML(false) // match EncodeArrowJSON byte-for-byte
+		rows := int64(0)
+		err := produce(func(batch *common.DataSet) error {
+			for _, row := range batch.Rows {
+				if encErr := enc.Encode(row); encErr != nil {
+					return encErr
+				}
+				rows++
+			}
+			return nil
+		})
+		if err == nil && rows == 0 {
+			// Preserve EncodeArrowJSON's empty-dataset sentinel so the blob
+			// decodes identically to a batch-written empty output.
+			_, err = buf.Write([]byte("[]"))
+		}
+		if err == nil {
+			err = buf.Flush()
+		}
+		_ = pw.CloseWithError(err)
+		done <- produced{rows: rows, err: err}
+	}()
+
+	ref, putErr := o.blobs.Put(context.Background(), o.namespace, pr, artifact.PutOptions{
+		MediaType: artifact.MediaTypeNDJSON,
+	})
+	if putErr != nil {
+		// Unblock the producer so the wait below cannot hang.
+		_ = pr.CloseWithError(putErr)
+	}
+	res := <-done
+
+	// A genuine producer error (a failing query, a bad row) is the root
+	// cause even though it also surfaces as a Put error through the closed
+	// pipe. But a producer error that IS a pipe error means the consumer
+	// died first, and Put's own error is the root cause there.
+	if res.err != nil && !errors.Is(res.err, io.ErrClosedPipe) {
+		return nil, res.err
+	}
+	if putErr != nil {
+		return nil, putErr
+	}
+
+	cols := []string{}
+	if columns != nil {
+		if c := columns(); c != nil {
+			cols = c
+		}
+	}
+	return &artifact.DatasetRef{
+		ArtifactRef: *ref,
+		Format:      artifact.FormatNDJSON,
+		Columns:     cols,
+		RowCount:    res.rows,
+	}, nil
+}
+
 // Get returns a node's output, reading it back from the artifact store if it
 // was spilled. The second return reports whether the node has an output at
 // all, matching the map lookup this replaced.
@@ -176,6 +271,22 @@ func (o *nodeOutputs) Get(nodeID string) (*common.DataSet, bool, error) {
 	o.mu.Unlock()
 	if !ok {
 		return nil, false, nil
+	}
+
+	// Materializing is the one place a reference can still exhaust the
+	// worker: streaming consumers read a batch at a time, but a consumer
+	// that cannot stream decodes the whole blob into Go maps here. Left
+	// unchecked that is an OOM kill, which takes down every other run on
+	// the worker and leaves this one to be failed later by recovery with
+	// "interrupted mid-execution" — telling the author nothing. Refusing
+	// up front costs one run and says exactly what happened.
+	if budget := datasetMemoryBudget(); budget > 0 && ref.SizeBytes > budget {
+		return nil, true, fmt.Errorf(
+			"output of node %s is too large to materialize: %s encoded (budget %s) across %d rows. "+
+				"The node consuming it cannot stream, so the whole dataset has to be decoded into memory. "+
+				"Narrow the data upstream, send it to a sink that streams (postgres append/overwrite, csv, json), "+
+				"or give the worker more memory (BROKOLI_DATASET_MEMORY_BUDGET overrides the budget)",
+			nodeID, humanBytes(ref.SizeBytes), humanBytes(budget), ref.RowCount)
 	}
 
 	rc, err := o.blobs.Open(context.Background(), &ref.ArtifactRef)

@@ -64,6 +64,8 @@ var rootCmd = &cobra.Command{
 //	brokoli v0.7.5 (abc123, 2026-04-13)
 func SetVersion(version, commit, date string) {
 	rootCmd.Version = version
+	// The UI asks the server what it is running, via /api/system/info.
+	api.SetBuildVersion(version)
 	rootCmd.SetVersionTemplate(fmt.Sprintf(
 		"brokoli %s (%s, %s)\n", version, shortCommit(commit), date,
 	))
@@ -203,7 +205,18 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Wire job queue from extensions (enterprise distributed mode)
-		if Extensions != nil && Extensions.JobQueue != nil && RunMode != "all" {
+		distributed := Extensions != nil && Extensions.JobQueue != nil && RunMode != "all"
+
+		// File nodes read and write whichever worker executes them. That is
+		// unambiguous in a single process and a hazard once work is
+		// dispatched to separate workers, so the engine is told which of the
+		// two this is — see engine/file_storage.go.
+		engine.SetDistributedWorkers(distributed)
+		if w := engine.FileStorageWarning(); w != "" {
+			log.Printf("WARNING: %s", w)
+		}
+
+		if distributed {
 			eng.JobQueue = Extensions.JobQueue
 			log.Printf("Job queue enabled (mode: %s)", RunMode)
 
@@ -292,19 +305,43 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Setup user accounts
-		var userStore *api.UserStore
-		if rawDB, ok := s.RawDB().(*sql.DB); ok {
-			us, err := api.NewUserStore(rawDB)
-			if err != nil {
-				log.Printf("WARNING: user store init failed: %v", err)
-			} else {
-				userStore = us
-				if userStore.UserCount() == 0 {
-					log.Println("No users configured — running in open mode (create first user via API or UI)")
-				} else {
-					log.Printf("User authentication enabled (%d users)", userStore.UserCount())
-				}
-			}
+		// A user store that cannot be built is fatal, not a warning.
+		//
+		// NewServer mounts JWTAuth only when this is non-nil, so carrying
+		// on without one starts a server with no authentication at all,
+		// on a database that may be full of users — previously marked by
+		// nothing but the WARNING below. A database that is still coming
+		// up produces exactly this, and the honest response is to fail
+		// and be restarted, not to serve everything to everyone in the
+		// meantime.
+		rawDB, ok := s.RawDB().(*sql.DB)
+		if !ok {
+			return fmt.Errorf("cannot set up user accounts: the store does not expose a *sql.DB, so authentication cannot be enforced")
+		}
+		userStore, err := api.NewUserStore(rawDB)
+		if err != nil {
+			return fmt.Errorf("user store init failed, refusing to start without authentication: %w", err)
+		}
+		// Account lockout lives in the store layer, which owns the
+		// login_attempts schema and writes it correctly for both
+		// dialects. UserStore used to reimplement it against a raw
+		// *sql.DB and got the Postgres column types wrong, so no
+		// attempt was ever recorded and no account was ever locked.
+		if la, ok := s.(store.LoginAttemptStore); ok {
+			userStore.UseLoginAttemptStore(la)
+		} else {
+			log.Printf("WARNING: this store does not implement LoginAttemptStore — account lockout after repeated failed logins is DISABLED")
+		}
+		switch count, cerr := userStore.UserCountErr(); {
+		case cerr != nil:
+			// Not fatal: the middleware refuses requests while the
+			// count is unavailable, so the server is safe to start
+			// and will recover when the database does.
+			log.Printf("WARNING: cannot determine user count at startup (%v) — API requests will be refused until the database responds", cerr)
+		case count == 0:
+			log.Println("No users configured — running in open mode (create first user via API or UI)")
+		default:
+			log.Printf("User authentication enabled (%d users)", count)
 		}
 
 		// Encryption for connection secrets
@@ -414,12 +451,12 @@ var serveCmd = &cobra.Command{
 				// allocating yet, so a bare headroom check alone doesn't
 				// prevent two jobs landing back-to-back before the first
 				// one's memory footprint becomes visible.
-				if !hasMemoryHeadroom() || time.Since(lastAdmission) < memoryBackpressureSettleDelay {
+				if admit, wait := admissionDecision(lastAdmission); !admit {
 					select {
 					case sig := <-quit:
 						shutdownDraining(sig)
 						return nil
-					case <-time.After(memoryBackpressureRecheckInterval):
+					case <-time.After(wait):
 					}
 					continue
 				}
@@ -711,7 +748,35 @@ func renewJobClaim(ctx context.Context, renewer extensions.JobQueueRenewer, jobI
 // with headroom for the SIGTERM-to-SIGKILL race: a job still running past
 // this point is abandoned to the execution-attempt lease/recovery system
 // (Tnsor-Labs/brokoli#6/#7/#9) rather than blocking shutdown indefinitely.
-const workerShutdownGracePeriod = 25 * time.Second
+var workerShutdownGracePeriod = defaultWorkerDrainTimeout()
+
+// defaultWorkerDrainTimeout resolves how long the dequeue loop waits for
+// in-flight jobs on SIGTERM.
+//
+// 25 seconds fits inside Kubernetes' default 30s
+// terminationGracePeriodSeconds, but it is far shorter than a real
+// pipeline: measured on the lab cluster, a job of 56 seconds was
+// abandoned by every graceful eviction — a KEDA scale-down, a node
+// drain, an ordinary rolling deploy — and recovery then failed the run
+// with "interrupted mid-execution" rather than retrying it. An
+// autoscaling fleet therefore kills work every time it shrinks.
+//
+// BROKOLI_WORKER_DRAIN_TIMEOUT lets an operator match the window to
+// their longest run. It only helps alongside a matching
+// terminationGracePeriodSeconds — the kernel's SIGKILL is not
+// negotiable — so the chart sets both from one value.
+func defaultWorkerDrainTimeout() time.Duration {
+	if v := os.Getenv("BROKOLI_WORKER_DRAIN_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			return d
+		}
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
+		}
+		log.Printf("WARNING: ignoring BROKOLI_WORKER_DRAIN_TIMEOUT=%q: expected a duration like 5m or a number of seconds", v)
+	}
+	return 25 * time.Second
+}
 
 // drainWorkerSlots waits for every in-flight worker job to finish, up to
 // timeout, and reports whether it fully drained in time.

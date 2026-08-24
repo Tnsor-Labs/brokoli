@@ -66,13 +66,19 @@ func TestCSVLoader_Load(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// An empty CSV field carries no type information, so it
+			// loads as nil rather than "". The SQL writer used to make
+			// that call instead — turning every empty string into NULL
+			// wherever it came from — which also destroyed genuinely
+			// empty strings read out of a database. CSV to database is
+			// unchanged end to end: an empty field still becomes NULL.
 			name:     "CSV file with missing values",
 			filePath: missingCSVPath,
 			want: &common.DataSet{
 				Columns: []string{"Name", "Age", "City"},
 				Rows: []common.DataRow{
-					{"Name": "John Doe", "Age": "30", "City": ""},
-					{"Name": "", "Age": "25", "City": "London"},
+					{"Name": "John Doe", "Age": "30", "City": nil},
+					{"Name": nil, "Age": "25", "City": "London"},
 				},
 			},
 			wantErr: false,

@@ -390,14 +390,53 @@ type NodeValidationResult struct {
 func ValidateNodes(nodes []models.Node) []NodeValidationResult {
 	var results []NodeValidationResult
 
+	writtenHere := sinkFilePaths(nodes)
 	for _, n := range nodes {
 		r := NodeValidationResult{NodeID: n.ID, NodeName: n.Name}
 		validateNodeConfigDetailed(n, &r)
+		validateFileStorage(n, writtenHere, &r)
 		if len(r.Errors) > 0 || len(r.Warnings) > 0 {
 			results = append(results, r)
 		}
 	}
 	return results
+}
+
+// sinkFilePaths collects the paths this pipeline writes for itself.
+func sinkFilePaths(nodes []models.Node) map[string]bool {
+	paths := map[string]bool{}
+	for _, n := range nodes {
+		if n.Type == models.NodeTypeSinkFile {
+			if p := getStr(n.Config, "path"); p != "" {
+				paths[p] = true
+			}
+		}
+	}
+	return paths
+}
+
+// validateFileStorage warns about file dependencies this deployment
+// cannot honour reliably.
+//
+// A pipeline that writes a file and reads it back in the same run is
+// safe: every node of a run executes on one worker. A pipeline that reads
+// a file *nobody in it wrote* depends on something outside the run — an
+// earlier run, or an operator's upload — and with per-worker filesystems
+// that dependency is a coin flip. The author is told at deploy time,
+// which is the last moment where changing the design is cheap.
+func validateFileStorage(n models.Node, writtenHere map[string]bool, r *NodeValidationResult) {
+	if n.Type != models.NodeTypeSourceFile || !unsharedFileStorage() {
+		return
+	}
+	path := getStr(n.Config, "path")
+	if path == "" || writtenHere[path] {
+		return
+	}
+	r.Warnings = append(r.Warnings,
+		"reads a file this pipeline does not write, and this deployment gives each worker its own filesystem: "+
+			"the run may land on a worker without the file, or read a stale copy left by an older run. "+
+			"Mount shared storage at the data directories and set BROKOLI_DATA_DIRS_SHARED=1, "+
+			"or produce the file within this pipeline")
 }
 
 func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {

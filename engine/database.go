@@ -5,6 +5,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"math"
+	"os"
+	"runtime/debug"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,13 +19,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DetectDriver returns the Go sql driver name for a connection URI.
 // dialectForURI maps a connection URI to the SQL dialect name GenerateSQL
 // understands, via the same scheme detection DetectDriver uses. Snowflake
 // and anything unrecognized fall back to "generic" — append/overwrite work
 // there, and upsert (which has no portable form) errors with a name.
 func dialectForURI(uri string) string {
-	driver, _, err := DetectDriver(uri)
+	// Pure scheme detection: the dialect GenerateSQL should target is a
+	// property of the URI, not of which drivers this build happens to compile
+	// in. Whether the connection can be opened is DetectDriver's business.
+	driver, _, err := detectDriver(uri)
 	if err != nil {
 		return "generic"
 	}
@@ -39,7 +45,47 @@ func dialectForURI(uri string) string {
 	}
 }
 
+// DetectDriver returns the Go sql driver name and DSN for a connection URI.
+//
+// A scheme this recognizes is not the same as a scheme this build can open:
+// the connection catalog offers Snowflake, SQL Server, Oracle, BigQuery, and
+// Databricks, but only pgx, mysql, and sqlite drivers are compiled in. Naming
+// a driver that was never registered gets database/sql's "unknown driver
+// (forgotten import?)", which reads like a build defect rather than an
+// unsupported connection type, so check first and say which it is.
 func DetectDriver(uri string) (string, string, error) {
+	driver, dsn, err := detectDriver(uri)
+	if err != nil {
+		return "", "", err
+	}
+	if !driverRegistered(driver) {
+		return "", "", fmt.Errorf(
+			"connection type %q is not supported by this build: no %q driver is compiled in (available: %s)",
+			schemeOf(uri), driver, strings.Join(sql.Drivers(), ", "))
+	}
+	return driver, dsn, nil
+}
+
+// driverRegistered reports whether database/sql can open this driver name.
+func driverRegistered(name string) bool {
+	for _, d := range sql.Drivers() {
+		if d == name {
+			return true
+		}
+	}
+	return false
+}
+
+// schemeOf names the connection type in an error message without echoing the
+// URI, which carries the password.
+func schemeOf(uri string) string {
+	if i := strings.Index(uri, "://"); i > 0 {
+		return uri[:i]
+	}
+	return "unknown"
+}
+
+func detectDriver(uri string) (string, string, error) {
 	switch {
 	case strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://"):
 		return "pgx", uri, nil
@@ -61,50 +107,6 @@ func DetectDriver(uri string) (string, string, error) {
 		return "sqlserver", uri, nil
 	default:
 		return "pgx", uri, nil
-	}
-}
-
-// BuildConnectionURI constructs a URI from connection fields for various database types.
-func BuildConnectionURI(connType, host string, port int, schema, login, password, extra string) string {
-	switch connType {
-	case "postgres", "redshift":
-		scheme := "postgres"
-		if connType == "redshift" {
-			scheme = "redshift"
-		}
-		if port == 0 {
-			if connType == "redshift" {
-				port = 5439
-			} else {
-				port = 5432
-			}
-		}
-		return fmt.Sprintf("%s://%s:%s@%s:%d/%s?sslmode=require", scheme, login, password, host, port, schema)
-	case "snowflake":
-		// Snowflake DSN: user:password@account/database/schema?warehouse=X
-		warehouse := "COMPUTE_WH"
-		if extra != "" {
-			// Try to parse warehouse from extra JSON
-			var ex map[string]string
-			if err := parseJSON(extra, &ex); err == nil {
-				if w, ok := ex["warehouse"]; ok {
-					warehouse = w
-				}
-			}
-		}
-		return fmt.Sprintf("snowflake://%s:%s@%s/%s?warehouse=%s", login, password, host, schema, warehouse)
-	case "mysql":
-		if port == 0 {
-			port = 3306
-		}
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", login, password, host, port, schema)
-	case "mssql", "sqlserver":
-		if port == 0 {
-			port = 1433
-		}
-		return fmt.Sprintf("sqlserver://%s:%s@%s:%d?database=%s", login, password, host, port, schema)
-	default:
-		return host
 	}
 }
 
@@ -144,29 +146,46 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 		return nil, fmt.Errorf("columns: %w", err)
 	}
 
+	// Guard the in-memory dataset against the worker's memory budget.
+	// Without this, a query returning more than the pod can hold takes
+	// the whole process down with an OOM kill — losing every other run
+	// on that worker and leaving this one to be failed later by
+	// recovery with "interrupted mid-execution", which tells the author
+	// nothing about what actually went wrong.
+	budget := datasetMemoryBudget()
+	var sampledBytes int64
+	var maxRows int
+
 	var dataRows []common.DataRow
+	scan := newRowScanner(columns)
 	for rows.Next() {
-		// Create scan targets
-		values := make([]interface{}, len(columns))
-		ptrs := make([]interface{}, len(columns))
-		for i := range values {
-			ptrs[i] = &values[i]
-		}
-
-		if err := rows.Scan(ptrs...); err != nil {
-			return nil, fmt.Errorf("scan row: %w", err)
-		}
-
-		row := make(common.DataRow, len(columns))
-		for i, col := range columns {
-			v := values[i]
-			// Convert []byte to string for readability
-			if b, ok := v.([]byte); ok {
-				v = string(b)
-			}
-			row[col] = v
+		row, err := scan.next(rows)
+		if err != nil {
+			return nil, err
 		}
 		dataRows = append(dataRows, row)
+
+		if budget > 0 {
+			// Size the first rows, then compare a count — estimating
+			// every row would cost more than the guard is worth.
+			if len(dataRows) <= datasetSampleRows {
+				sampledBytes += estimateRowBytes(row)
+				if len(dataRows) == datasetSampleRows {
+					avg := sampledBytes / int64(datasetSampleRows)
+					if avg < 1 {
+						avg = 1
+					}
+					maxRows = int(budget / avg)
+				}
+			} else if maxRows > 0 && len(dataRows) > maxRows {
+				avg := sampledBytes / int64(datasetSampleRows)
+				return nil, fmt.Errorf(
+					"query result is too large to hold in memory: stopped after %d rows at about %s (budget %s, roughly %d bytes per row). "+
+						"Narrow the query with a WHERE clause or LIMIT, split it across runs, or give the worker more memory "+
+						"(BROKOLI_DATASET_MEMORY_BUDGET overrides the budget)",
+					len(dataRows), humanBytes(int64(len(dataRows))*avg), humanBytes(budget), avg)
+			}
+		}
 	}
 
 	if err := rows.Err(); err != nil {
@@ -270,4 +289,186 @@ func splitStatements(sql string) []string {
 		stmts = append(stmts, s)
 	}
 	return stmts
+}
+
+const (
+	// datasetSampleRows is how many rows are measured to derive an
+	// average row size. Large enough to be representative of a result
+	// set, small enough that the measuring itself is free.
+	datasetSampleRows = 200
+
+	// datasetBudgetFraction is the share of the process memory limit a
+	// single materialised dataset may occupy. Deliberately well under
+	// half: a node holds its input while building its output, the sink
+	// encodes another copy on the way out, and the Go allocator does not
+	// hand memory back promptly. A third leaves room for all three.
+	datasetBudgetFraction = 0.30
+)
+
+// datasetMemoryBudget reports how many bytes one materialised dataset may
+// occupy, or 0 when no limit is known — on a bare host with no memory
+// limit set, behaviour is exactly as it was before this guard existed.
+func datasetMemoryBudget() int64 {
+	if v := os.Getenv("BROKOLI_DATASET_MEMORY_BUDGET"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit == math.MaxInt64 {
+		return 0
+	}
+	return int64(float64(limit) * datasetBudgetFraction)
+}
+
+// estimateRowBytes approximates a row's resident size: the data itself
+// plus the per-entry cost of holding it in a map of interfaces, which for
+// narrow rows dominates the values.
+func estimateRowBytes(row common.DataRow) int64 {
+	const perEntryOverhead = 48 // map bucket slot + interface header + key header
+	var n int64
+	for k, v := range row {
+		n += int64(len(k)) + perEntryOverhead
+		switch t := v.(type) {
+		case string:
+			n += int64(len(t))
+		case []byte:
+			n += int64(len(t))
+		case nil:
+			// nothing beyond the entry itself
+		default:
+			n += 16
+		}
+	}
+	return n
+}
+
+// humanBytes renders a byte count the way an operator reads it.
+func humanBytes(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1f GiB", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0f MiB", float64(n)/float64(1<<20))
+	case n >= 1<<10:
+		return fmt.Sprintf("%.0f KiB", float64(n)/float64(1<<10))
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
+// rowScanner turns *sql.Rows into DataRows. It exists so the materializing
+// and streaming query paths cannot drift apart on how a value is converted
+// — a difference there would mean the same query produced different data
+// depending on which path the planner chose, which is the kind of bug that
+// is invisible until someone diffs two loads of the same table.
+type rowScanner struct {
+	columns []string
+	values  []interface{}
+	ptrs    []interface{}
+}
+
+func newRowScanner(columns []string) *rowScanner {
+	s := &rowScanner{
+		columns: columns,
+		values:  make([]interface{}, len(columns)),
+		ptrs:    make([]interface{}, len(columns)),
+	}
+	for i := range s.values {
+		s.ptrs[i] = &s.values[i]
+	}
+	return s
+}
+
+func (s *rowScanner) next(rows *sql.Rows) (common.DataRow, error) {
+	if err := rows.Scan(s.ptrs...); err != nil {
+		return nil, fmt.Errorf("scan row: %w", err)
+	}
+	row := make(common.DataRow, len(s.columns))
+	for i, col := range s.columns {
+		v := s.values[i]
+		// Convert []byte to string for readability
+		if b, ok := v.([]byte); ok {
+			v = string(b)
+		}
+		row[col] = v
+	}
+	return row, nil
+}
+
+// StreamQueryDatabase runs a query and hands the rows to emit in batches,
+// never holding more than one batch.
+//
+// This is the counterpart of QueryDatabase for results that do not fit in
+// memory. QueryDatabase has to guess a ceiling and refuse anything above it
+// (see datasetMemoryBudget) because the whole result becomes one slice;
+// here there is no ceiling to enforce, since the resident set is one batch
+// regardless of how many rows the query returns. That is the point:
+// dataset size stops being bounded by worker memory.
+//
+// emit must not retain the batch after returning — the rows behind it are
+// reused. ctx governs the whole scan, so a cancelled run stops mid-result
+// instead of reading to the end of a large table first.
+func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, emit func(*common.DataSet) error) ([]string, int64, error) {
+	if batchSize <= 0 {
+		batchSize = streamBatchRows
+	}
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		return nil, 0, fmt.Errorf("open %s: %w", driver, err)
+	}
+	defer db.Close()
+
+	if err := db.PingContext(ctx); err != nil {
+		return nil, 0, fmt.Errorf("ping %s: %w", driver, err)
+	}
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, 0, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return nil, 0, fmt.Errorf("columns: %w", err)
+	}
+
+	scan := newRowScanner(columns)
+	batch := &common.DataSet{Columns: columns, Rows: make([]common.DataRow, 0, batchSize)}
+	total := int64(0)
+	for rows.Next() {
+		// Checked per row rather than per batch: a cancelled run should
+		// stop at the next row, not at the next thousand.
+		if err := ctx.Err(); err != nil {
+			return nil, 0, err
+		}
+		row, err := scan.next(rows)
+		if err != nil {
+			return nil, 0, err
+		}
+		batch.Rows = append(batch.Rows, row)
+		if len(batch.Rows) >= batchSize {
+			total += int64(len(batch.Rows))
+			if err := emit(batch); err != nil {
+				return nil, 0, err
+			}
+			batch.Rows = batch.Rows[:0]
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("rows iteration: %w", err)
+	}
+	if len(batch.Rows) > 0 {
+		total += int64(len(batch.Rows))
+		if err := emit(batch); err != nil {
+			return nil, 0, err
+		}
+	}
+	return columns, total, nil
 }

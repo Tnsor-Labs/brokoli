@@ -151,8 +151,8 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if q.Get("after") != "" || q.Get("limit") != "" {
-		runs, hasNext, err := h.store.ListRunsByPipelineCursor(pipelineID, q.Get("after"), limit)
+	if HasCursorPagination(r) {
+		runs, hasNext, err := h.store.ListRunsByPipelineCursor(pipelineID, CursorParam(r), limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

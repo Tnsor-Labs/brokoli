@@ -14,7 +14,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -27,35 +26,13 @@ import (
 	"github.com/Tnsor-Labs/brokoli/quality"
 )
 
-// allowedDataDirs defines directories where source/sink file nodes may read/write.
-// Configurable via BROKOLI_DATA_DIRS environment variable (colon-separated).
-var allowedDataDirs = func() []string {
-	dirs := os.Getenv("BROKOLI_DATA_DIRS")
-	if dirs == "" {
-		return []string{"/data", "/tmp", "."}
-	}
-	return strings.Split(dirs, ":")
-}()
-
-// validateFilePath ensures the path is within allowed directories and has no traversal.
+// validateFilePath ensures the path is within the configured data
+// directories and has no traversal. Delegates to common.PathAllowed so
+// the engine and the loaders cannot disagree about which directories are
+// usable — they used to, and /data was reachable according to one and
+// refused by the other.
 func validateFilePath(path string) error {
-	if strings.Contains(path, "..") {
-		return fmt.Errorf("path traversal not allowed")
-	}
-	absPath, err := filepath.Abs(path)
-	if err != nil {
-		return fmt.Errorf("invalid path")
-	}
-	for _, dir := range allowedDataDirs {
-		absDir, err := filepath.Abs(dir)
-		if err != nil {
-			continue
-		}
-		if strings.HasPrefix(absPath, absDir+string(filepath.Separator)) || absPath == absDir {
-			return nil
-		}
-	}
-	return fmt.Errorf("file path %q outside allowed directories (%s); set BROKOLI_DATA_DIRS to allow additional paths", path, strings.Join(allowedDataDirs, ", "))
+	return common.PathAllowed(path)
 }
 
 // redactURI returns uri with any embedded userinfo password replaced by
@@ -110,7 +87,7 @@ func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
 
 	ds, err := loader.Load(path)
 	if err != nil {
-		return nil, fmt.Errorf("load %s: %w", path, err)
+		return nil, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
 	}
 
 	// Detailed source logging
@@ -126,6 +103,19 @@ func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
 	}
 	ext := filepath.Ext(path)
 	r.log(node.ID, models.LogLevelInfo, "Loaded %d rows, %d columns from %s (%s, %s)", len(ds.Rows), len(ds.Columns), filepath.Base(path), ext, sizeStr)
+	if unsharedFileStorage() {
+		// Which pod, and how old — the two facts an operator needs to tell
+		// a correct read from a stale one, recorded while the run is
+		// happening rather than reconstructed afterwards.
+		host, _ := os.Hostname()
+		age := "unknown age"
+		if fi != nil {
+			age = fmt.Sprintf("last written %s", fi.ModTime().UTC().Format(time.RFC3339))
+		}
+		r.log(node.ID, models.LogLevelWarning,
+			"Read from this worker's own filesystem (%s, %s); another worker may hold a different copy of %s. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
+			host, age, path)
+	}
 	r.log(node.ID, models.LogLevelInfo, "Columns: %s", strings.Join(ds.Columns, ", "))
 	if len(ds.Rows) > 0 {
 		// Log first row as sample
@@ -794,6 +784,24 @@ func (r *Runner) runSQLGenerate(node models.Node, input *common.DataSet) (*commo
 	}, nil
 }
 
+// sinkFileFormat resolves a sink_file node's output format from its config
+// or, failing that, its path extension. Shared with the streamed path so
+// the two cannot disagree about what a ".csv" means.
+func sinkFileFormat(node models.Node) string {
+	if format, _ := node.Config["format"].(string); format != "" {
+		return format
+	}
+	path, _ := node.Config["path"].(string)
+	switch {
+	case strings.HasSuffix(path, ".csv") || strings.HasSuffix(path, ".tsv"):
+		return "csv"
+	case strings.HasSuffix(path, ".sql"):
+		return "sql"
+	default:
+		return "json"
+	}
+}
+
 func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_file node requires input data")
@@ -808,19 +816,7 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("sink_file: %w", err)
 	}
 
-	// Determine format from config or file extension
-	format, _ := node.Config["format"].(string)
-	if format == "" {
-		// Auto-detect from extension
-		switch {
-		case strings.HasSuffix(path, ".csv") || strings.HasSuffix(path, ".tsv"):
-			format = "csv"
-		case strings.HasSuffix(path, ".sql"):
-			format = "sql"
-		default:
-			format = "json"
-		}
-	}
+	format := sinkFileFormat(node)
 
 	// Ensure output directory exists
 	if dir := filepath.Dir(path); dir != "" {
@@ -863,6 +859,12 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		r.log(node.ID, models.LogLevelInfo, "Wrote %s to %s (%.0f KB, %d rows)", format, filepath.Base(path), float64(len(content))/1024, len(input.Rows))
 	}
 	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
+	if unsharedFileStorage() {
+		host, _ := os.Hostname()
+		r.log(node.ID, models.LogLevelWarning,
+			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
+			host)
+	}
 	return nil, nil
 }
 
@@ -877,23 +879,7 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 
 	// Rows
 	for _, row := range ds.Rows {
-		record := make([]string, len(ds.Columns))
-		for i, col := range ds.Columns {
-			if v, ok := row[col]; ok && v != nil {
-				switch val := v.(type) {
-				case float64:
-					// Remove floating point noise
-					if val == float64(int64(val)) {
-						record[i] = fmt.Sprintf("%d", int64(val))
-					} else {
-						record[i] = strconv.FormatFloat(val, 'f', -1, 64)
-					}
-				default:
-					record[i] = fmt.Sprintf("%v", v)
-				}
-			}
-		}
-		if err := w.Write(record); err != nil {
+		if err := w.Write(csvRecordFor(row, ds.Columns)); err != nil {
 			return nil, err
 		}
 	}
@@ -938,7 +924,21 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		Mode:        mode,
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
+		Truncate:    configBool(node.Config["truncate"]),
 	}
+	// Postgres appends and overwrites go through COPY, which carries the
+	// rows as data instead of rendering them into megabytes of SQL text
+	// for the server to parse back — measured at 3.3x on 25k rows. See
+	// copy_postgres.go for why the text format and not the binary one.
+	if canCopyInsert(cfg) {
+		affected, err := copyRowsToPostgres(uri, cfg, input)
+		if err != nil {
+			return nil, fmt.Errorf("copy to %s: %w", table, err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Copied %d rows into %s", affected, table)
+		return nil, nil
+	}
+
 	sql, err := GenerateSQL(cfg, input)
 	if err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
@@ -1018,7 +1018,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 	// reach a loopback/private/link-local address, so this had no
 	// carve-out to preserve (previously this had no SSRF protection at
 	// all).
-	client := netguard.Default.Client(30 * time.Second)
+	client := netguard.Outbound().Client(30 * time.Second)
 	totalSent := 0
 	totalBatches := (len(input.Rows) + batchSize - 1) / batchSize
 

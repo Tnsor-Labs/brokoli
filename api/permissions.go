@@ -35,8 +35,14 @@ func (pc *PermissionChecker) GetUserPermissions(userRole string, workspaceID str
 func (pc *PermissionChecker) HasPermission(r *http.Request, perm models.Permission) bool {
 	claims := r.Context().Value("claims")
 	if claims == nil {
-		// No auth context = open mode, allow everything
-		return true
+		// An unconfigured system awaiting its first user is allowed
+		// through — but only when JWTAuth said so. Absent claims used to
+		// be read as open mode on their own, and that is also exactly
+		// what a request looks like when no authentication middleware ran
+		// at all: NewServer mounts JWTAuth only `if userStore != nil`, so
+		// a user store that failed to build served every permission-gated
+		// route to anyone, behind nothing but a WARNING in the log.
+		return IsOpenMode(r)
 	}
 	mapClaims, ok := claims.(*jwt.MapClaims)
 	if !ok || mapClaims == nil {
