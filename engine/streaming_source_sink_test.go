@@ -163,10 +163,19 @@ func TestSinkCanStreamScope(t *testing.T) {
 	}
 	pg := "postgres://u:p@h/db"
 
+	my := "mysql://u:p@h/db"
+
 	yes := []models.Node{
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "append"}),
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "overwrite"}),
 		sink(map[string]interface{}{"uri": pg, "table": "t"}),
+		// MySQL earned the bulk-write capability in ADR-024's sense --
+		// the equivalence tests in mysql_bulk_test.go, with the server's
+		// Com_load counter as the anti-vacuity check, are what let these
+		// rows move out of the "no" list below.
+		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "append"}),
+		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "overwrite"}),
+		sink(map[string]interface{}{"uri": my, "table": "t"}),
 	}
 	for _, n := range yes {
 		if !sinkCanStream(n) {
@@ -177,7 +186,10 @@ func TestSinkCanStreamScope(t *testing.T) {
 	no := []models.Node{
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
 		sink(map[string]interface{}{"uri": pg, "table": "t", "create_table": true}),
-		sink(map[string]interface{}{"uri": "mysql://u:p@h/db", "table": "t", "mode": "append"}),
+		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
+		sink(map[string]interface{}{"uri": my, "table": "t", "create_table": true}),
+		// SQLite has no bulk protocol; it keeps the statement path.
+		sink(map[string]interface{}{"uri": "sqlite:///tmp/x.db", "table": "t", "mode": "append"}),
 		// No table: the sql_generate hand-off path, which has no config
 		// to inspect and must keep the batch path.
 		sink(map[string]interface{}{"uri": pg}),

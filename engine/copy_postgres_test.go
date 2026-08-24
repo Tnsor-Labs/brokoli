@@ -117,31 +117,38 @@ func TestCopyReaderStreamsRows(t *testing.T) {
 }
 
 // The fast path covers appends and overwrites on Postgres only.
-func TestCanCopyInsertScope(t *testing.T) {
+func TestBulkWriterScope(t *testing.T) {
 	yes := []SQLGenConfig{
 		{Dialect: "postgres", Mode: ModeAppend},
 		{Dialect: "postgres", Mode: ModeOverwrite},
 		{Dialect: "postgres", Mode: ""},
-		// "replace" is sqlgen's alias for overwrite; the COPY path has to
+		// "replace" is sqlgen's alias for overwrite; the bulk path has to
 		// keep clearing the table for it, not silently append.
 		{Dialect: "postgres", Mode: "replace"},
+		// MySQL earned the capability in ADR-024's sense: the equivalence
+		// tests in mysql_bulk_test.go are what let these rows exist.
+		{Dialect: "mysql", Mode: ModeAppend},
+		{Dialect: "mysql", Mode: ModeOverwrite},
+		{Dialect: "mysql", Mode: ""},
+		{Dialect: "mysql", Mode: "replace"},
 	}
 	for _, cfg := range yes {
-		if !canCopyInsert(cfg) {
-			t.Errorf("expected COPY for %+v", cfg)
+		if _, ok := bulkWriterFor(cfg); !ok {
+			t.Errorf("expected a bulk writer for %+v", cfg)
 		}
 	}
 	no := []SQLGenConfig{
 		{Dialect: "postgres", Mode: ModeUpsert},                    // needs ON CONFLICT
 		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL belongs on the statement path
-		{Dialect: "mysql", Mode: ModeAppend},
+		{Dialect: "mysql", Mode: ModeUpsert},                       // same, and the key validation lives on the statement path
+		{Dialect: "mysql", Mode: ModeAppend, CreateTable: true},
 		{Dialect: "sqlite", Mode: ModeAppend},
 		{Dialect: "sqlserver", Mode: ModeAppend},
 		{Dialect: "generic", Mode: ModeAppend},
 	}
 	for _, cfg := range no {
-		if canCopyInsert(cfg) {
-			t.Errorf("did not expect COPY for %+v", cfg)
+		if _, ok := bulkWriterFor(cfg); ok {
+			t.Errorf("did not expect a bulk writer for %+v", cfg)
 		}
 	}
 }
@@ -149,11 +156,11 @@ func TestCanCopyInsertScope(t *testing.T) {
 // An operator can put the statement path back without a different build.
 func TestCopyFastPathCanBeDisabled(t *testing.T) {
 	t.Setenv("BROKOLI_SINK_COPY", "0")
-	if canCopyInsert(SQLGenConfig{Dialect: "postgres", Mode: ModeAppend}) {
+	if _, ok := bulkWriterFor(SQLGenConfig{Dialect: "postgres", Mode: ModeAppend}); ok {
 		t.Fatal("BROKOLI_SINK_COPY=0 should return to the statement path")
 	}
 	t.Setenv("BROKOLI_SINK_COPY", "1")
-	if !canCopyInsert(SQLGenConfig{Dialect: "postgres", Mode: ModeAppend}) {
+	if _, ok := bulkWriterFor(SQLGenConfig{Dialect: "postgres", Mode: ModeAppend}); !ok {
 		t.Fatal("BROKOLI_SINK_COPY=1 should keep the fast path")
 	}
 }
