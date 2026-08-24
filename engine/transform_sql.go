@@ -37,6 +37,9 @@ type prefixSQL struct {
 	// Columns is the output column order, matching what the Go executor
 	// would produce.
 	Columns []string
+	// SourceOf maps each output column back to the source column it came
+	// from, so a later stage can still find its type after a rename.
+	SourceOf map[string]string
 }
 
 // compilePrefixToSQL renders a transform's row-wise prefix as a SELECT over
@@ -155,6 +158,10 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 		out = append(out, c.out)
 	}
 
+	sourceOf := make(map[string]string, len(cols))
+	for _, c := range cols {
+		sourceOf[c.out] = c.src
+	}
 	query := fmt.Sprintf("SELECT %s FROM (%s) AS brokoli_src", strings.Join(parts, ", "), srcQuery)
 	if len(wheres) > 0 {
 		// A filter partway through a prefix still applies to the whole
@@ -163,8 +170,9 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 		query += " WHERE " + strings.Join(wheres, " AND ")
 	}
 	return prefixSQL{
-		Query:   query,
-		Columns: out,
+		Query:    query,
+		Columns:  out,
+		SourceOf: sourceOf,
 	}, true
 }
 
@@ -172,4 +180,52 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 // column name cannot terminate the identifier and inject SQL.
 func quoteIdentPG(name string) string {
 	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// compilePlanToSQL compiles a whole transform plan -- the row-wise prefix and
+// the aggregate that may follow it -- into one statement.
+//
+// A plan with rules after the aggregate is refused. Those run against grouped
+// output, which is a different set of columns from anything the prefix
+// compiler has typed, so pushing the front half down would leave the engine
+// holding the aggregated result anyway.
+func compilePlanToSQL(plan transformStreamPlan, srcQuery string, srcColumns []string, dialect string, kinds map[string]sqlColumnKind) (prefixSQL, bool) {
+	base, ok := compilePrefixToSQLTyped(plan.prefix, srcQuery, srcColumns, dialect, kinds)
+	if !ok {
+		return prefixSQL{}, false
+	}
+	if plan.agg == nil {
+		return base, true
+	}
+	if len(plan.suffix) > 0 {
+		return prefixSQL{}, false
+	}
+
+	// After the prefix, a column is named by its output name and reachable in
+	// the outer query by that name, since the aggregate wraps the projection
+	// rather than sitting beside it.
+	visible := make(map[string]sqlColumnRef, len(base.Columns))
+	for _, c := range base.Columns {
+		kind := kindUnclassified
+		// Resolve through the rename map: the aggregate names a column as the
+		// prefix left it, while the types are keyed by what the source called
+		// it.
+		if src, ok := base.SourceOf[c]; ok {
+			if k, ok := kinds[src]; ok {
+				kind = k
+			}
+		}
+		visible[c] = sqlColumnRef{Ident: quoteIdentPG(c), Kind: kind}
+	}
+
+	selectList, groupBy, outCols, ok := compileAggregateToSQL(*plan.agg, visible)
+	if !ok {
+		return prefixSQL{}, false
+	}
+
+	return prefixSQL{
+		Query: fmt.Sprintf("SELECT %s FROM (%s) AS brokoli_agg GROUP BY %s",
+			strings.Join(selectList, ", "), base.Query, strings.Join(groupBy, ", ")),
+		Columns: outCols,
+	}, true
 }

@@ -62,8 +62,11 @@ func describeQueryColumns(ctx context.Context, uri, query string) (map[string]sq
 // which backend ran, which is the failure this whole exercise exists to avoid.
 func classifyDatabaseType(name string) sqlColumnKind {
 	switch strings.ToUpper(strings.TrimSpace(name)) {
-	case "TEXT", "VARCHAR", "CHAR", "BPCHAR", "NAME", "CITEXT":
+	case "TEXT", "VARCHAR", "CHAR", "BPCHAR", "NAME":
 		return kindText
+	// CITEXT is deliberately absent. It compares case-insensitively under a
+	// non-deterministic collation, so SQL would match 'ALICE' against 'alice'
+	// where the Go matcher, comparing bytes, would not.
 	case "INT2", "INT4", "INT8", "SMALLINT", "INTEGER", "BIGINT",
 		"FLOAT4", "FLOAT8", "REAL", "DOUBLE PRECISION", "NUMERIC", "DECIMAL":
 		return kindNumeric
