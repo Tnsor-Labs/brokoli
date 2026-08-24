@@ -130,6 +130,10 @@ func For(name string) (Dialect, bool) {
 	return d, ok
 }
 
+// A backend appears here only with a passing differential corpus behind
+// it -- the registration is the capability claim (ADR-024), and the corpus
+// in engine/transform_sql_diff_test.go is the proof.
 var registry = map[string]Dialect{
 	"postgres": postgres{},
+	"mysql":    mysqld{},
 }

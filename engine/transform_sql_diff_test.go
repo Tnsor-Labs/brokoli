@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // The transform plan has two backends: the Go streaming executor and, for the
@@ -29,13 +30,28 @@ import (
 
 const diffSrcTable = "brokoli_xform_diff"
 
-func setupDiffTable(t *testing.T, db *sql.DB) {
-	t.Helper()
-	stmts := []string{
-		`DROP TABLE IF EXISTS ` + diffSrcTable,
-		`CREATE TABLE ` + diffSrcTable + ` (
+// diffTableDDL is per-backend only in its type spellings. The DATA is one
+// corpus: the same eight rows, chosen for their hostility (case variance,
+// numeric-looking text, NULLs, an empty string), land in every backend, so
+// no backend gets a fixture that suits it.
+var diffTableDDL = map[string]string{
+	"postgres": `CREATE TABLE ` + diffSrcTable + ` (
 			id bigint, name text, city text, amount numeric, note text, flag boolean
 		)`,
+	"mysql": `CREATE TABLE ` + diffSrcTable + ` (
+			id BIGINT, name TEXT, city TEXT, amount DECIMAL(10,1), note TEXT, flag BOOLEAN
+		)`,
+}
+
+func setupDiffTable(t *testing.T, db *sql.DB, dialect string) {
+	t.Helper()
+	ddl, ok := diffTableDDL[dialect]
+	if !ok {
+		t.Fatalf("no diff-table DDL for dialect %q", dialect)
+	}
+	stmts := []string{
+		`DROP TABLE IF EXISTS ` + diffSrcTable,
+		ddl,
 		`INSERT INTO ` + diffSrcTable + ` VALUES
 			(1,  'alice', 'Lisbon',  10.5, 'first',  true),
 			(2,  'BOB',   'porto',   99,   NULL,     false),
@@ -70,113 +86,156 @@ func normalize(cols []string, rows []common.DataRow) []string {
 	return out
 }
 
+// prefixDiffCase is one corpus entry. compiled and why are keyed by dialect
+// with "default" as the shared expectation -- a per-dialect override is a
+// documented divergence between backends, not a loophole, and the runner
+// prints which one applied.
+type prefixDiffCase struct {
+	name     string
+	rules    []TransformRule
+	compiled map[string]bool
+	// why records what the compiler would have to prove before this rule
+	// can be pushed down. It is documentation with a test attached.
+	why map[string]string
+}
+
+func (c prefixDiffCase) wantCompiled(dialect string) bool {
+	if v, ok := c.compiled[dialect]; ok {
+		return v
+	}
+	return c.compiled["default"]
+}
+
+func (c prefixDiffCase) reason(dialect string) string {
+	if v, ok := c.why[dialect]; ok {
+		return v
+	}
+	return c.why["default"]
+}
+
+func yes() map[string]bool { return map[string]bool{"default": true} }
+func no() map[string]bool  { return map[string]bool{"default": false} }
+func because(s string) map[string]string {
+	return map[string]string{"default": s}
+}
+
+var prefixDiffCorpus = []prefixDiffCase{
+	{
+		name:     "drop_columns",
+		rules:    []TransformRule{{Type: "drop_columns", Columns: []string{"note", "flag"}}},
+		compiled: yes(),
+	},
+	{
+		name:     "rename_columns",
+		rules:    []TransformRule{{Type: "rename_columns", Mapping: map[string]string{"name": "full_name", "city": "town"}}},
+		compiled: yes(),
+	},
+	{
+		name: "drop then rename",
+		rules: []TransformRule{
+			{Type: "drop_columns", Columns: []string{"note"}},
+			{Type: "rename_columns", Mapping: map[string]string{"amount": "value"}},
+		},
+		compiled: yes(),
+	},
+	{
+		name:     "rename onto an existing column is refused",
+		rules:    []TransformRule{{Type: "rename_columns", Mapping: map[string]string{"name": "city"}}},
+		compiled: no(),
+		why:      because("the Go executor's surviving value depends on map iteration order"),
+	},
+	{
+		name:     "filter numeric",
+		rules:    []TransformRule{{Type: "filter_rows", Condition: "amount > 99"}},
+		compiled: yes(),
+	},
+	{
+		name:     "filter on text that looks numeric",
+		rules:    []TransformRule{{Type: "filter_rows", Condition: "city > 9"}},
+		compiled: no(),
+		why:      because("city is text; Go parses '10' as a number and compares numerically, SQL compares by collation, so 9 vs 10 order differently"),
+	},
+	{
+		name:     "filter equality on text",
+		rules:    []TransformRule{{Type: "filter_rows", Condition: "name = alice"}},
+		compiled: yes(),
+	},
+	{
+		name:     "apply_function upper",
+		rules:    []TransformRule{{Type: "apply_function", Column: "name", Function: "upper"}},
+		compiled: no(),
+		why: because("on a text column this now matches SQL exactly, since NULLs are left alone; what still blocks it is that " +
+			"the compiler has no column types, and on a non-text column Go renders the value with %v where SQL needs an " +
+			"explicit cast whose formatting has to be shown to agree. This is the next rule to push down, once types are threaded through."),
+	},
+	{
+		name:     "replace_values",
+		rules:    []TransformRule{{Type: "replace_values", Column: "city", Mapping: map[string]string{"porto": "Porto"}}},
+		compiled: no(),
+		why:      because("Go replaces on the stringified value and leaves the column a Go string; the SQL form has to agree on what a non-text column becomes"),
+	},
+	{
+		name:     "add_column",
+		rules:    []TransformRule{{Type: "add_column", Name: "double", Expression: "amount * 2"}},
+		compiled: no(),
+		why:      because("needs the expression evaluator from #213; there is no shared AST to compile to SQL yet"),
+	},
+	{name: "filter inequality on text", rules: []TransformRule{{Type: "filter_rows", Condition: "name != alice"}}, compiled: yes()},
+	{name: "filter numeric >=", rules: []TransformRule{{Type: "filter_rows", Condition: "amount >= 100"}}, compiled: yes()},
+	{name: "filter numeric <", rules: []TransformRule{{Type: "filter_rows", Condition: "amount < 10"}}, compiled: yes()},
+	{name: "filter text ordered", rules: []TransformRule{{Type: "filter_rows", Condition: "city > Faro"}}, compiled: yes()},
+	{name: "filter equality on numeric column", rules: []TransformRule{{Type: "filter_rows", Condition: "amount = 100"}}, compiled: yes()},
+	{name: "filter after a rename follows the new name", rules: []TransformRule{
+		{Type: "rename_columns", Mapping: map[string]string{"amount": "value"}},
+		{Type: "filter_rows", Condition: "value > 99"},
+	}, compiled: yes()},
+	{
+		// The first documented divergence between backends. On Postgres a
+		// boolean is BOOL, pgx hands Go a bool, and %v renders "true" --
+		// unclassified, refused. On MySQL, BOOLEAN is TINYINT and the text
+		// protocol hands Go the server's own rendering "1"/"0", so the
+		// numeric-column comparison forms are proven by the same corpus run
+		// that proves them for any other numeric column.
+		name:     "filter on a boolean column",
+		rules:    []TransformRule{{Type: "filter_rows", Condition: "flag = true"}},
+		compiled: map[string]bool{"default": false, "mysql": true},
+		why:      because("boolean is unclassified: Go renders it \"true\" and SQL would need a cast whose spelling has to be shown to agree"),
+	},
+	{name: "filter with in is refused", rules: []TransformRule{{Type: "filter_rows", Condition: "city in [Lisbon, Faro]"}}, compiled: no(),
+		why: because("set membership compares rendered text; the rendering of a non-text column has not been demonstrated for every member")},
+}
+
 func TestTransformSQLPrefixDifferential(t *testing.T) {
 	uri := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
 	if uri == "" {
 		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
 	}
-	db, err := sql.Open("pgx", uri)
+	runPrefixDifferentialCorpus(t, uri, "postgres")
+}
+
+// runPrefixDifferentialCorpus runs the shared corpus against one backend:
+// every rule executed BOTH ways -- the Go executor and the generated SQL --
+// against a live server, refused rules asserted refused.
+func runPrefixDifferentialCorpus(t *testing.T, uri, dialectName string) {
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	setupDiffTable(t, db)
+	setupDiffTable(t, db, dialectName)
+
+	d, ok := dbdialect.For(dialectName)
+	if !ok {
+		t.Fatalf("dialect %q not registered", dialectName)
+	}
 
 	const srcQuery = `SELECT id, name, city, amount, note, flag FROM ` + diffSrcTable
 
-	cases := []struct {
-		name         string
-		rules        []TransformRule
-		wantCompiled bool
-		// why records what the compiler would have to prove before this rule
-		// can be pushed down. It is documentation with a test attached.
-		why string
-	}{
-		{
-			name:         "drop_columns",
-			rules:        []TransformRule{{Type: "drop_columns", Columns: []string{"note", "flag"}}},
-			wantCompiled: true,
-		},
-		{
-			name:         "rename_columns",
-			rules:        []TransformRule{{Type: "rename_columns", Mapping: map[string]string{"name": "full_name", "city": "town"}}},
-			wantCompiled: true,
-		},
-		{
-			name: "drop then rename",
-			rules: []TransformRule{
-				{Type: "drop_columns", Columns: []string{"note"}},
-				{Type: "rename_columns", Mapping: map[string]string{"amount": "value"}},
-			},
-			wantCompiled: true,
-		},
-		{
-			name:         "rename onto an existing column is refused",
-			rules:        []TransformRule{{Type: "rename_columns", Mapping: map[string]string{"name": "city"}}},
-			wantCompiled: false,
-			why:          "the Go executor's surviving value depends on map iteration order",
-		},
-		{
-			name:         "filter numeric",
-			rules:        []TransformRule{{Type: "filter_rows", Condition: "amount > 99"}},
-			wantCompiled: true,
-		},
-		{
-			name:         "filter on text that looks numeric",
-			rules:        []TransformRule{{Type: "filter_rows", Condition: "city > 9"}},
-			wantCompiled: false,
-			why:          "city is text; Go parses '10' as a number and compares numerically, SQL compares by collation, so 9 vs 10 order differently",
-		},
-		{
-			name:         "filter equality on text",
-			rules:        []TransformRule{{Type: "filter_rows", Condition: "name = alice"}},
-			wantCompiled: true,
-		},
-		{
-			name:         "apply_function upper",
-			rules:        []TransformRule{{Type: "apply_function", Column: "name", Function: "upper"}},
-			wantCompiled: false,
-			why: "on a text column this now matches SQL exactly, since NULLs are left alone; what still blocks it is that " +
-				"the compiler has no column types, and on a non-text column Go renders the value with %v where SQL needs an " +
-				"explicit cast whose formatting has to be shown to agree. This is the next rule to push down, once types are threaded through.",
-		},
-		{
-			name:         "replace_values",
-			rules:        []TransformRule{{Type: "replace_values", Column: "city", Mapping: map[string]string{"porto": "Porto"}}},
-			wantCompiled: false,
-			why:          "Go replaces on the stringified value and leaves the column a Go string; the SQL form has to agree on what a non-text column becomes",
-		},
-		{
-			name:         "add_column",
-			rules:        []TransformRule{{Type: "add_column", Name: "double", Expression: "amount * 2"}},
-			wantCompiled: false,
-			why:          "needs the expression evaluator from #213; there is no shared AST to compile to SQL yet",
-		},
-	}
-
-	extra := []struct {
-		name         string
-		rules        []TransformRule
-		wantCompiled bool
-		why          string
-	}{
-		{"filter inequality on text", []TransformRule{{Type: "filter_rows", Condition: "name != alice"}}, true, ""},
-		{"filter numeric >=", []TransformRule{{Type: "filter_rows", Condition: "amount >= 100"}}, true, ""},
-		{"filter numeric <", []TransformRule{{Type: "filter_rows", Condition: "amount < 10"}}, true, ""},
-		{"filter text ordered", []TransformRule{{Type: "filter_rows", Condition: "city > Faro"}}, true, ""},
-		{"filter equality on numeric column", []TransformRule{{Type: "filter_rows", Condition: "amount = 100"}}, true, ""},
-		{"filter after a rename follows the new name", []TransformRule{
-			{Type: "rename_columns", Mapping: map[string]string{"amount": "value"}},
-			{Type: "filter_rows", Condition: "value > 99"},
-		}, true, ""},
-		{"filter on a boolean column is refused", []TransformRule{{Type: "filter_rows", Condition: "flag = true"}}, false,
-			"boolean is unclassified: Go renders it \"true\" and SQL would need a cast whose spelling has to be shown to agree"},
-		{"filter with in is refused", []TransformRule{{Type: "filter_rows", Condition: "city in [Lisbon, Faro]"}}, false,
-			"set membership compares rendered text; the rendering of a non-text column has not been demonstrated for every member"},
-	}
-	cases = append(cases, extra...)
-
-	for _, tc := range cases {
+	for _, tc := range prefixDiffCorpus {
 		t.Run(tc.name, func(t *testing.T) {
 			plan, ok := planTransformRules(tc.rules)
 			if !ok {
@@ -184,21 +243,22 @@ func TestTransformSQLPrefixDifferential(t *testing.T) {
 			}
 
 			srcCols := []string{"id", "name", "city", "amount", "note", "flag"}
-			kinds, err := describeQueryColumns(context.Background(), uri, srcQuery, pgDialect(t))
+			kinds, err := describeQueryColumns(context.Background(), uri, srcQuery, d)
 			if err != nil {
 				t.Fatalf("describe columns: %v", err)
 			}
-			compiled, gotCompiled := compilePrefixToSQLTyped(plan.prefix, srcQuery, srcCols, "postgres", kinds)
+			compiled, gotCompiled := compilePrefixToSQLTyped(plan.prefix, srcQuery, srcCols, dialectName, kinds)
 
-			if gotCompiled != tc.wantCompiled {
-				if tc.wantCompiled {
-					t.Fatalf("compiler declined a rule this test expects it to push down")
+			want := tc.wantCompiled(dialectName)
+			if gotCompiled != want {
+				if want {
+					t.Fatalf("compiler declined a rule this test expects it to push down on %s", dialectName)
 				}
-				t.Fatalf("compiler pushed down a rule that is not proven equivalent (%s). "+
-					"Adding a rule here requires a passing comparison, not just a compiler branch.", tc.why)
+				t.Fatalf("compiler pushed down a rule that is not proven equivalent on %s (%s). "+
+					"Adding a rule here requires a passing comparison, not just a compiler branch.", dialectName, tc.reason(dialectName))
 			}
-			if !tc.wantCompiled {
-				t.Logf("not pushed down, by design: %s", tc.why)
+			if !want {
+				t.Logf("not pushed down on %s, by design: %s", dialectName, tc.reason(dialectName))
 				return
 			}
 
@@ -268,12 +328,24 @@ func TestRefusedRulesReallyDiverge(t *testing.T) {
 	if uri == "" {
 		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
 	}
-	db, err := sql.Open("pgx", uri)
+	runRefusedRulesReallyDiverge(t, uri, "postgres")
+}
+
+// runRefusedRulesReallyDiverge holds refusals to their reasons on one
+// backend: each refused rule runs against the SQL a naive compiler would
+// have emitted, and the two must actually disagree. The naive statements
+// are deliberately portable, so every backend faces the same ones.
+func runRefusedRulesReallyDiverge(t *testing.T, uri, dialectName string) {
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	setupDiffTable(t, db)
+	setupDiffTable(t, db, dialectName)
 
 	const src = `SELECT id, name, city, amount, note, flag FROM ` + diffSrcTable
 
@@ -370,7 +442,7 @@ func TestApplyFunctionOnTextNowMatchesSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	setupDiffTable(t, db)
+	setupDiffTable(t, db, "postgres")
 
 	const src = `SELECT id, name, city, amount, note, flag FROM ` + diffSrcTable
 	for _, fn := range []struct{ rule, sqlFn string }{

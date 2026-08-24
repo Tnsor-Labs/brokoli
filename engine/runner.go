@@ -689,9 +689,15 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		node.Config = r.varCtx.ResolveConfig(node.Config)
 	}
 
-	// Resolve connection (conn_id → URI/headers)
+	// Resolve connection (conn_id → URI/headers). The warnings go to the
+	// run's own log as well as the server's: the person who has to act on
+	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
-		node.Config = r.connResolver.Resolve(node.Config, node.Type)
+		var warnings []string
+		node.Config, warnings = r.connResolver.ResolveWithWarnings(node.Config, node.Type)
+		for _, w := range warnings {
+			r.log(node.ID, models.LogLevelWarning, "%s", w)
+		}
 	}
 
 	// ADR-019 Milestone 1: decide whether this node takes the
