@@ -90,9 +90,15 @@ func TestSameServerRefusesUnknownAndIncapableDialects(t *testing.T) {
 	if sameServer("", pg, pg) {
 		t.Error("an empty dialect must not be treated as same-server")
 	}
-	// mysql has no Addresser yet; when it gains one this should be updated
-	// alongside a differential test, not silently.
-	if sameServer("mysql", "mysql://u:p@tcp(db:3306)/d", "mysql://u:p@tcp(db:3306)/d") {
+	// sqlite has no Addresser; a backend with no same-server rule must
+	// not push down. (mysql held this slot until it earned the capability
+	// with the differential corpus -- the pin tripped exactly as designed.)
+	if sameServer("sqlite", "sqlite:///tmp/a.db", "sqlite:///tmp/a.db") {
 		t.Error("a dialect with no same-server rule must not push down")
+	}
+	// And the capability mysql earned: identical resolved URIs are the
+	// same server. Its strictness matrix lives in pkg/dbdialect.
+	if !sameServer("mysql", "mysql://u:p@tcp(db:3306)/d", "mysql://u:p@tcp(db:3306)/d") {
+		t.Error("mysql identical URIs should be same-server since the pushdown work")
 	}
 }

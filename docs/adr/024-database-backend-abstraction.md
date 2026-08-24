@@ -327,3 +327,104 @@ suites executing there: the value-fidelity corpus against both backends,
 and the pushdown differential tests against live Postgres. The claim
 "nothing changed" in #341 is as good as those tests, and those tests now
 run on every push.
+
+## Update (2026-08-25): the second backend, and what it cost the interface
+
+MySQL is now a first-class backend: correctness (#344), bulk write (#345),
+and pushdown (this update's change). The ADR predicted "MySQL will bend the
+interface, and that is an acceptable second step". It bent it in one place
+and confirmed it in another, and both are worth recording.
+
+### The interface held; one method's contract got sharper
+
+No method was added, removed, or re-signed to admit MySQL. The nine-method
+`Dialect` plus the optional `Addresser` was enough, which is the strongest
+evidence available that deriving the surface from what the compiler
+actually calls — rather than from what a database might need — was right.
+
+What changed is `ByteOrderedText`'s contract. On Postgres it is
+`COLLATE "C"` and reads as a formality: text equality under a deterministic
+collation is already byte equality, so the method looked like it existed
+only for ordering. MySQL proved otherwise. Its default collations are
+case- and accent-insensitive, so `'Lisbon'` and `'lisbon'` are *equal*
+there — and the aggregate compiler was emitting a bare `GROUP BY` on the
+raw identifier, which collapsed them into one group where Go keeps two.
+
+The differential corpus caught it on its first MySQL run: seven groups in
+SQL, eight in Go. The fix is that grouping now goes through
+`ByteOrderedText` like every other text comparison, which is what the
+method meant all along. On Postgres the emitted SQL changed and the result
+did not — the corpus proves that too.
+
+That is the argument for a second backend stated concretely: a rule that is
+a no-op on the reference implementation is indistinguishable from a rule
+that is wrong, until something exercises it.
+
+### One documented divergence between backends
+
+`filter_rows` on a boolean column compiles on MySQL and is refused on
+Postgres. This is not a gap to close; it is the two backends genuinely
+differing:
+
+- Postgres has a real `BOOLEAN`, pgx hands Go a `bool`, and `%v` renders
+  `"true"`. Matching that in SQL needs a cast whose spelling has not been
+  shown to agree, so it stays refused.
+- MySQL's `BOOLEAN` is `TINYINT(1)`, and the driver's text protocol hands
+  Go the server's own rendering — `"1"` — so the column is numeric on both
+  sides and the existing numeric forms already agree.
+
+The corpus expresses this as a per-dialect override on one shared case,
+with the reason attached, rather than as two corpora. The distinction
+matters: one corpus with recorded differences is a comparison; two corpora
+are two claims that never meet. Every other case in the corpus carries a
+single shared expectation.
+
+### What MySQL refuses, and why the list is not shorter
+
+Same refusals as Postgres, with the same reasons, all still holding on a
+live server: `add_column` (no shared expression AST, #213), `sum`/`avg`
+(float addition is not associative and the database chooses the order,
+#325), `apply_function` and `replace_values` (no proven agreement on
+rendering a non-text column), `in` (set membership over rendered text),
+grouping by a numeric column, and text columns compared against
+numeric-looking targets.
+
+MySQL adds one refusal of its own, in the type classifier rather than the
+rule compiler: `BINARY`, `VARBINARY` and the `BLOB` family are
+unclassified. Their bytes are the column's raw value, but a literal in a
+generated statement is in the connection character set, and equality
+between the two is not the byte equality Go performs. `DATE`, `DATETIME`,
+`TIMESTAMP`, `TIME` and `YEAR` are unclassified on both backends.
+
+### Same-server identity: the parser is the specification
+
+`SameServer` for MySQL uses the driver's own `ParseDSN` rather than a
+second parser of the same format. #338 exists precisely because a second
+parser drifted from the first — it percent-encoded credentials the driver
+reads verbatim — so re-deriving DSN semantics by hand was the one approach
+ruled out in advance.
+
+The strictness matches the Postgres rule: TCP only (a socket is a
+different addressing scheme with its own argument), address as written
+after default-port normalisation, no DNS resolution, and user, password
+and database compared exactly. DSN parameters disqualify unless they are on
+a client-only allowlist (`parseTime`, `loc`, the timeouts, `tls`), because
+those affect this client's session rather than which server the composed
+statement runs on — and the statement runs entirely server-side.
+
+One implementation note that is load-bearing: the parameter keys are read
+from the raw DSN string, not from the parsed `Config`. The driver stores
+`charset` in an unexported field, so a check that inspected only the
+exported struct would have silently permitted the single parameter with
+the clearest effect on comparison semantics.
+
+### The pins tripped, twice
+
+ADR-024 claimed absent capabilities are pinned rather than merely absent.
+Both pins fired on the way in, exactly as designed: `sameServer("mysql",
+…)` asserting no pushdown (#341's addition) and `TestSinkCanStreamScope`
+asserting MySQL sinks do not stream (#345's). Neither could be satisfied by
+adding a capability quietly — each had to be replaced, in the same change
+that carries the differential proof, with the opposite assertion. The
+vacated slots were refilled with backends that still lack the capability
+(sqlite), so the pins keep meaning something.

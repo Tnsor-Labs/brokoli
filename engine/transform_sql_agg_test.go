@@ -6,6 +6,8 @@ import (
 	"os"
 	"reflect"
 	"testing"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // Aggregates run both ways and are compared, like the row-wise rules. The Go
@@ -17,17 +19,33 @@ func TestTransformSQLAggregateDifferential(t *testing.T) {
 	if uri == "" {
 		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
 	}
-	db, err := sql.Open("pgx", uri)
+	runAggregateDifferentialCorpus(t, uri, "postgres")
+}
+
+// The aggregate corpus has no per-backend divergences today: every
+// expectation is shared, and a backend that needs an override gets it the
+// way the prefix corpus grants one -- with the reason written down.
+func runAggregateDifferentialCorpus(t *testing.T, uri, dialectName string) {
+	driver, dsn, err := DetectDriver(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	setupDiffTable(t, db)
+	setupDiffTable(t, db, dialectName)
+
+	d, ok := dbdialect.For(dialectName)
+	if !ok {
+		t.Fatalf("dialect %q not registered", dialectName)
+	}
 
 	const srcQuery = `SELECT id, name, city, amount, note, flag FROM ` + diffSrcTable
 	srcCols := []string{"id", "name", "city", "amount", "note", "flag"}
 
-	kinds, err := describeQueryColumns(context.Background(), uri, srcQuery, pgDialect(t))
+	kinds, err := describeQueryColumns(context.Background(), uri, srcQuery, d)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +138,7 @@ func TestTransformSQLAggregateDifferential(t *testing.T) {
 			if !ok {
 				t.Fatalf("planTransformRules refused %v", tc.rules)
 			}
-			compiled, gotCompiled := compilePlanToSQL(plan, srcQuery, srcCols, "postgres", kinds)
+			compiled, gotCompiled := compilePlanToSQL(plan, srcQuery, srcCols, dialectName, kinds)
 			if gotCompiled != tc.wantCompiled {
 				if tc.wantCompiled {
 					t.Fatalf("compiler declined a case this test expects it to push down")

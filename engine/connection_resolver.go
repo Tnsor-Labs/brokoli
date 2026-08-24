@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -24,9 +25,33 @@ func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolve
 	return &ConnectionResolver{store: s, secrets: sec}
 }
 
+// ResolveWithWarnings is Resolve, plus the warnings it would otherwise only
+// write to the process log.
+//
+// A connection that resolves to nothing usable is a pipeline-authoring
+// problem, and the author reads the run's node log, not the server's stdout
+// -- so the message that explains the failure has to reach them there.
+// Without this, a run against an Oracle connection (advertised in the
+// catalog, no driver compiled in) failed with an error naming neither
+// Oracle nor the connection, while the sentence that would have explained
+// it went to a log the author cannot see.
+func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, []string) {
+	var warnings []string
+	resolved := cr.resolve(config, nodeType, func(format string, args ...interface{}) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	})
+	return resolved, warnings
+}
+
 // Resolve checks if the config has a conn_id and replaces connection fields with resolved values.
 // Returns the config unchanged if no conn_id is present (backward compatible).
+//
+// Callers that can reach the run's log should prefer ResolveWithWarnings.
 func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) map[string]interface{} {
+	return cr.resolve(config, nodeType, nil)
+}
+
+func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, warn func(string, ...interface{})) map[string]interface{} {
 	connID, ok := config["conn_id"].(string)
 	if !ok || connID == "" {
 		return config
@@ -34,7 +59,11 @@ func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType mo
 
 	conn, err := cr.store.GetConnection(connID)
 	if err != nil {
-		log.Printf("[conn-resolver] WARNING: conn_id %q not found: %v", connID, err)
+		msg, args := "conn_id %q not found: %v", []interface{}{connID, err}
+		log.Printf("[conn-resolver] WARNING: "+msg, args...)
+		if warn != nil {
+			warn(msg, args...)
+		}
 		return config
 	}
 
@@ -59,8 +88,12 @@ func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType mo
 		// from the bare hostname used to hand the Postgres driver a malformed
 		// DSN, losing the port, database, and credentials on the way.
 		if !conn.BuildsURI() {
-			log.Printf("[conn-resolver] WARNING: conn_id %q is type %q, which has no database driver; leaving the node's uri unchanged",
-				connID, conn.Type)
+			msg := "conn_id %q is type %q, which has no database driver in this build; the node's own uri is used unchanged, and the run will fail against it if there is none"
+			args := []interface{}{connID, conn.Type}
+			log.Printf("[conn-resolver] WARNING: "+msg, args...)
+			if warn != nil {
+				warn(msg, args...)
+			}
 			break
 		}
 		resolved["uri"] = conn.BuildURI()

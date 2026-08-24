@@ -43,8 +43,15 @@ func compileAggregateToSQL(rule TransformRule, cols map[string]sqlColumnRef, d d
 		if ref.Kind != kindText {
 			return nil, nil, nil, false
 		}
-		selectList = append(selectList, ref.Ident+" AS "+d.QuoteIdent(g))
-		groupBy = append(groupBy, ref.Ident)
+		// The grouping expression is byte-ordered, because Go groups on
+		// bytes. On Postgres this is belt-and-braces -- text equality under
+		// a deterministic collation is already byte equality -- but on MySQL
+		// the default collations are case- and accent-insensitive, and a
+		// bare GROUP BY city collapses 'Lisbon' and 'lisbon' into one group
+		// where Go keeps two. The differential corpus caught exactly that.
+		key := d.ByteOrderedText(ref.Ident)
+		selectList = append(selectList, key+" AS "+d.QuoteIdent(g))
+		groupBy = append(groupBy, key)
 		outCols = append(outCols, g)
 	}
 
