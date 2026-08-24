@@ -24,7 +24,10 @@ import (
 // and anything unrecognized fall back to "generic" — append/overwrite work
 // there, and upsert (which has no portable form) errors with a name.
 func dialectForURI(uri string) string {
-	driver, _, err := DetectDriver(uri)
+	// Pure scheme detection: the dialect GenerateSQL should target is a
+	// property of the URI, not of which drivers this build happens to compile
+	// in. Whether the connection can be opened is DetectDriver's business.
+	driver, _, err := detectDriver(uri)
 	if err != nil {
 		return "generic"
 	}
