@@ -937,16 +937,17 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 				table, strings.Join(others, "; "))
 		}
 	}
-	// Postgres appends and overwrites go through COPY, which carries the
-	// rows as data instead of rendering them into megabytes of SQL text
-	// for the server to parse back — measured at 3.3x on 25k rows. See
-	// copy_postgres.go for why the text format and not the binary one.
-	if canCopyInsert(cfg) {
-		affected, err := copyRowsToPostgres(uri, cfg, input)
+	// Appends and overwrites go through the dialect's bulk path where one
+	// exists -- Postgres COPY (measured at 3.3x on 25k rows, see
+	// copy_postgres.go), MySQL LOAD DATA LOCAL INFILE (see bulk_mysql.go)
+	// -- which carries the rows as data instead of rendering them into
+	// megabytes of SQL text for the server to parse back.
+	if w, ok := bulkWriterFor(cfg); ok {
+		affected, err := bulkWriteRows(w, uri, cfg, input)
 		if err != nil {
-			return nil, fmt.Errorf("copy to %s: %w", table, err)
+			return nil, fmt.Errorf("bulk write to %s: %w", table, err)
 		}
-		r.log(node.ID, models.LogLevelInfo, "Copied %d rows into %s", affected, table)
+		r.log(node.ID, models.LogLevelInfo, "Bulk-loaded %d rows into %s", affected, table)
 		return nil, nil
 	}
 

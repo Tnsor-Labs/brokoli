@@ -653,7 +653,8 @@ func sinkStreamConfig(node models.Node) (string, SQLGenConfig, bool) {
 		CreateTable: configBool(node.Config["create_table"]),
 		Truncate:    configBool(node.Config["truncate"]),
 	}
-	return uri, cfg, canCopyInsert(cfg)
+	_, ok := bulkWriterFor(cfg)
+	return uri, cfg, ok
 }
 
 // sinkCanStream reports whether a sink_db node's write path can consume
@@ -781,12 +782,17 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	return nodeExecutionResult{outputRef: ref}, nil
 }
 
-// runSinkDBStreamed writes a referenced input with COPY, pulling batches
-// off the blob store instead of decoding the whole thing first.
+// runSinkDBStreamed writes a referenced input with the dialect's bulk
+// path, pulling batches off the blob store instead of decoding the whole
+// thing first.
 func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	uri, cfg, ok := sinkStreamConfig(node)
 	if !ok {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db node is not streamable (dispatch bug: eligibility should have caught this)")
+	}
+	w, ok := bulkWriterFor(cfg)
+	if !ok {
+		return nodeExecutionResult{}, fmt.Errorf("no bulk writer for %q (dispatch bug: eligibility should have caught this)", cfg.Dialect)
 	}
 	if inputRef == nil {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db streamed path requires a referenced input (dispatch bug)")
@@ -805,9 +811,9 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 	}
 	defer closer.Close()
 
-	affected, err := copyBatchesToPostgres(ctx, uri, cfg, inputRef.Columns, batches.Next)
+	affected, err := w(ctx, uri, cfg, inputRef.Columns, batches.Next)
 	if err != nil {
-		return nodeExecutionResult{}, fmt.Errorf("copy to %s: %w", cfg.Table, err)
+		return nodeExecutionResult{}, fmt.Errorf("bulk write to %s: %w", cfg.Table, err)
 	}
 	r.log(node.ID, models.LogLevelInfo,
 		"Streamed %d rows into %s by reference (never materialized)", affected, cfg.Table)

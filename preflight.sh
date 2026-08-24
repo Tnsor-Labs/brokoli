@@ -151,7 +151,8 @@ if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}"
     done
     : "${BROKOLI_TEST_POSTGRES_URL:=postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable}"
     : "${BROKOLI_TEST_MYSQL_URL:=mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test}"
-    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL
+    : "${BROKOLI_TEST_MYSQL_ROOT_URL:=mysql://root:rootpw@tcp(localhost:55533)/brokoli_test}"
+    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL BROKOLI_TEST_MYSQL_ROOT_URL
   else
     say "WARNING: no docker compose — live-database tests will SKIP, and they are"
     say "         the ones that check what a real server does with a literal."

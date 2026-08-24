@@ -92,9 +92,19 @@ jobs:
       BROKOLI_TEST_MYSQL_USER: brokoli
       BROKOLI_TEST_MYSQL_PASSWORD: br@k:li/pw#1
       BROKOLI_TEST_MYSQL_DB: brokoli_test
+      # Root, for the one test that toggles a server global (the LOAD DATA
+      # fallback test flips local_infile off and back).
+      BROKOLI_TEST_MYSQL_ROOT_URL: mysql://root:rootpw@tcp(localhost:3306)/brokoli_test
 
     steps:
       - uses: actions/checkout@v4
+
+      # local_infile is off by default in MySQL 8, and a service container
+      # cannot be given a command line the way docker-compose.test.yml gives
+      # one. SET GLOBAL is dynamic and LOAD DATA LOCAL checks it at statement
+      # time, so setting it here is equivalent to --local-infile=1.
+      - name: Enable local_infile on the MySQL service
+        run: mysql --host=127.0.0.1 --port=3306 -uroot -prootpw -e "SET GLOBAL local_infile=1"
 
       - name: Set up Go
         uses: actions/setup-go@v5
