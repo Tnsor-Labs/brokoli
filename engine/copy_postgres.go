@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -286,6 +287,18 @@ func copyEscape(v any) string {
 		s = t
 	case []byte:
 		s = string(t)
+	case float64:
+		// Never %v a float here. Go renders float64(1000000) as "1e+06",
+		// which Postgres rejects for an integer column and, worse, accepts
+		// for a text one (#334). Decoding normalises integers to int64 so
+		// this should rarely be reached, but a renderer that can silently
+		// change a value is not something to leave in place on the strength
+		// of "should".
+		if t == math.Trunc(t) && math.Abs(t) < 1e15 {
+			s = strconv.FormatFloat(t, 'f', -1, 64)
+		} else {
+			s = strconv.FormatFloat(t, 'g', -1, 64)
+		}
 	default:
 		s = fmt.Sprintf("%v", t)
 	}

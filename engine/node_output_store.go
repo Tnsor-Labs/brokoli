@@ -56,6 +56,10 @@ type nodeOutputs struct {
 	mu      sync.Mutex
 	inline  map[string]*common.DataSet
 	spilled map[string]*artifact.DatasetRef
+	// tables holds ADR-023 TableRefs: outputs that were never read out of
+	// the database at all. They are run-scoped and never persisted — a
+	// barrier materialises to a blob, which is where durability lives.
+	tables map[string]*TableRef
 
 	// blobs is where spilled outputs go. Nil disables spilling entirely,
 	// which is the case for any runner without an artifact store behind it.
@@ -393,6 +397,24 @@ func (r *Runner) newOutputs() *nodeOutputs {
 // ref-producing handlers hand their output straight here). The consumer
 // side is unchanged — Get materializes it exactly like any spilled
 // output, and GetRef serves stream-capable consumers.
+// PutTable records a node's output as still being in its database.
+func (o *nodeOutputs) PutTable(nodeID string, ref *TableRef) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.tables == nil {
+		o.tables = make(map[string]*TableRef)
+	}
+	o.tables[nodeID] = ref
+}
+
+// GetTable returns a node's TableRef, if its output stayed in the database.
+func (o *nodeOutputs) GetTable(nodeID string) (*TableRef, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	ref, ok := o.tables[nodeID]
+	return ref, ok
+}
+
 func (o *nodeOutputs) PutRef(nodeID string, ref *artifact.DatasetRef) {
 	o.mu.Lock()
 	delete(o.inline, nodeID)
