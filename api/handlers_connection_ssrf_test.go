@@ -46,8 +46,8 @@ func TestTestHTTPAuth_BlocksLoopbackConnection(t *testing.T) {
 // testing cannot be redirected to a loopback address through bucket input.
 func TestTestS3_BlocksLoopbackEndpointInjection(t *testing.T) {
 	result := testS3(context.Background(), map[string]interface{}{
-		"bucket": "ignored@127.0.0.1:1/",
-		"region": "us-east-1",
+		"bucket":     "ignored@127.0.0.1:1/",
+		"region":     "us-east-1",
 		"access_key": "test-key",
 		"secret_key": "test-secret",
 	})
