@@ -344,6 +344,15 @@ func applyFunction(r TransformRule, ds *common.DataSet) error {
 	}
 	for _, row := range ds.Rows {
 		if val, ok := row[r.Column]; ok {
+			if val == nil {
+				// A NULL has no text to transform. It used to be rendered
+				// with %v first, so upper turned a missing value into the
+				// literal string "<NIL>" and lower into "<nil>" — a NULL
+				// silently replaced by garbage that then travelled
+				// downstream as real data. Every SQL engine leaves NULL
+				// alone here; so does this now.
+				continue
+			}
 			str, isStr := val.(string)
 			if !isStr {
 				str = fmt.Sprintf("%v", val)
