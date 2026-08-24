@@ -2,6 +2,7 @@ package engine
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -118,7 +119,7 @@ func TestStreamTransformToRef_EquivalentToBatchTransform(t *testing.T) {
 	in := &common.DataSet{Columns: []string{"id", "region", "amount"}}
 	for i := 0; i < 2500; i++ {
 		in.Rows = append(in.Rows, common.DataRow{
-			"id": float64(i), "region": fmt.Sprintf("r%d", i%7), "amount": float64(i) * 1.5,
+			"id": int64(i), "region": fmt.Sprintf("r%d", i%7), "amount": float64(i) * 1.5,
 		})
 	}
 	rules := []TransformRule{
@@ -173,10 +174,39 @@ func TestStreamTransformToRef_EquivalentToBatchTransform(t *testing.T) {
 		t.Fatalf("row counts differ: streamed=%d batch=%d", len(streamedDS.Rows), len(batchDS.Rows))
 	}
 	for i := range streamedDS.Rows {
-		if !reflect.DeepEqual(streamedDS.Rows[i], batchDS.Rows[i]) {
-			t.Fatalf("row %d differs: streamed=%v batch=%v", i, streamedDS.Rows[i], batchDS.Rows[i])
+		if !sameRowValues(streamedDS.Rows[i], batchDS.Rows[i]) {
+			t.Fatalf("row %d differs: streamed=%#v batch=%#v", i, streamedDS.Rows[i], batchDS.Rows[i])
 		}
 	}
+}
+
+// sameRowValues compares rows by value rather than by Go type.
+//
+// The streamed side has crossed a JSON boundary and the batch side has not,
+// and JSON cannot tell an integer from a float that happens to be integral:
+// 150 and 150.0 are the same six characters. The decoder resolves that
+// ambiguity towards int64 so that a bigint id survives (#334), which means a
+// float64 that is integral comes back as an int64.
+//
+// That distinction is invisible to everything downstream — the CSV and COPY
+// renderers produce identical text for both, toAggFloat accepts both, and a
+// "number" type assertion matches both — so comparing Go types here would
+// assert something no pipeline can observe, and would have to be weakened the
+// first time a real fixture contained a round number.
+func sameRowValues(a, b common.DataRow) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			return false
+		}
+		if fmt.Sprintf("%v", av) != fmt.Sprintf("%v", bv) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestStreamTransformToRef_EmptyResultUsesSentinel(t *testing.T) {
@@ -425,7 +455,7 @@ for r in rows:
     n += 1
 output_data = {"columns": ["n", "total"], "rows": [{"n": n, "total": total}]}
 `, func(t *testing.T, ds *common.DataSet) {
-			if len(ds.Rows) != 1 || ds.Rows[0]["n"] != float64(4000) {
+			if len(ds.Rows) != 1 || !numIs(ds.Rows[0]["n"], 4000) {
 				t.Fatalf("iterate-lazy: %v", ds.Rows)
 			}
 		}},
@@ -434,14 +464,14 @@ n1 = sum(1 for r in rows)
 n2 = sum(1 for r in rows)
 output_data = {"columns": ["n1", "n2"], "rows": [{"n1": n1, "n2": n2}]}
 `, func(t *testing.T, ds *common.DataSet) {
-			if len(ds.Rows) != 1 || ds.Rows[0]["n1"] != float64(4000) || ds.Rows[0]["n2"] != float64(4000) {
+			if len(ds.Rows) != 1 || !numIs(ds.Rows[0]["n1"], 4000) || !numIs(ds.Rows[0]["n2"], 4000) {
 				t.Fatalf("iterate-twice (re-iterability broken): %v", ds.Rows)
 			}
 		}},
 		{"len-and-index", `
 output_data = {"columns": ["count", "first", "last"], "rows": [{"count": len(rows), "first": rows[0]["id"], "last": rows[len(rows)-1]["id"]}]}
 `, func(t *testing.T, ds *common.DataSet) {
-			if len(ds.Rows) != 1 || ds.Rows[0]["count"] != float64(4000) || ds.Rows[0]["first"] != float64(0) || ds.Rows[0]["last"] != float64(3999) {
+			if len(ds.Rows) != 1 || !numIs(ds.Rows[0]["count"], 4000) || !numIs(ds.Rows[0]["first"], 0) || !numIs(ds.Rows[0]["last"], 3999) {
 				t.Fatalf("len-and-index (transparent materialization broken): %v", ds.Rows)
 			}
 		}},
@@ -745,5 +775,25 @@ for i in range(3000):
 	big, err := eng.ArtifactStore.ReadArtifact(run.ID, "big_only", "")
 	if err != nil || len(big.Rows) != 100 {
 		t.Fatalf("big artifact: err=%v rows=%d", err, len(big.Rows))
+	}
+}
+
+// numIs compares a row value numerically rather than by Go type. A number that
+// has crossed a JSON boundary comes back as int64 where an in-memory one is a
+// float64 (#334), and these assertions are about the value, not which of the
+// two representations carried it.
+func numIs(v interface{}, want float64) bool {
+	switch n := v.(type) {
+	case int64:
+		return float64(n) == want
+	case int:
+		return float64(n) == want
+	case float64:
+		return n == want
+	case json.Number:
+		f, err := n.Float64()
+		return err == nil && f == want
+	default:
+		return false
 	}
 }

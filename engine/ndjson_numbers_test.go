@@ -107,3 +107,37 @@ func TestNDJSONRoundTripIsIdentity(t *testing.T) {
 		}
 	}
 }
+
+// The round trip resolves an ambiguity JSON cannot express, and the resolution
+// should be recorded rather than discovered. An integer stays an integer,
+// which is the point; a float that happens to be integral becomes one too,
+// which is the cost.
+//
+// The cost is affordable because nothing downstream can tell them apart: both
+// render identically through the CSV and COPY writers, toAggFloat accepts
+// both, and a "number" type assertion matches both. If any of that stops being
+// true, this test is where to come back to.
+func TestNDJSONRoundTripResolvesIntegralFloatsToIntegers(t *testing.T) {
+	var buf bytes.Buffer
+	in := &common.DataSet{
+		Columns: []string{"integral", "fractional"},
+		Rows:    []common.DataRow{{"integral": 150.0, "fractional": 1.5}},
+	}
+	if err := EncodeArrowJSON(&buf, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := DecodeArrowJSON(bytes.NewReader(buf.Bytes()), in.Columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := out.Rows[0]["integral"].(int64); !ok {
+		t.Errorf("an integral float came back as %T, want int64", out.Rows[0]["integral"])
+	}
+	if _, ok := out.Rows[0]["fractional"].(float64); !ok {
+		t.Errorf("a fractional float came back as %T, want float64", out.Rows[0]["fractional"])
+	}
+	// The property that matters: the rendered value is unchanged either way.
+	if got := fmt.Sprintf("%v", out.Rows[0]["integral"]); got != "150" {
+		t.Errorf("integral value rendered as %q, want %q", got, "150")
+	}
+}

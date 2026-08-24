@@ -572,10 +572,21 @@ func ExecuteCodeNodeContext(parent context.Context, script string, input *common
 		}
 	}
 
-	// JSON fallback
+	// JSON fallback. UseNumber for the same reason the NDJSON reader uses it
+	// (#334): a plain decode turns every number into a float64, and a script
+	// returning an id of 1000000 would have it rendered downstream as
+	// "1e+06". Normalising here keeps a script's numbers the same shape as a
+	// database's.
 	var output CodeNodeOutput
-	if err := json.Unmarshal(stdout.Bytes(), &output); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(stdout.Bytes()))
+	dec.UseNumber()
+	if err := dec.Decode(&output); err != nil {
 		return nil, stderrStr, fmt.Errorf("script output is not valid JSON: %w\nstdout: %s", err, stdout.String())
+	}
+	for _, row := range output.Rows {
+		for k, v := range row {
+			row[k] = normalizeJSONNumbers(v)
+		}
 	}
 
 	ds := &common.DataSet{
