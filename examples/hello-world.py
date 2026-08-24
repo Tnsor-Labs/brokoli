@@ -7,7 +7,7 @@ UI or with ``brokoli run hello-world``.
 from brokoli import Pipeline, sink_file, source_api, transform
 
 
-with Pipeline("hello-world", description="Fetch employees and greet them"):
+with Pipeline("hello-world", description="Fetch employees and greet them") as pipeline:
     employees = source_api(
         "Fetch Employees",
         url="/api/samples/data/employees.json",
