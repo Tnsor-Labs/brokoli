@@ -67,7 +67,10 @@ jobs:
         env:
           MYSQL_ROOT_PASSWORD: rootpw
           MYSQL_USER: brokoli
-          MYSQL_PASSWORD: brokoli
+          # Deliberately full of characters that mean something in a URI. The
+          # DSN carries credentials verbatim (#338), and a password like this
+          # is what proves it on every run rather than in a test that skips.
+          MYSQL_PASSWORD: br@k:li/pw#1
           MYSQL_DATABASE: brokoli_test
         ports:
           - 3306:3306
@@ -77,7 +80,18 @@ jobs:
 
     env:
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
-      BROKOLI_TEST_MYSQL_URL: mysql://brokoli:brokoli@tcp(localhost:3306)/brokoli_test
+      BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
+      # A second Postgres variable exists for the execution-attempt migration
+      # test. Pointing it at the same server rather than leaving it unset is
+      # the difference between that test running and silently not.
+      BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      # The credential test builds a DSN from parts rather than parsing one,
+      # so it needs the fields separately.
+      BROKOLI_TEST_MYSQL_HOST: localhost
+      BROKOLI_TEST_MYSQL_PORT: "3306"
+      BROKOLI_TEST_MYSQL_USER: brokoli
+      BROKOLI_TEST_MYSQL_PASSWORD: br@k:li/pw#1
+      BROKOLI_TEST_MYSQL_DB: brokoli_test
 
     steps:
       - uses: actions/checkout@v4

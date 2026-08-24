@@ -90,7 +90,7 @@ MySQL and skip when neither is configured.
 ```bash
 docker compose -f docker-compose.test.yml up -d
 export BROKOLI_TEST_POSTGRES_URL='postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable'
-export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:brokoli@tcp(localhost:55533)/brokoli_test'
+export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
 ```
 
 `preflight.sh` does this for you when the variables are unset and docker

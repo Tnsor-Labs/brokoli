@@ -8,7 +8,7 @@
 #
 #   docker compose -f docker-compose.test.yml up -d
 #   export BROKOLI_TEST_POSTGRES_URL='postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable'
-#   export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:brokoli@tcp(localhost:55533)/brokoli_test'
+#   export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
 #   go test ./...
 #
 # Ports are in an unusual range so this does not collide with a database
@@ -38,7 +38,7 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: rootpw
       MYSQL_USER: brokoli
-      MYSQL_PASSWORD: brokoli
+      MYSQL_PASSWORD: br@k:li/pw#1
       MYSQL_DATABASE: brokoli_test
     ports:
       - "55533:3306"
