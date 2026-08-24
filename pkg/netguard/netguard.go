@@ -237,6 +237,21 @@ var Default = Policy{AllowLoopback: false}
 
 // resetOutboundForTest clears the memoised policy so a test can resolve
 // it again under different environment settings.
+// SetOutboundForTesting overrides the memoised outbound policy and returns a
+// function restoring it, so a test in another package can exercise code paths
+// that consult Outbound() without depending on process-wide env ordering.
+func SetOutboundForTesting(p Policy) (restore func()) {
+	prev := outboundPolicy
+	outboundOnce = sync.Once{}
+	outboundOnce.Do(func() { outboundPolicy = p })
+	return func() {
+		// Re-prime rather than restoring the saved Once: a sync.Once cannot be
+		// copied, and go vet is right to say so.
+		outboundOnce = sync.Once{}
+		outboundOnce.Do(func() { outboundPolicy = prev })
+	}
+}
+
 func resetOutboundForTest() {
 	outboundOnce = sync.Once{}
 	outboundPolicy = Policy{}

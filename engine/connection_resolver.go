@@ -54,6 +54,15 @@ func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType mo
 
 	switch nodeType {
 	case models.NodeTypeSourceDB, models.NodeTypeSinkDB:
+		// A connection type with no engine driver has no URI to inject. Leaving
+		// the node's own uri untouched makes the failure say so; fabricating one
+		// from the bare hostname used to hand the Postgres driver a malformed
+		// DSN, losing the port, database, and credentials on the way.
+		if !conn.BuildsURI() {
+			log.Printf("[conn-resolver] WARNING: conn_id %q is type %q, which has no database driver; leaving the node's uri unchanged",
+				connID, conn.Type)
+			break
+		}
 		resolved["uri"] = conn.BuildURI()
 
 	case models.NodeTypeSourceAPI, models.NodeTypeSinkAPI:

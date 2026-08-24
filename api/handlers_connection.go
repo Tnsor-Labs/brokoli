@@ -246,13 +246,18 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	c.CreatedAt = existing.CreatedAt
 	c.UpdatedAt = time.Now()
 
+	// A client that read this connection back got masked credentials. Echoing
+	// them into an update means "unchanged", never "set the credential to the
+	// mask".
+	unmaskCredentials(&c)
+
 	// Credential handling for updates:
 	// If a new password_ref is provided, use it (replaces any existing ref).
 	// If a bare password is provided, encrypt and store as encrypted:// ref.
 	// If neither, keep existing refs.
 	if c.PasswordRef != "" {
 		c.Password = ""
-	} else if c.Password != "" && c.Password != "********" {
+	} else if c.Password != "" {
 		enc, err := h.crypto.Encrypt(c.Password)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
@@ -327,11 +332,18 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Decrypt extras for HTTP connections
+	// Decrypt extras. The plaintext goes back onto the connection as well as
+	// into the parsed map: the HTTP paths below take the map, but BuildURI
+	// reads c.Extra for driver options, and an encrypted blob there parses as
+	// nothing. That silently dropped sslmode, so testing a connection with
+	// "sslmode": "require" against a server with TLS switched off reported
+	// "Connected successfully" for a session that was in the clear -- the
+	// exact false assurance the option exists to prevent.
 	var extra map[string]interface{}
 	if c.Extra != "" {
 		dec, err := h.crypto.Decrypt(c.Extra)
 		if err == nil {
+			c.Extra = dec
 			json.Unmarshal([]byte(dec), &extra)
 		}
 	}
@@ -421,7 +433,7 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 		}
 	}
 
-	client := netguard.Default.Client(5 * time.Second)
+	client := netguard.Outbound().Client(5 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {
 		if errors.Is(err, netguard.ErrBlockedTarget) {
@@ -575,7 +587,7 @@ func testGeneric(ctx context.Context, c *models.Connection, extra map[string]int
 			}
 			req.Header.Set("Content-Type", "application/json")
 
-			client := netguard.Default.Client(5 * time.Second)
+			client := netguard.Outbound().Client(5 * time.Second)
 			resp, err := client.Do(req)
 			if err != nil {
 				if errors.Is(err, netguard.ErrBlockedTarget) {
@@ -703,12 +715,40 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 // "encrypted://..." becomes "encrypted://********".
 // "vault://secret/data/prod#password" stays as-is (path is not a secret).
 // "k8s://ns/secret/key" stays as-is (reference path is not a secret).
+// maskedRef is what Get and List return in place of an encrypted credential
+// ref, and maskedSecret is the same for a bare password. Both are sentinels,
+// not values: a client doing read-modify-write against the REST API sends
+// them straight back, so the update path has to read them as "unchanged".
+// Storing one as though it were the credential destroys the real one, and
+// nothing surfaces until the next run tries to use the connection.
+const (
+	maskedRef    = "encrypted://********"
+	maskedSecret = "********"
+)
+
 func maskRef(ref string) string {
 	if ref == "" {
 		return ""
 	}
 	if strings.HasPrefix(ref, "encrypted://") {
-		return "encrypted://********"
+		return maskedRef
 	}
 	return ref
+}
+
+// unmaskCredentials normalises the sentinels a client may echo back into the
+// empty values that mean "keep what is stored".
+func unmaskCredentials(c *models.Connection) {
+	if c.PasswordRef == maskedRef {
+		c.PasswordRef = ""
+	}
+	if c.ExtraRef == maskedRef {
+		c.ExtraRef = ""
+	}
+	if c.Password == maskedSecret {
+		c.Password = ""
+	}
+	if c.Extra == maskedSecret {
+		c.Extra = ""
+	}
 }

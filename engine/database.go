@@ -19,13 +19,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-// DetectDriver returns the Go sql driver name for a connection URI.
 // dialectForURI maps a connection URI to the SQL dialect name GenerateSQL
 // understands, via the same scheme detection DetectDriver uses. Snowflake
 // and anything unrecognized fall back to "generic" — append/overwrite work
 // there, and upsert (which has no portable form) errors with a name.
 func dialectForURI(uri string) string {
-	driver, _, err := DetectDriver(uri)
+	// Pure scheme detection: the dialect GenerateSQL should target is a
+	// property of the URI, not of which drivers this build happens to compile
+	// in. Whether the connection can be opened is DetectDriver's business.
+	driver, _, err := detectDriver(uri)
 	if err != nil {
 		return "generic"
 	}
@@ -43,7 +45,47 @@ func dialectForURI(uri string) string {
 	}
 }
 
+// DetectDriver returns the Go sql driver name and DSN for a connection URI.
+//
+// A scheme this recognizes is not the same as a scheme this build can open:
+// the connection catalog offers Snowflake, SQL Server, Oracle, BigQuery, and
+// Databricks, but only pgx, mysql, and sqlite drivers are compiled in. Naming
+// a driver that was never registered gets database/sql's "unknown driver
+// (forgotten import?)", which reads like a build defect rather than an
+// unsupported connection type, so check first and say which it is.
 func DetectDriver(uri string) (string, string, error) {
+	driver, dsn, err := detectDriver(uri)
+	if err != nil {
+		return "", "", err
+	}
+	if !driverRegistered(driver) {
+		return "", "", fmt.Errorf(
+			"connection type %q is not supported by this build: no %q driver is compiled in (available: %s)",
+			schemeOf(uri), driver, strings.Join(sql.Drivers(), ", "))
+	}
+	return driver, dsn, nil
+}
+
+// driverRegistered reports whether database/sql can open this driver name.
+func driverRegistered(name string) bool {
+	for _, d := range sql.Drivers() {
+		if d == name {
+			return true
+		}
+	}
+	return false
+}
+
+// schemeOf names the connection type in an error message without echoing the
+// URI, which carries the password.
+func schemeOf(uri string) string {
+	if i := strings.Index(uri, "://"); i > 0 {
+		return uri[:i]
+	}
+	return "unknown"
+}
+
+func detectDriver(uri string) (string, string, error) {
 	switch {
 	case strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://"):
 		return "pgx", uri, nil
@@ -65,50 +107,6 @@ func DetectDriver(uri string) (string, string, error) {
 		return "sqlserver", uri, nil
 	default:
 		return "pgx", uri, nil
-	}
-}
-
-// BuildConnectionURI constructs a URI from connection fields for various database types.
-func BuildConnectionURI(connType, host string, port int, schema, login, password, extra string) string {
-	switch connType {
-	case "postgres", "redshift":
-		scheme := "postgres"
-		if connType == "redshift" {
-			scheme = "redshift"
-		}
-		if port == 0 {
-			if connType == "redshift" {
-				port = 5439
-			} else {
-				port = 5432
-			}
-		}
-		return fmt.Sprintf("%s://%s:%s@%s:%d/%s?sslmode=require", scheme, login, password, host, port, schema)
-	case "snowflake":
-		// Snowflake DSN: user:password@account/database/schema?warehouse=X
-		warehouse := "COMPUTE_WH"
-		if extra != "" {
-			// Try to parse warehouse from extra JSON
-			var ex map[string]string
-			if err := parseJSON(extra, &ex); err == nil {
-				if w, ok := ex["warehouse"]; ok {
-					warehouse = w
-				}
-			}
-		}
-		return fmt.Sprintf("snowflake://%s:%s@%s/%s?warehouse=%s", login, password, host, schema, warehouse)
-	case "mysql":
-		if port == 0 {
-			port = 3306
-		}
-		return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s", login, password, host, port, schema)
-	case "mssql", "sqlserver":
-		if port == 0 {
-			port = 1433
-		}
-		return fmt.Sprintf("sqlserver://%s:%s@%s:%d?database=%s", login, password, host, port, schema)
-	default:
-		return host
 	}
 }
 

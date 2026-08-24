@@ -92,11 +92,14 @@ func TestEventBusBridge_ForwardsToSODP(t *testing.T) {
 		t.Errorf("pipeline_id: got %v, want dist-pipe", m["pipeline_id"])
 	}
 
-	// Verify the watcher received a delta on dashboard.default
+	// Verify the watcher received a delta on dashboard.default. The delta and
+	// the state write are separate async hops, so waitForState returning does
+	// not mean the delta has landed yet -- a non-blocking check here asserts
+	// too early under load, which is the same mistake the wait above avoids.
 	select {
 	case <-subCh:
 		// expected
-	default:
+	case <-time.After(2 * time.Second):
 		t.Error("watcher should have received a dashboard delta from the bus-originated event")
 	}
 }
