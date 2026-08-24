@@ -233,3 +233,97 @@ world changes.
   clear-then-insert atomicity `ExecuteSQL` assumes does not hold there;
   `key_columns` is silently ignored by MySQL upsert; and MySQL 8.0.20
   deprecated the `VALUES()` form the generator emits.
+
+## Update (2026-08-24): what migrating Postgres taught
+
+Phase 1c is done — `pkg/dbdialect` exists and the compiler consumes it
+(#341), with the CI harness (#339) running the differential suites against
+live servers on every push. The interface that survived contact with the
+code differs from the sketch above in ways worth recording, because each
+difference is something the sketch got wrong.
+
+### The taxonomy missed a fifth concern: agreement
+
+The decision names four concerns — addressing, syntax, types, capabilities.
+The migration surfaced a fifth that is none of these: **how the backend's
+SQL is made to agree with the reference engine**. The implemented interface
+carries three methods the sketch did not anticipate:
+
+```go
+CastToText(expr string) string   // CAST(... AS TEXT)
+CastToFloat(expr string) string  // CAST(... AS DOUBLE PRECISION)
+ByteOrderedText(expr string) string  // ... COLLATE "C"
+```
+
+These are not syntax preferences. `CastToFloat` is **deliberately lossy**:
+the Go engine compares numbers through `strconv.ParseFloat`, so the SQL
+side must lose the same precision — a backend whose cast is *more* accurate
+than the engine's comparison diverges from it, and `NUMERIC` would be a
+bug. `ByteOrderedText` exists because Go compares bytes and no backend's
+default collation does. A backend author filling in these methods is not
+answering "how do I spell a cast" but "what makes my comparisons agree with
+the engine's" — which is exactly the question the differential corpus then
+verifies. The interface turned out to be the corpus's questions, written as
+methods.
+
+### "Addressing" overpromised, and the sketch's `Driver()` does not exist
+
+The decision assigned the dialect "the `database/sql` driver name, the DSN
+built from a connection's fields, and whether two connections address the
+same server". Only the third moved. Driver detection stays in
+`engine/database.go` and DSN construction stays on `models.Connection`,
+because both are on the connection-opening path and moving them is not
+behaviour-preserving in a way the suite can witness. The required surface
+as implemented has no `Driver()` method; same-server identity is the
+optional `Addresser`, exactly as sketched. The rest of the addressing
+concern migrates when it can carry its own oracle.
+
+Related, still true after this phase: `detectDriver`'s `default` branch
+still answers `pgx`, so an unrecognised URI is still handed to Postgres.
+`DetectDriver` now refuses schemes whose driver is not compiled in, with an
+error naming the scheme — but an unknown scheme is not one of those.
+Refusing it is a behaviour change (URIs that "work" today by accident would
+start erroring) and needs its own change with its own justification, not a
+line in a refactor.
+
+### "One place" is, for now, two places
+
+`engine/sqlgen.go` keeps its own `dialect` record — quoting characters,
+type maps, timestamp layouts, boolean literals — for statement
+*generation*, while `pkg/dbdialect` serves statement *compilation*. This is
+deliberate, not an oversight: the generator's record is on the write path,
+and folding it in would be a refactor whose mistakes corrupt destination
+tables rather than failing tests. The merge is the obvious next step and
+waits until the write path has the same differential coverage the compiler
+has. Until then, a backend author touches two records, and this section is
+the notice the decision section otherwise fails to give.
+
+### The dialect travels on the reference
+
+ADR-023's `TableRef` gained a field: `Dialect string`, the backend the
+carried query is written for. This is how the compiler receives the real
+dialect instead of the literal `"postgres"` the sprawl section describes —
+the producer that builds the ref knows the connection, records the dialect,
+and every consumer emits in it rather than re-deriving it and possibly
+disagreeing. A reference that crosses a segment now names the SQL it is
+written in, which ADR-023 should have required from the start.
+
+### Absent capabilities are pinned, not just absent
+
+The "asserted disabled" half of the registry discipline is implemented
+literally: `engine/table_ref_test.go` asserts that an unknown dialect never
+pushes down and that MySQL — which has no `Addresser` yet — never pushes
+down. When Phase 4 gives MySQL a same-server rule, that test fails, which
+is the point: a backend cannot gain a capability by omission, only by a
+change that trips a pinned expectation and replaces it with a differential
+proof.
+
+### One negative retired
+
+The first negative above — "the live tests that would catch a change have
+only just started running anywhere but one machine" — is retired. #339 put
+Postgres and MySQL service containers in CI, and the run logs show the
+suites executing there: the value-fidelity corpus against both backends,
+and the pushdown differential tests against live Postgres. The claim
+"nothing changed" in #341 is as good as those tests, and those tests now
+run on every push.
