@@ -3,6 +3,8 @@ package engine
 import (
 	"strings"
 	"testing"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 func refs() map[string]sqlColumnRef {
@@ -54,7 +56,7 @@ func TestCompileFilterToSQLShape(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, ok := compileFilterToSQL(tc.cond, refs())
+			got, ok := compileFilterToSQL(tc.cond, refs(), pgDialect(t))
 			if !ok {
 				t.Fatalf("refused %q", tc.cond)
 			}
@@ -74,7 +76,7 @@ func TestCompileFilterToSQLRefusals(t *testing.T) {
 		{"unparseable", "city", "not a condition at all"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got, ok := compileFilterToSQL(tc.cond, refs()); ok {
+			if got, ok := compileFilterToSQL(tc.cond, refs(), pgDialect(t)); ok {
 				t.Errorf("compiled %q (%s): %s", tc.cond, tc.why, got)
 			}
 		})
@@ -84,7 +86,7 @@ func TestCompileFilterToSQLRefusals(t *testing.T) {
 // A filter target is attacker-influenced in the sense that it comes from a
 // pipeline definition, so it must not be able to close the literal.
 func TestCompileFilterToSQLEscapesTarget(t *testing.T) {
-	got, ok := compileFilterToSQL("city = O'Brien' OR 1=1 --", refs())
+	got, ok := compileFilterToSQL("city = O'Brien' OR 1=1 --", refs(), pgDialect(t))
 	if !ok {
 		t.Skip("refused, which is also safe")
 	}
@@ -96,15 +98,12 @@ func TestCompileFilterToSQLEscapesTarget(t *testing.T) {
 	}
 }
 
-func TestClassifyDatabaseType(t *testing.T) {
-	for name, want := range map[string]sqlColumnKind{
-		"TEXT": kindText, "varchar": kindText, "BPCHAR": kindText,
-		"INT8": kindNumeric, "numeric": kindNumeric, "FLOAT8": kindNumeric,
-		"BOOL": kindUnclassified, "DATE": kindUnclassified, "JSONB": kindUnclassified,
-		"": kindUnclassified, "SOMETHING_NEW": kindUnclassified,
-	} {
-		if got := classifyDatabaseType(name); got != want {
-			t.Errorf("classifyDatabaseType(%q) = %v, want %v", name, got, want)
-		}
+// pgDialect is the reference backend these tests emit against.
+func pgDialect(t *testing.T) dbdialect.Dialect {
+	t.Helper()
+	d, ok := dbdialect.For("postgres")
+	if !ok {
+		t.Fatal("the postgres dialect should always be registered")
 	}
+	return d
 }

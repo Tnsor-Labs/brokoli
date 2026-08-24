@@ -3,6 +3,8 @@ package engine
 import (
 	"fmt"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // compileAggregateToSQL renders an aggregate rule as a GROUP BY over the
@@ -17,7 +19,7 @@ import (
 // engine's own summation order-independent, not to pretend the two agree.
 //
 // count, min, and max are order-independent and exact, so they compile.
-func compileAggregateToSQL(rule TransformRule, cols map[string]sqlColumnRef) (selectList []string, groupBy []string, outCols []string, ok bool) {
+func compileAggregateToSQL(rule TransformRule, cols map[string]sqlColumnRef, d dbdialect.Dialect) (selectList []string, groupBy []string, outCols []string, ok bool) {
 	if len(rule.GroupBy) == 0 {
 		return nil, nil, nil, false
 	}
@@ -41,7 +43,7 @@ func compileAggregateToSQL(rule TransformRule, cols map[string]sqlColumnRef) (se
 		if ref.Kind != kindText {
 			return nil, nil, nil, false
 		}
-		selectList = append(selectList, ref.Ident+" AS "+quoteIdentPG(g))
+		selectList = append(selectList, ref.Ident+" AS "+d.QuoteIdent(g))
 		groupBy = append(groupBy, ref.Ident)
 		outCols = append(outCols, g)
 	}
@@ -51,17 +53,17 @@ func compileAggregateToSQL(rule TransformRule, cols map[string]sqlColumnRef) (se
 		if name == "" {
 			name = af.Function + "_" + af.Column
 		}
-		expr, ok := aggExprSQL(af, cols)
+		expr, ok := aggExprSQL(af, cols, d)
 		if !ok {
 			return nil, nil, nil, false
 		}
-		selectList = append(selectList, expr+" AS "+quoteIdentPG(name))
+		selectList = append(selectList, expr+" AS "+d.QuoteIdent(name))
 		outCols = append(outCols, name)
 	}
 	return selectList, groupBy, outCols, true
 }
 
-func aggExprSQL(af AggField, cols map[string]sqlColumnRef) (string, bool) {
+func aggExprSQL(af AggField, cols map[string]sqlColumnRef, d dbdialect.Dialect) (string, bool) {
 	switch strings.ToLower(af.Function) {
 	case "count":
 		// The Go implementation returns len(rows): it counts every row in the
@@ -81,7 +83,7 @@ func aggExprSQL(af AggField, cols map[string]sqlColumnRef) (string, bool) {
 		// COALESCE to zero: a group whose values are all null contributes
 		// nothing in Go, which leaves min/max at their zero value rather than
 		// returning null.
-		return fmt.Sprintf("COALESCE(%s(CAST(%s AS DOUBLE PRECISION)), 0)", fn, ref.Ident), true
+		return fmt.Sprintf("COALESCE(%s(%s), 0)", fn, d.CastToFloat(ref.Ident)), true
 
 	default:
 		// sum and avg: see the note on compileAggregateToSQL.

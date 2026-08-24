@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // sqlColumnRef is how the prefix compiler describes one visible column to the
@@ -36,7 +38,7 @@ type sqlColumnRef struct {
 //
 // Where the two cannot be shown to agree, ok is false and the filter runs in
 // the engine.
-func compileFilterToSQL(cond string, cols map[string]sqlColumnRef) (string, bool) {
+func compileFilterToSQL(cond string, cols map[string]sqlColumnRef, d dbdialect.Dialect) (string, bool) {
 	pc, err := parseCondition(cond)
 	if err != nil {
 		return "", false
@@ -72,15 +74,15 @@ func compileFilterToSQL(cond string, cols map[string]sqlColumnRef) (string, bool
 
 	case "=", "==", "!=":
 		// String equality on the rendered value.
-		lhs := col + ` COLLATE "C"`
+		lhs := d.ByteOrderedText(col)
 		if kind == kindNumeric {
-			lhs = "CAST(" + col + " AS TEXT)"
+			lhs = d.CastToText(col)
 		}
 		op := "="
 		if pc.Op == "!=" {
 			op = "<>"
 		}
-		live = fmt.Sprintf("%s %s %s", lhs, op, quoteLiteralPG(pc.Target))
+		live = fmt.Sprintf("%s %s %s", lhs, op, d.QuoteLiteral(pc.Target))
 
 	case ">", "<", ">=", "<=":
 		targetNum, targetIsNum := parseGoFloat(pc.Target)
@@ -88,11 +90,11 @@ func compileFilterToSQL(cond string, cols map[string]sqlColumnRef) (string, bool
 		case kind == kindNumeric && targetIsNum:
 			// Both sides parse, so Go compares numerically -- through
 			// float64, which the cast reproduces.
-			live = fmt.Sprintf("CAST(%s AS DOUBLE PRECISION) %s %s",
-				col, pc.Op, strconv.FormatFloat(targetNum, 'g', -1, 64))
+			live = fmt.Sprintf("%s %s %s",
+				d.CastToFloat(col), pc.Op, strconv.FormatFloat(targetNum, 'g', -1, 64))
 		case kind == kindText && !targetIsNum:
 			// Neither side can parse, so Go compares bytes.
-			live = fmt.Sprintf(`%s COLLATE "C" %s %s`, col, pc.Op, quoteLiteralPG(pc.Target))
+			live = fmt.Sprintf("%s %s %s", d.ByteOrderedText(col), pc.Op, d.QuoteLiteral(pc.Target))
 		default:
 			// A text column against a numeric-looking target is the case that
 			// cannot be compiled: Go decides per row, comparing numerically
@@ -151,10 +153,4 @@ func goOutcomeForNil(pc parsedCondition) (bool, bool) {
 func parseGoFloat(s string) (float64, bool) {
 	f, err := strconv.ParseFloat(s, 64)
 	return f, err == nil
-}
-
-// quoteLiteralPG renders a string as a SQL literal, doubling embedded quotes
-// so a target value cannot close the literal and inject SQL.
-func quoteLiteralPG(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
