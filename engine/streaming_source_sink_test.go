@@ -223,9 +223,27 @@ func TestStreamEligibleCoversSourceAndSink(t *testing.T) {
 		t.Error("a sql sink_file must keep the batch path")
 	}
 
+	// An API sink posts rows in batches either way; streaming changes where
+	// the rows come from, not what is sent.
+	if !r.streamEligible(models.Node{Type: models.NodeTypeSinkAPI,
+		Config: map[string]interface{}{"url": "https://example.com/ingest"}}, o) {
+		t.Error("a sink_api should be stream-eligible")
+	}
+
+	// A file source streams the format whose shape is known before the data
+	// is read, and keeps the batch path for the one whose columns are the
+	// union of every object in the file.
+	if !r.streamEligible(models.Node{Type: models.NodeTypeSourceFile,
+		Config: map[string]interface{}{"path": "/tmp/in.csv"}}, o) {
+		t.Error("a csv source_file should be stream-eligible")
+	}
+	if r.streamEligible(models.Node{Type: models.NodeTypeSourceFile,
+		Config: map[string]interface{}{"path": "/tmp/in.json"}}, o) {
+		t.Error("a json source_file must keep the batch path")
+	}
+
 	for _, typ := range []models.NodeType{
-		models.NodeTypeSourceFile, models.NodeTypeSourceAPI,
-		models.NodeTypeSinkAPI, models.NodeTypeJoin,
+		models.NodeTypeSourceAPI, models.NodeTypeJoin,
 	} {
 		if r.streamEligible(models.Node{Type: typ}, o) {
 			t.Errorf("%s must keep the batch path", typ)
