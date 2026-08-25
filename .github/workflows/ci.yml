@@ -106,6 +106,13 @@ jobs:
       - name: Enable local_infile on the MySQL service
         run: mysql --host=127.0.0.1 --port=3306 -uroot -prootpw -e "SET GLOBAL local_infile=1"
 
+      # The dbt node shells out to dbt-core, and its tests run the real
+      # thing against the Postgres service above. Pinned, because dbt's CLI
+      # and its run_results.json schema both change across minor versions --
+      # an unpinned upgrade quietly changing behaviour is how #348 comes back.
+      - name: Install dbt-core
+        run: pip install --quiet "dbt-core==1.8.9" "dbt-postgres==1.8.2"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

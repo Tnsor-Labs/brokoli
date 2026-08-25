@@ -1,0 +1,14 @@
+version: 2
+
+models:
+  - name: stg_orders
+    columns:
+      - name: id
+        tests:
+          - unique
+          - not_null
+  - name: city_totals
+    columns:
+      - name: city
+        tests:
+          - not_null
