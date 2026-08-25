@@ -136,7 +136,14 @@ type Engine struct {
 	// FailAttempt.
 	RunsRecovered      int64
 	RunsRecoveryFailed int64
-	AttemptsReclaimed  int64
+	// RunsRecoveryRequeued counts interrupted runs recovery put back on the
+	// job queue instead of failing, because nothing with a durable record
+	// could have written outside Brokoli (Tnsor-Labs/brokoli#289). Worth
+	// watching separately from RunsRecovered: a rising count is eviction
+	// pressure rather than a fault, but a run cycling through it repeatedly
+	// is a run that cannot finish.
+	RunsRecoveryRequeued int64
+	AttemptsReclaimed    int64
 
 	// The counters below fill the remaining metrics gaps named by
 	// Tnsor-Labs/brokoli#11: event append/replay (Tnsor-Labs/brokoli#6) and
