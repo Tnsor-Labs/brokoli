@@ -70,8 +70,7 @@ func run(pass *analysis.Pass) (any, error) {
 }
 
 func isExcludedPackage(packagePath string) bool {
-	return strings.HasSuffix(packagePath, "/pkg/netguard") ||
-		strings.HasSuffix(packagePath, "/cmd")
+	return strings.HasSuffix(packagePath, "/pkg/netguard")
 }
 
 func consumeAllowDirective(

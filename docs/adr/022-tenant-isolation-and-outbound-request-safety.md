@@ -281,21 +281,24 @@ shared implementation.
 
 The known remaining Decision B coverage gaps were migrated to `pkg/netguard`,
 including the S3 connection test, notification webhooks and alerts, and
-engine HTTP connector paths.
+engine HTTP connector paths. The migrated paths use `netguard.Outbound()` so
+operator-configured CIDR and private-network allowances apply consistently
+across outbound features.
 
 A repository-local `go/analysis` analyzer now enforces the outbound HTTP
 policy in CI. It detects direct `net/http.Client` construction, including
 type aliases and `new(http.Client)`, as well as `http.DefaultClient` and
 the package-level `Get`, `Head`, `Post`, and `PostForm` helpers. The check
-runs across all Go packages, excluding the client-side CLI and
-`pkg/netguard` itself, and ignores test files.
+runs across all Go packages, excluding `pkg/netguard` itself, and ignores
+test files.
 
-Intentional server-side exceptions require a local
+Intentional exceptions require a local
 `//netguard:allow <justification>` directive immediately above the
 specific use. A directive must include a justification and is consumed
-by only one use. The current exceptions are the operator-configured
-Vault endpoint and plugin index/archive downloads, which intentionally
-support private services and mirrors.
+by only one use. The current exceptions are client-side CLI calls to the
+user's configured Brokoli server, the operator-configured Vault endpoint,
+and plugin index/archive downloads, which intentionally support private
+services and mirrors.
 
 The deferred CI enforcement for Decision B is now implemented. The
 `AllowLoopback: true` audit and Decision A store-layer tenant scoping

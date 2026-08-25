@@ -124,6 +124,7 @@ will use these credentials automatically — no need to pass --api-key.`,
 
 		// Authenticate via the API.
 		body := fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+		//netguard:allow client-side CLI call to the user's configured Brokoli server
 		resp, err := http.Post(server+"/api/auth/login", "application/json", strings.NewReader(body))
 		if err != nil {
 			return fmt.Errorf("connect to %s: %w", server, err)
@@ -180,6 +181,7 @@ var whoamiCmd = &cobra.Command{
 
 		req, _ := http.NewRequest("GET", cfg.Server+"/api/auth/me", nil)
 		req.Header.Set("Authorization", "Bearer "+cfg.Token)
+		//netguard:allow client-side CLI call to the user's configured Brokoli server
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("connect to %s: %w", cfg.Server, err)
