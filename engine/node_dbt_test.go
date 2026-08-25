@@ -262,35 +262,28 @@ func TestDBTCancellationStopsTheProcess(t *testing.T) {
 	}
 }
 
-// An unset profiles_dir must leave DBT_PROFILES_DIR alone. Exporting it
-// empty overrode dbt's own ~/.dbt default, so a project relying on that
-// default could not resolve its profile.
-func TestDBTDoesNotClobberProfilesDirDefault(t *testing.T) {
-	dbtBinary(t)
+// An unset profiles_dir must leave DBT_PROFILES_DIR alone.
+//
+// Exporting it empty -- which this node did -- overrode whatever the
+// operator had set, so a deployment that configures DBT_PROFILES_DIR in the
+// worker's environment (the ordinary way to do it) had it silently replaced
+// with nothing and could not resolve its profile.
+//
+// Deliberately tests the inherited environment rather than dbt's ~/.dbt
+// fallback: overriding HOME mid-process is not a property this code
+// controls, and a test that depends on it is testing the harness.
+func TestDBTDoesNotClobberProfilesDirFromTheEnvironment(t *testing.T) {
 	projectDir, profilesDir := dbtFixtureProject(t)
 
-	// Put the profile where dbt's default lookup finds it, and configure
-	// no profiles_dir at all.
-	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".dbt"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(profilesDir, "profiles.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(home, ".dbt", "profiles.yml"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("HOME", home)
-	t.Setenv("DBT_PROFILES_DIR", "")
-	os.Unsetenv("DBT_PROFILES_DIR")
+	// The operator's setting, in the environment the worker inherits.
+	t.Setenv("DBT_PROFILES_DIR", profilesDir)
 
 	r := dbtRunner(t)
 	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+		// No profiles_dir configured on the node.
 		"command": "seed", "project_dir": projectDir,
 	})); err != nil {
-		t.Fatalf("with no profiles_dir configured, dbt's own default must resolve: %v", err)
+		t.Fatalf("with no profiles_dir on the node, the environment's DBT_PROFILES_DIR must survive: %v", err)
 	}
 }
 
