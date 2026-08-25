@@ -11,6 +11,93 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.73] - 2026-08-25
+
+An interrupted run that wrote nothing now goes back on the queue instead of
+failing. With worker autoscaling on, that turns a routine eviction from a
+failed pipeline someone has to notice into a non-event.
+
+### Added
+
+- **An interrupted run that provably wrote nothing is re-queued** (#289) —
+  @hc12r. When a worker dies or is evicted mid-run, recovery could not tell
+  whether a node's side effect had completed, so it failed the run. That
+  default was right, and it stays — re-running a pipeline whose sink already
+  appended half its rows would double those rows.
+
+  But it was the right default for the wrong population. Autoscaling evicts
+  pods, nodes drain, rolling deploys are routine, and many interrupted runs
+  never reach anything that writes. Those are now re-queued automatically.
+
+  The test is not "did a sink run" but "could anything with a durable record
+  have written outside Brokoli". A node stuck mid-attempt is exactly the
+  ambiguous case, so if such a node could write, the run still fails.
+
+  The rule is a whitelist that defaults to deny. `code` is excluded because
+  it runs arbitrary user code; `source_api` is excluded because its HTTP
+  method is configurable, so a "source" can POST; `migrate`, `dbt` and
+  `notify` write by design; and unknown types, including every plugin node,
+  get no assumption made about them.
+
+  Four guards, each with a test. A deployment with no job queue fails the run
+  rather than parking it pending forever, which is the stranding fixed in
+  #216. Durable cancel intent outranks re-queueing. Re-queues are bounded, so
+  a run that keeps being interrupted becomes visible instead of cycling
+  silently. And a record for a node the current pipeline version no longer
+  contains blocks it.
+
+  **What changes for an operator:** runs that used to fail with "interrupted
+  mid-execution and cannot be safely resumed" may now complete on their own.
+  A new `brokoli_runs_recovery_requeued_total` metric counts them — a rising
+  count is eviction pressure rather than a fault, but one run cycling through
+  it repeatedly is a run that cannot finish.
+
+### Security
+
+- **Every outbound HTTP path now uses the sanctioned client, and CI enforces
+  it** (#320, #266, ADR-022) — @AghastyGD. The S3 connection test built a
+  bare `http.Client` and issued a request to a host derived from unvalidated
+  request fields, in the same file that already used the guarded client
+  correctly for its other connection types. That path, the notification
+  webhook, alerts, and the engine connector paths are all migrated.
+
+  All sixteen outbound call sites now consult the operator's configured
+  policy (`BROKOLI_OUTBOUND_ALLOW_CIDRS`, `BROKOLI_OUTBOUND_ALLOW_PRIVATE`)
+  rather than a hardcoded one, so an internal service reachable from one
+  node type is reachable from all of them.
+
+  A type-aware `go/analysis` pass now fails the build on a new direct
+  `http.Client`, `new(http.Client)`, `http.DefaultClient`, or the
+  package-level HTTP helpers — resolving through type aliases and aliased
+  imports, which a text search would miss. Exceptions require a
+  `//netguard:allow <justification>` directive that must carry a reason and
+  is consumed by exactly one use, so one comment cannot silently cover a
+  second violation added beside it later.
+
+### Internal
+
+- **ADR-025 accepted** (#354) — @hc12r. The dbt integration takes dbt's
+  manifest as its contract and makes a *model*, not a command, the unit of
+  work, with dbt remaining the compiler and executor. Nothing is implemented;
+  what is settled is the direction, so the first implementation does not
+  choose it by accident. Blocked on the Python-packaging decision (#352);
+  implementation tracked in #353.
+
+- **The engine test binary gets a timeout it can finish inside** (#329) —
+  @hc12r. The package measured 581s under `-race` against Go's 600s default:
+  nineteen seconds of headroom, so a loaded runner panicked and named
+  whichever test held the baton rather than anything at fault. CI and
+  preflight now pass `-timeout 15m`, chosen against the job's own 20m limit
+  so a genuine hang still panics with stacks inside the job.
+
+  The dbt tests now overlap each other, 84s to 56s, since each spends about
+  ten seconds in interpreter startup that it waits on rather than computes.
+
+  Parallelising 118 further tests was measured and reverted: it bought ten
+  seconds, because under `-race` with no idle cores the package is CPU-bound,
+  and it introduced an intermittent failure. Splitting the package is the
+  durable fix and now has evidence behind it.
+
 ## [0.10.72] - 2026-08-25
 
 The `dbt` node could not run dbt. Every command it offered failed before
