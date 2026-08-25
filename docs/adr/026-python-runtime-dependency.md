@@ -1,6 +1,7 @@
 # ADR-026: Check for a Python runtime, do not ship one
 
-**Status:** proposed
+**Status:** accepted — the rule is ADR-016's, applied to dbt; implementation
+is #353's Phase 0
 **Date:** 2026-08-25
 
 ## Context
