@@ -132,7 +132,19 @@ jobs:
           npm run build
 
       - name: Test
-        run: go test -v -race ./...
+        # Go's default per-package timeout is 10 minutes, and the engine
+        # package measured 581s under -race on a loaded machine
+        # (Tnsor-Labs/brokoli#329) -- 19 seconds of headroom. A runner
+        # under load therefore panics, and the panic names whichever test
+        # held the baton rather than anything at fault, which reads as
+        # flakiness in an innocent test (#264 has collected some of those).
+        #
+        # 15m is chosen against the job's own 20m limit: a genuine hang
+        # still panics with per-goroutine stacks INSIDE the job, which is
+        # the diagnosable failure, rather than the job being killed from
+        # outside with nothing to read. This raises the ceiling; it does
+        # not lower the package's cost, which is tracked in #329.
+        run: go test -v -race -timeout 15m ./...
 
       - name: Coverage
         run: |
