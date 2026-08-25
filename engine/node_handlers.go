@@ -1203,10 +1203,37 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 		}
 	}
 
+	tableCreated := false
+
+	// #360: create the destination from the source's REAL column types
+	// rather than from a sample of its values. The source is already asked
+	// this question for pushdown; here the answer is kept. Falls back to
+	// value inference when the source cannot report types (a file source
+	// never could), which is what every migration did before.
+	if createTable {
+		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery)
+		if haveTypes {
+			ddl, err := createTableFromSourceTypes(dialect, destTable, sourceDS.Columns, srcTypes)
+			if err != nil {
+				return nil, fmt.Errorf("migrate: %w", err)
+			}
+			if _, err := ExecuteSQL(destURI, ddl); err != nil {
+				return nil, fmt.Errorf("migrate: create %s: %w", destTable, err)
+			}
+			r.log(node.ID, models.LogLevelInfo,
+				"Created %s from the source's column types", destTable)
+			createTable = false
+			tableCreated = true
+		} else {
+			r.log(node.ID, models.LogLevelWarning,
+				"the source did not report column types, so %s will be created from sampled values -- "+
+					"widths and precision may not match the source", destTable)
+		}
+	}
+
 	// Process in chunks
 	totalMigrated := 0
 	totalChunks := (len(sourceDS.Rows) + chunkSize - 1) / chunkSize
-	tableCreated := false
 
 	for i := 0; i < len(sourceDS.Rows); i += chunkSize {
 		if r.ctx.Err() != nil {
