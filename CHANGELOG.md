@@ -11,6 +11,88 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.72] - 2026-08-25
+
+The `dbt` node could not run dbt. Every command it offered failed before
+reading the project, and it shipped that way because nothing ever ran it.
+
+### Fixed
+
+- **The `dbt` node could not execute any dbt command** (#348) — @hc12r. It
+  appended `--output json` to every invocation. That flag exists only on
+  `dbt ls`, so `run`, `test`, `build` and `seed` — every command the UI
+  offers — failed at dbt's option parser before touching the project:
+
+  ```
+  $ dbt run --project-dir /tmp --output json
+  Usage: dbt run [OPTIONS]
+  Error: No such option '--output'.
+  ```
+
+  Verified against dbt-core 1.8.9. `--output json` now goes to `ls` alone;
+  the other commands get `--log-format json`, which is the flag they have.
+
+  It reached production because nothing ever ran it. The only test
+  referencing dbt substituted a fake executor specifically to avoid needing
+  a real project on disk, so the wrapper was never executed against the tool
+  it wraps. The tests added here run real dbt-core against real Postgres,
+  and were checked against the reintroduced defect to confirm they fail on
+  it.
+
+  Three further defects in the same file go with it:
+
+  - `run_results.json` was read relative to the **engine's** working
+    directory rather than the project's, so it resolved to the wrong path
+    for every project that is not the process cwd.
+  - `DBT_PROFILES_DIR` was exported unconditionally, so an unset
+    `profiles_dir` set it to empty and overrode dbt's own `~/.dbt` default,
+    leaving a project that relied on that default unable to resolve its
+    profile.
+  - The command ran without the attempt's context, so a hung dbt ignored
+    both the node timeout and a cancelled run. Every other external call in
+    the engine threads it.
+
+  Failures now name the models that failed rather than reporting an exit
+  code, read from `run_results.json` — which dbt writes even when the
+  command fails, so it carries strictly more than the exit status. dbt's
+  JSON log stream is rendered as its human messages, with anything that does
+  not parse passed through so a stack trace still reaches the run log.
+
+  **If a pipeline has a `dbt` node, it has never run.** There is no data to
+  repair and nothing to re-run — the node failed every time. What changes on
+  upgrade is that it starts working, so a pipeline that was failing at this
+  node will now proceed past it.
+
+### Added
+
+- **ADR-025: run dbt projects as they are, and own the orchestration around
+  them** (#349) — @hc12r. Proposed. Records what the integration should be
+  rather than a shell wrapper: dbt's manifest as the contract, a **model**
+  as the unit of work rather than a command, with each model a node carrying
+  its own status, retry, and lineage, while dbt stays the compiler and
+  executor. A built model is a `TableRef` in ADR-023's sense, so it composes
+  with the pushdown compiler and the dialect layer from ADR-024 instead of
+  duplicating them.
+
+  The rejected alternatives are recorded with their reasons, including a
+  native model layer — architecturally the best fit for what now exists, and
+  commercially the worst, because it asks a team with a working dbt project
+  to rebuild rather than migrate. The cost is stated too: dbt-core as a
+  Python runtime dependency is the first thing that breaks the
+  single-static-binary property, and that packaging decision needs its own
+  ADR before implementation rather than during it.
+
+### Internal
+
+- **The dbt node's tests run real dbt in CI** (#348) — @hc12r. A fixture dbt
+  project (a seed, two models with a genuine `ref` edge, schema tests, and
+  one model that fails at execution rather than compile time) built by
+  dbt-core against the Postgres service container. dbt is pinned, because
+  its CLI and its `run_results.json` schema both drift across minor
+  versions, and an unpinned upgrade quietly changing behaviour is how this
+  defect would return. The tests skip rather than fail when dbt is absent,
+  so a contributor without a Python environment is not blocked.
+
 ## [0.10.71] - 2026-08-25
 
 MySQL becomes a backend on the same footing as Postgres. Two of these are
