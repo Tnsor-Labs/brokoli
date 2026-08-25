@@ -27,13 +27,9 @@ func TestCrashRecoveryBaseline(t *testing.T) {
 	// real-clock grace window (engine/recovery.go) would otherwise defer
 	// every one of these crash points on the first RecoverNonTerminalRuns
 	// call, same as the false-transition-gap race it exists to guard
-	// against. Zero it out here, exactly like the recoveryTransitionGracePeriod
-	// overrides in recovery_test.go, so this harness keeps testing the
-	// reconstruction logic itself rather than the grace period.
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	defer func() { recoveryTransitionGracePeriod = old }()
-
+	// against. The engines these cases build zero it out, so this harness
+	// keeps testing the reconstruction logic itself rather than the grace
+	// period.
 	cases := []struct {
 		name           string
 		point          string
@@ -306,6 +302,10 @@ func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID
 	runID := runs[0].ID
 
 	eng := drainEngineOnCleanup(t, NewEngine(s))
+	// See the note in TestCrashRecoveryBaseline: these fixtures are durable
+	// traces of a dead process, so the real-clock grace window would defer
+	// every one of them.
+	eng.RecoveryTransitionGracePeriod = 0
 	first, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("first RecoverNonTerminalRuns: %v", err)
@@ -361,6 +361,10 @@ func assertCrashRecovery(t *testing.T, dbPath string, wantStatus models.RunStatu
 	defer s.Close()
 
 	eng := drainEngineOnCleanup(t, NewEngine(s))
+	// See the note in TestCrashRecoveryBaseline: these fixtures are durable
+	// traces of a dead process, so the real-clock grace window would defer
+	// every one of them.
+	eng.RecoveryTransitionGracePeriod = 0
 	summary, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("RecoverNonTerminalRuns: %v", err)

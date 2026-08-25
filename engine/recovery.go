@@ -62,10 +62,16 @@ const recoveryBatchSize = 50
 // definite success or an explicit failed-node outcome is unambiguous
 // regardless of timing and does not need this check.
 //
-// A var, not a const — like reclaimSweepInterval, tests override it to a
-// near-zero value so they can assert the "genuinely orphaned, fail now"
-// path without an actual multi-second sleep.
-var recoveryTransitionGracePeriod = 20 * time.Second
+// defaultRecoveryTransitionGracePeriod is the value every Engine starts
+// with. The effective value lives on the Engine
+// (Engine.RecoveryTransitionGracePeriod) rather than in a package
+// variable: tests need to override it to a near-zero value to assert the
+// "genuinely orphaned, fail now" path without a multi-second sleep, and a
+// package-level var made that override process-wide — so no test touching
+// it could ever run in parallel with another, and one test's override
+// could be observed by an unrelated one. Per-engine state has neither
+// problem (Tnsor-Labs/brokoli#264, #329).
+const defaultRecoveryTransitionGracePeriod = 20 * time.Second
 
 // recoveryOutcome classifies what RecoverNonTerminalRuns did with one
 // non-terminal run, for RecoverySummary's counters.
@@ -345,7 +351,7 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		return outcome, reclaimed, ferr
 	default:
 		if lastActivity, ok := lastGenuineActivity(events); ok {
-			if time.Since(lastActivity) < recoveryTransitionGracePeriod {
+			if time.Since(lastActivity) < e.RecoveryTransitionGracePeriod {
 				common.SLog().Info("recovery: deferring run — last activity too recent to rule out a live in-process node transition",
 					common.RunAttr(run.ID), "since_last_event", time.Since(lastActivity))
 				return recoveryOutcomeDeferred, reclaimed, nil
