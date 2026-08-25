@@ -136,6 +136,10 @@ func PrometheusHandler(m *Metrics, s store.Store, e *engine.Engine, sched *engin
 		fmt.Fprintf(w, "# HELP brokoli_runs_recovery_failed_total Non-terminal runs startup recovery had no recoverable path for and forced to failed.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_runs_recovery_failed_total counter\n")
 		fmt.Fprintf(w, "brokoli_runs_recovery_failed_total %d\n", e.RunsRecoveryFailed)
+
+		fmt.Fprintf(w, "# HELP brokoli_runs_recovery_requeued_total Interrupted runs startup recovery put back on the job queue because nothing they reached could have written outside Brokoli.\n")
+		fmt.Fprintf(w, "# TYPE brokoli_runs_recovery_requeued_total counter\n")
+		fmt.Fprintf(w, "brokoli_runs_recovery_requeued_total %d\n", e.RunsRecoveryRequeued)
 		fmt.Fprintf(w, "# HELP brokoli_execution_attempts_reclaimed_total Execution attempts whose expired lease was reclaimed by startup recovery.\n")
 		fmt.Fprintf(w, "# TYPE brokoli_execution_attempts_reclaimed_total counter\n")
 		fmt.Fprintf(w, "brokoli_execution_attempts_reclaimed_total %d\n", e.AttemptsReclaimed)

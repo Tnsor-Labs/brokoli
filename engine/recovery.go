@@ -81,6 +81,10 @@ const (
 	// outcome from its event log (success or failure, matching what the
 	// live process would have persisted) and finalized it.
 	recoveryOutcomeReconciled
+	// recoveryOutcomeRequeued means the run was interrupted before
+	// anything could have been written outside Brokoli, so it went back on
+	// the job queue rather than being failed (Tnsor-Labs/brokoli#289).
+	recoveryOutcomeRequeued
 	// recoveryOutcomeFailed means the run had no recoverable path — its
 	// event log is incomplete or ambiguous — so recovery forced it to
 	// failed with a specific reason rather than leaving it stuck.
@@ -94,6 +98,7 @@ type RecoverySummary struct {
 	RunsScanned       int // total non-terminal runs examined
 	RunsReconciled    int // resolved to a terminal state matching what the live runner would have persisted
 	RunsFailed        int // forced to failed: no recoverable path existed
+	RunsRequeued      int // put back on the queue: interrupted before anything could have been written
 	RunsDeferred      int // left non-terminal: a live-looking lease means another process may still own the work
 	AttemptsReclaimed int // execution_attempts rows whose expired lease was settled to failed
 }
@@ -156,6 +161,8 @@ func (e *Engine) RecoverNonTerminalRuns() (summary *RecoverySummary, err error) 
 			switch outcome {
 			case recoveryOutcomeReconciled:
 				summary.RunsReconciled++
+			case recoveryOutcomeRequeued:
+				summary.RunsRequeued++
 			case recoveryOutcomeFailed:
 				summary.RunsFailed++
 			case recoveryOutcomeDeferred:
@@ -350,6 +357,18 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		} else {
 			reason = fmt.Sprintf("run was interrupted mid-execution and cannot be safely resumed from process-local state (%s never started)", neverStartedNode)
 		}
+
+		// #289: an interrupted run that provably wrote nothing goes back on
+		// the queue instead of being failed. Checked before the dangling
+		// node run is closed out, because a re-queued run's history should
+		// not carry a node closed as failed on a run that is about to
+		// execute again.
+		if requeued, rErr := e.tryRequeueInterruptedRun(run, pipe, latest, events, reason); rErr != nil {
+			return recoveryOutcomeDeferred, reclaimed, rErr
+		} else if requeued {
+			return recoveryOutcomeRequeued, reclaimed, nil
+		}
+
 		if ambiguousNodeRun != nil {
 			e.closeDanglingNodeRun(ambiguousNodeRun, reason)
 		}

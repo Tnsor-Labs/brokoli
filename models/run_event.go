@@ -112,6 +112,25 @@ const (
 	// reason (Payload.Error) rather than leaving it stuck non-terminal
 	// forever.
 	RunEventRecoveryFailed RunEventType = "run.recovery_failed"
+
+	// RunEventRecoveryRequeued marks startup recovery putting an
+	// interrupted run back on the job queue rather than failing it
+	// (Tnsor-Labs/brokoli#289).
+	//
+	// Recovery's default for an interrupted run is to fail it, because it
+	// cannot tell whether a node's side effect completed. This event is
+	// the narrower case where it can: every node with a durable record was
+	// of a type that provably cannot write outside Brokoli, so re-running
+	// from the beginning has nothing to duplicate. Worker eviction and
+	// node drains make this the ordinary shape of an interruption.
+	//
+	// Like RunEventRecoveryFailed, this event carries its own state
+	// transition — Payload.Status is always RunStatusPending — because the
+	// run is going back to where it was before a worker claimed it. The
+	// event log therefore records every automatic re-queue, which is both
+	// the audit trail and what bounds them: recovery counts these to stop
+	// a run cycling forever.
+	RunEventRecoveryRequeued RunEventType = "run.recovery_requeued"
 )
 
 // RunEvent is a single immutable, append-only fact about a run or a node

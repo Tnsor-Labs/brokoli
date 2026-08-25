@@ -89,6 +89,17 @@ func ProjectRun(runID string, events []models.RunEvent) *models.Run {
 			run.FinishedAt = p.FinishedAt
 			run.Error = p.Error
 
+		case models.RunEventRecoveryRequeued:
+			// Carries its own transition, back to pending: the run is
+			// returning to the state it was in before a worker claimed
+			// it, so a later projection must not still see it running.
+			// StartedAt is cleared for the same reason — the run that
+			// started is not the run that will now execute.
+			run.Status = models.RunStatusPending
+			run.StartedAt = nil
+			run.FinishedAt = nil
+			run.Error = p.Error
+
 		case models.RunEventRecoveryStarted, models.RunEventRecoveryCompleted:
 			// Informational only — the audit trail of a startup recovery
 			// pass. Any state change is carried by the RunEventTerminal (or
