@@ -18,16 +18,16 @@ import (
 // uncontended pod sees single-digit milliseconds, exceeding the original
 // 10s grace period and reproducing the identical bug
 // TestRecoverNonTerminalRunsDefersRecentNodeTransition already covers for
-// the uncontended case. recoveryTransitionGracePeriod must stay at least
+// the uncontended case. The default grace period must stay at least
 // as wide as reclaimSweepInterval — narrower defeats the whole point (an
 // uncontended transition was already "milliseconds, not seconds"; the
 // grace period exists specifically for the contended case, and shrinking
 // it back below where contention was actually observed silently
 // reintroduces this exact race).
 func TestRecoveryTransitionGracePeriodCoversRealContention(t *testing.T) {
-	if recoveryTransitionGracePeriod < reclaimSweepInterval {
-		t.Fatalf("recoveryTransitionGracePeriod = %s, want >= reclaimSweepInterval (%s) — narrowing this reintroduces the false-reclaim race found under real pod contention",
-			recoveryTransitionGracePeriod, reclaimSweepInterval)
+	if defaultRecoveryTransitionGracePeriod < reclaimSweepInterval {
+		t.Fatalf("defaultRecoveryTransitionGracePeriod = %s, want >= reclaimSweepInterval (%s) — narrowing this reintroduces the false-reclaim race found under real pod contention",
+			defaultRecoveryTransitionGracePeriod, reclaimSweepInterval)
 	}
 }
 
@@ -42,7 +42,13 @@ func newRecoveryTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}
 	t.Cleanup(func() { _ = s.Close() })
-	return drainEngineOnCleanup(t, NewEngine(s)), s
+	eng := drainEngineOnCleanup(t, NewEngine(s))
+	// No grace: these tests seed a durable trace and assert recovery's
+	// classification of it, with no live process to be confused with. The
+	// old package-level override did this globally; per-engine it cannot
+	// leak into anything else.
+	eng.RecoveryTransitionGracePeriod = 0
+	return eng, s
 }
 
 // seedRecoveryPipeline creates a two-node source->sink pipeline. Recovery
@@ -284,10 +290,6 @@ func TestRecoverNonTerminalRunsFinalizesFailedNodeAsFailed(t *testing.T) {
 // must not guess; it marks the run failed via the dedicated
 // RunEventRecoveryFailed event type instead of the ordinary RunEventTerminal.
 func TestRecoverNonTerminalRunsMarksNoRecoverablePathFailed(t *testing.T) {
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	defer func() { recoveryTransitionGracePeriod = old }()
-
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-no-nodes")
 	run := seedOrphanedRun(t, s, "pipe-no-nodes", "run-no-nodes", models.RunStatusRunning)
@@ -336,10 +338,6 @@ func TestRecoverNonTerminalRunsMarksNoRecoverablePathFailed(t *testing.T) {
 // tell, so this must never be folded into success or failure, only
 // "no recoverable path".
 func TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath(t *testing.T) {
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	defer func() { recoveryTransitionGracePeriod = old }()
-
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-mid-attempt")
 	run := seedOrphanedRun(t, s, "pipe-mid-attempt", "run-mid-attempt", models.RunStatusRunning)
@@ -406,6 +404,11 @@ func TestRecoverNonTerminalRunsMarksMidAttemptNodeAsNoRecoverablePath(t *testing
 // does for an explicit lease.
 func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 	eng, s := newRecoveryTestEngine(t)
+	// This is the one test in the file that needs the grace period ON: its
+	// whole point is that recent activity defers. A wide window makes that
+	// hold regardless of machine load, where the production default would
+	// also work but would tie the assertion to a 20s wall clock.
+	eng.RecoveryTransitionGracePeriod = time.Hour
 	seedRecoveryPipeline(t, s, "pipe-recent-transition")
 	run := seedOrphanedRun(t, s, "pipe-recent-transition", "run-recent-transition", models.RunStatusRunning)
 
@@ -463,11 +466,13 @@ func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 // the second pass reclaim it, despite the first pass's RecoveryStarted
 // event being newer than the grace period at call time.
 func TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers(t *testing.T) {
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 30 * time.Millisecond
-	defer func() { recoveryTransitionGracePeriod = old }()
-
 	eng, s := newRecoveryTestEngine(t)
+	// Pass 1 must see the seeded events as recent. A wide grace period makes
+	// that true regardless of how loaded the machine is; the previous
+	// version used 30ms and a real sleep, which lost the race under load and
+	// failed on its own pass-1 assertion (Tnsor-Labs/brokoli#264).
+	eng.RecoveryTransitionGracePeriod = time.Hour
+
 	seedRecoveryPipeline(t, s, "pipe-repeated-defer")
 	run := seedOrphanedRun(t, s, "pipe-repeated-defer", "run-repeated-defer", models.RunStatusRunning)
 
@@ -497,7 +502,17 @@ func TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers(t *testing.T) 
 		t.Fatalf("status after pass 1 = %s, want still running", got.Status)
 	}
 
-	time.Sleep(60 * time.Millisecond) // past recoveryTransitionGracePeriod
+	// Age the run's GENUINE activity into the past, leaving pass 1's own
+	// RunEventRecoveryStarted at its real timestamp. That is the exact
+	// arrangement the bug turned on: with recovery counting its own
+	// bookkeeping as activity, the newest event is always fresh and the run
+	// defers forever; counting only genuine activity, it is now old enough
+	// to reclaim.
+	//
+	// Done with SQL because AppendEvent stamps CreatedAt with time.Now()
+	// and offers no way to seed a backdated event.
+	backdateGenuineActivity(t, s, run.ID, time.Now().UTC().Add(-time.Minute))
+	eng.RecoveryTransitionGracePeriod = 10 * time.Second
 
 	summary2, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
@@ -597,10 +612,6 @@ func TestRecoverNonTerminalRunsDefersToLiveLease(t *testing.T) {
 // than left claimed forever, and that the run itself still proceeds through
 // the normal event-log reconciliation afterward.
 func TestRecoverNonTerminalRunsReclaimsExpiredLease(t *testing.T) {
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	defer func() { recoveryTransitionGracePeriod = old }()
-
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-expired-lease")
 	run := seedOrphanedRun(t, s, "pipe-expired-lease", "run-expired-lease", models.RunStatusRunning)
@@ -723,10 +734,6 @@ func createTestAttempt(t *testing.T, s *store.SQLiteStore, runID, nodeID string,
 // mirroring what #203 guaranteed for the live path. Without the flag this
 // exact setup is the forced-failed case covered above.
 func TestRecoverNonTerminalRunsHonorsDurableCancelIntent(t *testing.T) {
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	defer func() { recoveryTransitionGracePeriod = old }()
-
 	eng, s := newRecoveryTestEngine(t)
 	seedRecoveryPipeline(t, s, "pipe-cancel-intent")
 	run := seedOrphanedRun(t, s, "pipe-cancel-intent", "run-cancel-intent", models.RunStatusRunning)
@@ -766,5 +773,25 @@ func TestRecoverNonTerminalRunsHonorsDurableCancelIntent(t *testing.T) {
 	}
 	if containsEventType(types, models.RunEventRecoveryFailed) {
 		t.Errorf("events %v contain RunEventRecoveryFailed — the cancel intent was ignored", types)
+	}
+}
+
+// backdateGenuineActivity ages every event on a run EXCEPT recovery's own
+// bookkeeping, so a test can put real activity in the past while leaving
+// recovery's RecoveryStarted marker fresh. AppendEvent always stamps
+// CreatedAt with the current time, so this is the only way to arrange it.
+func backdateGenuineActivity(t *testing.T, s *store.SQLiteStore, runID string, to time.Time) {
+	t.Helper()
+	if err := s.WithTx(func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`UPDATE run_events SET created_at = ? WHERE run_id = ? AND event_type NOT IN (?, ?, ?)`,
+			to.Format(time.RFC3339Nano), runID,
+			string(models.RunEventRecoveryStarted),
+			string(models.RunEventRecoveryCompleted),
+			string(models.RunEventRecoveryFailed),
+		)
+		return err
+	}); err != nil {
+		t.Fatalf("backdate genuine activity: %v", err)
 	}
 }

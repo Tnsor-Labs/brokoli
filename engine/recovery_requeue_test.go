@@ -44,6 +44,9 @@ func newRequeueTestEngine(t *testing.T) (*Engine, *store.SQLiteStore, *idempoten
 	}
 	t.Cleanup(func() { _ = s.Close() })
 	eng := drainEngineOnCleanup(t, NewEngine(s))
+	// No grace: these fixtures are durable traces of an already-dead
+	// process, not a live run to be confused with one.
+	eng.RecoveryTransitionGracePeriod = 0
 	queue := newIdempotentFakeQueue()
 	eng.JobQueue = queue
 	return eng, s, queue
@@ -77,19 +80,11 @@ func seedInterruptedRun(t *testing.T, s *store.SQLiteStore, pipeID, runID string
 	return run
 }
 
-func withZeroGracePeriod(t *testing.T) {
-	t.Helper()
-	old := recoveryTransitionGracePeriod
-	recoveryTransitionGracePeriod = 0
-	t.Cleanup(func() { recoveryTransitionGracePeriod = old })
-}
-
 // The case the issue was filed for: a worker evicted while the SOURCE node
 // was running. Nothing downstream existed yet, so there is nothing to
 // duplicate and the run belongs back on the queue rather than in a human's
 // inbox.
 func TestRecoveryRequeuesInterruptedRunThatWroteNothing(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, queue := newRequeueTestEngine(t)
 	seedRequeuePipeline(t, s, "p-requeue", models.NodeTypeTransform)
 	run := seedInterruptedRun(t, s, "p-requeue", "run-requeue", "source")
@@ -136,7 +131,6 @@ func TestRecoveryRequeuesInterruptedRunThatWroteNothing(t *testing.T) {
 // written some or all of its rows. Re-running would duplicate them, so this
 // must still fail.
 func TestRecoveryDoesNotRequeueWhenASinkWasInFlight(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, queue := newRequeueTestEngine(t)
 	seedRequeuePipeline(t, s, "p-sink-inflight", models.NodeTypeTransform)
 	run := seedInterruptedRun(t, s, "p-sink-inflight", "run-sink-inflight", "sink", "source", "mid")
@@ -163,7 +157,6 @@ func TestRecoveryDoesNotRequeueWhenASinkWasInFlight(t *testing.T) {
 // A sink that COMPLETED is if anything worse: its rows are definitely
 // written, so a re-run definitely duplicates them.
 func TestRecoveryDoesNotRequeueAfterASinkCompleted(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, queue := newRequeueTestEngine(t)
 	// mid runs after the sink here only so that something is left in
 	// flight; what matters is the sink's completed record.
@@ -182,7 +175,6 @@ func TestRecoveryDoesNotRequeueAfterASinkCompleted(t *testing.T) {
 // it did. It is in the pipeline's middle, which is exactly where someone
 // would put a "post to our internal API" script.
 func TestRecoveryDoesNotRequeueWhenACodeNodeRan(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, queue := newRequeueTestEngine(t)
 	seedRequeuePipeline(t, s, "p-code", models.NodeTypeCode)
 	run := seedInterruptedRun(t, s, "p-code", "run-code", "mid", "source")
@@ -199,7 +191,6 @@ func TestRecoveryDoesNotRequeueWhenACodeNodeRan(t *testing.T) {
 // parking it pending would strand it forever — the failure mode #216
 // describes. Failing is correct there.
 func TestRecoveryDoesNotRequeueWithoutAJobQueue(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, _ := newRequeueTestEngine(t)
 	eng.JobQueue = nil
 	seedRequeuePipeline(t, s, "p-noqueue", models.NodeTypeTransform)
@@ -225,7 +216,6 @@ func TestRecoveryDoesNotRequeueWithoutAJobQueue(t *testing.T) {
 // to stop, and putting it back on the queue would restart work they
 // cancelled.
 func TestRecoveryDoesNotRequeueACancelledRun(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, queue := newRequeueTestEngine(t)
 	seedRequeuePipeline(t, s, "p-cancelled", models.NodeTypeTransform)
 	run := seedInterruptedRun(t, s, "p-cancelled", "run-cancelled", "source")
@@ -254,7 +244,6 @@ func TestRecoveryDoesNotRequeueACancelledRun(t *testing.T) {
 // become visible, or this feature replaces a failed run with an invisible
 // infinite loop.
 func TestRecoveryRequeueIsBounded(t *testing.T) {
-	withZeroGracePeriod(t)
 	eng, s, _ := newRequeueTestEngine(t)
 	seedRequeuePipeline(t, s, "p-bounded", models.NodeTypeTransform)
 	run := seedInterruptedRun(t, s, "p-bounded", "run-bounded", "source")

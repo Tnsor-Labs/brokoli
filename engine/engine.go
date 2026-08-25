@@ -143,7 +143,19 @@ type Engine struct {
 	// pressure rather than a fault, but a run cycling through it repeatedly
 	// is a run that cannot finish.
 	RunsRecoveryRequeued int64
-	AttemptsReclaimed    int64
+
+	// RecoveryTransitionGracePeriod is how long recovery treats a run's
+	// recent activity as possibly-still-live before declaring it orphaned.
+	// NewEngine sets it to defaultRecoveryTransitionGracePeriod; zero means
+	// no grace at all, which is what a test asserting the "genuinely
+	// orphaned, fail now" path wants.
+	//
+	// A field rather than a package variable so one test's override cannot
+	// be observed by another engine in the same process, which is both a
+	// correctness property and what lets tests that touch it run in
+	// parallel (Tnsor-Labs/brokoli#264, #329).
+	RecoveryTransitionGracePeriod time.Duration
+	AttemptsReclaimed             int64
 
 	// The counters below fill the remaining metrics gaps named by
 	// Tnsor-Labs/brokoli#11: event append/replay (Tnsor-Labs/brokoli#6) and
@@ -288,17 +300,18 @@ func NewEngine(s store.Store) *Engine {
 		checkpointDir = "./brokoli-pagination-checkpoints"
 	}
 	return &Engine{
-		store:                     s,
-		shutdown:                  make(chan struct{}),
-		eventCh:                   make(chan models.Event, eventBuf),
-		active:                    make(map[string]*Runner),
-		maxConcurrent:             maxC,
-		runSem:                    make(chan struct{}, maxC),
-		ArtifactStore:             NewLocalDiskArtifactStore(artifactDir),
-		SpillThresholdBytes:       spillThreshold,
-		StreamThresholdBytes:      streamThreshold,
-		PaginationCheckpointStore: NewLocalDiskPaginationCheckpointStore(checkpointDir),
-		InstanceID:                common.NewID(),
+		store:                         s,
+		RecoveryTransitionGracePeriod: defaultRecoveryTransitionGracePeriod,
+		shutdown:                      make(chan struct{}),
+		eventCh:                       make(chan models.Event, eventBuf),
+		active:                        make(map[string]*Runner),
+		maxConcurrent:                 maxC,
+		runSem:                        make(chan struct{}, maxC),
+		ArtifactStore:                 NewLocalDiskArtifactStore(artifactDir),
+		SpillThresholdBytes:           spillThreshold,
+		StreamThresholdBytes:          streamThreshold,
+		PaginationCheckpointStore:     NewLocalDiskPaginationCheckpointStore(checkpointDir),
+		InstanceID:                    common.NewID(),
 	}
 }
 
