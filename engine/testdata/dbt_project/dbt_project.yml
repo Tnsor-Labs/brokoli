@@ -1,0 +1,18 @@
+# A minimal but real dbt project, used by the dbt node's tests.
+#
+# It exists because the node it tests shipped unable to run any dbt command
+# at all (#348): the only test that referenced dbt substituted a fake
+# executor to avoid needing a project on disk, so nothing ever invoked the
+# tool being wrapped. A fixture that real dbt parses and builds is the
+# minimum for that class of defect to be caught.
+name: "brokoli_fixture"
+version: "1.0.0"
+config-version: 2
+profile: "brokoli_fixture"
+model-paths: ["models"]
+seed-paths: ["seeds"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+models:
+  brokoli_fixture:
+    +materialized: table

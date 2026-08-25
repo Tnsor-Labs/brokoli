@@ -13,8 +13,23 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
-// runDBT executes a dbt command (run, test, build, seed, snapshot) and returns
-// structured results. Requires dbt-core installed and a dbt project directory.
+// dbtCommands are the subcommands this node will invoke, and the ones the UI
+// offers. Anything else is refused by name rather than passed through: the
+// argument list below is assembled for these, and a command with different
+// flags would be handed options it does not accept -- which is exactly the
+// defect this file was rewritten to fix (#348).
+var dbtCommands = map[string]bool{
+	"run": true, "test": true, "build": true, "seed": true,
+	"snapshot": true, "compile": true, "ls": true,
+}
+
+// runDBT executes a dbt command against an existing dbt project and returns
+// its per-model results.
+//
+// This shells out to dbt-core, which must be installed on the worker. ADR-025
+// proposes replacing this with a model-level integration that reads dbt's
+// manifest; until that exists, the contract here is narrow: run the command,
+// report what dbt reported, and fail loudly when dbt fails.
 func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	command, _ := node.Config["command"].(string)
 	projectDir, _ := node.Config["project_dir"].(string)
@@ -26,23 +41,14 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	if command == "" {
 		command = "run"
 	}
-
-	validCommands := map[string]bool{
-		"run": true, "test": true, "build": true, "seed": true,
-		"snapshot": true, "compile": true, "ls": true,
-	}
-	if !validCommands[command] {
+	if !dbtCommands[command] {
 		return nil, fmt.Errorf("dbt: unsupported command %q (allowed: run, test, build, seed, snapshot, compile, ls)", command)
 	}
-
 	if projectDir == "" {
 		projectDir = "."
 	}
 
-	// Build dbt command args
-	args := []string{command}
-	args = append(args, "--project-dir", projectDir)
-
+	args := []string{command, "--project-dir", projectDir}
 	if profiles != "" {
 		args = append(args, "--profiles-dir", profiles)
 	}
@@ -55,77 +61,156 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	if varsJSON != "" {
 		args = append(args, "--vars", varsJSON)
 	}
-
-	// Output format: JSON for machine-readable results
-	args = append(args, "--output", "json", "--no-use-colors")
+	// --output json is a flag on `dbt ls` alone. Appending it to every
+	// command -- which this node did until #348 -- makes dbt exit at its
+	// option parser before reading the project, so run/test/build/seed
+	// could never execute. The machine-readable flag those commands do
+	// have is --log-format json, and the authoritative per-model result is
+	// run_results.json in the project's target directory.
+	if command == "ls" {
+		args = append(args, "--output", "json")
+	}
+	args = append(args, "--log-format", "json", "--no-use-colors")
 
 	r.log(node.ID, models.LogLevelInfo, "Running: dbt %s", strings.Join(args, " "))
 
-	cmd := exec.Command("dbt", args...)
+	// The attempt's context, so the node's configured timeout and a
+	// cancelled run both stop dbt where it is. Without it a hung invocation
+	// outlived both, which no other external call in the engine allows.
+	cmd := exec.CommandContext(r.ctx, "dbt", args...)
 	cmd.Dir = projectDir
-	cmd.Env = append(os.Environ(), "DBT_PROFILES_DIR="+profiles)
+	// Only override DBT_PROFILES_DIR when one was configured. Setting it
+	// unconditionally exported an empty value and overrode dbt's own
+	// ~/.dbt default, so a project relying on that default could not
+	// resolve its profile.
+	if profiles != "" {
+		cmd.Env = append(os.Environ(), "DBT_PROFILES_DIR="+profiles)
+	}
 
 	start := time.Now()
 	output, err := cmd.CombinedOutput()
 	duration := time.Since(start)
-
 	outputStr := string(output)
 
-	// Log dbt output line by line
 	for _, line := range strings.Split(outputStr, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			r.log(node.ID, models.LogLevelInfo, "[dbt] %s", line)
+		if line = strings.TrimSpace(line); line != "" {
+			r.log(node.ID, models.LogLevelInfo, "[dbt] %s", dbtLogLine(line))
 		}
 	}
 
+	// run_results.json is written even when the command fails, and it names
+	// which models failed -- strictly better than an exit code, so it is
+	// read on both paths.
+	results, resultsErr := readDbtRunResults(projectDir)
+
 	if err != nil {
-		return nil, fmt.Errorf("dbt %s failed (%.1fs): %s\n%s", command, duration.Seconds(), err, outputStr)
+		if ctxErr := r.ctx.Err(); ctxErr != nil {
+			return nil, fmt.Errorf("dbt %s cancelled after %.1fs: %w", command, duration.Seconds(), ctxErr)
+		}
+		if resultsErr == nil {
+			if failed := failedDbtNodes(results); len(failed) > 0 {
+				return nil, fmt.Errorf("dbt %s failed (%.1fs): %s",
+					command, duration.Seconds(), strings.Join(failed, ", "))
+			}
+		}
+		return nil, fmt.Errorf("dbt %s failed (%.1fs): %w", command, duration.Seconds(), err)
 	}
 
 	r.log(node.ID, models.LogLevelInfo, "dbt %s completed in %.1fs", command, duration.Seconds())
 
-	// Parse results into a dataset
-	ds := parseDbtResults(command, outputStr)
-	return ds, nil
-}
-
-// parseDbtResults converts dbt JSON output into a DataSet for downstream nodes.
-func parseDbtResults(command, output string) *common.DataSet {
-	// Try to parse dbt JSON output
-	var results []map[string]interface{}
-	if err := json.Unmarshal([]byte(output), &results); err == nil && len(results) > 0 {
-		return common.ConvertToDataSet(results)
+	if resultsErr == nil && len(results.Results) > 0 {
+		return dbtResultsDataSet(results), nil
 	}
-
-	// Fallback: parse dbt run_results.json if available
-	resultsPath := filepath.Join("target", "run_results.json")
-	if data, err := os.ReadFile(resultsPath); err == nil {
-		var runResults struct {
-			Results []struct {
-				UniqueID      string  `json:"unique_id"`
-				Status        string  `json:"status"`
-				ExecutionTime float64 `json:"execution_time"`
-				Message       string  `json:"message"`
-			} `json:"results"`
-		}
-		if json.Unmarshal(data, &runResults) == nil {
-			rows := make([]map[string]interface{}, 0, len(runResults.Results))
-			for _, res := range runResults.Results {
-				rows = append(rows, map[string]interface{}{
-					"model":          res.UniqueID,
-					"status":         res.Status,
-					"execution_time": res.ExecutionTime,
-					"message":        res.Message,
-				})
-			}
-			return common.ConvertToDataSet(rows)
-		}
-	}
-
-	// Final fallback: single row with command output
+	// ls and compile write no run_results.json; neither does a command that
+	// selected nothing. The output stays available rather than being
+	// discarded.
 	return &common.DataSet{
 		Columns: []string{"command", "output"},
-		Rows:    []common.DataRow{{"command": command, "output": strings.TrimSpace(output)}},
+		Rows:    []common.DataRow{{"command": command, "output": strings.TrimSpace(outputStr)}},
+	}, nil
+}
+
+// dbtRunResults is the subset of dbt's run_results.json this node reads. The
+// file is a documented dbt artifact with its own schema version; only fields
+// stable across the 1.x line are taken, and an unknown shape degrades to the
+// raw output rather than failing the node.
+type dbtRunResults struct {
+	Results []struct {
+		UniqueID      string  `json:"unique_id"`
+		Status        string  `json:"status"`
+		ExecutionTime float64 `json:"execution_time"`
+		Message       string  `json:"message"`
+		FailuresRaw   *int    `json:"failures"`
+	} `json:"results"`
+}
+
+// readDbtRunResults reads the project's run_results.json.
+//
+// The path is resolved against the project directory. Reading it relative to
+// the engine's working directory -- as this did until #348 -- resolved to the
+// wrong path for every project that is not the process cwd, which is every
+// real deployment.
+func readDbtRunResults(projectDir string) (dbtRunResults, error) {
+	var out dbtRunResults
+	data, err := os.ReadFile(filepath.Join(projectDir, "target", "run_results.json"))
+	if err != nil {
+		return out, err
 	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return out, err
+	}
+	return out, nil
+}
+
+func failedDbtNodes(res dbtRunResults) []string {
+	var failed []string
+	for _, r := range res.Results {
+		switch strings.ToLower(r.Status) {
+		case "error", "fail", "runtime error":
+			label := r.UniqueID
+			if r.Message != "" {
+				label += " (" + r.Message + ")"
+			}
+			failed = append(failed, label)
+		}
+	}
+	return failed
+}
+
+func dbtResultsDataSet(res dbtRunResults) *common.DataSet {
+	ds := &common.DataSet{Columns: []string{"model", "status", "execution_time", "message", "failures"}}
+	for _, r := range res.Results {
+		failures := interface{}(nil)
+		if r.FailuresRaw != nil {
+			failures = *r.FailuresRaw
+		}
+		ds.Rows = append(ds.Rows, common.DataRow{
+			"model":          r.UniqueID,
+			"status":         r.Status,
+			"execution_time": r.ExecutionTime,
+			"message":        r.Message,
+			"failures":       failures,
+		})
+	}
+	return ds
+}
+
+// dbtLogLine renders one line of dbt's JSON log stream for the run log. With
+// --log-format json each line is an object whose "info" carries the human
+// message; anything that does not parse is passed through unchanged, so a
+// plain-text line or a stack trace still reaches the author.
+func dbtLogLine(line string) string {
+	if !strings.HasPrefix(line, "{") {
+		return line
+	}
+	var entry struct {
+		Info struct {
+			Msg   string `json:"msg"`
+			Level string `json:"level"`
+		} `json:"info"`
+	}
+	if err := json.Unmarshal([]byte(line), &entry); err != nil || entry.Info.Msg == "" {
+		return line
+	}
+	return entry.Info.Msg
 }
