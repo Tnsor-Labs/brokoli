@@ -1,6 +1,7 @@
 # ADR-025: Run dbt projects as they are, and own the orchestration around them
 
-**Status:** proposed
+**Status:** accepted — direction agreed; implementation blocked on the
+Python-packaging decision (see Follow-ups)
 **Date:** 2026-08-25
 
 ## Context
@@ -232,8 +233,26 @@ back is a half-integration.
   and add the missing context/timeout handling, or mark the node
   unavailable in the UI. Shipping a node that fails at dbt's option parser
   for every command it offers is worse than not shipping it. Filed as its own
-  issue (#348).
+  issue (#348) — **fixed and released in v0.10.72**, so the node now runs
+  commands honestly. That is a working shell-out, not this ADR.
 - The packaging decision for a Python runtime dependency needs its own ADR
-  before implementation starts, not during it.
+  before implementation starts, not during it. Filed as #352, and it blocks
+  everything below.
+- Implementation is tracked in #353, whose Phase 0 (the manifest reader) is
+  the only part unblocked by #352: it is pure parsing against pinned
+  fixtures and needs no Python at run time.
 - Revisit Option B as an addition once dbt projects run, for teams starting
   from nothing.
+
+## Update (2026-08-25): accepted
+
+Accepted as the direction. Nothing is implemented yet and the acceptance
+does not pretend otherwise — what is settled is which of the three shapes
+in the Context section the work takes, so that the first implementation does
+not decide it by accident.
+
+Two things this deliberately does not settle, both recorded so they cannot
+be resolved silently by whoever starts first: how a Python runtime
+dependency ships (#352, which blocks implementation), and whether model-level
+dispatch invokes dbt per model or per subset — the ADR calls that a
+measurement rather than an opinion, and it stays one.

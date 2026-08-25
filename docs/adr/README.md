@@ -92,7 +92,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-022](./022-tenant-isolation-and-outbound-request-safety.md) | Enforce tenant isolation and outbound-request safety at the data/network layer, not per-handler | Proposed |
 | [ADR-023](./023-reference-kinds-and-the-data-plane.md) | Reference kinds, so the engine can stay out of the data path | Accepted |
 | [ADR-024](./024-database-backend-abstraction.md) | One place a database backend is described, and capabilities it has to earn | Accepted |
-| [ADR-025](./025-dbt-integration.md) | Run dbt projects as they are, and own the orchestration around them | Proposed |
+| [ADR-025](./025-dbt-integration.md) | Run dbt projects as they are, and own the orchestration around them | Accepted |
 
 ## How to add a new ADR
 
