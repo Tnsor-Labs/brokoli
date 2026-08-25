@@ -779,7 +779,7 @@ func (h *NotificationSettingsHandler) Test(w http.ResponseWriter, r *http.Reques
 		payload["channel"] = channel
 	}
 	data, _ := json.Marshal(payload)
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(webhook, "application/json", strings.NewReader(string(data)))
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "webhook request failed: "+err.Error())

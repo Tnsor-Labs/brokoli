@@ -2006,9 +2006,9 @@ func (r *Runner) fireHook(hookName string, extra map[string]string) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	// netguard.Default: hook.URL is arbitrary pipeline-editor-supplied
-	// config (models.Pipeline.Hooks) -- there was no SSRF protection
-	// here at all previously.
+	// hook.URL is arbitrary pipeline-editor-supplied config
+	// (models.Pipeline.Hooks), so it must use the operator-configured
+	// outbound policy. There was no SSRF protection here previously.
 	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Do(req)
 	if err != nil {

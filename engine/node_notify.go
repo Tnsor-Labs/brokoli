@@ -57,7 +57,7 @@ func (r *Runner) notifySlack(node models.Node, webhookURL, channel, message stri
 	}
 
 	body, _ := json.Marshal(payload)
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("slack notification failed: %w", err)
@@ -89,7 +89,7 @@ func (r *Runner) notifyWebhook(node models.Node, webhookURL, message string, inp
 	}
 
 	body, _ := json.Marshal(payload)
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("webhook notification failed: %w", err)

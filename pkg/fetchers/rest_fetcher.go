@@ -137,12 +137,12 @@ func (f *RESTFetcher) FetchPageContext(ctx context.Context, source string, optio
 }
 
 // outboundPolicy is the SSRF policy used for externally-supplied
-// source_api URLs. A package var, not a hardcoded netguard.Default,
-// solely so this package's own tests (which fetch from httptest.Server
-// -- i.e. loopback -- to simulate an external API, not to exercise the
-// SSRF guard itself) can relax it in TestMain; see fetchers_test.go.
-// Production always runs with the netguard.Default this is initialized
-// to.
+// source_api URLs. A package var, rather than calling netguard.Outbound
+// for every request, solely so this package's own tests (which fetch from
+// httptest.Server -- i.e. loopback -- to simulate an external API, not to
+// exercise the SSRF guard itself) can relax it in TestMain; see
+// fetchers_test.go. Production uses the operator-configured policy returned
+// by netguard.Outbound.
 var outboundPolicy = netguard.Outbound()
 
 // SetOutboundPolicyForTesting overrides the SSRF policy RESTFetcher uses
@@ -153,7 +153,7 @@ var outboundPolicy = netguard.Outbound()
 // loopback, to simulate an external API rather than to test the SSRF
 // guard itself -- needs this from its own TestMain, not just this
 // package's. Not for use outside tests; production always runs with
-// this var's real initializer (netguard.Default).
+// this var's real initializer (netguard.Outbound()).
 func SetOutboundPolicyForTesting(p netguard.Policy) (restore func()) {
 	prev := outboundPolicy
 	outboundPolicy = p
@@ -238,7 +238,7 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 	// Brokoli server. A relative path is an implicit self-reference to the
 	// trusted server — in k8s/docker deployments BROKOLI_SERVER_URL
 	// typically resolves to a private cluster IP (10.x / 172.16.x /
-	// ClusterIP) or loopback, which netguard.Default would otherwise
+	// ClusterIP) or loopback, which the default policy would otherwise
 	// block. Track whether the URL originated as relative so the request
 	// below can use selfRefClient (AllowLoopback: true) instead of the
 	// loopback-blocked client every externally-supplied URL goes through.

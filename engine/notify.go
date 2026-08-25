@@ -35,7 +35,7 @@ func SendWebhook(url string, payload WebhookPayload) {
 		return
 	}
 
-	client := netguard.Default.Client(10 * time.Second)
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(url, "application/json", bytes.NewReader(data))
 	if err != nil {
 		log.Printf("webhook: POST %s failed: %v", url, err)

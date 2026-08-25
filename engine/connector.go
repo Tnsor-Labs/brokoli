@@ -85,7 +85,7 @@ func (c *HTTPConnector) Read(config map[string]interface{}) (*common.DataSet, er
 		method = "GET"
 	}
 
-	client := netguard.Default.Client(30 * time.Second)
+	client := netguard.Outbound().Client(30 * time.Second)
 	req, err := http.NewRequest(method, url, nil)
 	if err != nil {
 		return nil, err
@@ -142,7 +142,7 @@ func (c *HTTPConnector) Write(config map[string]interface{}, data *common.DataSe
 		return err
 	}
 
-	client := netguard.Default.Client(30 * time.Second)
+	client := netguard.Outbound().Client(30 * time.Second)
 	req, err := http.NewRequest("POST", url, bytes.NewReader(body))
 	if err != nil {
 		return err

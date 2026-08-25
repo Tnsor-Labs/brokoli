@@ -1012,12 +1012,10 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 		}
 	}
 
-	// Send in batches. netguard.Default: sink_api's url is arbitrary
-	// pipeline-editor-supplied config, unlike a fetch's trusted
-	// self-reference case -- there is no legitimate reason for it to
-	// reach a loopback/private/link-local address, so this had no
-	// carve-out to preserve (previously this had no SSRF protection at
-	// all).
+	// Send in batches. sink_api's URL is arbitrary pipeline-editor-supplied
+	// config, so it must use the same operator-configured outbound policy as
+	// every other pipeline-triggered request. Previously this had no SSRF
+	// protection at all.
 	client := netguard.Outbound().Client(30 * time.Second)
 	totalSent := 0
 	totalBatches := (len(input.Rows) + batchSize - 1) / batchSize
