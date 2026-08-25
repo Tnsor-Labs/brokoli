@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -75,44 +76,6 @@ func copyFastPathDisabled() bool {
 	}
 	off, err := strconv.ParseBool(v)
 	return err == nil && !off
-}
-
-// canCopyInsert reports whether a sink write can go through COPY.
-func canCopyInsert(cfg SQLGenConfig) bool {
-	if copyFastPathDisabled() {
-		return false
-	}
-	if cfg.Dialect != "postgres" {
-		return false
-	}
-	// CreateTable emits DDL that belongs on the statement path, and
-	// upsert has no COPY equivalent.
-	if cfg.CreateTable {
-		return false
-	}
-	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
-	case "", ModeAppend, ModeOverwrite, "replace":
-		return true
-	default:
-		return false
-	}
-}
-
-// copyRowsToPostgres writes a dataset with COPY, clearing the table
-// first for overwrite. The delete and the copy share one transaction, so
-// overwrite stays atomic exactly as the statement path made it.
-// copyRowsToPostgres writes a materialized dataset. It is the batch-path
-// entry point; copyBatchesToPostgres is the streaming one, and both share
-// the implementation below so the two cannot drift.
-func copyRowsToPostgres(uri string, cfg SQLGenConfig, ds *common.DataSet) (int64, error) {
-	sent := false
-	return copyBatchesToPostgres(context.Background(), uri, cfg, ds.Columns, func() (*common.DataSet, error) {
-		if sent {
-			return nil, io.EOF
-		}
-		sent = true
-		return ds, nil
-	})
 }
 
 // copyBatchesToPostgres writes rows pulled from next, which returns batches
@@ -286,6 +249,18 @@ func copyEscape(v any) string {
 		s = t
 	case []byte:
 		s = string(t)
+	case float64:
+		// Never %v a float here. Go renders float64(1000000) as "1e+06",
+		// which Postgres rejects for an integer column and, worse, accepts
+		// for a text one (#334). Decoding normalises integers to int64 so
+		// this should rarely be reached, but a renderer that can silently
+		// change a value is not something to leave in place on the strength
+		// of "should".
+		if t == math.Trunc(t) && math.Abs(t) < 1e15 {
+			s = strconv.FormatFloat(t, 'f', -1, 64)
+		} else {
+			s = strconv.FormatFloat(t, 'g', -1, 64)
+		}
 	default:
 		s = fmt.Sprintf("%v", t)
 	}

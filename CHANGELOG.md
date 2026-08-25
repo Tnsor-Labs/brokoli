@@ -11,6 +11,230 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.70] - 2026-08-24
+
+An integer of a million or more could be changed as it moved between nodes,
+and on some pipelines that happened silently. That is the item to act on, and
+it was found while benchmarking the other one: a pipeline whose source and
+sink are on the same server now runs inside the database.
+
+### Fixed
+
+- **Integers stopped surviving a streamed node boundary** (#334) — @hc12r.
+  Reproduced against the v0.10.69 tag. A `source_db` to `sink_db` copy of a
+  million rows failed:
+
+  ```
+  copy: ERROR: invalid input syntax for type integer: "1e+06"
+  ```
+
+  Values moved between nodes as NDJSON, and the decode never asked
+  `encoding/json` to preserve number syntax, so every number returned as a
+  `float64`. Rendering one with `%v` is not the text that went in:
+
+  ```
+  {"id":1000000}           -> float64 -> "1e+06"
+  {"big":9007199254740993} -> float64 -> "9.007199254740992e+15"
+  ```
+
+  The second line is the worse one — the value changed, not its spelling.
+
+  The failing case is the lucky one. Against an integer column Postgres
+  rejects it, which is loud and safe. Against a **text** column it is accepted
+  and stored, so the pipeline succeeds and the data is wrong; and anything
+  past 2^53 loses digits wherever it lands. The same encoding backs resume
+  artifacts and code-node input staging, so a value could change identity
+  between a run and its resume. Any table with a million rows has ids in this
+  range, so this is the ordinary shape of the data rather than an edge case.
+
+  Fixed at the decode sites rather than in the renderers: the original text is
+  preserved and values normalise to what the materialising path already
+  produces. The code node's own output decode is covered too, so a Python
+  script returning `1000000` no longer has it rendered as `1e+06`.
+
+  `copyEscape` also formats floats explicitly instead of falling through to
+  `%v`. Decoding should make that unreachable, but a renderer that can
+  silently change a value is not worth leaving on the strength of "should" —
+  that is exactly how this survived, since the CSV writer had already patched
+  the symptom for file sinks and database sinks kept it.
+
+  **Upgrading does not repair data already written; re-running the pipeline
+  does.** The runs worth checking are the ones that succeeded against text
+  columns, not the ones that failed.
+
+  One consequence, recorded rather than hidden: JSON cannot distinguish `150`
+  from `150.0`, and the decoder resolves that towards an integer so a bigint
+  id survives. A float that happens to be integral therefore comes back as an
+  integer. Nothing downstream can observe it — the CSV and `COPY` writers
+  render both identically, aggregation accepts both, and a `number` type
+  assertion matches both.
+
+### Added
+
+- **A same-server pipeline runs inside the database** (#324, ADR-023) —
+  @hc12r. Where a `source_db` and a `sink_db` name the same server and the
+  transform between them can be expressed as SQL, the segment becomes one
+  `INSERT INTO … SELECT`. The engine issues a statement and reads a row count;
+  no row crosses the worker.
+
+  Measured on 1,000,000 rows between two tables on one Postgres server:
+
+  ```
+  read through the engine   12s
+  run in the database        2s
+  ```
+
+  Both wrote identical data — a four-column join matches on every row, with
+  none unique to either side. The win is time rather than memory; streaming
+  had already bounded memory. What disappears is parsing and re-encoding a
+  million rows to move them somewhere they already were.
+
+  There is nothing to switch on and no setting on a node. The engine decides,
+  the way it already decides whether to stream, and reads rows the ordinary
+  way whenever it cannot prove the two produce the same result.
+
+  It refuses by default and the conditions are strict: the same host, port,
+  database, user and password as written, without DNS resolution; Postgres
+  only; one consumer per node; `append` or `overwrite`; and every transform
+  between them already proven equivalent by comparison against a live
+  database. Two records reaching the same machine under different names are
+  treated as different servers, and so is the same server reached as two
+  different roles — running one role's query inside another's write is not a
+  performance question.
+
+  `BROKOLI_DATA_PLANE=interpreted` forces every pipeline back onto the
+  reading path, for incidents.
+
+  A pushed-down segment says so in the run log, naming the nodes the database
+  absorbed and the rows written. Every node in the segment is credited with
+  that count: those nodes did produce the rows, they simply never held them,
+  so reporting zero for a source would answer "how many rows did this read"
+  with a number true of the engine and false of the pipeline.
+
+- **The SQL compiler the above depends on** (#323, #332) — @hc12r. A
+  transform's plan compiles to SQL as a second backend beside the Go
+  executor. Only rules whose two backends can be shown to agree are compiled:
+  `drop_columns` and `rename_columns`, `filter_rows` on a text or numeric
+  column, and `count`, `min` and `max` grouped by text columns.
+
+  Brokoli's transform semantics are not SQL semantics, which is why the list
+  is short. A value is compared as its rendered text, a missing value renders
+  as `<nil>` and is compared like any string, and an ordered comparison is
+  numeric only when both sides parse as numbers. The generated SQL reproduces
+  that rather than doing the idiomatic thing — casting to double precision so
+  the same precision is lost, comparing text under the C collation because Go
+  compares bytes, and resolving a NULL row to the constant the Go matcher
+  would produce.
+
+  Every rule runs both ways against a live Postgres and the rows are compared;
+  rules the compiler declines are asserted to be declined, so nothing starts
+  being pushed down without a passing comparison. `sum` and `avg` are refused
+  because floating-point addition is not associative and the database may
+  aggregate in a different order than the engine reads — the same four values
+  total `1` one way and `0` the other. Grouping by a numeric column is refused
+  because Brokoli groups on rendered text, so `10.50` and `10.5` are two
+  groups where SQL sees one.
+
+- **ADR-023** (#333) — @hc12r. Records the decision the above implements:
+  a pipeline edge carries a reference whose *kind* says where the data is, and
+  whether the engine needs to read it at all, so that work can stay where the
+  data already is. Includes the resolutions for staging lifetime, resume
+  semantics, outbound safety, row counts, and declared validation.
+
+## [0.10.69] - 2026-08-24
+
+Streaming reaches `source_file`, and two bugs that had been hiding behind the
+fact that it did not. Both of those were live in v0.10.68: one let a node type
+an organisation's plan blocks execute anyway, and one silently discarded the
+edits a Python code node made to its rows. Neither announced itself.
+
+### Security
+
+- **A node type blocked by an organisation's plan executed anyway on the
+  streaming path** (#321) — @hc12r. The gate lived inside `runNodeLogic`. The
+  streaming path dispatches through `runNodeStreamed`, which never consulted
+  it, so a gated node ran whenever its upstream produced a reference and the
+  run reported plain success.
+
+  What kept it hidden is that enforcement had become a side effect of a
+  memory-management decision: the same pipeline was gated below the streaming
+  threshold and ungated above it, and every node type that learned to stream
+  widened the hole a little further. `source_db` streaming since v0.10.67 was
+  already enough to reach it; teaching `source_file` to stream made an
+  ordinary two-node pipeline take that path, which is how it surfaced.
+
+  The check now sits at the one point both execution paths pass through.
+  Keeping a copy inside each is the arrangement that failed.
+
+### Fixed
+
+- **A code node's edits to its rows were silently discarded when the input
+  arrived by reference** (#321) — @hc12r. Reproduced against the v0.10.68 tag:
+
+  ```python
+  for r in rows:
+      r["name"] = r["name"].upper()
+  output_data = {"columns": columns, "rows": rows}
+  ```
+
+  produced the original rows, unchanged, and the run succeeded.
+
+  `_LazyRows.__iter__` returned a fresh generator on every iteration, parsing
+  fresh dicts out of the NDJSON file. The script mutated those, they were
+  dropped at the end of the pass, and the output writer re-read the untouched
+  file. The harness called that the untouched lazy passthrough, which held
+  until the object handed back was one the script had written to. It needs no
+  unusual code to hit — any streamed input feeding the most ordinary Python
+  idiom there is.
+
+  Edits are now journaled to disk: a row written to during a pass is appended
+  to a journal as the pass moves past it, and the journal becomes the file
+  later passes read. Rows before the first edit are byte-copied rather than
+  re-encoded, and a pass abandoned early carries the unread remainder over
+  verbatim, so the dataset stays complete either way. Only scripts that
+  actually mutate pay for it; a read-only pass never opens a journal, and
+  memory stays constant in both cases.
+
+  Editing a row after the pass has already moved past it cannot be placed
+  correctly and now raises, with an explanation of what to do instead, rather
+  than being dropped. The previous test suite covered four ways to read a
+  by-reference input and none to write to one, which is how this shipped.
+
+### Added
+
+- **`source_file` streams, so a large CSV no longer kills the worker** (#321)
+  — @hc12r. Measured on identical pipelines differing only in their source
+  node, 1,000,000 rows writing a 112 MB CSV under a 512 MiB hard container
+  limit: `source_file` was OOM-killed after 3 seconds (exit 137) where
+  `source_db` completed in 17 MiB. Without a hard cap, `source_file` peaked at
+  653 MiB resident for a 108 MB file, roughly six times the file on disk —
+  `GOMEMLIMIT` does not prevent it, being a soft target the process grows past
+  before the cgroup intervenes.
+
+  The file is now read into the blob store batch by batch and the node returns
+  a reference. The same run finishes at 17 MiB with output byte-identical to
+  the `source_db` run, and the full chain — `source_file` into a `code` node
+  editing every row into `sink_file` — completes inside the same 512 MiB limit
+  with all 1,000,000 edits applied.
+
+  CSV only, for a structural reason rather than an unfinished one: JSON's
+  column set is the union of keys across every object in the file and is not
+  known until the last one is parsed, so a single-pass reader would have to
+  guess the columns from the first batch or read the whole file to find them.
+  Formats that cannot stream keep the materialising path.
+
+### Removed
+
+- **`pkg/loaders/streaming_loader.go`** (#321) — @hc12r. 258 lines
+  implementing exactly this feature, with four passing tests and no caller
+  outside its own package. It could not be adopted as it stood: it signalled
+  errors by sending a nil row and discarding the error, so a truncated file
+  was indistinguishable from a complete one; it stored `""` where the
+  materialising loader stores `nil` for an empty field, so whether streaming
+  engaged would have changed the data; it took no context, so a cancelled run
+  leaked the reader until EOF; and it sent one row per channel operation where
+  the consumer wants batches. Each of those is now a test on the replacement.
+
 ## [0.10.68] - 2026-08-24
 
 A pass over the connection subsystem and the authentication middleware.

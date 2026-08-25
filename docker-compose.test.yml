@@ -1,0 +1,57 @@
+# Databases the test suite talks to.
+#
+# Several tests are only meaningful against a real server: what a string
+# literal means, how a driver converts a value, whether a collation orders the
+# way Go does. Those are exactly the questions a fake would define away, so
+# they skip unless the matching environment variable is set — which meant, for
+# a long time, that they only ever ran on one developer's machine.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   export BROKOLI_TEST_POSTGRES_URL='postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable'
+#   export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
+#   export BROKOLI_TEST_MYSQL_ROOT_URL='mysql://root:rootpw@tcp(localhost:55533)/brokoli_test'
+#   go test ./...
+#
+# Ports are in an unusual range so this does not collide with a database
+# someone already has running — 5543x is taken on at least one machine here,
+# which is how that lesson was learned. The data is tmpfs — these are scratch
+# servers, and a test that depends on state surviving a restart is a test
+# that will fail mysteriously in CI.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: brokoli
+      POSTGRES_PASSWORD: brokoli
+      POSTGRES_DB: brokoli_test
+    ports:
+      - "55532:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U brokoli -d brokoli_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpw
+      MYSQL_USER: brokoli
+      MYSQL_PASSWORD: br@k:li/pw#1
+      MYSQL_DATABASE: brokoli_test
+    ports:
+      - "55533:3306"
+    tmpfs:
+      - /var/lib/mysql
+    command:
+      # local_infile is off by default in MySQL 8 and is what a bulk-load
+      # path would need; enabling it here means the capability can be tested
+      # rather than assumed available.
+      - --local-infile=1
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 3s
+      timeout: 5s
+      retries: 30

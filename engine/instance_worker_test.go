@@ -25,7 +25,7 @@ func TestExecuteInstanceWorkOrder_RunsTheScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteInstanceWorkOrder: %v", err)
 	}
-	if len(result.Rows) != 1 || result.Rows[0]["doubled"] != float64(42) {
+	if len(result.Rows) != 1 || !numIs(result.Rows[0]["doubled"], 42) {
 		t.Errorf("result rows = %v, want one row with doubled=42", result.Rows)
 	}
 }
@@ -249,7 +249,7 @@ func TestPipeline_ExpandRemoteDispatch_TrueEndToEnd(t *testing.T) {
 		if rerr != nil {
 			t.Fatalf("ReadArtifact(%s): %v", inst.InstanceKey, rerr)
 		}
-		if len(ds.Rows) != 1 || ds.Rows[0]["seen_remotely"] != float64(1) {
+		if len(ds.Rows) != 1 || !numIs(ds.Rows[0]["seen_remotely"], 1) {
 			t.Errorf("artifact for %s = %v, want one row with seen_remotely=1 (proves the REAL worker script ran, not a canned response)", inst.InstanceKey, ds.Rows)
 		}
 	}
@@ -386,7 +386,7 @@ func TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact(t *testing
 	if err != nil {
 		t.Fatalf("ReadArtifact: %v", err)
 	}
-	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+	if len(got.Rows) != 1 || !numIs(got.Rows[0]["n"], 2) {
 		t.Fatalf("artifact = %+v, want attempt 1's data untouched by the stale attempt 0 report", got)
 	}
 

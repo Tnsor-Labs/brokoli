@@ -19,9 +19,14 @@ const (
 
 // SQLGenConfig holds settings for SQL generation.
 type SQLGenConfig struct {
-	Dialect     string   `json:"dialect"`
-	Table       string   `json:"table"`
-	BatchSize   int      `json:"batch_size"`
+	Dialect   string `json:"dialect"`
+	Table     string `json:"table"`
+	BatchSize int    `json:"batch_size"`
+	// CreateTable emits a CREATE TABLE from the dataset's inferred types
+	// before the writes. On MySQL, DDL implicitly commits, so a run that
+	// creates its table and then fails leaves the empty table behind --
+	// the row write itself still rolls back. Postgres rolls back the
+	// creation too.
 	CreateTable bool     `json:"create_table"`
 	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
 	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
@@ -44,6 +49,10 @@ type SQLGenConfig struct {
 	// mid-load that is the better trade by an order of magnitude; for one
 	// backing a dashboard it is not, and the platform cannot tell which
 	// it is looking at.
+	//
+	// On MySQL the request always degrades to DELETE: TRUNCATE implicitly
+	// commits there, which would break overwrite's clear-then-insert
+	// atomicity. See clearTable.
 	Truncate bool `json:"truncate"`
 
 	// EmptyStringAsNull writes "" as NULL instead of an empty literal.
@@ -233,7 +242,13 @@ func isDate(s string) bool {
 // WHERE-less DELETE into the same whole-table drop, so the request is
 // satisfied by the statement it would have emitted anyway.
 func (d dialect) clearTable(table string, truncate bool) string {
-	if truncate && d.name != "sqlite" && d.name != "generic" {
+	// MySQL is excluded even when truncate is requested: TRUNCATE TABLE
+	// implicitly commits there, which breaks the one-transaction contract
+	// GenerateSQL states. A failure after the clear would leave the table
+	// emptied with nothing to roll back -- the previous rows destroyed and
+	// the new ones absent. DELETE is transactional on MySQL, so the truncate
+	// request degrades to the correct statement rather than the fast one.
+	if truncate && d.name != "sqlite" && d.name != "generic" && d.name != "mysql" {
 		return "TRUNCATE TABLE " + d.quoteIdent(table)
 	}
 	return "DELETE FROM " + d.quoteIdent(table)
@@ -255,6 +270,17 @@ type dialect struct {
 	tsLayout string
 	tsUTC    bool
 
+	// backslashEscapes says the dialect treats a backslash as an escape
+	// character inside a string literal, so one in a value has to be escaped
+	// to survive.
+	//
+	// MySQL does this unless NO_BACKSLASH_ESCAPES is set, which is not the
+	// default. Postgres does not, because standard_conforming_strings has
+	// been on since 9.1 — escaping there would corrupt the value in the other
+	// direction, turning one backslash into two. So this is a property of the
+	// dialect and not a safety measure to apply everywhere.
+	backslashEscapes bool
+
 	// emptyStringAsNull mirrors SQLGenConfig.EmptyStringAsNull; set by
 	// GenerateSQL rather than getDialect, since it is a per-write choice
 	// and not a property of the dialect.
@@ -273,7 +299,7 @@ func getDialect(name string) dialect {
 	case "mysql":
 		return dialect{
 			name: "mysql", quoteChar: "`", strQuote: "'", terminator: ";",
-			boolTrue: "TRUE", boolFalse: "FALSE",
+			boolTrue: "TRUE", boolFalse: "FALSE", backslashEscapes: true,
 			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
 			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
 		}
@@ -411,9 +437,20 @@ func (d dialect) formatValue(v interface{}) string {
 	}
 }
 
-// quoteString wraps a value in the dialect's string quote, doubling any
-// embedded quote character.
+// quoteString wraps a value in the dialect's string quote so that it arrives
+// as data rather than as SQL.
+//
+// Doubling the quote character is not sufficient on its own. On a dialect
+// where a backslash escapes, a value ending in one escapes the quote meant to
+// close the literal, and everything after it is parsed as SQL instead of
+// data — so a Windows path silently loses a character and a hostile value
+// escapes the literal entirely. Backslashes are therefore escaped first,
+// before the quote is doubled: doing it the other way round would escape the
+// backslash that the doubling introduced.
 func (d dialect) quoteString(s string) string {
+	if d.backslashEscapes {
+		s = strings.ReplaceAll(s, `\`, `\\`)
+	}
 	return d.strQuote + strings.ReplaceAll(s, d.strQuote, d.strQuote+d.strQuote) + d.strQuote
 }
 
@@ -477,10 +514,11 @@ func (d dialect) insertBatch(table string, columns []string, rows []common.DataR
 
 // upsertBatch builds an INSERT that updates rows colliding on keyCols. The
 // conflict clause hangs off a normal multi-row INSERT, so all rows in the
-// batch share it. Postgres and SQLite need the explicit key columns
-// (ON CONFLICT); MySQL keys off the table's own unique indexes
-// (ON DUPLICATE KEY). Other dialects have no portable form and error, so an
-// unsupported upsert fails with a name instead of silently inserting.
+// batch share it. Postgres and SQLite name the key columns in the statement
+// (ON CONFLICT); MySQL merges on whichever unique index collides
+// (ON DUPLICATE KEY), so its key_columns are validated against the table
+// before execution instead. Other dialects have no portable form and error,
+// so an unsupported upsert fails with a name instead of silently inserting.
 func (d dialect) upsertBatch(table string, columns, keyCols []string, rows []common.DataRow) (string, error) {
 	insert := strings.TrimSuffix(d.insertBatch(table, columns, rows), d.terminator)
 
@@ -511,19 +549,38 @@ func (d dialect) upsertBatch(table string, columns, keyCols []string, rows []com
 		}
 		return insert + " ON CONFLICT (" + strings.Join(quotedKeys, ", ") + ") DO UPDATE SET " + strings.Join(sets, ", ") + d.terminator, nil
 	case "mysql":
+		// MySQL cannot be told which index to merge on: ON DUPLICATE KEY
+		// UPDATE fires on whatever unique index the inserted row collides
+		// with. key_columns is therefore an assertion rather than an
+		// instruction -- required here so the configuration states the merge
+		// key, and verified against the table's actual unique indexes before
+		// execution (validateMySQLUpsertKey), because merging on a different
+		// key than the one configured rewrites rows the user did not
+		// address.
+		if len(keyCols) == 0 {
+			return "", fmt.Errorf("upsert requires key_columns for mysql (the unique index the merge keys on)")
+		}
+		// The row alias replaces VALUES(), which MySQL 8.0.20 deprecated
+		// and warns about on every statement. The alias form needs 8.0.20+
+		// (April 2020); anything older is an unpatched 8.0, and MariaDB --
+		// which has no alias form -- is not in the catalog.
+		const alias = "brokoli_new"
 		var sets []string
 		for _, col := range columns {
 			if inKeys[col] {
 				continue
 			}
-			sets = append(sets, d.quoteIdent(col)+" = VALUES("+d.quoteIdent(col)+")")
+			sets = append(sets, d.quoteIdent(col)+" = "+alias+"."+d.quoteIdent(col))
 		}
 		if len(sets) == 0 {
+			// Every column is part of the key -- assign the keys to
+			// themselves, which is MySQL's idiom for "do nothing" and leaves
+			// existing rows untouched.
 			for _, col := range columns {
-				sets = append(sets, d.quoteIdent(col)+" = VALUES("+d.quoteIdent(col)+")")
+				sets = append(sets, d.quoteIdent(col)+" = "+alias+"."+d.quoteIdent(col))
 			}
 		}
-		return insert + " ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ") + d.terminator, nil
+		return insert + " AS " + alias + " ON DUPLICATE KEY UPDATE " + strings.Join(sets, ", ") + d.terminator, nil
 	default:
 		return "", fmt.Errorf("upsert is not supported for dialect %q", d.name)
 	}

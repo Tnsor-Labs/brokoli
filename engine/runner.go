@@ -177,6 +177,17 @@ type nodeExecutionResult struct {
 	// most one of output/outputRef is set; every consumer of output in
 	// executeNode's success path has a ref-aware branch.
 	outputRef *artifact.DatasetRef
+	// outputTable is ADR-023's TableRef: the node's rows are still in their
+	// database and were never read out. At most one of output/outputRef/
+	// outputTable is set.
+	outputTable *TableRef
+	// pushedRowCount is the row count the server reported for a segment that
+	// executed in the database, which is the only count source such a
+	// segment has.
+	pushedRowCount int64
+	// pushedAbsorbed names the nodes whose work a pushed-down segment
+	// already performed, so each can be credited with the segment's count.
+	pushedAbsorbed []string
 }
 
 // nodeRowCount is what a completed node reports as its row count.
@@ -678,9 +689,15 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		node.Config = r.varCtx.ResolveConfig(node.Config)
 	}
 
-	// Resolve connection (conn_id → URI/headers)
+	// Resolve connection (conn_id → URI/headers). The warnings go to the
+	// run's own log as well as the server's: the person who has to act on
+	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
-		node.Config = r.connResolver.Resolve(node.Config, node.Type)
+		var warnings []string
+		node.Config, warnings = r.connResolver.ResolveWithWarnings(node.Config, node.Type)
+		for _, w := range warnings {
+			r.log(node.ID, models.LogLevelWarning, "%s", w)
+		}
 	}
 
 	// ADR-019 Milestone 1: decide whether this node takes the
@@ -702,6 +719,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// internally synchronized, so no lock is held here.
 	var input *common.DataSet
 	var inputRef *artifact.DatasetRef
+	var inputTable *TableRef
+	var outputTable *TableRef
+	var pushedRowCount int64
+	var pushedAbsorbed []string
 	var allInputs []*common.DataSet
 	// edgeInputsByFrom indexes the same upstream outputs by upstream node
 	// ID, alongside input/allInputs above — needed by dynamic-expansion
@@ -710,6 +731,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	edgeInputsByFrom := make(map[string]*common.DataSet)
 	for edgeIndex, edge := range r.pipe.Edges {
 		if edge.To == node.ID && edgeStates[edgeIndex] == edgeActive {
+			// An upstream that stayed in its database offers a TableRef.
+			// Taking it is what lets this node keep the work there too.
+			if inputTable == nil {
+				if tref, ok := outputs.GetTable(edge.From); ok {
+					inputTable = tref
+					continue
+				}
+			}
 			if streamable && inputRef == nil {
 				if ref, ok := outputs.GetRef(edge.From); ok {
 					// Held by reference: flow it through without ever
@@ -752,6 +781,11 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// Produces a ref, consumes nothing.
 			streamable = activeInputs == 0
 		case models.NodeTypeSinkFile:
+			streamable = inputRef != nil
+		case models.NodeTypeSinkAPI:
+			// Same rule as the other sinks: stream only from a reference. An
+			// inline input already fits, and re-reading it off disk to send
+			// it in the same batches would be slower for no gain.
 			streamable = inputRef != nil
 		case models.NodeTypeSinkDB:
 			// Consumes a ref, produces nothing. A sink handed an inline
@@ -1016,10 +1050,35 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			crashAt(crashPointBeforeNodeExecution, node.ID)
 			var result nodeExecutionResult
 			var e error
-			if streamable {
-				result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
-			} else {
-				result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+			// The plan gate is checked here, at the one point both
+			// execution paths pass through, rather than inside either of
+			// them. It used to live in runNodeLogic, which the streaming
+			// path does not call, so a gated node type executed anyway
+			// whenever its upstream produced a reference — the gate held
+			// only for as long as nothing upstream happened to stream.
+			if e = r.checkNodeTypeGate(node); e == nil {
+				// ADR-023: before either execution path, ask whether this
+				// node's work can stay in the database. It can only ever
+				// answer yes for a narrow, checked set of shapes; every
+				// other node falls through to exactly what it did before.
+				if pushed, handled, perr := r.tryPushdown(node, inputTable); handled || perr != nil {
+					result, e = pushed, perr
+				} else if inputTable != nil && input == nil {
+					// The segment plan said this node could consume the
+					// reference and it could not. Read the rows rather than
+					// run the node against nothing, which would report
+					// success having written zero.
+					ds, merr := r.materializeTableRef(node.ID, inputTable)
+					if merr != nil {
+						e = merr
+					} else {
+						result, e = r.runNodeLogic(node, ds, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+					}
+				} else if streamable {
+					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
+				} else {
+					result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+				}
 			}
 			resultCh <- nodeResult{result, e}
 		}()
@@ -1028,6 +1087,8 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		select {
 		case result := <-resultCh:
 			output, outputRef, conditionDecision, err = result.result.output, result.result.outputRef, result.result.condition, result.err
+			outputTable = result.result.outputTable
+			pushedRowCount, pushedAbsorbed = result.result.pushedRowCount, result.result.pushedAbsorbed
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
 				err = fmt.Errorf("pipeline cancelled")
@@ -1047,6 +1108,13 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
 			rowCount := nodeRowCount(output, outputRef, input, inputRef)
+			if pushedRowCount > 0 || len(pushedAbsorbed) > 0 {
+				// ADR-023: a segment that executed in the database has one
+				// count source, the server's own report, and it covers the
+				// whole segment rather than this node alone.
+				rowCount = int(pushedRowCount)
+				r.creditAbsorbedNodes(pushedAbsorbed, pushedRowCount, node.ID)
+			}
 			rowsPerSec := float64(0)
 			if duration > 0 && rowCount > 0 {
 				rowsPerSec = float64(rowCount) / (float64(duration) / 1000.0)
@@ -1125,6 +1193,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// stream-capable ones), the preview keeps only the rows it
 			// would have kept anyway, and the resume artifact is recorded
 			// without materializing when the store supports it.
+			// ADR-023: a node whose rows stayed in the database records a
+			// reference for its consumer and nothing else. There is no blob
+			// to preview and no artifact to write, because the engine never
+			// held the rows — the resume unit is the segment, and its
+			// barrier is where durability lives.
+			if outputTable != nil && !r.dryRun {
+				outputs.PutTable(node.ID, outputTable)
+			}
 			if outputRef != nil && !r.dryRun {
 				outputs.PutRef(node.ID, outputRef)
 				preview, perr := previewFromRef(outputs, outputRef, 50)
@@ -1522,20 +1598,24 @@ func outputExecutionResult(output *common.DataSet, err error) (nodeExecutionResu
 	return nodeExecutionResult{output: output}, err
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
-	// Check if the org's plan allows this node type. Deliberately checked
-	// before the executor loop below, not after: a NodeExecutor can claim
-	// any node type string (a plugin-registered type, an enterprise K8s-
-	// dispatched type, etc.), and this gate is meant to apply uniformly to
-	// every node type regardless of which mechanism ultimately executes
-	// it — a gate that only fired for the built-in switch further down
-	// would silently never apply to executor-dispatched types at all.
-	if extensions.NodeTypeGateFunc != nil {
-		if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
-			return nodeExecutionResult{}, fmt.Errorf("%s", msg)
-		}
+// checkNodeTypeGate reports whether the org's plan allows this node type.
+//
+// It applies to every node type regardless of which mechanism executes it: a
+// NodeExecutor can claim any node type string, and the streamed and
+// materialising paths are two more ways to reach a node, so the check belongs
+// at the dispatch point rather than inside one of the things being dispatched
+// to.
+func (r *Runner) checkNodeTypeGate(node models.Node) error {
+	if extensions.NodeTypeGateFunc == nil {
+		return nil
 	}
+	if msg := extensions.NodeTypeGateFunc(r.pipe.OrgID, string(node.Type)); msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}
 
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {

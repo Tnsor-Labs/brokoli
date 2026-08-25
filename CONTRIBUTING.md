@@ -79,3 +79,25 @@ Before every push:
 Node: CI pins v20. `preflight.sh` switches via nvm when available and
 warns otherwise — a build under a different major may pass locally and
 fail in CI (or vice versa).
+
+### Tests that need a real database
+
+Some tests answer questions only a server can: what a string literal means,
+how a driver converts a value, whether a collation orders the way Go does.
+A fake would define exactly those away, so they run against Postgres and
+MySQL and skip when neither is configured.
+
+```bash
+docker compose -f docker-compose.test.yml up -d
+export BROKOLI_TEST_POSTGRES_URL='postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable'
+export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
+```
+
+`preflight.sh` does this for you when the variables are unset and docker
+compose is available, and says so loudly when it cannot.
+
+A skipped test looks identical to a passing one in the summary line. If you
+are changing anything that touches SQL generation, value encoding, or the
+pushdown compiler, check the output actually says `PASS` for the live tests
+rather than assuming — the differential tests are the only thing standing
+between a plausible change and a silently wrong one.

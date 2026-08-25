@@ -47,8 +47,67 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    # Several tests are only meaningful against a real server: what a string
+    # literal means, how a driver converts a value, whether a collation orders
+    # the way Go does. They skip unless these variables are set, which meant
+    # the differential tests gating streaming and pushdown correctness had
+    # never run in CI at all — only on a developer's machine.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: brokoli
+          POSTGRES_PASSWORD: brokoli
+          POSTGRES_DB: brokoli_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brokoli -d brokoli_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_USER: brokoli
+          # Deliberately full of characters that mean something in a URI. The
+          # DSN carries credentials verbatim (#338), and a password like this
+          # is what proves it on every run rather than in a test that skips.
+          MYSQL_PASSWORD: br@k:li/pw#1
+          MYSQL_DATABASE: brokoli_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
+          --health-interval 3s --health-timeout 5s --health-retries 30
+
+    env:
+      BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
+      # A second Postgres variable exists for the execution-attempt migration
+      # test. Pointing it at the same server rather than leaving it unset is
+      # the difference between that test running and silently not.
+      BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      # The credential test builds a DSN from parts rather than parsing one,
+      # so it needs the fields separately.
+      BROKOLI_TEST_MYSQL_HOST: localhost
+      BROKOLI_TEST_MYSQL_PORT: "3306"
+      BROKOLI_TEST_MYSQL_USER: brokoli
+      BROKOLI_TEST_MYSQL_PASSWORD: br@k:li/pw#1
+      BROKOLI_TEST_MYSQL_DB: brokoli_test
+      # Root, for the one test that toggles a server global (the LOAD DATA
+      # fallback test flips local_infile off and back).
+      BROKOLI_TEST_MYSQL_ROOT_URL: mysql://root:rootpw@tcp(localhost:3306)/brokoli_test
+
     steps:
       - uses: actions/checkout@v4
+
+      # local_infile is off by default in MySQL 8, and a service container
+      # cannot be given a command line the way docker-compose.test.yml gives
+      # one. SET GLOBAL is dynamic and LOAD DATA LOCAL checks it at statement
+      # time, so setting it here is equivalent to --local-infile=1.
+      - name: Enable local_infile on the MySQL service
+        run: mysql --host=127.0.0.1 --port=3306 -uroot -prootpw -e "SET GLOBAL local_infile=1"
 
       - name: Set up Go
         uses: actions/setup-go@v5

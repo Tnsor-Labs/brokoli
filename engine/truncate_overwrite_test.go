@@ -22,7 +22,11 @@ func TestClearTablePerDialect(t *testing.T) {
 	}{
 		{"postgres", false, `DELETE FROM "t"`},
 		{"postgres", true, `TRUNCATE TABLE "t"`},
-		{"mysql", true, "TRUNCATE TABLE `t`"},
+		// MySQL's TRUNCATE implicitly commits, which would break
+		// overwrite's one-transaction contract, so the request degrades
+		// to the transactional statement. TestMySQLTruncateWouldBreakAtomicity
+		// demonstrates the behaviour this avoids against a live server.
+		{"mysql", true, "DELETE FROM `t`"},
 		{"sqlserver", true, `TRUNCATE TABLE [t]`},
 		// SQLite has no TRUNCATE; its planner already turns a WHERE-less
 		// DELETE into the same whole-table drop.

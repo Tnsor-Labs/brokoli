@@ -78,6 +78,17 @@ var driverOptionKeys = map[ConnectionType][]string{
 	ConnTypeMySQL: {
 		"tls", "charset", "collation", "parseTime", "loc",
 		"timeout", "readTimeout", "writeTimeout",
+		// interpolateParams trades a round trip per statement for
+		// client-side escaping (the driver refuses it under the multibyte
+		// charsets where that is unsafe); maxAllowedPacket is what a large
+		// batched INSERT runs into; clientFoundRows changes RowsAffected
+		// from rows-changed to rows-matched, which some callers need.
+		"interpolateParams", "maxAllowedPacket", "clientFoundRows",
+		// multiStatements is deliberately absent. Generated SQL is
+		// interpolated, not parameter-bound, so escaping carries the whole
+		// injection risk -- and multiStatements converts any escaping defect
+		// from a corrupted value into arbitrary statement execution. It
+		// stays out until parameters are bound.
 	},
 	ConnTypeMSSQL: {
 		"encrypt", "TrustServerCertificate", "hostNameInCertificate",
@@ -233,12 +244,45 @@ func (c *Connection) BuildURI() string {
 
 	case ConnTypeMySQL:
 		// MySQL DSN format: user:password@tcp(host:port)/dbname
-		u := &url.URL{Scheme: "mysql", User: c.userinfo(), Host: "tcp(" + c.hostPort(3306) + ")"}
-		if c.Schema != "" {
-			u.Path = "/" + c.Schema
+		//
+		// Assembled by concatenation rather than through net/url, because
+		// go-sql-driver reads the user and password verbatim — it unescapes
+		// only the database name and the query parameters. Building this with
+		// url.URL percent-encoded the credentials, so an operator whose
+		// password contained "@" had "%40" sent to MySQL and authentication
+		// failed with nothing to suggest why.
+		//
+		// The driver's own parse is what makes raw credentials safe here: it
+		// takes the LAST "/" as the database separator, the LAST "@" before
+		// it as the credential separator, and the FIRST ":" as the
+		// user/password split. So a password may contain "@", "/", ":", "#",
+		// "%" or a space. A username containing ":" cannot be expressed in
+		// this DSN form by anyone, and is the one case this does not carry.
+		//
+		// The query string keeps its encoding, since the driver does unescape
+		// parameters.
+		var b strings.Builder
+		b.WriteString("mysql://")
+		if c.Login != "" {
+			b.WriteString(c.Login)
+			if c.Password != "" {
+				b.WriteString(":")
+				b.WriteString(c.Password)
+			}
+			b.WriteString("@")
 		}
-		u.RawQuery = encodeOptions(opts)
-		return u.String()
+		b.WriteString("tcp(")
+		b.WriteString(c.hostPort(3306))
+		b.WriteString(")")
+		if c.Schema != "" {
+			b.WriteString("/")
+			b.WriteString(c.Schema)
+		}
+		if q := encodeOptions(opts); q != "" {
+			b.WriteString("?")
+			b.WriteString(q)
+		}
+		return b.String()
 
 	case ConnTypeMSSQL:
 		u := &url.URL{Scheme: "sqlserver", User: c.userinfo(), Host: c.hostPort(1433)}

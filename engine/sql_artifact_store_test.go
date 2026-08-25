@@ -76,7 +76,7 @@ func TestSQLArtifactStore_VisibleAcrossSeparateConnections(t *testing.T) {
 	if len(got.Rows) != 2 {
 		t.Fatalf("rows = %d, want 2", len(got.Rows))
 	}
-	if got.Rows[0]["hostname"] != "worker-a" || got.Rows[1]["value"] != float64(2) {
+	if got.Rows[0]["hostname"] != "worker-a" || !numIs(got.Rows[1]["value"], 2) {
 		t.Fatalf("row content mismatch: %+v", got.Rows)
 	}
 }
@@ -152,7 +152,7 @@ func TestSQLArtifactStore_WriteArtifactFencedRejectsStaleAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadArtifact: %v", err)
 	}
-	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+	if len(got.Rows) != 1 || !numIs(got.Rows[0]["n"], 2) {
 		t.Fatalf("artifact = %+v, want the winning attempt's data untouched by the stale write", got)
 	}
 }
@@ -193,7 +193,7 @@ func TestSQLArtifactStore_WriteArtifactFencedTiebreaksOnGenerationWithinAttempt(
 	if err != nil {
 		t.Fatalf("ReadArtifact: %v", err)
 	}
-	if len(got.Rows) != 1 || got.Rows[0]["n"] != float64(2) {
+	if len(got.Rows) != 1 || !numIs(got.Rows[0]["n"], 2) {
 		t.Fatalf("artifact = %+v, want the reclaimed generation's data", got)
 	}
 }
