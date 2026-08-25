@@ -139,7 +139,21 @@ func dbtNode(cfg map[string]interface{}) models.Node {
 // The defect itself: every command the UI offers must actually execute.
 // Against the broken code each of these failed with
 // "Error: No such option '--output'" before dbt read the project.
+// dbtTestsRunInParallel: every dbt invocation costs about ten seconds of
+// Python interpreter startup before it does any work, and these tests spend
+// nearly all their time waiting on that subprocess rather than using CPU.
+// They are independent by construction -- each gets its own copied project
+// directory and its own Postgres schema -- so running them concurrently
+// turns a serial sum into roughly the longest single test.
+//
+// Measured on the engine package: the dbt tests were 84s of a 180s package,
+// the single largest cost in it (Tnsor-Labs/brokoli#329).
+//
+// TestDBTDoesNotClobberProfilesDirFromTheEnvironment is deliberately NOT
+// parallel: it uses t.Setenv, which Go refuses to combine with t.Parallel
+// because the environment is process-wide.
 func TestDBTCommandsActuallyRun(t *testing.T) {
+	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 
@@ -188,6 +202,7 @@ func TestDBTCommandsActuallyRun(t *testing.T) {
 // ls is the one command that does take --output json, and it must keep
 // getting it -- the fix is conditional, not a blanket removal.
 func TestDBTListStillUsesOutputJSON(t *testing.T) {
+	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 	ds, err := r.runDBT(dbtNode(map[string]interface{}{
@@ -206,6 +221,7 @@ func TestDBTListStillUsesOutputJSON(t *testing.T) {
 // read from run_results.json, which dbt writes even on failure. An exit code
 // alone cannot say that.
 func TestDBTFailingModelNamesTheModel(t *testing.T) {
+	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 
@@ -225,6 +241,7 @@ func TestDBTFailingModelNamesTheModel(t *testing.T) {
 // relative to the engine's working directory -- which is what this did --
 // resolved to the wrong path for every project that is not the process cwd.
 func TestDBTReadsResultsFromTheProjectDirectory(t *testing.T) {
+	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 
