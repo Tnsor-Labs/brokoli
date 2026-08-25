@@ -11,6 +11,173 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.71] - 2026-08-25
+
+MySQL becomes a backend on the same footing as Postgres. Two of these are
+data-correctness fixes on the MySQL write path, and one is a behaviour change
+that will fail pipelines which were previously succeeding — read the upsert
+item before upgrading.
+
+### Fixed
+
+- **MySQL string literals did not escape backslashes** (#338) — @hc12r.
+  Values are rendered into SQL text rather than bound as parameters, and the
+  escaping doubled the quote character while doing nothing about backslash.
+  MySQL treats a backslash as an escape inside a literal unless
+  `NO_BACKSLASH_ESCAPES` is set, which is not the default.
+
+  So an ordinary Windows path arrived altered:
+
+  ```
+  C:\Users\report.csv   ->   C:Usersreport.csv
+  ```
+
+  and a value ending in a backslash escaped the quote meant to close the
+  literal, after which MySQL parsed the following text as SQL rather than
+  data. Verified against a live MySQL 8.4 before and after the fix.
+
+  Postgres was never affected: `standard_conforming_strings` makes a
+  backslash an ordinary character there, which is why this survived — the
+  escaping was correct for the backend it was written against.
+
+  **Upgrading does not repair data already written; re-running the pipeline
+  does.** The rows worth checking are text values containing backslashes.
+
+- **MySQL passwords containing URI metacharacters could not authenticate**
+  (#338) — @hc12r. The DSN was assembled with `net/url`, which
+  percent-encodes userinfo, while go-sql-driver reads credentials verbatim.
+  Any password containing `@ : / ? # %`, a space, or non-ASCII failed with
+  `Access denied` and nothing pointing at the cause. Credentials are now
+  carried verbatim; driver options keep their encoding, because those the
+  driver does unescape.
+
+- **A MySQL overwrite was not atomic** (#344) — @hc12r. `GenerateSQL`'s
+  contract is that clear-then-insert runs as one transaction. On MySQL,
+  `TRUNCATE TABLE` implicitly commits, so an overwrite with `truncate: true`
+  destroyed the previous rows the moment the clear ran — a failure in any
+  later statement rolled back nothing and left the table empty.
+
+  The `truncate` option now degrades to a transactional `DELETE` on MySQL.
+  It keeps its measured advantage on Postgres, where `TRUNCATE` rolls back.
+
+  `create_table: true` has the same MySQL caveat and it is now documented
+  rather than fixed: `CREATE TABLE` also commits implicitly, so a run that
+  creates its target and then fails leaves the empty table behind.
+
+- **A driverless connection failed with an error naming nothing** (#346) —
+  @hc12r. A connection whose type has no compiled-in driver — Oracle is the
+  live example, offered in the catalog — failed a run with a message naming
+  neither the connection nor its type, because the sentence explaining it
+  went to the server's stdout. Resolver warnings now reach the run's node
+  log, where the pipeline author reads them.
+
+### Changed
+
+- **MySQL upsert now requires `key_columns`, and validates them** (#344) —
+  @hc12r. **This will fail pipelines that previously succeeded, and that is
+  the point.**
+
+  MySQL's `ON DUPLICATE KEY UPDATE` merges on whichever unique index the
+  inserted row collides with; the statement cannot name one. `key_columns`
+  was therefore accepted and silently ignored — rows merged on whatever
+  index the schema happened to have, which may not be the columns
+  configured, rewriting rows nobody addressed.
+
+  `key_columns` is now required for MySQL upsert, as it already was for
+  Postgres and SQLite, and is checked against `information_schema` before
+  the write: the named columns must be exactly a unique index of the target
+  table, or the run fails naming the indexes the table actually has.
+
+  If a table carries additional unique indexes beyond the one named, the run
+  logs a warning listing them — a row can still collide there and MySQL
+  offers no way to prevent it, so the check does not pretend otherwise.
+
+  A pipeline that starts failing after this upgrade was merging on a key it
+  did not configure. The fix is to name the real one.
+
+- **MySQL upsert emits the row-alias form, requiring MySQL 8.0.20 or later**
+  (#344) — @hc12r. `VALUES()` in `ON DUPLICATE KEY UPDATE` has been
+  deprecated since 8.0.20 (April 2020) and warns on every statement.
+  Verified against live 8.4, which accepts both and warns only on the old
+  one. MariaDB has no alias form and is not in the connection catalog.
+
+- **Three MySQL driver options are now accepted** (#344) — @hc12r.
+  `interpolateParams`, `maxAllowedPacket` and `clientFoundRows`.
+  `multiStatements` remains deliberately rejected: generated SQL is
+  interpolated rather than parameter-bound, so allowing multiple statements
+  per call would turn any escaping defect into arbitrary statement
+  execution rather than a corrupted value.
+
+### Added
+
+- **Large MySQL writes stream instead of materialising** (#345) — @hc12r.
+  An append or overwrite into MySQL goes through `LOAD DATA LOCAL INFILE`
+  fed from an in-process stream: rows travel as data, never as SQL text, and
+  the worker holds one batch regardless of dataset size. Previously a MySQL
+  sink always materialised — the bounded-memory property applied to reads on
+  any driver but writes only on Postgres.
+
+  Measured at 1,000,000 rows against MySQL 8.4:
+
+  ```
+  LOAD DATA          7.0s   ~143k rows/s   one batch of memory
+  INSERT fallback   11.5s    ~87k rows/s   one batch of memory
+  statement path    11.0s    ~91k rows/s   whole dataset + ~60MB of SQL text
+  ```
+
+  The statement path's wall time flatters it; its real cost is the memory,
+  which is what this removes.
+
+  The fast path needs `local_infile=1` on the server, which is off by
+  default in MySQL 8. When the server refuses, Brokoli degrades to batched
+  `INSERT`s inside the same transaction — same contents, same atomicity,
+  still one batch of memory. Nothing to configure; the choice is made per
+  write by asking the server.
+
+- **A same-server MySQL pipeline runs inside the database** (#346) — @hc12r.
+  Pushdown, previously Postgres-only, now applies to MySQL on the same
+  terms: every transform rule is proven equivalent by running it both ways
+  against a live server and comparing, and anything unproven runs in the
+  engine.
+
+  Making the differential corpus shared between backends immediately found a
+  real bug: the aggregate compiler emitted a bare `GROUP BY`, which is
+  harmless on Postgres where text equality under a deterministic collation
+  is byte equality, but MySQL's default collations are case-insensitive and
+  collapsed `Lisbon` and `lisbon` into one group where the engine keeps two.
+  Grouping is now byte-wise on both backends; on Postgres the emitted SQL
+  changed and the results did not.
+
+  One difference between backends is documented rather than closed:
+  `filter_rows` on a boolean column qualifies on MySQL and not on Postgres,
+  because MySQL's `BOOLEAN` is a `TINYINT` whose driver reports the server's
+  own `1`, making the comparison numeric on both sides.
+
+- **`sink_api` streams** (#337, #327) — @hc12r. A `sink_api` node consumes
+  its input in batches rather than materialising it, so posting a large
+  dataset no longer bounds the run by worker memory. `source_api` cannot
+  stream and the reason is recorded with it.
+
+### Internal
+
+- **A database backend is described in one place** (#341, #340, #343,
+  ADR-024) — @hc12r. `pkg/dbdialect` holds what a backend is: quoting,
+  literal escaping, type classification, the shape probe, and the casts and
+  collation that make a SQL comparison agree with the Go one. Postgres was
+  migrated onto it with no behaviour change, and MySQL is the second
+  implementation. A backend may claim a capability only when a differential
+  test proves it against the reference path.
+
+  One dead parameter turned out to be load-bearing: the pushdown compiler
+  had threaded a dialect through since it was written, and the only
+  production caller passed the literal `"postgres"`, correct solely because
+  an upstream gate refused everything else first.
+
+- **The live-database tests run in CI** (#339) — @hc12r. Postgres and MySQL
+  service containers, so the differential suites that back every equivalence
+  claim run on every push rather than on one laptop. They had only ever run
+  locally.
+
 ## [0.10.70] - 2026-08-24
 
 An integer of a million or more could be changed as it moved between nodes,
