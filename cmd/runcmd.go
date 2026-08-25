@@ -55,6 +55,7 @@ type runResponse struct {
 }
 
 func triggerRun(serverURL, token, pipelineID string) (*runResponse, error) {
+	//netguard:allow client-side CLI call to the user's configured Brokoli server
 	client := &http.Client{Timeout: 30 * time.Second}
 	req, err := http.NewRequest("POST", serverURL+"/api/pipelines/"+pipelineID+"/run", nil)
 	if err != nil {
@@ -82,6 +83,7 @@ func triggerRun(serverURL, token, pipelineID string) (*runResponse, error) {
 }
 
 func pollRunStatus(serverURL, token, runID string, timeoutSec int) error {
+	//netguard:allow client-side CLI call to the user's configured Brokoli server
 	client := &http.Client{Timeout: 10 * time.Second}
 	deadline := time.Now().Add(time.Duration(timeoutSec) * time.Second)
 

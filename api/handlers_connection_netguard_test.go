@@ -61,3 +61,34 @@ func TestConnectionTestStillBlocksOutsideTheAllowlist(t *testing.T) {
 		t.Errorf("error = %q, want it to say the target was blocked", errMsg)
 	}
 }
+
+// TestS3ConnectionTestHonoursOutboundPolicy verifies that the S3 connection
+// test uses the operator-configured outbound policy. The crafted bucket puts
+// 10.20.0.1 in the URL authority; connectivity may fail, but the policy must
+// not reject an explicitly allowed CIDR.
+func TestS3ConnectionTestHonoursOutboundPolicy(t *testing.T) {
+	_, private, err := net.ParseCIDR("10.20.0.0/16")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restore := netguard.SetOutboundForTesting(netguard.Policy{
+		AllowedCIDRs: []*net.IPNet{private},
+	})
+	defer restore()
+
+	result := testS3(context.Background(), map[string]interface{}{
+		"bucket":     "ignored@10.20.0.1:9/",
+		"region":     "us-east-1",
+		"access_key": "test-key",
+		"secret_key": "test-secret",
+	})
+
+	errMsg, _ := result["error"].(string)
+	if strings.Contains(errMsg, "blocked") {
+		t.Errorf(
+			"an explicitly allowed CIDR was still refused by the S3 connection test: %s",
+			errMsg,
+		)
+	}
+}

@@ -42,6 +42,7 @@ var assertCmd = &cobra.Command{
 			return fmt.Errorf("failed to marshal assertions: %w", err)
 		}
 
+		//netguard:allow client-side CLI call to the user's configured Brokoli server
 		client := &http.Client{}
 		req, err := http.NewRequest("POST", serverURL+"/api/pipelines/"+pipelineID+"/test",
 			bytes.NewReader(assertionJSON))

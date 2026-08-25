@@ -40,6 +40,9 @@ jobs:
             exit 1
           fi
 
+      - name: Enforce outbound HTTP policy
+        run: go run ./internal/cmd/netguardcheck ./...
+
   test:
     name: Test
     runs-on: ubuntu-latest

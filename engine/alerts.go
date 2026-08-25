@@ -5,10 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"net/smtp"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 // AlertChannel defines a notification channel.
@@ -90,7 +91,7 @@ func sendSlack(config map[string]string, p AlertPayload) {
 	}
 
 	body, _ := json.Marshal(blocks)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("slack alert failed: %v", err)
@@ -122,7 +123,7 @@ func sendPagerDuty(config map[string]string, p AlertPayload) {
 	}
 
 	body, _ := json.Marshal(event)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post("https://events.pagerduty.com/v2/enqueue", "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("pagerduty alert failed: %v", err)
@@ -167,7 +168,7 @@ func sendWebhookAlert(config map[string]string, p AlertPayload) {
 		return
 	}
 	body, _ := json.Marshal(p)
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := netguard.Outbound().Client(10 * time.Second)
 	resp, err := client.Post(url, "application/json", bytes.NewReader(body))
 	if err != nil {
 		log.Printf("webhook alert failed: %v", err)

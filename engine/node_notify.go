@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 // runNotify sends a notification via webhook, Slack, or email.
@@ -57,7 +57,8 @@ func (r *Runner) notifySlack(node models.Node, webhookURL, channel, message stri
 	}
 
 	body, _ := json.Marshal(payload)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(webhookURL, "application/json", bytes.NewReader(body))
+	client := netguard.Outbound().Client(10 * time.Second)
+	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("slack notification failed: %w", err)
 	}
@@ -88,7 +89,8 @@ func (r *Runner) notifyWebhook(node models.Node, webhookURL, message string, inp
 	}
 
 	body, _ := json.Marshal(payload)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post(webhookURL, "application/json", bytes.NewReader(body))
+	client := netguard.Outbound().Client(10 * time.Second)
+	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("webhook notification failed: %w", err)
 	}

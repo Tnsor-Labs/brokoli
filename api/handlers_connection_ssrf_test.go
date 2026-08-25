@@ -41,3 +41,24 @@ func TestTestHTTPAuth_BlocksLoopbackConnection(t *testing.T) {
 		t.Fatalf("error = %q, want it to mention the target was blocked", errMsg)
 	}
 }
+
+// TestTestS3_BlocksLoopbackEndpointInjection proves this S3 connection
+// testing cannot be redirected to a loopback address through bucket input.
+func TestTestS3_BlocksLoopbackEndpointInjection(t *testing.T) {
+	result := testS3(context.Background(), map[string]interface{}{
+		"bucket":     "ignored@127.0.0.1:1/",
+		"region":     "us-east-1",
+		"access_key": "test-key",
+		"secret_key": "test-secret",
+	})
+
+	success, _ := result["success"].(bool)
+	if success {
+		t.Fatal("expected testS3 to reject a loopback target, got success=true")
+	}
+
+	errMsg, _ := result["error"].(string)
+	if !strings.Contains(errMsg, "blocked") {
+		t.Fatalf("error = %q, want it to mention the target was blocked", errMsg)
+	}
+}
