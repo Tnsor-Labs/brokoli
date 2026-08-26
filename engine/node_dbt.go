@@ -103,6 +103,17 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	// read on both paths.
 	results, resultsErr := readDbtRunResults(projectDir)
 
+	// #353: one invocation, an outcome per model. The manifest supplies the
+	// dependency graph, which is what lets a skip say WHICH failure caused
+	// it -- dbt records the status and nothing linking it to the cause.
+	// Best-effort: a project whose artifacts cannot be read still reports
+	// exactly what it reported before.
+	if summary, ok := r.recordDBTModelOutcomesFromProject(node, projectDir); ok {
+		r.log(node.ID, models.LogLevelInfo,
+			"dbt %s: %d succeeded, %d failed, %d skipped, %d warned",
+			command, summary.Succeeded, summary.Failed, summary.Skipped, summary.Warned)
+	}
+
 	if err != nil {
 		if ctxErr := r.ctx.Err(); ctxErr != nil {
 			return nil, fmt.Errorf("dbt %s cancelled after %.1fs: %w", command, duration.Seconds(), ctxErr)
