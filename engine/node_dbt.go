@@ -31,7 +31,7 @@ var dbtCommands = map[string]bool{
 // proposes replacing this with a model-level integration that reads dbt's
 // manifest; until that exists, the contract here is narrow: run the command,
 // report what dbt reported, and fail loudly when dbt fails.
-func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runDBT(node models.Node) (nodeExecutionResult, error) {
 	command, _ := node.Config["command"].(string)
 	projectDir, _ := node.Config["project_dir"].(string)
 	profiles, _ := node.Config["profiles_dir"].(string)
@@ -43,7 +43,7 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 		command = "run"
 	}
 	if !dbtCommands[command] {
-		return nil, fmt.Errorf("dbt: unsupported command %q (allowed: run, test, build, seed, snapshot, compile, ls)", command)
+		return nodeExecutionResult{}, fmt.Errorf("dbt: unsupported command %q (allowed: run, test, build, seed, snapshot, compile, ls)", command)
 	}
 	if projectDir == "" {
 		projectDir = "."
@@ -57,7 +57,7 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	if connID, _ := node.Config["conn_id"].(string); connID != "" && profiles == "" {
 		generated, err := r.generateDBTProfileForNode(node, connID)
 		if err != nil {
-			return nil, fmt.Errorf("dbt: %w", err)
+			return nodeExecutionResult{}, fmt.Errorf("dbt: %w", err)
 		}
 		// Removed when this node finishes, including on failure: the file
 		// holds a resolved credential.
@@ -145,21 +145,56 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 		failure := classifyDBTFailure(command, err, contextErrOf(r.ctx), parsed)
 		r.log(node.ID, models.LogLevelError, "dbt %s failed after %.1fs (%s)",
 			command, duration.Seconds(), failure.Kind)
-		return nil, failure
+		return nodeExecutionResult{}, failure
 	}
 
 	r.log(node.ID, models.LogLevelInfo, "dbt %s completed in %.1fs", command, duration.Seconds())
 
+	// #353 Phase 3: a model dbt just built is a named relation on a known
+	// server, which is what an ADR-023 reference is. Handing one downstream
+	// lets a sink on the same connection compose through the pushdown
+	// compiler that already exists, without the engine learning what dbt
+	// is. Only when the node asks for it by naming an output_model.
+	if project, presults, ok := r.dbtArtifacts(projectDir); ok {
+		ref, refErr := r.dbtOutputTableRef(node, projectDir, project, presults)
+		if refErr != nil {
+			return nodeExecutionResult{}, fmt.Errorf("dbt: %w", refErr)
+		}
+		if ref != nil {
+			r.log(node.ID, models.LogLevelInfo,
+				"handing %s downstream as a reference; its rows stay in the database",
+				strings.TrimPrefix(ref.Query, "SELECT * FROM "))
+			return nodeExecutionResult{outputTable: ref}, nil
+		}
+	} else if wanted, _ := node.Config["output_model"].(string); wanted != "" {
+		return nodeExecutionResult{}, fmt.Errorf(
+			"dbt: output_model %q was requested but dbt's artifacts could not be read", wanted)
+	}
+
 	if resultsErr == nil && len(results.Results) > 0 {
-		return dbtResultsDataSet(results), nil
+		return nodeExecutionResult{output: dbtResultsDataSet(results)}, nil
 	}
 	// ls and compile write no run_results.json; neither does a command that
 	// selected nothing. The output stays available rather than being
 	// discarded.
-	return &common.DataSet{
+	return nodeExecutionResult{output: &common.DataSet{
 		Columns: []string{"command", "output"},
 		Rows:    []common.DataRow{{"command": command, "output": strings.TrimSpace(outputStr)}},
-	}, nil
+	}}, nil
+}
+
+// dbtArtifacts reads a project's manifest and results together, since every
+// caller needs both or neither.
+func (r *Runner) dbtArtifacts(projectDir string) (*dbtmanifest.Project, *dbtmanifest.RunResults, bool) {
+	project, err := dbtmanifest.ParseProject(projectDir)
+	if err != nil {
+		return nil, nil, false
+	}
+	results, err := dbtmanifest.ParseRunResultsForProject(projectDir)
+	if err != nil {
+		return nil, nil, false
+	}
+	return project, results, true
 }
 
 // dbtRunResults is the subset of dbt's run_results.json this node reads. The

@@ -164,7 +164,7 @@ func TestDBTCommandsActuallyRun(t *testing.T) {
 		t.Fatalf("dbt seed: %v", err)
 	}
 
-	ds, err := r.runDBT(dbtNode(map[string]interface{}{
+	res, err := r.runDBT(dbtNode(map[string]interface{}{
 		"command": "run", "project_dir": projectDir, "profiles_dir": profilesDir,
 		"select": "stg_orders city_totals",
 	}))
@@ -172,13 +172,13 @@ func TestDBTCommandsActuallyRun(t *testing.T) {
 		t.Fatalf("dbt run: %v", err)
 	}
 	// The per-model results, not a blob of stdout.
-	if got := fmt.Sprint(ds.Columns); !strings.Contains(got, "model") || !strings.Contains(got, "status") {
-		t.Fatalf("expected per-model results, got columns %v", ds.Columns)
+	if got := fmt.Sprint(res.output.Columns); !strings.Contains(got, "model") || !strings.Contains(got, "status") {
+		t.Fatalf("expected per-model results, got columns %v", res.output.Columns)
 	}
-	if len(ds.Rows) != 2 {
-		t.Fatalf("expected 2 model results, got %d: %v", len(ds.Rows), ds.Rows)
+	if len(res.output.Rows) != 2 {
+		t.Fatalf("expected 2 model results, got %d: %v", len(res.output.Rows), res.output.Rows)
 	}
-	for _, row := range ds.Rows {
+	for _, row := range res.output.Rows {
 		if row["status"] != "success" {
 			t.Errorf("model %v: status %v, want success", row["model"], row["status"])
 		}
@@ -205,13 +205,13 @@ func TestDBTListStillUsesOutputJSON(t *testing.T) {
 	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
-	ds, err := r.runDBT(dbtNode(map[string]interface{}{
+	res, err := r.runDBT(dbtNode(map[string]interface{}{
 		"command": "ls", "project_dir": projectDir, "profiles_dir": profilesDir,
 	}))
 	if err != nil {
 		t.Fatalf("dbt ls: %v", err)
 	}
-	out := fmt.Sprint(ds.Rows)
+	out := fmt.Sprint(res.output.Rows)
 	if !strings.Contains(out, "stg_orders") {
 		t.Errorf("ls output should name the fixture's models: %s", out)
 	}

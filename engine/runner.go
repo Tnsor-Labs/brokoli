@@ -1702,7 +1702,9 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	case models.NodeTypeMigrate:
 		return outputExecutionResult(r.runMigrate(node))
 	case models.NodeTypeDBT:
-		return outputExecutionResult(r.runDBT(node))
+		// dbt can hand downstream a reference rather than rows (#353
+		// Phase 3), so it returns a full result rather than a dataset.
+		return r.runDBT(node)
 	case models.NodeTypeNotify:
 		return outputExecutionResult(r.runNotify(node, input))
 	case models.NodeTypeUnion:
