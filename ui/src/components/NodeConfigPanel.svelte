@@ -142,6 +142,12 @@
         ];
       case "source_api":
         return ["http", "generic"];
+      // dbt: only the backends Brokoli can generate a profile for. A dbt
+      // run against a warehouse Brokoli cannot read back is a
+      // half-integration (ADR-025), so offering one here would promise
+      // something the engine refuses.
+      case "dbt":
+        return ["postgres", "mysql"];
       default:
         return [];
     }
@@ -908,16 +914,87 @@
             >Path to your dbt project root (where dbt_project.yml lives).</span
           >
         </div>
+      </div>
+
+      <div class="field-group">
+        <span class="group-title">Where it connects</span>
         <div class="field">
-          <label>Target Environment</label>
-          <input
-            value={node.config["target"] || ""}
-            on:input={(e) => updateConfig("target", e.currentTarget.value)}
-            placeholder="dev"
-          />
-          <span class="field-hint"
-            >Which profile target to use (dev, staging, prod). Leave blank for default.</span
+          <label>Warehouse Connection</label>
+          <select
+            value={node.config["conn_id"] || ""}
+            on:change={(e) => updateConfig("conn_id", e.currentTarget.value)}
           >
+            <option value="">Use the project's own profiles.yml</option>
+            {#each filteredConns as c}
+              <option value={c.conn_id}>{c.conn_id} ({c.type})</option>
+            {/each}
+          </select>
+          <span class="field-hint">
+            Brokoli writes dbt's profile for the run from this connection, so the project needs no
+            second copy of the warehouse password.
+          </span>
+        </div>
+
+        {#if node.config["conn_id"] && node.config["profiles_dir"]}
+          <div class="field">
+            <div class="conn-badge warn">
+              A Profiles Directory is set under Advanced, and it wins: the connection above will not
+              be used. Clear one of them.
+            </div>
+          </div>
+        {/if}
+
+        {#if node.config["conn_id"]}
+          <div class="field">
+            <label>Schema to build into</label>
+            <input
+              value={node.config["target_schema"] || ""}
+              on:input={(e) => updateConfig("target_schema", e.currentTarget.value)}
+              placeholder="analytics"
+            />
+            <span class="field-hint">
+              Required. Where dbt creates your models. A connection names a database, not a schema,
+              so Brokoli will not guess this.
+            </span>
+          </div>
+        {:else}
+          <div class="field">
+            <label>Profile Target</label>
+            <input
+              value={node.config["target"] || ""}
+              on:input={(e) => updateConfig("target", e.currentTarget.value)}
+              placeholder="dev"
+            />
+            <span class="field-hint">
+              Which output inside your profiles.yml to use (dev, staging, prod). Leave blank for the
+              profile's default.
+            </span>
+          </div>
+        {/if}
+      </div>
+
+      <div class="field-group">
+        <span class="group-title">What it hands downstream</span>
+        <div class="field">
+          <label>Output Model</label>
+          <input
+            value={node.config["output_model"] || ""}
+            on:input={(e) => updateConfig("output_model", e.currentTarget.value)}
+            placeholder="dim_customers"
+            disabled={!node.config["conn_id"]}
+          />
+          {#if node.config["conn_id"]}
+            <span class="field-hint">
+              Optional. Name a model and downstream nodes read it directly in the warehouse — the
+              rows never pass through Brokoli. Leave blank to hand on a table of per-model results
+              instead.
+            </span>
+          {:else}
+            <span class="field-hint">
+              Needs a warehouse connection above: passing a model downstream means naming the server
+              it lives on, which a project's own profiles.yml does not tell Brokoli.
+            </span>
+          {/if}
         </div>
       </div>
 
@@ -934,6 +1011,35 @@
               on:input={(e) => updateConfig("profiles_dir", e.currentTarget.value)}
               placeholder="~/.dbt"
             />
+            <span class="field-hint">
+              A profiles.yml you maintain yourself. Setting this takes precedence over the warehouse
+              connection above, so leave it blank to use one.
+            </span>
+          </div>
+          <div class="field">
+            <label>Profile Name</label>
+            <input
+              value={node.config["profile"] || ""}
+              on:input={(e) => updateConfig("profile", e.currentTarget.value)}
+              placeholder="from dbt_project.yml"
+            />
+            <span class="field-hint">
+              Only when generating a profile from a connection. Defaults to the name your
+              dbt_project.yml already asks for, which is nearly always right.
+            </span>
+          </div>
+          <div class="field">
+            <label>Threads</label>
+            <input
+              type="number"
+              min="1"
+              value={node.config["threads"] || ""}
+              on:input={(e) => updateConfig("threads", Number(e.currentTarget.value))}
+              placeholder="4"
+            />
+            <span class="field-hint">
+              How many models dbt builds at once. Only applies to a generated profile.
+            </span>
           </div>
           <div class="field">
             <label>Variables</label>
@@ -1445,6 +1551,14 @@
     padding: 6px 10px;
     border-radius: 4px;
     border: 1px solid rgba(99, 102, 241, 0.2);
+  }
+
+  /* Used where a setting silently overrides another, so the conflict is
+     visible in the editor rather than discovered in a failed run. */
+  .conn-badge.warn {
+    color: var(--warning);
+    background: var(--warning-bg);
+    border-color: var(--warning);
   }
 
   .empty-panel {
