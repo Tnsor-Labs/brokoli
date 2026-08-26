@@ -4,6 +4,7 @@
   import { pipelines } from "../lib/stores";
   import { getSodpClient } from "../lib/sodp";
   import { dashboardKey } from "../lib/auth";
+  import { workspaceHeaders } from "../lib/workspace";
   import { icons } from "../lib/icons";
   import { notify } from "../lib/toast";
   import PageHeader from "../components/PageHeader.svelte";
@@ -212,10 +213,7 @@
       // Single request: pipelines + last run status + run counts
       const [summaryRes, schedRes] = await Promise.all([
         fetch("/api/pipelines/summary", {
-          headers: {
-            ...authHeaders(),
-            "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default",
-          },
+          headers: { ...authHeaders(), ...workspaceHeaders() },
         }),
         fetch("/api/scheduler/status", { headers: authHeaders() }),
       ]);

@@ -4,6 +4,7 @@
   import { notify } from "../lib/toast";
   import { pipelines } from "../lib/stores";
   import { authHeaders, dashboardKey } from "../lib/auth";
+  import { workspaceHeaders } from "../lib/workspace";
   import { getSodpClient } from "../lib/sodp";
   import PageHeader from "../components/PageHeader.svelte";
   import Skeleton from "../components/Skeleton.svelte";
@@ -160,10 +161,7 @@
   async function loadDashboardStats(): Promise<boolean> {
     try {
       const res = await fetch("/api/dashboard", {
-        headers: {
-          ...authHeaders(),
-          "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default",
-        },
+        headers: { ...authHeaders(), ...workspaceHeaders() },
       });
       if (!res.ok) return false;
       const d = await res.json();
@@ -209,10 +207,7 @@
     try {
       const [pipesRes, schedRes, connRes] = await Promise.all([
         fetch("/api/pipelines/summary", {
-          headers: {
-            ...authHeaders(),
-            "X-Workspace-ID": localStorage.getItem("brokoli-workspace") || "default",
-          },
+          headers: { ...authHeaders(), ...workspaceHeaders() },
         }),
         fetch("/api/scheduler/status", { headers: authHeaders() }),
         fetch("/api/connections", { headers: authHeaders() }),

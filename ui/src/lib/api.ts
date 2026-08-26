@@ -16,12 +16,9 @@ import type {
   PluginIndex,
 } from "./types";
 import { authHeaders, logout } from "./auth";
+import { workspaceHeaders } from "./workspace";
 
 const BASE = "/api";
-
-function getWorkspaceId(): string {
-  return localStorage.getItem("brokoli-workspace") || "default";
-}
 
 interface RequestOptions extends RequestInit {
   timeout?: number;
@@ -29,17 +26,13 @@ interface RequestOptions extends RequestInit {
 }
 
 async function request<T>(path: string, options?: RequestOptions): Promise<T> {
-  const {
-    timeout = 15000,
-    maxRetries = 2,
-    ...fetchOpts
-  } = options || {};
+  const { timeout = 15000, maxRetries = 2, ...fetchOpts } = options || {};
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
-    "X-Workspace-ID": getWorkspaceId(),
+    ...workspaceHeaders(),
     ...authHeaders(),
-    ...(fetchOpts.headers as Record<string, string> || {}),
+    ...((fetchOpts.headers as Record<string, string>) || {}),
   };
 
   let lastErr: Error | null = null;
@@ -65,7 +58,7 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
 
       // Retry on 5xx (server error) — not on 4xx (client error)
       if (res.status >= 500 && attempt < maxRetries) {
-        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
         continue;
       }
 
@@ -92,7 +85,7 @@ async function request<T>(path: string, options?: RequestOptions): Promise<T> {
 
       // Retry on network errors and timeouts
       if (attempt < maxRetries && (err.name === "AbortError" || err instanceof TypeError)) {
-        await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        await new Promise((r) => setTimeout(r, 1000 * Math.pow(2, attempt)));
         continue;
       }
 
@@ -127,10 +120,8 @@ export const api = {
       ),
     dependents: (id: string) =>
       request<{ id: string; name: string }[]>(`/pipelines/${id}/dependents`),
-    dependencyGraph: () =>
-      request<DependencyGraph>(`/pipelines/dependency-graph`),
-    versions: (id: string) =>
-      request<PipelineVersion[]>(`/pipelines/${id}/versions`),
+    dependencyGraph: () => request<DependencyGraph>(`/pipelines/dependency-graph`),
+    versions: (id: string) => request<PipelineVersion[]>(`/pipelines/${id}/versions`),
     plan: (id: string) => request<PhysicalPlan>(`/pipelines/${id}/plan`),
     rollback: (id: string, version: number) =>
       request<Pipeline>(`/pipelines/${id}/rollback`, {
@@ -144,8 +135,7 @@ export const api = {
         method: "POST",
         body: JSON.stringify({ params }),
       }),
-    listByPipeline: (pipelineId: string) =>
-      request<Run[]>(`/pipelines/${pipelineId}/runs`),
+    listByPipeline: (pipelineId: string) => request<Run[]>(`/pipelines/${pipelineId}/runs`),
     get: (id: string) => request<Run>(`/runs/${id}`),
     instances: (id: string) => request<PhysicalInstance[]>(`/runs/${id}/instances`),
     getLogs: (id: string) => request<LogEntry[]>(`/runs/${id}/logs`),
@@ -157,10 +147,8 @@ export const api = {
     // cancel/resume previously existed only as raw fetch calls inside
     // PipelineRuns.svelte, which is why nothing else in the app could offer
     // them. Any surface that shows a run can now act on it.
-    cancel: (id: string) =>
-      request<{ status: string }>(`/runs/${id}/cancel`, { method: "POST" }),
-    resume: (id: string) =>
-      request<Run>(`/runs/${id}/resume`, { method: "POST" }),
+    cancel: (id: string) => request<{ status: string }>(`/runs/${id}/cancel`, { method: "POST" }),
+    resume: (id: string) => request<Run>(`/runs/${id}/resume`, { method: "POST" }),
     events: (id: string) => request<RunEvent[]>(`/runs/${id}/events`),
   },
   alerts: {
@@ -202,7 +190,7 @@ export const api = {
     install: async (file: File): Promise<Plugin> => {
       const res = await fetch(`${BASE}/plugins`, {
         method: "POST",
-        headers: { ...authHeaders(), "X-Workspace-ID": getWorkspaceId() },
+        headers: { ...authHeaders(), ...workspaceHeaders() },
         body: file,
       });
       if (res.status === 401) {
