@@ -77,7 +77,10 @@ func (p *dbtProfile) Cleanup() {
 	if p == nil || p.Dir == "" {
 		return
 	}
-	os.RemoveAll(p.Dir)
+	// Best-effort: a directory that cannot be removed is a leaked
+	// credential worth no less than a returned error nobody would act on,
+	// and Cleanup is called from a defer where there is nowhere to put one.
+	_ = os.RemoveAll(p.Dir)
 	p.Dir = ""
 }
 
@@ -118,15 +121,14 @@ func generateDBTProfile(conn *models.Connection, profileName, targetSchema strin
 		port = adapter.DefaultPort
 	}
 
-	// 0700 at creation: no window in which another user on the host can
-	// read what is about to be written here.
+	// os.MkdirTemp creates with 0700, so the credential is unreadable by
+	// other users from the moment the directory exists rather than from
+	// whenever a chmod lands. An explicit chmod here would be redundant,
+	// and would also read as a too-permissive one to a static analyser
+	// that cannot tell a directory needs its execute bit.
 	dir, err := os.MkdirTemp("", "brokoli-dbt-profile-")
 	if err != nil {
 		return nil, fmt.Errorf("create profile directory: %w", err)
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		os.RemoveAll(dir)
-		return nil, fmt.Errorf("secure profile directory: %w", err)
 	}
 
 	const target = "brokoli"
@@ -151,7 +153,7 @@ func generateDBTProfile(conn *models.Connection, profileName, targetSchema strin
 
 	path := filepath.Join(dir, "profiles.yml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-		os.RemoveAll(dir)
+		_ = os.RemoveAll(dir)
 		return nil, fmt.Errorf("write profile: %w", err)
 	}
 	return &dbtProfile{Dir: dir, ProfileName: profileName, Target: target}, nil
@@ -242,6 +244,10 @@ func (r *Runner) generateDBTProfileForNode(node models.Node, connID string) (*db
 // engine for it would be a larger commitment than the problem.
 func dbtProjectProfileName(projectDir string) (string, error) {
 	path := filepath.Join(projectDir, "dbt_project.yml")
+	// #nosec G304 -- projectDir is operator-supplied node configuration
+	// naming a dbt project on this host, which is the whole point of the
+	// node; there is no untrusted request input on this path, and the file
+	// read is a fixed name inside it.
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", fmt.Errorf("read %s to find which profile the project wants: %w", path, err)
