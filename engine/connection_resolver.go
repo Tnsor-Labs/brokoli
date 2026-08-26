@@ -177,3 +177,24 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) {
 		}
 	}
 }
+
+// ResolveConnection returns a connection with its credentials resolved.
+//
+// Most nodes want a URI and get one from Resolve. dbt is different: it needs
+// the fields separately, because a dbt profile is structured YAML rather
+// than a connection string, so it cannot go through the URI path without
+// being taken apart again on the other side.
+//
+// The returned Connection carries plaintext credentials in memory, the same
+// contract Resolve already has, and must not be persisted or logged.
+func (cr *ConnectionResolver) ResolveConnection(connID string) (*models.Connection, error) {
+	if connID == "" {
+		return nil, fmt.Errorf("no conn_id given")
+	}
+	conn, err := cr.store.GetConnection(connID)
+	if err != nil {
+		return nil, fmt.Errorf("conn_id %q not found: %w", connID, err)
+	}
+	cr.resolveCredentials(conn)
+	return conn, nil
+}
