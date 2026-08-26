@@ -48,6 +48,24 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 		projectDir = "."
 	}
 
+	// #353 Phase 2: a conn_id generates the profile from a Brokoli
+	// connection, so a dbt project needs no second copy of the warehouse
+	// password. An explicit profiles_dir stays authoritative -- a project
+	// with a profile it already maintains should keep using it, and
+	// silently overriding that would be the wrong kind of helpful.
+	if connID, _ := node.Config["conn_id"].(string); connID != "" && profiles == "" {
+		generated, err := r.generateDBTProfileForNode(node, connID)
+		if err != nil {
+			return nil, fmt.Errorf("dbt: %w", err)
+		}
+		// Removed when this node finishes, including on failure: the file
+		// holds a resolved credential.
+		defer generated.Cleanup()
+		profiles = generated.Dir
+		r.log(node.ID, models.LogLevelInfo,
+			"using a generated dbt profile for connection %q; the project's own profiles.yml is not consulted", connID)
+	}
+
 	args := []string{command, "--project-dir", projectDir}
 	if profiles != "" {
 		args = append(args, "--profiles-dir", profiles)
