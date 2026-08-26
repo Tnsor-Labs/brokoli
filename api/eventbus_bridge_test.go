@@ -132,12 +132,21 @@ func TestEventBusBridge_OrgScopedChannel(t *testing.T) {
 		t.Errorf("org_id: got %v, want acme", m["org_id"])
 	}
 
-	// Dashboard snapshot should land on the org-scoped key
-	val, _ = srv.State.Get("dashboard.acme")
-	if val == nil {
-		t.Error("expected dashboard.acme to be populated for org-scoped event")
+	// Dashboard snapshot should land on the org-scoped key.
+	//
+	// Waited for rather than read once: the run state and the dashboard
+	// snapshot are separate async hops off the same event, so the Get above
+	// returning does not mean this one has been written -- the same mistake
+	// TestEventBusBridge_ForwardsToSODP documents about its delta. Reading it
+	// non-blocking failed 1 run in 20 under -race on origin/main in isolation
+	// (and once in a full preflight), and then asserted with t.Error and
+	// dereferenced the nil anyway -- so a flake took the whole package down
+	// with a panic instead of failing one test.
+	val, _ = waitForState(t, srv, "dashboard.acme")
+	snap, ok := val.(map[string]any)
+	if !ok {
+		t.Fatalf("dashboard.acme = %v (%T), want a snapshot map", val, val)
 	}
-	snap := val.(map[string]any)
 	if snap["runs_running"] != 1 {
 		t.Errorf("dashboard.acme runs_running: got %v, want 1", snap["runs_running"])
 	}

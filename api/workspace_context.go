@@ -20,6 +20,20 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 			wsID = models.DefaultWorkspaceID
 		}
 		wsID = sanitizeWorkspaceID(wsID)
+
+		// Single-tenant: this build has no workspace registry, no way to
+		// create a second workspace, and no page that can navigate to one,
+		// so the header names nothing it can be checked against. Honouring
+		// it anyway does not scope a request, it files it under a name
+		// nobody can reach: a stale value left in a browser by some other
+		// instance hides every existing row behind an empty 200 -- not an
+		// error a caller can react to -- and new rows are written where the
+		// operator cannot list them. The header is a multi-tenant input, so
+		// a build with no tenant resolver ignores it (#231).
+		if UserWorkspaceResolverFunc == nil {
+			wsID = models.DefaultWorkspaceID
+		}
+
 		if isWorkspacePublicRoute(r) {
 			ctx := context.WithValue(r.Context(), workspaceKey, wsID)
 			next.ServeHTTP(w, r.WithContext(ctx))

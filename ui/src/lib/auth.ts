@@ -1,4 +1,5 @@
 import { writable, get } from "svelte/store";
+import { resolveWorkspace, adoptWorkspaceForUser } from "./workspace";
 
 export interface AuthUser {
   id: string;
@@ -110,6 +111,7 @@ export function userCan(permission: string): boolean {
 export async function initAuth() {
   try {
     let tokenFromURL = false;
+    let workspaceHintFromCallback = false;
 
     // Check if setup is needed
     const setupRes = await fetch("/api/auth/setup");
@@ -137,7 +139,10 @@ export async function initAuth() {
         setToken(urlToken);
         tokenFromURL = true;
         if (wsId) {
+          // A hint, not a decision: resolveWorkspace() confirms it against
+          // the workspaces this user has before any request carries it.
           localStorage.setItem("brokoli-workspace", wsId);
+          workspaceHintFromCallback = true;
         }
         // Store onboarding flag for new signups
         const isNew = hashParams.get("new");
@@ -197,6 +202,12 @@ export async function initAuth() {
       } else if (get(authToken)) {
         setToken(null);
       }
+
+      // Settle the workspace before anything can fetch. The app renders
+      // nothing until authReady, so confirming here is what removes the
+      // race in #231 rather than merely narrowing it.
+      adoptWorkspaceForUser(claims.sub, workspaceHintFromCallback);
+      await resolveWorkspace(authHeaders());
     }
   } catch {
     // Server might not have auth — open mode
