@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbtmanifest"
 )
 
 // dbtCommands are the subcommands this node will invoke, and the ones the UI
@@ -133,16 +134,18 @@ func (r *Runner) runDBT(node models.Node) (*common.DataSet, error) {
 	}
 
 	if err != nil {
-		if ctxErr := r.ctx.Err(); ctxErr != nil {
-			return nil, fmt.Errorf("dbt %s cancelled after %.1fs: %w", command, duration.Seconds(), ctxErr)
+		// #353 Phase 2: "dbt failed" is not one thing. A failing test means
+		// the models built and the data is wrong; a compile error means
+		// nothing ran at all. Those call for different actions, and the
+		// artifacts already distinguish them.
+		var parsed *dbtmanifest.RunResults
+		if p, perr := dbtmanifest.ParseRunResultsForProject(projectDir); perr == nil {
+			parsed = p
 		}
-		if resultsErr == nil {
-			if failed := failedDbtNodes(results); len(failed) > 0 {
-				return nil, fmt.Errorf("dbt %s failed (%.1fs): %s",
-					command, duration.Seconds(), strings.Join(failed, ", "))
-			}
-		}
-		return nil, fmt.Errorf("dbt %s failed (%.1fs): %w", command, duration.Seconds(), err)
+		failure := classifyDBTFailure(command, err, contextErrOf(r.ctx), parsed)
+		r.log(node.ID, models.LogLevelError, "dbt %s failed after %.1fs (%s)",
+			command, duration.Seconds(), failure.Kind)
+		return nil, failure
 	}
 
 	r.log(node.ID, models.LogLevelInfo, "dbt %s completed in %.1fs", command, duration.Seconds())
@@ -189,21 +192,6 @@ func readDbtRunResults(projectDir string) (dbtRunResults, error) {
 		return out, err
 	}
 	return out, nil
-}
-
-func failedDbtNodes(res dbtRunResults) []string {
-	var failed []string
-	for _, r := range res.Results {
-		switch strings.ToLower(r.Status) {
-		case "error", "fail", "runtime error":
-			label := r.UniqueID
-			if r.Message != "" {
-				label += " (" + r.Message + ")"
-			}
-			failed = append(failed, label)
-		}
-	}
-	return failed
 }
 
 func dbtResultsDataSet(res dbtRunResults) *common.DataSet {
