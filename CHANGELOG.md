@@ -11,6 +11,158 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.74] - 2026-08-27
+
+A dbt node stops being one opaque success or failure. One invocation now
+produces a record per model, failures say which of dbt's five modes
+happened, and a model dbt built can be handed straight to a sink without
+the rows leaving the database.
+
+Alongside it, a column's declared type now survives the trip to a
+destination table instead of being guessed from a sample of its values —
+first for `migrate`, now for `sink_db` as well.
+
+### Added
+
+- **dbt reports an outcome per model, from one invocation** (#365, #366,
+  #367, #368, ADR-025) — @hc12r. Running dbt per model to get per-model
+  status was measured at 30x slower than one invocation: 665s against 21.8s
+  on a 100-model project. So Brokoli runs dbt once and reads what it already
+  writes — `manifest.json` for the build order and `run_results.json` for
+  what each node did — and reconciles the two into one row per model in
+  `execution_attempts`, keyed by the model's dbt `unique_id`.
+
+  Both artifacts are version-drifting under stable schema numbers, so the
+  readers decode only the fields Brokoli needs and are proven against two
+  dbt versions. A model that dbt skipped is distinguished from one that was
+  never selected, and a skip is reported with the failure that caused it
+  rather than as a bare "skipped" — the reconciler walks to the nearest
+  failing ancestor.
+
+- **dbt failures say which of the five modes happened** (#370) — @hc12r.
+  "dbt failed" left whoever was on call to open the log and work out which.
+  Each mode was reproduced against real dbt 1.8.9 before being encoded:
+  a compile error means nothing ran, a model error means the models that
+  do not depend on it are committed, and a test failure means everything
+  built and the data is wrong. Those call for different actions.
+
+  Neither signal separates them alone — exit 1 covers both a failing model
+  and a failing test, and a missing `run_results.json` covers both a compile
+  error and a kill — so the classifier reads the exit status, the artifacts
+  and the run's own context together. When the artifacts do not support a
+  specific answer it says so rather than guessing between them.
+
+- **A dbt profile is generated from a Brokoli connection** (#369) — @hc12r.
+  A dbt node pointed at a `conn_id` no longer needs a `profiles.yml` at all:
+  Brokoli writes one into a per-run temporary directory (0700, file 0600)
+  and removes it afterwards. A project that brings its own profile keeps
+  using it; the generated one never overwrites a real `profiles.yml` or the
+  default profiles directory.
+
+- **A dbt model can be handed downstream as a reference** (#371, ADR-023) —
+  @hc12r. Naming an `output_model` makes the dbt node hand its sink a
+  `TableRef` rather than rows, so a sink on the same connection composes
+  through the pushdown compiler that already existed and the rows never
+  enter the engine. Nothing in that machinery had to learn what dbt is.
+
+  It refuses by name where it cannot: an ephemeral model has no relation to
+  reference, and a project authenticating through its own `profiles.yml` is
+  reaching a server Brokoli cannot name, so composition requires `conn_id`.
+
+- **The dbt node is configurable from the pipeline editor** (#372) — @hc12r.
+  Project directory, the connection it runs against, and the model it hands
+  downstream are now first-class fields rather than raw JSON, with the
+  `target_schema`/`target` precedence stated in the form and a warning when
+  a project's own profile would win over the chosen connection.
+
+- **ADR-026: check for a Python runtime, do not ship one** (#359, #364) —
+  @hc12r. dbt-core is Python; the release is a `CGO_ENABLED=0` binary
+  cross-compiled to six targets. Rather than invent a policy, this applies
+  the one ADR-016 already set for plugin runtimes: resolve and check, never
+  provision. dbt must be present and within a declared supported range, and
+  is refused by name at validation time rather than mid-run — a dbt node
+  failing halfway through a DAG has already cost whatever ran before it.
+
+  **Someone who does not use dbt acquires no Python dependency and sees no
+  change to their install.** The container image remains an operator's
+  option, not a requirement.
+
+### Fixed
+
+- **A stale workspace id no longer hides every pipeline behind an empty
+  200** (#373, #231) — @hc12r. `localStorage` is keyed by origin, not by
+  instance, so `http://localhost:8088` serves whichever build was last run
+  there and a workspace id stamped by one instance was sent to the next.
+
+  The filed symptom was a blanket 403 in multi-tenant mode. The worse one
+  was silent: with no tenant resolver there is nothing to check the header
+  against, so an unrecognised id was used verbatim and every scoped list
+  came back empty. The product read as brand new — "Build your first
+  pipeline", stat cards at zero — while the Recent Runs panel beside it,
+  scoped by org rather than by workspace, listed the pipelines it would not
+  show.
+
+  A stored workspace id is now a hint until a workspace list confirms it,
+  and an unconfirmed hint is never sent; resolution is awaited before the
+  app renders, so nothing can race it; and a workspace stored for one user
+  is dropped when a different user signs in. On the server, a build with no
+  tenant registry ignores the header entirely rather than filing requests
+  under a name nobody can list — which closes the same trap for `curl` and
+  API tokens.
+
+- **A destination table is created from the source's real column types**
+  (#362, #374, #360, #363) — @hc12r. Type inference rendered each sampled
+  value with `%v` and tried to parse it, which cannot recover what the
+  source declared. A `bigint` whose sample fitted in an int32 became `INT`
+  and the load failed on the first value above 2^31 — after the table
+  existed. An exact decimal became a float, and a timestamp became text.
+
+  `migrate` now reads the source's types directly (#362), and `sink_db`
+  with `create_table` carries them across the node boundary (#374): a
+  source records what its columns are, transforms carry it through the same
+  rules the rows went through, and the sink uses it. Per column — a dataset
+  where one column was rewritten by a transform still gets exact types for
+  the other nine, with inference as the fallback for that one.
+
+  **What changes for an operator.** Tables created by `create_table` may
+  differ from the ones previous versions produced, and will match the
+  source more closely. A column whose type the destination genuinely cannot
+  hold without losing information — a `timestamptz` landing on MySQL — is
+  now named and refused before anything is written, where it previously
+  dropped the zone silently. Nullability is deliberately not carried from a
+  Postgres source, because pgx does not report it and inventing a `NOT NULL`
+  the source did not have would fail the load.
+
+- **Three defects on the `create_table` path** (#374) — @hc12r, all found by
+  the tests written for the change above.
+
+  `create_table` was silently broken whenever the sink was on the same
+  server as its source: that path compiles into an `INSERT INTO` an existing
+  relation and has no step that creates one, so the run failed on a table
+  that was not there. It now declines that compilation and creates the table.
+
+  A single-row load declared every column `INTEGER` regardless of content —
+  the inference threshold is four fifths of the sample, which rounds to zero
+  for one row, so the first test matched unconditionally. A text column came
+  out `INTEGER` and then failed to insert its own rows.
+
+  Postgres rendered an unbounded `text` column as
+  `VARCHAR(9223372036854775807)`, which the server rejects outright: pgx
+  reports the length of `text` as the maximum int64 and the renderer had no
+  upper bound. It now renders `TEXT`. `migrate` could reach this too, for
+  any text column landing on Postgres.
+
+- **A recovery test no longer races the clock, and its grace period is
+  per-engine** (#358, #264) — @hc12r. The test needed a 30ms window to still
+  be open when recovery read it, which a loaded machine could miss. It no
+  longer depends on the clock at all.
+
+  The grace period moved from a package-level variable onto the Engine. A
+  package-level override is process-wide, so one test's value was observable
+  by every other engine in the process and no test touching it could run in
+  parallel with another. Verified over 30 runs under `-race` with six
+  processes competing for CPU.
+
 ## [0.10.73] - 2026-08-25
 
 An interrupted run that wrote nothing now goes back on the queue instead of
