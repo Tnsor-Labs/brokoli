@@ -31,6 +31,16 @@ type SQLGenConfig struct {
 	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
 	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
 
+	// ColumnTypes are the real types an upstream node was able to report
+	// for these columns (#363), used in place of inferring them from a
+	// sample of values. Per column: anything absent still gets inferred,
+	// so a dataset where one column was rewritten by a transform keeps
+	// exact types for the rest.
+	//
+	// Not serialised. It is run-scoped state, and a config that arrived
+	// over a wire has no upstream to have learned it from.
+	ColumnTypes columnSchema `json:"-"`
+
 	// Truncate clears an overwrite's table with TRUNCATE instead of
 	// DELETE.
 	//
@@ -121,8 +131,11 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 	var sb strings.Builder
 
 	if cfg.CreateTable {
-		colTypes := inferTypes(ds.Columns, ds.Rows)
-		sb.WriteString(d.createTable(cfg.Table, ds.Columns, colTypes))
+		ddl, err := createTableDDL(d, cfg, ds)
+		if err != nil {
+			return "", err
+		}
+		sb.WriteString(ddl)
 		sb.WriteString("\n\n")
 	}
 
@@ -199,7 +212,16 @@ func inferColumnType(col string, rows []common.DataRow) string {
 		return "TEXT"
 	}
 
+	// At least four fifths of the values, and never fewer than one actual
+	// match. Without the floor, a single-row dataset gives
+	// int(1 * 0.8) == 0, so the first test below reads "intCount >= 0" and
+	// every column of a one-row load was declared INTEGER -- including a
+	// text one, which then failed to insert its own rows. A threshold of
+	// zero cannot mean "everything qualifies".
 	threshold := int(float64(total) * 0.8)
+	if threshold < 1 {
+		threshold = 1
+	}
 	if intCount >= threshold {
 		return "INTEGER"
 	}

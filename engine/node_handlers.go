@@ -310,22 +310,46 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return records
 }
 
-func (r *Runner) runSourceDB(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runSourceDB(node models.Node) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
-		return nil, fmt.Errorf("source_db node requires 'uri' config")
+		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'uri' config")
 	}
 	if query == "" {
-		return nil, fmt.Errorf("source_db node requires 'query' config")
+		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
 	ds, err := QueryDatabase(uri, query)
 	if err != nil {
-		return nil, fmt.Errorf("query database: %w", err)
+		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from database", len(ds.Rows), len(ds.Columns))
-	return ds, nil
+
+	// #363: the server already knows what these columns are. Ask it, so a
+	// downstream sink creating a table does not have to guess from the
+	// values. Only when something downstream would use the answer -- this
+	// is a second round trip, and most pipelines have no use for it.
+	return nodeExecutionResult{output: ds, outputSchema: r.sourceSchema(node, uri, query)}, nil
+}
+
+// sourceSchema probes a source's column types, or returns nil.
+//
+// Every failure is nil, never an error: a source that cannot report types is
+// the absent-capability-degrades path (a file source never could), and the
+// consumer falls back to inference exactly as before.
+func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema {
+	if !r.schemaCarryWanted() {
+		return nil
+	}
+	types, _, ok := sourceColumnTypes(r.ctx, uri, query)
+	if !ok {
+		r.log(node.ID, models.LogLevelWarning,
+			"This source could not report its column types, so a downstream create_table will "+
+				"infer them from values -- widths and precision may not match")
+		return nil
+	}
+	return columnSchema(types)
 }
 
 func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataSet, error) {
@@ -542,14 +566,14 @@ func parseNodeTransformRules(node models.Node) ([]TransformRule, error) {
 	return rules, nil
 }
 
-func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runTransform(node models.Node, input *common.DataSet, inputSchema columnSchema) (nodeExecutionResult, error) {
 	if input == nil {
-		return nil, fmt.Errorf("transform node requires input data")
+		return nodeExecutionResult{}, fmt.Errorf("transform node requires input data")
 	}
 
 	rules, err := parseNodeTransformRules(node)
 	if err != nil {
-		return nil, err
+		return nodeExecutionResult{}, err
 	}
 
 	// Clone dataset to avoid mutating upstream
@@ -571,7 +595,7 @@ func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.
 		beforeRows := len(clone.Rows)
 		beforeCols := len(clone.Columns)
 		if err := ApplyTransforms([]TransformRule{rule}, clone); err != nil {
-			return nil, fmt.Errorf("rule %d (%s): %w", i+1, rule.Type, err)
+			return nodeExecutionResult{}, fmt.Errorf("rule %d (%s): %w", i+1, rule.Type, err)
 		}
 		afterRows := len(clone.Rows)
 		afterCols := len(clone.Columns)
@@ -616,7 +640,15 @@ func (r *Runner) runTransform(node models.Node, input *common.DataSet) (*common.
 
 	r.log(node.ID, models.LogLevelInfo, "Transform summary: %d rules applied, %d → %d rows, %d → %d columns",
 		len(rules), len(input.Rows), len(clone.Rows), len(input.Columns), len(clone.Columns))
-	return clone, nil
+
+	// #363: carry the input's column types through the same rules the rows
+	// went through, so a downstream create_table keeps the ones no rule
+	// touched. Per column: a rule that cannot describe its effect
+	// invalidates only what it wrote.
+	return nodeExecutionResult{
+		output:       clone,
+		outputSchema: applyRulesToSchema(rules, inputSchema),
+	}, nil
 }
 
 func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*common.DataSet, error) {
@@ -888,7 +920,7 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 	return []byte(buf.String()), w.Error()
 }
 
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_db node requires input data")
 	}
@@ -925,6 +957,20 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet) (*common.Dat
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
 		Truncate:    configBool(node.Config["truncate"]),
+	}
+	// #363: create the table from the columns' real types where an upstream
+	// could report them, rather than from a sample of the values. Per
+	// column -- anything the schema does not describe still falls back to
+	// inference, which is what every sink did before.
+	if cfg.CreateTable && inputSchema.anyKnown(input.Columns) {
+		cfg.ColumnTypes = inputSchema
+		r.log(node.ID, models.LogLevelInfo,
+			"Creating %s from %d of %d column types carried from upstream; the rest are inferred from values",
+			table, inputSchema.countKnown(input.Columns), len(input.Columns))
+	} else if cfg.CreateTable {
+		r.log(node.ID, models.LogLevelWarning,
+			"No column types reached this sink, so %s will be created from sampled values -- "+
+				"widths and precision may not match the source", table)
 	}
 	if cfg.Dialect == "mysql" && strings.EqualFold(cfg.Mode, ModeUpsert) {
 		others, err := validateMySQLUpsertKey(r.ctx, uri, table, cfg.KeyColumns)

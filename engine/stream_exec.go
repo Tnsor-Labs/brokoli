@@ -506,7 +506,7 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 // after streamEligible plus the input-form checks passed, so the
 // preconditions (transform: inputRef non-nil; code: inputRef or no input)
 // hold by construction.
-func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, inputSchema columnSchema, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	switch node.Type {
 	case models.NodeTypeTransform:
 		rules, err := parseNodeTransformRules(node)
@@ -528,7 +528,10 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 		r.log(node.ID, models.LogLevelInfo,
 			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out (never materialized)",
 			len(rules), inRows, ref.RowCount)
-		return nodeExecutionResult{outputRef: ref}, nil
+		// #363: the same rules ran over the rows, so the same rules run
+		// over the types. Streaming changes where the rows are, not what
+		// the columns became.
+		return nodeExecutionResult{outputRef: ref, outputSchema: applyRulesToSchema(rules, inputSchema)}, nil
 	case models.NodeTypeSourceFile:
 		return r.runSourceFileStreamed(ctx, node, outputs)
 	case models.NodeTypeSourceDB:
@@ -779,7 +782,12 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	r.log(node.ID, models.LogLevelInfo,
 		"Streamed %d rows, %d columns from database by reference (never materialized)",
 		ref.RowCount, len(ref.Columns))
-	return nodeExecutionResult{outputRef: ref}, nil
+	// #363: the same column types the materialising path reports. A source
+	// that streams is still a source that knows what its columns are, and
+	// a sink downstream of it creating a table needs them just as much --
+	// this is in fact the more common shape, since streaming is what a
+	// source_db does whenever the reference-passing threshold is met.
+	return nodeExecutionResult{outputRef: ref, outputSchema: r.sourceSchema(node, uri, query)}, nil
 }
 
 // runSinkDBStreamed writes a referenced input with the dialect's bulk

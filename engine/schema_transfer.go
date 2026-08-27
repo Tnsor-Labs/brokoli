@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
@@ -124,5 +125,79 @@ func createTableFromSourceTypes(
 		sb.WriteString("\n")
 	}
 	sb.WriteString(");")
+	return sb.String(), nil
+}
+
+// createTableDDL renders a sink's CREATE TABLE, preferring each column's
+// carried type over one inferred from its values (#363).
+//
+// Mixing is the point. createTableFromSourceTypes above refuses outright
+// when a column has no type, which is right for migrate: both endpoints are
+// tables, so a column with no type means something is wrong. A sink is
+// different -- its input has been through nodes, and a transform that
+// rewrites one column says so by invalidating it. Refusing the whole table
+// because one column was computed would make the facility useless on
+// exactly the pipelines it was built for.
+//
+// So: carried where carried is known, inferred where it is not, and the
+// column-level refusal kept for the one case that is not a fallback --
+// a type the destination genuinely cannot hold.
+//
+// With no carried types at all this is byte-for-byte the old path.
+func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, error) {
+	inferred := inferTypes(ds.Columns, ds.Rows)
+	if !cfg.ColumnTypes.anyKnown(ds.Columns) {
+		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+	}
+
+	// Rendering canonical types needs the dialect that owns them. Without
+	// one there is nothing to render with, so fall back rather than fail:
+	// the caller asked for a table, not for a lecture about capabilities.
+	dd, ok := dbdialect.For(cfg.Dialect)
+	if !ok {
+		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+	}
+	renderer, ok := dd.(dbdialect.TypeRenderer)
+	if !ok {
+		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString("CREATE TABLE " + d.quoteIdent(cfg.Table) + " (\n")
+	for i, col := range ds.Columns {
+		sqlType := ""
+		notNull := false
+
+		if ct, known := cfg.ColumnTypes.known(col); known {
+			rendered, renderable := renderer.DDLType(ct)
+			if !renderable {
+				// The one refusal worth keeping. Inferring here would
+				// substitute something lossy for a type we actually know
+				// -- silently, and after the table exists. #360 is the
+				// record of what that costs.
+				return "", fmt.Errorf(
+					"column %q is %s upstream and %s has no type that holds it without losing "+
+						"information; create %s yourself and choose how to store it",
+					col, ct, cfg.Dialect, cfg.Table)
+			}
+			sqlType = rendered
+			notNull = !ct.Nullable
+		} else {
+			sqlType = d.typeMap[inferred[col]]
+			if sqlType == "" {
+				sqlType = "TEXT"
+			}
+		}
+
+		sb.WriteString("  " + d.quoteIdent(col) + " " + sqlType)
+		if notNull {
+			sb.WriteString(" NOT NULL")
+		}
+		if i < len(ds.Columns)-1 {
+			sb.WriteString(",")
+		}
+		sb.WriteString("\n")
+	}
+	sb.WriteString(")" + d.terminator)
 	return sb.String(), nil
 }

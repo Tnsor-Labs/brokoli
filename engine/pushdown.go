@@ -133,6 +133,14 @@ func (r *Runner) sinkAcceptsTableRef(node models.Node, in *TableRef) bool {
 	if uri == "" || table == "" || in == nil || len(in.Columns) == 0 {
 		return false
 	}
+	if configBool(node.Config["create_table"]) {
+		// This path INSERTs into an existing relation and has no step
+		// that creates one. runSinkDBFromTableRef declines for the same
+		// reason, and the two must agree: a source that hands out a
+		// reference its sink then refuses leaves the sink with no input
+		// at all, and it writes zero rows while reporting success.
+		return false
+	}
 	if !sameServer(in.Dialect, uri, in.ConnURI) {
 		return false
 	}
@@ -215,6 +223,16 @@ func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef) (int64, b
 		return 0, false, nil
 	}
 	if !sameServer(in.Dialect, uri, in.ConnURI) {
+		return 0, false, nil
+	}
+	if configBool(node.Config["create_table"]) {
+		// This path writes INSERT INTO an existing relation and has no
+		// step that creates one, so a create_table sink compiled into it
+		// failed on a table that was not there yet -- and, once #363 gave
+		// the materialising path real column types, would have skipped
+		// them even when it did work. Declining leaves the node to the
+		// path that creates the table, which is also the one that knows
+		// what the columns are.
 		return 0, false, nil
 	}
 	mode, _ := node.Config["mode"].(string)

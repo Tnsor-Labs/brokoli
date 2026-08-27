@@ -112,7 +112,7 @@ func TestValidatePipelineDatabaseConnectorsAcceptConnID(t *testing.T) {
 
 func TestRunnerRunNodeLogicRejectsUnsupportedType(t *testing.T) {
 	r := &Runner{pipe: &models.Pipeline{}, executors: []extensions.NodeExecutor{nil}}
-	_, err := r.runNodeLogic(models.Node{Type: "unknown"}, nil, nil, nil, 0, "", context.Background())
+	_, err := r.runNodeLogic(models.Node{Type: "unknown"}, nil, nil, nil, nil, 0, "", context.Background())
 	if err == nil || !strings.Contains(err.Error(), `unsupported node type "unknown"`) {
 		t.Fatalf("error = %v, want unsupported node type", err)
 	}
@@ -120,7 +120,7 @@ func TestRunnerRunNodeLogicRejectsUnsupportedType(t *testing.T) {
 
 func TestRunnerRecognizedBuiltInReachesRuntimeHandler(t *testing.T) {
 	r := &Runner{pipe: &models.Pipeline{}}
-	_, err := r.runNodeLogic(models.Node{Type: models.NodeTypeSourceFile, Config: map[string]interface{}{}}, nil, nil, nil, 0, "", context.Background())
+	_, err := r.runNodeLogic(models.Node{Type: models.NodeTypeSourceFile, Config: map[string]interface{}{}}, nil, nil, nil, nil, 0, "", context.Background())
 	if err == nil {
 		t.Fatal("source_file without a path unexpectedly succeeded")
 	}

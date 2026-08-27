@@ -60,6 +60,12 @@ type nodeOutputs struct {
 	// the database at all. They are run-scoped and never persisted — a
 	// barrier materialises to a blob, which is where durability lives.
 	tables map[string]*TableRef
+	// schemas holds what a node could say about its output columns' real
+	// types (#363), for consumers that would otherwise guess them from
+	// values. Run-scoped and never persisted, for the same reason tables
+	// are: a schema that outlived the run would be a wire format, and
+	// absence already means "infer it".
+	schemas map[string]columnSchema
 
 	// blobs is where spilled outputs go. Nil disables spilling entirely,
 	// which is the case for any runner without an artifact store behind it.
@@ -85,6 +91,7 @@ func newNodeOutputs(blobs artifact.Store, namespace string, threshold int64) *no
 	return &nodeOutputs{
 		inline:    make(map[string]*common.DataSet),
 		spilled:   make(map[string]*artifact.DatasetRef),
+		schemas:   make(map[string]columnSchema),
 		blobs:     blobs,
 		namespace: namespace,
 		threshold: threshold,
@@ -405,6 +412,29 @@ func (o *nodeOutputs) PutTable(nodeID string, ref *TableRef) {
 		o.tables = make(map[string]*TableRef)
 	}
 	o.tables[nodeID] = ref
+}
+
+// PutSchema records what a node could say about its output column types
+// (#363). Recording nothing is normal: most nodes cannot say.
+func (o *nodeOutputs) PutSchema(nodeID string, schema columnSchema) {
+	if len(schema) == 0 {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.schemas == nil {
+		o.schemas = make(map[string]columnSchema)
+	}
+	o.schemas[nodeID] = schema
+}
+
+// Schema returns what a node said about its output column types, or nil.
+// Nil is not an error -- it means a consumer has to infer, which is what
+// every consumer did before this existed.
+func (o *nodeOutputs) Schema(nodeID string) columnSchema {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.schemas[nodeID]
 }
 
 // GetTable returns a node's TableRef, if its output stayed in the database.
