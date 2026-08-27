@@ -53,6 +53,9 @@ func (postgres) CanonicalType(name string, precision, scale int64, precisionOK b
 	return c
 }
 
+// maxPostgresVarchar is the largest n Postgres accepts in VARCHAR(n).
+const maxPostgresVarchar = 10485760
+
 // DDLType renders a canonical type as Postgres DDL.
 func (postgres) DDLType(c ColumnType) (string, bool) {
 	switch c.Class {
@@ -83,7 +86,14 @@ func (postgres) DDLType(c ColumnType) (string, bool) {
 		// Postgres, so an unknown precision has a faithful home here.
 		return "NUMERIC", true
 	case TypeText:
-		if c.Length > 0 {
+		// Postgres caps VARCHAR(n) at 10485760, and a driver reporting an
+		// unbounded text column does so with a sentinel far above that:
+		// pgx answers Length() with math.MaxInt64 for `text`. Rendering
+		// that verbatim produced VARCHAR(9223372036854775807), which the
+		// server rejects as a syntax error -- so an unbounded or
+		// over-cap length renders as TEXT, which is the faithful
+		// unbounded type rather than a substitution.
+		if c.Length > 0 && c.Length <= maxPostgresVarchar {
 			return fmt.Sprintf("VARCHAR(%d)", c.Length), true
 		}
 		return "TEXT", true

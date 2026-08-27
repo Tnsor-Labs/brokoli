@@ -188,6 +188,10 @@ type nodeExecutionResult struct {
 	// pushedAbsorbed names the nodes whose work a pushed-down segment
 	// already performed, so each can be credited with the segment's count.
 	pushedAbsorbed []string
+	// outputSchema is what this node could say about its output columns'
+	// real types (#363). Nil is the normal answer -- most nodes cannot
+	// say, and a consumer that gets nothing infers, as it always did.
+	outputSchema columnSchema
 }
 
 // nodeRowCount is what a completed node reports as its row count.
@@ -718,9 +722,11 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// Find input data from connected upstream nodes. nodeOutputs is
 	// internally synchronized, so no lock is held here.
 	var input *common.DataSet
+	var inputSchema columnSchema
 	var inputRef *artifact.DatasetRef
 	var inputTable *TableRef
 	var outputTable *TableRef
+	var outputSchema columnSchema
 	var pushedRowCount int64
 	var pushedAbsorbed []string
 	var allInputs []*common.DataSet
@@ -736,6 +742,16 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			if inputTable == nil {
 				if tref, ok := outputs.GetTable(edge.From); ok {
 					inputTable = tref
+					// #363: nothing records a schema alongside a
+					// TableRef today -- a reference is only ever handed
+					// out for a chain ending at a sink that is not
+					// creating its table, which is the one consumer that
+					// has no use for column types. Taken anyway so a
+					// future producer that does record one cannot lose
+					// it here by omission.
+					if inputSchema == nil {
+						inputSchema = outputs.Schema(edge.From)
+					}
 					continue
 				}
 			}
@@ -747,6 +763,11 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					// their memory doesn't matter, per the ADR's
 					// engagement rule.
 					inputRef = ref
+					// #363: the types describe the columns, not where
+					// the rows are being held.
+					if inputSchema == nil {
+						inputSchema = outputs.Schema(edge.From)
+					}
 					continue
 				}
 			}
@@ -761,6 +782,9 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			if ok {
 				if input == nil {
 					input = ds
+					// #363: the schema travels with the input it
+					// describes, so it is taken from the same edge.
+					inputSchema = outputs.Schema(edge.From)
 				}
 				allInputs = append(allInputs, ds)
 				edgeInputsByFrom[edge.From] = ds
@@ -1072,12 +1096,12 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					if merr != nil {
 						e = merr
 					} else {
-						result, e = r.runNodeLogic(node, ds, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
 					}
 				} else if streamable {
-					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, outputs)
+					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs)
 				} else {
-					result, e = r.runNodeLogic(node, input, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
 				}
 			}
 			resultCh <- nodeResult{result, e}
@@ -1088,6 +1112,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		case result := <-resultCh:
 			output, outputRef, conditionDecision, err = result.result.output, result.result.outputRef, result.result.condition, result.err
 			outputTable = result.result.outputTable
+			outputSchema = result.result.outputSchema
 			pushedRowCount, pushedAbsorbed = result.result.pushedRowCount, result.result.pushedAbsorbed
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
@@ -1200,6 +1225,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			// barrier is where durability lives.
 			if outputTable != nil && !r.dryRun {
 				outputs.PutTable(node.ID, outputTable)
+			}
+			// #363: what this node could say about its output column
+			// types, for a downstream sink that would otherwise guess
+			// them from values. Recorded alongside whichever output form
+			// this node produced, since the types describe the columns
+			// rather than where the rows ended up sitting.
+			if outputSchema != nil && !r.dryRun {
+				outputs.PutSchema(node.ID, outputSchema)
 			}
 			if outputRef != nil && !r.dryRun {
 				outputs.PutRef(node.ID, outputRef)
@@ -1615,7 +1648,7 @@ func (r *Runner) checkNodeTypeGate(node models.Node) error {
 	return nil
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1674,9 +1707,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	case models.NodeTypeSourceAPI:
 		return outputExecutionResult(r.runSourceAPI(node))
 	case models.NodeTypeSourceDB:
-		return outputExecutionResult(r.runSourceDB(node))
+		// Returns a full result: a source that can report its column
+		// types hands them downstream alongside the rows (#363).
+		return r.runSourceDB(node)
 	case models.NodeTypeTransform:
-		return outputExecutionResult(r.runTransform(node, input))
+		return r.runTransform(node, input, inputSchema)
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
 	case models.NodeTypeCode:
@@ -1696,7 +1731,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, allInputs
 	case models.NodeTypeSinkFile:
 		return outputExecutionResult(r.runSinkFile(node, input))
 	case models.NodeTypeSinkDB:
-		return outputExecutionResult(r.runSinkDB(node, input))
+		return outputExecutionResult(r.runSinkDB(node, input, inputSchema))
 	case models.NodeTypeSinkAPI:
 		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:
