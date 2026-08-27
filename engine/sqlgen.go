@@ -22,14 +22,37 @@ type SQLGenConfig struct {
 	Dialect   string `json:"dialect"`
 	Table     string `json:"table"`
 	BatchSize int    `json:"batch_size"`
-	// CreateTable emits a CREATE TABLE from the dataset's inferred types
-	// before the writes. On MySQL, DDL implicitly commits, so a run that
-	// creates its table and then fails leaves the empty table behind --
-	// the row write itself still rolls back. Postgres rolls back the
-	// creation too.
+	// CreateTable emits a CREATE TABLE before the writes, from the
+	// dataset's inferred types or from ColumnTypes where an upstream could
+	// report them. On MySQL, DDL implicitly commits, so a run that creates
+	// its table and then fails leaves the empty table behind -- the row
+	// write itself still rolls back. Postgres rolls back the creation too.
+	//
+	// That holds on both write paths. The statement path emits the DDL and
+	// the rows as one script; the bulk path takes the DDL through
+	// CreateDDL and runs it inside the load's own transaction (#376). The
+	// second exists because putting them in one string pinned every row to
+	// the statement path, at about 7x on 50k rows.
 	CreateTable bool     `json:"create_table"`
 	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
 	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
+
+	// CreateDDL is a rendered CREATE TABLE for a bulk write to execute
+	// inside its own transaction, before the rows (#376).
+	//
+	// It exists so that creating a table does not cost the bulk path. The
+	// DDL and the rows used to be one SQL string, which pinned the whole
+	// write to the statement path over one statement -- measured at about
+	// 7x on 50k rows. Handing the writers the DDL separately lets the rows
+	// go through COPY or LOAD DATA while the creation stays in the same
+	// transaction as the load, so Postgres still rolls the table back when
+	// the load fails. On MySQL, DDL commits implicitly whatever we do,
+	// which is what SQLGenConfig.CreateTable already documents.
+	//
+	// Set by the caller that renders it; CreateTable is cleared at the same
+	// time, since the statement path must not emit it a second time. Not
+	// serialised, for the same reason ColumnTypes is not.
+	CreateDDL string `json:"-"`
 
 	// ColumnTypes are the real types an upstream node was able to report
 	// for these columns (#363), used in place of inferring them from a

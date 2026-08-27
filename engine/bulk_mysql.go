@@ -104,6 +104,18 @@ func loadBatchesToMySQL(ctx context.Context, uri string, cfg SQLGenConfig, colum
 		}
 	}()
 
+	// #376: create the table here rather than in a separate statement
+	// before the load, so a create-and-load can use LOAD DATA. Unlike
+	// Postgres this buys no atomicity -- MySQL commits DDL implicitly, so
+	// the table survives a failed load either way, which is what
+	// SQLGenConfig.CreateTable already documents. What it buys is the
+	// fast path.
+	if cfg.CreateDDL != "" {
+		if _, err := tx.ExecContext(ctx, cfg.CreateDDL); err != nil {
+			return 0, fmt.Errorf("create %s: %w", cfg.Table, err)
+		}
+	}
+
 	if mode == ModeOverwrite || mode == "replace" {
 		// Serialize concurrent overwrites of the same table, as the
 		// Postgres path does with LOCK TABLE. MySQL's LOCK TABLES
