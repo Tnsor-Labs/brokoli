@@ -61,6 +61,24 @@ func appendBatchesToClickHouse(ctx context.Context, uri string, cfg SQLGenConfig
 		}
 	}
 
+	// Overwrite (ADR-027 phase 3) is TRUNCATE then append, with both of
+	// its weaknesses stated rather than smoothed over. There is no
+	// transaction, so readers see the empty table the moment the truncate
+	// lands -- not the previous contents through MVCC, which is what the
+	// other backends give -- and a failure after it leaves whatever
+	// batches had committed, not the old rows. And there is no advisory
+	// lock to take: ClickHouse has no session-lock primitive, so two
+	// concurrent overwrites of one table interleave undefined, exactly the
+	// hazard the Postgres and MySQL writers lock against. An operator who
+	// schedules overlapping overwrites of one ClickHouse table has no
+	// guard here, and the docs say so.
+	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	if mode == ModeOverwrite || mode == "replace" {
+		if _, err := db.ExecContext(ctx, d.clearTable(cfg.Table, cfg.Truncate)); err != nil {
+			return 0, fmt.Errorf("clear %s: %w", cfg.Table, err)
+		}
+	}
+
 	quoted := make([]string, len(columns))
 	for i, c := range columns {
 		quoted[i] = d.quoteIdent(c)

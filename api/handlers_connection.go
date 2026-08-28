@@ -659,7 +659,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "The most widely used open-source relational database",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
 		{"type": "clickhouse", "label": "ClickHouse", "category": "database", "icon": "connGeneric",
-			"description": "Column-oriented analytical database. Read and append supported; overwrite arrives with ADR-027 phase 3",
+			"description": "Column-oriented analytical database. Read, append and overwrite supported; upsert has no ClickHouse equivalent",
 			"fields":      []string{"host", "port", "schema", "login", "password"},
 			"hints":       map[string]string{"port": "9000 (native protocol)", "schema": "database name"}},
 		{"type": "snowflake", "label": "Snowflake", "category": "database", "icon": "connSnowflake",

@@ -168,7 +168,7 @@ func TestClickHouseWriteModesAreGatedByName(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run := func(mode string) *models.Run {
+	run := func(mode string, createTable bool) *models.Run {
 		t.Helper()
 		dir := t.TempDir()
 		st, err := store.NewSQLiteStore(filepath.Join(dir, "g.db"))
@@ -177,7 +177,7 @@ func TestClickHouseWriteModesAreGatedByName(t *testing.T) {
 		}
 		t.Cleanup(func() { st.Close() })
 		eng := drainEngineOnCleanup(t, NewEngine(st))
-		cfg := map[string]interface{}{"uri": dsn, "table": "ch_gate_dst", "mode": mode, "create_table": true}
+		cfg := map[string]interface{}{"uri": dsn, "table": "ch_gate_dst", "mode": mode, "create_table": createTable}
 		if mode == "upsert" {
 			cfg["key_columns"] = []interface{}{"id"}
 		}
@@ -206,19 +206,26 @@ func TestClickHouseWriteModesAreGatedByName(t *testing.T) {
 	t.Cleanup(func() { cdb.Exec("DROP TABLE IF EXISTS ch_gate_dst") })
 
 	// Append works, end to end, table created on the way.
-	if r := run("append"); r.Status != models.RunStatusSuccess {
+	if r := run("append", true); r.Status != models.RunStatusSuccess {
 		t.Fatalf("append should be earned since phase 2, got: %s", r.Error)
 	}
 
-	// Overwrite: refused, naming the phase.
-	if r := run("overwrite"); r.Status == models.RunStatusSuccess {
-		t.Fatal("overwrite must be refused until phase 3")
-	} else if !strings.Contains(r.Error, "phase 3") {
-		t.Errorf("the overwrite refusal should name the phase, got: %s", r.Error)
+	// Overwrite works since phase 3, and replaces: the append above put
+	// one row in; the overwrite leaves exactly one row, not two.
+	if r := run("overwrite", false); r.Status != models.RunStatusSuccess {
+		t.Fatalf("overwrite should be earned since phase 3, got: %s", r.Error)
+	}
+	cdb2 := openFor(t, dsn)
+	var n uint64
+	if err := cdb2.QueryRow("SELECT count() FROM ch_gate_dst").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("after overwrite the table holds %d rows, want 1 -- it must replace, not append", n)
 	}
 
 	// Upsert: refused for good, pointing at what actually exists.
-	if r := run("upsert"); r.Status == models.RunStatusSuccess {
+	if r := run("upsert", false); r.Status == models.RunStatusSuccess {
 		t.Fatal("upsert must be refused: ClickHouse has no synchronous merge")
 	} else if !strings.Contains(r.Error, "ReplacingMergeTree") {
 		t.Errorf("the upsert refusal should explain the native alternative, got: %s", r.Error)

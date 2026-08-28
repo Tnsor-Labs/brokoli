@@ -348,6 +348,19 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'uri' or 'conn_id' is required for sink_db", n.Name))
 		}
+		// ADR-027 phase 3: the upsert refusal moves to validation time,
+		// where the editor shows it, rather than waiting for a run to
+		// fail. Only the explicit-uri form is checkable statically; a
+		// conn_id resolves at run time and the same refusal catches it
+		// there (refuseUnearnedWrite).
+		if strings.HasPrefix(getStr(n.Config, "uri"), "clickhouse://") &&
+			strings.EqualFold(strings.TrimSpace(getStr(n.Config, "mode")), ModeUpsert) {
+			ve.Add(fmt.Sprintf(
+				"Node %q: ClickHouse has no upsert -- there is no synchronous merge to map mode: upsert "+
+					"onto. ReplacingMergeTree deduplicates eventually, at merge time, which is a different "+
+					"promise; append into a ReplacingMergeTree table you create if eventual dedup is what "+
+					"you want", n.Name))
+		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			ve.Add(fmt.Sprintf("Node %q: union only supports mode=\"union\" (got %q)", n.Name, mode))
