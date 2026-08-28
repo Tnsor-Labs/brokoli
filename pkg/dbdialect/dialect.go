@@ -130,16 +130,28 @@ func For(name string) (Dialect, bool) {
 	return d, ok
 }
 
-// A backend appears here only with the proof its registration claims.
-// For postgres and mysql the claim is full compilation and the proof is the
-// differential corpus in engine/transform_sql_diff_test.go. For clickhouse
-// (ADR-027 phase 1) the claim is deliberately narrower -- read-side only:
-// it implements no Addresser, so sameServer never answers yes and the
-// compiler can never form a ClickHouse segment. Widening that claim means
-// implementing Addresser WITH the corpus passing against a live ClickHouse,
-// not editing this map.
+// A backend appears here only with the proof its registration claims, and
+// the claims are tiered:
+//
+//   - postgres, mysql: full compilation -- the differential corpus in
+//     engine/transform_sql_diff_test.go is the proof.
+//   - clickhouse: read and write, no compilation -- no Addresser, so
+//     sameServer never answers yes; the pushdown refusal is measured
+//     (TestClickHouseInsertSelectReportsNoCount) and may only be lifted
+//     when that measurement flips AND the corpus passes.
+//   - sqlite, sqlserver, generic: write vocabulary only (#361) -- present
+//     so statement generation has one table of backends instead of two.
+//     No Addresser, no TypeReader/TypeRenderer; every compile- and
+//     typed-DDL path degrades exactly as it did when these names were
+//     absent.
+//
+// Widening any tier means providing that tier's proof, not editing this
+// map.
 var registry = map[string]Dialect{
 	"postgres":   postgres{},
 	"mysql":      mysqld{},
 	"clickhouse": clickhouse{},
+	"sqlite":     sqlited{},
+	"sqlserver":  sqlserver{},
+	"generic":    generic{},
 }

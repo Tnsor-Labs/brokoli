@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 // Write modes for GenerateSQL.
@@ -362,55 +363,38 @@ type dialect struct {
 }
 
 func getDialect(name string) dialect {
-	switch strings.ToLower(name) {
-	case "postgres", "postgresql":
-		return dialect{
-			name: "postgres", quoteChar: `"`, strQuote: "'", terminator: ";",
-			boolTrue: "TRUE", boolFalse: "FALSE",
-			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
-			tsLayout: "2006-01-02 15:04:05.999999-07:00", tsUTC: false,
-		}
-	case "mysql":
-		return dialect{
-			name: "mysql", quoteChar: "`", strQuote: "'", terminator: ";",
-			boolTrue: "TRUE", boolFalse: "FALSE", backslashEscapes: true,
-			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
-			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
-		}
-	case "sqlite":
-		return dialect{
-			name: "sqlite", quoteChar: `"`, strQuote: "'", terminator: ";",
-			boolTrue: "1", boolFalse: "0",
-			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER", "TEXT": "TEXT", "TIMESTAMP": "TEXT"},
-			tsLayout: "2006-01-02T15:04:05.999999Z07:00", tsUTC: false,
-		}
-	case "clickhouse":
-		return dialect{
-			name: "clickhouse", quoteChar: "`", strQuote: "'", terminator: ";",
-			// ClickHouse accepts true/false literals for Bool.
-			boolTrue: "true", boolFalse: "false", backslashEscapes: true,
-			typeMap: map[string]string{
-				"INTEGER": "Int64", "FLOAT": "Float64", "BOOLEAN": "Bool",
-				"TEXT": "String", "TIMESTAMP": "DateTime64(6, 'UTC')"},
-			// A DateTime64 literal carries no zone; rendered in UTC so the
-			// instant survives, and the column type above pins the zone.
-			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
-			createTableSuffix: " ENGINE = MergeTree ORDER BY tuple()",
-		}
-	case "sqlserver", "mssql":
-		return dialect{
-			name: "sqlserver", quoteChar: "[", strQuote: "'", terminator: ";",
-			boolTrue: "1", boolFalse: "0",
-			typeMap:  map[string]string{"INTEGER": "INT", "FLOAT": "FLOAT", "BOOLEAN": "BIT", "TEXT": "NVARCHAR(MAX)", "TIMESTAMP": "DATETIME2"},
-			tsLayout: "2006-01-02 15:04:05.9999999", tsUTC: true,
-		}
-	default:
-		return dialect{
-			name: "generic", quoteChar: `"`, strQuote: "'", terminator: ";",
-			boolTrue: "TRUE", boolFalse: "FALSE",
-			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN", "TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
-			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
-		}
+	// One table of backends (#361): the vocabulary lives on each dialect
+	// in pkg/dbdialect, and this adapter is all that remains of the switch
+	// that used to duplicate it. The aliases and the default-to-generic
+	// are the old switch's behaviour, preserved exactly and pinned by
+	// TestGetDialectMatchesLegacyTable.
+	n := strings.ToLower(name)
+	switch n {
+	case "postgresql":
+		n = "postgres"
+	case "mssql":
+		n = "sqlserver"
+	}
+	dd, ok := dbdialect.For(n)
+	if !ok {
+		n = "generic"
+		dd, _ = dbdialect.For(n)
+	}
+	// Every registered dialect carries the write vocabulary -- a backend
+	// the generator cannot spell for could not be a backend at all. The
+	// totality is pinned by a test over the whole registry, so a future
+	// registration cannot forget it; the panic is for the impossible case
+	// the test exists to prevent.
+	sw, ok := dd.(dbdialect.StatementWriter)
+	if !ok {
+		panic("dialect " + n + " registered without a write vocabulary; see StatementWriter")
+	}
+	ws := sw.WriteSyntax()
+	return dialect{
+		name: n, quoteChar: ws.QuoteChar, strQuote: ws.StrQuote,
+		terminator: ws.Terminator, boolTrue: ws.BoolTrue, boolFalse: ws.BoolFalse,
+		typeMap: ws.TypeMap, tsLayout: ws.TSLayout, tsUTC: ws.TSUTC,
+		backslashEscapes: ws.BackslashEscapes, createTableSuffix: ws.CreateTableSuffix,
 	}
 }
 
