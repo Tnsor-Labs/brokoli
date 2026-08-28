@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -43,6 +44,7 @@ type Scheduler struct {
 
 	stopReclaim chan struct{}
 	reclaimDone chan struct{}
+	syncDone    chan struct{}
 }
 
 // NewScheduler creates a scheduler that uses the given engine to run
@@ -64,6 +66,7 @@ func NewScheduler(engine *Engine, s store.Store, leader store.LeaderElector) *Sc
 		leader:      leader,
 		stopReclaim: make(chan struct{}),
 		reclaimDone: make(chan struct{}),
+		syncDone:    make(chan struct{}),
 	}
 }
 
@@ -136,6 +139,7 @@ var scheduleSyncInterval = 30 * time.Second
 // keeping followers current costs a periodic read and buys an instant
 // handover.
 func (s *Scheduler) runScheduleSync() {
+	defer close(s.syncDone)
 	ticker := time.NewTicker(scheduleSyncInterval)
 	defer ticker.Stop()
 
@@ -292,11 +296,28 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 		if nextExpected.Before(now) && now.Sub(nextExpected) < 24*time.Hour {
 			common.SLog().Info("catch-up: pipeline missed scheduled run, triggering now",
 				common.PipelineAttr(p.ID), "pipeline_name", p.Name, "expected_at", nextExpected)
-			go func(pid string) {
-				if _, err := s.engine.RunPipeline(pid); err != nil {
+			// The run fires now, but its interval is the MISSED tick's
+			// (ADR-028): [previous tick before it, nextExpected). That is
+			// what makes the catch-up run process the slice it was owed
+			// rather than whatever is current -- and the dispatch
+			// uniqueness makes racing a concurrently-booting leader's own
+			// catch-up pass a quiet no-op instead of a duplicate.
+			missed := nextExpected
+			go func(pid string, sched cron.Schedule, tick time.Time) {
+				opts := RunOptions{Trigger: models.RunTriggerScheduled}
+				if start, ok := prevTick(sched, tick); ok {
+					t0, t1 := start, tick
+					opts.DataIntervalStart, opts.DataIntervalEnd = &t0, &t1
+				}
+				_, err := s.engine.RunPipelineOpts(pid, opts)
+				if errors.Is(err, store.ErrDuplicateScheduledRun) {
+					common.SLog().Debug("catch-up already dispatched elsewhere", common.PipelineAttr(pid))
+					return
+				}
+				if err != nil {
 					common.SLog().Error("catch-up run failed", common.PipelineAttr(pid), "error", err)
 				}
-			}(p.ID)
+			}(p.ID, schedule, missed)
 		}
 	}
 }
@@ -305,6 +326,13 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 func (s *Scheduler) Stop() {
 	close(s.stopReclaim)
 	<-s.reclaimDone // wait for the sweep goroutine to actually exit
+	// The sync loop shares the stop channel but was never joined, and an
+	// unjoined goroutine outliving Stop is exactly how the -race suite
+	// caught one test's leftover sync loop reading scheduleSyncInterval
+	// while the next test wrote it -- the package-level-override disease
+	// TestRecoverNonTerminalRuns' grace period had (#358), one goroutine
+	// over. Stop now means stopped.
+	<-s.syncDone
 	ctx := s.cron.Stop()
 	<-ctx.Done() // wait for running jobs to finish
 }
@@ -359,7 +387,14 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 			return
 		}
 		common.SLog().Info("scheduled run triggered", common.PipelineAttr(pid))
-		run, err := s.engine.RunPipeline(pid)
+		run, err := s.engine.RunPipelineOpts(pid, s.scheduledRunOptions(pid, tzSched))
+		if errors.Is(err, store.ErrDuplicateScheduledRun) {
+			// The leader-failover race resolving correctly (ADR-028):
+			// another instance fired this tick first and its run exists.
+			// Losing the insert IS the design, not a failure.
+			common.SLog().Debug("scheduled fire already dispatched elsewhere", common.PipelineAttr(pid))
+			return
+		}
 		if err != nil {
 			common.SLog().Error("scheduled run failed", common.PipelineAttr(pid), "error", err)
 			return
@@ -375,6 +410,37 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 	s.schedules[pipelineID] = schedule
 	s.names[pipelineID] = pipelineName
 	return nil
+}
+
+// scheduledRunOptions builds the provenance for a tick that just fired:
+// trigger "scheduled" and the interval [previous tick, this tick).
+//
+// The activation instant comes from the cron entry's own Prev, which the
+// library sets to the scheduled time before invoking the job -- exact even
+// when the callback starts late. The fallback derives it from the clock,
+// which is correct whenever the callback runs after its tick (always, in
+// practice: timers fire at-or-after).
+func (s *Scheduler) scheduledRunOptions(pipelineID string, sched cron.Schedule) RunOptions {
+	opts := RunOptions{Trigger: models.RunTriggerScheduled}
+
+	var tick time.Time
+	s.mu.Lock()
+	if entryID, ok := s.entries[pipelineID]; ok {
+		tick = s.cron.Entry(entryID).Prev
+	}
+	s.mu.Unlock()
+	if tick.IsZero() {
+		if t, ok := prevTick(sched, time.Now().UTC()); ok {
+			tick = t
+		} else {
+			return opts // no derivable tick: dispatch without an interval
+		}
+	}
+	if start, ok := prevTick(sched, tick); ok {
+		t0, t1 := start, tick
+		opts.DataIntervalStart, opts.DataIntervalEnd = &t0, &t1
+	}
+	return opts
 }
 
 // Unregister removes the cron schedule for a pipeline.
