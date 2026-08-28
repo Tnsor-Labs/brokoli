@@ -17,6 +17,11 @@ const (
 	RunStatusSkipped RunStatus = "skipped"
 )
 
+// RunTriggerScheduled marks a run created by the scheduler for a cron
+// tick (or its catch-up pass). The empty string remains "everything
+// else" -- manual, API, webhook -- undistinguished, as historically.
+const RunTriggerScheduled = "scheduled"
+
 // Run represents a single execution of a pipeline.
 type Run struct {
 	ID         string            `json:"id"`
@@ -40,6 +45,21 @@ type Run struct {
 	// existed) — callers fall back to the live pipeline definition, the
 	// previous behavior, rather than treating 0 as a real version number.
 	PipelineVersion int `json:"pipeline_version,omitempty"`
+
+	// Trigger records what created this run: "scheduled" for the
+	// scheduler's cron ticks, "" for everything else today (manual, API,
+	// webhook -- indistinguishable historically, and left so rather than
+	// guessed). ADR-028's backfill adds its own value later. The partial
+	// unique index guarding scheduled dispatch keys on this, which is why
+	// it is a recorded fact rather than an inference from other fields.
+	Trigger string `json:"trigger,omitempty"`
+
+	// DataIntervalStart/End are the half-open data interval [start, end)
+	// this run is responsible for (ADR-028), stamped by whatever created
+	// the run. Nil for every run that predates the field and for every
+	// manual run: absence means "no interval", never "empty interval".
+	DataIntervalStart *time.Time `json:"data_interval_start,omitempty"`
+	DataIntervalEnd   *time.Time `json:"data_interval_end,omitempty"`
 
 	// ResumedFromRunID is the ID of the run this run was resumed from, set
 	// by Engine.ResumeRun. Empty for a run that was not created via resume.

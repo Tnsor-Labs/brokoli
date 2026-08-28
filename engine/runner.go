@@ -58,7 +58,10 @@ type Runner struct {
 	dryRunResults        map[string]*DryRunNodeResult
 	params               map[string]string // runtime params
 	varCtx               *VariableContext
-	preRunID             string                          // pre-generated run ID (for registration before Execute)
+	preRunID             string     // pre-generated run ID (for registration before Execute)
+	trigger              string     // what created this run ("scheduled", "" = manual)
+	intervalStart        *time.Time // ADR-028 data interval, stamped by the dispatcher
+	intervalEnd          *time.Time
 	acceptedRun          *models.Run                     // queued run already persisted and atomically claimed
 	orgID                string                          // tenant isolation for WebSocket events
 	alertRaised          bool                            // guards raiseFailureAlert against double-firing
@@ -308,15 +311,18 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		}
 		r.traceID = common.NewID()
 		r.run = &models.Run{
-			ID:               runID,
-			PipelineID:       r.pipe.ID,
-			Status:           models.RunStatusRunning,
-			Params:           r.params,
-			StartedAt:        &now,
-			TraceID:          r.traceID,
-			PipelineVersion:  r.pipelineVersion,
-			ResumedFromRunID: r.resumedFromRunID,
-			OrgID:            r.orgID,
+			ID:                runID,
+			PipelineID:        r.pipe.ID,
+			Status:            models.RunStatusRunning,
+			Params:            r.params,
+			StartedAt:         &now,
+			TraceID:           r.traceID,
+			PipelineVersion:   r.pipelineVersion,
+			ResumedFromRunID:  r.resumedFromRunID,
+			OrgID:             r.orgID,
+			Trigger:           r.trigger,
+			DataIntervalStart: r.intervalStart,
+			DataIntervalEnd:   r.intervalEnd,
 		}
 		crashAt(crashPointBeforeRunCreate, "")
 		if err := r.store.CreateRun(r.run); err != nil {
@@ -366,6 +372,11 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		mergedParams[k] = v
 	}
 	r.varCtx = NewVariableContext(mergedParams, r.run.ID, now)
+	// ADR-028: the run's data interval, resolvable as ${interval.start}
+	// and ${interval.end}. Taken from the run row rather than the runner
+	// fields so a resumed or accepted run carries its original interval.
+	r.varCtx.IntervalStart = r.run.DataIntervalStart
+	r.varCtx.IntervalEnd = r.run.DataIntervalEnd
 	r.varCtx.Vars = r.varStore // wire stored variables into resolver
 
 	// Build the runtime graph. Edges resolve active or inactive; data
