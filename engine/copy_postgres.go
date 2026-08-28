@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/stdlib"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -58,10 +59,13 @@ import (
 //	100k rows         2877ms      832ms   3.5x
 //	                34.8k r/s   120k r/s
 //
-// Only append and overwrite use it. Upsert needs ON CONFLICT, which COPY
-// has no equivalent for; staging into a temp table and merging measured
-// slower than the statement path at this size (660ms), so it stays as
-// it is.
+// Append and overwrite COPY straight into the target. Upsert stages
+// (#377): COPY into a session temp table, then one merge statement. An
+// earlier note here rejected staging as "measured slower (660ms)" -- that
+// number was against COPY-append at 25k rows (190ms), a comparison staging
+// can only lose, and was never made against the statement-path upsert it
+// would actually replace (~1s at that size). BenchmarkUpsertWrite holds
+// the honest comparison.
 
 // copyFastPathDisabled lets an operator fall back to the statement path
 // without redeploying a different build, in case a workload meets
@@ -109,11 +113,25 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 
 	d := getDialect("postgres")
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	upsert := mode == ModeUpsert
+	if upsert {
+		for _, k := range cfg.KeyColumns {
+			if err := validateIdentifier(k); err != nil {
+				return 0, fmt.Errorf("invalid key column %q: %w", k, err)
+			}
+		}
+	}
 	quotedCols := make([]string, len(columns))
 	for i, c := range columns {
 		quotedCols[i] = d.quoteIdent(c)
 	}
-	copyStmt := fmt.Sprintf("COPY %s (%s) FROM STDIN", d.quoteIdent(cfg.Table), strings.Join(quotedCols, ", "))
+	// An upsert stages: COPY lands in the session temp table and one merge
+	// moves the rows on (#377). Append and overwrite COPY straight in.
+	loadTarget := cfg.Table
+	if upsert {
+		loadTarget = upsertStageName
+	}
+	copyStmt := fmt.Sprintf("COPY %s (%s) FROM STDIN", d.quoteIdent(loadTarget), strings.Join(quotedCols, ", "))
 
 	var affected int64
 	rawErr := conn.Raw(func(dc any) error {
@@ -170,11 +188,65 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 			}
 		}
 
+		if upsert {
+			// The same EXCLUSIVE lock the overwrite branch takes, for a
+			// harder reason: the merge below is two statements, and a
+			// concurrent insert between them would turn the anti-join's
+			// "not present" answer stale and fail on a duplicate key.
+			// Writers wait for each other; readers keep reading through
+			// MVCC. Concurrent upserts of one table serialize, which the
+			// statement path did not force -- traded for the merge form
+			// that is 3-6x faster than ON CONFLICT (see upsertMergeSQL).
+			if _, err := tx.Exec(ctx, "LOCK TABLE "+d.quoteIdent(cfg.Table)+" IN EXCLUSIVE MODE"); err != nil {
+				return fmt.Errorf("lock table for upsert: %w", err)
+			}
+			// The merge updates whatever the key columns match, so they
+			// must be a unique index -- an UPDATE joined on a non-unique
+			// key would touch every matching row where the statement path
+			// refuses. Checked here by name, before any rows move, the
+			// way validateMySQLUpsertKey does for MySQL.
+			if err := validatePostgresUpsertKey(ctx, tx, cfg.Table, cfg.KeyColumns); err != nil {
+				return err
+			}
+			// The stage lives and dies with this transaction (ON COMMIT
+			// DROP), so a failed load or merge leaves nothing behind --
+			// neither staged rows nor, with CreateDDL, a half-made target.
+			for _, ddl := range d.upsertStageDDL(cfg.Table) {
+				if _, err := tx.Exec(ctx, ddl); err != nil {
+					return fmt.Errorf("create upsert stage for %s: %w", cfg.Table, err)
+				}
+			}
+		}
+
 		tag, err := pgxConn.PgConn().CopyFrom(ctx, copyReader(columns, next), copyStmt)
 		if err != nil {
 			return fmt.Errorf("copy: %w", err)
 		}
 		affected = tag.RowsAffected()
+
+		if upsert {
+			// Last-write-wins: drop every staged row that shares its key
+			// with a later one, then merge what is left -- one UPDATE for
+			// the rows that exist, one anti-join INSERT for the rest.
+			if _, err := tx.Exec(ctx, d.upsertDedupSQL(cfg.KeyColumns)); err != nil {
+				return fmt.Errorf("dedup upsert stage for %s: %w", cfg.Table, err)
+			}
+			merge, err := d.upsertMergeSQL(cfg.Table, columns, cfg.KeyColumns)
+			if err != nil {
+				return err
+			}
+			// The merge's count is the honest one: distinct rows written
+			// to the target. The COPY count above includes staged rows a
+			// later duplicate superseded.
+			affected = 0
+			for _, stmt := range merge {
+				tag, err := tx.Exec(ctx, stmt)
+				if err != nil {
+					return fmt.Errorf("merge upsert stage into %s: %w", cfg.Table, err)
+				}
+				affected += tag.RowsAffected()
+			}
+		}
 
 		return tx.Commit(ctx)
 	})
@@ -281,4 +353,86 @@ func copyEscape(v any) string {
 	}
 	r := strings.NewReplacer(`\`, `\\`, "\t", `\t`, "\n", `\n`, "\r", `\r`)
 	return r.Replace(s)
+}
+
+// validatePostgresUpsertKey checks that key_columns name a unique index on
+// the target, the way validateMySQLUpsertKey does for MySQL -- and for the
+// same underlying reason stated differently. MySQL merges on any unique
+// index regardless of key_columns, so there the check keeps configuration
+// honest. Here the staged merge UPDATEs whatever the key columns match, so
+// a non-unique key would silently update every matching row where the
+// statement path's ON CONFLICT refuses with "no unique or exclusion
+// constraint". The check turns that into a named refusal before any rows
+// move.
+//
+// Partial unique indexes (WHERE clauses) do not count: they only guarantee
+// uniqueness for the rows they cover, which is not the guarantee a merge
+// needs. Expression-index entries resolve to no column name and disqualify
+// their index the same way.
+func validatePostgresUpsertKey(ctx context.Context, tx pgx.Tx, table string, keyCols []string) error {
+	if len(keyCols) == 0 {
+		return fmt.Errorf("upsert requires key_columns for postgres (the merge key)")
+	}
+
+	rows, err := tx.Query(ctx, `
+		SELECT i.relname, a.attname
+		FROM pg_index x
+		JOIN pg_class i ON i.oid = x.indexrelid
+		JOIN pg_attribute a ON a.attrelid = x.indrelid AND a.attnum = ANY (x.indkey)
+		WHERE x.indrelid = to_regclass($1)
+		  AND x.indisunique
+		  AND x.indpred IS NULL
+		ORDER BY i.relname, a.attnum`, table)
+	if err != nil {
+		return fmt.Errorf("read unique indexes of %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	indexes := map[string][]string{}
+	var order []string
+	for rows.Next() {
+		var index, column string
+		if err := rows.Scan(&index, &column); err != nil {
+			return err
+		}
+		if _, seen := indexes[index]; !seen {
+			order = append(order, index)
+		}
+		indexes[index] = append(indexes[index], column)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(indexes) == 0 {
+		return fmt.Errorf(
+			"cannot upsert into %s: the table has no unique index, so there is nothing for the merge to key on",
+			table)
+	}
+
+	want := make(map[string]bool, len(keyCols))
+	for _, k := range keyCols {
+		want[strings.ToLower(k)] = true
+	}
+	matches := func(cols []string) bool {
+		if len(cols) != len(want) {
+			return false
+		}
+		for _, c := range cols {
+			if !want[strings.ToLower(c)] {
+				return false
+			}
+		}
+		return true
+	}
+
+	var others []string
+	for _, name := range order {
+		if matches(indexes[name]) {
+			return nil
+		}
+		others = append(others, fmt.Sprintf("%s (%s)", name, strings.Join(indexes[name], ", ")))
+	}
+	return fmt.Errorf(
+		"key_columns (%s) does not match any unique index on %s; the table's unique indexes are: %s",
+		strings.Join(keyCols, ", "), table, strings.Join(others, "; "))
 }

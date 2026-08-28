@@ -341,3 +341,95 @@ func TestDialectForURI(t *testing.T) {
 		}
 	}
 }
+
+// #377: the staged-upsert renderers. The live behaviour is pinned in
+// bulk_upsert_test.go; these pin the SQL shapes, which is what a reviewer
+// and a future dialect need to see.
+func TestUpsertMergeSQLPostgres(t *testing.T) {
+	d := getDialect("postgres")
+	stmts, err := d.upsertMergeSQL("t", []string{"id", "name", "age"}, []string{"id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stmts) != 2 {
+		t.Fatalf("want update+insert, got %d statements", len(stmts))
+	}
+	update, insert := stmts[0], stmts[1]
+	if !strings.Contains(update, `UPDATE "t" t SET "name" = s."name", "age" = s."age"`) {
+		t.Errorf("update shape wrong: %s", update)
+	}
+	if strings.Contains(update, `"id" = s."id",`) || strings.Contains(update, `SET "id"`) {
+		t.Errorf("the key column must not be in the SET list: %s", update)
+	}
+	if !strings.Contains(insert, "WHERE NOT EXISTS") || !strings.Contains(insert, `t."id" = s."id"`) {
+		t.Errorf("insert must anti-join on the key: %s", insert)
+	}
+	if strings.Contains(update, "ON CONFLICT") || strings.Contains(insert, "ON CONFLICT") {
+		t.Error("the staged merge must not use ON CONFLICT -- measured 3-6x slower (see upsertMergeSQL)")
+	}
+
+	// Every column in the key: nothing to update, insert-only.
+	stmts, err = d.upsertMergeSQL("t", []string{"a", "b"}, []string{"a", "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stmts) != 1 || !strings.Contains(stmts[0], "WHERE NOT EXISTS") {
+		t.Errorf("all-keys should degrade to the anti-join insert alone: %v", stmts)
+	}
+}
+
+func TestUpsertMergeSQLMySQL(t *testing.T) {
+	d := getDialect("mysql")
+	stmts, err := d.upsertMergeSQL("t", []string{"id", "name"}, []string{"id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stmts) != 1 {
+		t.Fatalf("want one statement, got %d", len(stmts))
+	}
+	m := stmts[0]
+	// ORDER BY is what carries last-write-wins on this backend.
+	if !strings.Contains(m, "ORDER BY __brokoli_seq") {
+		t.Errorf("the merge must order by staging sequence: %s", m)
+	}
+	if !strings.Contains(m, "ON DUPLICATE KEY UPDATE `name` = `brokoli_upsert_stage`.`name`") {
+		t.Errorf("update values must come from the stage: %s", m)
+	}
+	if strings.Contains(m, "VALUES(") {
+		t.Errorf("VALUES() is deprecated since MySQL 8.0.20: %s", m)
+	}
+}
+
+func TestUpsertStageAndDedupSQL(t *testing.T) {
+	pg := getDialect("postgres")
+	ddl := pg.upsertStageDDL("t")
+	if len(ddl) != 2 || !strings.Contains(ddl[0], "ON COMMIT DROP") || !strings.Contains(ddl[1], "BIGSERIAL") {
+		t.Errorf("postgres stage DDL wrong: %v", ddl)
+	}
+	dedup := pg.upsertDedupSQL([]string{"id", "region"})
+	for _, want := range []string{`a."id" = b."id"`, `a."region" = b."region"`, "a.__brokoli_seq < b.__brokoli_seq"} {
+		if !strings.Contains(dedup, want) {
+			t.Errorf("dedup missing %q: %s", want, dedup)
+		}
+	}
+
+	my := getDialect("mysql")
+	ddl = my.upsertStageDDL("t")
+	// AS SELECT rather than LIKE: LIKE would copy the target's unique
+	// indexes, and a unique index on the stage rejects exactly the in-set
+	// duplicates the last-write-wins rule exists to resolve.
+	if len(ddl) != 2 || !strings.Contains(ddl[0], "AS SELECT * FROM `t` WHERE 1=0") {
+		t.Errorf("mysql stage DDL wrong: %v", ddl)
+	}
+	if !strings.Contains(ddl[1], "AUTO_INCREMENT") {
+		t.Errorf("mysql stage needs the sequence column: %v", ddl)
+	}
+
+	// A dialect with no staged path says so.
+	if _, err := getDialect("sqlserver").upsertMergeSQL("t", []string{"a"}, []string{"a"}); err == nil {
+		t.Error("an unsupported dialect must refuse, not render something")
+	}
+	if _, err := pg.upsertMergeSQL("t", []string{"a"}, nil); err == nil {
+		t.Error("a merge without key columns must refuse")
+	}
+}

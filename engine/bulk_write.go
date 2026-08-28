@@ -20,11 +20,14 @@ type bulkBatchWriter func(ctx context.Context, uri string, cfg SQLGenConfig, col
 // writer all ask here, so they cannot disagree about which path a write
 // takes.
 //
-// Scope is identical for every backend: append and overwrite only. Upsert
-// needs a conflict clause no bulk protocol carries, and CreateTable emits
-// DDL that belongs on the statement path. A dialect with no writer here
-// simply keeps today's statement path -- absence degrades, it does not
-// error.
+// Append and overwrite go straight through. Upsert goes through staged
+// (#377): no bulk protocol carries a conflict clause, so the rows bulk-load
+// into a session temp table and one merge statement moves them on -- which
+// still spares the server parsing the rows as SQL text, the cost that made
+// the statement-path upsert the slowest write in the product. CreateTable
+// alone does not disqualify a write; bulkCreateReady moves its DDL into the
+// writer's transaction. A dialect with no writer here simply keeps today's
+// statement path -- absence degrades, it does not error.
 func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 	if copyFastPathDisabled() {
 		return nil, false
@@ -34,6 +37,13 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 	}
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
 	case "", ModeAppend, ModeOverwrite, "replace":
+	case ModeUpsert:
+		// The merge needs its conflict target, and only Postgres has the
+		// staged path so far. MySQL keeps the statement path until its
+		// stage-and-ordered-merge lands.
+		if len(cfg.KeyColumns) == 0 || cfg.Dialect != "postgres" {
+			return nil, false
+		}
 	default:
 		return nil, false
 	}
@@ -62,6 +72,13 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 // not describe has its type inferred from the values.
 func bulkCreateReady(cfg SQLGenConfig, ds *common.DataSet) (SQLGenConfig, error) {
 	if !cfg.CreateTable {
+		return cfg, nil
+	}
+	// create_table plus upsert stays on the statement path. A table this
+	// run creates has no unique index, so the merge has nothing to
+	// conflict on -- the combination fails today and would fail staged;
+	// moving a failure is not a speed-up.
+	if strings.EqualFold(strings.TrimSpace(cfg.Mode), ModeUpsert) {
 		return cfg, nil
 	}
 	moved := cfg

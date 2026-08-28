@@ -137,10 +137,23 @@ func TestBulkWriterScope(t *testing.T) {
 			t.Errorf("expected a bulk writer for %+v", cfg)
 		}
 	}
+	// Postgres upsert earned the staged path (#377): COPY into a session
+	// temp table, one merge statement out -- the equivalence and dup-key
+	// tests in bulk_upsert_test.go are what let this row exist.
+	yes = append(yes, SQLGenConfig{Dialect: "postgres", Mode: ModeUpsert, KeyColumns: []string{"id"}})
+	for _, cfg := range yes[len(yes)-1:] {
+		if _, ok := bulkWriterFor(cfg); !ok {
+			t.Errorf("expected a bulk writer for %+v", cfg)
+		}
+	}
+
 	no := []SQLGenConfig{
-		{Dialect: "postgres", Mode: ModeUpsert},                    // needs ON CONFLICT
-		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL belongs on the statement path
-		{Dialect: "mysql", Mode: ModeUpsert},                       // same, and the key validation lives on the statement path
+		// An upsert without its conflict target has nothing to merge on.
+		{Dialect: "postgres", Mode: ModeUpsert},
+		// MySQL upsert keeps the statement path until its own staged
+		// merge lands (#377 phase 2).
+		{Dialect: "mysql", Mode: ModeUpsert, KeyColumns: []string{"id"}},
+		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL moves via bulkCreateReady, not here
 		{Dialect: "mysql", Mode: ModeAppend, CreateTable: true},
 		{Dialect: "sqlite", Mode: ModeAppend},
 		{Dialect: "sqlserver", Mode: ModeAppend},
