@@ -11,6 +11,81 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.76] - 2026-08-28
+
+ClickHouse arrives as the third database backend (ADR-027): readable,
+appendable, overwritable -- and honest about everything it is not. The
+capability climbed the same ladder MySQL did, one phase per PR, each
+earned by tests against a live server.
+
+Measured, 50,000 4-column rows against the 25.3 LTS container: the native
+batch writes at 410-525k rows/sec against 145k for rendered SQL -- on the
+benchmark machine, the fastest write path in the product (Postgres COPY
+measured 250-460k on the same hardware). The benchmark is committed
+(`BenchmarkClickHouseWrite`) so the claim stays checkable.
+
+### Added
+
+- **ClickHouse connections, sources, and migrations out** (#385, #386,
+  ADR-027 phases 0-1) -- @hc12r. `clickhouse://` connections over the
+  native protocol (pure-Go driver, so the single-binary release is
+  untouched), `source_db` reads, and migrations out of ClickHouse that
+  carry declared column types: `UInt32` widens to a 64-bit destination
+  column, `Decimal(12,2)` stays exact, `DateTime64` lands as
+  `timestamptz` because a ClickHouse DateTime is an epoch instant, and a
+  `Nullable(String)` NULL survives as NULL. Wrapped type names --
+  `Nullable(...)`, `LowCardinality(...)` -- unwrap before anything is
+  judged.
+
+  The catalog entry follows a new rule with teeth: a connection type
+  enters the catalog only in the change that makes `source_db` actually
+  work against it, and the connection test now runs `SELECT 1` through
+  the driver for every backend rather than stopping at a handshake.
+
+- **ClickHouse sinks: append and overwrite** (#387, #388, phases 2-3) --
+  @hc12r. Appends go through the native batch protocol; `create_table`
+  renders real column types with `Nullable(T)` explicit -- ClickHouse
+  columns are non-nullable by default, the inverse of every other
+  backend, and a missed wrapper would turn NULLs into zeros -- plus the
+  engine clause the language requires (`ENGINE = MergeTree ORDER BY
+  tuple()` by default, `table_engine` in node config to override).
+  Keyed appends and overwrites are stream-eligible, so a table larger
+  than worker memory writes with a one-batch resident set.
+
+  **What ClickHouse does not promise, stated rather than smoothed
+  over.** There are no transactions: each committed batch is atomic and
+  nothing larger is, so a failed load keeps the batches that were
+  acknowledged, and an interrupted overwrite keeps its truncate. A test
+  observes exactly that weaker state and will fail if ClickHouse ever
+  gains something better to use. A resumed run that re-runs a ClickHouse
+  write warns in its own log that already-committed batches are still in
+  the table, naming the mitigations. Concurrent overwrites of one table
+  are unguarded -- ClickHouse has no advisory-lock primitive -- and the
+  code says so.
+
+  **Upsert is refused, not counterfeited.** ClickHouse has no
+  synchronous merge; `ReplacingMergeTree` deduplicates eventually, at
+  merge time, which is a different promise than `mode: upsert` makes on
+  the other backends. The refusal fires in the pipeline editor at
+  validation time and explains the native alternative. Pushdown is
+  likewise fully refused -- structurally (the dialect claims no
+  same-server capability) and observed end to end -- until a
+  differential corpus earns it.
+
+### Fixed
+
+- **Unknown connection schemes no longer route into the Postgres
+  driver** for the connection test's purposes: `SELECT 1` through the
+  real driver replaces ping-only success, so a green connection test now
+  means the server executes SQL for that user. (The `detectDriver`
+  default-to-pgx fallthrough itself is tracked in #383.)
+
+### Known limits
+
+- The native batch does not coerce string values into numeric columns
+  where the rendered-SQL escape hatch would; a CSV-sourced append into a
+  typed ClickHouse table needs a cast upstream for now. Tracked in #382.
+
 ## [0.10.75] - 2026-08-28
 
 The write paths get fast. Creating a destination table no longer costs the
