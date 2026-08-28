@@ -38,10 +38,11 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
 	case "", ModeAppend, ModeOverwrite, "replace":
 	case ModeUpsert:
-		// The merge needs its conflict target, and only Postgres has the
-		// staged path so far. MySQL keeps the statement path until its
-		// stage-and-ordered-merge lands.
-		if len(cfg.KeyColumns) == 0 || cfg.Dialect != "postgres" {
+		// The merge needs its conflict target. Postgres stages through
+		// COPY and merges with an update-then-insert pair; MySQL stages
+		// through LOAD DATA and merges with one ordered INSERT ... ON
+		// DUPLICATE KEY UPDATE.
+		if len(cfg.KeyColumns) == 0 {
 			return nil, false
 		}
 	default:

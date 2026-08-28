@@ -147,12 +147,19 @@ func TestBulkWriterScope(t *testing.T) {
 		}
 	}
 
+	// MySQL joined it (#377 phase 2): LOAD DATA into the stage, one
+	// ordered merge out.
+	yes = append(yes, SQLGenConfig{Dialect: "mysql", Mode: ModeUpsert, KeyColumns: []string{"id"}})
+	for _, cfg := range yes[len(yes)-1:] {
+		if _, ok := bulkWriterFor(cfg); !ok {
+			t.Errorf("expected a bulk writer for %+v", cfg)
+		}
+	}
+
 	no := []SQLGenConfig{
 		// An upsert without its conflict target has nothing to merge on.
 		{Dialect: "postgres", Mode: ModeUpsert},
-		// MySQL upsert keeps the statement path until its own staged
-		// merge lands (#377 phase 2).
-		{Dialect: "mysql", Mode: ModeUpsert, KeyColumns: []string{"id"}},
+		{Dialect: "mysql", Mode: ModeUpsert},
 		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL moves via bulkCreateReady, not here
 		{Dialect: "mysql", Mode: ModeAppend, CreateTable: true},
 		{Dialect: "sqlite", Mode: ModeAppend},

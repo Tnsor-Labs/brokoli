@@ -294,11 +294,24 @@ func runSourceToSinkUpsert(t *testing.T, uri, table string, keys []string) *mode
 //	BROKOLI_TEST_POSTGRES_URL=... go test ./engine/ -run xxx \
 //	  -bench BenchmarkUpsertWrite -benchtime 5x
 func BenchmarkUpsertWrite(b *testing.B) {
-	pg := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
-	if pg == "" {
-		b.Skip("BROKOLI_TEST_POSTGRES_URL not set")
+	for _, backend := range []struct{ name, env, dialect, createSQL string }{
+		{"postgres", "BROKOLI_TEST_POSTGRES_URL", "postgres",
+			"CREATE TABLE upbench (id bigint PRIMARY KEY, city text, amount double precision, note text)"},
+		{"mysql", "BROKOLI_TEST_MYSQL_URL", "mysql",
+			"CREATE TABLE upbench (id bigint PRIMARY KEY, city text, amount double, note text)"},
+	} {
+		uri := os.Getenv(backend.env)
+		if uri == "" {
+			continue
+		}
+		b.Run(backend.name, func(b *testing.B) {
+			benchUpsertBackend(b, uri, backend.dialect, backend.createSQL)
+		})
 	}
-	db, err := openBench(pg)
+}
+
+func benchUpsertBackend(b *testing.B, uri, dialect, createSQL string) {
+	db, err := openBench(uri)
 	if err != nil {
 		b.Fatal(err)
 	}
@@ -317,16 +330,17 @@ func BenchmarkUpsertWrite(b *testing.B) {
 					for i := 0; i < b.N; i++ {
 						b.StopTimer()
 						db.Exec("DROP TABLE IF EXISTS upbench")
-						db.Exec("CREATE TABLE upbench (id bigint PRIMARY KEY, city text, amount double precision, note text)")
+						db.Exec(createSQL)
 						cfg := upsertCfg("upbench")
+						cfg.Dialect = dialect
 						if load == "all_conflict" {
 							// Pre-seed so every row is an update.
-							if err := benchWrite(pg, cfg, ds); err != nil {
+							if err := benchWrite(uri, cfg, ds); err != nil {
 								b.Fatal(err)
 							}
 						}
 						b.StartTimer()
-						if err := benchWrite(pg, cfg, ds); err != nil {
+						if err := benchWrite(uri, cfg, ds); err != nil {
 							b.Fatal(err)
 						}
 					}
@@ -372,4 +386,147 @@ func benchWrite(uri string, cfg SQLGenConfig, ds *common.DataSet) error {
 	}
 	_, err = ExecuteSQL(uri, stmt)
 	return err
+}
+
+// --- MySQL (#377 phase 2) ---
+
+// The MySQL equivalence argument, with two rows of hostile values in the
+// dataset so the LOAD DATA escaping is exercised on this path too -- the
+// merge itself renders no values, but the claim is about the whole write.
+func TestMySQLStagedUpsertMatchesTheStatementPath(t *testing.T) {
+	my := os.Getenv("BROKOLI_TEST_MYSQL_URL")
+	if my == "" {
+		t.Skip("BROKOLI_TEST_MYSQL_URL not set")
+	}
+	db := openFor(t, my)
+
+	hostile := func(offset int) *common.DataSet {
+		ds := upsertRows(300, offset, "pass")
+		ds.Rows = append(ds.Rows,
+			common.DataRow{"id": int64(offset + 9000), "city": `x\'; DROP TABLE t; --`, "amount": 1.0, "note": "tab\there"},
+			common.DataRow{"id": int64(offset + 9001), "city": `C:\Users\path`, "amount": 2.0, "note": "line\nbreak"},
+		)
+		return ds
+	}
+
+	results := map[string]string{}
+	for _, path := range []string{"statement", "staged"} {
+		table := "myeq_" + path
+		db.Exec("DROP TABLE IF EXISTS " + table)
+		if _, err := db.Exec("CREATE TABLE " + table +
+			" (id bigint PRIMARY KEY, city text, amount double, note text)"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS " + table) })
+
+		if path == "statement" {
+			t.Setenv("BROKOLI_SINK_COPY", "false")
+		} else {
+			t.Setenv("BROKOLI_SINK_COPY", "true")
+		}
+		cfg := upsertCfg(table)
+		cfg.Dialect = "mysql"
+
+		_, bulk1 := writeUpsert(t, my, cfg, hostile(0))
+		_, bulk2 := writeUpsert(t, my, cfg, hostile(150)) // 150..299 update, 300..449 insert
+		wantBulk := path == "staged"
+		if bulk1 != wantBulk || bulk2 != wantBulk {
+			t.Fatalf("%s run took the wrong path (bulk=%v,%v)", path, bulk1, bulk2)
+		}
+		results[path] = upsertTableContents(t, my, table)
+	}
+
+	if results["staged"] != results["statement"] {
+		t.Errorf("staged and statement upserts diverged on MySQL:\nstatement %d chars, staged %d chars",
+			len(results["statement"]), len(results["staged"]))
+	}
+	// Both passes' hostile rows: 4 distinct ids among them. Counted by
+	// the server, not by splitting the rendered contents on newlines --
+	// the hostile notes deliberately contain newlines.
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM myeq_staged").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 454 {
+		t.Errorf("expected 454 rows, got %d", n)
+	}
+}
+
+// The dup-key rule on MySQL: last-write-wins, same as its statement path
+// always was -- but now guaranteed by ORDER BY rather than left to the
+// select order the server happened to choose.
+func TestMySQLStagedUpsertResolvesInSetDuplicatesLastWriteWins(t *testing.T) {
+	my := os.Getenv("BROKOLI_TEST_MYSQL_URL")
+	if my == "" {
+		t.Skip("BROKOLI_TEST_MYSQL_URL not set")
+	}
+	db := openFor(t, my)
+	db.Exec("DROP TABLE IF EXISTS mydup")
+	if _, err := db.Exec("CREATE TABLE mydup (id bigint PRIMARY KEY, city text, amount double, note text)"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS mydup") })
+
+	dup := &common.DataSet{
+		Columns: []string{"id", "city", "amount", "note"},
+		Rows: []common.DataRow{
+			{"id": int64(1), "city": "first", "amount": 1.0, "note": "n"},
+			{"id": int64(1), "city": "second", "amount": 1.5, "note": "n"},
+			{"id": int64(1), "city": "third", "amount": 1.75, "note": "n"},
+		},
+	}
+	cfg := upsertCfg("mydup")
+	cfg.Dialect = "mysql"
+	_, bulk := writeUpsert(t, my, cfg, dup)
+	if !bulk {
+		t.Fatal("the staged path did not engage")
+	}
+	var city string
+	if err := db.QueryRow("SELECT city FROM mydup WHERE id = 1").Scan(&city); err != nil {
+		t.Fatal(err)
+	}
+	if city != "third" {
+		t.Errorf("id=1 city = %q, want %q (the last staged row wins)", city, "third")
+	}
+}
+
+// A bad merge key is refused by name before any rows move, on this path
+// too -- the writer itself validates, because the streamed sink reaches it
+// without going through runSinkDB's check.
+func TestMySQLStagedUpsertRefusesABadKey(t *testing.T) {
+	my := os.Getenv("BROKOLI_TEST_MYSQL_URL")
+	if my == "" {
+		t.Skip("BROKOLI_TEST_MYSQL_URL not set")
+	}
+	db := openFor(t, my)
+	db.Exec("DROP TABLE IF EXISTS mybad")
+	if _, err := db.Exec("CREATE TABLE mybad (id bigint PRIMARY KEY, city text, amount double, note text)"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS mybad") })
+	if _, err := db.Exec("INSERT INTO mybad VALUES (1, 'keep', 0, 'keep')"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := upsertCfg("mybad")
+	cfg.Dialect = "mysql"
+	cfg.KeyColumns = []string{"city"}
+	w, ok := bulkWriterFor(cfg)
+	if !ok {
+		t.Fatal("no writer")
+	}
+	_, err := bulkWriteRows(w, my, cfg, upsertRows(5, 0, "x"))
+	if err == nil {
+		t.Fatal("a key that matches no unique index must be refused")
+	}
+	if !strings.Contains(err.Error(), "unique index") {
+		t.Errorf("the refusal should name the problem, got: %v", err)
+	}
+	var n int
+	if err := db.QueryRow("SELECT count(*) FROM mybad").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("target has %d rows, want 1 -- the refused write leaked", n)
+	}
 }
