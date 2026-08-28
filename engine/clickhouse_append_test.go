@@ -278,3 +278,71 @@ func runMigrateWithConfig(t *testing.T, cfg map[string]interface{}) *models.Run 
 	}
 	return run
 }
+
+// The numbers behind the capability claim, measured the way #324, #376 and
+// #377 were. Statement is the BROKOLI_SINK_COPY=0 escape hatch -- rendered
+// INSERT text -- and bulk is the native batch the capability registration
+// claims is worth having.
+//
+//	BROKOLI_TEST_CLICKHOUSE_URL=... go test ./engine/ -run xxx \
+//	  -bench BenchmarkClickHouseWrite -benchtime 5x
+func BenchmarkClickHouseWrite(b *testing.B) {
+	dsn := os.Getenv("BROKOLI_TEST_CLICKHOUSE_URL")
+	if dsn == "" {
+		b.Skip("BROKOLI_TEST_CLICKHOUSE_URL not set")
+	}
+	db, err := openBench(dsn)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer db.Close()
+
+	for _, size := range []int{1000, 10000, 50000} {
+		rows := make([]common.DataRow, 0, size)
+		for i := 0; i < size; i++ {
+			rows = append(rows, common.DataRow{
+				"id": int64(i), "city": fmt.Sprintf("city-%d", i%50),
+				"amount": 10.25, "note": "some note text here"})
+		}
+		ds := &common.DataSet{Columns: []string{"id", "city", "amount", "note"}, Rows: rows}
+
+		for _, path := range []string{"statement", "bulk"} {
+			for _, mode := range []string{ModeAppend, ModeOverwrite} {
+				b.Run(fmt.Sprintf("%s/%s/%drows", path, mode, size), func(b *testing.B) {
+					if path == "statement" {
+						b.Setenv("BROKOLI_SINK_COPY", "false")
+					} else {
+						b.Setenv("BROKOLI_SINK_COPY", "true")
+					}
+					cfg := SQLGenConfig{Dialect: "clickhouse", Table: "chbench", BatchSize: 1000, Mode: mode}
+					for i := 0; i < b.N; i++ {
+						b.StopTimer()
+						db.Exec("DROP TABLE IF EXISTS chbench")
+						db.Exec("CREATE TABLE chbench (id Int64, city String, amount Float64, note String) ENGINE = MergeTree ORDER BY id")
+						b.StartTimer()
+						if w, ok := bulkWriterFor(cfg); ok {
+							if _, err := bulkWriteRows(w, dsn, cfg, ds); err != nil {
+								b.Fatal(err)
+							}
+						} else {
+							stmt, err := GenerateSQL(cfg, ds)
+							if err != nil {
+								b.Fatal(err)
+							}
+							if _, err := ExecuteSQL(dsn, stmt); err != nil {
+								b.Fatal(err)
+							}
+						}
+					}
+					b.StopTimer()
+					var n uint64
+					db.QueryRow("SELECT count() FROM chbench").Scan(&n)
+					if int(n) != size {
+						b.Fatalf("wrote %d rows, want %d", n, size)
+					}
+					db.Exec("DROP TABLE IF EXISTS chbench")
+				})
+			}
+		}
+	}
+}
