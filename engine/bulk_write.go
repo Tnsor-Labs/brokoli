@@ -46,6 +46,37 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 	return nil, false
 }
 
+// bulkCreateReady moves a pending CREATE TABLE off the statement path and
+// into the bulk writer's transaction, when a writer would otherwise take
+// this write (#376).
+//
+// The refusal in bulkWriterFor above is about the DDL, not the rows -- but
+// GenerateSQL emits both as one string, so one statement used to pin fifty
+// thousand rows to the statement path. Rendering the DDL here and handing
+// it to the writer separates them: the creation still happens, in the same
+// transaction as the load, and the rows go through COPY or LOAD DATA.
+//
+// Returns cfg untouched when there is nothing to create, or when no writer
+// would take this write anyway -- the statement path then emits the DDL
+// exactly as it always did. ds is needed because a column the caller could
+// not describe has its type inferred from the values.
+func bulkCreateReady(cfg SQLGenConfig, ds *common.DataSet) (SQLGenConfig, error) {
+	if !cfg.CreateTable {
+		return cfg, nil
+	}
+	moved := cfg
+	moved.CreateTable = false
+	if _, ok := bulkWriterFor(moved); !ok {
+		return cfg, nil
+	}
+	ddl, err := createTableDDL(getDialect(cfg.Dialect), cfg, ds)
+	if err != nil {
+		return cfg, err
+	}
+	moved.CreateDDL = ddl
+	return moved, nil
+}
+
 // bulkWriteRows writes one materialized dataset through a bulk writer. It
 // is the batch-path entry point; the writers themselves are the streaming
 // ones, and both paths share the implementation so the two cannot drift.

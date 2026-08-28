@@ -129,6 +129,17 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 		}
 		defer tx.Rollback(ctx) //nolint:errcheck // no-op once committed
 
+		// #376: creating the table happens here, inside the load's own
+		// transaction, rather than as a separate statement before it. That
+		// is what lets a create-and-load use COPY while keeping the
+		// property the statement path had -- a failed load rolls the
+		// creation back too, so a failure leaves nothing behind.
+		if cfg.CreateDDL != "" {
+			if _, err := tx.Exec(ctx, cfg.CreateDDL); err != nil {
+				return fmt.Errorf("create %s: %w", cfg.Table, err)
+			}
+		}
+
 		if mode == ModeOverwrite || mode == "replace" {
 			// Serialize concurrent overwrites of the same table.
 			//

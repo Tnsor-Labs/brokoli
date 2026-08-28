@@ -983,6 +983,15 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 				table, strings.Join(others, "; "))
 		}
 	}
+	// #376: a table that has to be created no longer costs the fast path.
+	// The DDL moves into the writer's own transaction instead of being
+	// rendered into the same SQL string as the rows, which used to pin the
+	// whole write to the statement path over one statement.
+	cfg, err := bulkCreateReady(cfg, input)
+	if err != nil {
+		return nil, fmt.Errorf("sink_db: %w", err)
+	}
+
 	// Appends and overwrites go through the dialect's bulk path where one
 	// exists -- Postgres COPY (measured at 3.3x on 25k rows, see
 	// copy_postgres.go), MySQL LOAD DATA LOCAL INFILE (see bulk_mysql.go)
@@ -1256,6 +1265,14 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	// this question for pushdown; here the answer is kept. Falls back to
 	// value inference when the source cannot report types (a file source
 	// never could), which is what every migration did before.
+	//
+	// #376: the DDL is rendered here but no longer executed here. It is
+	// handed to the write path, which runs it inside the bulk writer's own
+	// transaction when a writer takes the load -- so creating the table
+	// stops costing the fast path, and on Postgres a failed load still
+	// rolls the creation back. Where no writer takes it, it is executed on
+	// its own below, exactly as before.
+	typedDDL := ""
 	if createTable {
 		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery)
 		if haveTypes {
@@ -1263,18 +1280,79 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 			if err != nil {
 				return nil, fmt.Errorf("migrate: %w", err)
 			}
-			if _, err := ExecuteSQL(destURI, ddl); err != nil {
-				return nil, fmt.Errorf("migrate: create %s: %w", destTable, err)
-			}
-			r.log(node.ID, models.LogLevelInfo,
-				"Created %s from the source's column types", destTable)
-			createTable = false
-			tableCreated = true
+			typedDDL = ddl
 		} else {
 			r.log(node.ID, models.LogLevelWarning,
 				"the source did not report column types, so %s will be created from sampled values -- "+
 					"widths and precision may not match the source", destTable)
 		}
+	}
+
+	// One config for the whole migration, so the write path is chosen once
+	// with full information rather than per chunk.
+	writeCfg := SQLGenConfig{
+		Dialect:    dialect,
+		Table:      destTable,
+		BatchSize:  chunkSize,
+		Mode:       mode,
+		KeyColumns: keyColumns,
+		// A rendered DDL supersedes the flag: the statement path must not
+		// emit CREATE TABLE a second time.
+		CreateTable: createTable && typedDDL == "",
+		CreateDDL:   typedDDL,
+	}
+	writeCfg, cerr := bulkCreateReady(writeCfg, sourceDS)
+	if cerr != nil {
+		return nil, fmt.Errorf("migrate: %w", cerr)
+	}
+
+	// #376: a migration is a bulk load, and used to be the one write path
+	// that never said so -- it rendered every row as SQL text even when the
+	// destination had COPY or LOAD DATA. Appends and overwrites now go
+	// through the same writer sink_db uses. Upsert has no bulk protocol and
+	// keeps the chunked statement path below.
+	if w, ok := bulkWriterFor(writeCfg); ok {
+		sent := 0
+		chunkNum := 0
+		next := func() (*common.DataSet, error) {
+			if r.ctx.Err() != nil {
+				return nil, fmt.Errorf("cancelled at chunk %d", chunkNum+1)
+			}
+			if sent >= len(sourceDS.Rows) {
+				return nil, io.EOF
+			}
+			end := sent + chunkSize
+			if end > len(sourceDS.Rows) {
+				end = len(sourceDS.Rows)
+			}
+			chunk := &common.DataSet{Columns: sourceDS.Columns, Rows: sourceDS.Rows[sent:end]}
+			sent = end
+			chunkNum++
+			r.log(node.ID, models.LogLevelInfo, "Chunk %d/%d: %d rows handed to the bulk writer (%d total)",
+				chunkNum, totalChunksFor(len(sourceDS.Rows), chunkSize), len(chunk.Rows), sent)
+			return chunk, nil
+		}
+		affected, err := w(r.ctx, destURI, writeCfg, sourceDS.Columns, next)
+		if err != nil {
+			return nil, fmt.Errorf("migrate: bulk write to %s: %w", destTable, err)
+		}
+		if writeCfg.CreateDDL != "" {
+			r.log(node.ID, models.LogLevelInfo, "Created %s from the source's column types", destTable)
+		}
+		r.log(node.ID, models.LogLevelInfo,
+			"Migration complete: %d rows migrated to %s in %d chunks (bulk)", affected, destTable, chunkNum)
+		return migrateSummary(int(affected), destTable, chunkNum), nil
+	}
+
+	// No bulk writer for this destination: the DDL, if one was rendered,
+	// has to run on its own before the chunked statement path.
+	if writeCfg.CreateDDL != "" {
+		if _, err := ExecuteSQL(destURI, writeCfg.CreateDDL); err != nil {
+			return nil, fmt.Errorf("migrate: create %s: %w", destTable, err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Created %s from the source's column types", destTable)
+		createTable = false
+		tableCreated = true
 	}
 
 	// Process in chunks
@@ -1330,14 +1408,29 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 
 	r.log(node.ID, models.LogLevelInfo, "Migration complete: %d rows migrated to %s in %d chunks", totalMigrated, destTable, totalChunks)
 
+	return migrateSummary(totalMigrated, destTable, totalChunks), nil
+}
+
+// totalChunksFor is how many chunks a row count divides into, for the
+// progress line both migrate paths log.
+func totalChunksFor(rows, chunkSize int) int {
+	if chunkSize <= 0 {
+		return 1
+	}
+	return (rows + chunkSize - 1) / chunkSize
+}
+
+// migrateSummary is the one-row dataset a migrate node reports, shared so
+// the bulk and statement paths cannot describe the same work differently.
+func migrateSummary(rows int, table string, chunks int) *common.DataSet {
 	return &common.DataSet{
 		Columns: []string{"migrated_rows", "table", "chunks"},
 		Rows: []common.DataRow{{
-			"migrated_rows": totalMigrated,
-			"table":         destTable,
-			"chunks":        totalChunks,
+			"migrated_rows": rows,
+			"table":         table,
+			"chunks":        chunks,
 		}},
-	}, nil
+	}
 }
 
 func (r *Runner) nodeByID(id string) *models.Node {
