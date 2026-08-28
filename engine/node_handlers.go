@@ -929,6 +929,9 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if uri == "" {
 		return nil, fmt.Errorf("sink_db node requires 'uri' config")
 	}
+	if err := refuseUnearnedWrite(uri); err != nil {
+		return nil, fmt.Errorf("sink_db: %w", err)
+	}
 
 	// Path 1 (kept for back-compat): an upstream sql_generate node already
 	// produced ready-to-run SQL in a single sql_output row.
@@ -1224,6 +1227,9 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	}
 	if destURI == "" || destTable == "" {
 		return nil, fmt.Errorf("migrate node requires dest connection (dest_conn_id or dest_uri) and 'dest_table'")
+	}
+	if err := refuseUnearnedWrite(destURI); err != nil {
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	if dialect == "" {
 		dialect = "generic"

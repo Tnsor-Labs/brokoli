@@ -46,6 +46,8 @@ func dialectForURI(uri string) string {
 		return "sqlite"
 	case "sqlserver":
 		return "sqlserver"
+	case "clickhouse":
+		return "clickhouse"
 	default:
 		return "generic"
 	}
@@ -101,6 +103,9 @@ func detectDriver(uri string) (string, string, error) {
 		return "pgx", dsn, nil
 	case strings.HasPrefix(uri, "snowflake://"):
 		return "snowflake", strings.TrimPrefix(uri, "snowflake://"), nil
+	case strings.HasPrefix(uri, "clickhouse://"):
+		// clickhouse-go accepts the URI itself as its DSN.
+		return "clickhouse", uri, nil
 	case strings.HasPrefix(uri, "mysql://"):
 		dsn := strings.TrimPrefix(uri, "mysql://")
 		return "mysql", dsn, nil
@@ -582,4 +587,23 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 		}
 	}
 	return columns, total, nil
+}
+
+// refuseUnearnedWrite refuses a write destination whose backend can be read
+// but has not earned the write path (ADR-027 phase 1, ADR-024's rule that a
+// capability is claimed only with proof behind it).
+//
+// ClickHouse is readable -- source_db and a migration's source side work --
+// but writing it means statement generation, value rendering, and the
+// no-transactions atomicity story, none of which has a differential corpus
+// yet. Falling through to the generic statement dialect would "work" on a
+// demo and corrupt on the first boolean; a named refusal keeps the failure
+// at configuration time and says where the work is tracked.
+func refuseUnearnedWrite(uri string) error {
+	if dialectForURI(uri) == "clickhouse" {
+		return fmt.Errorf(
+			"ClickHouse can be read but not yet written: the write path is phase 2 of the ADR-027 " +
+				"implementation (Tnsor-Labs/brokoli#382) and is refused until its equivalence tests exist")
+	}
+	return nil
 }

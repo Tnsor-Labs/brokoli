@@ -71,6 +71,9 @@ services:
       CLICKHOUSE_USER: brokoli
       CLICKHOUSE_PASSWORD: brokoli
       CLICKHOUSE_DB: brokoli_test
+      # Lets the test user CREATE USER, which the hostile-credential
+      # round-trip test needs. Scratch server, tmpfs data.
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
     ports:
       - "55534:9000"
     tmpfs:

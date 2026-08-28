@@ -130,10 +130,16 @@ func For(name string) (Dialect, bool) {
 	return d, ok
 }
 
-// A backend appears here only with a passing differential corpus behind
-// it -- the registration is the capability claim (ADR-024), and the corpus
-// in engine/transform_sql_diff_test.go is the proof.
+// A backend appears here only with the proof its registration claims.
+// For postgres and mysql the claim is full compilation and the proof is the
+// differential corpus in engine/transform_sql_diff_test.go. For clickhouse
+// (ADR-027 phase 1) the claim is deliberately narrower -- read-side only:
+// it implements no Addresser, so sameServer never answers yes and the
+// compiler can never form a ClickHouse segment. Widening that claim means
+// implementing Addresser WITH the corpus passing against a live ClickHouse,
+// not editing this map.
 var registry = map[string]Dialect{
-	"postgres": postgres{},
-	"mysql":    mysqld{},
+	"postgres":   postgres{},
+	"mysql":      mysqld{},
+	"clickhouse": clickhouse{},
 }

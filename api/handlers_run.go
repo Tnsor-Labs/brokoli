@@ -501,6 +501,15 @@ func (h *RunHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A real query, not only a ping (ADR-027's catalog rule). Ping proves
+	// a handshake; SELECT 1 proves the server executes SQL for this user
+	// against this database, which is what a green test result claims.
+	var one int
+	if err := db.QueryRow("SELECT 1").Scan(&one); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, map[string]interface{}{"success": true, "driver": driver})
 }
 
