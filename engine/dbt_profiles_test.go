@@ -325,3 +325,42 @@ func TestDBTRunsFromAConnectionWithNoProjectProfile(t *testing.T) {
 }
 
 func parsePortForTest(s string) (int, error) { return strconv.Atoi(s) }
+
+// ADR-027 phase 4: the ClickHouse profile stanza. No dbname -- ClickHouse
+// has no database/schema split, the schema IS the database dbt builds in --
+// and driver: native, because the connection record's port is the native
+// protocol's. The live proof is TestDBTRunsOnClickHouse.
+func TestClickHouseProfileShape(t *testing.T) {
+	conn := &models.Connection{
+		ConnID: "ch", Type: models.ConnTypeClickHouse,
+		Host: "localhost", Port: 55534,
+		Login: "brokoli", Password: "pw",
+		// Deliberately no Schema: the connection's own database plays no
+		// part in a ClickHouse profile, and requiring one would refuse
+		// connections that work everywhere else.
+	}
+	p, err := generateDBTProfile(conn, "proj", "dbt_target", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer p.Cleanup()
+
+	body, err := os.ReadFile(filepath.Join(p.Dir, "profiles.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(body)
+	for _, want := range []string{
+		"type: clickhouse",
+		"driver: native",
+		"port: 55534",
+		`schema: "dbt_target"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("profile missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "dbname") {
+		t.Errorf("a ClickHouse profile must not carry dbname -- there is no database/schema split:\n%s", got)
+	}
+}

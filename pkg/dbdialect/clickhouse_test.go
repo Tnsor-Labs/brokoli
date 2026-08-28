@@ -23,15 +23,23 @@ func TestClickHouseQuoting(t *testing.T) {
 	}
 }
 
-// Registration claims read-side only: no Addresser means sameServer can
-// never answer yes, so no pushdown segment can form. This is ADR-027's
-// "pushdown starts fully refused" as a structural fact -- if someone adds
-// Addresser without the corpus, this fails and points at the rule.
+// Registration claims read-and-write but never pushdown: no Addresser
+// means sameServer can never answer yes, so no segment can form. Since
+// phase 4 this is a MEASURED refusal, not only a structural one --
+// TestClickHouseInsertSelectReportsNoCount (engine) pins that clickhouse-go
+// reports no row count for INSERT ... SELECT, so a ClickHouse segment can
+// never satisfy ADR-023's free-count-source rule and its executor would
+// fail every segment the planner formed. Behind that stand two more
+// blockers: no transaction (the commit-is-the-artifact resume rule cannot
+// hold) and no lock primitive (an overwrite segment cannot serialize).
+// Adding Addresser is correct only after the count measurement flips AND
+// the differential corpus passes against a live server.
 func TestClickHouseClaimsNoAddresser(t *testing.T) {
 	d, _ := For("clickhouse")
 	if _, ok := d.(Addresser); ok {
-		t.Fatal("clickhouse implements Addresser; pushdown may only be claimed with the " +
-			"differential corpus passing against a live server (ADR-024, ADR-027 phase 3+)")
+		t.Fatal("clickhouse implements Addresser; the pushdown refusal is measured (see " +
+			"TestClickHouseInsertSelectReportsNoCount) and may only be lifted when that " +
+			"measurement flips and the differential corpus passes (ADR-024, ADR-027)")
 	}
 }
 

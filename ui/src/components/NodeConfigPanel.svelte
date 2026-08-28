@@ -152,7 +152,7 @@
       // half-integration (ADR-025), so offering one here would promise
       // something the engine refuses.
       case "dbt":
-        return ["postgres", "mysql"];
+        return ["postgres", "mysql", "clickhouse"];
       default:
         return [];
     }
