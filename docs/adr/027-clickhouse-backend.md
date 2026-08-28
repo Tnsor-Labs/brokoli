@@ -1,6 +1,6 @@
 # ADR-027: ClickHouse as the third backend, append-first
 
-**Status:** accepted — direction agreed; implementation phased, Phase 0 unstarted
+**Status:** accepted — implemented; phases 0–4 landed (#382), pushdown refused on measurement (see Deferred)
 **Date:** 2026-08-28
 
 ## Context
