@@ -130,3 +130,87 @@ func splitClickHouseType(name string) (string, []string) {
 	}
 	return base, args
 }
+
+// DDLType renders a canonical type as ClickHouse DDL (ADR-027 phase 2 --
+// this is the TypeRenderer whose absence phase 1 pinned, crossed here with
+// the equivalence tests the pin demanded).
+//
+// Nullability is part of the type, not a suffix: ClickHouse columns are
+// non-nullable by default, and Nullable(T) is the only way to hold a NULL.
+// A nullable canonical type therefore renders wrapped -- returning bare T
+// would make every NULL from the source either an insert error or, worse,
+// the type's default value, which is the #360 corruption class.
+//
+// Refusals, each with its reason:
+//
+//   - TypeTimestamp (zoneless): a ClickHouse DateTime is an epoch instant,
+//     and storing a wall-clock reading into one forces an interpretation
+//     the source never made. The operator chooses -- usually by casting to
+//     an instant at the source -- rather than this code guessing UTC.
+//   - TypeDecimal beyond 76 digits, or with no declared precision:
+//     Decimal's cap is 76, and ClickHouse has no unconstrained exact
+//     numeric -- the same rule as MySQL's renderer.
+//   - TypeTime: ClickHouse has no time-of-day type.
+//   - TypeJSON: the JSON column type is not yet something to build on.
+//
+// Renderings that need their reasons stated:
+//
+//   - TypeDate renders Date32, not Date: Date stops at 2149 and starts at
+//     1970, where Date32 spans 1900-2299 -- the wider window loses fewer
+//     source values, and both cost 4 bytes... Date costs 2, which is the
+//     one thing Date32 gives up.
+//   - TypeTimestampTZ renders DateTime64(6, 'UTC'): microsecond precision
+//     matches what the other backends carry, and the named zone makes the
+//     column's rendering deterministic regardless of server timezone. The
+//     zone does not change what is stored -- an epoch instant either way.
+//   - TypeBytes renders String: a ClickHouse String is a byte string, so
+//     this is the faithful home, not a substitution.
+func (clickhouse) DDLType(c ColumnType) (string, bool) {
+	var base string
+	switch c.Class {
+	case TypeBool:
+		base = "Bool"
+	case TypeInt:
+		switch {
+		case c.Bits <= 16 && c.Bits > 0:
+			base = "Int16"
+		case c.Bits <= 32 && c.Bits > 0:
+			base = "Int32"
+		default:
+			base = "Int64"
+		}
+	case TypeFloat:
+		if c.Bits == 32 {
+			base = "Float32"
+		} else {
+			base = "Float64"
+		}
+	case TypeDecimal:
+		if c.Precision <= 0 || c.Precision > 76 {
+			return "", false
+		}
+		s := c.Scale
+		if s > c.Precision {
+			s = c.Precision
+		}
+		base = "Decimal(" + itoa(c.Precision) + ", " + itoa(s) + ")"
+	case TypeText, TypeBytes:
+		base = "String"
+	case TypeDate:
+		base = "Date32"
+	case TypeTimestampTZ:
+		base = "DateTime64(6, 'UTC')"
+	case TypeUUID:
+		base = "UUID"
+	default:
+		return "", false
+	}
+	if c.Nullable {
+		return "Nullable(" + base + ")", true
+	}
+	return base, true
+}
+
+// itoa avoids importing strconv twice under different names in reviews;
+// identical to strconv.Itoa.
+func itoa(n int) string { return strconv.Itoa(n) }

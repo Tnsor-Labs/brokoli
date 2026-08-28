@@ -113,10 +113,50 @@ func TestClickHouseCanonicalType(t *testing.T) {
 		t.Errorf("LowCardinality(Nullable(String)) = %+v, want nullable text", got)
 	}
 
-	// And clickhouse deliberately does NOT render DDL yet: the write path
-	// is phase 2, and a TypeRenderer here without its equivalence tests
-	// would be a capability claimed without proof.
-	if _, ok := d.(TypeRenderer); ok {
-		t.Fatal("clickhouse implements TypeRenderer; DDL rendering is phase 2 and needs its tests first")
+	// Phase 2 crossed the phase-1 pin deliberately: the TypeRenderer now
+	// exists, with the equivalence tests in engine/clickhouse_append_test.go
+	// as the proof the pin demanded. Its own table is TestClickHouseDDLType.
+	if _, ok := d.(TypeRenderer); !ok {
+		t.Fatal("clickhouse must render DDL now; the write path depends on it")
+	}
+}
+
+// The renderer's table, refusals included.
+func TestClickHouseDDLType(t *testing.T) {
+	d, _ := For("clickhouse")
+	r := d.(TypeRenderer)
+
+	for _, tc := range []struct {
+		ct   ColumnType
+		want string
+		ok   bool
+	}{
+		{ColumnType{Class: TypeBool}, "Bool", true},
+		{ColumnType{Class: TypeInt, Bits: 16}, "Int16", true},
+		{ColumnType{Class: TypeInt, Bits: 64}, "Int64", true},
+		{ColumnType{Class: TypeInt}, "Int64", true}, // unspecified widens, never narrows
+		{ColumnType{Class: TypeFloat, Bits: 32}, "Float32", true},
+		{ColumnType{Class: TypeDecimal, Precision: 12, Scale: 2}, "Decimal(12, 2)", true},
+		{ColumnType{Class: TypeText}, "String", true},
+		{ColumnType{Class: TypeBytes}, "String", true},
+		{ColumnType{Class: TypeDate}, "Date32", true},
+		{ColumnType{Class: TypeTimestampTZ}, "DateTime64(6, 'UTC')", true},
+		{ColumnType{Class: TypeUUID}, "UUID", true},
+		// Nullable is part of the type: bare T would turn NULLs into the
+		// type's default value, the #360 corruption class.
+		{ColumnType{Class: TypeInt, Bits: 64, Nullable: true}, "Nullable(Int64)", true},
+		{ColumnType{Class: TypeText, Nullable: true}, "Nullable(String)", true},
+		// Refusals, each named in DDLType's comment.
+		{ColumnType{Class: TypeTimestamp}, "", false},
+		{ColumnType{Class: TypeTime}, "", false},
+		{ColumnType{Class: TypeJSON}, "", false},
+		{ColumnType{Class: TypeDecimal}, "", false},                // no declared precision
+		{ColumnType{Class: TypeDecimal, Precision: 77}, "", false}, // past the 76 cap
+		{ColumnType{Class: TypeUnknown}, "", false},
+	} {
+		got, ok := r.DDLType(tc.ct)
+		if got != tc.want || ok != tc.ok {
+			t.Errorf("DDLType(%+v) = %q,%v want %q,%v", tc.ct, got, ok, tc.want, tc.ok)
+		}
 	}
 }

@@ -648,6 +648,7 @@ func sinkStreamConfig(node models.Node) (string, SQLGenConfig, bool) {
 		return "", SQLGenConfig{}, false
 	}
 	mode, _ := node.Config["mode"].(string)
+	tableEngine, _ := node.Config["table_engine"].(string)
 	cfg := SQLGenConfig{
 		Dialect:     dialectForURI(uri),
 		Table:       table,
@@ -655,6 +656,7 @@ func sinkStreamConfig(node models.Node) (string, SQLGenConfig, bool) {
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
 		Truncate:    configBool(node.Config["truncate"]),
+		TableEngine: tableEngine,
 	}
 	_, ok := bulkWriterFor(cfg)
 	return uri, cfg, ok

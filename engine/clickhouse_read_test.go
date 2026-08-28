@@ -146,42 +146,82 @@ func TestMigrateOutOfClickHouseCarriesTypes(t *testing.T) {
 	}
 }
 
-// Only readable: every write path refuses by name, at configuration level,
-// before anything reaches the server.
-func TestClickHouseWritesAreRefusedByName(t *testing.T) {
+// Phase 2 narrowed the refusal deliberately: append is earned (the
+// equivalence tests in clickhouse_append_test.go are the proof), and the
+// modes that are not stay refused by name -- overwrite until phase 3,
+// upsert for good, with the refusal explaining ReplacingMergeTree rather
+// than counterfeiting it.
+func TestClickHouseWriteModesAreGatedByName(t *testing.T) {
 	dsn := clickhouseTestDSN(t)
 	pg := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
 	if pg == "" {
 		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
 	}
 
-	// sink_db pointed at ClickHouse.
-	run := runSourceToSink(t, pg, "SELECT 1 AS id", dsn, "ch_refused", nil)
-	if run.Status == models.RunStatusSuccess {
-		t.Fatal("a sink_db against ClickHouse must be refused in phase 1")
-	}
-	if !strings.Contains(run.Error, "phase 2") || !strings.Contains(run.Error, "#382") {
-		t.Errorf("the refusal should say where the work is tracked, got: %s", run.Error)
-	}
-
-	// migrate with a ClickHouse destination.
-	run = runMigrate(t, pg, "SELECT 1 AS id", dsn, "ch_refused2")
-	if run.Status == models.RunStatusSuccess {
-		t.Fatal("a migrate into ClickHouse must be refused in phase 1")
-	}
-	if !strings.Contains(run.Error, "phase 2") {
-		t.Errorf("the migrate refusal should name the phase, got: %s", run.Error)
-	}
-
-	// And nothing was created on the server.
-	db := openFor(t, dsn)
-	var n uint64
-	if err := db.QueryRow(
-		"SELECT count() FROM system.tables WHERE database = currentDatabase() AND name LIKE 'ch_refused%'").Scan(&n); err != nil {
+	pdb := openFor(t, pg)
+	pdb.Exec("DROP TABLE IF EXISTS ch_gate_src")
+	if _, err := pdb.Exec("CREATE TABLE ch_gate_src (id bigint)"); err != nil {
 		t.Fatal(err)
 	}
-	if n != 0 {
-		t.Errorf("%d table(s) appeared despite the refusal", n)
+	t.Cleanup(func() { pdb.Exec("DROP TABLE IF EXISTS ch_gate_src") })
+	if _, err := pdb.Exec("INSERT INTO ch_gate_src VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+
+	run := func(mode string) *models.Run {
+		t.Helper()
+		dir := t.TempDir()
+		st, err := store.NewSQLiteStore(filepath.Join(dir, "g.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { st.Close() })
+		eng := drainEngineOnCleanup(t, NewEngine(st))
+		cfg := map[string]interface{}{"uri": dsn, "table": "ch_gate_dst", "mode": mode, "create_table": true}
+		if mode == "upsert" {
+			cfg["key_columns"] = []interface{}{"id"}
+		}
+		p := &models.Pipeline{
+			ID: "chg-" + mode, Name: mode, Enabled: true,
+			Nodes: []models.Node{
+				{ID: "src", Type: models.NodeTypeSourceDB, Name: "S",
+					Config: map[string]interface{}{"uri": pg, "query": "SELECT id FROM ch_gate_src"}},
+				{ID: "sink", Type: models.NodeTypeSinkDB, Name: "K", Config: cfg},
+			},
+			Edges:     []models.Edge{{From: "src", To: "sink"}},
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+		if err := st.CreatePipeline(p); err != nil {
+			t.Fatal(err)
+		}
+		r, err := eng.RunPipeline(p.ID)
+		if err != nil {
+			return &models.Run{Status: models.RunStatusFailed, Error: err.Error()}
+		}
+		return r
+	}
+
+	cdb := openFor(t, dsn)
+	cdb.Exec("DROP TABLE IF EXISTS ch_gate_dst")
+	t.Cleanup(func() { cdb.Exec("DROP TABLE IF EXISTS ch_gate_dst") })
+
+	// Append works, end to end, table created on the way.
+	if r := run("append"); r.Status != models.RunStatusSuccess {
+		t.Fatalf("append should be earned since phase 2, got: %s", r.Error)
+	}
+
+	// Overwrite: refused, naming the phase.
+	if r := run("overwrite"); r.Status == models.RunStatusSuccess {
+		t.Fatal("overwrite must be refused until phase 3")
+	} else if !strings.Contains(r.Error, "phase 3") {
+		t.Errorf("the overwrite refusal should name the phase, got: %s", r.Error)
+	}
+
+	// Upsert: refused for good, pointing at what actually exists.
+	if r := run("upsert"); r.Status == models.RunStatusSuccess {
+		t.Fatal("upsert must be refused: ClickHouse has no synchronous merge")
+	} else if !strings.Contains(r.Error, "ReplacingMergeTree") {
+		t.Errorf("the upsert refusal should explain the native alternative, got: %s", r.Error)
 	}
 }
 

@@ -589,21 +589,36 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 	return columns, total, nil
 }
 
-// refuseUnearnedWrite refuses a write destination whose backend can be read
-// but has not earned the write path (ADR-027 phase 1, ADR-024's rule that a
-// capability is claimed only with proof behind it).
+// refuseUnearnedWrite refuses a write shape its backend has not earned
+// (ADR-027, ADR-024's rule that a capability is claimed only with proof
+// behind it).
 //
-// ClickHouse is readable -- source_db and a migration's source side work --
-// but writing it means statement generation, value rendering, and the
-// no-transactions atomicity story, none of which has a differential corpus
-// yet. Falling through to the generic statement dialect would "work" on a
-// demo and corrupt on the first boolean; a named refusal keeps the failure
-// at configuration time and says where the work is tracked.
-func refuseUnearnedWrite(uri string) error {
-	if dialectForURI(uri) == "clickhouse" {
-		return fmt.Errorf(
-			"ClickHouse can be read but not yet written: the write path is phase 2 of the ADR-027 " +
-				"implementation (Tnsor-Labs/brokoli#382) and is refused until its equivalence tests exist")
+// ClickHouse earned append in phase 2 -- the native-batch writer with the
+// equivalence corpus behind it. Overwrite waits for phase 3, where its
+// weaker semantics (TRUNCATE with no transaction to roll back into) are
+// documented and observed by tests rather than discovered. Upsert is
+// refused for good: ClickHouse has no synchronous merge, and mapping
+// mode: upsert onto ReplacingMergeTree would deduplicate eventually --
+// readers seeing duplicates until an unscheduled merge -- which is not
+// what upsert means on the other backends, so the equivalence test such a
+// claim would need can never pass. ReplacingMergeTree remains available to
+// users who want eventual dedup and know it, by creating the table
+// themselves and appending.
+func refuseUnearnedWrite(uri, mode string) error {
+	if dialectForURI(uri) != "clickhouse" {
+		return nil
 	}
-	return nil
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ModeAppend:
+		return nil
+	case ModeUpsert:
+		return fmt.Errorf(
+			"ClickHouse has no upsert: there is no synchronous merge to map mode: upsert onto -- " +
+				"ReplacingMergeTree deduplicates eventually, at merge time, which is a different promise. " +
+				"Append instead, into a ReplacingMergeTree table you create, if eventual dedup is what you want")
+	default:
+		return fmt.Errorf(
+			"ClickHouse write mode %q is not yet supported: overwrite is phase 3 of the ADR-027 "+
+				"implementation (Tnsor-Labs/brokoli#382); append works today", mode)
+	}
 }

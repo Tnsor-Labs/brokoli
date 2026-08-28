@@ -929,7 +929,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if uri == "" {
 		return nil, fmt.Errorf("sink_db node requires 'uri' config")
 	}
-	if err := refuseUnearnedWrite(uri); err != nil {
+	if err := refuseUnearnedWrite(uri, sinkMode(node)); err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}
 
@@ -953,6 +953,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		return nil, nil
 	}
 	mode, _ := node.Config["mode"].(string)
+	tableEngine, _ := node.Config["table_engine"].(string)
 	cfg := SQLGenConfig{
 		Dialect:     dialectForURI(uri),
 		Table:       table,
@@ -960,6 +961,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		KeyColumns:  configStringSlice(node.Config["key_columns"]),
 		CreateTable: configBool(node.Config["create_table"]),
 		Truncate:    configBool(node.Config["truncate"]),
+		TableEngine: tableEngine,
 	}
 	// #363: create the table from the columns' real types where an upstream
 	// could report them, rather than from a sample of the values. Per
@@ -1042,6 +1044,13 @@ func configStringSlice(v interface{}) []string {
 	default:
 		return nil
 	}
+}
+
+// sinkMode is a sink_db node's write mode, for gates that run before the
+// full config is assembled.
+func sinkMode(node models.Node) string {
+	m, _ := node.Config["mode"].(string)
+	return m
 }
 
 func configBool(v interface{}) bool {
@@ -1228,7 +1237,7 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	if destURI == "" || destTable == "" {
 		return nil, fmt.Errorf("migrate node requires dest connection (dest_conn_id or dest_uri) and 'dest_table'")
 	}
-	if err := refuseUnearnedWrite(destURI); err != nil {
+	if err := refuseUnearnedWrite(destURI, mode); err != nil {
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	if dialect == "" {
@@ -1282,7 +1291,8 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	if createTable {
 		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery)
 		if haveTypes {
-			ddl, err := createTableFromSourceTypes(dialect, destTable, sourceDS.Columns, srcTypes)
+			tableEngine, _ := node.Config["table_engine"].(string)
+			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes)
 			if err != nil {
 				return nil, fmt.Errorf("migrate: %w", err)
 			}

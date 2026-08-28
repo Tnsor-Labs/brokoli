@@ -87,6 +87,7 @@ func sourceColumnTypes(ctx context.Context, uri, query string) (map[string]dbdia
 // in the data, the second before anything moves.
 func createTableFromSourceTypes(
 	destDialect string,
+	tableEngine string,
 	table string,
 	columns []string,
 	types map[string]dbdialect.ColumnType,
@@ -124,7 +125,11 @@ func createTableFromSourceTypes(
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(");")
+	dd2 := getDialect(destDialect)
+	if tableEngine != "" && dd2.createTableSuffix != "" {
+		dd2.createTableSuffix = " ENGINE = " + tableEngine
+	}
+	sb.WriteString(")" + dd2.createTableSuffix + ";")
 	return sb.String(), nil
 }
 
@@ -145,6 +150,9 @@ func createTableFromSourceTypes(
 //
 // With no carried types at all this is byte-for-byte the old path.
 func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, error) {
+	if cfg.TableEngine != "" && d.createTableSuffix != "" {
+		d.createTableSuffix = " ENGINE = " + cfg.TableEngine
+	}
 	inferred := inferTypes(ds.Columns, ds.Rows)
 	if !cfg.ColumnTypes.anyKnown(ds.Columns) {
 		return d.createTable(cfg.Table, ds.Columns, inferred), nil
@@ -198,6 +206,6 @@ func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, er
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(")" + d.terminator)
+	sb.WriteString(")" + d.createTableSuffix + d.terminator)
 	return sb.String(), nil
 }
