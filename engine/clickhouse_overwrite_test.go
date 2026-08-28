@@ -313,14 +313,13 @@ func TestClickHouseResumedRunWarnsAboutDuplicates(t *testing.T) {
 		t.Fatal("no run recorded")
 	}
 
-	// Create the table so the resume can proceed past the warning. String
-	// columns deliberately: a CSV source delivers strings, and the native
-	// batch does not coerce them into numeric columns (the driver refuses
-	// "converting string to Int64") -- a real gap between the bulk and
-	// statement paths for string-typed inputs, recorded on #382 rather
-	// than papered over here.
+	// Create the table so the resume can proceed past the warning. Typed
+	// columns on purpose: this is the shape that exposed #392 -- a CSV
+	// source delivers strings, and the native batch used to refuse them
+	// for an Int64 column. Since the coercion landed, the original
+	// failing shape is the proof it works in a real pipeline.
 	if _, err := db.Exec(
-		"CREATE TABLE chres_dst (id String, city String) ENGINE = MergeTree ORDER BY id"); err != nil {
+		"CREATE TABLE chres_dst (id Int64, city String) ENGINE = MergeTree ORDER BY id"); err != nil {
 		t.Fatal(err)
 	}
 
