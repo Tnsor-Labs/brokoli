@@ -204,8 +204,18 @@ refused.
 
 ### Deferred
 
-- **Pushdown** (Phase 4) — plausible but each rule needs its measured
-  refusal-or-proof, and nobody has asked yet.
+- **Pushdown** — investigated in phase 4 and refused on measurement rather
+  than left "plausible". clickhouse-go reports no row count for
+  `INSERT ... SELECT` (pinned by `TestClickHouseInsertSelectReportsNoCount`,
+  which fails if the driver ever starts reporting one), so a ClickHouse
+  segment can never satisfy ADR-023's free-count-source eligibility rule:
+  the planner would form segments whose executor must always fail at the
+  commit gate. Behind that stand two further blockers, each an ADR-023
+  violation of its own -- no transaction, so "inside a segment the commit
+  is the artifact" cannot hold; and no lock primitive, so an overwrite
+  segment cannot serialize against a concurrent one. The byte-wise
+  string-comparison alignment noted below remains true and remains moot
+  until the count measurement flips.
 - **`ReplacingMergeTree`-aware sink modes** — an explicit, honestly-named
   "eventual dedup append" mode could exist someday; it is not upsert and
   will not be called upsert.
@@ -213,6 +223,11 @@ refused.
   decision rather than an absence; revisit if a pure-Go or wazero-based
   binding matures. Its dbt route is a separate question against ADR-025's
   read-back rule.
+- ~~dbt-clickhouse~~ — landed in phase 4: `dbtAdapters` generates a
+  `driver: native` profile against the connection's own port, proven end
+  to end by `TestDBTRunsOnClickHouse`. (Operational note: dbt-clickhouse
+  1.8.9's native client imports `pkg_resources`, removed in setuptools 81,
+  so the dbt environment pins `setuptools<81`.)
 - **HTTP protocol fallback** — the native protocol is the decision;
   environments that only expose HTTP (port 8123) are out of scope until
   someone real hits it.
