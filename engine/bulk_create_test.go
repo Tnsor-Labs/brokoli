@@ -223,9 +223,9 @@ func TestBulkCreateReadyLeavesTheStatementPathAlone(t *testing.T) {
 	}
 }
 
-// A migration is a bulk load and now says so. Upsert has no bulk protocol
-// and must keep the chunked statement path.
-func TestMigrateUsesTheBulkPathExceptForUpsert(t *testing.T) {
+// A migration is a bulk load and now says so -- keyed Postgres upserts
+// included (#377). MySQL upsert keeps the statement path until phase 2.
+func TestMigrateWritePathSelection(t *testing.T) {
 	pg, _ := bothBackends(t)
 	db := openFor(t, pg)
 
@@ -257,20 +257,37 @@ func TestMigrateUsesTheBulkPathExceptForUpsert(t *testing.T) {
 		t.Errorf("an append migration should have used the bulk writer; log said:\n%s", logs)
 	}
 
-	// Upsert has no bulk protocol and must stay on the chunked statement
-	// path -- the pairing matters, since a writer that silently took an
-	// upsert would drop its conflict handling.
+	// A Postgres upsert stages through the same writer (#377): COPY into
+	// a temp table, one merge out. The completion line says so, and the
+	// merged contents are checked rather than assumed.
 	db.Exec("DROP TABLE IF EXISTS mbulk_up")
 	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS mbulk_up") })
 	if _, err := db.Exec("CREATE TABLE mbulk_up (id bigint PRIMARY KEY, city text)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("INSERT INTO mbulk_up VALUES (1, 'stale'), (9999, 'survivor')"); err != nil {
 		t.Fatal(err)
 	}
 	upRun, upLogs := runMigrateWithLogs(t, pg, "SELECT id, city FROM mbulk_src", pg, "mbulk_up", "upsert")
 	if upRun.Status != models.RunStatusSuccess {
 		t.Fatalf("upsert migrate failed: %s", upRun.Error)
 	}
-	if strings.Contains(upLogs, "(bulk)") {
-		t.Errorf("an upsert must not go through the bulk writer; log said:\n%s", upLogs)
+	if !strings.Contains(upLogs, "(bulk)") {
+		t.Errorf("a keyed Postgres upsert should go through the staged bulk path; log said:\n%s", upLogs)
+	}
+	var city string
+	if err := db.QueryRow("SELECT city FROM mbulk_up WHERE id = 1").Scan(&city); err != nil {
+		t.Fatal(err)
+	}
+	if city != "c1" {
+		t.Errorf("id=1 = %q, want %q -- the merge did not update", city, "c1")
+	}
+	var total int
+	if err := db.QueryRow("SELECT count(*) FROM mbulk_up").Scan(&total); err != nil {
+		t.Fatal(err)
+	}
+	if total != 201 {
+		t.Errorf("count = %d, want 201 (200 merged + the untouched survivor)", total)
 	}
 }
 

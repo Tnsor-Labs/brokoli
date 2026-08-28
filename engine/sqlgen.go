@@ -630,3 +630,187 @@ func (d dialect) upsertBatch(table string, columns, keyCols []string, rows []com
 		return "", fmt.Errorf("upsert is not supported for dialect %q", d.name)
 	}
 }
+
+// --- Staged upsert (#377) ---
+//
+// An upsert used to be the one write that could not use a bulk protocol:
+// COPY and LOAD DATA insert, and that is all they do, so every upsert was
+// rendered as INSERT ... ON CONFLICT text for the server to parse back --
+// measured at 22-28k rows/sec on Postgres against 250-400k for COPY, with
+// all-inserts and all-conflicts within 15% of each other. The cost was the
+// parsing, not the update work.
+//
+// The shape that fixes it: bulk-load the rows into a session temp table,
+// then merge with one statement, all inside the transaction the writers
+// already open. The renderers below produce the statements; the writers own
+// the sequencing.
+//
+// # The duplicate-key rule, chosen rather than inherited
+//
+// Two rows with the same key in one dataset used to behave differently per
+// backend, and on Postgres differently per row position: both rows in one
+// 100-row batch was an error ("ON CONFLICT DO UPDATE command cannot affect
+// row a second time"), while rows in different batches quietly applied
+// last-write-wins. MySQL always applied last-write-wins. The staged path
+// makes one rule and applies it everywhere: THE LAST ROW IN THE DATASET
+// WINS. On Postgres that is a behaviour change -- a run that errored can
+// now succeed -- and it is deliberate: the error depended on where a batch
+// boundary happened to fall, which is not a contract, it is an accident.
+//
+// Postgres enforces the rule by deleting all but the last staged row per
+// key before merging (the seq column records staging order). MySQL gets it
+// from the merge itself: INSERT ... SELECT ... ORDER BY seq processes rows
+// in staging order, and a later duplicate updates the earlier row, which is
+// the same behaviour its VALUES form always had.
+//
+// # Why the stage tables look the way they do
+//
+// Postgres: CREATE TEMP TABLE (LIKE target) copies columns and NOT NULL but
+// not indexes, which is exactly right -- a unique index on the stage would
+// reject the in-set duplicates the dedup step exists to resolve. ON COMMIT
+// DROP ties cleanup to the transaction.
+//
+// MySQL: LIKE would copy the target's unique indexes, so the stage is
+// created with AS SELECT ... WHERE 1=0, which copies only the columns.
+// Verified against MySQL 8.4. The synthetic AUTO_INCREMENT key exists
+// because MySQL requires AUTO_INCREMENT to be a key; it collides with
+// nothing, since it is the one column the load never writes.
+
+// upsertStageName is the session-scoped staging table. A constant name is
+// safe because temp tables are per-session and each bulk write opens its
+// own connection.
+const upsertStageName = "brokoli_upsert_stage"
+
+// upsertStageDDL renders the statements that create the stage. Executed one
+// at a time by the writer -- Postgres inside the load's transaction, MySQL
+// before it, because CREATE TEMPORARY TABLE inside a transaction is
+// forbidden under some binlog configurations and buys nothing there anyway
+// (MySQL DDL commits implicitly).
+func (d dialect) upsertStageDDL(table string) []string {
+	switch d.name {
+	case "postgres":
+		return []string{
+			"CREATE TEMP TABLE " + d.quoteIdent(upsertStageName) +
+				" (LIKE " + d.quoteIdent(table) + ") ON COMMIT DROP",
+			"ALTER TABLE " + d.quoteIdent(upsertStageName) +
+				" ADD COLUMN __brokoli_seq BIGSERIAL",
+		}
+	case "mysql":
+		return []string{
+			"CREATE TEMPORARY TABLE " + d.quoteIdent(upsertStageName) +
+				" AS SELECT * FROM " + d.quoteIdent(table) + " WHERE 1=0",
+			"ALTER TABLE " + d.quoteIdent(upsertStageName) +
+				" ADD COLUMN __brokoli_seq BIGINT AUTO_INCREMENT PRIMARY KEY",
+		}
+	}
+	return nil
+}
+
+// upsertDedupSQL renders the last-write-wins delete: every staged row that
+// shares its key with a later one goes. Postgres only -- MySQL's merge
+// applies the rule by processing order instead, because MySQL cannot
+// reference a temp table twice in one statement (ERROR 1137).
+//
+// NULL keys are deliberately not deduplicated: NULL never equals NULL, so
+// the target's unique index does not collide such rows either, and they
+// all insert -- the same outcome the statement path had.
+func (d dialect) upsertDedupSQL(keyCols []string) string {
+	conds := make([]string, 0, len(keyCols)+1)
+	for _, k := range keyCols {
+		conds = append(conds, "a."+d.quoteIdent(k)+" = b."+d.quoteIdent(k))
+	}
+	conds = append(conds, "a.__brokoli_seq < b.__brokoli_seq")
+	stage := d.quoteIdent(upsertStageName)
+	return "DELETE FROM " + stage + " a USING " + stage + " b WHERE " + strings.Join(conds, " AND ")
+}
+
+// upsertMergeSQL renders the statements that move the staged rows into the
+// target, executed in order inside the writer's transaction.
+//
+// Postgres deliberately does NOT use INSERT ... ON CONFLICT here. Measured
+// on 50k rows against Postgres 16, merging the same staged set:
+//
+//	INSERT ... ON CONFLICT DO UPDATE     1578ms (all conflicts) / 1358ms (all inserts)
+//	UPDATE join + INSERT anti-join        471ms                 /  254ms
+//	MERGE (Postgres 15+)                  460ms                 /  219ms
+//
+// ON CONFLICT pays for per-row speculative insertion into the unique index,
+// which is also why the statement-path upsert was slow: the cost was never
+// only the SQL-text parsing. The update-then-insert pair gets the same
+// result 3-6x faster and works on every supported server version, where
+// MERGE would pin Postgres 15. It is only correct under the EXCLUSIVE lock
+// the writer takes -- a concurrent insert between the two statements would
+// otherwise produce a duplicate-key failure -- and only when the key
+// columns are unique, which the writer validates first: an UPDATE joined on
+// a non-unique key would update every matching row, where the statement
+// path refuses.
+//
+// The SET list follows upsertBatch's rules: key columns excluded, and the
+// all-keys case degrades to insert-only (ON CONFLICT DO NOTHING's meaning).
+//
+// MySQL is one statement: INSERT ... SELECT ... ORDER BY seq with ON
+// DUPLICATE KEY UPDATE. The ORDER BY is what carries last-write-wins --
+// rows merge in staging order, so a later duplicate updates the earlier
+// row, the same behaviour its VALUES form always had.
+func (d dialect) upsertMergeSQL(table string, columns, keyCols []string) ([]string, error) {
+	if len(keyCols) == 0 {
+		return nil, fmt.Errorf("upsert requires key_columns for %s", d.name)
+	}
+	inKeys := make(map[string]bool, len(keyCols))
+	for _, k := range keyCols {
+		inKeys[k] = true
+	}
+	quotedCols := make([]string, len(columns))
+	for i, c := range columns {
+		quotedCols[i] = d.quoteIdent(c)
+	}
+	colList := strings.Join(quotedCols, ", ")
+	stage := d.quoteIdent(upsertStageName)
+	target := d.quoteIdent(table)
+
+	switch d.name {
+	case "postgres":
+		joins := make([]string, len(keyCols))
+		for i, k := range keyCols {
+			joins[i] = "t." + d.quoteIdent(k) + " = s." + d.quoteIdent(k)
+		}
+		joinCond := strings.Join(joins, " AND ")
+
+		var sets []string
+		for _, col := range columns {
+			if inKeys[col] {
+				continue
+			}
+			sets = append(sets, d.quoteIdent(col)+" = s."+d.quoteIdent(col))
+		}
+
+		insert := "INSERT INTO " + target + " (" + colList + ") SELECT " + colList +
+			" FROM " + stage + " s WHERE NOT EXISTS (SELECT 1 FROM " + target + " t WHERE " + joinCond + ")"
+		if len(sets) == 0 {
+			// Every column is part of the key: existing rows have nothing
+			// to learn, so only the new ones move.
+			return []string{insert}, nil
+		}
+		update := "UPDATE " + target + " t SET " + strings.Join(sets, ", ") +
+			" FROM " + stage + " s WHERE " + joinCond
+		return []string{update, insert}, nil
+
+	case "mysql":
+		var sets []string
+		for _, col := range columns {
+			if inKeys[col] {
+				continue
+			}
+			sets = append(sets, d.quoteIdent(col)+" = "+stage+"."+d.quoteIdent(col))
+		}
+		if len(sets) == 0 {
+			for _, col := range columns {
+				sets = append(sets, d.quoteIdent(col)+" = "+stage+"."+d.quoteIdent(col))
+			}
+		}
+		return []string{"INSERT INTO " + target + " (" + colList + ") SELECT " + colList +
+			" FROM " + stage + " ORDER BY __brokoli_seq ON DUPLICATE KEY UPDATE " +
+			strings.Join(sets, ", ")}, nil
+	}
+	return nil, fmt.Errorf("staged upsert is not supported for dialect %q", d.name)
+}
