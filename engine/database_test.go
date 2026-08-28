@@ -85,3 +85,43 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 		}
 	}
 }
+
+// #383: an unknown scheme is refused by that name, where it used to fall
+// through to pgx and fail with a Postgres error about the wrong backend.
+// Schemeless strings keep the pgx default -- libpq keyword DSNs and bare
+// host:port/db strings are historically Postgres, and the mapping test
+// above pins that.
+func TestUnknownSchemesAreRefusedByName(t *testing.T) {
+	for _, uri := range []string{
+		"oracle://u:p@h:1521/svc",
+		"bigquery://project/dataset",
+		"databricks://token@workspace/warehouse",
+		"gopher://why:not@h/x",
+	} {
+		t.Run(uri, func(t *testing.T) {
+			_, _, err := DetectDriver(uri)
+			if err == nil {
+				t.Fatal("an unknown scheme must be refused, not routed into pgx")
+			}
+			scheme := uri[:strings.Index(uri, "://")]
+			if !strings.Contains(err.Error(), `"`+scheme+`"`) {
+				t.Errorf("the refusal must name the scheme %q, got: %v", scheme, err)
+			}
+			if !strings.Contains(err.Error(), "supported:") {
+				t.Errorf("the refusal should list what this build supports, got: %v", err)
+			}
+			if strings.Contains(err.Error(), uri) {
+				t.Errorf("the error echoes the URI, which carries the password: %v", err)
+			}
+		})
+	}
+
+	// The behaviors the fix must NOT change: keyword DSNs and schemeless
+	// host strings still reach pgx, and every named scheme still maps.
+	for _, uri := range []string{"host=localhost dbname=x", "host:5432/db"} {
+		driver, _, err := detectDriver(uri)
+		if err != nil || driver != "pgx" {
+			t.Errorf("schemeless %q: driver=%q err=%v, want the pinned pgx default", uri, driver, err)
+		}
+	}
+}

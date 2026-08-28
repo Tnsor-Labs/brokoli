@@ -117,6 +117,19 @@ func detectDriver(uri string) (string, string, error) {
 	case strings.HasPrefix(uri, "sqlserver://") || strings.HasPrefix(uri, "mssql://"):
 		return "sqlserver", uri, nil
 	default:
+		// A scheme this switch does not name is refused by that name
+		// (#383). It used to fall through to pgx, so oracle:// and
+		// bigquery:// produced a Postgres driver error about the wrong
+		// backend, named confidently -- the failure ADR-024's survey
+		// called "a default that guesses". Schemeless strings keep the
+		// pgx default deliberately: libpq keyword DSNs and bare
+		// host:port/db strings are historically Postgres, and the
+		// mapping test pins that.
+		if strings.Contains(uri, "://") {
+			return "", "", fmt.Errorf(
+				"connection scheme %q has no driver in this build (supported: postgres, postgresql, "+
+					"redshift, mysql, sqlite, clickhouse, snowflake, sqlserver, mssql)", schemeOf(uri))
+		}
 		return "pgx", uri, nil
 	}
 }
