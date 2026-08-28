@@ -27,6 +27,7 @@ const (
 	ConnTypeDatabricks ConnectionType = "databricks"
 	ConnTypeOracle     ConnectionType = "oracle"
 	ConnTypeMSSQL      ConnectionType = "mssql"
+	ConnTypeClickHouse ConnectionType = "clickhouse"
 	ConnTypeGeneric    ConnectionType = "generic"
 )
 
@@ -67,6 +68,13 @@ func (c *Connection) HasCredentialRefs() bool {
 // so a misspelled "sslmode" value fails the connection loudly instead of being
 // dropped and silently downgrading to an unencrypted link.
 var driverOptionKeys = map[ConnectionType][]string{
+	ConnTypeClickHouse: {
+		// clickhouse-go's own query parameters. "secure" turns TLS on;
+		// there is deliberately no skip_verify here -- an operator who
+		// needs a private CA configures the host trust store rather than
+		// being offered a silent verification bypass.
+		"secure", "dial_timeout", "read_timeout", "compress",
+	},
 	ConnTypePostgres: {
 		"sslmode", "sslrootcert", "sslcert", "sslkey",
 		"application_name", "connect_timeout", "target_session_attrs",
@@ -207,7 +215,8 @@ func (c *Connection) hostPort(defaultPort int) string {
 func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
-		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
+		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse,
+		ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
 		return true
 	default:
 		return false
@@ -236,6 +245,19 @@ func (c *Connection) BuildURI() string {
 			scheme, defPort = "redshift", 5439
 		}
 		u := &url.URL{Scheme: scheme, User: c.userinfo(), Host: c.hostPort(defPort)}
+		if c.Schema != "" {
+			u.Path = "/" + c.Schema
+		}
+		u.RawQuery = encodeOptions(opts)
+		return u.String()
+
+	case ConnTypeClickHouse:
+		// clickhouse-go parses its DSN with url.Parse and unescapes the
+		// userinfo, so the percent-encoding url.UserPassword applies is
+		// correct here -- the opposite of the MySQL case below, and the
+		// reason this uses the URL form (proven by the hostile-credential
+		// test against the live server).
+		u := &url.URL{Scheme: "clickhouse", User: c.userinfo(), Host: c.hostPort(9000)}
 		if c.Schema != "" {
 			u.Path = "/" + c.Schema
 		}

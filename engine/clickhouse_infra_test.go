@@ -100,21 +100,22 @@ func TestClickHouseInfrastructure(t *testing.T) {
 	}
 }
 
-// No URI scheme reaches the driver yet: clickhouse:// still falls through
-// DetectDriver's default into pgx (#383 tracks fixing that fallthrough).
-// Pinned so phase 1 -- which changes exactly this -- has to update this
-// test deliberately, and so nobody reads the registered driver as a
-// working connection type before then.
-func TestClickHouseURIsDoNotRouteAnywhereYet(t *testing.T) {
-	driver, _, err := DetectDriver("clickhouse://u:p@h:9000/db")
+// Phase 1 crossed the phase-0 scope boundary deliberately: clickhouse://
+// now routes to the clickhouse driver, and the dialect behind it exists
+// (pkg/dbdialect/clickhouse.go, read-side only). This is the test phase 0
+// said would have to change by hand.
+func TestClickHouseURIsRouteToTheClickHouseDriver(t *testing.T) {
+	driver, dsn, err := DetectDriver("clickhouse://u:p@h:9000/db")
 	if err != nil {
-		// Refusing outright would also be honest (#383's preferred end
-		// state); what must not happen silently is routing to clickhouse
-		// before a dialect exists.
-		return
+		t.Fatal(err)
 	}
-	if driver == "clickhouse" {
-		t.Fatal("clickhouse:// routes to the clickhouse driver, but no dialect exists yet -- " +
-			"this is phase 1 arriving without its tests")
+	if driver != "clickhouse" {
+		t.Fatalf("driver = %q, want clickhouse", driver)
+	}
+	if dsn != "clickhouse://u:p@h:9000/db" {
+		t.Fatalf("dsn = %q; clickhouse-go takes the URI verbatim", dsn)
+	}
+	if got := dialectForURI("clickhouse://u:p@h:9000/db"); got != "clickhouse" {
+		t.Fatalf("dialectForURI = %q, want clickhouse", got)
 	}
 }

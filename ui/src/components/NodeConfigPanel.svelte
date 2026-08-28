@@ -127,6 +127,23 @@
   function connTypeFilter(nodeType: string): string[] {
     switch (nodeType) {
       case "source_db":
+        return [
+          "postgres",
+          "mysql",
+          "sqlite",
+          // Readable since ADR-027 phase 1; sink_db deliberately does not
+          // list it -- the write path is phase 2, and offering a
+          // connection the run will refuse is the dead-catalog pattern
+          // #383 exists to end.
+          "clickhouse",
+          "snowflake",
+          "redshift",
+          "bigquery",
+          "databricks",
+          "oracle",
+          "mssql",
+          "generic",
+        ];
       case "sink_db":
         return [
           "postgres",

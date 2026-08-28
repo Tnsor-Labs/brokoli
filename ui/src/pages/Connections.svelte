@@ -218,6 +218,8 @@
         return 5432;
       case "mysql":
         return 3306;
+      case "clickhouse":
+        return 9000;
       case "http":
         return 443;
       case "sftp":
