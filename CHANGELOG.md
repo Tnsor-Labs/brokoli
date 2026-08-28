@@ -11,6 +11,47 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.77] - 2026-08-28
+
+The ClickHouse arc closes (ADR-027 phase 4, #382): dbt runs against
+ClickHouse connections, and the pushdown question is answered by a
+measurement rather than left open.
+
+### Added
+
+- **dbt on ClickHouse** (#391) -- @hc12r. A dbt node pointed at a
+  ClickHouse connection generates a `driver: native` profile against the
+  connection's own host and port -- one connection record, one address,
+  where dbt-clickhouse's HTTP default would have invented a port the
+  connection never described. The profile stanza is adapter-aware:
+  ClickHouse has no database/schema split, so it carries the target
+  schema (the database dbt builds in) and no `dbname`. Proven end to end
+  against a live server: a real dbt run through the generated profile,
+  per-model outcomes recorded, and the built model read back through
+  Brokoli's own source path -- ADR-025's read-back rule, literally.
+
+  Operational note, recorded where it bites: dbt-clickhouse 1.8.9's
+  native client imports `pkg_resources`, which setuptools 81 removed, and
+  the resulting failure blames the wrong package ("clickhouse-driver is
+  not installed" -- it is). dbt environments should pin `setuptools<81`;
+  Brokoli's own CI does, with the reason in a comment.
+
+### Changed
+
+- **ClickHouse pushdown is refused on measurement, not deferred by
+  default** (#391, ADR-027) -- @hc12r. The driver reports no row count
+  for `INSERT ... SELECT` -- verified against a statement that provably
+  moved 400 rows and still answered zero -- so a pushed-down ClickHouse
+  segment could never report its write honestly, which ADR-023 makes the
+  price of eligibility. Two further blockers stand recorded behind it:
+  no transactions (a half-finished segment cannot roll back or resume
+  safely) and no locks (concurrent writes to one table cannot
+  serialize).
+
+  The refusal is self-updating: a test runs that exact insert and fails
+  the day the driver starts reporting a real count, with instructions to
+  revisit the ADR before anything else changes.
+
 ## [0.10.76] - 2026-08-28
 
 ClickHouse arrives as the third database backend (ADR-027): readable,
