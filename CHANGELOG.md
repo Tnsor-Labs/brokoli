@@ -11,6 +11,91 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.75] - 2026-08-28
+
+The write paths get fast. Creating a destination table no longer costs the
+bulk path, and upserts stop being the slowest write in the product --
+measured, on 50,000 rows against Postgres: `create_table` sinks went from
+60k to ~450k rows/sec, and upserts from ~26k to ~95k.
+
+Two upsert behaviours changed deliberately in the process; both are
+documented below and pinned by tests.
+
+### Changed
+
+- **Creating a table no longer forfeits the bulk write path** (#376, #378)
+  -- @hc12r. `sink_db` wrote 411k rows/sec into a table that existed and
+  60k when it had to create one, because the `CREATE TABLE` and the rows
+  were rendered as one SQL string and one statement pinned the whole write
+  to the statement path. The DDL now executes inside the bulk writer's own
+  transaction, so the rows go through COPY or LOAD DATA -- and on Postgres
+  a failed load still rolls the table creation back, which the obvious fix
+  (run the DDL first) would have quietly lost.
+
+  `migrate` never used the bulk writers at all, in any configuration; it
+  now does, and a 50k-row migration went from 1.07s to 392ms.
+
+- **Upserts are staged through the bulk protocol** (#377, #379, #380) --
+  @hc12r. Rows bulk-load into a session temp table and one merge moves
+  them into the target, inside the same transaction where the backend has
+  one.
+
+  On Postgres this is 3.7x on inserts and 2.8x on conflicts at 50k rows --
+  and the interesting part is why the first attempt was not: the cost was
+  never only parsing. `INSERT ... ON CONFLICT` pays for per-row
+  speculative insertion into the unique index, staged or not, so the
+  shipped merge is an UPDATE join plus an anti-join INSERT under an
+  `EXCLUSIVE` lock -- measured 3-6x faster than `ON CONFLICT` on the same
+  staged set, and equal to `MERGE` without requiring Postgres 15.
+  Concurrent upserts of one table now serialize; readers keep reading
+  through MVCC.
+
+  On MySQL the same staging buys no throughput, and the committed
+  benchmark says so rather than implying otherwise -- MySQL never had the
+  speculative-insertion tax. What it buys is memory: upsert was the one
+  sink mode that could not stream, and its statement path held the rows
+  plus their rendered SQL text. A keyed upsert is now stream-eligible on
+  both backends, with a resident set of one batch whatever the table size.
+
+  **Behaviour change one: duplicate keys within one dataset now resolve to
+  "the last row wins", on both backends.** Previously Postgres errored
+  ("ON CONFLICT cannot affect row a second time") only when the duplicates
+  happened to share a 100-row batch, and applied last-write-wins when they
+  did not -- the outcome depended on row position. MySQL always applied
+  last-write-wins. A run that used to fail on Postgres can now succeed;
+  the old refusal is itself pinned by a test so the difference stays
+  documented.
+
+  **Behaviour change two: `key_columns` must name a unique index, and the
+  refusal is named.** Postgres previously surfaced the server's generic
+  "no unique or exclusion constraint" error after rendering the whole
+  statement; it now refuses before any rows move, naming what was asked
+  for and what unique indexes the table actually has -- the check MySQL
+  upserts already had.
+
+  Counts: Postgres reports distinct rows merged (in-set duplicates
+  collapse); MySQL keeps its arithmetic of 1 per insert and 2 per update,
+  exactly as its statement path always reported.
+
+- **A stale performance claim corrected** (#379) -- @hc12r. The COPY
+  path's comment rejecting staged upserts as "measured slower (660ms)"
+  compared staging against COPY-append -- a comparison staging can only
+  lose -- and never against the statement-path upsert it would replace.
+  `BenchmarkUpsertWrite` (both backends, three sizes, both load shapes) is
+  now the standing record.
+
+### Added
+
+- **ADR-027: ClickHouse as the third backend, append-first** (#381,
+  accepted) -- @hc12r. The direction for the next backend arc: pure-Go
+  driver so the `CGO_ENABLED=0` release is untouched, bulk append first
+  because that is both ClickHouse's design center and what this release
+  made the write path best at, upsert refused by name rather than
+  counterfeited with `ReplacingMergeTree`, and a catalog rule with teeth
+  -- a connection type enters the catalog only in the PR that makes
+  `source_db` actually work against it. Implementation is phased in #382;
+  the existing advertised-but-dead connection types are #383.
+
 ## [0.10.74] - 2026-08-27
 
 A dbt node stops being one opaque success or failure. One invocation now
