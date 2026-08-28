@@ -95,7 +95,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-025](./025-dbt-integration.md) | Run dbt projects as they are, and own the orchestration around them | Accepted |
 | [ADR-026](./026-python-runtime-dependency.md) | Check for a Python runtime, do not ship one | Accepted |
 | [ADR-027](./027-clickhouse-backend.md) | ClickHouse as the third backend, append-first | Accepted |
-| [ADR-028](./028-data-intervals.md) | A scheduled run processes an interval, not a moment | Proposed |
+| [ADR-028](./028-data-intervals.md) | A scheduled run processes an interval, not a moment | Accepted |
 
 ## How to add a new ADR
 

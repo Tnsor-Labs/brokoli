@@ -1,6 +1,6 @@
 # ADR-028: A scheduled run processes an interval, not a moment
 
-**Status:** proposed
+**Status:** accepted — direction agreed; implementation phased, unstarted
 **Date:** 2026-08-28
 
 ## Context
