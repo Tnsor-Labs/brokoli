@@ -346,3 +346,146 @@ func BenchmarkClickHouseWrite(b *testing.B) {
 		}
 	}
 }
+
+// #392: a CSV-shaped dataset -- every value a string -- lands identically
+// through the native batch and the statement path. The batch probes the
+// target's types and parses strings the way the server parses literals, so
+// "same pipeline, different outcome by path" is closed with an equivalence
+// test rather than an apology.
+func TestClickHouseStringValuesMatchAcrossPaths(t *testing.T) {
+	dsn := clickhouseTestDSN(t)
+	db := openFor(t, dsn)
+
+	// The dataset a CSV source actually produces.
+	stringRows := &common.DataSet{
+		Columns: []string{"id", "amount", "price", "flag", "city"},
+		Rows: []common.DataRow{
+			{"id": "1", "amount": "10.5", "price": "19.99", "flag": "true", "city": "lisbon"},
+			{"id": "9007199254740993", "amount": "-3.25", "price": "0.01", "flag": "false", "city": "porto"},
+			{"id": "42", "amount": "0", "price": "123.45", "flag": "1", "city": "faro"},
+			// No padded numerics here on purpose: the server refuses
+			// ' 42 ' as an Int64 literal, so the coercer must too --
+			// pinned by the refusal test below, not smoothed over here.
+		},
+	}
+
+	results := map[string]string{}
+	for _, path := range []string{"statement", "bulk"} {
+		table := "chstr_" + path
+		db.Exec("DROP TABLE IF EXISTS " + table)
+		if _, err := db.Exec("CREATE TABLE " + table +
+			" (id Int64, amount Float64, price Decimal(10, 2), flag Bool, city String) ENGINE = MergeTree ORDER BY id"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS " + table) })
+
+		if path == "statement" {
+			t.Setenv("BROKOLI_SINK_COPY", "false")
+		} else {
+			t.Setenv("BROKOLI_SINK_COPY", "true")
+		}
+		cfg := SQLGenConfig{Dialect: "clickhouse", Table: table, BatchSize: 2, Mode: ModeAppend}
+		w, bulk := bulkWriterFor(cfg)
+		if wantBulk := path == "bulk"; bulk != wantBulk {
+			t.Fatalf("%s run offered the wrong path", path)
+		}
+		if bulk {
+			if _, err := bulkWriteRows(w, dsn, cfg, stringRows); err != nil {
+				t.Fatalf("bulk append of string values: %v", err)
+			}
+		} else {
+			stmt, err := GenerateSQL(cfg, stringRows)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := ExecuteSQL(dsn, stmt); err != nil {
+				t.Fatalf("statement append of string values: %v", err)
+			}
+		}
+
+		rows, err := db.Query("SELECT id, amount, price, flag, city FROM " + table + " ORDER BY id")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for rows.Next() {
+			var id int64
+			var amount float64
+			var price string
+			var flag bool
+			var city string
+			if err := rows.Scan(&id, &amount, &price, &flag, &city); err != nil {
+				t.Fatal(err)
+			}
+			out = append(out, fmt.Sprintf("%d|%v|%s|%v|%s", id, amount, price, flag, city))
+		}
+		rows.Close()
+		results[path] = strings.Join(out, " ")
+	}
+
+	if results["bulk"] != results["statement"] {
+		t.Errorf("string-valued appends diverged by path:\nstatement: %q\nbulk:      %q",
+			results["statement"], results["bulk"])
+	}
+	// 2^53+1 through the string path: only integer parsing carries it --
+	// a float round trip would have corrupted it on either path.
+	if !strings.Contains(results["bulk"], "9007199254740993|") {
+		t.Errorf("the past-float64 integer did not survive: %q", results["bulk"])
+	}
+}
+
+// The refusal half of #392: a string that does not parse for its column is
+// named -- column, value, and the way out -- rather than surfacing as the
+// driver's "converting string to Int64 is unsupported".
+func TestClickHouseUnparseableStringIsRefusedByName(t *testing.T) {
+	dsn := clickhouseTestDSN(t)
+	db := openFor(t, dsn)
+	db.Exec("DROP TABLE IF EXISTS chstr_bad")
+	if _, err := db.Exec(
+		"CREATE TABLE chstr_bad (id Int64, city String) ENGINE = MergeTree ORDER BY id"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS chstr_bad") })
+
+	cfg := SQLGenConfig{Dialect: "clickhouse", Table: "chstr_bad", Mode: ModeAppend}
+	w, ok := bulkWriterFor(cfg)
+	if !ok {
+		t.Fatal("no writer")
+	}
+	_, err := bulkWriteRows(w, dsn, cfg, &common.DataSet{
+		Columns: []string{"id", "city"},
+		Rows:    []common.DataRow{{"id": "not-a-number", "city": "x"}},
+	})
+	if err == nil {
+		t.Fatal("an unparseable value for an Int64 column must be refused")
+	}
+	for _, want := range []string{`"id"`, "not-a-number", "cast it upstream"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should carry %q, got: %v", want, err)
+		}
+	}
+	var n uint64
+	if err := db.QueryRow("SELECT count() FROM chstr_bad").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("%d row(s) written despite the refusal", n)
+	}
+
+	// A whitespace-padded numeric refuses on BOTH paths -- the server
+	// rejects ' 42 ' as an Int64 literal, so the coercer must not be
+	// kinder than the server. Equivalence includes the failures.
+	padded := &common.DataSet{Columns: []string{"id", "city"},
+		Rows: []common.DataRow{{"id": " 42 ", "city": "x"}}}
+	if _, err := bulkWriteRows(w, dsn, cfg, padded); err == nil {
+		t.Error("bulk accepted a padded numeric the statement path refuses")
+	}
+	t.Setenv("BROKOLI_SINK_COPY", "false")
+	stmt, err := GenerateSQL(cfg, padded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExecuteSQL(dsn, stmt); err == nil {
+		t.Error("the server accepted a padded numeric; the coercer's strictness claim is stale")
+	}
+}
