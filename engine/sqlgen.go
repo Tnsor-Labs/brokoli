@@ -299,6 +299,15 @@ func isDate(s string) bool {
 // WHERE-less DELETE into the same whole-table drop, so the request is
 // satisfied by the statement it would have emitted anyway.
 func (d dialect) clearTable(table string, truncate bool) string {
+	// ClickHouse always truncates, whatever the flag says. A bare DELETE
+	// does not exist there -- DELETE is a lightweight delete that demands
+	// a WHERE clause and runs as a background mutation -- and the reason
+	// the other backends prefer DELETE (it rolls back inside the write's
+	// transaction) is void on a backend with no transactions: nothing
+	// rolls back either way, so the honest statement is the fast one.
+	if d.name == "clickhouse" {
+		return "TRUNCATE TABLE " + d.quoteIdent(table)
+	}
 	// MySQL is excluded even when truncate is requested: TRUNCATE TABLE
 	// implicitly commits there, which breaks the one-transaction contract
 	// GenerateSQL states. A failure after the clear would leave the table

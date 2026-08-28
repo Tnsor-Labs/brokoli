@@ -181,8 +181,10 @@ func TestSinkCanStreamScope(t *testing.T) {
 		// than worker memory a bounded resident set.
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
 		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
-		// ClickHouse appends stream since ADR-027 phase 2.
+		// ClickHouse appends stream since ADR-027 phase 2, overwrites
+		// since phase 3.
 		sink(map[string]interface{}{"uri": "clickhouse://u:p@h:9000/db", "table": "t", "mode": "append"}),
+		sink(map[string]interface{}{"uri": "clickhouse://u:p@h:9000/db", "table": "t", "mode": "overwrite"}),
 	}
 	for _, n := range yes {
 		if !sinkCanStream(n) {
@@ -198,9 +200,7 @@ func TestSinkCanStreamScope(t *testing.T) {
 		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert"}),
 		sink(map[string]interface{}{"uri": pg, "table": "t", "create_table": true}),
 		sink(map[string]interface{}{"uri": my, "table": "t", "create_table": true}),
-		// ClickHouse overwrite and upsert do not stream: phase 3 and
-		// refused-for-good respectively.
-		sink(map[string]interface{}{"uri": "clickhouse://u:p@h:9000/db", "table": "t", "mode": "overwrite"}),
+		// ClickHouse upsert does not stream: refused for good.
 		sink(map[string]interface{}{"uri": "clickhouse://u:p@h:9000/db", "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
 		// SQLite has no bulk protocol; it keeps the statement path.
 		sink(map[string]interface{}{"uri": "sqlite:///tmp/x.db", "table": "t", "mode": "append"}),

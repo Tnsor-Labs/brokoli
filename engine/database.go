@@ -609,7 +609,7 @@ func refuseUnearnedWrite(uri, mode string) error {
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(mode)) {
-	case "", ModeAppend:
+	case "", ModeAppend, ModeOverwrite, "replace":
 		return nil
 	case ModeUpsert:
 		return fmt.Errorf(
@@ -617,8 +617,6 @@ func refuseUnearnedWrite(uri, mode string) error {
 				"ReplacingMergeTree deduplicates eventually, at merge time, which is a different promise. " +
 				"Append instead, into a ReplacingMergeTree table you create, if eventual dedup is what you want")
 	default:
-		return fmt.Errorf(
-			"ClickHouse write mode %q is not yet supported: overwrite is phase 3 of the ADR-027 "+
-				"implementation (Tnsor-Labs/brokoli#382); append works today", mode)
+		return fmt.Errorf("ClickHouse write mode %q is not supported", mode)
 	}
 }

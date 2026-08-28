@@ -932,6 +932,18 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if err := refuseUnearnedWrite(uri, sinkMode(node)); err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}
+	// ADR-027's resume carve-out, surfaced in the run at risk rather than
+	// only in the ADR. ClickHouse has no transactions, so the failed
+	// attempt this run resumes from may have durably committed some of its
+	// batches -- re-running the append writes them again. The operator
+	// reading this run's log is exactly the person who needs to know.
+	if dialectForURI(uri) == "clickhouse" && r.run != nil && r.run.ResumedFromRunID != "" {
+		r.log(node.ID, models.LogLevelWarning,
+			"This resumed run re-runs a ClickHouse write. Batches the failed attempt already committed "+
+				"are still in the table (ClickHouse has no transaction to roll them back), so an append can "+
+				"duplicate rows. Use overwrite for idempotent re-runs, or deduplicate downstream "+
+				"(e.g. a ReplacingMergeTree table)")
+	}
 
 	// Path 1 (kept for back-compat): an upstream sql_generate node already
 	// produced ready-to-run SQL in a single sql_output row.
