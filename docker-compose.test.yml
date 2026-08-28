@@ -10,6 +10,7 @@
 #   export BROKOLI_TEST_POSTGRES_URL='postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable'
 #   export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
 #   export BROKOLI_TEST_MYSQL_ROOT_URL='mysql://root:rootpw@tcp(localhost:55533)/brokoli_test'
+#   export BROKOLI_TEST_CLICKHOUSE_URL='clickhouse://brokoli:brokoli@localhost:55534/brokoli_test'
 #   go test ./...
 #
 # Ports are in an unusual range so this does not collide with a database
@@ -52,6 +53,38 @@ services:
       - --local-infile=1
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-prootpw"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  clickhouse:
+    # 25.3 is an LTS release, pinned per ADR-027 phase 0. The exposed port
+    # is the NATIVE protocol (9000) -- clickhouse-go's decision path; the
+    # HTTP port stays unexposed because the ADR defers the HTTP fallback.
+    #
+    # The password is deliberately plain for now: hostile-credential
+    # coverage belongs to phase 1, when the URI builder that has to carry
+    # it exists (the MySQL password above is hostile because #338's DSN
+    # builder is what it proves).
+    image: clickhouse/clickhouse-server:25.3-alpine
+    environment:
+      CLICKHOUSE_USER: brokoli
+      CLICKHOUSE_PASSWORD: brokoli
+      CLICKHOUSE_DB: brokoli_test
+    ports:
+      - "55534:9000"
+    tmpfs:
+      - /var/lib/clickhouse
+    ulimits:
+      # The server refuses to start under the default container nofile
+      # limit on some hosts; this is the value its own docs use.
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      # /ping answers unauthenticated on the HTTP port inside the
+      # container, so the check needs no credentials.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
       interval: 3s
       timeout: 5s
       retries: 30
