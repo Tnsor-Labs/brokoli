@@ -92,6 +92,35 @@ func loadBatchesToMySQL(ctx context.Context, uri string, cfg SQLGenConfig, colum
 
 	d := getDialect("mysql")
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
+	upsert := mode == ModeUpsert
+
+	if upsert {
+		for _, k := range cfg.KeyColumns {
+			if err := validateIdentifier(k); err != nil {
+				return 0, fmt.Errorf("invalid key column %q: %w", k, err)
+			}
+		}
+		// The same assertion the statement path makes, in the one place
+		// every caller passes through -- the streamed sink reaches this
+		// writer without going through runSinkDB's check.
+		if others, err := validateMySQLUpsertKey(ctx, uri, cfg.Table, cfg.KeyColumns); err != nil {
+			return 0, err
+		} else if len(others) > 0 {
+			// The warning the handlers log; here there is no node logger,
+			// and the behaviour it warns about is unchanged.
+			_ = others
+		}
+		// The stage is created OUTSIDE the transaction, deliberately.
+		// CREATE TEMPORARY TABLE inside a transaction is forbidden under
+		// some binlog configurations, and being inside buys nothing on
+		// MySQL -- DDL commits implicitly, and a temp table dies with
+		// this pinned session (conn.Close below) regardless.
+		for _, ddl := range d.upsertStageDDL(cfg.Table) {
+			if _, err := conn.ExecContext(ctx, ddl); err != nil {
+				return 0, fmt.Errorf("create upsert stage for %s: %w", cfg.Table, err)
+			}
+		}
+	}
 
 	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
@@ -141,14 +170,45 @@ func loadBatchesToMySQL(ctx context.Context, uri string, cfg SQLGenConfig, colum
 		}
 	}
 
+	// An upsert loads the stage; append and overwrite load the target.
+	loadTarget := cfg.Table
+	if upsert {
+		loadTarget = upsertStageName
+	}
+
 	var affected int64
 	if useLoadData {
-		affected, err = execLoadData(ctx, tx, d, cfg.Table, columns, next)
+		affected, err = execLoadData(ctx, tx, d, loadTarget, columns, next)
 	} else {
-		affected, err = execInsertBatches(ctx, tx, d, cfg.Table, columns, next)
+		affected, err = execInsertBatches(ctx, tx, d, loadTarget, columns, next)
 	}
 	if err != nil {
 		return 0, err
+	}
+
+	if upsert {
+		// One ordered merge moves the staged rows on. ORDER BY the
+		// staging sequence is what carries last-write-wins: rows merge
+		// in dataset order, so a later duplicate updates the earlier
+		// row -- the same behaviour the statement path's VALUES form
+		// always had, now guaranteed rather than left to select order.
+		merge, err := d.upsertMergeSQL(cfg.Table, columns, cfg.KeyColumns)
+		if err != nil {
+			return 0, err
+		}
+		affected = 0
+		for _, stmt := range merge {
+			res, err := tx.ExecContext(ctx, stmt)
+			if err != nil {
+				return 0, fmt.Errorf("merge upsert stage into %s: %w", cfg.Table, err)
+			}
+			// MySQL counts 1 for an inserted row and 2 for an updated
+			// one, exactly as the statement path's ON DUPLICATE KEY
+			// always reported. Kept, not corrected: the number means
+			// the same thing on both paths.
+			n, _ := res.RowsAffected()
+			affected += n
+		}
 	}
 
 	if err := tx.Commit(); err != nil {

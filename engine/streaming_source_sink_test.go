@@ -176,10 +176,11 @@ func TestSinkCanStreamScope(t *testing.T) {
 		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "append"}),
 		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "overwrite"}),
 		sink(map[string]interface{}{"uri": my, "table": "t"}),
-		// A Postgres upsert stages through the bulk writer (#377), so it
+		// A keyed upsert stages through the bulk writer (#377), so it
 		// streams too -- which is what gives an upsert of a table larger
 		// than worker memory a bounded resident set.
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
+		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
 	}
 	for _, n := range yes {
 		if !sinkCanStream(n) {
@@ -192,8 +193,8 @@ func TestSinkCanStreamScope(t *testing.T) {
 		// on; it keeps the statement path, whose per-batch statements
 		// carry the same refusal the server would give.
 		sink(map[string]interface{}{"uri": pg, "table": "t", "mode": "upsert"}),
+		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert"}),
 		sink(map[string]interface{}{"uri": pg, "table": "t", "create_table": true}),
-		sink(map[string]interface{}{"uri": my, "table": "t", "mode": "upsert", "key_columns": []interface{}{"id"}}),
 		sink(map[string]interface{}{"uri": my, "table": "t", "create_table": true}),
 		// SQLite has no bulk protocol; it keeps the statement path.
 		sink(map[string]interface{}{"uri": "sqlite:///tmp/x.db", "table": "t", "mode": "append"}),
