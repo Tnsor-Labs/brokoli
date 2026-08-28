@@ -140,19 +140,20 @@ pass ui-checks
 # the EE preflight provisions Redis: use what the operator already has,
 # otherwise bring up the compose file, otherwise say plainly that the run is
 # weaker than it looks.
-if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}" ]; then
+if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}" ] || [ -z "${BROKOLI_TEST_CLICKHOUSE_URL:-}" ]; then
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     say "starting test databases (docker-compose.test.yml)"
     docker compose -f docker-compose.test.yml up -d >/dev/null 2>&1 || true
     for _ in $(seq 1 40); do
       healthy=$(docker compose -f docker-compose.test.yml ps --format '{{.Health}}' 2>/dev/null | grep -c healthy || true)
-      [ "$healthy" -ge 2 ] && break
+      [ "$healthy" -ge 3 ] && break
       sleep 3
     done
     : "${BROKOLI_TEST_POSTGRES_URL:=postgres://brokoli:brokoli@localhost:55532/brokoli_test?sslmode=disable}"
     : "${BROKOLI_TEST_MYSQL_URL:=mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test}"
     : "${BROKOLI_TEST_MYSQL_ROOT_URL:=mysql://root:rootpw@tcp(localhost:55533)/brokoli_test}"
-    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL BROKOLI_TEST_MYSQL_ROOT_URL
+    : "${BROKOLI_TEST_CLICKHOUSE_URL:=clickhouse://brokoli:brokoli@localhost:55534/brokoli_test}"
+    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL BROKOLI_TEST_MYSQL_ROOT_URL BROKOLI_TEST_CLICKHOUSE_URL
   else
     say "WARNING: no docker compose — live-database tests will SKIP, and they are"
     say "         the ones that check what a real server does with a literal."

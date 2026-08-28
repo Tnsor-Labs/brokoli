@@ -80,6 +80,20 @@ jobs:
         options: >-
           --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
           --health-interval 3s --health-timeout 5s --health-retries 30
+      clickhouse:
+        # ADR-027 phase 0. Same 25.3 LTS pin as docker-compose.test.yml;
+        # the smoke test fails by name if the two ever disagree.
+        image: clickhouse/clickhouse-server:25.3-alpine
+        env:
+          CLICKHOUSE_USER: brokoli
+          CLICKHOUSE_PASSWORD: brokoli
+          CLICKHOUSE_DB: brokoli_test
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
+          --health-interval 3s --health-timeout 5s --health-retries 30
+          --ulimit nofile=262144:262144
 
     env:
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
@@ -90,6 +104,7 @@ jobs:
       BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
       # The credential test builds a DSN from parts rather than parsing one,
       # so it needs the fields separately.
+      BROKOLI_TEST_CLICKHOUSE_URL: clickhouse://brokoli:brokoli@localhost:9000/brokoli_test
       BROKOLI_TEST_MYSQL_HOST: localhost
       BROKOLI_TEST_MYSQL_PORT: "3306"
       BROKOLI_TEST_MYSQL_USER: brokoli
