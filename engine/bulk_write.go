@@ -53,6 +53,17 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 		return copyBatchesToPostgres, true
 	case "mysql":
 		return loadBatchesToMySQL, true
+	case "clickhouse":
+		// Append only (ADR-027 phase 2): overwrite needs the non-MVCC
+		// truncate semantics documented and tested (phase 3), and upsert
+		// is refused by name for good. Both are stopped earlier by
+		// refuseUnearnedWrite; the mode check here keeps this function's
+		// answer honest for callers that ask it directly.
+		switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
+		case "", ModeAppend:
+			return appendBatchesToClickHouse, true
+		}
+		return nil, false
 	}
 	return nil, false
 }

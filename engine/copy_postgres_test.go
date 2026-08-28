@@ -156,10 +156,25 @@ func TestBulkWriterScope(t *testing.T) {
 		}
 	}
 
+	// ClickHouse earned append in ADR-027 phase 2 -- the equivalence and
+	// DDL tests in clickhouse_append_test.go are what let this row exist.
+	yes = append(yes, SQLGenConfig{Dialect: "clickhouse", Mode: ModeAppend},
+		SQLGenConfig{Dialect: "clickhouse", Mode: ""})
+	for _, cfg := range yes[len(yes)-2:] {
+		if _, ok := bulkWriterFor(cfg); !ok {
+			t.Errorf("expected a bulk writer for %+v", cfg)
+		}
+	}
+
 	no := []SQLGenConfig{
 		// An upsert without its conflict target has nothing to merge on.
 		{Dialect: "postgres", Mode: ModeUpsert},
 		{Dialect: "mysql", Mode: ModeUpsert},
+		// ClickHouse: overwrite is phase 3, upsert is refused for good --
+		// and both are stopped earlier by refuseUnearnedWrite; this pins
+		// that this function's own answer agrees.
+		{Dialect: "clickhouse", Mode: ModeOverwrite},
+		{Dialect: "clickhouse", Mode: ModeUpsert, KeyColumns: []string{"id"}},
 		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL moves via bulkCreateReady, not here
 		{Dialect: "mysql", Mode: ModeAppend, CreateTable: true},
 		{Dialect: "sqlite", Mode: ModeAppend},

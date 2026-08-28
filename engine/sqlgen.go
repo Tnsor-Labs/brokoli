@@ -54,6 +54,15 @@ type SQLGenConfig struct {
 	// serialised, for the same reason ColumnTypes is not.
 	CreateDDL string `json:"-"`
 
+	// TableEngine overrides the ClickHouse ENGINE clause create_table
+	// renders (ADR-027: "a stated, overridable default"). The value is the
+	// clause body -- "MergeTree ORDER BY (id)" -- written by the pipeline
+	// author, who can already run arbitrary SQL through transform and
+	// sql_generate nodes, so this is configuration, not untrusted data.
+	// Ignored by every other dialect. Not serialised, like the fields
+	// below, because it travels from node config to writer in-process.
+	TableEngine string `json:"-"`
+
 	// ColumnTypes are the real types an upstream node was able to report
 	// for these columns (#363), used in place of inferring them from a
 	// sample of values. Per column: anything absent still gets inferred,
@@ -151,6 +160,9 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 
 	d := getDialect(cfg.Dialect)
 	d.emptyStringAsNull = cfg.EmptyStringAsNull
+	if cfg.TableEngine != "" && d.createTableSuffix != "" {
+		d.createTableSuffix = " ENGINE = " + cfg.TableEngine
+	}
 	var sb strings.Builder
 
 	if cfg.CreateTable {
@@ -330,6 +342,14 @@ type dialect struct {
 	// GenerateSQL rather than getDialect, since it is a per-write choice
 	// and not a property of the dialect.
 	emptyStringAsNull bool
+
+	// createTableSuffix is what this dialect requires after the column
+	// list of a CREATE TABLE. Empty for every backend but ClickHouse,
+	// whose language has no default: a table must declare an ENGINE, and
+	// MergeTree ORDER BY tuple() is the one valid for any schema with no
+	// ordering assumption smuggled in (ADR-027). A caller with a real
+	// sort key overrides it per node (table_engine).
+	createTableSuffix string
 }
 
 func getDialect(name string) dialect {
@@ -354,6 +374,19 @@ func getDialect(name string) dialect {
 			boolTrue: "1", boolFalse: "0",
 			typeMap:  map[string]string{"INTEGER": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER", "TEXT": "TEXT", "TIMESTAMP": "TEXT"},
 			tsLayout: "2006-01-02T15:04:05.999999Z07:00", tsUTC: false,
+		}
+	case "clickhouse":
+		return dialect{
+			name: "clickhouse", quoteChar: "`", strQuote: "'", terminator: ";",
+			// ClickHouse accepts true/false literals for Bool.
+			boolTrue: "true", boolFalse: "false", backslashEscapes: true,
+			typeMap: map[string]string{
+				"INTEGER": "Int64", "FLOAT": "Float64", "BOOLEAN": "Bool",
+				"TEXT": "String", "TIMESTAMP": "DateTime64(6, 'UTC')"},
+			// A DateTime64 literal carries no zone; rendered in UTC so the
+			// instant survives, and the column type above pins the zone.
+			tsLayout: "2006-01-02 15:04:05.999999", tsUTC: true,
+			createTableSuffix: " ENGINE = MergeTree ORDER BY tuple()",
 		}
 	case "sqlserver", "mssql":
 		return dialect{
@@ -525,7 +558,7 @@ func (d dialect) createTable(table string, columns []string, types map[string]st
 		}
 		sb.WriteString("\n")
 	}
-	sb.WriteString(")" + d.terminator)
+	sb.WriteString(")" + d.createTableSuffix + d.terminator)
 	return sb.String()
 }
 
