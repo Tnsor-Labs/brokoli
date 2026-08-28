@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
 
 func sqlDS() *common.DataSet {
@@ -431,5 +432,92 @@ func TestUpsertStageAndDedupSQL(t *testing.T) {
 	}
 	if _, err := pg.upsertMergeSQL("t", []string{"a"}, nil); err == nil {
 		t.Error("a merge without key columns must refuse")
+	}
+}
+
+// #361: getDialect's switch moved into pkg/dbdialect, and this is the
+// behaviour-preservation pin -- every field of every dialect, including
+// the aliases and the default-to-generic, asserted against the values the
+// old switch carried. The values deliberately live in this test rather
+// than referencing the new source: a refactor that changed one would fail
+// here instead of agreeing with itself.
+func TestGetDialectMatchesLegacyTable(t *testing.T) {
+	type row struct {
+		name             string
+		quoteChar        string
+		boolTrue         string
+		tsLayout         string
+		tsUTC            bool
+		backslashEscapes bool
+		typeInteger      string
+		typeTimestamp    string
+		createSuffix     string
+	}
+	cases := map[string]row{
+		"postgres":   {"postgres", `"`, "TRUE", "2006-01-02 15:04:05.999999-07:00", false, false, "INTEGER", "TIMESTAMP", ""},
+		"postgresql": {"postgres", `"`, "TRUE", "2006-01-02 15:04:05.999999-07:00", false, false, "INTEGER", "TIMESTAMP", ""},
+		"mysql":      {"mysql", "`", "TRUE", "2006-01-02 15:04:05.999999", true, true, "INT", "DATETIME", ""},
+		"clickhouse": {"clickhouse", "`", "true", "2006-01-02 15:04:05.999999", true, true, "Int64", "DateTime64(6, 'UTC')", " ENGINE = MergeTree ORDER BY tuple()"},
+		"sqlite":     {"sqlite", `"`, "1", "2006-01-02T15:04:05.999999Z07:00", false, false, "INTEGER", "TEXT", ""},
+		"sqlserver":  {"sqlserver", "[", "1", "2006-01-02 15:04:05.9999999", true, false, "INT", "DATETIME2", ""},
+		"mssql":      {"sqlserver", "[", "1", "2006-01-02 15:04:05.9999999", true, false, "INT", "DATETIME2", ""},
+		"generic":    {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
+		// Unknown names fall to generic, as the old default: arm did.
+		"oracle": {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
+		"":       {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
+	}
+	for in, want := range cases {
+		d := getDialect(in)
+		if d.name != want.name || d.quoteChar != want.quoteChar || d.boolTrue != want.boolTrue ||
+			d.tsLayout != want.tsLayout || d.tsUTC != want.tsUTC ||
+			d.backslashEscapes != want.backslashEscapes ||
+			d.typeMap["INTEGER"] != want.typeInteger || d.typeMap["TIMESTAMP"] != want.typeTimestamp ||
+			d.createTableSuffix != want.createSuffix {
+			t.Errorf("getDialect(%q) = %+v, diverged from the legacy table (want %+v)", in, d, want)
+		}
+		if d.strQuote != "'" || d.terminator != ";" {
+			t.Errorf("getDialect(%q): strQuote/terminator changed", in)
+		}
+	}
+}
+
+// The totality the adapter leans on: every registered dialect carries the
+// write vocabulary. This is what turns getDialect's panic into dead code.
+func TestEveryRegisteredDialectHasWriteSyntax(t *testing.T) {
+	for _, name := range []string{"postgres", "mysql", "clickhouse", "sqlite", "sqlserver", "generic"} {
+		d, ok := dbdialect.For(name)
+		if !ok {
+			t.Errorf("%s is not registered", name)
+			continue
+		}
+		sw, ok := d.(dbdialect.StatementWriter)
+		if !ok {
+			t.Errorf("%s registered without a write vocabulary", name)
+			continue
+		}
+		ws := sw.WriteSyntax()
+		if ws.QuoteChar == "" || ws.StrQuote == "" || ws.Terminator == "" ||
+			ws.BoolTrue == "" || ws.BoolFalse == "" || len(ws.TypeMap) == 0 || ws.TSLayout == "" {
+			t.Errorf("%s has an incomplete write vocabulary: %+v", name, ws)
+		}
+	}
+}
+
+// The new write-only registrations must not have widened any claim: no
+// Addresser (nothing compiles against them) and no TypeReader/TypeRenderer
+// (typed DDL still falls back to inference). The registry comment calls
+// these tiers; this is the tiers as assertions.
+func TestWriteOnlyDialectsClaimNothingMore(t *testing.T) {
+	for _, name := range []string{"sqlite", "sqlserver", "generic"} {
+		d, _ := dbdialect.For(name)
+		if _, ok := d.(dbdialect.Addresser); ok {
+			t.Errorf("%s implements Addresser; compilation requires a differential corpus", name)
+		}
+		if _, ok := d.(dbdialect.TypeReader); ok {
+			t.Errorf("%s implements TypeReader without the live coverage that earns it", name)
+		}
+		if _, ok := d.(dbdialect.TypeRenderer); ok {
+			t.Errorf("%s implements TypeRenderer without the equivalence tests that earn it", name)
+		}
 	}
 }
