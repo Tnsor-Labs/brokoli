@@ -113,7 +113,12 @@ IR) must also agree on the emitted key sets, not just the rendering:
   `"query_result"` on `source_db` nodes that carry a `query`, and
   `"api_response"` on `source_api` nodes. These survive normalization
   and are part of the digest.
-- Node ids: `clean(name) + "_" + n`, where `clean` lowercases, strips
-  every character outside `[a-z0-9_]`, truncates to 20 characters, and
+- Node ids: `clean(name) + "_" + n`, where `clean` lowercases, replaces
+  spaces with underscores, drops every remaining character that is not
+  alphanumeric or `_` (alphanumeric per Unicode, as in Python's
+  `str.isalnum` — not ASCII-only), truncates to 20 code points, and
   falls back to `"node"`; `n` is a per-base counter starting at 1,
   skipping ids already taken (including explicitly keyed ones).
+  `"Read A"` therefore yields `read_a_1`, not `reada_1` — the
+  space-to-underscore step happens before the strip, and a compiler
+  that strips first diverges on every multi-word display name.
