@@ -49,9 +49,17 @@ type Connection struct {
 	Extra       string         `json:"extra,omitempty"`        // resolved plaintext (in-memory only, never persisted)
 	PasswordRef string         `json:"password_ref,omitempty"` // credential ref: env://VAR, vault://path#key, k8s://ns/secret/key, encrypted://...
 	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
-	WorkspaceID string         `json:"workspace_id,omitempty"`
-	CreatedAt   time.Time      `json:"created_at"`
-	UpdatedAt   time.Time      `json:"updated_at"`
+	// MaxConcurrent bounds how many node executions may hold this
+	// connection at once (#398, Airflow-pools shape): a node resolving
+	// this conn_id acquires a slot for the duration of its execution,
+	// blocking -- visibly, in the run log -- when the pool is full.
+	// PER ENGINE INSTANCE in this release: the budget is an in-process
+	// semaphore, so a multi-instance deployment multiplies it by the
+	// instance count. 0 = unlimited, today's behavior exactly.
+	MaxConcurrent int       `json:"max_concurrent,omitempty"`
+	WorkspaceID   string    `json:"workspace_id,omitempty"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // HasCredentialRefs returns true if the connection uses external secret references.

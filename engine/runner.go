@@ -704,6 +704,19 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		node.Config = r.varCtx.ResolveConfig(node.Config)
 	}
 
+	// Connection-pool membership (#398) is decided by the config BEFORE
+	// the resolver rewrites it: an explicit pool: wins, else the conn_id
+	// the node resolves. Captured here; acquired around each attempt's
+	// actual execution further down.
+	poolName, poolExplicit := "", false
+	if node.Config != nil {
+		if v, ok := node.Config["pool"].(string); ok && v != "" {
+			poolName, poolExplicit = v, true
+		} else if v, ok := node.Config["conn_id"].(string); ok && v != "" {
+			poolName = v
+		}
+	}
+
 	// Resolve connection (conn_id → URI/headers). The warnings go to the
 	// run's own log as well as the server's: the person who has to act on
 	// them is the pipeline author, who reads this node's log.
@@ -1080,8 +1093,26 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			go r.renewAttemptLease(attemptCtx, execAttemptStore, node.ID, "", attempt, execFencingGen)
 		}
 
+		// Connection pool (#398): take a slot for the duration of this
+		// attempt's actual execution. Waiting is bounded by the RUN's
+		// context, not the attempt timeout -- a queued wait is not the
+		// node running -- and the slot is released by the executing
+		// goroutine itself, so a timed-out-but-still-running handler
+		// keeps holding its slot until it genuinely stops touching the
+		// connection (the pool's whole guarantee).
+		releaseSlot := func() {}
+		if poolName != "" && r.connResolver != nil && r.connResolver.pools != nil {
+			rel, poolErr := r.acquireConnectionSlot(node, poolName, poolExplicit, attempt)
+			if poolErr != nil {
+				attemptCancel()
+				return nil, poolErr
+			}
+			releaseSlot = rel
+		}
+
 		resultCh := make(chan nodeResult, 1)
 		go func() {
+			defer releaseSlot()
 			crashAt(crashPointBeforeNodeExecution, node.ID)
 			var result nodeExecutionResult
 			var e error

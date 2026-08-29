@@ -300,7 +300,14 @@ func NewEngine(s store.Store) *Engine {
 		checkpointDir = "./brokoli-pagination-checkpoints"
 	}
 	return &Engine{
-		store:                         s,
+		store: s,
+		// Always present, not only under serve: the connection-pool
+		// budgets (#398) ride on the resolver, and a control that exists
+		// only in one construction path is a control that silently does
+		// not exist in the others. serve overrides this with the
+		// secrets-chain-backed resolver; the pools object survives that
+		// because serve builds its resolver through the same constructor.
+		ConnResolver:                  NewConnectionResolver(s, nil),
 		RecoveryTransitionGracePeriod: defaultRecoveryTransitionGracePeriod,
 		shutdown:                      make(chan struct{}),
 		eventCh:                       make(chan models.Event, eventBuf),

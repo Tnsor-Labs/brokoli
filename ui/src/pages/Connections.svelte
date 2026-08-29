@@ -20,6 +20,7 @@
     login: string;
     password?: string;
     extra?: string;
+    max_concurrent?: number;
     created_at: string;
     updated_at: string;
   }
@@ -660,6 +661,21 @@
                 >
               </div>
             {/if}
+
+            <div class="form-group">
+              <label for="connection-max-concurrent">Max concurrent node executions</label>
+              <input
+                id="connection-max-concurrent"
+                type="number"
+                min="0"
+                value={form.max_concurrent || 0}
+                on:input={(e) => (form.max_concurrent = Number(e.currentTarget.value))}
+              />
+              <span class="field-hint"
+                >0 = unlimited. Nodes over the budget wait (visible in the run log). Per engine
+                instance in this release.</span
+              >
+            </div>
 
             {#if testResult}
               <div

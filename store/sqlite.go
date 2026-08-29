@@ -161,6 +161,7 @@ func (s *SQLiteStore) migrate() error {
 	// instead of bare encrypted blobs. See pkg/secrets for resolvers.
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN password_ref TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN extra_ref TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0`)
 	// Migrate legacy encrypted values: copy password_enc → password_ref
 	// with encrypted:// prefix so the resolver chain handles them.
 	s.db.Exec(`UPDATE connections SET password_ref = 'encrypted://' || password_enc WHERE password_enc != '' AND password_ref = ''`)
@@ -2210,18 +2211,18 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 		extraRef = "encrypted://" + extraEnc
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at, max_concurrent)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef, wsID,
-		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat),
+		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent,
 	)
 	return err
 }
 
 func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 	row := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
 		 FROM connections WHERE conn_id = ?`, connID,
 	)
 	return scanConnection(row)
@@ -2229,7 +2230,7 @@ func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 
 func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
 		 FROM connections ORDER BY conn_id`,
 	)
 	if err != nil {
@@ -2242,7 +2243,7 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 		var c models.Connection
 		var createdAt, updatedAt string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -2254,7 +2255,7 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 
 func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
 		 FROM connections WHERE workspace_id = ? ORDER BY conn_id`, workspaceID,
 	)
 	if err != nil {
@@ -2266,7 +2267,7 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 		var c models.Connection
 		var createdAt, updatedAt string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
@@ -2288,11 +2289,11 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 		extraRef = "encrypted://" + extraEnc
 	}
 	result, err := s.db.Exec(
-		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?
+		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?, max_concurrent=?
 		 WHERE conn_id = ?`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef,
-		c.UpdatedAt.UTC().Format(timeFormat), c.ConnID,
+		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, c.ConnID,
 	)
 	if err != nil {
 		return err
@@ -2320,7 +2321,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 	var c models.Connection
 	var createdAt, updatedAt string
 	if err := row.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt); err != nil {
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
 		return nil, err
 	}
 	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
