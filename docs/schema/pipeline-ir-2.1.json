@@ -31,6 +31,10 @@
       "description": "Cron expression; empty for manual-only."
     },
     "schedule_timezone": { "type": "string" },
+    "catchup": {
+      "type": "boolean",
+      "description": "Opt into per-interval catch-up (ADR-028 phase 2): after downtime, one run per missed schedule interval, oldest first, instead of the default single catch-up run for the most recently missed tick."
+    },
     "webhook_url": { "type": "string" },
     "params": {
       "type": ["object", "null"],
