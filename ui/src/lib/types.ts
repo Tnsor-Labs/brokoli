@@ -11,6 +11,7 @@ export interface Pipeline {
   tags?: string[];
   hooks?: Record<string, Hook>;
   schedule_timezone?: string;
+  catchup?: boolean;
   sla_deadline?: string;
   sla_timezone?: string;
   depends_on?: string[];
