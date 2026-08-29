@@ -22,6 +22,11 @@ const (
 // else" -- manual, API, webhook -- undistinguished, as historically.
 const RunTriggerScheduled = "scheduled"
 
+// RunTriggerBackfill marks a run created by a backfill (ADR-028 phase 3).
+// Deliberately outside the scheduled-dispatch unique index: re-running an
+// attempted interval is what a backfill is for, and history appends.
+const RunTriggerBackfill = "backfill"
+
 // Run represents a single execution of a pipeline.
 type Run struct {
 	ID         string            `json:"id"`

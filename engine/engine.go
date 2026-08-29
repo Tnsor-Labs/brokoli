@@ -1230,32 +1230,6 @@ type DryRunNodeResult struct {
 	Error   string                   `json:"error,omitempty"`
 }
 
-// Backfill triggers multiple runs for a date range.
-func (e *Engine) Backfill(pipelineID, startDate, endDate string) ([]string, error) {
-	start, err := time.Parse("2006-01-02", startDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid start_date: %w", err)
-	}
-	end, err := time.Parse("2006-01-02", endDate)
-	if err != nil {
-		return nil, fmt.Errorf("invalid end_date: %w", err)
-	}
-	if end.Before(start) {
-		return nil, fmt.Errorf("end_date must be after start_date")
-	}
-
-	var runIDs []string
-	for d := start; !d.After(end); d = d.AddDate(0, 0, 1) {
-		params := map[string]string{"date": d.Format("2006-01-02")}
-		run, err := e.RunPipeline(pipelineID, params)
-		if err != nil {
-			return runIDs, fmt.Errorf("backfill %s failed: %w", d.Format("2006-01-02"), err)
-		}
-		runIDs = append(runIDs, run.ID)
-	}
-	return runIDs, nil
-}
-
 // ResumeRun re-runs a failed run from the first failed node.
 //
 // Two correctness properties matter here, both fixed by Tnsor-Labs/brokoli#8:

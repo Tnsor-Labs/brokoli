@@ -230,6 +230,15 @@ export type RunStatus =
   | "blocked"
   | "skipped";
 
+export interface BackfillPlan {
+  pipeline_id: string;
+  intervals: number;
+  first_interval_start: string;
+  last_interval_end: string;
+  concurrency: number;
+  note: string;
+}
+
 export interface Run {
   id: string;
   pipeline_id: string;
