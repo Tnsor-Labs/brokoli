@@ -155,6 +155,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/dry-run", rh.DryRun)
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/backfill", rh.Backfill)
 		r.Get("/pipelines/{id}/runs", rh.ListByPipeline)
+		r.Get("/pipelines/{id}/grid", rh.Grid)
 		r.Get("/pipelines/{id}/node-stats", rh.NodeStats)
 		r.Get("/runs/{id}", rh.Get)
 		r.With(requirePerm(models.PermRunsResume)).Post("/runs/{id}/resume", rh.ResumeRun)

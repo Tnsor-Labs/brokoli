@@ -1306,6 +1306,46 @@ func (s *SQLiteStore) UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error {
 	return checkRowsAffected(result, "node_run", nr.ID)
 }
 
+// GridNodeRuns batch-fetches the latest attempt's node-run per (run, node)
+// for the given runs -- the grid view's cells (#400). One query, the
+// ROW_NUMBER-per-partition idiom this file already uses twice.
+func (s *SQLiteStore) GridNodeRuns(runIDs []string) (map[string][]models.NodeRun, error) {
+	out := make(map[string][]models.NodeRun, len(runIDs))
+	if len(runIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(runIDs))
+	args := make([]interface{}, len(runIDs))
+	for i, id := range runIDs {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.Query(`
+		SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, queue_ms
+		FROM (
+			SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, queue_ms,
+			       ROW_NUMBER() OVER (PARTITION BY run_id, node_id ORDER BY attempt DESC) AS rn
+			FROM node_runs WHERE run_id IN (`+strings.Join(placeholders, ",")+`)
+		) WHERE rn = 1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nr models.NodeRun
+		var status string
+		var startedAt sql.NullString
+		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount,
+			&startedAt, &nr.DurationMs, &nr.Error, &nr.Attempt, &nr.QueueMs); err != nil {
+			return nil, err
+		}
+		nr.Status = models.RunStatus(status)
+		nr.StartedAt = parseTimePtr(startedAt)
+		out[nr.RunID] = append(out[nr.RunID], nr)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) {
 	rows, err := s.db.Query(
 		`SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, ready_at, queue_ms, rows_per_sec, trace_id, span_id

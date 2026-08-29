@@ -2626,6 +2626,50 @@ func (s *PostgresStore) GetLatestNodeProfile(pipelineID, nodeID string) (string,
 // every node of every given pipeline in one query, the same DISTINCT ON
 // shape GetLatestRunsByPipelineIDs already uses for an analogous "latest
 // per group" problem.
+
+// GridNodeRuns batch-fetches the latest attempt's node-run per (run, node)
+// for the given runs -- the grid view's cells (#400). One query, the
+// ROW_NUMBER-per-partition idiom this file already uses twice.
+func (s *PostgresStore) GridNodeRuns(runIDs []string) (map[string][]models.NodeRun, error) {
+	out := make(map[string][]models.NodeRun, len(runIDs))
+	if len(runIDs) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(runIDs))
+	args := make([]interface{}, len(runIDs))
+	for i, id := range runIDs {
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = id
+	}
+	rows, err := s.db.Query(`
+		SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, queue_ms
+		FROM (
+			SELECT id, run_id, node_id, status, row_count, started_at, duration_ms, error, attempt, queue_ms,
+			       ROW_NUMBER() OVER (PARTITION BY run_id, node_id ORDER BY attempt DESC) AS rn
+			FROM node_runs WHERE run_id IN (`+strings.Join(placeholders, ",")+`)
+		) latest WHERE rn = 1`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nr models.NodeRun
+		var status string
+		var startedAt sql.NullTime
+		if err := rows.Scan(&nr.ID, &nr.RunID, &nr.NodeID, &status, &nr.RowCount,
+			&startedAt, &nr.DurationMs, &nr.Error, &nr.Attempt, &nr.QueueMs); err != nil {
+			return nil, err
+		}
+		nr.Status = models.RunStatus(status)
+		if startedAt.Valid {
+			t := startedAt.Time
+			nr.StartedAt = &t
+		}
+		out[nr.RunID] = append(out[nr.RunID], nr)
+	}
+	return out, rows.Err()
+}
+
 func (s *PostgresStore) GetLatestNodeProfilesForPipelines(pipelineIDs []string) (map[string]NodeProfileRecord, error) {
 	out := make(map[string]NodeProfileRecord, len(pipelineIDs))
 	uniq := make([]string, 0, len(pipelineIDs))

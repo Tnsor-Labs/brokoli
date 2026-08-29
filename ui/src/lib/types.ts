@@ -231,6 +231,26 @@ export type RunStatus =
   | "blocked"
   | "skipped";
 
+export interface PipelineGrid {
+  nodes: { id: string; name: string; type: string }[];
+  runs: {
+    id: string;
+    status: string;
+    started_at: string | null;
+    trigger?: string;
+    data_interval_start?: string;
+    data_interval_end?: string;
+    pipeline_version: number;
+  }[];
+  cells: Record<
+    string,
+    Record<
+      string,
+      { status: string; attempt: number; duration_ms: number; row_count: number; error?: string }
+    >
+  >;
+}
+
 export interface BackfillPlan {
   pipeline_id: string;
   intervals: number;
