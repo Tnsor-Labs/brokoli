@@ -1,4 +1,5 @@
 import type {
+  PipelineGrid,
   BackfillPlan,
   Pipeline,
   PipelineVersion,
@@ -124,6 +125,7 @@ export const api = {
     dependencyGraph: () => request<DependencyGraph>(`/pipelines/dependency-graph`),
     versions: (id: string) => request<PipelineVersion[]>(`/pipelines/${id}/versions`),
     plan: (id: string) => request<PhysicalPlan>(`/pipelines/${id}/plan`),
+    grid: (id: string, runs = 30) => request<PipelineGrid>(`/pipelines/${id}/grid?runs=${runs}`),
     rollback: (id: string, version: number) =>
       request<Pipeline>(`/pipelines/${id}/rollback`, {
         method: "POST",

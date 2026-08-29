@@ -215,6 +215,15 @@
     } finally {
       loading = false;
     }
+    // Deep link from the grid (#400): ?run=<id> opens that run's detail
+    // as if it had been clicked, once history is loaded.
+    const qs = new URLSearchParams(window.location.hash.split("?")[1] || "");
+    const wanted = qs.get("run");
+    if (wanted) {
+      const hit = runs.find((r) => r.id === wanted);
+      if (hit) selectRun(hit);
+    }
+
     // Older servers may not expose physical planning yet — planPromise
     // already turned that into a resolved null above.
     plan = await planPromise;
@@ -578,6 +587,9 @@
         <p>Inspect run health, node timing, output data, and logs.</p>
       </div>
       <div class="toolbar-right">
+        <a href="#/pipelines/{params.id}/grid" class="btn-sm" title="Grid: runs x nodes over time">
+          <span class="btn-label">Grid</span>
+        </a>
         <a href="#/pipelines/{params.id}/edit" class="btn-sm" title="Edit Pipeline">
           <svg class="btn-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
             ><path

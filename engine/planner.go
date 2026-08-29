@@ -170,6 +170,24 @@ func ProjectRunInstances(s store.Store, runID string) ([]models.PhysicalInstance
 	return out, nil
 }
 
+// TopoOrderedNodes flattens topoWaves into one dependency-ordered list --
+// the row order the grid view (#400) reads correctly, because it is the
+// order the runner actually executes in. A cyclic graph (which Validate
+// refuses at persistence, so only historical corruption could produce)
+// falls back to authored order rather than erroring: the grid is a view,
+// and a view that refuses to render helps nobody diagnose anything.
+func TopoOrderedNodes(nodes []models.Node, edges []models.Edge) []models.Node {
+	waves, err := topoWaves(nodes, edges)
+	if err != nil {
+		return nodes
+	}
+	out := make([]models.Node, 0, len(nodes))
+	for _, w := range waves {
+		out = append(out, w...)
+	}
+	return out
+}
+
 // topoWaves groups nodes into dependency waves (Kahn by level): every
 // node in wave i has all its predecessors in waves < i. This is the same
 // wave structure the runner schedules in, so stage boundaries in the

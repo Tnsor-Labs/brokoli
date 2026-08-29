@@ -410,6 +410,13 @@ type NodeRunStore interface {
 	// UpdateNodeRunTx updates a node outcome inside an existing transaction.
 	UpdateNodeRunTx(tx *sql.Tx, nr *models.NodeRun) error
 	ListNodeRunsByRun(runID string) ([]models.NodeRun, error)
+
+	// GridNodeRuns batch-fetches, for the given runs, the LATEST
+	// attempt's node-run per (run, node) in one query -- the grid view's
+	// cells (#400), the same ROW_NUMBER-per-partition shape
+	// GetLatestNodeProfilesForPipelines and GetLatestRunsByPipelineIDs
+	// use for their own "latest per group" problems. Keyed by run ID.
+	GridNodeRuns(runIDs []string) (map[string][]models.NodeRun, error)
 }
 
 // RunEventStore is the immutable, append-only log of run/node-attempt

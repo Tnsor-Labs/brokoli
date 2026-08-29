@@ -7,6 +7,7 @@
   import Pipelines from "./pages/Pipelines.svelte";
   import PipelineEditor from "./pages/PipelineEditor.svelte";
   import PipelineRuns from "./pages/PipelineRuns.svelte";
+  import PipelineGrid from "./pages/PipelineGrid.svelte";
   import Settings from "./pages/Settings.svelte";
   import Login from "./pages/Login.svelte";
   import Lineage from "./pages/Lineage.svelte";
@@ -41,6 +42,7 @@
     "/pipelines/:id/edit": PipelineEditor,
     "/pipelines/:id/runs/:runId/gantt": FullGantt,
     "/pipelines/:id/runs": PipelineRuns,
+    "/pipelines/:id/grid": PipelineGrid,
     "/pipelines/:id": PipelineRuns,
     "/lineage": Lineage,
     "/dependencies": DependencyGraph,
