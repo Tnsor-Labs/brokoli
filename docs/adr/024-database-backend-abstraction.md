@@ -428,3 +428,37 @@ adding a capability quietly — each had to be replaced, in the same change
 that carries the differential proof, with the opposite assertion. The
 vacated slots were refilled with backends that still lack the capability
 (sqlite), so the pins keep meaning something.
+
+## Update (2026-08-29): the fold finished, and what stayed behind (#361)
+
+#401 moved the write vocabulary; this update records the rest of the
+fold. `detectDriver` and `dialectForURI` are now adapters over the
+registry's own **URI claims** (`pkg/dbdialect/uriclaim.go`): each
+backend states the schemes it owns, the `database/sql` driver that opens
+them, and the DSN shape that driver wants, next to the rest of its
+vocabulary. Adding a backend's scheme means implementing `URIClaims`,
+not editing the engine's table. The unknown-scheme refusal (#395) now
+lists the claimed schemes from the registry, so the message cannot drift
+from the claims.
+
+Three things deliberately did not fold, each recorded where it lives:
+
+- **snowflake://** maps to a driver with no dialect owner in the
+  registry; it stays in the engine adapter until snowflake earns a
+  registration tier with that tier's proof.
+- **The `.db`/`.sqlite` filename suffixes and the schemeless-string
+  Postgres default** are heuristics about strings with no scheme to
+  claim; they stay in the adapter, pinned by its mapping tests.
+- **`models.Connection.BuildURI` and the API connection catalog** span
+  connectors that are not database dialects (HTTP, S3, SFTP, ...), so a
+  database-dialect registry cannot own them without claiming things it
+  has no vocabulary for. They remain the per-connector tables they are.
+
+`bulkWriterFor` keeps its writers in the engine -- they are engine code,
+COPY/LOAD DATA plumbing over engine types -- but its dispatch key is the
+registry dialect name, so it names no backend the registry does not.
+
+The acceptance bar was this ADR's own: the pre-existing mapping tests
+(`TestDetectDriverSchemeMapping`, `TestDialectForURI`) pass unchanged,
+and the claims' exact coverage is pinned by name in
+`TestAllURIClaimsCoverage`.
