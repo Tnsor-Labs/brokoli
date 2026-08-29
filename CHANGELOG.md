@@ -11,6 +11,107 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.78] - 2026-08-29
+
+ADR-028 lands whole: a scheduled run knows the half-open data interval
+it covers, and catch-up, backfill and the SDK all speak in those
+intervals. The tracking issue (#397) closed with all four phases on
+main.
+
+### Added
+
+- **Data intervals** (#402, ADR-028 accepted in #396) -- @hc12r. A
+  scheduled run carries `[data_interval_start, data_interval_end)` --
+  the previous tick to the fired tick, stamped at dispatch. In node
+  config, `${interval.start}` and `${interval.end}` resolve to RFC3339
+  UTC through the ordinary variable resolver; a run WITHOUT an interval
+  leaves the reference visibly unresolved instead of silently empty,
+  because silent emptiness is how bad data happens. A resumed run keeps
+  its original interval, so the slice a failed run was responsible for
+  is the slice its resume processes. Scheduled dispatch is unique on
+  `(pipeline_id, data_interval_start)`, which turns a leader-failover
+  double-fire into a quiet no-op instead of a duplicate run. The DST
+  edges are pinned by measurement, not assumption: in a zoned schedule,
+  spring-forward skips the day's fire entirely and fall-back fires both
+  occurrences -- the test table documents the library's real behavior.
+
+- **Opt-in per-interval catch-up** (#404) -- @hc12r. The default stays
+  exactly what it was: after downtime, one catch-up run for the most
+  recently missed tick. A pipeline that sets the new `catchup` flag (a
+  real column, declared in the IR schema, a checkbox next to the
+  schedule field) instead gets every complete interval the schedule
+  owed, oldest first, sequentially, anchored on the newest
+  `data_interval_end` on record so the chain continues rather than
+  being re-derived from wall clocks. The per-pipeline cap (50)
+  truncates keeping the NEWEST intervals -- an unattended catch-up must
+  land the pipeline current -- and logs the dropped range; older slices
+  stay reachable through an explicit backfill.
+
+- **Backfill walks the schedule's own interval grid** (#403) -- @hc12r.
+  The previous backfill parsed date strings, invented a daily grid
+  regardless of the pipeline's actual schedule, executed every run
+  synchronously inside the HTTP handler, and stopped at the first
+  failure. Replaced end to end: enumeration walks the pipeline's own
+  schedule, one interval-stamped run per slice, oldest first at
+  concurrency 1 in the background; a failed slice is counted, not
+  fatal; ranges past 500 intervals are refused naming the count rather
+  than silently truncated. A pipeline that references neither
+  `${interval.*}` nor the grandfathered `${param.date}` is refused
+  without `force`, because every run would do identical work. New CLI
+  verb: `brokoli backfill <pipeline-id> --start --end [--force]`.
+
+- **`data_intervals` in `supported_execution_features`** (#405) --
+  @hc12r. Advertised now that pipelines using it actually run (the
+  list's honesty rule), and pinned by the capabilities test because the
+  SDK gate matches the exact string. SDK counterpart shipped as
+  brokoli-sdk#71: `Pipeline(catch_up=...)` stopped raising, compiles to
+  the `catchup` field, and deploy preflight refuses servers that
+  advertise features but not this one -- naming the feature instead of
+  letting the server's fail-closed decoder 400 opaquely.
+
+### Changed
+
+- **Backfill API answers with a plan, not a run-ID list** (#403) --
+  @hc12r. `POST /api/pipelines/{id}/backfill` now returns 202 with the
+  accepted plan (interval count, bounds, concurrency); the old response
+  required the entire backfill to finish inside the request, which no
+  real range could survive. The date-only `start_date`/`end_date`
+  fields keep their historical inclusive-day meaning alongside the new
+  RFC3339 `start`/`end`, and pipelines built on the old `${param.date}`
+  convention backfill unchanged -- every backfill run still receives
+  `params[date]` set to its slice's start date.
+
+- **The write vocabulary moves into `pkg/dbdialect`** (#401, progress
+  on #361) -- @hc12r. Statement generation's per-backend record --
+  quoting, literal rules, boolean spellings, type maps, timestamp
+  layouts, escaping, the CREATE TABLE suffix -- moves out of
+  engine/sqlgen.go into each backend's own file as a `StatementWriter`
+  capability, now that the bulk-write equivalence corpora against live
+  Postgres, MySQL and ClickHouse exist to refactor against. SQLite,
+  SQL Server and the generic fallback join the registry as a third,
+  narrowest claim tier: write vocabulary only.
+
+### Fixed
+
+- **Unknown connection schemes are refused by name** (#395, closes
+  #383) -- @hc12r. detectDriver's default handed any unrecognised URI
+  to pgx, so `oracle://`, `bigquery://` and `databricks://` -- all
+  offered by the connection catalog -- failed with a Postgres error
+  naming the wrong backend. An unmapped scheme is now refused naming
+  that scheme and listing what this build supports, without echoing the
+  URI (it carries the password).
+
+- **ClickHouse parses string values the way the server parses
+  literals** (#394, closes #392) -- @hc12r. A CSV-shaped dataset
+  appended into a typed ClickHouse table diverged by path: the
+  statement path's rendered literal `'123'` was parsed server-side into
+  an Int64 column, while the native batch appender refused. The batch
+  writer now probes the target's columns once (LIMIT 0, read through
+  the dialect's own TypeReader) and parses strings headed at integer,
+  float and boolean columns; Decimal, DateTime and String pass through
+  to the driver's own parsing. A probe failure degrades to no coercion,
+  which is where the path stood before.
+
 ## [0.10.77] - 2026-08-28
 
 The ClickHouse arc closes (ADR-027 phase 4, #382): dbt runs against
