@@ -115,7 +115,7 @@ func TestCapabilitiesHandler(t *testing.T) {
 	// data_intervals: the SDK's catch_up gate matches the exact string
 	// (#397 phase 4); dropping or renaming it silently re-bricks
 	// Pipeline(catch_up=...) against this server.
-	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false}
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false}
 	for _, f := range features {
 		if s, ok := f.(string); ok {
 			if _, known := want[s]; known {

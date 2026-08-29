@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -45,6 +47,7 @@ type Scheduler struct {
 	stopReclaim chan struct{}
 	reclaimDone chan struct{}
 	syncDone    chan struct{}
+	waitDone    chan struct{}
 }
 
 // NewScheduler creates a scheduler that uses the given engine to run
@@ -67,6 +70,7 @@ func NewScheduler(engine *Engine, s store.Store, leader store.LeaderElector) *Sc
 		stopReclaim: make(chan struct{}),
 		reclaimDone: make(chan struct{}),
 		syncDone:    make(chan struct{}),
+		waitDone:    make(chan struct{}),
 	}
 }
 
@@ -107,6 +111,7 @@ func (s *Scheduler) Start() error {
 	s.cron.Start()
 	go s.runReclaimSweep()
 	go s.runScheduleSync()
+	go s.runWaitWatcher()
 	common.SLog().Info("scheduler started", "pipelines_scheduled", registered)
 
 	return nil
@@ -469,6 +474,7 @@ func (s *Scheduler) Stop() {
 	// TestRecoverNonTerminalRuns' grace period had (#358), one goroutine
 	// over. Stop now means stopped.
 	<-s.syncDone
+	<-s.waitDone
 	ctx := s.cron.Stop()
 	<-ctx.Done() // wait for running jobs to finish
 }
@@ -659,3 +665,80 @@ func (s *Scheduler) LeaderFencingGeneration() int64 { return s.leader.FencingGen
 func (s *Scheduler) LeaderAcquisitions() int64     { return s.leader.Acquisitions() }
 func (s *Scheduler) LeaderReleases() int64         { return s.leader.Releases() }
 func (s *Scheduler) LeaderElectionFailures() int64 { return s.leader.ElectionFailures() }
+
+// waitWatchInterval is the watcher's own tick; each park's next_poll_at
+// respects its condition's poll_interval on top of this. A var so tests
+// can shrink it.
+var waitWatchInterval = 2 * time.Second
+
+// runWaitWatcher is the triggerer (#399): one goroutine babysits every
+// parked wait -- thousands of waits cost this loop, not thousands of run
+// slots. Leader-gated like the cron ticks and the catch-up pass, so a
+// multi-instance deployment does not double-poll; the wake claim
+// (waiting -> running) makes even a gate mistake a no-op, not a double
+// run.
+func (s *Scheduler) runWaitWatcher() {
+	defer close(s.waitDone)
+	ticker := time.NewTicker(waitWatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.stopReclaim:
+			return
+		case <-ticker.C:
+		}
+		if !s.leader.IsLeader() {
+			continue
+		}
+		s.pollParkedWaits()
+	}
+}
+
+func (s *Scheduler) pollParkedWaits() {
+	now := time.Now().UTC()
+	due, err := s.store.ListDueParkedWaits(now, 100)
+	if err != nil {
+		common.SLog().Error("wait watcher: list due parks", "error", err)
+		return
+	}
+	for _, w := range due {
+		run, err := s.store.GetRun(w.RunID)
+		if err != nil || run.Status != models.RunStatusWaiting {
+			// A park whose run is not waiting any more is stale -- the
+			// crash-ordering leftovers parkRun documents. Self-heal.
+			_, _ = s.store.DeleteParkedWait(w.RunID)
+			continue
+		}
+		if now.After(w.ExpiresAt) {
+			s.engine.TimeoutParkedRun(w, now)
+			continue
+		}
+		var cond waitCondition
+		if err := json.Unmarshal([]byte(w.Condition), &cond); err != nil {
+			s.engine.TimeoutParkedRun(w, now) // unparseable = unwakeable; fail it visibly
+			continue
+		}
+		met, err := waitConditionMet(context.Background(), s.store, run, cond)
+		if err != nil {
+			common.SLog().Warn("wait watcher: condition evaluation failed; treating as not met",
+				common.RunAttr(w.RunID), "condition", cond.Type, "error", err)
+		}
+		if met {
+			claimed, err := s.store.DeleteParkedWait(w.RunID)
+			if err != nil || !claimed {
+				continue
+			}
+			s.engine.bg.Add(1)
+			go func(runID string) {
+				defer s.engine.bg.Done()
+				if _, err := s.engine.WakeParkedRun(runID); err != nil {
+					common.SLog().Error("wake parked run", common.RunAttr(runID), "error", err)
+				}
+			}(w.RunID)
+			continue
+		}
+		if err := s.store.BumpParkedWait(w.RunID, now.Add(time.Duration(w.PollInterval)*time.Millisecond)); err != nil {
+			common.SLog().Warn("wait watcher: bump next poll", common.RunAttr(w.RunID), "error", err)
+		}
+	}
+}

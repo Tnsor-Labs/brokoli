@@ -144,7 +144,8 @@ func IsBuiltInNodeType(nodeType models.NodeType) bool {
 		models.NodeTypeCode, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
-		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter:
+		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter,
+		models.NodeTypeWait:
 		return true
 	}
 	return false

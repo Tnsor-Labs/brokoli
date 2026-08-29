@@ -6,9 +6,11 @@ import "time"
 type EventType string
 
 const (
-	EventRunStarted    EventType = "run.started"
-	EventRunCompleted  EventType = "run.completed"
-	EventRunFailed     EventType = "run.failed"
+	EventRunStarted   EventType = "run.started"
+	EventRunCompleted EventType = "run.completed"
+	EventRunFailed    EventType = "run.failed"
+	// EventRunWaiting: the run parked on a wait node (#399).
+	EventRunWaiting    EventType = "run.waiting"
 	EventNodeStarted   EventType = "node.started"
 	EventNodeCompleted EventType = "node.completed"
 	EventNodeFailed    EventType = "node.failed"
