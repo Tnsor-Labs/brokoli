@@ -11,6 +11,77 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.79] - 2026-08-29
+
+The orchestration wave: the three Airflow-inspired capabilities filed
+after the data-intervals arc all land -- connection pools, the grid
+view, and deferrable waits -- plus ADR-024's fold finished.
+
+### Added
+
+- **Connection pools** (#408, closes #398) -- @hc12r. A connection
+  gains `max_concurrent` (0 = unlimited, today's behavior exactly): a
+  named concurrency budget that nodes, not runs, draw from -- a
+  ten-node pipeline may touch the warehouse in one node for two
+  seconds. The slot is held for the duration of the attempt's actual
+  execution and released by the executing goroutine itself, so a
+  timed-out-but-still-running handler keeps its slot until it genuinely
+  stops touching the connection. Waiting blocks (bounded by the run's
+  own cancellation, not the node timeout) and is visible in the node's
+  run log; an explicit `pool:` naming no connection fails the node,
+  because a budget that silently doesn't limit is a disabled control.
+  PER ENGINE INSTANCE in this release, stated on the field and in the
+  UI; the store-backed cluster-wide budget is #407. Acceptance ran
+  against live Postgres, asserted from the server's side: four racing
+  runs through a 2-slot pool, `pg_stat_activity` sampled every 40ms,
+  never more than 2 active. Also fixed on the way: the connection
+  resolver existed only under `serve`, the same silently-missing-
+  control shape -- `NewEngine` now always constructs it.
+
+- **Grid view** (#409, closes #400) -- @hc12r. The question an operator
+  actually asks is "how has this pipeline behaved lately", and no list
+  answers it. `/pipelines/{id}/grid` is the matrix that does: runs as
+  columns (newest right), nodes as rows in the planner's own dependency
+  order, one status-colored cell per node-run's LATEST attempt -- a red
+  row is a broken node, a red column is a bad day, a diagonal is a
+  deploy. Version boundaries are drawn on the column axis (a behavior
+  change lining up with a deploy is the diagnosis half the time),
+  backfill-triggered columns are marked, and clicking a cell deep-links
+  the runs page with that run expanded. One new store query
+  (`GridNodeRuns`, the ROW_NUMBER-per-partition shape both stores
+  already use twice) serves the whole matrix.
+
+- **Deferrable waits** (#411, closes #399) -- @hc12r. A node that waits
+  -- for a file, an endpoint, a partition, another pipeline -- used to
+  burn a worker slot for the whole wait. The new `wait` node type parks
+  instead: when its condition (`file_exists`, `http` through the
+  netguard-guarded client, `interval_elapsed` pairing with ADR-028, or
+  `pipeline` subsuming the dependency-gate shape) is not met, the run
+  flips to the new status `waiting`, a durable park lands in the store,
+  and the slot frees. One leader-gated watcher babysits every parked
+  wait and wakes the SAME run when the condition fires; timeouts are
+  part of the condition and fail naming it. Measured at the issue's own
+  number: 1,000 parked waits hold 0 run slots and a sub-20 goroutine
+  delta, and a parked run survives instance restart. Recovery and
+  startup redispatch deliberately exclude `waiting`: a parked run is
+  paused, not interrupted work. `deferrable-waits` joins
+  `supported_execution_features`.
+
+### Changed
+
+- **URI schemes are registry claims** (#410, closes #361) -- @hc12r.
+  `detectDriver` and `dialectForURI` stop being per-backend tables in
+  the engine: each registered dialect states the schemes it owns, the
+  driver that opens them, and the DSN shape that driver wants, and the
+  unknown-scheme refusal builds its supported list from the claims so
+  the message cannot drift. What deliberately did not fold is recorded
+  in ADR-024's update section: snowflake (a driver with no dialect
+  owner), the sqlite filename suffixes and schemeless Postgres default
+  (heuristics with no scheme to claim), and BuildURI plus the
+  connection catalog (they span non-database connectors). Behavior-
+  preserving by the ADR's own bar: the pre-existing mapping tests pass
+  unchanged.
+
 ## [0.10.78] - 2026-08-29
 
 ADR-028 lands whole: a scheduled run knows the half-open data interval
