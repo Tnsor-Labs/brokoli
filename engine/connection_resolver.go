@@ -18,11 +18,16 @@ import (
 type ConnectionResolver struct {
 	store   store.Store
 	secrets *secrets.Chain
+	// pools carries the per-connection concurrency budgets (#398); it
+	// lives here because the resolver is the one engine-wide object every
+	// Runner already holds, and pool membership is decided by the same
+	// conn_id the resolver resolves.
+	pools *connectionPools
 }
 
 // NewConnectionResolver creates a new resolver.
 func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolver {
-	return &ConnectionResolver{store: s, secrets: sec}
+	return &ConnectionResolver{store: s, secrets: sec, pools: newConnectionPools()}
 }
 
 // ResolveWithWarnings is Resolve, plus the warnings it would otherwise only
