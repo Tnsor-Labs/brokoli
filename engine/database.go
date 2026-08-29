@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 	"math"
 	"os"
 	"runtime/debug"
@@ -33,24 +34,24 @@ func dialectForURI(uri string) string {
 	// Pure scheme detection: the dialect GenerateSQL should target is a
 	// property of the URI, not of which drivers this build happens to compile
 	// in. Whether the connection can be opened is DetectDriver's business.
-	driver, _, err := detectDriver(uri)
-	if err != nil {
-		return "generic"
+	// The claims are the registry's own (#361): each backend states the
+	// schemes it speaks for next to the rest of its vocabulary.
+	for _, c := range dbdialect.AllURIClaims() {
+		if strings.HasPrefix(uri, c.Scheme+"://") {
+			return c.Dialect
+		}
 	}
-	switch driver {
-	case "pgx":
-		return "postgres"
-	case "mysql":
-		return "mysql"
-	case "sqlite":
+	// The adapter's recorded leftovers, matching detectDriver's: sqlite
+	// filename suffixes, and the schemeless Postgres default. Snowflake
+	// and refused schemes have no registered dialect and fall to generic,
+	// exactly as the driver switch used to send them.
+	if strings.HasSuffix(uri, ".db") || strings.HasSuffix(uri, ".sqlite") {
 		return "sqlite"
-	case "sqlserver":
-		return "sqlserver"
-	case "clickhouse":
-		return "clickhouse"
-	default:
-		return "generic"
 	}
+	if !strings.Contains(uri, "://") {
+		return "postgres"
+	}
+	return "generic"
 }
 
 // DetectDriver returns the Go sql driver name and DSN for a connection URI.
@@ -94,41 +95,48 @@ func schemeOf(uri string) string {
 }
 
 func detectDriver(uri string) (string, string, error) {
+	// Scheme-owned URIs: the registry's own claims (#361). A backend
+	// states its schemes, driver, and DSN shape next to the rest of its
+	// vocabulary, so adding one means implementing URIClaims, not editing
+	// this function.
+	for _, c := range dbdialect.AllURIClaims() {
+		if strings.HasPrefix(uri, c.Scheme+"://") {
+			dsn := uri
+			if c.DSN != nil {
+				dsn = c.DSN(uri)
+			}
+			return c.Driver, dsn, nil
+		}
+	}
+
+	// The adapter's recorded leftovers -- each here because it has no
+	// claim to make, not because folding was forgotten:
 	switch {
-	case strings.HasPrefix(uri, "postgres://") || strings.HasPrefix(uri, "postgresql://"):
-		return "pgx", uri, nil
-	case strings.HasPrefix(uri, "redshift://"):
-		// Redshift is Postgres-compatible — convert scheme and use pgx
-		dsn := "postgres://" + strings.TrimPrefix(uri, "redshift://")
-		return "pgx", dsn, nil
 	case strings.HasPrefix(uri, "snowflake://"):
+		// A driver with no dialect owner in the registry; stays here
+		// until snowflake earns a registration tier.
 		return "snowflake", strings.TrimPrefix(uri, "snowflake://"), nil
-	case strings.HasPrefix(uri, "clickhouse://"):
-		// clickhouse-go accepts the URI itself as its DSN.
-		return "clickhouse", uri, nil
-	case strings.HasPrefix(uri, "mysql://"):
-		dsn := strings.TrimPrefix(uri, "mysql://")
-		return "mysql", dsn, nil
-	case strings.HasPrefix(uri, "sqlite://"):
-		path := strings.TrimPrefix(uri, "sqlite://")
-		return "sqlite", path, nil
 	case strings.HasSuffix(uri, ".db") || strings.HasSuffix(uri, ".sqlite"):
+		// A filename, not a scheme: nothing to claim.
 		return "sqlite", uri, nil
-	case strings.HasPrefix(uri, "sqlserver://") || strings.HasPrefix(uri, "mssql://"):
-		return "sqlserver", uri, nil
 	default:
-		// A scheme this switch does not name is refused by that name
-		// (#383). It used to fall through to pgx, so oracle:// and
-		// bigquery:// produced a Postgres driver error about the wrong
-		// backend, named confidently -- the failure ADR-024's survey
-		// called "a default that guesses". Schemeless strings keep the
-		// pgx default deliberately: libpq keyword DSNs and bare
+		// A scheme nothing claims is refused by that name (#383). It
+		// used to fall through to pgx, so oracle:// and bigquery://
+		// produced a Postgres driver error about the wrong backend,
+		// named confidently -- the failure ADR-024's survey called "a
+		// default that guesses". Schemeless strings keep the pgx
+		// default deliberately: libpq keyword DSNs and bare
 		// host:port/db strings are historically Postgres, and the
 		// mapping test pins that.
 		if strings.Contains(uri, "://") {
+			schemes := make([]string, 0, 12)
+			for _, c := range dbdialect.AllURIClaims() {
+				schemes = append(schemes, c.Scheme)
+			}
+			schemes = append(schemes, "snowflake")
 			return "", "", fmt.Errorf(
-				"connection scheme %q has no driver in this build (supported: postgres, postgresql, "+
-					"redshift, mysql, sqlite, clickhouse, snowflake, sqlserver, mssql)", schemeOf(uri))
+				"connection scheme %q has no driver in this build (supported: %s)",
+				schemeOf(uri), strings.Join(schemes, ", "))
 		}
 		return "pgx", uri, nil
 	}
