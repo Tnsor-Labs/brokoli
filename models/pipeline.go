@@ -89,6 +89,12 @@ var SupportedExecutionFeatures = []string{
 	// checkpoints and per-page retry policy (config.pagination +
 	// config.execution).
 	"pagination-checkpoints",
+	// ADR-028 data intervals, complete as of #397 phases 1-3: scheduled
+	// runs carry [start, end) and ${interval.*} resolves in node config;
+	// pipeline.catchup opts into per-interval catch-up; backfill walks
+	// the schedule's own grid. Named with an underscore because the
+	// accepted ADR spells it that way and the SDK gate matches exactly.
+	"data_intervals",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

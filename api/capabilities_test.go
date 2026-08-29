@@ -112,7 +112,10 @@ func TestCapabilitiesHandler(t *testing.T) {
 	if !ok || len(features) == 0 {
 		t.Fatalf("expected supported_execution_features, got %v", body["supported_execution_features"])
 	}
-	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false}
+	// data_intervals: the SDK's catch_up gate matches the exact string
+	// (#397 phase 4); dropping or renaming it silently re-bricks
+	// Pipeline(catch_up=...) against this server.
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false}
 	for _, f := range features {
 		if s, ok := f.(string); ok {
 			if _, known := want[s]; known {
