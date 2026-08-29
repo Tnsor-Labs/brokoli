@@ -23,6 +23,14 @@ type VariableContext struct {
 	Vars      VariableStore     // stored variables (${var.key})
 	RunID     string
 	StartedAt time.Time
+
+	// IntervalStart/End are the run's data interval (ADR-028), resolvable
+	// as ${interval.start} and ${interval.end} in RFC3339 UTC. Nil in a
+	// run with no interval, in which case the references stay unresolved
+	// -- the same visible-in-output behaviour every unknown variable has,
+	// and validation warns about the combination up front.
+	IntervalStart *time.Time
+	IntervalEnd   *time.Time
 }
 
 // NewVariableContext creates a context from the current environment and params.
@@ -62,6 +70,22 @@ func (vc *VariableContext) resolveKey(key string) string {
 
 	prefix, name := parts[0], parts[1]
 	switch prefix {
+	case "interval":
+		// ADR-028: the run's data interval, RFC3339 UTC. Unresolved (the
+		// reference stays visible) when the run carries no interval --
+		// an empty string here would quietly produce WHERE ts >= '',
+		// which is the silent kind of wrong; the visible kind gets fixed.
+		switch name {
+		case "start":
+			if vc.IntervalStart != nil {
+				return vc.IntervalStart.UTC().Format(time.RFC3339)
+			}
+		case "end":
+			if vc.IntervalEnd != nil {
+				return vc.IntervalEnd.UTC().Format(time.RFC3339)
+			}
+		}
+		return "${" + key + "}"
 	case "env":
 		if v, ok := vc.Env[name]; ok {
 			return v

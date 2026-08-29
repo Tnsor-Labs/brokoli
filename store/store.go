@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -613,4 +615,29 @@ type TemplateStore interface {
 type LifecycleStore interface {
 	Close() error
 	RawDB() interface{} // returns *sql.DB for extensions
+}
+
+// ErrDuplicateScheduledRun reports that a scheduled run for this pipeline
+// and data interval already exists (ADR-028's dispatch-idempotency guard).
+// It is the leader-failover race resolving correctly: the second instance
+// to fire a tick loses the insert and treats this as "already dispatched",
+// not as a failure.
+var ErrDuplicateScheduledRun = errors.New("a scheduled run for this pipeline and data interval already exists")
+
+// isScheduledIntervalConflict recognises the unique-index violation behind
+// ErrDuplicateScheduledRun on either backend. Postgres names the index in
+// its message; SQLite names the column pair instead -- and only this index
+// covers runs.data_interval_start, so the pair is just as unambiguous.
+// Matching these specifics keeps the sentinel from swallowing any other
+// constraint's violation.
+func isScheduledIntervalConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "uq_runs_scheduled_interval") {
+		return true
+	}
+	return strings.Contains(msg, "UNIQUE constraint failed") &&
+		strings.Contains(msg, "runs.data_interval_start")
 }

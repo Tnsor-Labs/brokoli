@@ -593,7 +593,28 @@ func (e *Engine) resolvePipelineForRun(pipelineID string, version int) (*models.
 }
 
 // RunPipeline triggers execution of a pipeline by ID with optional params.
+// RunOptions carries what RunPipeline's variadic params cannot: who
+// created the run and, for scheduled dispatch, the data interval it covers
+// (ADR-028).
+type RunOptions struct {
+	Params  map[string]string
+	Trigger string
+	// DataIntervalStart/End stamp the half-open interval [start, end) on
+	// the run. Both or neither; the scheduler is the only stamper today.
+	DataIntervalStart *time.Time
+	DataIntervalEnd   *time.Time
+}
+
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
+	opts := RunOptions{}
+	if len(params) > 0 && params[0] != nil {
+		opts.Params = params[0]
+	}
+	return e.RunPipelineOpts(pipelineID, opts)
+}
+
+// RunPipelineOpts is RunPipeline with the run's provenance attached.
+func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Run, error) {
 	if e.closing() {
 		return nil, ErrEngineClosed
 	}
@@ -616,17 +637,18 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	if ok, _, reason := CheckDependencies(e.store, pipe, time.Now().UTC()); !ok {
 		now := time.Now().UTC()
 		blocked := &models.Run{
-			ID:              common.NewID(),
-			PipelineID:      pipe.ID,
-			Status:          models.RunStatusBlocked,
-			Error:           reason,
-			StartedAt:       &now,
-			FinishedAt:      &now,
-			PipelineVersion: pipelineVersion,
-			OrgID:           pipe.OrgID,
-		}
-		if len(params) > 0 && params[0] != nil {
-			blocked.Params = params[0]
+			ID:                common.NewID(),
+			PipelineID:        pipe.ID,
+			Status:            models.RunStatusBlocked,
+			Error:             reason,
+			StartedAt:         &now,
+			FinishedAt:        &now,
+			PipelineVersion:   pipelineVersion,
+			OrgID:             pipe.OrgID,
+			Params:            opts.Params,
+			Trigger:           opts.Trigger,
+			DataIntervalStart: opts.DataIntervalStart,
+			DataIntervalEnd:   opts.DataIntervalEnd,
 		}
 		if err := e.store.CreateRun(blocked); err != nil {
 			return nil, fmt.Errorf("create blocked run: %w", err)
@@ -655,9 +677,10 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
-	if len(params) > 0 && params[0] != nil {
-		runner.params = params[0]
-	}
+	runner.params = opts.Params
+	runner.trigger = opts.Trigger
+	runner.intervalStart = opts.DataIntervalStart
+	runner.intervalEnd = opts.DataIntervalEnd
 
 	// Acquire concurrency slot (blocks if at max)
 	atomic.AddInt64(&e.RunsQueueWaiting, 1)
@@ -1383,6 +1406,14 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
+	// ADR-028: a resume processes the slice the failed run was
+	// responsible for, so the original's data interval carries over. The
+	// TRIGGER deliberately does not -- a resumed run with trigger
+	// "scheduled" would collide with the original on the scheduled-
+	// dispatch unique index, and ResumedFromRunID already records the
+	// provenance a resume has.
+	runner.intervalStart = oldRun.DataIntervalStart
+	runner.intervalEnd = oldRun.DataIntervalEnd
 	runner.pipelineVersion = newRunVersion
 	runner.metrics = e.newRunnerMetrics()
 

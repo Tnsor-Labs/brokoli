@@ -264,6 +264,16 @@ func (s *SQLiteStore) migrate() error {
 	// practice even though they're technically updatable columns.
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN pipeline_version INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN resumed_from_run_id TEXT NOT NULL DEFAULT ''`)
+	// ADR-028: the data interval a scheduled run covers, and what created
+	// the run. The partial unique index is the leader-failover guard --
+	// two instances firing the same tick race to insert, the second
+	// loses, and no duplicate scheduled run exists. Scheduled only:
+	// manual runs carry no interval, and a backfill re-running an
+	// interval is a deliberate new run.
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT ''`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN data_interval_start TEXT`)
+	s.db.Exec(`ALTER TABLE runs ADD COLUMN data_interval_end TEXT`)
+	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_scheduled_interval ON runs(pipeline_id, data_interval_start) WHERE trigger_type = 'scheduled' AND data_interval_start IS NOT NULL`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 
 	// Durable cancellation intent (see models.Run.CancelRequested and
@@ -927,9 +937,9 @@ func (s *SQLiteStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]*mode
 
 	// Rank pending runs first, then started runs newest-first, consistently with Postgres.
 	query := `
-		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
+		SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end
 		FROM (
-			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested,
+			SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end,
 			       ROW_NUMBER() OVER (
 			           PARTITION BY pipeline_id
 			           ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC
@@ -1029,9 +1039,12 @@ func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
 	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID, r.OrgID, boolToInt(r.CancelRequested),
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID, r.OrgID, boolToInt(r.CancelRequested), r.Trigger, formatTimePtr(r.DataIntervalStart), formatTimePtr(r.DataIntervalEnd),
 	)
+	if isScheduledIntervalConflict(err) {
+		return ErrDuplicateScheduledRun
+	}
 	return wrapStoreErr("CreateRun", r.ID, err)
 }
 
@@ -1082,7 +1095,7 @@ func (s *SQLiteStore) CancelPendingRun(runID string, finishedAt time.Time) (bool
 
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested FROM runs WHERE id = ?`, id,
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end FROM runs WHERE id = ?`, id,
 	)
 	r, err := scanRun(row)
 	if err != nil {
@@ -1099,7 +1112,7 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
 	rows, err := s.db.Query(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end
 		 FROM runs WHERE pipeline_id = ? ORDER BY (started_at IS NULL) DESC, started_at DESC, id DESC LIMIT ?`,
 		pipelineID, limit,
 	)
@@ -1119,7 +1132,7 @@ func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models
 	return runs, rows.Err()
 }
 
-const runColumns = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested`
+const runColumns = `id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end`
 
 func (s *SQLiteStore) ListRunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error) {
 	// Fetch one more than asked for: if it comes back, there is another
@@ -1194,13 +1207,13 @@ func (s *SQLiteStore) ListNonTerminalRuns(afterID string, limit int) ([]models.R
 	var err error
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` ORDER BY id ASC LIMIT ?`,
 			fetchN,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested
+			`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end
 			 FROM runs WHERE `+nonTerminalRunStatusFilter+` AND id > ? ORDER BY id ASC LIMIT ?`,
 			afterID, fetchN,
 		)
@@ -2115,9 +2128,12 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	var startedAt, finishedAt sql.NullString
 	var paramsJSON string
 
-	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested); err != nil {
+	var intervalStart, intervalEnd sql.NullString
+	if err := sc.Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested, &r.Trigger, &intervalStart, &intervalEnd); err != nil {
 		return nil, err
 	}
+	r.DataIntervalStart = parseTimePtr(intervalStart)
+	r.DataIntervalEnd = parseTimePtr(intervalEnd)
 	if err := json.Unmarshal([]byte(paramsJSON), &r.Params); err != nil {
 		return nil, fmt.Errorf("decode run params: %w", err)
 	}
