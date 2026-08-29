@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.10.80] - 2026-08-29
+
+### Fixed
+
+- **Revocable API tokens actually authenticate** (#414) -- @hc12r.
+  `api_tokens` rows could be created and listed, but nothing on the
+  request path ever consulted them: presenting one got 401 like any
+  garbage bearer, so the tokens page minted decorations. The middleware
+  cannot validate them itself without opinions that belong upstream
+  (which claims a workspace token implies), so this adds the extension
+  seam instead -- `api.BearerTokenResolverFunc`, in the
+  OrgResolverFunc/AuthMethodsFunc pattern the package already uses.
+  Consulted only after JWT parsing fails, so sessions never pay the
+  lookup, on both the main request path and the WebSocket path; a nil
+  func or false return leaves the 401 exactly as it was. Downstream
+  distributions wire it to the api_tokens hash lookup, which also makes
+  browser-confirmed device authorization mint revocable brk_ tokens
+  instead of 24-hour session JWTs.
+
 ## [0.10.79] - 2026-08-29
 
 The orchestration wave: the three Airflow-inspired capabilities filed
