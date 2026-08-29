@@ -353,8 +353,10 @@
     if (!params.id || !backfillStart || !backfillEnd) return;
     backfilling = true;
     try {
-      const result = await api.runs.backfill(params.id, backfillStart, backfillEnd);
-      notify.success(`Backfill started: ${result.count} runs queued`);
+      const plan = await api.runs.backfill(params.id, backfillStart, backfillEnd);
+      notify.success(
+        `Backfill accepted: ${plan.intervals} interval${plan.intervals === 1 ? "" : "s"}, oldest first`,
+      );
       showBackfill = false;
       runs = await api.runs.listByPipeline(params.id);
     } catch (e: any) {

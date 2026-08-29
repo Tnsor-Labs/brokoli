@@ -1,4 +1,5 @@
 import type {
+  BackfillPlan,
   Pipeline,
   PipelineVersion,
   PhysicalPlan,
@@ -139,10 +140,14 @@ export const api = {
     get: (id: string) => request<Run>(`/runs/${id}`),
     instances: (id: string) => request<PhysicalInstance[]>(`/runs/${id}/instances`),
     getLogs: (id: string) => request<LogEntry[]>(`/runs/${id}/logs`),
-    backfill: (pipelineId: string, startDate: string, endDate: string) =>
-      request<{ runs: string[]; count: number }>(`/pipelines/${pipelineId}/backfill`, {
+    // Interval-native since ADR-028: the server enumerates the pipeline's
+    // own schedule inside the range and answers with a plan, not run IDs --
+    // the runs execute in the background, oldest interval first. Date-only
+    // strings keep their historical inclusive-day meaning.
+    backfill: (pipelineId: string, startDate: string, endDate: string, force = false) =>
+      request<BackfillPlan>(`/pipelines/${pipelineId}/backfill`, {
         method: "POST",
-        body: JSON.stringify({ start_date: startDate, end_date: endDate }),
+        body: JSON.stringify({ start_date: startDate, end_date: endDate, force }),
       }),
     // cancel/resume previously existed only as raw fetch calls inside
     // PipelineRuns.svelte, which is why nothing else in the app could offer

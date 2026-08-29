@@ -3,10 +3,12 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
 	"strconv"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -407,27 +409,54 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Interval-native since ADR-028: start/end as RFC3339, enumerated
+	// over the pipeline's own schedule. The pre-ADR date-only fields are
+	// still accepted -- a bare date means midnight UTC, and end_date is
+	// the inclusive day it always was.
 	var req struct {
+		Start     string `json:"start"`
+		End       string `json:"end"`
 		StartDate string `json:"start_date"`
 		EndDate   string `json:"end_date"`
+		Force     bool   `json:"force"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.StartDate == "" || req.EndDate == "" {
-		writeError(w, http.StatusBadRequest, "start_date and end_date required (YYYY-MM-DD)")
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	parse := func(rfc, date string, endOfDay bool) (time.Time, error) {
+		if rfc != "" {
+			return time.Parse(time.RFC3339, rfc)
+		}
+		if date == "" {
+			return time.Time{}, fmt.Errorf("start/end (RFC3339) or start_date/end_date (YYYY-MM-DD) required")
+		}
+		t, err := time.Parse("2006-01-02", date)
+		if err == nil && endOfDay {
+			t = t.AddDate(0, 0, 1)
+		}
+		return t, err
+	}
+	start, err := parse(req.Start, req.StartDate, false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	end, err := parse(req.End, req.EndDate, true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	runIDs, err := h.engine.Backfill(pipelineID, req.StartDate, req.EndDate)
+	plan, err := h.engine.Backfill(pipelineID, engine.BackfillRequest{Start: start, End: end, Force: req.Force})
 	if err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"runs":  runIDs,
-			"error": err.Error(),
-		})
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]interface{}{
-		"runs":  runIDs,
-		"count": len(runIDs),
+	AuditLog(r, "backfill", "pipeline", pipelineID, nil, map[string]interface{}{
+		"intervals": plan.Intervals, "start": plan.First, "end": plan.Last,
 	})
+	writeJSON(w, http.StatusAccepted, plan)
 }
 
 func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
