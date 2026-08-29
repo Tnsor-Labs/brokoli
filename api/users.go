@@ -776,6 +776,15 @@ func IsOpenMode(r *http.Request) bool {
 }
 
 // JWTAuth middleware — checks Bearer token. Skips if no users exist (open mode).
+// BearerTokenResolverFunc lets an extension authenticate bearer tokens
+// that are not this package's JWTs -- enterprise wires it to the
+// api_tokens store so a revocable brk_ token (created in the UI or minted
+// by device authorization) authenticates like a session. Consulted ONLY
+// after JWT parsing fails, so ordinary sessions never pay the lookup; a
+// nil func or a false return leaves the request exactly as unauthorized
+// as it always was.
+var BearerTokenResolverFunc func(token string) (*jwt.MapClaims, bool)
+
 func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -893,7 +902,13 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 					}
 				}
 				if token != "" {
-					if claims, err := ParseToken(token); err == nil {
+					claims, parseErr := ParseToken(token)
+					if parseErr != nil && BearerTokenResolverFunc != nil {
+						if resolved, ok := BearerTokenResolverFunc(token); ok && resolved != nil {
+							claims, parseErr = resolved, nil
+						}
+					}
+					if parseErr == nil {
 						// Propagate claims and org_id into the request context so
 						// downstream WebSocket handlers (sodp.Server.HandleWS) can
 						// enforce per-session tenant isolation. Without this the
@@ -929,10 +944,18 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				}
 			}
 
-			claims, err := ParseToken(strings.TrimPrefix(authHeader, "Bearer "))
+			bearer := strings.TrimPrefix(authHeader, "Bearer ")
+			claims, err := ParseToken(bearer)
 			if err != nil {
-				writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
-				return
+				if BearerTokenResolverFunc != nil {
+					if resolved, ok := BearerTokenResolverFunc(bearer); ok && resolved != nil {
+						claims, err = resolved, nil
+					}
+				}
+				if err != nil {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+					return
+				}
 			}
 
 			// Add claims to context
