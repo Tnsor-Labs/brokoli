@@ -10,13 +10,18 @@ import (
 
 // Pipeline represents a data processing pipeline with its nodes and edges.
 type Pipeline struct {
-	ID               string            `json:"id"`
-	IRVersion        string            `json:"ir_version,omitempty"` // pipeline IR protocol version (e.g. "2.0"); empty means pre-versioned (pre-Phase-0 SDK clients)
-	Name             string            `json:"name"`
-	Description      string            `json:"description"`
-	Nodes            []Node            `json:"nodes"`
-	Edges            []Edge            `json:"edges"`
-	Schedule         string            `json:"schedule"`                    // cron expression, empty for manual-only
+	ID          string `json:"id"`
+	IRVersion   string `json:"ir_version,omitempty"` // pipeline IR protocol version (e.g. "2.0"); empty means pre-versioned (pre-Phase-0 SDK clients)
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Nodes       []Node `json:"nodes"`
+	Edges       []Edge `json:"edges"`
+	Schedule    string `json:"schedule"` // cron expression, empty for manual-only
+	// Catchup opts this pipeline into per-interval catch-up (ADR-028
+	// phase 2, #397): after downtime, one run per missed schedule
+	// interval, oldest first, instead of the default single catch-up run
+	// for the most recently missed tick.
+	Catchup          bool              `json:"catchup,omitempty"`
 	WebhookURL       string            `json:"webhook_url"`                 // URL for event notifications
 	Params           map[string]string `json:"params"`                      // default parameter values
 	Tags             []string          `json:"tags"`                        // labels for filtering/grouping

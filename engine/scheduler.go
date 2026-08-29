@@ -273,6 +273,13 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 			}
 		}
 
+		// Opted-in pipelines (ADR-028 phase 2): one run per missed
+		// interval instead of the single-shot below.
+		if p.Catchup {
+			s.catchUpPerInterval(p, schedule)
+			continue
+		}
+
 		// Get the last run for this pipeline
 		runs, err := s.store.ListRunsByPipeline(p.ID, 1)
 		if err != nil || len(runs) == 0 {
@@ -320,6 +327,135 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 			}(p.ID, schedule, missed)
 		}
 	}
+}
+
+// catchUpMaxIntervals bounds one opted-in catch-up pass per pipeline.
+// Unlike backfill's cap this one truncates rather than refuses -- catch-up
+// is unattended, there is no caller to hand a refusal to -- and it keeps
+// the NEWEST intervals, because a capped catch-up must still land the
+// pipeline current. The dropped older slices are logged with their range
+// (no silent caps) and stay reachable through an explicit backfill. A
+// variable so tests can shrink it.
+var catchUpMaxIntervals = 50
+
+// catchUpPerInterval is the opted-in (pipeline.catchup) half of
+// catchUpMissedRuns: enumerate every complete interval the schedule owed
+// between the last processed slice and now, and dispatch one run per
+// interval, oldest first, sequentially. Runs carry trigger "scheduled" --
+// they ARE the scheduled runs that never fired -- so the scheduled-dispatch
+// unique index collapses races against a concurrently-booting leader's own
+// pass into quiet no-ops.
+func (s *Scheduler) catchUpPerInterval(p models.Pipeline, sched cron.Schedule) {
+	// A pipeline that has never run is owed nothing: same first-deploy
+	// rule as the single-shot path, otherwise enabling catchup on a brand
+	// new pipeline would immediately replay history nobody asked for.
+	runs, err := s.store.ListRunsByPipeline(p.ID, 50)
+	if err != nil || len(runs) == 0 {
+		return
+	}
+
+	// The anchor is the newest DataIntervalEnd on record -- "the last
+	// slice that was processed" -- so catch-up continues the interval
+	// chain rather than re-deriving it from wall clocks. Runs from before
+	// phase 1 (or manual runs only) have no interval; fall back to the
+	// newest StartedAt, which is what the single-shot path anchors on.
+	var anchor time.Time
+	for _, r := range runs {
+		if r.DataIntervalEnd != nil && r.DataIntervalEnd.After(anchor) {
+			anchor = *r.DataIntervalEnd
+		}
+	}
+	if anchor.IsZero() {
+		for _, r := range runs { // newest first
+			if r.StartedAt != nil {
+				anchor = *r.StartedAt
+				break
+			}
+		}
+	}
+	if anchor.IsZero() {
+		return
+	}
+
+	now := time.Now().UTC()
+	if lb := now.Add(-maxIntervalLookback); anchor.Before(lb) {
+		common.SLog().Warn("catch-up lookback clamped to a year; older slices need an explicit backfill",
+			common.PipelineAttr(p.ID), "anchor", anchor)
+		anchor = lb
+	}
+
+	// Count the complete missed intervals first, so the cap can drop the
+	// OLDEST ones without holding the whole list. An interval is missed
+	// only when its END has passed; the one still in progress is cron's.
+	total := 0
+	for a := sched.Next(anchor.Add(-time.Nanosecond)); !a.IsZero(); {
+		b := sched.Next(a)
+		if b.IsZero() || b.After(now) {
+			break
+		}
+		total++
+		a = b
+	}
+	if total == 0 {
+		return
+	}
+	skip := 0
+	if total > catchUpMaxIntervals {
+		skip = total - catchUpMaxIntervals
+		common.SLog().Warn("catch-up cap truncated the oldest missed intervals; recover them with an explicit backfill",
+			common.PipelineAttr(p.ID), "missed", total, "dispatching", catchUpMaxIntervals, "dropped_oldest", skip)
+	}
+	kept := make([][2]time.Time, 0, total-skip)
+	i := 0
+	for a := sched.Next(anchor.Add(-time.Nanosecond)); !a.IsZero(); {
+		b := sched.Next(a)
+		if b.IsZero() || b.After(now) {
+			break
+		}
+		if i >= skip {
+			kept = append(kept, [2]time.Time{a, b})
+		}
+		i++
+		a = b
+	}
+
+	common.SLog().Info("catch-up: dispatching missed intervals",
+		common.PipelineAttr(p.ID), "pipeline_name", p.Name, "intervals", len(kept),
+		"first", kept[0][0], "last", kept[len(kept)-1][1])
+
+	// Sequential, oldest first, joined to the engine's background group so
+	// shutdown waits for the run in flight instead of orphaning it.
+	s.engine.bg.Add(1)
+	go func() {
+		defer s.engine.bg.Done()
+		for _, iv := range kept {
+			if s.engine.closing() {
+				return
+			}
+			if !s.leader.IsLeader() {
+				common.SLog().Info("catch-up stopped mid-pipeline: leadership lost", common.PipelineAttr(p.ID))
+				return
+			}
+			start, end := iv[0], iv[1]
+			_, err := s.engine.RunPipelineOpts(p.ID, RunOptions{
+				Trigger:           models.RunTriggerScheduled,
+				DataIntervalStart: &start,
+				DataIntervalEnd:   &end,
+			})
+			if errors.Is(err, store.ErrDuplicateScheduledRun) {
+				common.SLog().Debug("catch-up interval already dispatched elsewhere",
+					common.PipelineAttr(p.ID), "interval_start", start)
+				continue
+			}
+			if err != nil {
+				// A failed slice does not stop the rest, same rule as
+				// backfill: slices are independent units of work and the
+				// failure is recorded on its run.
+				common.SLog().Error("catch-up run failed",
+					common.PipelineAttr(p.ID), "interval_start", start, "error", err)
+			}
+		}
+	}()
 }
 
 // Stop gracefully stops the scheduler.

@@ -424,6 +424,7 @@
       ...(pipeline?.tags ? { tags: pipeline.tags } : {}),
       ...(pipeline?.hooks ? { hooks: pipeline.hooks } : {}),
       ...(pipeline?.schedule_timezone ? { schedule_timezone: pipeline.schedule_timezone } : {}),
+      ...(pipeline?.catchup ? { catchup: true } : {}),
       ...(pipeline?.sla_deadline ? { sla_deadline: pipeline.sla_deadline } : {}),
       ...(pipeline?.sla_timezone ? { sla_timezone: pipeline.sla_timezone } : {}),
       ...(pipeline?.depends_on ? { depends_on: pipeline.depends_on } : {}),
@@ -554,6 +555,20 @@
             placeholder="No schedule (manual)"
             title="Cron expression, e.g. 0 2 * * * (daily at 2am)"
           />
+          <label
+            class="catchup-toggle"
+            title="After downtime, run every missed schedule interval (oldest first) instead of only the most recent one"
+          >
+            <input
+              type="checkbox"
+              checked={pipeline?.catchup ?? false}
+              on:change={(e) => {
+                if (pipeline) pipeline.catchup = e.currentTarget.checked;
+                markDirty();
+              }}
+            />
+            Catch up
+          </label>
         </div>
         <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -565,7 +580,13 @@
       <div class="toolbar-right">
         <a class="btn-sm" href="#/pipelines/{params?.id}/runs" title="View runs for this pipeline">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d={icons.history.d} stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <path
+              d={icons.history.d}
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            />
           </svg>
           <span>View Runs</span>
         </a>
@@ -1188,6 +1209,17 @@
   .pipeline-name {
     font-weight: 600;
     font-size: 14px;
+  }
+
+  .catchup-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    color: var(--text-secondary, #888);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
   }
 
   .schedule-input {
