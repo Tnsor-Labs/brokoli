@@ -89,6 +89,10 @@ var SupportedExecutionFeatures = []string{
 	// checkpoints and per-page retry policy (config.pagination +
 	// config.execution).
 	"pagination-checkpoints",
+	// Deferrable waits (#399): the wait node type -- file_exists, http,
+	// interval_elapsed and pipeline conditions -- parks its run without a
+	// slot and wakes it when the condition fires.
+	"deferrable-waits",
 	// ADR-028 data intervals, complete as of #397 phases 1-3: scheduled
 	// runs carry [start, end) and ${interval.*} resolves in node config;
 	// pipeline.catchup opts into per-interval catch-up; backfill walks
@@ -153,8 +157,13 @@ const (
 	NodeTypeSinkAPI      NodeType = "sink_api"
 	NodeTypeMigrate      NodeType = "migrate"
 	NodeTypeCondition    NodeType = "condition" // if/else branching
-	NodeTypeDBT          NodeType = "dbt"       // dbt run/test/build
-	NodeTypeNotify       NodeType = "notify"    // send Slack/email/webhook notification
+	// NodeTypeWait parks the run until a declarative condition fires
+	// (#399): file_exists, http, interval_elapsed, or pipeline. While
+	// parked the run costs no concurrency slot; one leader-gated watcher
+	// babysits every parked wait.
+	NodeTypeWait   NodeType = "wait"
+	NodeTypeDBT    NodeType = "dbt"    // dbt run/test/build
+	NodeTypeNotify NodeType = "notify" // send Slack/email/webhook notification
 
 	// NodeTypeUnion concatenates two or more upstream datasets into one.
 	// Emitted by brokoli-sdk's union(name, *refs) and

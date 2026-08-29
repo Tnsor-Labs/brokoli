@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -564,6 +565,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			}
 		}
 		if runErr != nil {
+			var park *WaitParkError
+			if errors.As(runErr, &park) {
+				return r.run, r.parkRun(park)
+			}
 			return r.run, r.failRun(runErr)
 		}
 
@@ -607,6 +612,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	}
 
 	if runErr != nil {
+		var park *WaitParkError
+		if errors.As(runErr, &park) {
+			return r.run, r.parkRun(park)
+		}
 		r.run.Status = models.RunStatusFailed
 		r.run.FinishedAt = &finishTime
 		if err := r.store.UpdateRun(r.run); err != nil {
@@ -1403,6 +1412,31 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			break
 		}
 
+		// ── Parked wait for this attempt (#399) ──
+		// Not a failure: the wait node's condition is not met YET. The
+		// node-run is recorded as waiting, the attempt's lease is dropped
+		// so the eventual wake can reclaim it without waiting out the
+		// 15s expiry, and the park signal bubbles up untouched -- retries
+		// make no sense for a condition that polls on its own clock.
+		var parkSignal *WaitParkError
+		if errors.As(err, &parkSignal) && !r.dryRun {
+			nr.Status = models.RunStatusWaiting
+			nr.DurationMs = duration
+			if persistErr := r.store.UpdateNodeRun(nr); persistErr != nil {
+				return nil, fmt.Errorf("persist waiting node attempt: %w", persistErr)
+			}
+			if execAttemptStore != nil {
+				if _, rlErr := execAttemptStore.RenewLease(r.run.ID, node.ID, "", attempt, r.instanceID, execFencingGen, 0); rlErr != nil {
+					r.log(node.ID, models.LogLevelWarning, "Failed to drop parked attempt lease (wake may wait out the expiry): %v", rlErr)
+				}
+			}
+			r.logWithTrace(node.ID, models.LogLevelInfo, spanID, attempt, nil,
+				"Waiting: condition %q not met; run parks (poll %s, deadline %s)",
+				parkSignal.Condition.Type, parkSignal.Poll, parkSignal.Deadline.Format(time.RFC3339))
+			attemptSpan.End()
+			return nil, err
+		}
+
 		// ── Failure for this attempt ──
 		nr.Status = models.RunStatusFailed
 		nr.DurationMs = duration
@@ -1784,6 +1818,8 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runDBT(node)
 	case models.NodeTypeNotify:
 		return outputExecutionResult(r.runNotify(node, input))
+	case models.NodeTypeWait:
+		return outputExecutionResult(r.runWait(node, input))
 	case models.NodeTypeUnion:
 		return outputExecutionResult(r.runUnion(node, allInputs))
 	case models.NodeTypeDatasetMap:

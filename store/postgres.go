@@ -80,6 +80,17 @@ func (s *PostgresStore) migrate() error {
 	// Pipeline schema additions (safe to re-run — errors ignored for existing columns)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS schedule_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS catchup BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS parked_waits (
+		run_id TEXT PRIMARY KEY,
+		pipeline_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		condition TEXT NOT NULL,
+		poll_interval_ms BIGINT NOT NULL,
+		next_poll_at TIMESTAMPTZ NOT NULL,
+		expires_at TIMESTAMPTZ NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_parked_waits_due ON parked_waits(next_poll_at)`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_deadline TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS sla_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS depends_on JSONB NOT NULL DEFAULT '[]'`)
@@ -1006,6 +1017,84 @@ func pgCreateRun(x sqlExecerPg, r *models.Run) error {
 // its own helpers rather than sharing them with sqlite.go.
 type sqlExecerPg interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+// ── Parked waits (#399) ─────────────────────────────────────
+
+func (s *PostgresStore) CreateParkedWait(w *models.ParkedWait) error {
+	_, err := s.db.Exec(
+		`INSERT INTO parked_waits (run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		w.RunID, w.PipelineID, w.NodeID, w.Condition, w.PollInterval,
+		w.NextPollAt.UTC(), w.ExpiresAt.UTC(), w.CreatedAt.UTC(),
+	)
+	return wrapStoreErr("CreateParkedWait", w.RunID, err)
+}
+
+func (s *PostgresStore) DeleteParkedWait(runID string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM parked_waits WHERE run_id = $1`, runID)
+	if err != nil {
+		return false, wrapStoreErr("DeleteParkedWait", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("DeleteParkedWait", runID, err)
+}
+
+func (s *PostgresStore) ListDueParkedWaits(now time.Time, limit int) ([]models.ParkedWait, error) {
+	rows, err := s.db.Query(
+		`SELECT run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at
+		 FROM parked_waits WHERE next_poll_at <= $1 OR expires_at <= $1 ORDER BY next_poll_at ASC LIMIT $2`,
+		now.UTC(), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ParkedWait
+	for rows.Next() {
+		var w models.ParkedWait
+		if err := rows.Scan(&w.RunID, &w.PipelineID, &w.NodeID, &w.Condition, &w.PollInterval, &w.NextPollAt, &w.ExpiresAt, &w.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) BumpParkedWait(runID string, nextPollAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE parked_waits SET next_poll_at = $1 WHERE run_id = $2`,
+		nextPollAt.UTC(), runID)
+	return wrapStoreErr("BumpParkedWait", runID, err)
+}
+
+func (s *PostgresStore) CountParkedWaits() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM parked_waits`).Scan(&n)
+	return n, err
+}
+
+func (s *PostgresStore) ClaimWaitingRun(runID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1 WHERE id=$2 AND status=$3`,
+		string(models.RunStatusRunning), runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("ClaimWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("ClaimWaitingRun", runID, err)
+}
+
+func (s *PostgresStore) FailWaitingRun(runID string, finishedAt time.Time, errMsg string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1, finished_at=$2, error=$3 WHERE id=$4 AND status=$5`,
+		string(models.RunStatusFailed), finishedAt.UTC(), errMsg, runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("FailWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("FailWaitingRun", runID, err)
 }
 
 func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {

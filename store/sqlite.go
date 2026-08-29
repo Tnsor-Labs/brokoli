@@ -72,6 +72,17 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN schedule_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN catchup INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS parked_waits (
+		run_id TEXT PRIMARY KEY,
+		pipeline_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		condition TEXT NOT NULL,
+		poll_interval_ms INTEGER NOT NULL,
+		next_poll_at TEXT NOT NULL,
+		expires_at TEXT NOT NULL,
+		created_at TEXT NOT NULL
+	)`)
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_parked_waits_due ON parked_waits(next_poll_at)`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_deadline TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN sla_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN depends_on TEXT NOT NULL DEFAULT '[]'`)
@@ -1048,6 +1059,88 @@ func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 		return ErrDuplicateScheduledRun
 	}
 	return wrapStoreErr("CreateRun", r.ID, err)
+}
+
+// ── Parked waits (#399) ─────────────────────────────────────
+
+func (s *SQLiteStore) CreateParkedWait(w *models.ParkedWait) error {
+	_, err := s.db.Exec(
+		`INSERT INTO parked_waits (run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		w.RunID, w.PipelineID, w.NodeID, w.Condition, w.PollInterval,
+		w.NextPollAt.UTC().Format(timeFormat), w.ExpiresAt.UTC().Format(timeFormat), w.CreatedAt.UTC().Format(timeFormat),
+	)
+	return wrapStoreErr("CreateParkedWait", w.RunID, err)
+}
+
+func (s *SQLiteStore) DeleteParkedWait(runID string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM parked_waits WHERE run_id = ?`, runID)
+	if err != nil {
+		return false, wrapStoreErr("DeleteParkedWait", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("DeleteParkedWait", runID, err)
+}
+
+func (s *SQLiteStore) ListDueParkedWaits(now time.Time, limit int) ([]models.ParkedWait, error) {
+	rows, err := s.db.Query(
+		`SELECT run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at
+		 FROM parked_waits WHERE next_poll_at <= ? OR expires_at <= ? ORDER BY next_poll_at ASC LIMIT ?`,
+		now.UTC().Format(timeFormat), now.UTC().Format(timeFormat), limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []models.ParkedWait
+	for rows.Next() {
+		var w models.ParkedWait
+		var next, exp, created string
+		if err := rows.Scan(&w.RunID, &w.PipelineID, &w.NodeID, &w.Condition, &w.PollInterval, &next, &exp, &created); err != nil {
+			return nil, err
+		}
+		w.NextPollAt, _ = time.Parse(timeFormat, next)
+		w.ExpiresAt, _ = time.Parse(timeFormat, exp)
+		w.CreatedAt, _ = time.Parse(timeFormat, created)
+		out = append(out, w)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) BumpParkedWait(runID string, nextPollAt time.Time) error {
+	_, err := s.db.Exec(`UPDATE parked_waits SET next_poll_at = ? WHERE run_id = ?`,
+		nextPollAt.UTC().Format(timeFormat), runID)
+	return wrapStoreErr("BumpParkedWait", runID, err)
+}
+
+func (s *SQLiteStore) CountParkedWaits() (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM parked_waits`).Scan(&n)
+	return n, err
+}
+
+func (s *SQLiteStore) ClaimWaitingRun(runID string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=? WHERE id=? AND status=?`,
+		string(models.RunStatusRunning), runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("ClaimWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("ClaimWaitingRun", runID, err)
+}
+
+func (s *SQLiteStore) FailWaitingRun(runID string, finishedAt time.Time, errMsg string) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=?, finished_at=?, error=? WHERE id=? AND status=?`,
+		string(models.RunStatusFailed), formatTimePtr(&finishedAt), errMsg, runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("FailWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("FailWaitingRun", runID, err)
 }
 
 func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {

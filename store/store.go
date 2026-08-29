@@ -17,7 +17,11 @@ import (
 // PostgresStore.ListNonTerminalRuns so the terminal-status set only needs
 // keeping in sync with engine's private isTerminalRunStatus (which store
 // cannot import) in one place.
-const nonTerminalRunStatusFilter = `status NOT IN ('success','failed','cancelled','blocked')`
+// 'waiting' is also excluded even though it is non-terminal: a parked
+// run (#399) is the wait watcher's to wake or time out, and recovery or
+// startup redispatch treating it as interrupted work would re-run a run
+// that is deliberately, durably paused.
+const nonTerminalRunStatusFilter = `status NOT IN ('success','failed','cancelled','blocked','waiting')`
 
 // PageParams holds pagination parameters.
 type PageParams struct {
@@ -417,6 +421,23 @@ type NodeRunStore interface {
 	// GetLatestNodeProfilesForPipelines and GetLatestRunsByPipelineIDs
 	// use for their own "latest per group" problems. Keyed by run ID.
 	GridNodeRuns(runIDs []string) (map[string][]models.NodeRun, error)
+
+	// Parked waits (#399, deferrable waits): a run parked at a wait node,
+	// durable so it survives instance restarts. The leader's watcher owns
+	// this table; recovery deliberately leaves status "waiting" runs to it.
+	CreateParkedWait(w *models.ParkedWait) error
+	// DeleteParkedWait reports whether THIS caller removed the row -- the
+	// watcher's claim against double-waking.
+	DeleteParkedWait(runID string) (bool, error)
+	// ListDueParkedWaits returns parks whose next poll or expiry is due.
+	ListDueParkedWaits(now time.Time, limit int) ([]models.ParkedWait, error)
+	BumpParkedWait(runID string, nextPollAt time.Time) error
+	CountParkedWaits() (int, error)
+	// ClaimWaitingRun flips waiting -> running, the atomic wake claim.
+	ClaimWaitingRun(runID string) (bool, error)
+	// FailWaitingRun flips waiting -> failed with the error, the timeout
+	// path -- conditional, so it cannot clobber a run that already woke.
+	FailWaitingRun(runID string, finishedAt time.Time, errMsg string) (bool, error)
 }
 
 // RunEventStore is the immutable, append-only log of run/node-attempt

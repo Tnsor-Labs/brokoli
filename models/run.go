@@ -12,6 +12,10 @@ const (
 	RunStatusFailed    RunStatus = "failed"
 	RunStatusCancelled RunStatus = "cancelled"
 	RunStatusBlocked   RunStatus = "blocked" // dependencies not satisfied, trigger skipped
+	// RunStatusWaiting: parked on a wait node (#399, deferrable waits).
+	// Non-terminal, holds NO run slot; the leader's wait watcher owns
+	// waking it (store parked_waits), recovery deliberately does not.
+	RunStatusWaiting RunStatus = "waiting"
 	// RunStatusSkipped is a node-only terminal state for work made inactive
 	// by conditional routing. A pipeline Run itself is never skipped.
 	RunStatusSkipped RunStatus = "skipped"
@@ -160,4 +164,19 @@ type LogEntry struct {
 	SpanID    string            `json:"span_id,omitempty"`  // unique per node attempt
 	Attempt   int               `json:"attempt,omitempty"`  // retry attempt number
 	Metadata  map[string]string `json:"metadata,omitempty"` // structured key-value pairs
+}
+
+// ParkedWait is one deferred wait (#399): a run parked at a wait node,
+// owned by the store so it survives instance restarts. The condition is
+// the node's config, serialized; the watcher re-parses it on every poll
+// so a config format change cannot leave stale in-memory parses running.
+type ParkedWait struct {
+	RunID        string    `json:"run_id"`
+	PipelineID   string    `json:"pipeline_id"`
+	NodeID       string    `json:"node_id"`
+	Condition    string    `json:"condition"` // the wait node's config, JSON
+	PollInterval int64     `json:"poll_interval_ms"`
+	NextPollAt   time.Time `json:"next_poll_at"`
+	ExpiresAt    time.Time `json:"expires_at"`
+	CreatedAt    time.Time `json:"created_at"`
 }

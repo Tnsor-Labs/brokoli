@@ -45,6 +45,14 @@ const (
 	// the run's final status/finished_at/error, same as RunEventTerminal.
 	RunEventCancelled RunEventType = "run.cancelled"
 
+	// RunEventParked / RunEventWoken bracket a deferrable wait (#399):
+	// parked when a wait node's condition was not met and the run went to
+	// status waiting holding no slot; woken when the watcher claimed it
+	// back to running. Projections that do not know these types ignore
+	// them -- waiting runs are deliberately outside recovery's scope.
+	RunEventParked RunEventType = "run.parked"
+	RunEventWoken  RunEventType = "run.woken"
+
 	// RunEventTerminal marks a run reaching a terminal outcome that is not a
 	// cancellation: success, failed, or (for the direct-create path) it is
 	// folded into RunEventCreated instead since blocked runs never

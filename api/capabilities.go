@@ -28,6 +28,7 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 	models.NodeTypeSinkAPI:       {models.CapabilitySink},
 	models.NodeTypeNotify:        {models.CapabilitySink},
 	models.NodeTypeUnion:         {models.CapabilityCompute, models.CapabilityDatasetOutput},
+	models.NodeTypeWait:          {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeDatasetMap:    {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeDatasetFilter: {models.CapabilityCompute, models.CapabilityDatasetOutput},
 }
