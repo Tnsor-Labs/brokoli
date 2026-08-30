@@ -35,7 +35,7 @@ func WrapperPath() (string, error) {
 }
 
 func materialize() (string, error) {
-	files := []string{"wrapper.py", "version.py"}
+	files := []string{"wrapper.py", "version.py", "protocol.py", "worker_main.py"}
 	sum := sha256.New()
 	contents := make(map[string][]byte, len(files))
 	for _, name := range files {
