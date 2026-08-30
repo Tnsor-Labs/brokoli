@@ -17,9 +17,12 @@ import (
 // a torn earlier write is repaired rather than trusted.
 
 var (
-	materializeOnce sync.Once
-	materializedDir string
-	materializeErr  error
+	materializeOnce   sync.Once
+	materializedDir   string
+	materializeErr    error
+	jsMaterializeOnce sync.Once
+	jsMaterializedDir string
+	jsMaterializeErr  error
 )
 
 // WrapperPath returns the on-disk path of wrapper.py, materializing the
@@ -32,6 +35,18 @@ func WrapperPath() (string, error) {
 		return "", materializeErr
 	}
 	return filepath.Join(materializedDir, "wrapper.py"), nil
+}
+
+// JSWrapperPath returns the on-disk path of worker_main.mjs,
+// materializing all sibling imports on first use.
+func JSWrapperPath() (string, error) {
+	jsMaterializeOnce.Do(func() {
+		jsMaterializedDir, jsMaterializeErr = materializeJS()
+	})
+	if jsMaterializeErr != nil {
+		return "", jsMaterializeErr
+	}
+	return filepath.Join(jsMaterializedDir, "worker_main.mjs"), nil
 }
 
 func materialize() (string, error) {
@@ -75,6 +90,42 @@ func materialize() (string, error) {
 		}
 		return "", fmt.Errorf("materialize wrapper: %w", err)
 	}
+	return dir, nil
+}
+
+func materializeJS() (string, error) {
+	files := []string{"worker_main.mjs", "protocol.mjs", "contract.mjs", "version.mjs"}
+	sum := sha256.New()
+	contents := make(map[string][]byte, len(files))
+	for _, name := range files {
+		raw, err := jswrapperFS.ReadFile("jswrapper/" + name)
+		if err != nil {
+			return "", fmt.Errorf("embedded %s unreadable: %w", name, err)
+		}
+		contents[name] = raw
+		sum.Write([]byte(name))
+		sum.Write(raw)
+	}
+	prefix := fmt.Sprintf("brokoli-jswrapper-v%d-%s-", jsWrapperVersion, hex.EncodeToString(sum.Sum(nil))[:16])
+	dir, err := os.MkdirTemp(os.TempDir(), prefix)
+	if err != nil {
+		return "", err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = os.RemoveAll(dir)
+		}
+	}()
+	for _, name := range files {
+		if err := os.WriteFile(filepath.Join(dir, name), contents[name], 0o600); err != nil {
+			return "", err
+		}
+	}
+	if err := os.Chmod(dir, 0o700); err != nil { // #nosec G302 -- directory execute permission is required; files remain 0600.
+		return "", err
+	}
+	remove = false
 	return dir, nil
 }
 

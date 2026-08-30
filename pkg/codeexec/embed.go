@@ -10,3 +10,9 @@ import "embed"
 //
 //go:embed pywrapper/wrapper.py pywrapper/version.py pywrapper/protocol.py pywrapper/worker_main.py
 var pywrapperFS embed.FS
+
+// The JavaScript wrapper is a bare-Node artifact: the engine resolves a
+// Node runtime but never provisions npm dependencies (ADR-030).
+//
+//go:embed jswrapper/worker_main.mjs jswrapper/protocol.mjs jswrapper/contract.mjs jswrapper/version.mjs
+var jswrapperFS embed.FS

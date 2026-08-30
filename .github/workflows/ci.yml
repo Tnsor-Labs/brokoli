@@ -154,6 +154,9 @@ jobs:
         with:
           node-version: "20"
 
+      - name: Code-node JavaScript wrapper contract tests
+        run: node --test pkg/codeexec/jswrapper/tests/*.test.mjs
+
       - name: Build UI (required for go:embed)
         working-directory: ui
         run: |

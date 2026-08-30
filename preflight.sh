@@ -204,6 +204,16 @@ else
   echo "pytest not installed for python3 — skipping (CI still runs it)"
 fi
 
+# ---- 5c. code-node JavaScript wrapper contract tests (ADR-030) ----
+stage "node --test pkg/codeexec/jswrapper/tests"
+if ! node --test pkg/codeexec/jswrapper/tests/*.test.mjs > "$LOGDIR/jswrapper-node.log" 2>&1; then
+  tail -20 "$LOGDIR/jswrapper-node.log"
+  fail jswrapper-node "$LOGDIR/jswrapper-node.log"
+  exit 1
+fi
+tail -3 "$LOGDIR/jswrapper-node.log"
+pass jswrapper-node
+
 # ---- 6. optional coverage pass (CI runs it; adds minutes; opt-in) ----
 if [ "${PREFLIGHT_COVERAGE:-}" = "1" ]; then
   stage "coverage (CI parity)"
