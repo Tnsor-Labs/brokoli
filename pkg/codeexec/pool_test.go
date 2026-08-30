@@ -58,12 +58,10 @@ func TestPoolReusesWarmWorkers(t *testing.T) {
 	if boots := p.WorkerBoots(); boots != 1 {
 		t.Fatalf("expected 1 boot, got %d", boots)
 	}
-	raw, err := os.ReadFile(second.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(raw), `"a": 4`) && !strings.Contains(string(raw), `"a":4`) {
-		t.Fatalf("output not transformed: %s", raw)
+	// Inline input keeps the v1 stdin contract: the result returns
+	// inline too, no file involved.
+	if second.Path != "" || len(second.Rows) != 1 || second.Rows[0]["a"] != float64(4) {
+		t.Fatalf("inline result wrong: %+v", second)
 	}
 	if second.Meta.WrapperVersion != 2 || second.Meta.ProtocolVersion != 1 {
 		t.Fatalf("meta wrong: %+v", second.Meta)
@@ -109,11 +107,25 @@ for r in rows:
     kept.append(r)
 kept[0]["a"] = 99
 `
-	rows := []map[string]interface{}{{"a": float64(1)}, {"a": float64(2)}}
-	_, err := p.Exec(context.Background(), inlineReq(script, rows, filepath.Join(dir, "m.ndjson")))
+	// LazyRows strictness belongs to the FILE data plane only (inline
+	// input keeps v1's freely-mutable stdin rows), so stage NDJSON.
+	inp := filepath.Join(dir, "in.ndjson")
+	if err := os.WriteFile(inp, []byte("{\"a\": 1}\n{\"a\": 2}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{
+		Script: script, Interpreter: "python3",
+		InputNDJSON: inp, InputColumns: []string{"a"},
+		OutputNDJSON: filepath.Join(dir, "m.ndjson"),
+		Timeout:      30 * time.Second,
+	}
+	_, err := p.Exec(context.Background(), req)
 	var scriptErr *ErrScript
 	if !errors.As(err, &scriptErr) || scriptErr.Kind != ErrKindMutationAfterPass {
 		t.Fatalf("want mutation_after_pass, got %v", err)
+	}
+	if !strings.Contains(scriptErr.Message, "already moved on") {
+		t.Fatalf("mutation message lost its explanation: %q", scriptErr.Message)
 	}
 }
 

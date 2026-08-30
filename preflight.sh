@@ -176,6 +176,17 @@ fi
 tail -3 "$LOGDIR/tests.log"
 pass tests
 
+# ---- 5a2. code-node legacy-path leg (ADR-029 dual mode) ----
+# The pool is the default; the legacy spawn path stays green until its
+# removal one release later. Matches the CI leg.
+stage "engine code-node tests, legacy path (BROKOLI_CODE_POOL=0)"
+if ! env BROKOLI_CODE_POOL=0 go test -timeout 10m -run 'TestCodeNode|TestLazyRows|TestPipeline_LazyRows|TestPipeline_EmitZeroRows|TestPipeline_Streamed|TestInstanceWorker|TestExpansion' ./engine/ > "$LOGDIR/tests-legacy-code.log" 2>&1; then
+  grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests-legacy-code.log" | head -10
+  fail tests-legacy-code "$LOGDIR/tests-legacy-code.log"
+  exit 1
+fi
+pass tests-legacy-code
+
 # ---- 5b. code-node wrapper contract tests (pytest, ADR-029) ----
 # Real Python tested as Python, matching CI. Skipped only when pytest
 # is genuinely unavailable — the wrapper tests matter exactly as much

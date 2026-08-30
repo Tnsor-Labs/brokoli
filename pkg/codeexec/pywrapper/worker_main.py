@@ -54,6 +54,13 @@ except ImportError:
 import protocol  # noqa: E402  (sys.path[0] is this file's directory)
 from version import WRAPPER_VERSION  # noqa: E402
 
+_MUTATION_MESSAGE = (
+    "a row was modified after the loop that read it had already moved on. "
+    "Rows stream from disk one at a time, so an edit has to be made while the row is the "
+    "one being handled. Edit it inside the loop body, or collect what you need into a new "
+    "list and output that instead. This is refused rather than ignored because applying it "
+    "would mean guessing where the row belongs.")
+
 _WRAPPER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "wrapper.py")
 _ENV_KEYS = (
     "BROKED_SCRIPT",
@@ -71,7 +78,8 @@ _ENV_KEYS = (
 def _forward_captured(sock_file, exec_id, captured, level, skip_last_json=False):
     """Send captured output lines as log frames. Returns the trailing
     JSON payload when skip_last_json found one (the inline result)."""
-    lines = [l for l in captured.getvalue().splitlines() if l.strip()]
+    lines = [l for l in captured.getvalue().splitlines()
+             if l.strip() and not l.startswith("#PROGRESS:")]
     inline = None
     if skip_last_json and lines:
         try:
@@ -96,34 +104,42 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
     inp = msg.get("input") or {}
     out = msg.get("output") or {}
     input_path = inp.get("path", "")
-    inline_rows = None
-    if inp.get("mode") == "inline":
-        # Small data still travels by file between worker and wrapper —
-        # one data plane inside the process, and the wrapper's lazy rows
-        # handle it in constant memory either way.
-        inline_rows = inp.get("rows") or []
-        input_path = os.path.join(tmpdir, f"inline_in_{os.getpid()}.ndjson")
-        with open(input_path, "w") as f:
-            for row in inline_rows:
-                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    stdin_payload = "{}"
+    inline = inp.get("mode") == "inline"
+    if inline:
+        # Inline input keeps the v1 stdin contract EXACTLY: rows arrive
+        # as a plain list (mutable anywhere, no lazy-rows strictness)
+        # and the result returns inline. Only ndjson-mode input gets the
+        # file data plane and its streaming semantics — pinned by
+        # TestCodeNode_FilterAndTransform, which post-mutates collected
+        # rows the way stdin-mode scripts always could.
+        input_path = ""
+        stdin_payload = json.dumps({
+            "columns": inp.get("columns") or [],
+            "rows": inp.get("rows") or [],
+            "config": msg.get("config") or {},
+            "params": msg.get("params") or {},
+        }, ensure_ascii=False)
 
     for key in _ENV_KEYS:
         os.environ.pop(key, None)
     os.environ["BROKED_SCRIPT"] = script_path
     os.environ["BROKED_CONFIG"] = json.dumps(msg.get("config") or {}, ensure_ascii=False)
     os.environ["BROKED_PARAMS"] = json.dumps(msg.get("params") or {}, ensure_ascii=False)
+    output_path = ""
     if input_path:
         os.environ["BROKED_INPUT_NDJSON"] = input_path
         columns = inp.get("columns") or []
         if columns:
             os.environ["BROKED_INPUT_COLUMNS"] = json.dumps(columns)
-    output_path = out.get("path") or os.path.join(tmpdir, f"out_{os.getpid()}.ndjson")
-    os.environ["BROKED_OUTPUT_NDJSON"] = output_path
+    if not inline:
+        output_path = out.get("path") or os.path.join(tmpdir, f"out_{os.getpid()}.ndjson")
+        os.environ["BROKED_OUTPUT_NDJSON"] = output_path
 
     ns = {"__name__": "__main__", "__file__": _WRAPPER_PATH, "__builtins__": __builtins__}
     real_stdin, real_stdout, real_stderr = sys.stdin, sys.stdout, sys.stderr
     captured_out, captured_err = io.StringIO(), io.StringIO()
-    sys.stdin = io.StringIO("{}")
+    sys.stdin = io.StringIO(stdin_payload)
     sys.stdout, sys.stderr = captured_out, captured_err
     failure = None
     try:
@@ -140,9 +156,11 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
                    "message": "script exceeded the memory limit",
                    "traceback": traceback.format_exc()}
     except BaseException as e:  # noqa: BLE001 — every failure becomes a typed frame
-        kind = "mutation_after_pass" if type(e).__name__ == "_MutationAfterPass" else "user_exception"
-        failure = {"kind": kind, "message": str(e) or type(e).__name__,
-                   "traceback": traceback.format_exc()}
+        if type(e).__name__ == "_MutationAfterPass":
+            failure = {"kind": "mutation_after_pass", "message": _MUTATION_MESSAGE}
+        else:
+            failure = {"kind": "user_exception", "message": str(e) or type(e).__name__,
+                       "traceback": traceback.format_exc()}
     finally:
         sys.stdin, sys.stdout, sys.stderr = real_stdin, real_stdout, real_stderr
         # The wrapper registers its journal cleanup with atexit, which a
@@ -163,14 +181,9 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
             os.remove(script_path)
         except OSError:
             pass
-        if inline_rows is not None:
-            try:
-                os.remove(input_path)
-            except OSError:
-                pass
 
-    inline = _forward_captured(sock_file, exec_id, captured_out, "info",
-                               skip_last_json=failure is None)
+    inline_result = _forward_captured(sock_file, exec_id, captured_out, "info",
+                                      skip_last_json=failure is None)
     _forward_captured(sock_file, exec_id, captured_err, "warning")
 
     if failure is not None:
@@ -178,7 +191,7 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
         protocol.write_frame(sock_file, protocol.FRAME_ERROR, failure)
         return
 
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 0 and inline is None:
+    if output_path and os.path.exists(output_path) and os.path.getsize(output_path) > 0 and inline_result is None:
         rows_written = 0
         columns = []
         with open(output_path) as f:
@@ -198,7 +211,7 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
                   "columns": list(declared) if declared else columns,
                   "rows_written": rows_written}
     else:
-        payload = inline or {"columns": [], "rows": []}
+        payload = inline_result or {"columns": [], "rows": []}
         result = {"mode": "inline", "columns": payload.get("columns") or [],
                   "rows": payload.get("rows") or [],
                   "rows_written": len(payload.get("rows") or [])}
