@@ -2,10 +2,13 @@ package engine
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
+	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
 // ValidationError holds all issues found during validation.
@@ -394,6 +397,10 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 // a typo'd type — for years.
 func codeExecutionKeyErrors(config map[string]interface{}) []string {
 	var errs []string
+	language, languageErr := codeLanguage(config)
+	if languageErr != nil {
+		errs = append(errs, languageErr.Error())
+	}
 	for _, key := range []string{"timeout", "max_memory_mb", "max_cpu_seconds"} {
 		if raw, ok := config[key]; ok {
 			valid := false
@@ -411,6 +418,22 @@ func codeExecutionKeyErrors(config map[string]interface{}) []string {
 	if raw, ok := config["python_path"]; ok {
 		if v, isStr := raw.(string); !isStr || strings.TrimSpace(v) == "" {
 			errs = append(errs, "'python_path' must be a non-empty string when set")
+		}
+	}
+	if raw, ok := config["node_path"]; ok {
+		if v, isStr := raw.(string); !isStr || strings.TrimSpace(v) == "" {
+			errs = append(errs, "'node_path' must be a non-empty string when set")
+		} else if languageErr == nil && language == "typescript" {
+			if _, reason := plugins.ResolveNodePath(v, ">=20.0"); reason != "" {
+				errs = append(errs, fmt.Sprintf("'node_path' must resolve Node >=20: %s", reason))
+			}
+		}
+	}
+	if languageErr == nil && language == "typescript" && !codeexec.PoolEnabled() {
+		if runtime.GOOS == "windows" {
+			errs = append(errs, "language 'typescript' requires the code worker pool, which is unavailable on Windows")
+		} else {
+			errs = append(errs, "language 'typescript' requires the code worker pool; BROKOLI_CODE_POOL=0 selects the Python-only legacy path")
 		}
 	}
 	return errs

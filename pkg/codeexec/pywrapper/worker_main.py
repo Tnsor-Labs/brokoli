@@ -254,6 +254,7 @@ def main():
     protocol.write_frame(sock_file, protocol.FRAME_HELLO, {
         "protocol_version": protocol.PROTOCOL_VERSION,
         "wrapper_version": WRAPPER_VERSION,
+        "language": "python",
         "python_version": platform.python_version(),
         "pid": os.getpid(),
     })

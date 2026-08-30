@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/proctree"
@@ -23,23 +25,35 @@ const terminationGrace = 5 * time.Second
 
 // Worker is one long-lived interpreter process plus its socket.
 type Worker struct {
-	cmd      *exec.Cmd
-	conn     net.Conn
-	rw       *bufio.ReadWriter
-	hello    HelloMsg
-	sockPath string
-	execs    int
-	idleAt   time.Time
-	oneShot  bool
+	cmd       *exec.Cmd
+	conn      net.Conn
+	rw        *bufio.ReadWriter
+	hello     HelloMsg
+	sockPath  string
+	execs     int
+	idleAt    time.Time
+	oneShot   bool
+	stderr    *stderrTail
+	waitDone  chan struct{}
+	waitErr   error
+	killOnce  sync.Once
+	cleanOnce sync.Once
 }
 
 // spawnWorker starts one worker process and waits for its hello.
-func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir string, oneShot bool) (*Worker, error) {
-	wrapperPath, err := WrapperPath()
+func spawnWorker(ctx context.Context, language, interpreter string, limits Limits, sockDir string, oneShot bool) (*Worker, error) {
+	var workerMain string
+	var err error
+	if language == "typescript" {
+		workerMain, err = JSWrapperPath()
+	} else {
+		var wrapperPath string
+		wrapperPath, err = WrapperPath()
+		workerMain = filepath.Join(filepath.Dir(wrapperPath), "worker_main.py")
+	}
 	if err != nil {
 		return nil, err
 	}
-	workerMain := filepath.Join(filepath.Dir(wrapperPath), "worker_main.py")
 
 	sockPath := filepath.Join(sockDir, fmt.Sprintf("w-%d.sock", time.Now().UnixNano()))
 	listener, err := net.Listen("unix", sockPath)
@@ -49,6 +63,9 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 	defer listener.Close()
 
 	args := []string{workerMain, "--socket", sockPath}
+	if language == "typescript" && limits.MemoryMB > 0 {
+		args = append([]string{fmt.Sprintf("--max-old-space-size=%d", limits.MemoryMB)}, args...)
+	}
 	if oneShot {
 		args = append(args, "--one-shot")
 	}
@@ -61,10 +78,32 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 	proctree.ConfigureProcessGroup(cmd)
 	cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
 	cmd.WaitDelay = terminationGrace
+	tail := &stderrTail{}
 	cmd.Stdout = nil
-	cmd.Stderr = nil
+	cmd.Stderr = tail
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn code worker (%s): %w", interpreter, err)
+	}
+	w := &Worker{
+		cmd:      cmd,
+		sockPath: sockPath,
+		oneShot:  oneShot,
+		stderr:   tail,
+		waitDone: make(chan struct{}),
+	}
+	go func() {
+		w.waitErr = cmd.Wait()
+		close(w.waitDone)
+	}()
+	fileSizeBytes := uint64(0)
+	if limits.FileSizeMB > 0 {
+		fileSizeBytes = uint64(limits.FileSizeMB) * 1024 * 1024
+	}
+	if err := proctree.ApplyRlimits(cmd.Process.Pid, proctree.Rlimits{
+		CPUSeconds: uint64(max(limits.CPUSeconds, 0)), FileSizeBytes: fileSizeBytes, OpenFiles: uint64(max(limits.OpenFiles, 0)),
+	}); err != nil {
+		w.kill()
+		return nil, fmt.Errorf("apply code worker limits: %w\nstderr: %s", err, strings.TrimSpace(tail.String()))
 	}
 
 	type accepted struct {
@@ -81,31 +120,29 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 	select {
 	case a := <-acceptCh:
 		if a.err != nil {
-			killWorkerProcess(cmd)
+			w.kill()
 			return nil, fmt.Errorf("worker accept: %w", a.err)
 		}
 		conn = a.conn
+	case <-w.waitDone:
+		w.cleanup()
+		return nil, fmt.Errorf("code worker exited before connecting: %v\nstderr: %s", w.waitErr, strings.TrimSpace(tail.String()))
 	case <-time.After(spawnTimeout):
-		killWorkerProcess(cmd)
+		w.kill()
 		return nil, fmt.Errorf("code worker did not connect within %s", spawnTimeout)
 	case <-ctx.Done():
-		killWorkerProcess(cmd)
+		w.kill()
 		return nil, ctx.Err()
 	}
 
-	w := &Worker{
-		cmd:      cmd,
-		conn:     conn,
-		rw:       bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn)),
-		sockPath: sockPath,
-		oneShot:  oneShot,
-	}
+	w.conn = conn
+	w.rw = bufio.NewReadWriter(bufio.NewReader(conn), bufio.NewWriter(conn))
 	_ = conn.SetReadDeadline(time.Now().Add(spawnTimeout))
 	frameType, payload, err := ReadFrame(w.rw.Reader)
 	_ = conn.SetReadDeadline(time.Time{})
 	if err != nil || frameType != FrameHello {
 		w.kill()
-		return nil, fmt.Errorf("worker hello: %w (frame %#x)", err, frameType)
+		return nil, fmt.Errorf("worker hello: %w (frame %#x)\nstderr: %s", err, frameType, strings.TrimSpace(tail.String()))
 	}
 	if err := unmarshalStrictEnough(payload, &w.hello); err != nil {
 		w.kill()
@@ -116,6 +153,14 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 		return nil, fmt.Errorf("code worker speaks protocol %d; host supports %v",
 			w.hello.ProtocolVersion, SupportedCodeProtocolVersions)
 	}
+	if w.hello.Language != language {
+		w.kill()
+		return nil, fmt.Errorf("code worker language %q does not match requested %q", w.hello.Language, language)
+	}
+	if want := wrapperVersionForLanguage(language); w.hello.WrapperVersion != want {
+		w.kill()
+		return nil, fmt.Errorf("%s code worker wrapper version %d does not match embedded contract %d", language, w.hello.WrapperVersion, want)
+	}
 	return w, nil
 }
 
@@ -123,11 +168,16 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 // socket. Used on cancel, timeout, protocol corruption, and recycle —
 // every path where the process's state is no longer trusted.
 func (w *Worker) kill() {
-	if w.conn != nil {
-		_ = w.conn.Close()
-	}
-	killWorkerProcess(w.cmd)
-	_ = os.Remove(w.sockPath)
+	w.killOnce.Do(func() {
+		if w.conn != nil {
+			_ = w.conn.Close()
+		}
+		if w.cmd != nil && w.cmd.Process != nil {
+			_ = proctree.KillProcessTree(w.cmd.Process)
+		}
+		w.awaitExit(terminationGrace)
+		w.cleanup()
+	})
 }
 
 // shutdown asks the worker to exit cleanly, then enforces it.
@@ -136,27 +186,30 @@ func (w *Worker) shutdown() {
 		_ = WriteFrame(w.rw.Writer, FrameShutdown, struct{}{})
 		_ = w.rw.Flush()
 	}
-	if w.cmd != nil && w.cmd.Process != nil {
-		done := make(chan struct{})
-		go func() { _ = w.cmd.Wait(); close(done) }()
-		select {
-		case <-done:
-		case <-time.After(terminationGrace):
-		}
-	}
-	w.kill()
-}
-
-func killWorkerProcess(cmd *exec.Cmd) {
-	if cmd == nil || cmd.Process == nil {
+	if !w.awaitExit(terminationGrace) {
+		w.kill()
 		return
 	}
-	_ = proctree.KillProcessTree(cmd.Process)
-	// Reap; bounded because the group just got SIGKILL.
-	waitDone := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(waitDone) }()
-	select {
-	case <-waitDone:
-	case <-time.After(terminationGrace):
+	w.cleanup()
+}
+
+func (w *Worker) awaitExit(timeout time.Duration) bool {
+	if w.waitDone == nil {
+		return true
 	}
+	select {
+	case <-w.waitDone:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
+}
+
+func (w *Worker) cleanup() {
+	w.cleanOnce.Do(func() {
+		if w.conn != nil {
+			_ = w.conn.Close()
+		}
+		_ = os.Remove(w.sockPath)
+	})
 }

@@ -353,7 +353,7 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 	return columnSchema(types)
 }
 
-func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runCode(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	script, _ := node.Config["script"].(string)
 	if script == "" {
 		return nil, fmt.Errorf("code node requires 'script' in config")
@@ -380,10 +380,14 @@ func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataS
 
 	// ADR-029 P0 audit line: which wrapper contract and which ceilings
 	// this execution ran under, durable with the run.
-	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
-		codeexec.WrapperVersion(), codeexec.Resolve(configForScript))
+	language, languageErr := codeLanguage(configForScript)
+	if languageErr != nil {
+		return nil, languageErr
+	}
+	r.log(node.ID, models.LogLevelInfo, "code exec: language=%s wrapper v%d, %s",
+		language, codeWrapperVersion(language), codeexec.Resolve(configForScript))
 
-	result, stderr, err := ExecuteCodeNodeProgress(context.Background(), script, input, configForScript, runParams, timeoutSec,
+	result, stderr, err := ExecuteCodeNodeProgress(ctx, script, input, configForScript, runParams, timeoutSec,
 		func(percent int, message string) {
 			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 		})
@@ -391,7 +395,7 @@ func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataS
 		// Log stderr as warnings (user print statements, warnings, etc.)
 		for _, line := range splitLines(stderr) {
 			if line != "" {
-				r.log(node.ID, models.LogLevelWarning, "python: %s", line)
+				r.log(node.ID, models.LogLevelWarning, "%s: %s", language, line)
 			}
 		}
 	}

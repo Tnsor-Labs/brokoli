@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -126,6 +127,11 @@ func TestValidate_SelfLoop(t *testing.T) {
 }
 
 func TestValidate_CodeNodeExecutionKeys(t *testing.T) {
+	t.Setenv("BROKOLI_CODE_POOL", "1")
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
 	makeCode := func(config map[string]interface{}) *models.Pipeline {
 		config["script"] = "output_data = {}"
 		return &models.Pipeline{
@@ -138,9 +144,9 @@ func TestValidate_CodeNodeExecutionKeys(t *testing.T) {
 		}
 	}
 
-	// Valid shapes: JSON floats, YAML ints, a real python_path.
+	// Valid shapes: JSON floats, YAML ints, runtime paths, and both languages.
 	ve := ValidatePipeline(makeCode(map[string]interface{}{
-		"timeout": float64(60), "max_memory_mb": 512, "max_cpu_seconds": float64(30), "python_path": "/usr/bin/python3",
+		"timeout": float64(60), "max_memory_mb": 512, "max_cpu_seconds": float64(30), "language": "typescript", "node_path": nodePath,
 	}))
 	if ve.HasErrors() {
 		t.Fatalf("valid execution keys rejected: %v", ve.Errors)
@@ -152,10 +158,28 @@ func TestValidate_CodeNodeExecutionKeys(t *testing.T) {
 		"string cpu":          {"max_cpu_seconds": "fast"},
 		"empty python_path":   {"python_path": "  "},
 		"numeric python_path": {"python_path": 3},
+		"empty node_path":     {"node_path": "  "},
+		"numeric node_path":   {"node_path": 3},
+		"unknown language":    {"language": "ruby"},
+		"numeric language":    {"language": 3},
+		"null language":       {"language": nil},
 	} {
 		if ve := ValidatePipeline(makeCode(config)); !ve.HasErrors() {
 			t.Errorf("%s: expected a validation error", name)
 		}
+	}
+
+	results := ValidateNodes(makeCode(map[string]interface{}{"language": "ruby"}).Nodes)
+	if len(results) == 0 || !strings.Contains(strings.Join(results[0].Errors, " "), "language") {
+		t.Fatalf("per-node validation did not reject language: %+v", results)
+	}
+}
+
+func TestValidate_TypeScriptRefusesLegacyCodePath(t *testing.T) {
+	t.Setenv("BROKOLI_CODE_POOL", "0")
+	errs := codeExecutionKeyErrors(map[string]interface{}{"language": "typescript"})
+	if !strings.Contains(strings.Join(errs, " "), "BROKOLI_CODE_POOL=0") {
+		t.Fatalf("legacy-path refusal does not name the constraint: %v", errs)
 	}
 }
 

@@ -1,10 +1,116 @@
 package engine
 
 import (
+	"context"
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
+
+func TestCodeNode_TypeScript(t *testing.T) {
+	if !codeexec.PoolEnabled() {
+		t.Skip("TypeScript requires the worker pool")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	ds := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": float64(2)}}}
+	result, stderr, err := ExecuteCodeNode(`
+    console.log("typescript ran");
+    await sleep(1);
+    output_data = { columns: ["id"], rows: rows.map(row => ({ id: row.id * config.multiplier })) };
+  `, ds, map[string]interface{}{"language": "typescript", "node_path": node, "multiplier": float64(3)}, nil, 10)
+	if err != nil {
+		t.Fatalf("TypeScript execution failed: %v\nstderr: %s", err, stderr)
+	}
+	if len(result.Rows) != 1 || result.Rows[0]["id"] != float64(6) || !strings.Contains(stderr, "typescript ran") {
+		t.Fatalf("TypeScript result wrong: result=%+v stderr=%q", result, stderr)
+	}
+}
+
+func TestCodeNode_TypeScriptCancellationKillsBusyWorker(t *testing.T) {
+	if !codeexec.PoolEnabled() {
+		t.Skip("TypeScript requires the worker pool")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := ExecuteCodeNodeContext(ctx, `await sleep(60000);`, nil,
+			map[string]interface{}{"language": "typescript", "node_path": node}, nil, 120)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation error = %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("busy TypeScript worker ignored cancellation")
+	}
+}
+
+func TestCodeNode_TypeScriptStreamed(t *testing.T) {
+	if !codeexec.PoolEnabled() {
+		t.Skip("TypeScript requires the worker pool")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	input := filepath.Join(t.TempDir(), "input.ndjson")
+	if err := os.WriteFile(input, []byte("{\"id\":1}\n{\"id\":2}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result, err := executeCodeNodeStreamed(context.Background(), `
+    begin_emit(["id"]);
+    for await (const row of rowsStream()) emit({ id: row.id * 2 });
+  `, input, []string{"id"}, map[string]interface{}{"language": "typescript", "node_path": node}, nil, 10, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(result.outputPath) })
+	got, err := os.ReadFile(result.outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "{\"id\":2}\n{\"id\":4}\n" {
+		t.Fatalf("streamed TypeScript output = %q", got)
+	}
+}
+
+func TestCodeNode_LegacyStreamedCancellation(t *testing.T) {
+	t.Setenv("BROKOLI_CODE_POOL", "0")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := executeCodeNodeStreamed(ctx, "import time\ntime.sleep(60)", "", nil, nil, nil, 120, nil)
+		done <- err
+	}()
+	time.Sleep(100 * time.Millisecond)
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("legacy streamed execution returned no cancellation error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("legacy streamed execution ignored cancellation")
+	}
+}
 
 func TestCodeNode_Passthrough(t *testing.T) {
 	ds := &common.DataSet{

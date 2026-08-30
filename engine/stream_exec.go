@@ -233,9 +233,12 @@ type codeStreamResult struct {
 // lattice is battle-tested and this path never needs it — a streamed
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
-func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamed(parent context.Context, script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+	if _, err := validateCodeRuntimeConstraint(nodeConfig); err != nil {
+		return nil, err
+	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodeStreamedPooled(script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
+		return executeCodeNodeStreamedPooled(parent, script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
 	}
 	if script == "" {
 		return nil, fmt.Errorf("code node requires a 'script' in config")
@@ -269,7 +272,7 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 		pythonPath = pp
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
+	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
 	limits := codeexec.Resolve(nodeConfig)
@@ -559,14 +562,14 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 	case models.NodeTypeSinkDB:
 		return r.runSinkDBStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeCode:
-		return r.runCodeStreamed(node, inputRef, outputs)
+		return r.runCodeStreamed(ctx, node, inputRef, outputs)
 	}
 	return nodeExecutionResult{}, fmt.Errorf("node type %q is not stream-capable", node.Type)
 }
 
 // runCodeStreamed mirrors runCode's config handling and stderr logging
 // exactly, around file-based I/O on both sides of the subprocess.
-func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	script, _ := node.Config["script"].(string)
 	if script == "" {
 		return nodeExecutionResult{}, fmt.Errorf("code node requires 'script' in config")
@@ -587,8 +590,12 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 	}
 
 	// ADR-029 P0 audit line, mirroring runCode's.
-	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
-		codeexec.WrapperVersion(), codeexec.Resolve(configForScript))
+	language, languageErr := codeLanguage(configForScript)
+	if languageErr != nil {
+		return nodeExecutionResult{}, languageErr
+	}
+	r.log(node.ID, models.LogLevelInfo, "code exec: language=%s wrapper v%d, %s",
+		language, codeWrapperVersion(language), codeexec.Resolve(configForScript))
 
 	stagedInput := ""
 	if inputRef != nil {
@@ -605,14 +612,14 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 	if inputRef != nil {
 		inputCols = inputRef.Columns
 	}
-	res, err := executeCodeNodeStreamed(script, stagedInput, inputCols, configForScript, runParams, timeoutSec,
+	res, err := executeCodeNodeStreamed(ctx, script, stagedInput, inputCols, configForScript, runParams, timeoutSec,
 		func(percent int, message string) {
 			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 		})
 	if res != nil && res.stderr != "" {
 		for _, line := range splitLines(res.stderr) {
 			if line != "" {
-				r.log(node.ID, models.LogLevelWarning, "python: %s", line)
+				r.log(node.ID, models.LogLevelWarning, "%s: %s", language, line)
 			}
 		}
 	}
