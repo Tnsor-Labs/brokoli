@@ -13,10 +13,9 @@ import (
 
 // Limits bound one code-node subprocess. MemoryMB and CPUSeconds of
 // zero mean unlimited; FileSizeMB and OpenFiles fall back to their
-// documented defaults when zero. Memory is enforced as RLIMIT_AS —
-// address space, not RSS — so mmap-heavy libraries can trip it below
-// their true resident usage; size it generously or use the cgroup
-// backstop (a later ADR-029 stage) where accuracy matters.
+// documented defaults when zero. Python enforces memory as RLIMIT_AS;
+// TypeScript uses V8's --max-old-space-size because Node's reserved
+// address-space cage makes RLIMIT_AS unsuitable (ADR-030).
 type Limits struct {
 	MemoryMB   int
 	CPUSeconds int

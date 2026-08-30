@@ -57,6 +57,9 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
+	if _, err := validateCodeRuntimeConstraint(nodeConfig); err != nil {
+		return nil, "", err
+	}
 	if codeexec.PoolEnabled() {
 		return executeCodeNodePooled(parent, script, input, nodeConfig, runParams, timeoutSec, progress)
 	}

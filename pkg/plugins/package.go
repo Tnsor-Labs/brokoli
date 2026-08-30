@@ -238,6 +238,10 @@ func resolveRuntimeBinary(name, constraint string) (path string, reason string) 
 	if err != nil {
 		return "", err.Error()
 	}
+	return checkRuntimeConstraint(name, bin, major, minor, constraint)
+}
+
+func checkRuntimeConstraint(name, bin string, major, minor int, constraint string) (path string, reason string) {
 	constraint = strings.TrimSpace(constraint)
 	if constraint == "" {
 		return bin, ""
@@ -584,4 +588,20 @@ func copyTreeInternal(src, dst string) error {
 // a non-empty reason explains a failed resolution.
 func ResolvePython(constraint string) (path string, reason string) {
 	return resolvePythonRuntime(constraint)
+}
+
+// ResolveNode exposes the shared runtime resolver to the TypeScript
+// code-node worker. Node is resolved from the host, never provisioned.
+func ResolveNode(constraint string) (path string, reason string) {
+	return resolveRuntimeBinary("node", constraint)
+}
+
+// ResolveNodePath probes an explicit per-node override through the same
+// Node version policy as PATH resolution.
+func ResolveNodePath(binary, constraint string) (path string, reason string) {
+	path, major, minor, err := probeVersion(binary, "--version")
+	if err != nil {
+		return "", err.Error()
+	}
+	return checkRuntimeConstraint("node", path, major, minor, constraint)
 }

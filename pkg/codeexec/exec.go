@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -12,6 +13,7 @@ import (
 // input mode: InlineRows (small data) or InputNDJSON (a staged file by
 // reference — the ADR-029 v1 data plane).
 type Request struct {
+	Language        string // "python" (default) | "typescript"
 	Script          string
 	Config          map[string]interface{}
 	Params          map[string]string
@@ -29,6 +31,7 @@ type Request struct {
 // ExecMeta is the per-run audit record (ADR-029): which contract this
 // execution actually ran under.
 type ExecMeta struct {
+	Language        string
 	WrapperVersion  int
 	ProtocolVersion int
 	Interpreter     string
@@ -55,6 +58,27 @@ type ErrScript struct {
 	Traceback string
 }
 
+// ErrWorkerDied preserves process-level diagnostics when a worker
+// cannot send a typed frame (V8 OOM and native-library aborts).
+type ErrWorkerDied struct {
+	Cause  error
+	Exit   error
+	Stderr string
+}
+
+func (e *ErrWorkerDied) Error() string {
+	detail := fmt.Sprintf("code worker died mid-execution: %v", e.Cause)
+	if e.Exit != nil {
+		detail += fmt.Sprintf(" (process: %v)", e.Exit)
+	}
+	if strings.TrimSpace(e.Stderr) != "" {
+		detail += "\nworker stderr: " + strings.TrimSpace(e.Stderr)
+	}
+	return detail
+}
+
+func (e *ErrWorkerDied) Unwrap() error { return e.Cause }
+
 func (e *ErrScript) Error() string {
 	if e.Traceback != "" {
 		return fmt.Sprintf("%s\nstderr: %s", e.Message, e.Traceback)
@@ -67,18 +91,25 @@ func (e *ErrScript) Error() string {
 // untrusted — ADR-029) and leave every other worker untouched; the
 // pool respawns lazily on the next demand.
 func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
+	if req.Language == "" {
+		req.Language = "python"
+	}
+	if req.Language != "python" && req.Language != "typescript" {
+		return nil, fmt.Errorf("codeexec: unsupported language %q", req.Language)
+	}
 	if req.Interpreter == "" {
 		return nil, errors.New("codeexec: request needs a resolved interpreter")
 	}
 	if req.Timeout <= 0 {
 		req.Timeout = 30 * time.Second
 	}
-	worker, warm, err := p.acquire(ctx, req.Interpreter, req.Limits)
+	worker, warm, err := p.acquire(ctx, req.Language, req.Interpreter, req.Limits)
 	if err != nil {
 		return nil, err
 	}
 	meta := ExecMeta{
-		WrapperVersion:  WrapperVersion(),
+		Language:        req.Language,
+		WrapperVersion:  wrapperVersionForLanguage(req.Language),
 		ProtocolVersion: CodeProtocolVersion,
 		Interpreter:     req.Interpreter,
 		Warm:            warm,
@@ -119,21 +150,28 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 		healthy := !out.fatal
 		if out.err != nil {
 			var scriptErr *ErrScript
-			if errors.As(out.err, &scriptErr) && scriptErr.Kind == ErrKindResourceLimit {
-				healthy = false // allocator state untrusted after a breach
+			if errors.As(out.err, &scriptErr) && (scriptErr.Kind == ErrKindResourceLimit || scriptErr.Kind == ErrKindInternal) {
+				healthy = false // allocator/internal state is untrusted after a breach
 			}
 		}
-		p.release(worker, req.Interpreter, req.Limits, healthy)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, healthy)
 		return out.result, out.err
 	case <-timer.C:
 		worker.kill()
-		p.release(worker, req.Interpreter, req.Limits, false)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, false)
 		return nil, fmt.Errorf("script timed out after %ds", int(req.Timeout.Seconds()))
 	case <-ctx.Done():
 		worker.kill()
-		p.release(worker, req.Interpreter, req.Limits, false)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, false)
 		return nil, ctx.Err()
 	}
+}
+
+func wrapperVersionForLanguage(language string) int {
+	if language == "typescript" {
+		return JSWrapperVersion()
+	}
+	return WrapperVersion()
 }
 
 // exchange drives one exec frame to its result on a single worker.
@@ -142,6 +180,7 @@ func (p *Pool) exchange(w *Worker, msg ExecMsg, req Request, meta ExecMeta) (out
 	err    error
 	fatal  bool
 }) {
+	w.stderr.Reset()
 	if err := WriteFrame(w.rw.Writer, FrameExec, msg); err != nil {
 		return failFatal(fmt.Errorf("send exec to code worker: %w", err))
 	}
@@ -151,7 +190,12 @@ func (p *Pool) exchange(w *Worker, msg ExecMsg, req Request, meta ExecMeta) (out
 	for {
 		frameType, payload, err := ReadFrame(w.rw.Reader)
 		if err != nil {
-			return failFatal(fmt.Errorf("code worker died mid-execution: %w", err))
+			exited := w.awaitExit(250 * time.Millisecond)
+			var exitErr error
+			if exited {
+				exitErr = w.waitErr
+			}
+			return failFatal(&ErrWorkerDied{Cause: err, Exit: exitErr, Stderr: w.stderr.String()})
 		}
 		switch frameType {
 		case FrameLog:

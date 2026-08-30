@@ -232,6 +232,36 @@ func TestInstallArchiveNodeTooOldNamesVersions(t *testing.T) {
 	}
 }
 
+func TestResolveNodeUsesSharedVersionPolicy(t *testing.T) {
+	orig := runtimeVersionFns["node"]
+	t.Cleanup(func() { runtimeVersionFns["node"] = orig })
+	runtimeVersionFns["node"] = func() (string, int, int, error) {
+		return "/runtime/node", 20, 11, nil
+	}
+	if path, reason := ResolveNode(">=20.0"); path != "/runtime/node" || reason != "" {
+		t.Fatalf("ResolveNode accepted runtime = %q, %q", path, reason)
+	}
+	runtimeVersionFns["node"] = func() (string, int, int, error) {
+		return "/runtime/node", 19, 9, nil
+	}
+	if path, reason := ResolveNode(">=20.0"); path != "" || !strings.Contains(reason, "19.9") {
+		t.Fatalf("ResolveNode old runtime = %q, %q", path, reason)
+	}
+}
+
+func TestResolveNodePathEnforcesVersion(t *testing.T) {
+	oldNode := filepath.Join(t.TempDir(), "node")
+	if err := os.WriteFile(oldNode, []byte("#!/bin/sh\necho v18.19.0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if path, reason := ResolveNodePath(oldNode, ">=20.0"); path != "" || !strings.Contains(reason, "18.19") {
+		t.Fatalf("old node_path = %q, %q", path, reason)
+	}
+	if path, reason := ResolveNodePath(filepath.Join(t.TempDir(), "missing"), ">=20.0"); path != "" || !strings.Contains(reason, "not found") {
+		t.Fatalf("missing node_path = %q, %q", path, reason)
+	}
+}
+
 func TestFirstDottedVersion(t *testing.T) {
 	cases := []struct {
 		in       string

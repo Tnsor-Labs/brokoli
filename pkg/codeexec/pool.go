@@ -12,7 +12,7 @@ import (
 )
 
 // Pool keeps warm code-node workers, one sub-pool per
-// (interpreter, limits) pair so a node's python_path override or
+// (language, interpreter, limits) tuple so a node's runtime override or
 // custom ceiling never shares a process with differently-configured
 // nodes. Concurrency never regresses relative to spawn-per-invocation:
 // when every pooled slot is busy at the cap, Exec spawns a one-shot
@@ -36,6 +36,7 @@ type Pool struct {
 }
 
 type subPool struct {
+	language    string
 	interpreter string
 	limits      Limits
 	idle        []*Worker
@@ -101,17 +102,34 @@ func NewPool() *Pool {
 // pooled and one-shot — for tests and the audit trail.
 func (p *Pool) WorkerBoots() int64 { return p.boots.Load() }
 
-func subKey(interpreter string, limits Limits) string {
+func subKey(language, interpreter string, limits Limits) string {
 	raw, _ := json.Marshal(limits)
-	return interpreter + "|" + string(raw)
+	return language + "|" + interpreter + "|" + string(raw)
 }
 
 // acquire returns a warm worker for the key, or spawns one. The bool
 // reports warmth (true = reused). At the cap it either spawns a
 // one-shot (default) or blocks until a slot frees (opt-in queue).
-func (p *Pool) acquire(ctx context.Context, interpreter string, limits Limits) (*Worker, bool, error) {
+func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits Limits) (*Worker, bool, error) {
 	p.janitor.Do(func() { go p.reapLoop() })
-	key := subKey(interpreter, limits)
+	p.mu.Lock()
+	closed := p.closed
+	p.mu.Unlock()
+	if closed {
+		return nil, false, fmt.Errorf("code worker pool is shut down")
+	}
+	// RLIMIT_CPU is cumulative for a process, not resettable per frame.
+	// A CPU-limited request therefore gets a one-shot worker so every
+	// node receives its full declared per-execution budget.
+	if limits.CPUSeconds > 0 {
+		w, err := spawnWorker(ctx, language, interpreter, limits, p.sockDir, true)
+		if err != nil {
+			return nil, false, err
+		}
+		p.boots.Add(1)
+		return w, false, nil
+	}
+	key := subKey(language, interpreter, limits)
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -120,7 +138,7 @@ func (p *Pool) acquire(ctx context.Context, interpreter string, limits Limits) (
 		}
 		sub := p.subs[key]
 		if sub == nil {
-			sub = &subPool{interpreter: interpreter, limits: limits}
+			sub = &subPool{language: language, interpreter: interpreter, limits: limits}
 			p.subs[key] = sub
 		}
 		if n := len(sub.idle); n > 0 {
@@ -132,7 +150,7 @@ func (p *Pool) acquire(ctx context.Context, interpreter string, limits Limits) (
 		if p.total < p.maxWorkers {
 			p.total++
 			p.mu.Unlock()
-			w, err := spawnWorker(ctx, interpreter, limits, p.sockDir, false)
+			w, err := spawnWorker(ctx, language, interpreter, limits, p.sockDir, false)
 			if err != nil {
 				p.mu.Lock()
 				p.total--
@@ -146,7 +164,7 @@ func (p *Pool) acquire(ctx context.Context, interpreter string, limits Limits) (
 		if !p.queueAtCap {
 			p.mu.Unlock()
 			// Overflow: same protocol, one execution, exits by itself.
-			w, err := spawnWorker(ctx, interpreter, limits, p.sockDir, true)
+			w, err := spawnWorker(ctx, language, interpreter, limits, p.sockDir, true)
 			if err != nil {
 				return nil, false, err
 			}
@@ -165,7 +183,7 @@ func (p *Pool) acquire(ctx context.Context, interpreter string, limits Limits) (
 }
 
 // release returns a healthy worker to its sub-pool, or retires it.
-func (p *Pool) release(w *Worker, interpreter string, limits Limits, healthy bool) {
+func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, healthy bool) {
 	if w.oneShot {
 		w.kill()
 		return
@@ -180,7 +198,7 @@ func (p *Pool) release(w *Worker, interpreter string, limits Limits, healthy boo
 		return
 	}
 	w.idleAt = time.Now()
-	key := subKey(interpreter, limits)
+	key := subKey(language, interpreter, limits)
 	p.mu.Lock()
 	if p.closed || p.subs[key] == nil {
 		p.mu.Unlock()

@@ -1799,7 +1799,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		if nodeHasExpansion(node) {
 			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
 		}
-		return outputExecutionResult(r.runCode(node, input))
+		return outputExecutionResult(r.runCode(ctx, node, input))
 	case models.NodeTypeJoin:
 		return outputExecutionResult(r.runJoin(node, allInputs))
 	case models.NodeTypeSQLGenerate:

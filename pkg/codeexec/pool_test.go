@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -34,6 +35,121 @@ func inlineReq(script string, rows []map[string]interface{}, out string) Request
 		InputColumns: []string{"a"},
 		OutputNDJSON: out,
 		Timeout:      30 * time.Second,
+	}
+}
+
+func inlineTSReq(t *testing.T, script string, rows []map[string]interface{}, out string) Request {
+	t.Helper()
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("node is not installed")
+	}
+	return Request{
+		Language: "typescript", Script: script, Interpreter: node,
+		InlineRows: rows, InputColumns: []string{"a"}, OutputNDJSON: out, Timeout: 30 * time.Second,
+	}
+}
+
+func TestPoolRunsAndReusesTypeScriptWorkers(t *testing.T) {
+	p := testPool(t)
+	dir := t.TempDir()
+	script := `output_data = { columns, rows: rows.map(row => ({ a: row.a * 2 })) };`
+	first, err := p.Exec(context.Background(), inlineTSReq(t, script, []map[string]interface{}{{"a": float64(2)}}, filepath.Join(dir, "one.ndjson")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := p.Exec(context.Background(), inlineTSReq(t, script, []map[string]interface{}{{"a": float64(3)}}, filepath.Join(dir, "two.ndjson")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Meta.Language != "typescript" || first.Meta.WrapperVersion != 1 || second.Rows[0]["a"] != float64(6) {
+		t.Fatalf("TypeScript result/meta wrong: first=%+v second=%+v", first, second)
+	}
+	if !second.Meta.Warm || p.WorkerBoots() != 1 {
+		t.Fatalf("TypeScript worker was not reused: warm=%v boots=%d", second.Meta.Warm, p.WorkerBoots())
+	}
+}
+
+func TestPoolSeparatesLanguagesAndMakesCPULimitsOneShot(t *testing.T) {
+	if subKey("python", "/runtime", Limits{}) == subKey("typescript", "/runtime", Limits{}) {
+		t.Fatal("language missing from sub-pool identity")
+	}
+	p := testPool(t)
+	dir := t.TempDir()
+	for i := range 2 {
+		req := inlineTSReq(t, `output_data = { columns: [], rows: [] };`, nil, filepath.Join(dir, fmt.Sprintf("%d.ndjson", i)))
+		req.Limits.CPUSeconds = 10
+		if _, err := p.Exec(context.Background(), req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if p.WorkerBoots() != 2 {
+		t.Fatalf("CPU-limited executions reused a cumulative-limit process: boots=%d", p.WorkerBoots())
+	}
+}
+
+func TestTypeScriptHeapAbortRetainsBoundedStderr(t *testing.T) {
+	p := testPool(t)
+	req := inlineTSReq(t, `
+    const values = [];
+    while (true) values.push(new Array(100000).fill("memory"));
+  `, nil, filepath.Join(t.TempDir(), "oom.ndjson"))
+	req.Limits.MemoryMB = 32
+	_, err := p.Exec(context.Background(), req)
+	var died *ErrWorkerDied
+	if !errors.As(err, &died) {
+		t.Fatalf("want ErrWorkerDied from fatal V8 OOM, got %v", err)
+	}
+	if !strings.Contains(strings.ToLower(died.Stderr), "heap") || !strings.Contains(strings.ToLower(died.Stderr), "out of memory") {
+		t.Fatalf("V8 fatal diagnostic missing from stderr tail: %q", died.Stderr)
+	}
+	if len(died.Stderr) > workerStderrTailBytes+100 {
+		t.Fatalf("worker stderr was not bounded: %d bytes", len(died.Stderr))
+	}
+}
+
+func TestCPULimitedRequestAfterCloseIsRejected(t *testing.T) {
+	p := NewPool()
+	p.Close()
+	req := inlineReq(`output_data = {"columns": [], "rows": []}`, nil, filepath.Join(t.TempDir(), "out.ndjson"))
+	req.Limits.CPUSeconds = 1
+	if _, err := p.Exec(context.Background(), req); err == nil || !strings.Contains(err.Error(), "shut down") {
+		t.Fatalf("closed pool accepted CPU-limited request: %v", err)
+	}
+}
+
+func TestWorkerExitBeforeConnectReturnsStderrImmediately(t *testing.T) {
+	interpreter := filepath.Join(t.TempDir(), "fail-worker")
+	if err := os.WriteFile(interpreter, []byte("#!/bin/sh\necho startup exploded >&2\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, err := spawnWorker(context.Background(), "python", interpreter, Limits{}, t.TempDir(), false)
+	if err == nil || !strings.Contains(err.Error(), "startup exploded") {
+		t.Fatalf("startup stderr missing: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("pre-connect worker death took %s", elapsed)
+	}
+}
+
+func TestWorkerHelloRequiresLanguage(t *testing.T) {
+	interpreter := filepath.Join(t.TempDir(), "missing-language")
+	script := `#!/usr/bin/env python3
+import json, socket, struct, sys, time
+path = sys.argv[sys.argv.index("--socket") + 1]
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.connect(path)
+body = json.dumps({"protocol_version": 1, "wrapper_version": 2, "pid": 1}).encode()
+s.sendall(struct.pack(">IBB", len(body), 1, 0x10) + body)
+time.sleep(5)
+`
+	if err := os.WriteFile(interpreter, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := spawnWorker(context.Background(), "python", interpreter, Limits{}, t.TempDir(), false)
+	if err == nil || !strings.Contains(err.Error(), "language") {
+		t.Fatalf("worker without hello language was accepted: %v", err)
 	}
 }
 

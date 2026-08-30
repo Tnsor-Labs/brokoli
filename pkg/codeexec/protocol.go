@@ -55,7 +55,8 @@ const (
 type HelloMsg struct {
 	ProtocolVersion int    `json:"protocol_version"`
 	WrapperVersion  int    `json:"wrapper_version"`
-	PythonVersion   string `json:"python_version"`
+	PythonVersion   string `json:"python_version,omitempty"`
+	Language        string `json:"language,omitempty"`
 	Pid             int    `json:"pid"`
 }
 

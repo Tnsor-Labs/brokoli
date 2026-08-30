@@ -12,7 +12,6 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
 // The pool-backed launchers (ADR-029). Same inputs, same outputs, same
@@ -20,34 +19,24 @@ import (
 // a warm worker from pkg/codeexec's pool runs the exec, so interpreter
 // boot and library imports are paid once per worker, not per node run.
 
-// resolveCodeInterpreter picks the python for one node: the node's own
-// python_path override wins (its sub-pool keeps it isolated), otherwise
-// the ADR-016/026 resolution — never a hardcoded "python3" (though that
-// remains the last-resort fallback when resolution cannot even probe).
-func resolveCodeInterpreter(nodeConfig map[string]interface{}) string {
-	if pp, ok := nodeConfig["python_path"].(string); ok && pp != "" {
-		return pp
-	}
-	if path, _ := plugins.ResolvePython(""); path != "" {
-		return path
-	}
-	return "python3"
-}
-
 // scriptErrorToEngineError maps a pool execution failure onto the same
 // error shapes the legacy path produces, so callers and tests see one
 // contract regardless of lifecycle.
-func scriptErrorToEngineError(err error, limits codeexec.Limits, stderr string) error {
+func scriptErrorToEngineError(err error, language string, limits codeexec.Limits, stderr string) error {
 	var scriptErr *codeexec.ErrScript
 	if errors.As(err, &scriptErr) {
 		switch scriptErr.Kind {
 		case codeexec.ErrKindResourceLimit:
 			if limits.MemoryMB > 0 {
+				mechanism := "address space"
+				if language == "typescript" {
+					mechanism = "V8 old-space heap"
+				}
 				return fmt.Errorf(
-					"script exceeded the memory limit (%d MiB, enforced as address space): "+
+					"script exceeded the memory limit (%d MiB, enforced as %s): "+
 						"raise max_memory_mb on the node or the server default, or stream with emit() "+
 						"instead of materializing the dataset\nstderr: %s",
-					limits.MemoryMB, stderr)
+					limits.MemoryMB, mechanism, stderr)
 			}
 			return fmt.Errorf("script exceeded a resource limit: %s\nstderr: %s", scriptErr.Message, stderr)
 		default:
@@ -66,7 +55,8 @@ func scriptErrorToEngineError(err error, limits codeexec.Limits, stderr string) 
 	// and a C-level allocator giving up under RLIMIT_AS exits without a
 	// Python traceback. The unframed detail died with the process, so
 	// name the plausible ceilings rather than reporting a bare EOF.
-	if strings.Contains(err.Error(), "worker died") {
+	var workerDied *codeexec.ErrWorkerDied
+	if errors.As(err, &workerDied) {
 		var hints []string
 		if limits.CPUSeconds > 0 {
 			hints = append(hints, fmt.Sprintf("the CPU limit (%d s)", limits.CPUSeconds))
@@ -75,7 +65,8 @@ func scriptErrorToEngineError(err error, limits codeexec.Limits, stderr string) 
 			hints = append(hints, fmt.Sprintf("the memory limit (%d MiB)", limits.MemoryMB))
 		}
 		if len(hints) > 0 {
-			return fmt.Errorf("script was killed, most likely by %s\nstderr: %s", strings.Join(hints, " or "), stderr)
+			detail := strings.TrimSpace(strings.Join([]string{stderr, workerDied.Stderr}, "\n"))
+			return fmt.Errorf("script was killed, most likely by %s\nstderr: %s", strings.Join(hints, " or "), detail)
 		}
 	}
 	return fmt.Errorf("script failed: %w\nstderr: %s", err, stderr)
@@ -83,16 +74,21 @@ func scriptErrorToEngineError(err error, limits codeexec.Limits, stderr string) 
 
 func executeCodeNodePooled(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
 	limits := codeexec.Resolve(nodeConfig)
+	language, interpreter, err := resolveCodeRuntime(nodeConfig)
+	if err != nil {
+		return nil, "", err
+	}
 	tmpDir := os.TempDir()
 	outputPath := filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
 	defer os.Remove(outputPath)
 
 	req := codeexec.Request{
+		Language:     language,
 		Script:       script,
 		Config:       nodeConfig,
 		Params:       runParams,
 		Timeout:      time.Duration(timeoutSec) * time.Second,
-		Interpreter:  resolveCodeInterpreter(nodeConfig),
+		Interpreter:  interpreter,
 		Limits:       limits,
 		OutputNDJSON: outputPath,
 	}
@@ -123,7 +119,7 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 	res, err := codeexec.GlobalPool().Exec(parent, req)
 	stderrStr := strings.Join(stderrLines, "\n")
 	if err != nil {
-		return nil, stderrStr, scriptErrorToEngineError(err, limits, stderrStr)
+		return nil, stderrStr, scriptErrorToEngineError(err, language, limits, stderrStr)
 	}
 
 	if res.Path != "" {
@@ -148,16 +144,21 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 	return ds, stderrStr, nil
 }
 
-func executeCodeNodeStreamedPooled(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamedPooled(parent context.Context, script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	limits := codeexec.Resolve(nodeConfig)
+	language, interpreter, err := resolveCodeRuntime(nodeConfig)
+	if err != nil {
+		return nil, err
+	}
 	outputPath := filepath.Join(os.TempDir(), fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
 
 	req := codeexec.Request{
+		Language:     language,
 		Script:       script,
 		Config:       nodeConfig,
 		Params:       runParams,
 		Timeout:      time.Duration(timeoutSec) * time.Second,
-		Interpreter:  resolveCodeInterpreter(nodeConfig),
+		Interpreter:  interpreter,
 		Limits:       limits,
 		InputNDJSON:  inputNDJSONPath,
 		InputColumns: inputColumns,
@@ -167,11 +168,11 @@ func executeCodeNodeStreamedPooled(script string, inputNDJSONPath string, inputC
 	req.LogHandler = func(_, message string) { stderrLines = append(stderrLines, message) }
 	req.ProgressHandler = progress
 
-	res, err := codeexec.GlobalPool().Exec(context.Background(), req)
+	res, err := codeexec.GlobalPool().Exec(parent, req)
 	stderrStr := strings.Join(stderrLines, "\n")
 	if err != nil {
 		_ = os.Remove(outputPath)
-		return nil, scriptErrorToEngineError(err, limits, stderrStr)
+		return nil, scriptErrorToEngineError(err, language, limits, stderrStr)
 	}
 	out := &codeStreamResult{stderr: stderrStr}
 	if res.Path != "" {
