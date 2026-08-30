@@ -139,6 +139,39 @@ def _bundle_import_paths(bundle_dir):
     return [bundle_dir] + paths
 
 
+def _purge_modules_under(bundle_root, before):
+    """Drop, from sys.modules, any module that was imported during this
+    execution from under the bundle root.
+
+    sys.modules is keyed by module name, not by import path. The host
+    re-extracts the byte-identical bundle to a FRESH directory for every
+    execution, so a warm worker that kept the previous run's imports
+    would keep their module objects — and the module-level mutable state
+    they hold — alive across separate pipeline runs sharing this worker.
+    That is exactly the persistent-state footgun the
+    fresh-namespace-per-exec design exists to prevent, one layer down, so
+    it is cleaned here as symmetrically as sys.path's restore: silently
+    carried helper state never survives a run. Only modules absent when
+    the execution started (`before`) are candidates, and only those whose
+    file sits under the bundle root — stdlib or worker modules imported
+    lazily mid-exec are shared safely and left alone. Next execution of
+    the same digest imports its helpers from scratch."""
+    root = os.path.realpath(bundle_root)
+    for name in list(sys.modules):
+        if name in before:
+            continue
+        mod = sys.modules.get(name)
+        mfile = getattr(mod, "__file__", None)
+        if mfile is None:
+            continue
+        try:
+            under = os.path.commonpath([root, os.path.realpath(mfile)]) == root
+        except ValueError:
+            under = False
+        if under:
+            sys.modules.pop(name, None)
+
+
 def _run_exec(sock_file, msg, wrapper_code, tmpdir):
     exec_id = msg.get("exec_id", "")
     bundle = msg.get("bundle") or {}
@@ -208,6 +241,7 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
         os.environ["BROKED_OUTPUT_NDJSON"] = output_path
 
     ns = {"__name__": "__main__", "__file__": _WRAPPER_PATH, "__builtins__": __builtins__}
+    module_snapshot = set(sys.modules) if bundle_dir else None
     real_stdin, real_stdout, real_stderr = sys.stdin, sys.stdout, sys.stderr
     captured_out, captured_err = io.StringIO(), io.StringIO()
     sys.stdin = io.StringIO(stdin_payload)
@@ -236,6 +270,11 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
         sys.stdin, sys.stdout, sys.stderr = real_stdin, real_stdout, real_stderr
         if saved_path is not None:
             sys.path[:] = saved_path
+        if module_snapshot is not None:
+            try:
+                _purge_modules_under(root, module_snapshot)
+            except Exception:
+                pass
         # The wrapper registers its journal cleanup with atexit, which a
         # long-lived worker never reaches: run and unregister it now so
         # journals from a mutating script don't outlive the execution.

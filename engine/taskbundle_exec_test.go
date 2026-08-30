@@ -174,6 +174,59 @@ func TestTaskBundleRunsTwiceShareTheDigestSubPool(t *testing.T) {
 	}
 }
 
+func TestTaskBundleHelpersDoNotLeakStateAcrossRuns(t *testing.T) {
+	// helpers.py carries a module-level counter; tasks.py reports its
+	// current value. Both runs use the SAME digest, so they land on the
+	// SAME warm worker (digest sub-key) while the host re-extracts the
+	// byte-identical bytes to a FRESH directory each time. sys.modules is
+	// keyed by module name, not by import path: if the worker kept the
+	// first run's imports, the second run would import the first run's
+	// cached helpers object and observe count=2 — module-level state that
+	// survived a separate pipeline run. Both runs must observe a freshly
+	// imported module.
+	e := newTBEngine(t)
+	m := &taskbundle.Manifest{
+		Format: taskbundle.Format, Language: "python", TaskName: "state-suite",
+		Entry: "tasks.py", Files: []string{"helpers.py", "tasks.py"},
+	}
+	archive, err := taskbundle.Assemble(map[string]string{
+		"helpers.py": "count = 0\ndef bump():\n    global count\n    count += 1\n    return count\n",
+		"tasks.py":   "from helpers import bump\nout = [{\"v\": bump()} for r in rows]\noutput_data = {\"columns\": [\"v\"], \"rows\": out}\n",
+	}, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := taskbundle.DigestOf(archive)
+	if created, err := e.s.PutTaskBundle(tbOrg, digest, archive); err != nil || !created {
+		t.Fatalf("seed bundle: created=%v err=%v", created, err)
+	}
+	for _, id := range []string{"p-tb-state-a", "p-tb-state-b"} {
+		run, err := e.runPipeline(t, id, digest, nil)
+		if err != nil {
+			t.Fatalf("%s returned error: %v", id, err)
+		}
+		wantV(t, e.firstCodeRow(t, run), 1)
+	}
+}
+
+func TestTaskBundleInsideExpansionFailsClearly(t *testing.T) {
+	// A task_bundle code node used as a .expand() factory must fail with
+	// the unsupported-combination error at run time — not the generic
+	// "expansion node requires 'script' in config", which would read as
+	// an author misconfiguration.
+	e := newTBEngine(t)
+	digest := e.bundle(t, 2)
+	_, execErr := e.runPipeline(t, "p-tb-exp", digest, map[string]interface{}{
+		"expansion": map[string]interface{}{"over": map[string]interface{}{"file": "src"}},
+	})
+	if execErr == nil {
+		t.Fatal("a task_bundle node inside .expand() ran to success")
+	}
+	if !strings.Contains(execErr.Error(), "task_bundle") || !strings.Contains(execErr.Error(), ".expand()") {
+		t.Fatalf("failure does not name the unsupported combination: %s", execErr)
+	}
+}
+
 func TestTaskBundleEntryOutsideFileListFailsTheRun(t *testing.T) {
 	e := newTBEngine(t)
 	// A manifest whose entry is NOT in its own authoritative file list is

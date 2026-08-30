@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,30 @@ func TestExecuteInstanceWorkOrder_RunsTheScript(t *testing.T) {
 	}
 	if len(result.Rows) != 1 || !numIs(result.Rows[0]["doubled"], 42) {
 		t.Errorf("result rows = %v, want one row with doubled=42", result.Rows)
+	}
+}
+
+func TestExecuteInstanceWorkOrder_RefusesTaskBundleWorkOrder(t *testing.T) {
+	// A task_bundle code node dispatched to a remote instance worker must
+	// fail with the unsupported-combination error before any code runs —
+	// not the generic "code node requires a 'script' in config", which is
+	// what execution would otherwise report for a bundle reference.
+	_, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{
+		NodeType: "code",
+		Config: map[string]interface{}{
+			"task_bundle": map[string]interface{}{
+				"digest": "sha256:" + strings.Repeat("a", 64),
+				"format": "task-bundle/1",
+			},
+		},
+		ItemColumns:    []string{"n"},
+		TimeoutSeconds: 5,
+	})
+	if err == nil {
+		t.Fatal("a task_bundle work order ran to success")
+	}
+	if !strings.Contains(err.Error(), "task_bundle") || !strings.Contains(err.Error(), "instance worker") {
+		t.Fatalf("failure does not name the unsupported combination: %s", err)
 	}
 }
 

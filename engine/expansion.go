@@ -382,6 +382,11 @@ func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]
 
 	script, _ := node.Config["script"].(string)
 	if script == "" {
+		if digest, isBundle, tbErr := taskBundleReference(node.Config); tbErr != nil {
+			return nil, fmt.Errorf("node %s (%s): %w", node.Name, node.ID, tbErr)
+		} else if isBundle {
+			return nil, fmt.Errorf("node %s (%s): task_bundle code nodes (%s) are not supported inside .expand() fan-out in this version — factory nodes fan out bare-script code; drop the task_bundle reference or the expansion", node.Name, node.ID, digest)
+		}
 		return nil, fmt.Errorf("node %s (%s): expansion node requires 'script' in config", node.Name, node.ID)
 	}
 

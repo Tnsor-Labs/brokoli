@@ -125,9 +125,10 @@ IR) must also agree on the emitted key sets, not just the rendering:
   IR digest. The archive bytes themselves ride sideband (uploaded by the
   deployer); they never appear in the IR. SDKs MUST NOT write
   `archive_sha256` into a packaged manifest: it is self-referential (the
-  digest of bytes that contain the field naming it), so core's
-  `ParseArchive` rejects a non-empty value, and no real archive can
-  match.
+  digest of bytes that contain the field naming it), so no real value can
+  equal the archive's actual digest, and core's `ParseArchive` refuses any
+  non-empty value that does not match the archive it ships in — which
+  means, in practice, every non-empty value.
 - Node ids: `clean(name) + "_" + n`, where `clean` lowercases, replaces
   spaces with underscores, drops every remaining character that is not
   alphanumeric or `_` (alphanumeric per Unicode, as in Python's
