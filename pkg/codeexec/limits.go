@@ -11,12 +11,6 @@ import (
 	"strings"
 )
 
-// WrapperVersion identifies the Python wrapper contract a code node ran
-// under, recorded in run logs so upgrades are auditable per run
-// (ADR-029). Version 1 is the legacy Go-string wrapper; the extracted
-// pywrapper library bumps this to 2.
-const WrapperVersion = 1
-
 // Limits bound one code-node subprocess. MemoryMB and CPUSeconds of
 // zero mean unlimited; FileSizeMB and OpenFiles fall back to their
 // documented defaults when zero. Memory is enforced as RLIMIT_AS —

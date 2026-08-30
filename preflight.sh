@@ -176,6 +176,23 @@ fi
 tail -3 "$LOGDIR/tests.log"
 pass tests
 
+# ---- 5b. code-node wrapper contract tests (pytest, ADR-029) ----
+# Real Python tested as Python, matching CI. Skipped only when pytest
+# is genuinely unavailable — the wrapper tests matter exactly as much
+# as the Go tests that pin the same contract from the other side.
+stage "pytest pkg/codeexec/pywrapper/tests"
+if python3 -m pytest --version >/dev/null 2>&1; then
+  if ! python3 -m pytest pkg/codeexec/pywrapper/tests/ -q > "$LOGDIR/pytest.log" 2>&1; then
+    tail -20 "$LOGDIR/pytest.log"
+    fail pytest "$LOGDIR/pytest.log"
+    exit 1
+  fi
+  tail -1 "$LOGDIR/pytest.log"
+  pass pytest
+else
+  echo "pytest not installed for python3 — skipping (CI still runs it)"
+fi
+
 # ---- 6. optional coverage pass (CI runs it; adds minutes; opt-in) ----
 if [ "${PREFLIGHT_COVERAGE:-}" = "1" ]; then
   stage "coverage (CI parity)"
