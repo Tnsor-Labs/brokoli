@@ -81,7 +81,7 @@ func scriptErrorToEngineError(err error, limits codeexec.Limits, stderr string) 
 	return fmt.Errorf("script failed: %w\nstderr: %s", err, stderr)
 }
 
-func executeCodeNodePooled(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
+func executeCodeNodePooled(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	tmpDir := os.TempDir()
 	outputPath := filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
@@ -118,6 +118,7 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 
 	var stderrLines []string
 	req.LogHandler = func(_, message string) { stderrLines = append(stderrLines, message) }
+	req.ProgressHandler = progress
 
 	res, err := codeexec.GlobalPool().Exec(parent, req)
 	stderrStr := strings.Join(stderrLines, "\n")
@@ -147,7 +148,7 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 	return ds, stderrStr, nil
 }
 
-func executeCodeNodeStreamedPooled(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*codeStreamResult, error) {
+func executeCodeNodeStreamedPooled(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	outputPath := filepath.Join(os.TempDir(), fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
 
@@ -164,6 +165,7 @@ func executeCodeNodeStreamedPooled(script string, inputNDJSONPath string, inputC
 	}
 	var stderrLines []string
 	req.LogHandler = func(_, message string) { stderrLines = append(stderrLines, message) }
+	req.ProgressHandler = progress
 
 	res, err := codeexec.GlobalPool().Exec(context.Background(), req)
 	stderrStr := strings.Join(stderrLines, "\n")

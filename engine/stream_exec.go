@@ -233,9 +233,9 @@ type codeStreamResult struct {
 // lattice is battle-tested and this path never needs it — a streamed
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
-func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*codeStreamResult, error) {
+func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	if codeexec.PoolEnabled() {
-		return executeCodeNodeStreamedPooled(script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec)
+		return executeCodeNodeStreamedPooled(script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
 	}
 	if script == "" {
 		return nil, fmt.Errorf("code node requires a 'script' in config")
@@ -605,7 +605,10 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 	if inputRef != nil {
 		inputCols = inputRef.Columns
 	}
-	res, err := executeCodeNodeStreamed(script, stagedInput, inputCols, configForScript, runParams, timeoutSec)
+	res, err := executeCodeNodeStreamed(script, stagedInput, inputCols, configForScript, runParams, timeoutSec,
+		func(percent int, message string) {
+			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
+		})
 	if res != nil && res.stderr != "" {
 		for _, line := range splitLines(res.stderr) {
 			if line != "" {

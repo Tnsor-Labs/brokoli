@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,5 +294,35 @@ func TestFrameRoundTrip(t *testing.T) {
 	var got ExecMsg
 	if err := unmarshalStrictEnough(payload, &got); err != nil || got.ExecID != "x1" || got.Input.Mode != "inline" {
 		t.Fatalf("payload mangled: %+v %v", got, err)
+	}
+}
+
+func TestPoolDeliversTypedProgress(t *testing.T) {
+	p := testPool(t)
+	dir := t.TempDir()
+	inp := filepath.Join(dir, "in.ndjson")
+	if err := os.WriteFile(inp, []byte("{\"a\": 1}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var progress []string
+	req := Request{
+		Script:       `output_data = {"columns": columns, "rows": rows}`,
+		Interpreter:  "python3",
+		InputNDJSON:  inp,
+		InputColumns: []string{"a"},
+		OutputNDJSON: filepath.Join(dir, "out.ndjson"),
+		Timeout:      30 * time.Second,
+		ProgressHandler: func(percent int, message string) {
+			progress = append(progress, fmt.Sprintf("%d:%s", percent, message))
+		},
+	}
+	if _, err := p.Exec(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	// File mode always announces its lazy attach at 5%; the marker was
+	// emitted and DISCARDED for the legacy transport's whole life.
+	joined := strings.Join(progress, "\n")
+	if !strings.Contains(joined, "5:") {
+		t.Fatalf("typed progress not delivered: %v", progress)
 	}
 }
