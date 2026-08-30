@@ -125,6 +125,40 @@ func TestValidate_SelfLoop(t *testing.T) {
 	}
 }
 
+func TestValidate_CodeNodeExecutionKeys(t *testing.T) {
+	makeCode := func(config map[string]interface{}) *models.Pipeline {
+		config["script"] = "output_data = {}"
+		return &models.Pipeline{
+			Name: "test",
+			Nodes: []models.Node{
+				{ID: "src", Type: models.NodeTypeSourceFile, Name: "Load", Config: map[string]interface{}{"path": "/tmp/in.csv"}},
+				{ID: "code", Type: models.NodeTypeCode, Name: "Code", Config: config},
+			},
+			Edges: []models.Edge{{From: "src", To: "code"}},
+		}
+	}
+
+	// Valid shapes: JSON floats, YAML ints, a real python_path.
+	ve := ValidatePipeline(makeCode(map[string]interface{}{
+		"timeout": float64(60), "max_memory_mb": 512, "max_cpu_seconds": float64(30), "python_path": "/usr/bin/python3",
+	}))
+	if ve.HasErrors() {
+		t.Fatalf("valid execution keys rejected: %v", ve.Errors)
+	}
+
+	for name, config := range map[string]map[string]interface{}{
+		"zero timeout":        {"timeout": float64(0)},
+		"negative memory":     {"max_memory_mb": float64(-1)},
+		"string cpu":          {"max_cpu_seconds": "fast"},
+		"empty python_path":   {"python_path": "  "},
+		"numeric python_path": {"python_path": 3},
+	} {
+		if ve := ValidatePipeline(makeCode(config)); !ve.HasErrors() {
+			t.Errorf("%s: expected a validation error", name)
+		}
+	}
+}
+
 // ── ValidateNodes (per-node) tests ──
 
 func TestValidateNodes_AllValid(t *testing.T) {

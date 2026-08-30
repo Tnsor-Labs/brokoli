@@ -375,6 +375,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
 	case models.NodeTypeCode:
+		for _, msg := range codeExecutionKeyErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
 		if nodeHasExpansion(n) {
 			// parseExpansionConfig's errors already name the node
 			// (Name/ID) themselves — see engine/expansion.go — so append
@@ -384,6 +387,33 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			}
 		}
 	}
+}
+
+// codeExecutionKeyErrors validates the code node's execution-contract
+// keys (ADR-029). These were silently coerced — or silently ignored on
+// a typo'd type — for years.
+func codeExecutionKeyErrors(config map[string]interface{}) []string {
+	var errs []string
+	for _, key := range []string{"timeout", "max_memory_mb", "max_cpu_seconds"} {
+		if raw, ok := config[key]; ok {
+			valid := false
+			switch v := raw.(type) {
+			case float64:
+				valid = v > 0
+			case int: // YAML-parsed pipelines carry ints, JSON carries float64
+				valid = v > 0
+			}
+			if !valid {
+				errs = append(errs, fmt.Sprintf("'%s' must be a positive number", key))
+			}
+		}
+	}
+	if raw, ok := config["python_path"]; ok {
+		if v, isStr := raw.(string); !isStr || strings.TrimSpace(v) == "" {
+			errs = append(errs, "'python_path' must be a non-empty string when set")
+		}
+	}
+	return errs
 }
 
 func getStr(m map[string]interface{}, key string) string {
@@ -492,6 +522,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "script") == "" {
 			r.Errors = append(r.Errors, "'script' is required")
 		}
+		r.Errors = append(r.Errors, codeExecutionKeyErrors(n.Config)...)
 		if nodeHasExpansion(n) {
 			if _, err := parseExpansionConfig(n); err != nil {
 				r.Errors = append(r.Errors, err.Error())

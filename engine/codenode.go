@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
@@ -35,6 +36,27 @@ const fileModeThreshold = 10000
 // Python wrapper with auto-detection of transfer mode and pyarrow.
 const pythonWrapper = `
 import sys, json, os, csv
+
+# Resource ceilings (ADR-029 P0): applied first, before pyarrow/pandas
+# imports, so library allocations count under the cap. RLIMIT_AS is
+# address space, not RSS. Absent limits (env unset) leave the process
+# unbounded, and platforms without the resource module (Windows) skip
+# the whole block.
+try:
+    import resource as _resource
+    def _brokoli_rlimit(env_name, res, scale):
+        _v = int(os.environ.get(env_name, "0") or 0)
+        if _v > 0:
+            try:
+                _resource.setrlimit(res, (_v * scale, _v * scale))
+            except (ValueError, OSError):
+                pass
+    _brokoli_rlimit("BROKED_LIMIT_MEMORY_MB", _resource.RLIMIT_AS, 1024 * 1024)
+    _brokoli_rlimit("BROKED_LIMIT_CPU_SECONDS", _resource.RLIMIT_CPU, 1)
+    _brokoli_rlimit("BROKED_LIMIT_FILE_SIZE_MB", _resource.RLIMIT_FSIZE, 1024 * 1024)
+    _brokoli_rlimit("BROKED_LIMIT_OPEN_FILES", _resource.RLIMIT_NOFILE, 1)
+except ImportError:
+    pass
 
 # Transfer mode detection
 _input_csv = os.environ.get("BROKED_INPUT_CSV", "")
@@ -249,21 +271,32 @@ def _brokoli_excepthook(etype, value, tb):
 sys.excepthook = _brokoli_excepthook
 _use_file = bool(_input_csv) or bool(_input_ndjson)
 
-# Try to use pyarrow/pandas for faster processing
+# Try to use pyarrow/pandas for faster processing — but only when a
+# file-based transfer can actually use them, and never under a memory
+# ceiling (ADR-029). stdin-mode executions get nothing from these
+# imports; and under RLIMIT_AS the imports are not merely slow but
+# LETHAL — numpy's OpenBLAS pre-reserves address space far beyond real
+# usage and, when the reservation fails, exits the process from C
+# ("OpenBLAS error: Memory allocation ... giving up"), which no
+# except clause can catch. A capped execution therefore takes the
+# pure-Python NDJSON/CSV paths, trading transfer speed for the bounded
+# memory the operator asked for. except Exception, not ImportError,
+# for the failures that ARE catchable.
+_mem_capped = int(os.environ.get("BROKED_LIMIT_MEMORY_MB", "0") or 0) > 0
 _has_pyarrow = False
-try:
-    import pyarrow
-    import pyarrow.csv as pa_csv
-    _has_pyarrow = True
-except ImportError:
-    pass
-
 _has_pandas = False
-try:
-    import pandas as pd
-    _has_pandas = True
-except ImportError:
-    pass
+if _use_file and not _mem_capped:
+    try:
+        import pyarrow
+        import pyarrow.csv as pa_csv
+        _has_pyarrow = True
+    except Exception:
+        pass
+    try:
+        import pandas as pd
+        _has_pandas = True
+    except Exception:
+        pass
 
 # Read input — NDJSON mode attaches lazily (constant memory until the
 # script itself demands otherwise via len()/indexing)
@@ -506,11 +539,14 @@ func ExecuteCodeNodeContext(parent context.Context, script string, input *common
 	ctx, cancel := context.WithTimeout(parent, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
+	limits := codeexec.Resolve(nodeConfig)
+
 	cmd := exec.CommandContext(ctx, pythonPath, scriptFile)
 	cmd.Env = append(os.Environ(),
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),
 	)
+	cmd.Env = append(cmd.Env, limits.Env()...)
 	if useFileMode && transferMode == TransferArrow {
 		cmd.Env = append(cmd.Env,
 			"BROKED_INPUT_NDJSON="+inputNDJSON,
@@ -549,6 +585,11 @@ func ExecuteCodeNodeContext(parent context.Context, script string, input *common
 		return nil, stderrStr, fmt.Errorf("script timed out after %ds", timeoutSec)
 	}
 	if err != nil {
+		if ctx.Err() == nil {
+			if lerr := limitBreachError(err, stderrStr, limits); lerr != nil {
+				return nil, stderrStr, lerr
+			}
+		}
 		return nil, stderrStr, fmt.Errorf("script failed: %w\nstderr: %s", err, stderrStr)
 	}
 

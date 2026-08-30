@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
 )
@@ -265,6 +266,8 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
+	limits := codeexec.Resolve(nodeConfig)
+
 	cmd := exec.CommandContext(ctx, pythonPath, scriptFile) // #nosec G204 -- identical to ExecuteCodeNode's baseline-accepted launch: a code node exists to run pipeline-author code, and an author-set python_path grants nothing the script itself doesn't already have.
 	cmd.Env = append(os.Environ(),
 		"BROKED_CONFIG="+string(configJSON),
@@ -272,6 +275,7 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 		"BROKED_OUTPUT_NDJSON="+outputNDJSON,
 		"BROKED_OUTPUT_COLUMNS="+outputCols,
 	)
+	cmd.Env = append(cmd.Env, limits.Env()...)
 	if inputNDJSONPath != "" {
 		cmd.Env = append(cmd.Env, "BROKED_INPUT_NDJSON="+inputNDJSONPath)
 		if len(inputColumns) > 0 {
@@ -307,6 +311,11 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 	}
 	if err != nil {
 		_ = os.Remove(outputNDJSON)
+		if ctx.Err() == nil {
+			if lerr := limitBreachError(err, stderrStr, limits); lerr != nil {
+				return nil, lerr
+			}
+		}
 		return nil, fmt.Errorf("script failed: %w\nstderr: %s", err, stderrStr)
 	}
 
@@ -569,6 +578,10 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
 	}
+
+	// ADR-029 P0 audit line, mirroring runCode's.
+	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
+		codeexec.WrapperVersion, codeexec.Resolve(configForScript))
 
 	stagedInput := ""
 	if inputRef != nil {
