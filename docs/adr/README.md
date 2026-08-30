@@ -97,6 +97,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-027](./027-clickhouse-backend.md) | ClickHouse as the third backend, append-first | Accepted |
 | [ADR-028](./028-data-intervals.md) | A scheduled run processes an interval, not a moment | Accepted |
 | [ADR-029](./029-code-node-worker-protocol.md) | Code-node worker pool and framed execution protocol | Accepted |
+| [ADR-030](./030-code-node-language-dispatch.md) | Code-node language dispatch and the TypeScript worker contract | Accepted |
 
 ## How to add a new ADR
 
