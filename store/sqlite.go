@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "modernc.org/sqlite"
 )
@@ -389,6 +391,22 @@ func (s *SQLiteStore) migrate() error {
 		read_at TEXT,
 		dismissed_at TEXT)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+
+	// Task bundles (ADR-031): tenant-scoped, content-addressed project
+	// archives. A bundle's identity IS its digest, so the primary key is
+	// (org_id, digest) — no id column, no revision, no overwrite. Uploads
+	// that hash to an existing digest are idempotent no-ops; uploads that
+	// collide differently are refused by the store method, never silently
+	// clobbered. archive is immutable, banned from UPDATE (guarded at the
+	// method layer, not just convention), and capped
+	// (pkg/taskbundle.MaxArchiveBytes) before it ever lands here.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
+		org_id TEXT NOT NULL,
+		digest TEXT NOT NULL,
+		size_bytes INTEGER NOT NULL,
+		archive BLOB NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (org_id, digest))`)
 
 	// Pipeline templates — global, admin-curated starter pipelines
 	// (GET /api/templates). Used to be hardcoded JS in the frontend;
@@ -2791,6 +2809,59 @@ func (s *SQLiteStore) CreateAlert(a *models.Alert) error {
 		nullableTime(a.ReadAt), nullableTime(a.DismissedAt),
 	)
 	return wrapStoreErr("CreateAlert", a.ID, err)
+}
+
+// --- Task bundles (ADR-031) ---
+
+// PutTaskBundle stores an archive content-addressed under digest.
+// Callers pass a digest the bytes actually hash to; a mismatch is a
+// caller bug and is refused here rather than papered over. The insert is
+// race-safe on both the SQLite and Postgres backends: INSERT ... ON
+// CONFLICT DO NOTHING, then read back — a concurrent identical upload
+// reports created=false, a concurrent colliding one reports
+// ErrTaskBundleCollision. Never an update; the archive is immutable.
+func (s *SQLiteStore) PutTaskBundle(orgID, digest string, archive []byte) (bool, error) {
+	if len(archive) > taskbundle.MaxArchiveBytes {
+		return false, fmt.Errorf("task bundle archive %d bytes exceeds the %d-byte cap", len(archive), int64(taskbundle.MaxArchiveBytes))
+	}
+	if taskbundle.DigestOf(archive) != digest {
+		return false, fmt.Errorf("task bundle digest %q does not match the archive's actual digest %q", digest, taskbundle.DigestOf(archive))
+	}
+	now := time.Now().UTC().Format(timeFormat)
+	res, err := s.db.Exec(
+		`INSERT INTO task_bundles (org_id, digest, size_bytes, archive, created_at) VALUES (?, ?, ?, ?, ?)
+		 ON CONFLICT (org_id, digest) DO NOTHING`,
+		orgID, digest, len(archive), archive, now,
+	)
+	if err != nil {
+		return false, wrapStoreErr("PutTaskBundle", digest, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return true, nil
+	}
+	existing, err := s.GetTaskBundle(orgID, digest)
+	if err != nil {
+		return false, wrapStoreErr("PutTaskBundle", digest, err)
+	}
+	if !bytes.Equal(existing, archive) {
+		return false, ErrTaskBundleCollision
+	}
+	return false, nil
+}
+
+// GetTaskBundle returns the stored archive for orgID under digest.
+func (s *SQLiteStore) GetTaskBundle(orgID, digest string) ([]byte, error) {
+	var archive []byte
+	err := s.db.QueryRow(
+		`SELECT archive FROM task_bundles WHERE org_id = ? AND digest = ?`, orgID, digest,
+	).Scan(&archive)
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskBundleNotFound
+	}
+	if err != nil {
+		return nil, wrapStoreErr("GetTaskBundle", digest, err)
+	}
+	return archive, nil
 }
 
 // ListAlerts returns an org's alerts newest-first. Dismissed alerts are

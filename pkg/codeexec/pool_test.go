@@ -71,8 +71,21 @@ func TestPoolRunsAndReusesTypeScriptWorkers(t *testing.T) {
 }
 
 func TestPoolSeparatesLanguagesAndMakesCPULimitsOneShot(t *testing.T) {
-	if subKey("python", "/runtime", Limits{}) == subKey("typescript", "/runtime", Limits{}) {
+	a := subKey("python", "/runtime", Limits{}, "")
+	b := subKey("typescript", "/runtime", Limits{}, "")
+	if a == b {
 		t.Fatal("language missing from sub-pool identity")
+	}
+	// ADR-031: a different bundle digest must never share a sub-pool.
+	c := subKey("python", "/runtime", Limits{}, "sha256:aaa")
+	if c == a || c == b {
+		t.Fatal("bundle digest missing from sub-pool identity")
+	}
+	if d := subKey("python", "/runtime", Limits{}, "sha256:bbb"); d == c {
+		t.Fatal("two different bundle digests collapse to one sub-pool")
+	}
+	if e := subKey("python", "/runtime", Limits{}, ""); e != a {
+		t.Fatal("empty bundle digest must join the ordinary sub-pool")
 	}
 	p := testPool(t)
 	dir := t.TempDir()

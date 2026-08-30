@@ -18,6 +18,21 @@ import (
 // error text families as the legacy spawn path — different lifecycle:
 // a warm worker from pkg/codeexec's pool runs the exec, so interpreter
 // boot and library imports are paid once per worker, not per node run.
+//
+// A task bundle (ADR-031) rides the same pool: the engine materializes
+// it to a temp dir, and codeBundleSpec carries the mount. The pooled
+// executor fills the Request's TaskBundle* fields, which join the pool
+// sub-key by digest and scope the worker's imports to the bundle + stdlib.
+
+// codeBundleSpec is an already-materialized, already-validated task bundle
+// handed to the pooled executor. dir is owned by the caller and removed by
+// the caller; the executor only reads it.
+type codeBundleSpec struct {
+	digest string   // the IR's task_bundle.digest (pool sub-key + audit)
+	dir    string   // extracted bundle root
+	entry  string   // entry module, relative to dir
+	files  []string // authoritative manifest file list
+}
 
 // scriptErrorToEngineError maps a pool execution failure onto the same
 // error shapes the legacy path produces, so callers and tests see one
@@ -72,7 +87,7 @@ func scriptErrorToEngineError(err error, language string, limits codeexec.Limits
 	return fmt.Errorf("script failed: %w\nstderr: %s", err, stderr)
 }
 
-func executeCodeNodePooled(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
+func executeCodeNodePooled(parent context.Context, script string, bundle *codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	language, interpreter, err := resolveCodeRuntime(nodeConfig)
 	if err != nil {
@@ -91,6 +106,17 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 		Interpreter:  interpreter,
 		Limits:       limits,
 		OutputNDJSON: outputPath,
+	}
+	if bundle != nil {
+		// A bundle is the script source: the same single-source contract
+		// the legacy path keeps for script, expressed through the
+		// TaskBundle* request fields (which suppress Script on the wire
+		// and split the pool by digest).
+		req.Script = ""
+		req.BundleDigest = bundle.digest
+		req.TaskBundleDir = bundle.dir
+		req.TaskBundleEntry = bundle.entry
+		req.TaskBundleFiles = bundle.files
 	}
 
 	// Same threshold, same staging as the legacy path: large inputs go
@@ -144,7 +170,7 @@ func executeCodeNodePooled(parent context.Context, script string, input *common.
 	return ds, stderrStr, nil
 }
 
-func executeCodeNodeStreamedPooled(parent context.Context, script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	language, interpreter, err := resolveCodeRuntime(nodeConfig)
 	if err != nil {
@@ -163,6 +189,13 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, inputN
 		InputNDJSON:  inputNDJSONPath,
 		InputColumns: inputColumns,
 		OutputNDJSON: outputPath,
+	}
+	if bundle != nil {
+		req.Script = ""
+		req.BundleDigest = bundle.digest
+		req.TaskBundleDir = bundle.dir
+		req.TaskBundleEntry = bundle.entry
+		req.TaskBundleFiles = bundle.files
 	}
 	var stderrLines []string
 	req.LogHandler = func(_, message string) { stderrLines = append(stderrLines, message) }

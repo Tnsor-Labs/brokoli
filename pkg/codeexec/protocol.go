@@ -84,10 +84,21 @@ type ExecOutput struct {
 	Path string `json:"path,omitempty"`
 }
 
+// ExecBundle mounts a materialized task bundle (ADR-031) for one
+// execution. When present, the worker executes Entry's module (a path
+// relative to Dir, guaranteed to be in Files) under a bundle-scoped
+// import path; Script is ignored — the host never sends both.
+type ExecBundle struct {
+	Dir   string   `json:"dir"`
+	Entry string   `json:"entry"`
+	Files []string `json:"files"`
+}
+
 // ExecMsg is one invocation.
 type ExecMsg struct {
 	ExecID    string                 `json:"exec_id"`
 	Script    string                 `json:"script"`
+	Bundle    *ExecBundle            `json:"bundle,omitempty"`
 	Config    map[string]interface{} `json:"config"`
 	Params    map[string]string      `json:"params"`
 	Input     ExecInput              `json:"input"`

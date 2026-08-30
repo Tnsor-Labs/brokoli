@@ -645,6 +645,48 @@ type LifecycleStore interface {
 	RawDB() interface{} // returns *sql.DB for extensions
 }
 
+// TaskBundleStore persists task-bundle archives (ADR-031) content-
+// addressed within a tenant. A task bundle is immutable once stored: its
+// digest is its identity, so re-uploading identical bytes is a no-op and
+// re-uploading different bytes under the same digest is an error, never
+// an overwrite. Tenancy is by org_id — the same digest reference in two
+// orgs plainly names two different archives, which is the whole point of
+// tenant provenance.
+//
+// OPTIONAL capability, deliberately not embedded in Store (same shape as
+// PhysicalPlanStore / ExecutionAttemptStore): the core SQLite/Postgres
+// backends implement it; callers reach it by type-asserting the Store
+// they hold (`if sb, ok := s.(store.TaskBundleStore); ok`) so a
+// hand-written store that hasn't adopted it yet (the EE APIStore) keeps
+// satisfying Store. Exactly one optional capability is enough for
+// "pipelines refuse to deploy" — an engine whose store lacks the store
+// rejects task_bundle nodes at validation time, and the API 503s on
+// upload.
+type TaskBundleStore interface {
+	// PutTaskBundle content-addresses archive bytes for orgID under an
+	// already-verified digest reference. Callers must pass the digest the
+	// bytes actually hash to (the API verifies before calling). Returns
+	// created=true when the archive was newly stored, or created=false
+	// (nil error) when byte-identical bytes are already present. Returns
+	// ErrTaskBundleCollision when a different archive already occupies
+	// the digest.
+	PutTaskBundle(orgID, digest string, archive []byte) (bool, error)
+	// GetTaskBundle returns the stored archive for orgID under digest, or
+	// ErrTaskBundleNotFound when the org has no such bundle.
+	GetTaskBundle(orgID, digest string) ([]byte, error)
+}
+
+// ErrTaskBundleCollision reports that a digest reference is already taken
+// by a different archive — a content-identity violation that must surface
+// as a client error (409), never as a silent overwrite.
+var ErrTaskBundleCollision = errors.New("a different task bundle already occupies this digest")
+
+// ErrTaskBundleNotFound reports that no archive is stored for the given
+// org/digest pair. Sized like the other not-found sentinels
+// (ErrArtifactNotFound, ErrCheckpointNotFound) so handlers can map it to
+// a 404 without string-matching.
+var ErrTaskBundleNotFound = errors.New("task bundle not found")
+
 // ErrDuplicateScheduledRun reports that a scheduled run for this pipeline
 // and data interval already exists (ADR-028's dispatch-idempotency guard).
 // It is the leader-failover race resolving correctly: the second instance

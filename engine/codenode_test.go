@@ -78,7 +78,7 @@ func TestCodeNode_TypeScriptStreamed(t *testing.T) {
 	result, err := executeCodeNodeStreamed(context.Background(), `
     begin_emit(["id"]);
     for await (const row of rowsStream()) emit({ id: row.id * 2 });
-  `, input, []string{"id"}, map[string]interface{}{"language": "typescript", "node_path": node}, nil, 10, nil)
+  `, nil, input, []string{"id"}, map[string]interface{}{"language": "typescript", "node_path": node}, nil, 10, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestCodeNode_LegacyStreamedCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := executeCodeNodeStreamed(ctx, "import time\ntime.sleep(60)", "", nil, nil, nil, 120, nil)
+		_, err := executeCodeNodeStreamed(ctx, "import time\ntime.sleep(60)", nil, "", nil, nil, nil, 120, nil)
 		done <- err
 	}()
 	time.Sleep(100 * time.Millisecond)

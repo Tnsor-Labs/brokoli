@@ -354,9 +354,29 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 }
 
 func (r *Runner) runCode(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
-	script, _ := node.Config["script"].(string)
-	if script == "" {
-		return nil, fmt.Errorf("code node requires 'script' in config")
+	// A code node's script source is exactly one of: a bare 'script'
+	// string, or a 'task_bundle' reference (ADR-031). Validation has
+	// already refused the "both" and "neither" shapes at deploy time;
+	// this re-parses because validation is not the arbiter of a node
+	// that reached run time through a version-gated path.
+	var script string
+	var bundle *codeBundleSpec
+	digest, isBundle, tbErr := taskBundleReference(node.Config)
+	if tbErr != nil {
+		return nil, tbErr
+	}
+	if isBundle {
+		b, err := r.materializeTaskBundle(digest)
+		if err != nil {
+			return nil, err
+		}
+		bundle = b
+		defer os.RemoveAll(bundle.dir)
+	} else {
+		script, _ = node.Config["script"].(string)
+		if script == "" {
+			return nil, fmt.Errorf("code node requires 'script' in config")
+		}
 	}
 
 	timeoutSec := 30
@@ -364,10 +384,11 @@ func (r *Runner) runCode(ctx context.Context, node models.Node, input *common.Da
 		timeoutSec = int(t)
 	}
 
-	// Remove script from config before passing to the script (avoid circular ref)
+	// Remove the script source from config before passing to the script
+	// (avoid circular ref).
 	configForScript := make(map[string]interface{})
 	for k, v := range node.Config {
-		if k != "script" {
+		if k != "script" && k != "task_bundle" {
 			configForScript[k] = v
 		}
 	}
@@ -387,10 +408,18 @@ func (r *Runner) runCode(ctx context.Context, node models.Node, input *common.Da
 	r.log(node.ID, models.LogLevelInfo, "code exec: language=%s wrapper v%d, %s",
 		language, codeWrapperVersion(language), codeexec.Resolve(configForScript))
 
-	result, stderr, err := ExecuteCodeNodeProgress(ctx, script, input, configForScript, runParams, timeoutSec,
-		func(percent int, message string) {
-			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
-		})
+	result, stderr, err := func() (*common.DataSet, string, error) {
+		if bundle != nil {
+			return ExecuteTaskBundleNodeProgress(ctx, *bundle, input, configForScript, runParams, timeoutSec,
+				func(percent int, message string) {
+					r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
+				})
+		}
+		return ExecuteCodeNodeProgress(ctx, script, input, configForScript, runParams, timeoutSec,
+			func(percent int, message string) {
+				r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
+			})
+	}()
 	if stderr != "" {
 		// Log stderr as warnings (user print statements, warnings, etc.)
 		for _, line := range splitLines(stderr) {

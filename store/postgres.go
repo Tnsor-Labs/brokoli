@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"embed"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -443,6 +445,18 @@ func (s *PostgresStore) migrate() error {
 		read_at TIMESTAMPTZ,
 		dismissed_at TIMESTAMPTZ)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+
+	// Task bundles (ADR-031) — the tenant-scoped, content-addressed
+	// project-archive table; see store/sqlite.go for the shared doc
+	// comment. Identity IS (org_id, digest); bytes stored as BYTEA; never
+	// updated by any query path, only inserted or read back.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
+		org_id TEXT NOT NULL,
+		digest TEXT NOT NULL,
+		size_bytes BIGINT NOT NULL,
+		archive BYTEA NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (org_id, digest))`)
 
 	// Pipeline templates — see the matching table in store/sqlite.go for
 	// the full doc comment; kept in sync column-for-column between
@@ -2191,6 +2205,53 @@ func (s *PostgresStore) CreateAlert(a *models.Alert) error {
 		a.PipelineID, a.PipelineName, a.RunID, a.CreatedAt.UTC(), a.ReadAt, a.DismissedAt,
 	)
 	return err
+}
+
+// --- Task bundles (ADR-031) ---
+// Shared doc comment in store/sqlite.go; the dialect split is $N
+// placeholders, BYTEA + TIMESTAMPTZ, and the same race-safe INSERT ...
+// ON CONFLICT DO NOTHING.
+
+func (s *PostgresStore) PutTaskBundle(orgID, digest string, archive []byte) (bool, error) {
+	if len(archive) > taskbundle.MaxArchiveBytes {
+		return false, fmt.Errorf("task bundle archive %d bytes exceeds the %d-byte cap", len(archive), int64(taskbundle.MaxArchiveBytes))
+	}
+	if taskbundle.DigestOf(archive) != digest {
+		return false, fmt.Errorf("task bundle digest %q does not match the archive's actual digest %q", digest, taskbundle.DigestOf(archive))
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO task_bundles (org_id, digest, size_bytes, archive) VALUES ($1,$2,$3,$4)
+		 ON CONFLICT (org_id, digest) DO NOTHING`,
+		orgID, digest, len(archive), archive,
+	)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return true, nil
+	}
+	existing, err := s.GetTaskBundle(orgID, digest)
+	if err != nil {
+		return false, err
+	}
+	if !bytes.Equal(existing, archive) {
+		return false, ErrTaskBundleCollision
+	}
+	return false, nil
+}
+
+func (s *PostgresStore) GetTaskBundle(orgID, digest string) ([]byte, error) {
+	var archive []byte
+	err := s.db.QueryRow(
+		`SELECT archive FROM task_bundles WHERE org_id = $1 AND digest = $2`, orgID, digest,
+	).Scan(&archive)
+	if err == sql.ErrNoRows {
+		return nil, ErrTaskBundleNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return archive, nil
 }
 
 func (s *PostgresStore) ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error) {

@@ -138,17 +138,25 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// Physical plan explanation, before execution (#90 M2).
 		r.Get("/pipelines/{id}/plan", ph.Plan)
 
-		// Plugin management (#110 M2). Install runs plugin code on the
-		// host, so create/remove need settings.edit; list and archive
-		// fetch are read-only (archive fetch is how workers pull by
-		// digest). Node types hot-reload on install/remove.
-		r.Get("/plugins", plugh.List)
-		r.Get("/plugins/index", plugh.Index)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins/index/{name}", plugh.InstallByName)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
-		r.Get("/plugins/{name}/archive", plugh.Archive)
-		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
+// Plugin management (#110 M2). Install runs plugin code on the
+	// host, so create/remove need settings.edit; list and archive
+	// fetch are read-only (archive fetch is how workers pull by
+	// digest). Node types hot-reload on install/remove.
+	r.Get("/plugins", plugh.List)
+	r.Get("/plugins/index", plugh.Index)
+	r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins/index/{name}", plugh.InstallByName)
+	r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
+	r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
+	r.Get("/plugins/{name}/archive", plugh.Archive)
+	r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
+
+	// Task bundles (ADR-031). Uploads are content-addressed by the URL
+	// digest, which the handler re-hashes before persisting; uploads need
+	// pipelines.create (authoring a bundle is authoring pipeline input),
+	// fetches are auth-only like the plugin archive. Both org-scoped.
+	tbh := NewTaskBundleHandler(s)
+	r.With(requirePerm(models.PermPipelinesCreate)).Post("/task-bundles/{digest}", tbh.Upload)
+	r.Get("/task-bundles/{digest}", tbh.Get)
 
 		// Runs
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/run", rh.TriggerRun)
