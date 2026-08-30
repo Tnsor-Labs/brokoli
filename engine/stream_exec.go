@@ -234,6 +234,9 @@ type codeStreamResult struct {
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
 func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*codeStreamResult, error) {
+	if codeexec.PoolEnabled() {
+		return executeCodeNodeStreamedPooled(script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec)
+	}
 	if script == "" {
 		return nil, fmt.Errorf("code node requires a 'script' in config")
 	}

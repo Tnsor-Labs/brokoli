@@ -177,6 +177,11 @@ jobs:
         # not lower the package's cost, which is tracked in #329.
         run: go test -v -race -timeout 15m ./...
 
+      # ADR-029 dual-mode leg: the pool is the default; this keeps the
+      # legacy spawn path green until its removal one release later.
+      - name: Code-node legacy-path leg (pool off)
+        run: env BROKOLI_CODE_POOL=0 go test -timeout 10m -run 'TestCodeNode|TestLazyRows|TestPipeline_LazyRows|TestPipeline_EmitZeroRows|TestPipeline_Streamed|TestInstanceWorker|TestExpansion' ./engine/
+
       - name: Coverage
         run: |
           go test -coverprofile=coverage.out ./...

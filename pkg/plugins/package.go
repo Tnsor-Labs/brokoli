@@ -577,3 +577,11 @@ func copyTreeInternal(src, dst string) error {
 		return err
 	})
 }
+
+// ResolvePython exposes the ADR-016/026 python resolution to other
+// subprocess mechanisms — ADR-029's code-node workers use it instead of
+// hardcoding "python3". Empty constraint means "any python3 on PATH";
+// a non-empty reason explains a failed resolution.
+func ResolvePython(constraint string) (path string, reason string) {
+	return resolvePythonRuntime(constraint)
+}

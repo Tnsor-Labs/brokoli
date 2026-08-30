@@ -57,7 +57,7 @@ func spawnWorker(ctx context.Context, interpreter string, limits Limits, sockDir
 	// exists to run pipeline-author code) and the script is our own
 	// materialized worker_main.py.
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), interpreter, args...)
-	cmd.Env = append(os.Environ(), limits.Env()...)
+	cmd.Env = append(workerEnv(), limits.Env()...)
 	proctree.ConfigureProcessGroup(cmd)
 	cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
 	cmd.WaitDelay = terminationGrace

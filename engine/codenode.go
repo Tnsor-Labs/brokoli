@@ -50,6 +50,9 @@ func ExecuteCodeNodeContext(parent context.Context, script string, input *common
 	if timeoutSec <= 0 {
 		timeoutSec = 30
 	}
+	if codeexec.PoolEnabled() {
+		return executeCodeNodePooled(parent, script, input, nodeConfig, runParams, timeoutSec)
+	}
 
 	// Contract v2 (ADR-029): the wrapper is the embedded, versioned
 	// pywrapper library materialized to disk; the user script travels as
