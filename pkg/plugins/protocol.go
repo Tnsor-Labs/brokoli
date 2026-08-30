@@ -6,10 +6,12 @@
 // protocol: a plugin is an executable that supports a handful of
 // subcommands (`spec`, `check`, `discover`, `read`, `write`) and
 // communicates with the host over stdin/stdout as newline-delimited
-// JSON ("JSONL"). Plugins can be written in any language — Python is
-// the recommended authoring path via the `brokoli-connector-sdk`
-// package, but a shell script is enough to satisfy the protocol,
-// which is how the reference test plugin is shipped.
+// JSON ("JSONL"). Plugins can be written in any language; a shell
+// script is enough to satisfy the protocol, which is how the
+// reference test plugin is shipped. (An earlier version of this
+// comment recommended a `brokoli-connector-sdk` Python package that
+// was never built — see ADR-002's follow-ups and ADR-029, which
+// supersede that plan.)
 //
 // Lifecycle of one plugin invocation:
 //

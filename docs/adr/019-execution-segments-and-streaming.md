@@ -110,6 +110,11 @@ Milestone 2 landed re-scoped, and the re-scoping is the finding:
   memory-optimal — at ~7 MiB anon for streaming-idiom pipelines, the
   remaining sequential-vs-overlapped latency difference on the
   benchmark is a few seconds, and nothing currently hurts for it.
+  *(2026-08-30: this conclusion is adopted as protocol by
+  [ADR-029](./029-code-node-worker-protocol.md) — the code-node data
+  plane stays file-by-reference for contract-v1 scripts, and FIFO/
+  socket row streaming is reserved for a declared per-script
+  strict-streaming capability.)*
 
 ## Context
 
@@ -318,5 +323,7 @@ checkpoints first; a dedicated ADR if a real workload outgrows it.
   post-processing — gated by the spill threshold, verified against
   the live benchmark with before/after cgroup peaks recorded here.
 - Milestone 1.5 SDK note: lazy `rows` compatibility policy.
+  *(2026-08-30: written — it is the "Lazy rows compatibility policy"
+  section of [ADR-029](./029-code-node-worker-protocol.md).)*
 - Re-measure the per-run divisor (ADR-018) once Milestone 1 lands.
 - Milestone 2 design note before any scheduler concurrency work.
