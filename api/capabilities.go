@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
@@ -46,6 +47,9 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		"supported_ir_versions":              models.SupportedIRVersions,
 		"supported_execution_features":       models.SupportedExecutionFeatures,
 		"plugin_protocol_version":            plugins.ProtocolVersion,
+		"code_protocol_version":              codeexec.CodeProtocolVersion,
+		"supported_code_protocol_versions":   codeexec.SupportedCodeProtocolVersions,
+		"code_wrapper_version":               codeexec.WrapperVersion(),
 		"supported_plugin_protocol_versions": plugins.SupportedProtocolVersions,
 		"supported_packaging_versions":       plugins.SupportedPackagingVersions,
 		"supported_runtime_classes":          plugins.SupportedRuntimeClasses,

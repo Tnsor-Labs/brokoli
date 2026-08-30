@@ -108,6 +108,15 @@ func TestCapabilitiesHandler(t *testing.T) {
 		t.Error("expected node_type_capabilities to be present")
 	}
 
+	// ADR-029: the code-node execution contract is advertised like the
+	// plugin protocol's.
+	if v, ok := body["code_protocol_version"].(float64); !ok || v < 1 {
+		t.Errorf("code_protocol_version missing or wrong: %v", body["code_protocol_version"])
+	}
+	if v, ok := body["code_wrapper_version"].(float64); !ok || v < 2 {
+		t.Errorf("code_wrapper_version missing or wrong: %v", body["code_wrapper_version"])
+	}
+
 	features, ok := body["supported_execution_features"].([]interface{})
 	if !ok || len(features) == 0 {
 		t.Fatalf("expected supported_execution_features, got %v", body["supported_execution_features"])
@@ -115,7 +124,10 @@ func TestCapabilitiesHandler(t *testing.T) {
 	// data_intervals: the SDK's catch_up gate matches the exact string
 	// (#397 phase 4); dropping or renaming it silently re-bricks
 	// Pipeline(catch_up=...) against this server.
-	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false}
+	// code-streaming-emit: the SDK gate for emit()/begin_emit() scripts
+	// matches the exact string (ADR-029); dropping or renaming it lets
+	// emit() scripts deploy ungated to servers again.
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false, "code-streaming-emit": false}
 	for _, f := range features {
 		if s, ok := f.(string); ok {
 			if _, known := want[s]; known {

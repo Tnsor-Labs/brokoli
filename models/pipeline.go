@@ -99,6 +99,12 @@ var SupportedExecutionFeatures = []string{
 	// the schedule's own grid. Named with an underscore because the
 	// accepted ADR spells it that way and the SDK gate matches exactly.
 	"data_intervals",
+	// ADR-029: the code-node wrapper's streaming idiom -- emit(row) /
+	// begin_emit(columns), lazy re-iterable rows, generator outputs.
+	// Before this was advertised, an emit() script deployed silently to
+	// a server whose wrapper predated the idiom and misbehaved at run
+	// time; the SDK preflight gates on this name.
+	"code-streaming-emit",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

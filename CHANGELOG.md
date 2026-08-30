@@ -11,6 +11,50 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Code nodes run on a warm worker pool** (ADR-029, #419-#423) --
+  @hc12r. Long-lived Python workers over a framed, versioned Unix-socket
+  protocol replace spawn-per-invocation: interpreter and pandas/pyarrow
+  boot are paid once per worker, not once per node run -- measured
+  71.6ms to 3.3ms per execution (21.7x) on the expansion fan-out shape.
+  Crash isolation strictly improves (a dying worker costs one execution
+  and a lazy respawn); cancel/timeout kill only the busy worker.
+  `BROKOLI_CODE_POOL=0` keeps the legacy spawn path for one release;
+  Windows stays on it. The wrapper itself is now a real, versioned,
+  pytest-tested Python library embedded in the binary, and every code
+  execution's run log records its wrapper version and effective limits.
+- **Resource ceilings for code nodes** (ADR-029 P0, #420) -- @hc12r.
+  `BROKOLI_CODE_MEMORY_MB` / `BROKOLI_CODE_CPU_SECONDS` server defaults
+  (with `BROKOLI_CODE_MAX_*` clamps) and per-node `max_memory_mb` /
+  `max_cpu_seconds`, enforced as rlimits. A breach fails that script
+  with an error naming the limit -- never a bare "signal: killed", and
+  never the whole pod. Memory is enforced as address space; the
+  wrapper's pandas/pyarrow transfer acceleration is disabled under a
+  memory cap (numpy's allocator exits uncatchably from C when its
+  reservation fails).
+- **Script progress is finally consumed** -- @hc12r. The wrapper's
+  `#PROGRESS:` markers were emitted and discarded for their whole life;
+  on the pool path they become typed frames that land in the run log as
+  info lines.
+- `/api/capabilities` advertises `code_protocol_version`,
+  `code_wrapper_version`, and the `code-streaming-emit` execution
+  feature, closing the gap where an `emit()` script deployed silently
+  to a server whose wrapper predated the idiom -- @hc12r.
+
+### Changed
+
+- **Code-node scripts no longer inherit the host environment**
+  (ADR-029's secrets fix) -- @hc12r. Workers start from an allowlist
+  (`PATH`, `HOME`, `LANG`, `LC_*`, `TZ`, `TMPDIR`). Deployments whose
+  scripts legitimately read host variables name them in
+  `BROKOLI_CODE_PASS_ENV` (or set `*` to restore the old behavior).
+- User `print()` in a code node can no longer corrupt small-dataset
+  results: output rides the protocol, prints ride the run log -- @hc12r.
+- Code-node tracebacks now carry the user script's own line numbers
+  (`<code-node>`), and a script containing `%` can no longer corrupt
+  the wrapper -- @hc12r.
+
 ## [0.10.80] - 2026-08-29
 
 ### Fixed

@@ -383,7 +383,10 @@ func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataS
 	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
 		codeexec.WrapperVersion(), codeexec.Resolve(configForScript))
 
-	result, stderr, err := ExecuteCodeNode(script, input, configForScript, runParams, timeoutSec)
+	result, stderr, err := ExecuteCodeNodeProgress(context.Background(), script, input, configForScript, runParams, timeoutSec,
+		func(percent int, message string) {
+			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
+		})
 	if stderr != "" {
 		// Log stderr as warnings (user print statements, warnings, etc.)
 		for _, line := range splitLines(stderr) {

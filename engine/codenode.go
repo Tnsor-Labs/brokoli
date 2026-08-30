@@ -44,6 +44,13 @@ func ExecuteCodeNode(script string, input *common.DataSet, nodeConfig map[string
 // The context is combined with the node's own timeout so remote workers can
 // terminate an in-flight code WorkOrder when its run is cancelled.
 func ExecuteCodeNodeContext(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
+	return ExecuteCodeNodeProgress(parent, script, input, nodeConfig, runParams, timeoutSec, nil)
+}
+
+// ExecuteCodeNodeProgress additionally consumes the script's typed
+// progress reports (ADR-029; pool path only — the legacy transport
+// emitted #PROGRESS: markers on stderr and always discarded them).
+func ExecuteCodeNodeProgress(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(percent int, message string)) (*common.DataSet, string, error) {
 	if script == "" {
 		return nil, "", fmt.Errorf("code node requires a 'script' in config")
 	}
@@ -51,7 +58,7 @@ func ExecuteCodeNodeContext(parent context.Context, script string, input *common
 		timeoutSec = 30
 	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodePooled(parent, script, input, nodeConfig, runParams, timeoutSec)
+		return executeCodeNodePooled(parent, script, input, nodeConfig, runParams, timeoutSec, progress)
 	}
 
 	// Contract v2 (ADR-029): the wrapper is the embedded, versioned

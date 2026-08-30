@@ -75,11 +75,28 @@ _ENV_KEYS = (
 )
 
 
+_PROGRESS_RE = None
+
 def _forward_captured(sock_file, exec_id, captured, level, skip_last_json=False):
-    """Send captured output lines as log frames. Returns the trailing
-    JSON payload when skip_last_json found one (the inline result)."""
-    lines = [l for l in captured.getvalue().splitlines()
-             if l.strip() and not l.startswith("#PROGRESS:")]
+    """Send captured output lines as log frames — except the wrapper's
+    #PROGRESS: markers, which become typed progress frames (they were
+    emitted and DISCARDED for the whole life of the legacy transport).
+    Returns the trailing JSON payload when skip_last_json found one
+    (the inline result)."""
+    global _PROGRESS_RE
+    if _PROGRESS_RE is None:
+        import re
+        _PROGRESS_RE = re.compile(r"^#PROGRESS:(\d+)\s*(.*)$")
+    raw_lines = [l for l in captured.getvalue().splitlines() if l.strip()]
+    lines = []
+    for line in raw_lines:
+        m = _PROGRESS_RE.match(line)
+        if m:
+            protocol.write_frame(sock_file, protocol.FRAME_PROGRESS,
+                                 {"exec_id": exec_id, "percent": int(m.group(1)),
+                                  "message": m.group(2)})
+        else:
+            lines.append(line)
     inline = None
     if skip_last_json and lines:
         try:
