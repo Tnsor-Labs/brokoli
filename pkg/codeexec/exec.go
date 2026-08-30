@@ -15,14 +15,14 @@ import (
 // Script (a bare code string) or TaskBundle* (a materialized ADR-031
 // bundle — when set, Script is ignored).
 type Request struct {
-	Language    string // "python" (default) | "typescript"
-	Script      string
-	Config      map[string]interface{}
-	Params      map[string]string
-	Timeout     time.Duration
-	Interpreter string // resolved python; required
-	Limits      Limits
-	InlineRows  []map[string]interface{}
+	Language        string // "python" (default) | "typescript"
+	Script          string
+	Config          map[string]interface{}
+	Params          map[string]string
+	Timeout         time.Duration
+	Interpreter     string // resolved python; required
+	Limits          Limits
+	InlineRows      []map[string]interface{}
 	InputColumns    []string
 	InputNDJSON     string
 	OutputNDJSON    string // where file-mode output should land; required

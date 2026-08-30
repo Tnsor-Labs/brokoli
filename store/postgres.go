@@ -450,7 +450,7 @@ func (s *PostgresStore) migrate() error {
 	// project-archive table; see store/sqlite.go for the shared doc
 	// comment. Identity IS (org_id, digest); bytes stored as BYTEA; never
 	// updated by any query path, only inserted or read back.
-	s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
 		org_id TEXT NOT NULL,
 		digest TEXT NOT NULL,
 		size_bytes BIGINT NOT NULL,

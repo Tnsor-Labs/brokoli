@@ -400,7 +400,7 @@ func (s *SQLiteStore) migrate() error {
 	// clobbered. archive is immutable, banned from UPDATE (guarded at the
 	// method layer, not just convention), and capped
 	// (pkg/taskbundle.MaxArchiveBytes) before it ever lands here.
-	s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS task_bundles (
 		org_id TEXT NOT NULL,
 		digest TEXT NOT NULL,
 		size_bytes INTEGER NOT NULL,

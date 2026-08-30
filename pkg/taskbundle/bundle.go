@@ -195,8 +195,12 @@ func ParseArchive(b []byte) (*Manifest, error) {
 				return nil, fmt.Errorf("read task bundle manifest: %w", err)
 			}
 		} else {
-			if _, err := io.Copy(io.Discard, tr); err != nil {
+			n, err := io.Copy(io.Discard, io.LimitReader(tr, MaxArchiveBytes+1))
+			if err != nil {
 				return nil, fmt.Errorf("read task bundle entry %q: %w", hdr.Name, err)
+			}
+			if n > MaxArchiveBytes {
+				return nil, fmt.Errorf("task bundle entry %q exceeds the %d-byte file limit", hdr.Name, int64(MaxArchiveBytes))
 			}
 		}
 	}
@@ -262,7 +266,7 @@ func Extract(b []byte, destRoot string) (*Manifest, error) {
 			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
 				return nil, err
 			}
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target is traversal-checked above (absolute and ".." paths refused) and joined under the operator-chosen destRoot; same idiom as pkg/plugins/package.go extraction.
 			if err != nil {
 				return nil, err
 			}
