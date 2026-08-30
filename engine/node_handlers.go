@@ -19,6 +19,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
@@ -376,6 +377,11 @@ func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataS
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
 	}
+
+	// ADR-029 P0 audit line: which wrapper contract and which ceilings
+	// this execution ran under, durable with the run.
+	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
+		codeexec.WrapperVersion, codeexec.Resolve(configForScript))
 
 	result, stderr, err := ExecuteCodeNode(script, input, configForScript, runParams, timeoutSec)
 	if stderr != "" {
