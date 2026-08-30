@@ -80,7 +80,7 @@ async function main() {
     served++;
     if (args.oneShot && served >= 1) break;
   }
-  socket.end();
+  socket.destroy();
 }
 
 main().catch((error) => {
