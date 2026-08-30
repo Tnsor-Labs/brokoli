@@ -200,7 +200,11 @@ preserved verbatim, message text included.
 ### Deferred
 
 - **Phase 4 — language coverage.** The protocol is the contract; a new
-  language is a new worker implementation, not a new mechanism. Go is
+  language is a new worker implementation, not a new mechanism.
+  *(2026-08-30: TypeScript decided by
+  [ADR-030](./030-code-node-language-dispatch.md) — language dispatch,
+  the JS wrapper contract incl. `sleep(ms)`, and Node-specific limit
+  enforcement. Go and further languages remain deferred there.)* Go is
   the special case worth naming: a native in-binary executor against
   the same `Exec` interface is legitimate (no subprocess needed) and is
   the one place the isolation/tightness trade-off can genuinely be
