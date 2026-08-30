@@ -125,6 +125,13 @@ var serveCmd = &cobra.Command{
 				log.Printf("plugins: %d node type(s) registered", n)
 			}
 		}
+		if nodePath, reason := plugins.ResolveNode(">=20.0"); nodePath != "" {
+			api.SetCodeRuntime(nodePath)
+			log.Printf("code nodes: TypeScript enabled with Node %s", nodePath)
+		} else {
+			api.SetCodeRuntime("")
+			log.Printf("code nodes: TypeScript unavailable: %s", reason)
+		}
 		license, _ := Extensions.License.Validate()
 		log.Printf("Edition: %s", license.Edition)
 		if license.Company != "" {

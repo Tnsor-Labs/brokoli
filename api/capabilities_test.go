@@ -13,6 +13,8 @@ import (
 // ir_version(s) and node/connector capability tags a given Brokoli
 // deployment understands before deploying a pipeline.
 func TestCapabilitiesHandler(t *testing.T) {
+	SetCodeRuntime("")
+	t.Cleanup(func() { SetCodeRuntime("") })
 	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
 	rec := httptest.NewRecorder()
 
@@ -107,6 +109,12 @@ func TestCapabilitiesHandler(t *testing.T) {
 	if body["node_type_capabilities"] == nil {
 		t.Error("expected node_type_capabilities to be present")
 	}
+	if languages, ok := body["code_languages"].([]interface{}); !ok || len(languages) != 1 || languages[0] != "python" {
+		t.Errorf("unexpected Python-only code_languages: %v", body["code_languages"])
+	}
+	if body["code_js_wrapper_version"] != float64(1) {
+		t.Errorf("unexpected JS wrapper version: %v", body["code_js_wrapper_version"])
+	}
 
 	// ADR-029: the code-node execution contract is advertised like the
 	// plugin protocol's.
@@ -139,6 +147,28 @@ func TestCapabilitiesHandler(t *testing.T) {
 		if !seen {
 			t.Errorf("supported_execution_features missing %q", name)
 		}
+	}
+}
+
+func TestCapabilitiesAdvertiseTypeScriptOnlyWhenNodeResolves(t *testing.T) {
+	SetCodeRuntime("/usr/bin/node")
+	t.Cleanup(func() { SetCodeRuntime("") })
+	rec := httptest.NewRecorder()
+	CapabilitiesHandler(rec, httptest.NewRequest(http.MethodGet, "/api/capabilities", nil))
+	var body map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["code_js_wrapper_version"] != float64(1) {
+		t.Fatalf("wrong JS wrapper version: %v", body["code_js_wrapper_version"])
+	}
+	features := body["supported_execution_features"].([]interface{})
+	seen := false
+	for _, feature := range features {
+		seen = seen || feature == "code-typescript"
+	}
+	if !seen {
+		t.Fatalf("code-typescript not advertised: %v", features)
 	}
 }
 

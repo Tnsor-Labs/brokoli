@@ -13,6 +13,12 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **TypeScript code-node capabilities are advertised honestly** (ADR-030,
+  #426, A5) -- @hc12r. `/api/capabilities` now reports `code_languages` and
+  `code_js_wrapper_version`, and adds `code-typescript` only when Node >=20
+  actually resolves at server startup. Hosts without Node continue to expose
+  the Python-only capability set, so SDK preflight refuses TypeScript before
+  persistence rather than allowing a runtime failure.
 - **Code nodes run on a warm worker pool** (ADR-029, #419-#423) --
   @hc12r. Long-lived Python workers over a framed, versioned Unix-socket
   protocol replace spawn-per-invocation: interpreter and pandas/pyarrow
