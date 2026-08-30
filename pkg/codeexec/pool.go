@@ -41,11 +41,16 @@ type subPool struct {
 	idle        []*Worker
 }
 
-// PoolEnabled reports whether the warm pool is switched on
-// (BROKOLI_CODE_POOL=1). Default off while the launchers still ship
-// the spawn-per-invocation path; the flip is its own change.
+// PoolEnabled reports whether the warm pool runs code nodes. Default ON
+// for unix (ADR-029, benchmarked in the wiring PR); BROKOLI_CODE_POOL=0
+// keeps the legacy spawn-per-invocation path for one release. Windows
+// always takes the legacy path — no process groups, no AF_UNIX story,
+// no rlimits.
 func PoolEnabled() bool {
-	return os.Getenv("BROKOLI_CODE_POOL") == "1" && runtime.GOOS != "windows"
+	if runtime.GOOS == "windows" {
+		return false
+	}
+	return os.Getenv("BROKOLI_CODE_POOL") != "0"
 }
 
 var (
@@ -81,7 +86,7 @@ func NewPool() *Pool {
 	if err != nil {
 		dir = os.TempDir()
 	}
-	_ = os.Chmod(dir, 0o700)
+	_ = os.Chmod(dir, 0o700) // #nosec G302 -- a directory (Unix sockets live here): the execute bit is required to enter it, and 0700 is the minimal mode that works.
 	return &Pool{
 		subs:       map[string]*subPool{},
 		maxWorkers: maxWorkers,

@@ -151,7 +151,7 @@ func WriteFrame(w io.Writer, frameType byte, payload interface{}) error {
 		return fmt.Errorf("frame %#x payload %d exceeds %d bytes", frameType, len(body), MaxFramePayload)
 	}
 	header := make([]byte, 6)
-	binary.BigEndian.PutUint32(header[0:4], uint32(len(body)))
+	binary.BigEndian.PutUint32(header[0:4], uint32(len(body))) // #nosec G115 -- len(body) <= MaxFramePayload (128 MiB), checked above; it cannot overflow uint32.
 	header[4] = CodeProtocolVersion
 	header[5] = frameType
 	if _, err := w.Write(header); err != nil {
