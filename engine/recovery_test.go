@@ -449,6 +449,35 @@ func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 	}
 }
 
+// TestRecoverNonTerminalRunsDefersLocalActiveRunner covers a transition that
+// lasts longer than RecoveryTransitionGracePeriod: the runner is still alive,
+// but no node attempt lease exists while the next node waits for a semaphore.
+func TestRecoverNonTerminalRunsDefersLocalActiveRunner(t *testing.T) {
+	eng, s := newRecoveryTestEngine(t)
+	eng.RecoveryTransitionGracePeriod = 0
+	seedRecoveryPipeline(t, s, "pipe-local-active")
+	run := seedOrphanedRun(t, s, "pipe-local-active", "run-local-active", models.RunStatusRunning)
+
+	eng.mu.Lock()
+	eng.active[run.ID] = &Runner{}
+	eng.mu.Unlock()
+
+	summary, err := eng.RecoverNonTerminalRuns()
+	if err != nil {
+		t.Fatalf("RecoverNonTerminalRuns: %v", err)
+	}
+	if summary.RunsDeferred != 1 || summary.RunsFailed != 0 {
+		t.Fatalf("summary = %+v, want 1 deferred and 0 failed", summary)
+	}
+	got, err := s.GetRun(run.ID)
+	if err != nil {
+		t.Fatalf("GetRun: %v", err)
+	}
+	if got.Status != models.RunStatusRunning {
+		t.Fatalf("run status = %s, want running", got.Status)
+	}
+}
+
 // TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers is the direct
 // regression test for a second bug found live testing right after the first
 // (TestRecoverNonTerminalRunsDefersRecentNodeTransition): recoverRun
