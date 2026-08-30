@@ -187,6 +187,27 @@ don't transplant:
 - Worker-death diagnostics improve for both languages via the stderr
   tail capture.
 
+### Amendments from implementation (2026-08-30, core #429 review)
+
+Two contract decisions were made, correctly, during implementation and
+are ratified here rather than living only in code comments:
+
+- **CPU-limited executions forfeit pool warmth.** RLIMIT_CPU counts a
+  process's *cumulative* CPU time and cannot be reset per execution, so
+  a warm worker would charge earlier executions' CPU against later
+  ones' budgets. A request with `CPUSeconds > 0` therefore always gets
+  a one-shot worker with a fresh budget. Operational consequence,
+  documented in the ops docs: a server-wide `BROKOLI_CODE_CPU_SECONDS`
+  default disables warm-pool amortization for every code node — prefer
+  per-node `max_cpu_seconds` on the scripts that need it.
+- **Dynamic code generation is off inside the vm context**
+  (`codeGeneration: { strings: false, wasm: false }`): user scripts
+  cannot `eval`, construct `Function` from strings, or instantiate
+  WASM. This is the "unnamed capabilities are not contractual" rule
+  made enforcing rather than advisory, and it keeps the namespace
+  portable into the Phase-5 sandbox. A script generator must never
+  emit `eval`-dependent code.
+
 ### Negative
 
 - The Node memory ceiling bounds the V8 heap, not the process:
