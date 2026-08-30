@@ -85,7 +85,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-015](./015-logical-and-physical-execution-plans.md) | Persist logical and physical execution plans separately | Accepted |
 | [ADR-016](./016-plugin-packaging-and-distribution.md) | Plugin packaging, runtime resolution, and distribution | Accepted |
 | [ADR-017](./017-worker-protocol-v2-instance-dispatch.md) | Worker protocol v2 — instance-level dispatch, lease, and fencing | Accepted |
-| [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Proposed |
+| [ADR-018](./018-chunked-execution-and-backpressure.md) | Chunked node execution and memory-aware backpressure | Accepted |
 | [ADR-019](./019-execution-segments-and-streaming.md) | Execution segments, streaming capabilities, and reference-passing dataflow | Accepted |
 | [ADR-020](./020-ecosystem-portfolio-phase-1.md) | Adopt the ecosystem framing — Phase 1 portfolio and OSS/Enterprise boundary | Proposed |
 | [ADR-021](./021-cli-browser-login.md) | Session and token model — revocable sessions, refresh tokens, and browser-based CLI login | Proposed |
@@ -96,6 +96,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-026](./026-python-runtime-dependency.md) | Check for a Python runtime, do not ship one | Accepted |
 | [ADR-027](./027-clickhouse-backend.md) | ClickHouse as the third backend, append-first | Accepted |
 | [ADR-028](./028-data-intervals.md) | A scheduled run processes an interval, not a moment | Accepted |
+| [ADR-029](./029-code-node-worker-protocol.md) | Code-node worker pool and framed execution protocol | Accepted |
 
 ## How to add a new ADR
 

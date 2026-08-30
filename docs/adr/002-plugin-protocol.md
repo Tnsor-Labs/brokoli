@@ -81,11 +81,19 @@ Protocol Version 1 as of v0.8.0.
   and sink. A transform plugin needs the protocol to thread input
   records through stdin *after* the config header, and the engine
   to wire that up. Phase 2 work.
+  *(2026-08-30: still deferred. Code nodes are the supported
+  transform-in-foreign-code path; a future transform-plugin design
+  should build on ADR-029's framed protocol, not on stdin threading —
+  see [ADR-029](./029-code-node-worker-protocol.md).)*
 - **Long-lived plugin daemons.** Today a plugin process spawns for
   every node invocation. For latency-sensitive use cases (a sensor
   polling every 10 seconds), we'd want to keep the process alive and
   drive it over a persistent request/response loop. Not needed for
   v0.8.0.
+  *(2026-08-30: realized for code nodes by
+  [ADR-029](./029-code-node-worker-protocol.md)'s warm worker pool.
+  Plugin daemons proper remain deferred and should adopt that pool
+  and framing when they happen.)*
 
 ## Alternatives considered
 
@@ -119,3 +127,8 @@ Protocol Version 1 as of v0.8.0.
 - Phase 2: Python SDK (`brokoli-connector-sdk` on PyPI) so authors
   don't touch the protocol directly — `@source` / `@sink`
   decorators handle the JSONL marshaling.
+  *(2026-08-30: superseded by
+  [ADR-029](./029-code-node-worker-protocol.md) — the package was
+  never built; its first real content is the in-repo code-node
+  wrapper library, with PyPI publication a future authoring
+  convenience, never a runtime dependency.)*
