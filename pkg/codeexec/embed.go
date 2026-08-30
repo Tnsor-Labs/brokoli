@@ -8,5 +8,5 @@ import "embed"
 // pytest suite under pywrapper/tests is deliberately NOT embedded — it
 // tests the wrapper in CI, it does not ship.
 //
-//go:embed pywrapper/wrapper.py pywrapper/version.py
+//go:embed pywrapper/wrapper.py pywrapper/version.py pywrapper/protocol.py pywrapper/worker_main.py
 var pywrapperFS embed.FS
