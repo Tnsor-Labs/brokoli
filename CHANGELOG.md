@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-30
+
 ### Added
 
 - **TypeScript code-node capabilities are advertised honestly** (ADR-030,
@@ -47,6 +49,15 @@ reconstruct from git archaeology.
   `code_wrapper_version`, and the `code-streaming-emit` execution
   feature, closing the gap where an `emit()` script deployed silently
   to a server whose wrapper predated the idiom -- @hc12r.
+- **TypeScript code nodes actually dispatch** (ADR-030, #428, #429) --
+  @hc12r. The JavaScript/TypeScript wrapper reaches contract v1 and
+  code workers dispatch to a Node runner under the same per-run
+  resource ceilings as Python -- the half that turns the advertised
+  `code-typescript` capability into an executable one.
+- **A language-neutral IR canonicalization and digest spec** (#417) --
+  @hc12r. Byte-identical IR from any SDK is now a stated property with
+  the normalization rules written down, so the Python and TypeScript
+  SDK differential oracle has a concrete contract to test against.
 
 ### Changed
 
@@ -60,6 +71,15 @@ reconstruct from git archaeology.
 - Code-node tracebacks now carry the user script's own line numbers
   (`<code-node>`), and a script containing `%` can no longer corrupt
   the wrapper -- @hc12r.
+
+### Fixed
+
+- **Recovery no longer claims runs owned by an active local runner** --
+  @hc12r. Between code-node dispatch steps a live run holds no
+  execution lease, and the 20s reclaim sweep could read that lease-free
+  gap as an orphaned run and mis-schedule it. Recovery now consults the
+  engine's active-run map and defers any run the local runner owns, so
+  a multi-node host stops mis-scheduling its own healthy runs.
 
 ## [0.10.80] - 2026-08-29
 
