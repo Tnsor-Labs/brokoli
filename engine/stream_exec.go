@@ -241,11 +241,14 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 		timeoutSec = 30
 	}
 
-	fullScript := fmt.Sprintf(pythonWrapper, script)
+	wrapperFile, werr := codeexec.WrapperPath()
+	if werr != nil {
+		return nil, fmt.Errorf("materialize code wrapper: %w", werr)
+	}
 	tmpDir := os.TempDir()
 	nano := time.Now().UnixNano()
 	scriptFile := filepath.Join(tmpDir, fmt.Sprintf("brokoli_code_%d.py", nano))
-	if err := os.WriteFile(scriptFile, []byte(fullScript), 0o600); err != nil {
+	if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
 		return nil, fmt.Errorf("write script file: %w", err)
 	}
 	defer os.Remove(scriptFile)
@@ -268,8 +271,9 @@ func executeCodeNodeStreamed(script string, inputNDJSONPath string, inputColumns
 
 	limits := codeexec.Resolve(nodeConfig)
 
-	cmd := exec.CommandContext(ctx, pythonPath, scriptFile) // #nosec G204 -- identical to ExecuteCodeNode's baseline-accepted launch: a code node exists to run pipeline-author code, and an author-set python_path grants nothing the script itself doesn't already have.
+	cmd := exec.CommandContext(ctx, pythonPath, wrapperFile) // #nosec G204 -- identical to ExecuteCodeNode's baseline-accepted launch: a code node exists to run pipeline-author code, and an author-set python_path grants nothing the script itself doesn't already have.
 	cmd.Env = append(os.Environ(),
+		"BROKED_SCRIPT="+scriptFile,
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),
 		"BROKED_OUTPUT_NDJSON="+outputNDJSON,
@@ -581,7 +585,7 @@ func (r *Runner) runCodeStreamed(node models.Node, inputRef *artifact.DatasetRef
 
 	// ADR-029 P0 audit line, mirroring runCode's.
 	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
-		codeexec.WrapperVersion, codeexec.Resolve(configForScript))
+		codeexec.WrapperVersion(), codeexec.Resolve(configForScript))
 
 	stagedInput := ""
 	if inputRef != nil {

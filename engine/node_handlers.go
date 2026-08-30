@@ -381,7 +381,7 @@ func (r *Runner) runCode(node models.Node, input *common.DataSet) (*common.DataS
 	// ADR-029 P0 audit line: which wrapper contract and which ceilings
 	// this execution ran under, durable with the run.
 	r.log(node.ID, models.LogLevelInfo, "code exec: wrapper v%d, %s",
-		codeexec.WrapperVersion, codeexec.Resolve(configForScript))
+		codeexec.WrapperVersion(), codeexec.Resolve(configForScript))
 
 	result, stderr, err := ExecuteCodeNode(script, input, configForScript, runParams, timeoutSec)
 	if stderr != "" {

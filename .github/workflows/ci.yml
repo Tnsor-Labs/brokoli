@@ -136,6 +136,14 @@ jobs:
         # imports pkg_resources, which setuptools 81 removed.
         run: pip install --quiet "dbt-core==1.8.9" "dbt-postgres==1.8.2" "dbt-clickhouse==1.8.9" "setuptools<81"
 
+      # The code-node wrapper is real Python now (ADR-029), tested as
+      # Python: a wrapper edit fails here with a Python traceback before
+      # it fails as a byte-diff inside a Go test.
+      - name: Code-node wrapper contract tests (pytest)
+        run: |
+          pip install --quiet pytest
+          python -m pytest pkg/codeexec/pywrapper/tests/ -q
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
