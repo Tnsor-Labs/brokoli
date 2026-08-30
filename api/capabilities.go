@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
@@ -34,6 +35,33 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 	models.NodeTypeDatasetFilter: {models.CapabilityCompute, models.CapabilityDatasetOutput},
 }
 
+var codeRuntimeState = struct {
+	sync.RWMutex
+	nodePath string
+}{}
+
+// SetCodeRuntime records the runtime resolution performed by the server at
+// startup. Capabilities must describe the process that will execute a node,
+// not merely the runtime classes the binary knows about.
+func SetCodeRuntime(nodePath string) {
+	codeRuntimeState.Lock()
+	codeRuntimeState.nodePath = nodePath
+	codeRuntimeState.Unlock()
+}
+
+func codeRuntimeCapabilities() (languages []string, features []string, nodePath string) {
+	codeRuntimeState.RLock()
+	nodePath = codeRuntimeState.nodePath
+	codeRuntimeState.RUnlock()
+	languages = []string{"python"}
+	features = append([]string(nil), models.SupportedExecutionFeatures...)
+	if nodePath != "" {
+		languages = append(languages, "typescript")
+		features = append(features, "code-typescript")
+	}
+	return languages, features, nodePath
+}
+
 // CapabilitiesHandler returns the host's supported pipeline IR versions,
 // plugin protocol versions, plugin packaging versions and runtime classes,
 // and known node/connector capability tags.
@@ -42,10 +70,11 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 // a pipeline (e.g. whether IR 2.1 conditional edges or decorator-based
 // source nodes are supported).
 func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	languages, features, _ := codeRuntimeCapabilities()
+	response := map[string]interface{}{
 		"ir_version":                         models.CurrentIRVersion,
 		"supported_ir_versions":              models.SupportedIRVersions,
-		"supported_execution_features":       models.SupportedExecutionFeatures,
+		"supported_execution_features":       features,
 		"plugin_protocol_version":            plugins.ProtocolVersion,
 		"code_protocol_version":              codeexec.CodeProtocolVersion,
 		"supported_code_protocol_versions":   codeexec.SupportedCodeProtocolVersions,
@@ -53,7 +82,12 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		"supported_plugin_protocol_versions": plugins.SupportedProtocolVersions,
 		"supported_packaging_versions":       plugins.SupportedPackagingVersions,
 		"supported_runtime_classes":          plugins.SupportedRuntimeClasses,
+		"code_languages":                     languages,
 		"node_capabilities":                  []string{models.CapabilitySource, models.CapabilitySink, models.CapabilityCompute, models.CapabilityDatasetOutput},
 		"node_type_capabilities":             nodeTypeCapabilities,
-	})
+	}
+	// The wrapper contract is embedded even when Node is unavailable; this
+	// version identifies what the binary would run if the runtime resolves.
+	response["code_js_wrapper_version"] = codeexec.JSWrapperVersion()
+	writeJSON(w, http.StatusOK, response)
 }

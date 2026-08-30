@@ -228,6 +228,19 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 	}()
 	_ = runCtx // no further nested spans in this pass; kept for future propagation
 
+	// A live Runner can have no node-level lease during the transition from
+	// one completed node to the next queued node. The Engine.active registry
+	// is authoritative for runners owned by this process, so never let the
+	// reclaim sweep classify that lease-free interval as an orphan.
+	e.mu.RLock()
+	_, locallyActive := e.active[run.ID]
+	e.mu.RUnlock()
+	if locallyActive {
+		common.SLog().Info("recovery: deferring run — active runner owns it locally",
+			common.RunAttr(run.ID))
+		return recoveryOutcomeDeferred, reclaimed, nil
+	}
+
 	e.appendEvent(&models.RunEvent{RunID: run.ID, EventType: models.RunEventRecoveryStarted})
 
 	if attemptStore != nil {
