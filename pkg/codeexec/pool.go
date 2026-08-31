@@ -12,9 +12,13 @@ import (
 )
 
 // Pool keeps warm code-node workers, one sub-pool per
-// (language, interpreter, limits) tuple so a node's runtime override or
-// custom ceiling never shares a process with differently-configured
-// nodes. Concurrency never regresses relative to spawn-per-invocation:
+// (language, interpreter, limits, bundle-digest) tuple so a node's
+// runtime override or custom ceiling never shares a process with
+// differently-configured nodes — and a task-bundle execution never
+// shares a process with a different bundle (a warm python worker's
+// sys.modules is process-global; ADR-031's per-bundle scoping cannot
+// undo another bundle's imports, so the pool fences at the sub-key
+// instead). Concurrency never regresses relative to spawn-per-invocation:
 // when every pooled slot is busy at the cap, Exec spawns a one-shot
 // ephemeral worker instead of queueing — today N concurrent code nodes
 // get N interpreters, and that stays exactly true, so pool exhaustion
@@ -39,6 +43,7 @@ type subPool struct {
 	language    string
 	interpreter string
 	limits      Limits
+	bundle      string // ADR-031 bundle digest, "" for bare-script executions
 	idle        []*Worker
 }
 
@@ -102,15 +107,19 @@ func NewPool() *Pool {
 // pooled and one-shot — for tests and the audit trail.
 func (p *Pool) WorkerBoots() int64 { return p.boots.Load() }
 
-func subKey(language, interpreter string, limits Limits) string {
+func subKey(language, interpreter string, limits Limits, bundleDigest string) string {
 	raw, _ := json.Marshal(limits)
-	return language + "|" + interpreter + "|" + string(raw)
+	key := language + "|" + interpreter + "|" + string(raw)
+	if bundleDigest != "" {
+		key += "|bundle:" + bundleDigest
+	}
+	return key
 }
 
 // acquire returns a warm worker for the key, or spawns one. The bool
 // reports warmth (true = reused). At the cap it either spawns a
 // one-shot (default) or blocks until a slot frees (opt-in queue).
-func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits Limits) (*Worker, bool, error) {
+func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits Limits, bundleDigest string) (*Worker, bool, error) {
 	p.janitor.Do(func() { go p.reapLoop() })
 	p.mu.Lock()
 	closed := p.closed
@@ -129,7 +138,7 @@ func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits
 		p.boots.Add(1)
 		return w, false, nil
 	}
-	key := subKey(language, interpreter, limits)
+	key := subKey(language, interpreter, limits, bundleDigest)
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -138,7 +147,7 @@ func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits
 		}
 		sub := p.subs[key]
 		if sub == nil {
-			sub = &subPool{language: language, interpreter: interpreter, limits: limits}
+			sub = &subPool{language: language, interpreter: interpreter, limits: limits, bundle: bundleDigest}
 			p.subs[key] = sub
 		}
 		if n := len(sub.idle); n > 0 {
@@ -183,7 +192,7 @@ func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits
 }
 
 // release returns a healthy worker to its sub-pool, or retires it.
-func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, healthy bool) {
+func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, bundleDigest string, healthy bool) {
 	if w.oneShot {
 		w.kill()
 		return
@@ -198,7 +207,7 @@ func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, h
 		return
 	}
 	w.idleAt = time.Now()
-	key := subKey(language, interpreter, limits)
+	key := subKey(language, interpreter, limits, bundleDigest)
 	p.mu.Lock()
 	if p.closed || p.subs[key] == nil {
 		p.mu.Unlock()

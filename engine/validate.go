@@ -9,6 +9,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 )
 
 // ValidationError holds all issues found during validation.
@@ -436,6 +437,26 @@ func codeExecutionKeyErrors(config map[string]interface{}) []string {
 			errs = append(errs, "language 'typescript' requires the code worker pool; BROKOLI_CODE_POOL=0 selects the Python-only legacy path")
 		}
 	}
+	if raw, ok := config["task_bundle"]; ok {
+		tb, isMap := raw.(map[string]interface{})
+		if !isMap {
+			errs = append(errs, "'task_bundle' must be an object like {\"digest\": \"sha256:...\", \"format\": \"task-bundle/1\"}")
+		} else {
+			digest, _ := tb["digest"].(string)
+			if !taskbundle.IsDigest(digest) {
+				errs = append(errs, "'task_bundle.digest' must be a content address of the form \"sha256:<64 hex chars>\"")
+			}
+			if format, _ := tb["format"].(string); format != taskbundle.Format {
+				errs = append(errs, fmt.Sprintf("'task_bundle.format' must be %q", taskbundle.Format))
+			}
+		}
+		if s, _ := config["script"].(string); s != "" {
+			errs = append(errs, "'script' and 'task_bundle' are mutually exclusive on one code node")
+		}
+		if languageErr == nil && language == "typescript" {
+			errs = append(errs, "task bundles are not executable for language 'typescript' yet (v1 mounts python bundles)")
+		}
+	}
 	return errs
 }
 
@@ -542,7 +563,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 			r.Errors = append(r.Errors, "'uri' or 'conn_id' is required")
 		}
 	case models.NodeTypeCode:
-		if getStr(n.Config, "script") == "" {
+		if getStr(n.Config, "script") == "" && n.Config["task_bundle"] == nil {
 			r.Errors = append(r.Errors, "'script' is required")
 		}
 		r.Errors = append(r.Errors, codeExecutionKeyErrors(n.Config)...)

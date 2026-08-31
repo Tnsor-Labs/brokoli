@@ -235,3 +235,162 @@ for _ in range(64):
     r = run_wrapper(script, stdin=stdin_payload([]), env={"BROKED_LIMIT_MEMORY_MB": "256"})
     assert r.returncode != 0
     assert "MemoryError" in r.stderr
+
+
+# ── task bundles (ADR-031) ─────────────────────────────────────────────
+#
+# These exercise worker_main._run_exec in-process: the same function the
+# pool-driven worker calls per exec frame, with a fake socket capturing
+# protocol frames. They pin the bundle-mount contract from the Python
+# side; the cross-bundle isolation-by-digest guarantee is the pool's
+# sub-key, proved end-to-end in engine/taskbundle_exec_test.go.
+
+import io  # noqa: E402  (after the subprocess-based helpers above)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # wrapper dir: protocol, version, worker_main
+import protocol  # noqa: E402
+import worker_main  # noqa: E402
+
+WRAPPER_CODE = compile(open(WRAPPER).read(), WRAPPER, "exec")
+
+
+class FrameCapture:
+    """Fake socket whose writes are reassembled into (type, payload) frames."""
+
+    def __init__(self):
+        self.buf = b""
+
+    def write(self, data):
+        self.buf += data
+        return len(data)
+
+    def flush(self):
+        return None
+
+    def frames(self):
+        buf = io.BytesIO(self.buf)
+        out = []
+        while True:
+            try:
+                t, payload = protocol.read_frame(buf)
+            except Exception:
+                break
+            out.append((t, payload))
+        return out
+
+
+def run_bundle_exec(bundle_dir, entry, files, script_override=None):
+    capture = FrameCapture()
+    tmp = tempfile.mkdtemp(prefix="brk-bundle-test-")
+    msg = {
+        "exec_id": "t-bundle",
+        "bundle": {"dir": bundle_dir, "entry": entry, "files": files},
+        "config": {},
+        "params": {},
+        "input": {"mode": "none"},
+        "output": {"mode": "ndjson"},
+        "timeout_ms": 30000,
+    }
+    worker_main._run_exec(capture, msg, WRAPPER_CODE, tmp)
+    return capture.frames()
+
+
+def make_bundle_dir(*, mult_name="helpers", mult):
+    """A two-file bundle: a helper module and an entry importing it."""
+    root = tempfile.mkdtemp(prefix="brk-bundle-dir-")
+    with open(os.path.join(root, "helpers.py"), "w") as f:
+        f.write(f"def apply(x):\n    return x * {mult}\n")
+    entry = "tasks.py"
+    with open(os.path.join(root, entry), "w") as f:
+        f.write(
+            "from helpers import apply\n"
+            "output_data = {'columns': ['v'], 'rows': [{'v': apply(r['v'])} for r in rows]}\n"
+        )
+    # These in-process tests share one interpreter, so the helper module
+    # from an EARLIER bundle stays cached in sys.modules and would shadow
+    # this bundle's own helpers.py — the very leak the producer-side pool
+    # fences by digest-joined sub-keys, and impossible to simulate across
+    # two bundles here. Purge the module names to emulate a fresh worker.
+    sys.modules.pop("helpers", None)
+    sys.modules.pop("tasks", None)
+    return root, entry, ["helpers.py", entry]
+
+
+def test_bundle_exec_computes_with_a_relative_import():
+    bundle_dir, entry, files = make_bundle_dir(mult_name="helpers", mult=2)
+    frames = run_bundle_exec(bundle_dir, entry, files)
+    result = [f for t, f in frames if t == protocol.FRAME_RESULT]
+    assert result, [f for t, f in frames if t == protocol.FRAME_ERROR]
+    assert result[0]["output"]["columns"] == ["v"]
+    # Inline input is empty here ("none"); construct a rowed input instead.
+    assert result[0]["output"]["rows"] == []
+
+
+def test_bundle_sees_its_own_helper_module():
+    capture = FrameCapture()
+    tmp = tempfile.mkdtemp(prefix="brk-bundle-test-")
+    bundle_dir, entry, files = make_bundle_dir(mult=3)
+    msg = {
+        "exec_id": "t-bundle-rows",
+        "bundle": {"dir": bundle_dir, "entry": entry, "files": files},
+        "config": {},
+        "params": {},
+        "input": {"mode": "inline", "rows": [{"v": 7}]},
+        "output": {"mode": "ndjson"},
+        "timeout_ms": 30000,
+    }
+    worker_main._run_exec(capture, msg, WRAPPER_CODE, tmp)
+    frames = capture.frames()
+    result = [f for t, f in frames if t == protocol.FRAME_RESULT]
+    assert result, [f for t, f in frames if t == protocol.FRAME_ERROR]
+    assert result[0]["output"]["rows"] == [{"v": 21}]
+
+
+def test_bundle_cannot_import_from_the_wrapper_directory():
+    # _escaped_probe lives in the wrapper dir, which the mount excludes
+    # from sys.path; importing it must resolve against nothing.
+    root = tempfile.mkdtemp(prefix="brk-bundle-dir-")
+    entry = "tasks.py"
+    with open(os.path.join(root, entry), "w") as f:
+        f.write("import _escaped_probe\n")
+    frames = run_bundle_exec(root, entry, [entry])
+    errors = [f for t, f in frames if t == protocol.FRAME_ERROR]
+    assert errors, "expected an error frame, got %r" % frames
+    assert "No module named '_escaped_probe'" in errors[0]["message"] or "escaped_probe" in errors[0]["traceback"]
+
+
+def test_bundle_entry_outside_the_manifest_is_refused():
+    root, entry, files = make_bundle_dir(mult=2)
+    frames = run_bundle_exec(root, "sneaky.py", files)
+    errors = [f for t, f in frames if t == protocol.FRAME_ERROR]
+    assert errors, "expected an internal refusal, got %r" % frames
+    assert errors[0]["kind"] == "internal"
+    assert "not in the manifest file list" in errors[0]["message"]
+
+
+def test_bundle_import_scope_excludes_site_packages():
+    wrapper_dir = str(Path(__file__).resolve().parent.parent)
+    fake_main = object()
+    paths = _scope_with_worker_main(wrapper_dir, "/tmp/bundle-x")
+    bundle = paths[0]
+    assert bundle == "/tmp/bundle-x"
+    for p in paths[1:]:
+        low = p.lower().replace("\\", "/")
+        assert "site-packages" not in low and "dist-packages" not in low, p
+        assert p != wrapper_dir
+
+
+def _scope_with_worker_main(wrapper_dir, bundle_dir):
+    import sys as _sys
+    state = [
+        bundle_dir,
+        "/usr/lib/python3.11",
+        "/usr/local/lib/python3.11/site-packages",
+        wrapper_dir,
+    ]
+    saved = _sys.path[:]
+    try:
+        _sys.path[:] = state
+        return worker_main._bundle_import_paths(bundle_dir)
+    finally:
+        _sys.path[:] = saved

@@ -233,15 +233,15 @@ type codeStreamResult struct {
 // lattice is battle-tested and this path never needs it — a streamed
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
-func executeCodeNodeStreamed(parent context.Context, script string, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamed(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	if _, err := validateCodeRuntimeConstraint(nodeConfig); err != nil {
 		return nil, err
 	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodeStreamedPooled(parent, script, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
+		return executeCodeNodeStreamedPooled(parent, script, bundle, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
 	}
 	if script == "" {
-		return nil, fmt.Errorf("code node requires a 'script' in config")
+		return nil, fmt.Errorf("task bundles require the warm code pool (BROKOLI_CODE_POOL is off for this run)")
 	}
 	if timeoutSec <= 0 {
 		timeoutSec = 30
@@ -570,9 +570,24 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 // runCodeStreamed mirrors runCode's config handling and stderr logging
 // exactly, around file-based I/O on both sides of the subprocess.
 func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
-	script, _ := node.Config["script"].(string)
-	if script == "" {
-		return nodeExecutionResult{}, fmt.Errorf("code node requires 'script' in config")
+	script := ""
+	var bundle *codeBundleSpec
+	digest, isBundle, tbErr := taskBundleReference(node.Config)
+	if tbErr != nil {
+		return nodeExecutionResult{}, tbErr
+	}
+	if isBundle {
+		b, err := r.materializeTaskBundle(digest)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		bundle = b
+		defer os.RemoveAll(bundle.dir)
+	} else {
+		script, _ = node.Config["script"].(string)
+		if script == "" {
+			return nodeExecutionResult{}, fmt.Errorf("code node requires 'script' in config")
+		}
 	}
 	timeoutSec := 30
 	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
@@ -580,7 +595,7 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 	}
 	configForScript := make(map[string]interface{})
 	for k, v := range node.Config {
-		if k != "script" {
+		if k != "script" && k != "task_bundle" {
 			configForScript[k] = v
 		}
 	}
@@ -612,7 +627,7 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 	if inputRef != nil {
 		inputCols = inputRef.Columns
 	}
-	res, err := executeCodeNodeStreamed(ctx, script, stagedInput, inputCols, configForScript, runParams, timeoutSec,
+	res, err := executeCodeNodeStreamed(ctx, script, bundle, stagedInput, inputCols, configForScript, runParams, timeoutSec,
 		func(percent int, message string) {
 			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 		})

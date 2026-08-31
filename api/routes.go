@@ -150,6 +150,14 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/plugins/{name}/archive", plugh.Archive)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
 
+		// Task bundles (ADR-031). Uploads are content-addressed by the URL
+		// digest, which the handler re-hashes before persisting; uploads need
+		// pipelines.create (authoring a bundle is authoring pipeline input),
+		// fetches are auth-only like the plugin archive. Both org-scoped.
+		tbh := NewTaskBundleHandler(s)
+		r.With(requirePerm(models.PermPipelinesCreate)).Post("/task-bundles/{digest}", tbh.Upload)
+		r.Get("/task-bundles/{digest}", tbh.Get)
+
 		// Runs
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/run", rh.TriggerRun)
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/dry-run", rh.DryRun)

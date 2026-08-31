@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // CodeNodeInput is the JSON structure passed to the Python script via stdin (small datasets).
@@ -61,7 +64,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 		return nil, "", err
 	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodePooled(parent, script, input, nodeConfig, runParams, timeoutSec, progress)
+		return executeCodeNodePooled(parent, script, nil, input, nodeConfig, runParams, timeoutSec, progress)
 	}
 
 	// Contract v2 (ADR-029): the wrapper is the embedded, versioned
@@ -254,6 +257,94 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	}
 
 	return ds, stderrStr, nil
+}
+
+// ExecuteTaskBundleNodeProgress executes a materialized task bundle
+// (ADR-031) with the same progress contract as ExecuteCodeNodeProgress.
+// v1 mounts python bundles through the warm pool; the legacy spawned
+// path cannot scope a worker's imports to a bundle (no resident
+// interpreter to fence), so a store-less or pool-less host refuses here
+// rather than silently degrading from bundle semantics.
+func ExecuteTaskBundleNodeProgress(parent context.Context, bundle codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
+	if bundle.digest == "" || bundle.dir == "" || bundle.entry == "" {
+		return nil, "", fmt.Errorf("code node requires a task bundle to execute")
+	}
+	if timeoutSec <= 0 {
+		timeoutSec = 30
+	}
+	if _, err := validateCodeRuntimeConstraint(nodeConfig); err != nil {
+		return nil, "", err
+	}
+	if !codeexec.PoolEnabled() {
+		return nil, "", fmt.Errorf("task bundle %s requires the code worker pool, which is disabled (BROKOLI_CODE_POOL=0)", bundle.digest)
+	}
+	return executeCodeNodePooled(parent, "", &bundle, input, nodeConfig, runParams, timeoutSec, progress)
+}
+
+// taskBundleReference parses a code node's 'task_bundle' config object
+// into the digest it names. ok=false means the node has no task_bundle
+// (it is a bare-script node); any other malformation is an error. Format
+// is re-verified here, not just at validation, so a bundle field served
+// from a stale persisted pipeline cannot slip through a run-time path.
+func taskBundleReference(config map[string]interface{}) (digest string, ok bool, err error) {
+	raw, present := config["task_bundle"]
+	if !present {
+		return "", false, nil
+	}
+	m, isMap := raw.(map[string]interface{})
+	if !isMap {
+		return "", false, fmt.Errorf("code node 'task_bundle' must be an object with digest and format")
+	}
+	digest, _ = m["digest"].(string)
+	if !taskbundle.IsDigest(digest) {
+		return "", false, fmt.Errorf("code node 'task_bundle.digest' must be a content address of the form \"sha256:<64 hex chars>\"")
+	}
+	if format, _ := m["format"].(string); format != taskbundle.Format {
+		return "", false, fmt.Errorf("code node 'task_bundle.format' is unsupported: %q", format)
+	}
+	return digest, true, nil
+}
+
+// materializeTaskBundle fetches a task bundle from the org-scoped store,
+// re-verifies that the stored bytes hash to the referenced digest, and
+// safely extracts them to a fresh temp dir. The returned dir is owned by
+// the caller and must be removed when execution is done (the only
+// caller, runCode, defers RemoveAll on it). Every failure mode here is
+// "refuse to run": a stored archive that no longer hashes to its digest,
+// a manifest that cannot validate, or a file list that does not match
+// the archive is a broken delivery, not something to discover at line
+// one of a user script.
+func (r *Runner) materializeTaskBundle(digest string) (*codeBundleSpec, error) {
+	if r.store == nil {
+		return nil, fmt.Errorf("task bundle %s: this server has no task bundle store", digest)
+	}
+	sb, ok := r.store.(store.TaskBundleStore)
+	if !ok {
+		return nil, fmt.Errorf("task bundle %s: this server has no task bundle store", digest)
+	}
+	archive, err := sb.GetTaskBundle(r.orgID, digest)
+	if err != nil {
+		if errors.Is(err, store.ErrTaskBundleNotFound) {
+			return nil, fmt.Errorf("task bundle %s is not stored for this org: upload the bundle before running a pipeline that references it", digest)
+		}
+		return nil, fmt.Errorf("task bundle %s: %w", digest, err)
+	}
+	if taskbundle.DigestOf(archive) != digest {
+		return nil, fmt.Errorf("stored task bundle does not match its digest %s: refusing to execute", digest)
+	}
+	dir, err := os.MkdirTemp("", "brokoli-bundle-")
+	if err != nil {
+		return nil, err
+	}
+	m, err := taskbundle.Extract(archive, dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, fmt.Errorf("task bundle %s: %w", digest, err)
+	}
+	// Extract already ran manifest validation, which pinned format and the
+	// python language; the entry and file list travel from the same
+	// manifest the digest bound at upload.
+	return &codeBundleSpec{digest: digest, dir: dir, entry: m.Entry, files: m.Files}, nil
 }
 
 // writeCSVFile writes a DataSet to a CSV temp file.

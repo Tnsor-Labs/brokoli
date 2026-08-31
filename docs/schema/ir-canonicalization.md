@@ -113,6 +113,22 @@ IR) must also agree on the emitted key sets, not just the rendering:
   `"query_result"` on `source_db` nodes that carry a `query`, and
   `"api_response"` on `source_api` nodes. These survive normalization
   and are part of the digest.
+- **`code` node content addressing (ADR-031 task bundles):** a code node
+  carries exactly one of `config.script` (inline source) or
+  `config.task_bundle` (a content-addressed project archive reference) —
+  never both, never neither; `config.language` is present in both forms.
+  `task_bundle` is `{"digest", "format"}` with
+  `digest == "sha256:" + 64 lowercase hex chars` (the SHA-256 of the
+  archive's own bytes) and `format == "task-bundle/1"`. The digest is
+  part of the node config, so it is canonicalized and hashed like any
+  other value: two pipelines referencing different archives differ in
+  IR digest. The archive bytes themselves ride sideband (uploaded by the
+  deployer); they never appear in the IR. SDKs MUST NOT write
+  `archive_sha256` into a packaged manifest: it is self-referential (the
+  digest of bytes that contain the field naming it), so no real value can
+  equal the archive's actual digest, and core's `ParseArchive` refuses any
+  non-empty value that does not match the archive it ships in — which
+  means, in practice, every non-empty value.
 - Node ids: `clean(name) + "_" + n`, where `clean` lowercases, replaces
   spaces with underscores, drops every remaining character that is not
   alphanumeric or `_` (alphanumeric per Unicode, as in Python's

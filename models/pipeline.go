@@ -105,6 +105,13 @@ var SupportedExecutionFeatures = []string{
 	// a server whose wrapper predated the idiom and misbehaved at run
 	// time; the SDK preflight gates on this name.
 	"code-streaming-emit",
+	// ADR-031 task bundles: a code node whose config carries a
+	// task_bundle reference executes a versioned, content-addressed
+	// project artifact mounted by the worker instead of a bare script.
+	// A server that does not advertise this must refuse such pipelines
+	// at deploy preflight -- "deployed, then fails at run time" is the
+	// exact failure mode this list exists to prevent.
+	"task-bundles",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

@@ -112,11 +112,98 @@ def _forward_captured(sock_file, exec_id, captured, level, skip_last_json=False)
     return inline
 
 
+def _bundle_import_paths(bundle_dir):
+    """The sys.path a task-bundle execution runs under (ADR-031/030):
+    the bundle root first, then ONLY the interpreter's standard library —
+    never host site-packages/dist-packages, never another bundle's dir,
+    never the wrapper's own dir. The manifest file list is the
+    authoritative import surface: a file that is not in the bundle is not
+    on the path at all, so escaping imports are refused structurally
+    rather than by pattern. The wrapper's own Arrow/pandas fast paths
+    simply don't resolve here, which is correct — a bundle is
+    self-contained (its manifest's file list is its world) and its
+    executions fall back to the pure-Python data paths."""
+    wrapper_dir = os.path.dirname(os.path.abspath(_WRAPPER_PATH))
+    paths = []
+    for p in sys.path:
+        if not p:
+            continue
+        if p == bundle_dir:
+            continue
+        if p == wrapper_dir:
+            continue
+        low = p.replace("\\", "/").lower()
+        if "site-packages" in low or "dist-packages" in low:
+            continue
+        paths.append(p)
+    return [bundle_dir] + paths
+
+
+def _purge_modules_under(bundle_root, before):
+    """Drop, from sys.modules, any module that was imported during this
+    execution from under the bundle root.
+
+    sys.modules is keyed by module name, not by import path. The host
+    re-extracts the byte-identical bundle to a FRESH directory for every
+    execution, so a warm worker that kept the previous run's imports
+    would keep their module objects — and the module-level mutable state
+    they hold — alive across separate pipeline runs sharing this worker.
+    That is exactly the persistent-state footgun the
+    fresh-namespace-per-exec design exists to prevent, one layer down, so
+    it is cleaned here as symmetrically as sys.path's restore: silently
+    carried helper state never survives a run. Only modules absent when
+    the execution started (`before`) are candidates, and only those whose
+    file sits under the bundle root — stdlib or worker modules imported
+    lazily mid-exec are shared safely and left alone. Next execution of
+    the same digest imports its helpers from scratch."""
+    root = os.path.realpath(bundle_root)
+    for name in list(sys.modules):
+        if name in before:
+            continue
+        mod = sys.modules.get(name)
+        mfile = getattr(mod, "__file__", None)
+        if mfile is None:
+            continue
+        try:
+            under = os.path.commonpath([root, os.path.realpath(mfile)]) == root
+        except ValueError:
+            under = False
+        if under:
+            sys.modules.pop(name, None)
+
+
 def _run_exec(sock_file, msg, wrapper_code, tmpdir):
     exec_id = msg.get("exec_id", "")
-    script_path = os.path.join(tmpdir, f"user_script_{os.getpid()}.py")
-    with open(script_path, "w") as f:
-        f.write(msg.get("script", ""))
+    bundle = msg.get("bundle") or {}
+    bundle_dir = bundle.get("dir", "")
+    saved_path = None
+    if bundle_dir:
+        # The host has already validated the manifest; this is the
+        # worker-side repeat of the two invariants that matter at the
+        # mount point: the entry is one of the manifest's files, and it
+        # stays inside the bundle root. A violation means the host sent a
+        # malformed execution, which is a worker-trust breach — reported
+        # as an internal error, not executed.
+        root = os.path.realpath(bundle_dir)
+        entry = bundle.get("entry", "") or ""
+        files = frozenset(bundle.get("files") or [])
+        entry_rel = entry.replace("\\", "/")
+        script_path = os.path.realpath(os.path.join(root, entry.replace("/", os.sep)))
+        if (entry_rel not in files
+                or os.path.commonpath([root, script_path]) != root
+                or not os.path.isfile(script_path)):
+            protocol.write_frame(sock_file, protocol.FRAME_ERROR, {
+                "exec_id": exec_id,
+                "kind": "internal",
+                "message": "refused task bundle execution: entry is not in the manifest file list or escapes the bundle root",
+            })
+            return
+        saved_path = sys.path[:]
+        sys.path[:] = _bundle_import_paths(root)
+    else:
+        script_path = os.path.join(tmpdir, f"user_script_{os.getpid()}.py")
+        with open(script_path, "w") as f:
+            f.write(msg.get("script", ""))
 
     inp = msg.get("input") or {}
     out = msg.get("output") or {}
@@ -154,6 +241,7 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
         os.environ["BROKED_OUTPUT_NDJSON"] = output_path
 
     ns = {"__name__": "__main__", "__file__": _WRAPPER_PATH, "__builtins__": __builtins__}
+    module_snapshot = set(sys.modules) if bundle_dir else None
     real_stdin, real_stdout, real_stderr = sys.stdin, sys.stdout, sys.stderr
     captured_out, captured_err = io.StringIO(), io.StringIO()
     sys.stdin = io.StringIO(stdin_payload)
@@ -180,6 +268,13 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
                        "traceback": traceback.format_exc()}
     finally:
         sys.stdin, sys.stdout, sys.stderr = real_stdin, real_stdout, real_stderr
+        if saved_path is not None:
+            sys.path[:] = saved_path
+        if module_snapshot is not None:
+            try:
+                _purge_modules_under(root, module_snapshot)
+            except Exception:
+                pass
         # The wrapper registers its journal cleanup with atexit, which a
         # long-lived worker never reaches: run and unregister it now so
         # journals from a mutating script don't outlive the execution.

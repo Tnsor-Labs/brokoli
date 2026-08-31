@@ -11,7 +11,9 @@ import (
 
 // Request is one code-node execution against the pool. Exactly one
 // input mode: InlineRows (small data) or InputNDJSON (a staged file by
-// reference — the ADR-029 v1 data plane).
+// reference — the ADR-029 v1 data plane). Exactly one script source:
+// Script (a bare code string) or TaskBundle* (a materialized ADR-031
+// bundle — when set, Script is ignored).
 type Request struct {
 	Language        string // "python" (default) | "typescript"
 	Script          string
@@ -26,6 +28,18 @@ type Request struct {
 	OutputNDJSON    string // where file-mode output should land; required
 	LogHandler      func(level, message string)
 	ProgressHandler func(percent int, message string)
+
+	// TaskBundle mounts a materialized task bundle for this execution
+	// (ADR-031). TaskBundleDir is an already-extracted bundle root,
+	// TaskBundleEntry its entry module relative to it, TaskBundleFiles
+	// the manifest's authoritative file list. BundleDigest joins the
+	// pool's sub-key: a warm python worker's sys.modules is
+	// process-global, so a different bundle must never share a process
+	// with one that already imported from its own tree.
+	TaskBundleDir   string
+	TaskBundleEntry string
+	TaskBundleFiles []string
+	BundleDigest    string
 }
 
 // ExecMeta is the per-run audit record (ADR-029): which contract this
@@ -103,7 +117,7 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 	if req.Timeout <= 0 {
 		req.Timeout = 30 * time.Second
 	}
-	worker, warm, err := p.acquire(ctx, req.Language, req.Interpreter, req.Limits)
+	worker, warm, err := p.acquire(ctx, req.Language, req.Interpreter, req.Limits, req.BundleDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -132,6 +146,13 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 		Output:    ExecOutput{Mode: "ndjson", Path: req.OutputNDJSON},
 		TimeoutMs: req.Timeout.Milliseconds(),
 	}
+	if req.TaskBundleDir != "" {
+		// A bundle is the script source; never send a script alongside
+		// it. The digest already identifies the archive the dir was
+		// extracted from; the dir carries the actual bytes.
+		msg.Script = ""
+		msg.Bundle = &ExecBundle{Dir: req.TaskBundleDir, Entry: req.TaskBundleEntry, Files: req.TaskBundleFiles}
+	}
 
 	type outcome struct {
 		result *Result
@@ -154,15 +175,15 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 				healthy = false // allocator/internal state is untrusted after a breach
 			}
 		}
-		p.release(worker, req.Language, req.Interpreter, req.Limits, healthy)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, healthy)
 		return out.result, out.err
 	case <-timer.C:
 		worker.kill()
-		p.release(worker, req.Language, req.Interpreter, req.Limits, false)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
 		return nil, fmt.Errorf("script timed out after %ds", int(req.Timeout.Seconds()))
 	case <-ctx.Done():
 		worker.kill()
-		p.release(worker, req.Language, req.Interpreter, req.Limits, false)
+		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
 		return nil, ctx.Err()
 	}
 }
