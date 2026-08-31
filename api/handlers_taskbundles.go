@@ -7,10 +7,13 @@ package api
 // Uploads are POST /api/task-bundles/{digest}: the digest is in the URL,
 // not the body, so a client can never claim a digest it did not actually
 // hash — the handler re-hashes the raw body and demands equality before a
-// single byte is persisted (Decision 6's verify-on-upload half). A
-// byte-identical re-upload is a no-op (201 then 200 unchanged); a
-// different archive claiming an occupied digest is a 409 collision. Both
-// persist nothing unless the bytes verify.
+// single byte is persisted (Decision 6's verify-on-upload half). The
+// manifest is also parsed and validated at upload (format, language,
+// entry, file-list consistency), so a malformed bundle fails where the
+// author is looking, not at first pipeline run. A byte-identical
+// re-upload is a no-op (201 then 200 unchanged); a different archive
+// claiming an occupied digest is a 409 collision. All three checks must
+// pass before a single byte is persisted.
 //
 // Fetch is GET /api/task-bundles/{digest}: raw bytes with an ETag equal
 // to the digest, the same fetch-by-digest shape as the plugin archive
@@ -108,6 +111,19 @@ func (h *TaskBundleHandler) Upload(w http.ResponseWriter, r *http.Request) {
 	if actual != digest {
 		writeError(w, http.StatusBadRequest,
 			"archive hashes to "+actual+" but was claimed as "+digest)
+		return
+	}
+
+	// Validate the manifest now, not just at first mount: "deployment
+	// must fail... when bundling fails" (ADR-031 Decision 5) reads most
+	// naturally as failing at the point the author is looking at —
+	// upload — not at first pipeline run, which could be days later and
+	// on someone else's screen. ParseArchive is bounded the same way
+	// Extract is (entry count, per-entry, and aggregate decompressed
+	// size), so this is safe to run on the unauthenticated-content
+	// upload body before anything is persisted.
+	if _, err := taskbundle.ParseArchive(body); err != nil {
+		writeError(w, http.StatusBadRequest, "task bundle manifest is invalid: "+err.Error())
 		return
 	}
 

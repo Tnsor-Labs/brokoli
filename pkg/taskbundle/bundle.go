@@ -38,6 +38,13 @@ const Format = "task-bundle/1"
 // same defense at materialization time).
 const MaxArchiveBytes = 64 << 20 // 64 MiB
 
+// MaxArchiveEntries caps the number of tar entries ParseArchive/Extract
+// will walk. Tar headers are mostly padding, so they compress far better
+// than file content; without this, a small gzip could still force
+// millions of Next()/Clean() calls before either byte cap is ever
+// touched. 10,000 covers any plausible project layout with headroom.
+const MaxArchiveEntries = 10000
+
 var digestRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
 // DigestOf returns the canonical content address of archive bytes — the
@@ -171,6 +178,7 @@ func ParseArchive(b []byte) (*Manifest, error) {
 
 	var manifestRaw []byte
 	entries := 0
+	var total int64
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -180,6 +188,9 @@ func ParseArchive(b []byte) (*Manifest, error) {
 			return nil, fmt.Errorf("read task bundle archive: %w", err)
 		}
 		entries++
+		if entries > MaxArchiveEntries {
+			return nil, fmt.Errorf("task bundle archive has more than %d entries", MaxArchiveEntries)
+		}
 		if hdr.Typeflag != tar.TypeReg && hdr.Typeflag != tar.TypeDir {
 			return nil, fmt.Errorf("task bundle entry %q has unsupported type %d", hdr.Name, hdr.Typeflag)
 		}
@@ -194,7 +205,16 @@ func ParseArchive(b []byte) (*Manifest, error) {
 			if err != nil {
 				return nil, fmt.Errorf("read task bundle manifest: %w", err)
 			}
+			total += int64(len(manifestRaw))
 		} else {
+			// Bounded per entry AND across the whole archive: a per-entry
+			// cap alone still lets many small entries add up to unbounded
+			// decompressed work before any single one trips its own
+			// limit. This mirrors Extract's own `total` tracking below —
+			// ParseArchive must be exactly as safe on attacker-controlled
+			// bytes as Extract is, since callers (the upload handler
+			// among them) may validate a manifest via ParseArchive alone,
+			// without ever calling Extract.
 			n, err := io.Copy(io.Discard, io.LimitReader(tr, MaxArchiveBytes+1))
 			if err != nil {
 				return nil, fmt.Errorf("read task bundle entry %q: %w", hdr.Name, err)
@@ -202,6 +222,10 @@ func ParseArchive(b []byte) (*Manifest, error) {
 			if n > MaxArchiveBytes {
 				return nil, fmt.Errorf("task bundle entry %q exceeds the %d-byte file limit", hdr.Name, int64(MaxArchiveBytes))
 			}
+			total += n
+		}
+		if total > MaxArchiveBytes {
+			return nil, fmt.Errorf("task bundle archive exceeds the %d-byte total limit", int64(MaxArchiveBytes))
 		}
 	}
 	if manifestRaw == nil {
@@ -237,6 +261,7 @@ func Extract(b []byte, destRoot string) (*Manifest, error) {
 	tr := tar.NewReader(gz)
 
 	var total int64
+	entries := 0
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -244,6 +269,10 @@ func Extract(b []byte, destRoot string) (*Manifest, error) {
 		}
 		if err != nil {
 			return nil, fmt.Errorf("read task bundle archive: %w", err)
+		}
+		entries++
+		if entries > MaxArchiveEntries {
+			return nil, fmt.Errorf("task bundle archive has more than %d entries", MaxArchiveEntries)
 		}
 		name := filepath.FromSlash(hdr.Name)
 		if filepath.IsAbs(name) || strings.Contains(name, "..") {
