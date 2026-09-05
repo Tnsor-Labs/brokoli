@@ -868,3 +868,34 @@ match, not the implementation itself), a tagged-value JSON Schema and its
 round-trip vectors, and wiring `task_interface` into the pipeline IR
 (IR 2.2 / `task-ports-v1`) — there is no Go struct to bind it to yet, so
 this ADR is not close to its acceptance gates.
+
+## Update (2026-09-05) — rollout step 2 landed, partially
+
+`docs/schema/pipeline-ir-2.2.json` publishes the additive, optional
+node-level `interface` and pipeline-level `parameters` fields (both
+`$ref`-ing `task-interface-v1.json`), proven a true superset of every
+2.0/2.1 pipeline this server already accepts. `api/capabilities.go`
+gains `node_type_interfaces`, a reference table (mirroring the existing
+`node_type_capabilities`) giving 13 of the ~19 built-in node types their
+already-known ADR-032 interface, each validated against the schema by a
+test.
+
+Five node types are named and deliberately excluded rather than
+silently skipped: `source_api` (its output kind depends on per-node
+config, not its type alone — a static per-type table cannot say that
+honestly), `join` (takes exactly two inputs, but `models.Edge` carries
+no port identity — edge order, not a named port, currently distinguishes
+them), `dbt` (output shape genuinely varies by config), `wait` (the SDK
+never wires it an input, and its unconnected semantics are murkier than
+the other control-flow nodes), and `sql_generate`/`code` (not
+investigated / not knowable ahead of schema derivation, respectively).
+
+Still not done: this table is a discovery/reference surface only,
+exactly like `node_type_capabilities` itself — no deploy or validate
+path reads it, no `models.Node` carries a persisted `interface`, and no
+`task-ports-v1` capability is advertised (advertising it before anything
+actually accepts these fields would be the same dishonest-capability
+gap `sdk#86`'s fail-closed fix was built to prevent). Wiring `interface`/
+`parameters` into `models.Node`/`models.Pipeline` for real, with the
+matching two-way schema/model field sweep `ir_schema_contract_test.go`
+already does for 2.1, is the next slice — tracked in issue #439.
