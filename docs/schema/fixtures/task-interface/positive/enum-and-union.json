@@ -1,0 +1,40 @@
+{
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {},
+  "outputs": {},
+  "parameters": {
+    "region": {
+      "type": { "kind": "enum", "values": ["us-east", "eu-west"] },
+      "required": false,
+      "default": "us-east"
+    },
+    "payment_method": {
+      "type": {
+        "kind": "union",
+        "tag_field": "kind",
+        "value_field": "value",
+        "variants": [
+          {
+            "tag": "card",
+            "type": {
+              "kind": "record",
+              "fields": [
+                { "name": "last4", "type": { "kind": "string" }, "required": true }
+              ]
+            }
+          },
+          {
+            "tag": "bank",
+            "type": {
+              "kind": "record",
+              "fields": [
+                { "name": "iban", "type": { "kind": "string" }, "required": true }
+              ]
+            }
+          }
+        ]
+      },
+      "required": true
+    }
+  }
+}

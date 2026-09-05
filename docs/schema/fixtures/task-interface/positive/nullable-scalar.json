@@ -1,0 +1,14 @@
+{
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {
+    "label": {
+      "value": { "kind": "scalar", "type": { "kind": "string", "nullable": true, "min_length": 1, "max_length": 64 } },
+      "cardinality": "optional"
+    }
+  },
+  "outputs": {
+    "count": {
+      "value": { "kind": "scalar", "type": { "kind": "int64", "minimum": "0" } }
+    }
+  }
+}

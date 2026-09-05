@@ -853,3 +853,18 @@ directly — it defines a type/interface contract, not an execution
 mechanism — but ADR-033 (stacked on this one) does conflict with ADR-029
 and ADR-031 in ways that needed resolving before implementation. See
 ADR-035.
+
+## Update (2026-09-05) — rollout step 1 landed
+
+Per section 12's incremental rollout, step 1 ("add canonical schema
+definitions and fixtures without changing execution") is done:
+`docs/schema/task-interface-v1.json` (the BPTD type descriptor language,
+named ports, and parameter declarations), the companion canonical
+value-encoding spec at `docs/schema/task-interface-canonicalization.md`,
+positive/negative fixtures, and `models/task_interface_schema_test.go`.
+Not yet done, deliberately, per that same document's own scope note: a
+Go digest/assignability *implementation* (the schema is the spec it must
+match, not the implementation itself), a tagged-value JSON Schema and its
+round-trip vectors, and wiring `task_interface` into the pipeline IR
+(IR 2.2 / `task-ports-v1`) — there is no Go struct to bind it to yet, so
+this ADR is not close to its acceptance gates.

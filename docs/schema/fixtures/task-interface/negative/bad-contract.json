@@ -1,0 +1,6 @@
+{
+  "_violation": "contract must be exactly 'brokoli.task-interface/v1'.",
+  "contract": "brokoli.task-interface/v2",
+  "inputs": {},
+  "outputs": {}
+}

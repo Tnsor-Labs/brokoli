@@ -1,0 +1,8 @@
+{
+  "_violation": "port names must match ^[A-Za-z_][A-Za-z0-9_]{0,127}$ (ADR-032 section 3 rule 1, reused for port names).",
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {
+    "1-not-an-identifier": { "value": { "kind": "scalar", "type": { "kind": "int64" } } }
+  },
+  "outputs": {}
+}
