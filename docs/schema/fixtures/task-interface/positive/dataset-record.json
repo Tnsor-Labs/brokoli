@@ -1,0 +1,42 @@
+{
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {
+    "orders": {
+      "value": {
+        "kind": "dataset",
+        "row": {
+          "kind": "record",
+          "fields": [
+            { "name": "id", "type": { "kind": "int64" }, "required": true },
+            { "name": "amount", "type": { "kind": "decimal" }, "required": true },
+            { "name": "email", "type": { "kind": "string", "nullable": true }, "required": false }
+          ],
+          "additional_fields": false
+        },
+        "column_order": ["id", "amount", "email"]
+      }
+    }
+  },
+  "parameters": {
+    "threshold": {
+      "type": { "kind": "float64", "minimum": 0, "maximum": 1 },
+      "required": false,
+      "default": 0.5,
+      "description": "Minimum score retained by the task"
+    }
+  },
+  "outputs": {
+    "result": {
+      "value": {
+        "kind": "dataset",
+        "row": {
+          "kind": "record",
+          "fields": [
+            { "name": "id", "type": { "kind": "int64" }, "required": true },
+            { "name": "score", "type": { "kind": "float64" }, "required": true }
+          ]
+        }
+      }
+    }
+  }
+}

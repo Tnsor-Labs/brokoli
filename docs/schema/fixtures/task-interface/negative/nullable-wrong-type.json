@@ -1,0 +1,8 @@
+{
+  "_violation": "nullable must be a boolean, not a string -- enforced via bptd_common's allOf, not the leaf's own whitelist-only properties.",
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {},
+  "outputs": {
+    "x": { "value": { "kind": "scalar", "type": { "kind": "string", "nullable": "yes" } } }
+  }
+}

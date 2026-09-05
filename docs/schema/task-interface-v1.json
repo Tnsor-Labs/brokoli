@@ -1,0 +1,791 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/task-interface-v1.json",
+  "title": "Brokoli portable task interface v1 (ADR-032)",
+  "description": "Canonical machine-readable contract for a task's named input/output ports, local parameters, and the Brokoli Portable Type Descriptor (BPTD) those ports and parameters are built from. This is a rollout-step-1 artifact (ADR-032 section 12, step 1): it defines the schema and its fixtures without wiring it into the pipeline IR or execution -- IR 2.2 wires config.interface on a task node to this schema, and models/ir_schema_contract_test.go gains that binding in a later PR, not this one. A change here is a change to every SDK and the core validator at once: version it accordingly, per the same discipline as pipeline-ir-2.1.json.",
+  "$ref": "#/$defs/task_interface",
+  "$defs": {
+    "task_interface": {
+      "type": "object",
+      "required": [
+        "contract",
+        "inputs",
+        "outputs"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "brokoli.task-interface/v1"
+        },
+        "inputs": {
+          "type": "object",
+          "description": "Named input ports, keyed by port name. Port names are stable logical identity and are never inferred from edge order.",
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "description": "Named output ports, keyed by port name. Every emitted output must be declared; an absent optional output is explicit.",
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/port"
+          }
+        },
+        "parameters": {
+          "type": "object",
+          "description": "Task-local parameter declarations, bound by invocation-level parameter_bindings (ADR-032 section 7) -- not pipeline parameters, and not run values.",
+          "propertyNames": {
+            "$ref": "#/$defs/identifier"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/parameter_declaration"
+          }
+        }
+      }
+    },
+    "pipeline_parameters": {
+      "type": "object",
+      "description": "Pipeline-level parameter declarations (ADR-032 section 3). Not part of task_interface's own root; a pipeline's top-level 'parameters' object references this shape once IR 2.2 wires it in.",
+      "propertyNames": {
+        "$ref": "#/$defs/identifier"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/parameter_declaration"
+      }
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$"
+    },
+    "parameter_declaration": {
+      "type": "object",
+      "required": [
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/bptd_type"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "default": {
+          "description": "A literal portable value validated against 'type' at compile time. Cannot execute code, read environment variables, or refer to another parameter."
+        },
+        "description": {
+          "type": "string"
+        },
+        "sensitive": {
+          "type": "boolean",
+          "description": "Controls display/logging/audit redaction for an ordinary inline parameter. Does NOT make it a securely stored secret -- actual secrets use the separate invocation-level resource_bindings contract (ADR-032 section 3 rule 7)."
+        }
+      },
+      "not": {
+        "required": [
+          "required",
+          "default"
+        ],
+        "properties": {
+          "required": {
+            "const": true
+          }
+        }
+      },
+      "$comment": "required:true and default are mutually exclusive (ADR-032 section 3 rule 2); the 'not' clause above rejects the one combination that violates it (required:true together with a default) without forbidding required:false with a default, or required:true with no default."
+    },
+    "port": {
+      "type": "object",
+      "required": [
+        "value"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/value_contract"
+        },
+        "cardinality": {
+          "type": "string",
+          "enum": [
+            "one",
+            "optional",
+            "many"
+          ],
+          "default": "one"
+        }
+      }
+    },
+    "value_contract": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/value_dataset"
+        },
+        {
+          "$ref": "#/$defs/value_scalar"
+        },
+        {
+          "$ref": "#/$defs/value_artifact"
+        },
+        {
+          "$ref": "#/$defs/value_collection"
+        },
+        {
+          "$ref": "#/$defs/value_control"
+        }
+      ]
+    },
+    "value_dataset": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "dataset"
+        },
+        "row": {
+          "description": "The row descriptor. Omitted means unknown (ADR-032 section 6): absence is honest, never inferred.",
+          "$ref": "#/$defs/bptd_type"
+        },
+        "column_order": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Explicit presentation/physical column order (ADR-032 section 4 rule 2). Declaration order in 'row.fields' alone is never semantic."
+        }
+      }
+    },
+    "value_scalar": {
+      "type": "object",
+      "required": [
+        "kind",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "scalar"
+        },
+        "type": {
+          "$ref": "#/$defs/bptd_type"
+        }
+      }
+    },
+    "value_artifact": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "artifact"
+        },
+        "media_types": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "logical_type": {
+          "type": "string"
+        }
+      }
+    },
+    "value_collection": {
+      "type": "object",
+      "required": [
+        "kind",
+        "items",
+        "ordered",
+        "item_key"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "collection"
+        },
+        "items": {
+          "$ref": "#/$defs/value_contract"
+        },
+        "ordered": {
+          "type": "boolean"
+        },
+        "item_key": {
+          "description": "Stable item-key descriptor used to derive physical instance identity (ADR-015). Duplicate keys are invalid even when duplicate values are allowed.",
+          "$ref": "#/$defs/bptd_type"
+        }
+      }
+    },
+    "value_control": {
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "control"
+        }
+      },
+      "$comment": "No business value; ordering/routing only. Cardinality one; cannot be read by task code (ADR-032 section 6)."
+    },
+    "bptd_type": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/bptd_boolean"
+        },
+        {
+          "$ref": "#/$defs/bptd_int64"
+        },
+        {
+          "$ref": "#/$defs/bptd_float64"
+        },
+        {
+          "$ref": "#/$defs/bptd_decimal"
+        },
+        {
+          "$ref": "#/$defs/bptd_string"
+        },
+        {
+          "$ref": "#/$defs/bptd_bytes"
+        },
+        {
+          "$ref": "#/$defs/bptd_date"
+        },
+        {
+          "$ref": "#/$defs/bptd_timestamp"
+        },
+        {
+          "$ref": "#/$defs/bptd_duration"
+        },
+        {
+          "$ref": "#/$defs/bptd_json"
+        },
+        {
+          "$ref": "#/$defs/bptd_unknown"
+        },
+        {
+          "$ref": "#/$defs/bptd_array"
+        },
+        {
+          "$ref": "#/$defs/bptd_map"
+        },
+        {
+          "$ref": "#/$defs/bptd_record"
+        },
+        {
+          "$ref": "#/$defs/bptd_enum"
+        },
+        {
+          "$ref": "#/$defs/bptd_union"
+        }
+      ]
+    },
+    "bptd_common": {
+      "type": "object",
+      "properties": {
+        "nullable": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        },
+        "extensions": {
+          "type": "object",
+          "description": "Inert custom semantic annotations namespace (ADR-032 section 5). Never interpreted by core validation."
+        }
+      },
+      "$comment": "Every bptd_* leaf below both allOf-refs this schema AND re-lists nullable/description/extensions as `true` (accept-anything) in its own properties. That repetition is required, not redundant: additionalProperties:false on the leaf only recognizes property names declared in that same schema object -- names introduced purely through an allOf'd $ref are invisible to it and would be rejected as unknown. The real type constraint (boolean/string/object) still comes from this schema, enforced in parallel because allOf requires satisfying every branch at once; the leaf's own `true` only exists to whitelist the key name."
+    },
+    "bptd_boolean": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "boolean"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_int64": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "int64"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "minimum": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        },
+        "maximum": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        },
+        "exclusive_minimum": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        },
+        "exclusive_maximum": {
+          "type": "string",
+          "pattern": "^(0|-?[1-9][0-9]*)$"
+        }
+      }
+    },
+    "bptd_float64": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "float64"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "minimum": {
+          "type": "number"
+        },
+        "maximum": {
+          "type": "number"
+        },
+        "exclusive_minimum": {
+          "type": "number"
+        },
+        "exclusive_maximum": {
+          "type": "number"
+        }
+      }
+    },
+    "bptd_decimal": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "decimal"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "minimum": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "maximum": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "exclusive_minimum": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        },
+        "exclusive_maximum": {
+          "type": "string",
+          "pattern": "^-?(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+        }
+      }
+    },
+    "bptd_string": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "string"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "min_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pattern": {
+          "type": "string"
+        },
+        "format": {
+          "type": "string"
+        }
+      }
+    },
+    "bptd_bytes": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "bytes"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_date": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "date"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_timestamp": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "timestamp"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_duration": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "duration"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_json": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "json"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_unknown": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "unknown"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true
+      }
+    },
+    "bptd_array": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind",
+        "items"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "array"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "items": {
+          "$ref": "#/$defs/bptd_type"
+        },
+        "min_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique_items": {
+          "type": "boolean"
+        }
+      }
+    },
+    "bptd_map": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind",
+        "keys",
+        "values"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "map"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "keys": {
+          "const": "string"
+        },
+        "values": {
+          "$ref": "#/$defs/bptd_type"
+        }
+      },
+      "$comment": "Map keys remain strings in v1 (ADR-032 section 9 rule 9); 'keys' is a closed const, not open to future primitives yet."
+    },
+    "bptd_record": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind",
+        "fields"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "record"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "fields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/record_field"
+          }
+        },
+        "additional_fields": {
+          "type": "boolean"
+        }
+      }
+    },
+    "record_field": {
+      "type": "object",
+      "required": [
+        "name",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/identifier"
+        },
+        "type": {
+          "$ref": "#/$defs/bptd_type"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    },
+    "bptd_enum": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind",
+        "values"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "enum"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "$comment": "Enum values are strings in v1 (ADR-032 section 4)."
+    },
+    "bptd_union": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/bptd_common"
+        }
+      ],
+      "type": "object",
+      "required": [
+        "kind",
+        "tag_field",
+        "value_field",
+        "variants"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "union"
+        },
+        "nullable": true,
+        "description": true,
+        "extensions": true,
+        "tag_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value_field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "variants": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/union_variant"
+          },
+          "minItems": 1
+        }
+      },
+      "$comment": "Recursive unions are not supported in v1 (ADR-032 section 4); this schema does not additionally forbid a variant whose payload happens to be a union kind by structural recursion prevention -- that check needs semantic validation, not structural JSON Schema (self-reference detection through $refs is exactly the kind of check this format cannot express)."
+    },
+    "union_variant": {
+      "type": "object",
+      "required": [
+        "tag",
+        "type"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tag": {
+          "type": "string",
+          "minLength": 1
+        },
+        "type": {
+          "$ref": "#/$defs/bptd_type"
+        }
+      }
+    }
+  }
+}

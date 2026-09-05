@@ -1,0 +1,9 @@
+{
+  "_violation": "ADR-032 section 3 rule 2: required:true and default are mutually exclusive.",
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {},
+  "outputs": {},
+  "parameters": {
+    "threshold": { "type": { "kind": "float64" }, "required": true, "default": 0.5 }
+  }
+}

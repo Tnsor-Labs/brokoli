@@ -1,0 +1,26 @@
+{
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {
+    "batch": {
+      "value": {
+        "kind": "collection",
+        "items": { "kind": "scalar", "type": { "kind": "int64" } },
+        "ordered": true,
+        "item_key": { "kind": "string" }
+      },
+      "cardinality": "many"
+    },
+    "start": {
+      "value": { "kind": "control" }
+    }
+  },
+  "outputs": {
+    "report": {
+      "value": {
+        "kind": "artifact",
+        "media_types": ["application/pdf", "text/csv"],
+        "logical_type": "monthly-report"
+      }
+    }
+  }
+}

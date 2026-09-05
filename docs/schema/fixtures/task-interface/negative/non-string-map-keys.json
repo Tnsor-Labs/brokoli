@@ -1,0 +1,9 @@
+{
+  "_violation": "map keys remain strings in v1 (ADR-032 section 4); 'keys' must be the const \"string\".",
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {},
+  "outputs": {},
+  "parameters": {
+    "counts": { "type": { "kind": "map", "keys": "int64", "values": { "kind": "int64" } } }
+  }
+}

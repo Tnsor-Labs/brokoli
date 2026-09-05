@@ -1,0 +1,8 @@
+{
+  "_violation": "bptd_* leaves are additionalProperties:false; 'bogus' is not a recognized key on a string descriptor.",
+  "contract": "brokoli.task-interface/v1",
+  "inputs": {},
+  "outputs": {
+    "x": { "value": { "kind": "scalar", "type": { "kind": "string", "bogus": 1 } } }
+  }
+}
