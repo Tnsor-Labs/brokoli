@@ -919,3 +919,31 @@ Still, deliberately, not done: no `task-ports-v1` capability advertised
 (nothing validates or executes against these fields yet — that's ADR-032
 rollout step 4), and `nodeTypeInterfaces` still isn't attached to any
 real, deployed node. Tracked in issue #439, step 2 now fully checked off.
+
+## Update (2026-09-05) — rollout step 4 started: the assignability engine
+
+`pkg/taskinterface` implements the Brokoli Portable Type Descriptor as
+real Go types (`Type`, `Field`, `Variant`, `PortValue` — this is the
+first point in the arc where BPTD needed real typed Go structs rather
+than the free-form `map[string]interface{}` `Node.Interface`/
+`Pipeline.Parameters` use; a discriminated recursive comparison over raw
+maps would have been unsafe) and `AssignPort`/`AssignType`, implementing
+all twelve directional rules from section 9 — including int64/decimal
+canonical-string range comparison via `math/big.Float` (proven against a
+2^62-scale boundary case, well past float64's exact-integer limit), the
+`required:true`+optional-producer-field rejection, the closed-record
+"producer extras" rule, union variant matching, and the exact worked
+diagnostic this ADR itself gives as an example
+(`publish.orders <- score_orders.result: required field $.score expects
+float64 but producer declares string` — pinned as a test). 88.3% test
+coverage; every non-trivial rule verified load-bearing by mutation
+(temporarily inverting the rule, confirming the expected test fails,
+reverting).
+
+Deliberately not in this PR, matching every prior step's staging
+discipline: **wiring `AssignPort` into `engine/validate.go`'s edge
+checking**, so a real pipeline's connected node interfaces actually get
+checked at save/deploy time, and **typed run-parameter validation and
+snapshotting** (ADR-032 section 3's other step-4 half) — both real,
+separate slices, tracked in issue #439. Today, nothing calls this
+package outside its own tests.
