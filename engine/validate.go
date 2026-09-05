@@ -10,6 +10,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 )
 
 // ValidationError holds all issues found during validation.
@@ -186,6 +187,8 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toNode.Type))
 		}
 
+		validateEdgeAssignability(fromNode, toNode, ve)
+
 		inputDegree[e.To]++
 	}
 
@@ -230,6 +233,89 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			}
 		}
 	}
+}
+
+// validateEdgeAssignability checks one edge's producer output port against
+// its consumer input port with pkg/taskinterface's BPTD assignability
+// engine (ADR-032 section 9), when both nodes have a known interface.
+//
+// "Known interface" means fromNode.Interface/toNode.Interface if the node
+// declares its own (nothing populates this yet -- ADR-032 rollout step 3,
+// SDK inference, will), else models.NodeTypeInterfaces's reference entry
+// for the node's type when known. Today every reference-table dataset
+// port declares row: unknown except migrate's (which can never appear as
+// an edge's producer -- migrate cannot have outgoing edges, checked
+// above), so this check is a real, exercised mechanism that cannot yet
+// reject any pipeline actually reachable through today's SDKs; it starts
+// mattering the moment a node's own Interface carries a concrete schema.
+//
+// Only Incompatible is a hard validation error. Unverified is a legitimate
+// ADR-032 outcome ("never displayed as statically compatible", but not a
+// proven violation either) and is not surfaced here -- there is no
+// warning-vs-error channel in ValidationError yet, and treating Unverified
+// as blocking would reject pipelines this check cannot actually disprove.
+func validateEdgeAssignability(fromNode, toNode models.Node, ve *ValidationError) {
+	producerIface := effectiveNodeInterface(fromNode)
+	if producerIface == nil {
+		return
+	}
+	consumerIface := effectiveNodeInterface(toNode)
+	if consumerIface == nil {
+		return
+	}
+	producerPort, ok := portValueFromInterface(producerIface, "outputs", "result")
+	if !ok {
+		return
+	}
+	consumerPort, ok := portValueFromInterface(consumerIface, "inputs", "input")
+	if !ok {
+		return
+	}
+	res := taskinterface.AssignPort(producerPort, consumerPort)
+	if res.Verdict == taskinterface.Incompatible {
+		ve.Add(fmt.Sprintf("Invalid connection: %s -> %s: %s: %s", fromNode.ID, toNode.ID, res.Path, res.Reason))
+	}
+}
+
+// effectiveNodeInterface returns n's own declared ADR-032 interface if
+// set, else the models.NodeTypeInterfaces reference entry for its type if
+// known, else nil (genuinely unknown -- ADR-032 section 6: absence is
+// honest, never a guess, and validateEdgeAssignability skips the check
+// entirely rather than inventing a contract).
+func effectiveNodeInterface(n models.Node) map[string]interface{} {
+	if n.Interface != nil {
+		return n.Interface
+	}
+	if iface, ok := models.NodeTypeInterfaces[n.Type]; ok {
+		return iface
+	}
+	return nil
+}
+
+// portValueFromInterface extracts and parses one named port's value
+// contract from a task-interface document's "inputs" or "outputs" group.
+// Ports that use a convention this pipeline doesn't declare (no "input"/
+// "result" port, e.g. a node with genuinely no data output) return
+// ok == false, not an error -- there is nothing to check, not a violation.
+func portValueFromInterface(iface map[string]interface{}, group, portName string) (taskinterface.PortValue, bool) {
+	groupMap, _ := iface[group].(map[string]interface{})
+	portRaw, ok := groupMap[portName]
+	if !ok {
+		return taskinterface.PortValue{}, false
+	}
+	portMap, ok := portRaw.(map[string]interface{})
+	if !ok {
+		return taskinterface.PortValue{}, false
+	}
+	valueRaw, ok := portMap["value"]
+	if !ok {
+		return taskinterface.PortValue{}, false
+	}
+	pv, err := taskinterface.ParsePortValue(valueRaw)
+	if err != nil {
+		return taskinterface.PortValue{}, false
+	}
+	return pv, true
 }
 
 // unionFedBySingleExpansion reports whether unionNodeID has exactly one

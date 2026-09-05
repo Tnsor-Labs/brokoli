@@ -947,3 +947,38 @@ checked at save/deploy time, and **typed run-parameter validation and
 snapshotting** (ADR-032 section 3's other step-4 half) — both real,
 separate slices, tracked in issue #439. Today, nothing calls this
 package outside its own tests.
+
+## Update (2026-09-05) — assignability wired into engine/validate.go
+
+`engine/validate.go`'s `validateEdgeAssignability` now calls
+`pkg/taskinterface.AssignPort` for every edge whose two nodes both have a
+known interface (the node's own `Interface` if set — nothing populates
+that yet — else `models.NodeTypeInterfaces`'s reference entry). Only
+`Incompatible` is a hard validation error; `Unverified` is left
+non-blocking, since `ValidationError` has no warning channel yet and
+`Unverified` is explicitly not a proven violation.
+
+This required moving `nodeTypeInterfaces` out of `api/capabilities.go`
+into `models.NodeTypeInterfaces`: `engine` cannot import `api` (`api`
+already imports `engine`), so the reference table needed a home both
+packages can reach. `api/capabilities.go` now reads
+`models.NodeTypeInterfaces` for the same `GET /api/capabilities`
+response it always exposed.
+
+**Why this is safe to land now, verified rather than assumed:** every
+reference-table interface declares `row: unknown` except `migrate`'s
+(which can never appear as an edge's producer — `migrate` cannot have
+outgoing edges, checked earlier in the same function) — and two unknown
+rows are always `Assignable` by rule 12's principle. So this wiring
+cannot reject any pipeline reachable through today's SDKs; the full
+existing `engine` test suite (including every `ValidatePipeline` test)
+passes unchanged. What it *does* do is make the mechanism genuinely
+live: an explicit, incompatible `Node.Interface` (the shape a future SDK
+inference step, or a hand-authored pipeline, could set today) is caught
+at validate time, with a test proving it, and mutation-proving the
+wiring itself is load-bearing (temporarily removed the call, confirmed
+the expected test fails, restored).
+
+Still not done: typed run-parameter validation/snapshotting (ADR-032
+section 3's other half of step 4) and `Unverified` has no surfaced
+warning path yet. Tracked in issue #439.
