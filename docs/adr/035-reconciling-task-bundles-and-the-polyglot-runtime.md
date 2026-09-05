@@ -1,4 +1,4 @@
-# ADR-034: Reconciling task bundles and the code-node protocol with the polyglot task runtime
+# ADR-035: Reconciling task bundles and the code-node protocol with the polyglot task runtime
 
 **Status:** proposed
 **Date:** 2026-09-05
