@@ -99,6 +99,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-029](./029-code-node-worker-protocol.md) | Code-node worker pool and framed execution protocol | Accepted |
 | [ADR-030](./030-code-node-language-dispatch.md) | Code-node language dispatch and the TypeScript worker contract | Accepted |
 | [ADR-031](./031-task-authoring-and-project-packaging.md) | Task authoring and project packaging for multi-language pipelines | Proposed |
+| [ADR-032](./032-portable-task-interfaces-and-data-contracts.md) | Portable task interfaces and data contracts | Proposed |
 
 ## How to add a new ADR
 
