@@ -1101,7 +1101,7 @@ not have inferred correctly: whether `task-bundle/v2` (§2) supersedes
 `task-bundle/1`, whether this ADR's fresh-child-per-attempt warm-supervisor
 model (§10) replaces ADR-029's exec-multiplexing pool, and whether
 `brokoli.task-runtime/v1` (§7) replaces ADR-029's framed socket protocol.
-ADR-034 resolves all three: `task-bundle/v2` and the `task` node are
+ADR-035 resolves all three: `task-bundle/v2` and the `task` node are
 additive, scoped to servers advertising `task-runtime-v1`; ADR-029's pool
 and protocol continue to govern `code` nodes (bare or carrying
 `task-bundle/1`) unchanged; this ADR's model and protocol apply to `task`

@@ -852,4 +852,4 @@ the two weeks before it. It does not conflict with any of the three
 directly — it defines a type/interface contract, not an execution
 mechanism — but ADR-033 (stacked on this one) does conflict with ADR-029
 and ADR-031 in ways that needed resolving before implementation. See
-ADR-034.
+ADR-035.

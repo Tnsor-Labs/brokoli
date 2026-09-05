@@ -101,7 +101,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-031](./031-task-authoring-and-project-packaging.md) | Task authoring and project packaging for multi-language pipelines | Accepted |
 | [ADR-032](./032-portable-task-interfaces-and-data-contracts.md) | Portable task interfaces and data contracts | Proposed |
 | [ADR-033](./033-polyglot-task-runtime-and-worker-protocol.md) | Polyglot task runtime and worker protocol | Proposed |
-| [ADR-034](./034-reconciling-task-bundles-and-the-polyglot-runtime.md) | Reconciling task bundles and the code-node protocol with the polyglot task runtime | Proposed |
+| [ADR-035](./035-reconciling-task-bundles-and-the-polyglot-runtime.md) | Reconciling task bundles and the code-node protocol with the polyglot task runtime | Proposed |
 
 ## How to add a new ADR
 

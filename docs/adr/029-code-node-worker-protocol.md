@@ -305,4 +305,4 @@ child process per attempt, under a warm supervisor) scoped to the new
 `task` IR node it defines. That model does not replace the pool this ADR
 describes: the exec-multiplexing pool here continues to govern bare
 `code` nodes and `code` nodes carrying an ADR-031 `task-bundle/1`
-reference, unchanged. See ADR-034 for the full reconciliation.
+reference, unchanged. See ADR-035 for the full reconciliation.

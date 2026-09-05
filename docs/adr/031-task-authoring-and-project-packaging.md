@@ -496,5 +496,5 @@ and released in v0.11.0, and brokoli-sdk already emits it
 (`@task(package="bundle")`, `brokoli-sdk#90`). ADR-033 later defines a
 second format, `task-bundle/v2`, for a new `task` IR node; the two do not
 replace each other, and `task-bundle/1` on the `code` node keeps working
-unchanged. See ADR-034 for the full reconciliation between this ADR and
+unchanged. See ADR-035 for the full reconciliation between this ADR and
 ADR-032/033.
