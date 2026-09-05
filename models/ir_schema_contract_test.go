@@ -1,7 +1,8 @@
 package models_test
 
 // Contract tests binding models.Pipeline to the canonical IR schema at
-// docs/schema/pipeline-ir-2.1.json (issue #109 M1, ADR-014 rule 1).
+// docs/schema/pipeline-ir-2.2.json (issue #109 M1, ADR-014 rule 1; ADR-032
+// rollout step 2/#439 for the 'interface'/'parameters' fields).
 //
 // Two directions of drift are caught:
 //   - model grows a field the schema doesn't know: the fully-populated
@@ -27,11 +28,36 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-const schemaPath = "../docs/schema/pipeline-ir-2.1.json"
+const schemaPath = "../docs/schema/pipeline-ir-2.2.json"
 
+// taskInterfaceSchemaURL is task-interface-v1.json's own declared $id --
+// taskInterfaceSchemaPath (the file path) is declared in
+// task_interface_schema_test.go, same package.
+const taskInterfaceSchemaURL = "https://github.com/Tnsor-Labs/brokoli/docs/schema/task-interface-v1.json"
+
+// taskInterfaceSchemaURL/taskInterfaceSchemaPath are shared with
+// task_interface_schema_test.go (same package) -- pipeline-ir-2.2.json's
+// 'interface'/'parameters' fields $ref into task-interface-v1.json by its
+// absolute $id, so the compiler needs that document registered via
+// AddResource before compiling schemaPath: a bare Compile() of it first
+// does not share that registration, and once compilation of the
+// referencing document begins, a relative "task-interface-v1.json#/..."
+// $ref resolves into the https:// URL-space both schemas' $id declare,
+// not the filesystem.
 func compileSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
+	data, err := os.ReadFile(taskInterfaceSchemaPath)
+	if err != nil {
+		t.Fatalf("read %s: %v", taskInterfaceSchemaPath, err)
+	}
+	doc, err := jsonschema.UnmarshalJSON(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("unmarshal %s: %v", taskInterfaceSchemaPath, err)
+	}
 	c := jsonschema.NewCompiler()
+	if err := c.AddResource(taskInterfaceSchemaURL, doc); err != nil {
+		t.Fatalf("register %s: %v", taskInterfaceSchemaURL, err)
+	}
 	sch, err := c.Compile(schemaPath)
 	if err != nil {
 		t.Fatalf("compile canonical schema: %v", err)
@@ -58,7 +84,7 @@ func fullyPopulatedPipeline() *models.Pipeline {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	return &models.Pipeline{
 		ID:        "pipe-1",
-		IRVersion: "2.1",
+		IRVersion: models.TaskInterfaceIRVersion,
 		Name:      "everything",
 		Description: "every field set, so a model field the schema " +
 			"doesn't know fails additionalProperties",
@@ -68,6 +94,13 @@ func fullyPopulatedPipeline() *models.Pipeline {
 				Config:       map[string]interface{}{"path": "/tmp/in.csv", "custom_key": 1},
 				Position:     models.Position{X: 50, Y: 200},
 				Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+				Interface: map[string]interface{}{
+					"contract": "brokoli.task-interface/v1",
+					"inputs":   map[string]interface{}{},
+					"outputs": map[string]interface{}{
+						"result": map[string]interface{}{"value": map[string]interface{}{"kind": "dataset"}},
+					},
+				},
 			},
 			{ID: "gate", Type: models.NodeTypeCondition, Name: "Gate",
 				Config: map[string]interface{}{"expression": "row_count > 0"}},
@@ -83,7 +116,12 @@ func fullyPopulatedPipeline() *models.Pipeline {
 		ScheduleTimezone: "America/New_York",
 		WebhookURL:       "https://hooks.example/x",
 		Params:           map[string]string{"limit": "10"},
-		Tags:             []string{"etl"},
+		Parameters: map[string]interface{}{
+			"threshold": map[string]interface{}{
+				"type": map[string]interface{}{"kind": "float64"}, "required": false, "default": 0.5,
+			},
+		},
+		Tags: []string{"etl"},
 		Hooks: map[string]models.Hook{
 			"on_failure": {Type: "webhook", URL: "https://hooks.example/f", Enabled: true,
 				Extra: map[string]string{"channel": "alerts"}},
@@ -196,6 +234,12 @@ func TestSchemaRejectsContractViolations(t *testing.T) {
 		{"bad capability", func(m map[string]interface{}) {
 			m["nodes"].([]interface{})[0].(map[string]interface{})["capabilities"] = []interface{}{"quantum"}
 		}},
+		{"node interface with the wrong contract string", func(m map[string]interface{}) {
+			m["nodes"].([]interface{})[0].(map[string]interface{})["interface"].(map[string]interface{})["contract"] = "not-the-right-contract-string"
+		}},
+		{"pipeline parameter with both required:true and a default", func(m map[string]interface{}) {
+			m["parameters"].(map[string]interface{})["threshold"].(map[string]interface{})["required"] = true
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -226,12 +270,41 @@ func TestSchemaAndModelDeclareTheSameFields(t *testing.T) {
 
 	for name := range modelProps {
 		if !schemaProps[name] {
-			t.Errorf("models.Pipeline field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.1.json in the same change", name)
+			t.Errorf("models.Pipeline field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.2.json in the same change", name)
 		}
 	}
 	for name := range schemaProps {
 		if !modelProps[name] {
 			t.Errorf("schema property %q has no models.Pipeline field -- the schema documents a contract the server no longer honors", name)
+		}
+	}
+}
+
+// TestSchemaAndModelDeclareTheSameNodeFields is
+// TestSchemaAndModelDeclareTheSameFields's counterpart for models.Node
+// against $defs.node.properties -- added alongside the ADR-032 'interface'
+// field (issue #439 step 2) since no such sweep existed for Node before.
+func TestSchemaAndModelDeclareTheSameNodeFields(t *testing.T) {
+	schemaProps := defSchemaProperties(t, "node")
+
+	modelProps := map[string]bool{}
+	nt := reflect.TypeOf(models.Node{})
+	for i := 0; i < nt.NumField(); i++ {
+		tag := nt.Field(i).Tag.Get("json")
+		name := strings.Split(tag, ",")[0]
+		if name != "" && name != "-" {
+			modelProps[name] = true
+		}
+	}
+
+	for name := range modelProps {
+		if !schemaProps[name] {
+			t.Errorf("models.Node field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.2.json's $defs.node in the same change", name)
+		}
+	}
+	for name := range schemaProps {
+		if !modelProps[name] {
+			t.Errorf("schema $defs.node property %q has no models.Node field -- the schema documents a contract the server no longer honors", name)
 		}
 	}
 }
@@ -244,6 +317,26 @@ func topLevelSchemaProperties(t *testing.T) map[string]bool {
 	}
 	doc := raw.(map[string]interface{})
 	props := doc["properties"].(map[string]interface{})
+	out := map[string]bool{}
+	for name := range props {
+		out[name] = true
+	}
+	return out
+}
+
+func defSchemaProperties(t *testing.T, defName string) map[string]bool {
+	t.Helper()
+	raw, err := jsonschema.UnmarshalJSON(bytes.NewReader(mustReadSchema(t)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc := raw.(map[string]interface{})
+	defs := doc["$defs"].(map[string]interface{})
+	def, ok := defs[defName].(map[string]interface{})
+	if !ok {
+		t.Fatalf("schema has no $defs.%s", defName)
+	}
+	props := def["properties"].(map[string]interface{})
 	out := map[string]bool{}
 	for name := range props {
 		out[name] = true

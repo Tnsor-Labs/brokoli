@@ -890,12 +890,32 @@ never wires it an input, and its unconnected semantics are murkier than
 the other control-flow nodes), and `sql_generate`/`code` (not
 investigated / not knowable ahead of schema derivation, respectively).
 
-Still not done: this table is a discovery/reference surface only,
-exactly like `node_type_capabilities` itself — no deploy or validate
-path reads it, no `models.Node` carries a persisted `interface`, and no
-`task-ports-v1` capability is advertised (advertising it before anything
-actually accepts these fields would be the same dishonest-capability
-gap `sdk#86`'s fail-closed fix was built to prevent). Wiring `interface`/
-`parameters` into `models.Node`/`models.Pipeline` for real, with the
-matching two-way schema/model field sweep `ir_schema_contract_test.go`
-already does for 2.1, is the next slice — tracked in issue #439.
+Still not done at that point: this table was a discovery/reference
+surface only, exactly like `node_type_capabilities` itself — no deploy
+or validate path read it, no `models.Node` carried a persisted
+`interface`, and no `task-ports-v1` capability was advertised
+(advertising it before anything actually accepted these fields would be
+the same dishonest-capability gap `sdk#86`'s fail-closed fix was built
+to prevent).
+
+## Update (2026-09-05) — rollout step 2 complete
+
+`models.Node` gains a real `Interface map[string]interface{}` field and
+`models.Pipeline` gains `Parameters map[string]interface{}` (both
+`json:",omitempty"`, free-form like `Node.Config` already is — full BPTD
+typing stays in the JSON Schema and its contract tests, not a parallel
+Go type system). `models/ir_schema_contract_test.go` now targets
+`pipeline-ir-2.2.json` directly (its own fully-populated fixture carries
+a real node `interface` and pipeline `parameters`), gains a
+`TestSchemaAndModelDeclareTheSameNodeFields` sweep — `models.Node`'s own
+counterpart to the existing pipeline-level two-way sweep, which never
+existed before this change — and two new contract-violation cases
+(malformed node interface; a pipeline parameter with both `required:true`
+and a `default`). `SupportedIRVersions` gains `"2.2"`
+(`TaskInterfaceIRVersion`): structural acceptance only, since nothing in
+`Validate()` or run admission consults either field's contents yet.
+
+Still, deliberately, not done: no `task-ports-v1` capability advertised
+(nothing validates or executes against these fields yet — that's ADR-032
+rollout step 4), and `nodeTypeInterfaces` still isn't attached to any
+real, deployed node. Tracked in issue #439, step 2 now fully checked off.

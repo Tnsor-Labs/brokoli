@@ -21,17 +21,27 @@ type Pipeline struct {
 	// phase 2, #397): after downtime, one run per missed schedule
 	// interval, oldest first, instead of the default single catch-up run
 	// for the most recently missed tick.
-	Catchup          bool              `json:"catchup,omitempty"`
-	WebhookURL       string            `json:"webhook_url"`                 // URL for event notifications
-	Params           map[string]string `json:"params"`                      // default parameter values
-	Tags             []string          `json:"tags"`                        // labels for filtering/grouping
-	Hooks            map[string]Hook   `json:"hooks,omitempty"`             // on_start, on_success, on_failure, on_node_failure
-	ScheduleTimezone string            `json:"schedule_timezone,omitempty"` // e.g. "America/New_York", defaults to UTC
-	SLADeadline      string            `json:"sla_deadline,omitempty"`      // "HH:MM" — must complete by this time daily
-	SLATimezone      string            `json:"sla_timezone,omitempty"`      // e.g. "America/New_York", defaults to UTC
-	DependsOn        []string          `json:"depends_on,omitempty"`        // legacy: pipeline IDs that must succeed before this runs
-	DependencyRules  []DependencyRule  `json:"dependency_rules,omitempty"`  // rich cross-pipeline dependency rules
-	WebhookToken     string            `json:"webhook_token,omitempty"`     // token for triggering via webhook
+	Catchup    bool              `json:"catchup,omitempty"`
+	WebhookURL string            `json:"webhook_url"` // URL for event notifications
+	Params     map[string]string `json:"params"`      // default parameter values, legacy/untyped (ADR-032 section 3)
+	// Parameters is the ADR-032 typed pipeline parameter declaration
+	// object (docs/schema/task-interface-v1.json#/$defs/pipeline_parameters).
+	// Additive and optional, distinct from the legacy Params above and
+	// never silently merged with it. Free-form here (like Config on Node)
+	// because full BPTD typing lives in the JSON Schema and its own
+	// contract tests, not as a parallel Go type system -- see
+	// models/ir_schema_contract_test.go and issue #439 step 2. Not yet
+	// consulted by Validate() or by run admission: typed run-parameter
+	// validation is ADR-032 rollout step 4, not this field's existence.
+	Parameters       map[string]interface{} `json:"parameters,omitempty"`
+	Tags             []string               `json:"tags"`                        // labels for filtering/grouping
+	Hooks            map[string]Hook        `json:"hooks,omitempty"`             // on_start, on_success, on_failure, on_node_failure
+	ScheduleTimezone string                 `json:"schedule_timezone,omitempty"` // e.g. "America/New_York", defaults to UTC
+	SLADeadline      string                 `json:"sla_deadline,omitempty"`      // "HH:MM" — must complete by this time daily
+	SLATimezone      string                 `json:"sla_timezone,omitempty"`      // e.g. "America/New_York", defaults to UTC
+	DependsOn        []string               `json:"depends_on,omitempty"`        // legacy: pipeline IDs that must succeed before this runs
+	DependencyRules  []DependencyRule       `json:"dependency_rules,omitempty"`  // rich cross-pipeline dependency rules
+	WebhookToken     string                 `json:"webhook_token,omitempty"`     // token for triggering via webhook
 	// Extensions is the one open namespace in an otherwise fail-closed
 	// payload (ADR-014 rules 8/9): newer clients park fields this server
 	// doesn't understand here, and the server persists and echoes them back
@@ -63,10 +73,19 @@ const CurrentIRVersion = "2.0"
 // branch selection.
 const ConditionalEdgesIRVersion = "2.1"
 
+// TaskInterfaceIRVersion is the first IR version whose nodes/pipeline may
+// carry an ADR-032 'interface'/'parameters' object
+// (docs/schema/pipeline-ir-2.2.json). Structural acceptance only: nothing
+// in Validate() or run admission consults either field's contents yet
+// (ADR-032 rollout step 4 does) -- a server on this version merely
+// accepts and echoes them, the same forward-compatible treatment
+// Extensions already gets.
+const TaskInterfaceIRVersion = "2.2"
+
 // SupportedIRVersions lists every ir_version this host can accept in a
 // deployed pipeline. Expand when introducing a new version; only remove
 // an old entry when formally deprecating it.
-var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion}
+var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion, TaskInterfaceIRVersion}
 
 // SupportedExecutionFeatures names the pipeline semantics this host can
 // actually EXECUTE, advertised at /api/capabilities (ADR-014 rule 5) so
@@ -203,11 +222,20 @@ type Position struct {
 
 // Node represents a single processing step in a pipeline.
 type Node struct {
-	ID           string                 `json:"id"`
-	Type         NodeType               `json:"type"`
-	Name         string                 `json:"name"`
-	Config       map[string]interface{} `json:"config"`
-	Position     Position               `json:"position"`
+	ID       string                 `json:"id"`
+	Type     NodeType               `json:"type"`
+	Name     string                 `json:"name"`
+	Config   map[string]interface{} `json:"config"`
+	Position Position               `json:"position"`
+	// Interface is the node's ADR-032 task interface (named ports,
+	// cardinality, task-local parameters), when known
+	// (docs/schema/task-interface-v1.json#/$defs/task_interface). Additive
+	// and optional; absent means unknown, never a guess (ADR-032 section
+	// 6). api.nodeTypeInterfaces is the reference table of already-known
+	// values for built-in node types -- this field is where a real,
+	// per-node value would live once something actually populates one
+	// (issue #439 step 2 remainder); nothing does yet.
+	Interface    map[string]interface{} `json:"interface,omitempty"`
 	Capabilities []string               `json:"capabilities,omitempty"` // e.g. ["source", "dataset-output"], ["sink"], ["compute"]; see CapabilitySource etc.
 }
 
