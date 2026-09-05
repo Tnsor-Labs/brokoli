@@ -982,3 +982,27 @@ the expected test fails, restored).
 Still not done: typed run-parameter validation/snapshotting (ADR-032
 section 3's other half of step 4) and `Unverified` has no surfaced
 warning path yet. Tracked in issue #439.
+
+## Update (2026-09-05) — typed parameter value validation (pure function)
+
+`pkg/taskinterface` gains `ValidateValue` (a concrete JSON value against
+a BPTD type descriptor — a different question from `AssignType`'s
+type-vs-type comparison) and `ResolveParameters` (ADR-032 section 3 rule
+4/5: validates submitted values, applies declared defaults, rejects
+unknown parameter names and missing required ones, all before a run
+would be created). Covers every BPTD kind, including the tagged
+`$bptd` wire forms for int64/decimal/bytes/timestamp/duration (section
+4) — decimal requires the tagged form outright, since a plain JSON
+number can't represent it losslessly; int64 additionally accepts a
+plain whole-number JSON value as a convenience form. 85.9% coverage;
+the closed-record `additional_fields: false` rejection verified
+load-bearing by mutation.
+
+Deliberately not in this PR: wiring `ResolveParameters` into the actual
+run-trigger HTTP path (`api/handlers_run.go`'s `TriggerRun`, which
+today decodes an untyped `map[string]string` with no validation at
+all — `engine.RunPipelineOpts` never consults `Pipeline.Parameters`),
+and persisting a resolved snapshot on `models.Run` (which has no typed
+field for it yet; `Run.Params` is the existing untyped legacy field).
+That wiring also touches the store layer (Postgres and SQLite schemas)
+and is a separate, real slice — tracked in issue #439.
