@@ -98,9 +98,10 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-028](./028-data-intervals.md) | A scheduled run processes an interval, not a moment | Accepted |
 | [ADR-029](./029-code-node-worker-protocol.md) | Code-node worker pool and framed execution protocol | Accepted |
 | [ADR-030](./030-code-node-language-dispatch.md) | Code-node language dispatch and the TypeScript worker contract | Accepted |
-| [ADR-031](./031-task-authoring-and-project-packaging.md) | Task authoring and project packaging for multi-language pipelines | Proposed |
+| [ADR-031](./031-task-authoring-and-project-packaging.md) | Task authoring and project packaging for multi-language pipelines | Accepted |
 | [ADR-032](./032-portable-task-interfaces-and-data-contracts.md) | Portable task interfaces and data contracts | Proposed |
 | [ADR-033](./033-polyglot-task-runtime-and-worker-protocol.md) | Polyglot task runtime and worker protocol | Proposed |
+| [ADR-034](./034-reconciling-task-bundles-and-the-polyglot-runtime.md) | Reconciling task bundles and the code-node protocol with the polyglot task runtime | Proposed |
 
 ## How to add a new ADR
 
