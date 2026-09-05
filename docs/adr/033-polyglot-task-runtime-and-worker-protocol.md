@@ -1091,3 +1091,18 @@ This ADR remains proposed until all of the following are demonstrated:
   parity and never claims production isolation it did not provide;
 - capability negotiation fails closed for bundle, protocol, runtime, codec,
   interface, and isolation requirements.
+
+## Update (2026-09-05)
+
+This ADR shipped without referencing ADR-029 (the code-node worker pool
+and framed protocol) or ADR-031 (`task-bundle/1`), both already released.
+That left three relationships unstated that a reader or implementor could
+not have inferred correctly: whether `task-bundle/v2` (§2) supersedes
+`task-bundle/1`, whether this ADR's fresh-child-per-attempt warm-supervisor
+model (§10) replaces ADR-029's exec-multiplexing pool, and whether
+`brokoli.task-runtime/v1` (§7) replaces ADR-029's framed socket protocol.
+ADR-035 resolves all three: `task-bundle/v2` and the `task` node are
+additive, scoped to servers advertising `task-runtime-v1`; ADR-029's pool
+and protocol continue to govern `code` nodes (bare or carrying
+`task-bundle/1`) unchanged; this ADR's model and protocol apply to `task`
+nodes exclusively.

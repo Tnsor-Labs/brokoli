@@ -297,3 +297,12 @@ preserved verbatim, message text included.
 - SDK release gating `emit()` scripts on `code-streaming-emit`.
 - Phase 4 / Phase 5 / strict-streaming / fork-template as listed under
   Deferred.
+
+## Update (2026-09-05)
+
+ADR-033 introduces a second, separate warm-execution model (a fresh
+child process per attempt, under a warm supervisor) scoped to the new
+`task` IR node it defines. That model does not replace the pool this ADR
+describes: the exec-multiplexing pool here continues to govern bare
+`code` nodes and `code` nodes carrying an ADR-031 `task-bundle/1`
+reference, unchanged. See ADR-035 for the full reconciliation.

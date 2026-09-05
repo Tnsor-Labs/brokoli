@@ -1,6 +1,6 @@
 # ADR-031: Task authoring and project packaging for multi-language pipelines
 
-**Status:** proposed
+**Status:** accepted
 **Date:** 2026-08-30
 
 ## Context
@@ -488,3 +488,13 @@ entrypoint shape are out of scope until their own follow-up ADRs.
 - Open a follow-up ADR for third-party dependency packaging once project-file
   bundling has shipped and been used.
 - Open a follow-up ADR for JVM packaging once a JVM worker ADR exists.
+
+## Update (2026-09-05)
+
+Status corrected to `accepted`: this ADR's `task-bundle/1` design shipped
+and released in v0.11.0, and brokoli-sdk already emits it
+(`@task(package="bundle")`, `brokoli-sdk#90`). ADR-033 later defines a
+second format, `task-bundle/v2`, for a new `task` IR node; the two do not
+replace each other, and `task-bundle/1` on the `code` node keeps working
+unchanged. See ADR-035 for the full reconciliation between this ADR and
+ADR-032/033.

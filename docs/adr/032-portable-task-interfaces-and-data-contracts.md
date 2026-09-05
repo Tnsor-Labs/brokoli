@@ -844,3 +844,12 @@ This ADR remains proposed until all of the following are demonstrated:
   annotations, defaults, bindings, and run values;
 - ADR-014 and ADR-010 are updated wherever implementation changes their
   persisted-version or queued-run semantics.
+
+## Update (2026-09-05)
+
+This ADR does not reference ADR-029, ADR-030, or ADR-031, all shipped in
+the two weeks before it. It does not conflict with any of the three
+directly — it defines a type/interface contract, not an execution
+mechanism — but ADR-033 (stacked on this one) does conflict with ADR-029
+and ADR-031 in ways that needed resolving before implementation. See
+ADR-035.
