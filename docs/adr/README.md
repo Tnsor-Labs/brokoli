@@ -100,6 +100,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-030](./030-code-node-language-dispatch.md) | Code-node language dispatch and the TypeScript worker contract | Accepted |
 | [ADR-031](./031-task-authoring-and-project-packaging.md) | Task authoring and project packaging for multi-language pipelines | Proposed |
 | [ADR-032](./032-portable-task-interfaces-and-data-contracts.md) | Portable task interfaces and data contracts | Proposed |
+| [ADR-033](./033-polyglot-task-runtime-and-worker-protocol.md) | Polyglot task runtime and worker protocol | Proposed |
 
 ## How to add a new ADR
 
