@@ -228,3 +228,18 @@ func TestExtractRejectsInvalidManifest(t *testing.T) {
 		t.Fatal("expected an invalid manifest to be rejected")
 	}
 }
+
+func TestFindPayloadReturnsTheMatchingID(t *testing.T) {
+	m := validManifest()
+	got, ok := FindPayload(m, "python-any")
+	if !ok || got.ID != "python-any" {
+		t.Fatalf("FindPayload = %+v, %v", got, ok)
+	}
+}
+
+func TestFindPayloadMissingIDReturnsNotOK(t *testing.T) {
+	m := validManifest()
+	if _, ok := FindPayload(m, "nonexistent"); ok {
+		t.Fatal("expected a missing payload ID to return ok=false")
+	}
+}

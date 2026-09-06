@@ -1476,3 +1476,76 @@ the routing decision itself. Mutation-tested that routing check (forced
 it permanently false), confirmed the routing test fails for the right
 reason (attempt settles failed via the generic refusal instead of
 completed), then restored. Full `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout phase 2d: resolved-execution-record production before reuse
+
+Ships phase 2d: section 4's determinism pin. Before this phase, a task
+node's payload was reselected fresh on every single attempt (`Runner.runTask`/
+`ExecuteTaskWorkOrderContext` both called `taskbundlev2.SelectPythonPayload`
+unconditionally) — a retry could in principle select a different payload
+than attempt 0 did, with nothing to notice or prevent it. Section 4 rule
+5 is explicit: "retries and resumed runs reuse the pinned record. A
+newer interpreter, adapter, or bundle does not silently change an
+existing run."
+
+- **New `store.ResolvedExecutionRecordStore`** (SQLite + Postgres,
+  optional capability mirroring `TaskBundleV2Store`'s exact shape):
+  `PutResolvedExecutionRecord`/`GetResolvedExecutionRecord`, keyed by
+  `(run_id, node_id)` — one level up from `ExecutionAttemptStore`'s own
+  per-attempt keying (`run_id, node_id, instance_key, attempt`), since
+  the whole point is one pin surviving every attempt of one node in one
+  run. Confirmed no existing durable record was scoped there already
+  (`models.ExecutionAttempt`/`NodeRun` are both per-attempt by
+  construction) — this needed a genuinely new table, not an extension of
+  either.
+- **`engine/task.go`'s new `resolveExecutionRecord`**: the first
+  resolution for a (run, node) pair resolves fresh (unchanged
+  `SelectPythonPayload`), computes an execution-environment digest, and
+  pins both via `PutResolvedExecutionRecord`; every later call fetches
+  the existing pin and reuses its payload ID verbatim instead of
+  re-selecting — proven directly (`TestResolveExecutionRecord_RetryReusesThePinEvenWhenAPreferredPayloadAppears`):
+  a payload that would sort first in a fresh `SelectPythonPayload` call
+  is added to the manifest between two calls, and the second call still
+  returns the originally pinned payload. A pinned payload that no longer
+  matches this host's platform fails with a message naming `platform:`
+  explicitly (section 4: "the run waits or fails with `platform`") rather
+  than silently re-resolving or running something incompatible. Degrades
+  to the pre-phase-2d fresh-every-time behavior on a store that hasn't
+  adopted the new capability.
+- **A concrete execution-environment digest**, since ADR-033 states what
+  it must cover (adapter/harness bytes, exact runtime build, dependency
+  artifacts, platform ABI, declared system libraries) without mandating
+  an algorithm: sha256 over adapter identity + adapter version
+  (`pkg/taskharness/pyharness`'s new exported `Adapter`/`AdapterVersion`
+  constants, kept hand-in-sync with `harness.py`'s own identical
+  constants, the same trust `harness.py`'s own version already relies
+  on), the resolved python interpreter's actual `--version` output, host
+  OS/arch, and the payload's dependency-lock file digest (reused from
+  the manifest's own already-verified per-file digest, not rehashed).
+  "Declared system libraries" has nothing to hash anywhere in this
+  codebase yet — a real, documented gap, not silently dropped.
+- **`ExecutionProfile`** is pinned as the literal string `"trusted@1"` —
+  naming the one resource/isolation policy this rollout applies to every
+  task attempt (`pkg/codeexec.Resolve`'s limits, unchanged), using the
+  ADR's own "name@revision" convention so a future policy change has
+  somewhere to bump.
+- **`pkg/taskbundlev2` gained two small exports** used by the above:
+  `FindPayload` (look up a payload by ID, to re-locate a pinned
+  selection) and `PlatformMatches` (was already used internally by
+  `SelectPythonPayload`; now also used to check a pinned payload is
+  still runnable on reuse).
+
+Verification: store-level tests mirror `TaskBundleV2Store`'s exact
+contract shape (identical re-pin is a no-op, a different re-pin is a
+loud conflict, scoped independently per run and per node, live-Postgres
+semantics). `engine/task_resolved_execution_record_test.go` calls
+`resolveExecutionRecord` directly to prove the two behaviors a real
+end-to-end run can't deterministically exercise (a real bundle's
+manifest never mutates mid-run): retry-reuse survives a newly-appearing,
+otherwise-preferred payload, and a pinned-but-no-longer-runnable payload
+fails named as `platform`. Mutation-tested the reuse check itself
+(forced it to always treat the node as unpinned), confirmed the retry-reuse
+test now fails via the store's own conflict detection (a second, different
+resolution correctly refuses to silently overwrite the first), then
+restored. Full existing local/remote task-node test suites pass
+unchanged. Full `./preflight.sh` green.

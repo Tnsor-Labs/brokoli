@@ -105,7 +105,7 @@ func TestTaskNodeRemoteDispatch_Succeeds(t *testing.T) {
 			}
 			// The real worker-side executor, run against the real store --
 			// this is the actual thing being tested, not a fake result.
-			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.WorkOrder)
+			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.RunID, job.NodeID, job.WorkOrder)
 			if err != nil {
 				return nil, nil, err.Error()
 			}
@@ -155,7 +155,7 @@ func TestTaskNodeRemoteDispatch_WorkerFailureFailsTheRun(t *testing.T) {
 	eng.InstanceJobQueue = &fakeInstanceJobQueue{
 		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
 		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
-			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.WorkOrder)
+			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.RunID, job.NodeID, job.WorkOrder)
 			if err != nil {
 				return nil, nil, err.Error()
 			}

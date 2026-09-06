@@ -6,6 +6,7 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
 	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "modernc.org/sqlite"
 )
@@ -430,6 +432,18 @@ func (s *SQLiteStore) migrate() error {
 		archive BLOB NOT NULL,
 		created_at TEXT NOT NULL,
 		PRIMARY KEY (org_id, digest))`)
+
+	// Resolved execution records (ADR-033 section 4): one pin per
+	// (run_id, node_id), immutable once set -- record_json is the
+	// pkg/taskruntime.ResolvedExecutionRecord as JSON, not decomposed
+	// into columns, since nothing ever queries by its individual fields
+	// (only fetched whole, by this table's own key).
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS resolved_execution_records (
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		record_json TEXT NOT NULL,
+		created_at TEXT NOT NULL,
+		PRIMARY KEY (run_id, node_id))`)
 
 	// Pipeline templates — global, admin-curated starter pipelines
 	// (GET /api/templates). Used to be hardcoded JS in the frontend;
@@ -2970,6 +2984,59 @@ func (s *SQLiteStore) GetTaskBundleV2(orgID, digest string) ([]byte, error) {
 		return nil, wrapStoreErr("GetTaskBundleV2", digest, err)
 	}
 	return archive, nil
+}
+
+// --- Resolved execution records (ADR-033 section 4) ---
+
+// PutResolvedExecutionRecord pins record for (runID, nodeID), the first
+// time only. Race-safe the same way PutTaskBundleV2 is: INSERT ... ON
+// CONFLICT DO NOTHING, then read back — a concurrent identical
+// resolution reports created=false, a concurrent DIFFERENT one reports
+// ErrResolvedExecutionRecordConflict.
+func (s *SQLiteStore) PutResolvedExecutionRecord(runID, nodeID string, record *taskruntime.ResolvedExecutionRecord) (bool, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return false, fmt.Errorf("marshal resolved execution record: %w", err)
+	}
+	now := time.Now().UTC().Format(timeFormat)
+	res, err := s.db.Exec(
+		`INSERT INTO resolved_execution_records (run_id, node_id, record_json, created_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT (run_id, node_id) DO NOTHING`,
+		runID, nodeID, string(raw), now,
+	)
+	if err != nil {
+		return false, wrapStoreErr("PutResolvedExecutionRecord", nodeID, err)
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return true, nil
+	}
+	existing, err := s.GetResolvedExecutionRecord(runID, nodeID)
+	if err != nil {
+		return false, wrapStoreErr("PutResolvedExecutionRecord", nodeID, err)
+	}
+	if !reflect.DeepEqual(existing, record) {
+		return false, ErrResolvedExecutionRecordConflict
+	}
+	return false, nil
+}
+
+// GetResolvedExecutionRecord returns the pinned record for (runID, nodeID).
+func (s *SQLiteStore) GetResolvedExecutionRecord(runID, nodeID string) (*taskruntime.ResolvedExecutionRecord, error) {
+	var raw string
+	err := s.db.QueryRow(
+		`SELECT record_json FROM resolved_execution_records WHERE run_id = ? AND node_id = ?`, runID, nodeID,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, ErrResolvedExecutionRecordNotFound
+	}
+	if err != nil {
+		return nil, wrapStoreErr("GetResolvedExecutionRecord", nodeID, err)
+	}
+	var record taskruntime.ResolvedExecutionRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return nil, fmt.Errorf("unmarshal resolved execution record for node %s: %w", nodeID, err)
+	}
+	return &record, nil
 }
 
 // ListAlerts returns an org's alerts newest-first. Dismissed alerts are

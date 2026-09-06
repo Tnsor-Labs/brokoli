@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
 )
 
 // nonTerminalRunStatusFilter is the SQL fragment (valid in both the SQLite
@@ -714,6 +715,50 @@ var ErrTaskBundleV2Collision = errors.New("a different task bundle already occup
 // ErrTaskBundleV2NotFound is TaskBundleV2Store's counterpart to
 // ErrTaskBundleNotFound.
 var ErrTaskBundleV2NotFound = errors.New("task bundle not found")
+
+// ResolvedExecutionRecordStore persists the ADR-033 section 4 pin for one
+// task-node execution lineage: the payload/platform/environment selection
+// resolved once, before this node's first execution attempt, and reused
+// unchanged by every later attempt (including retries and redeliveries of
+// the same remote job) -- "a newer interpreter, adapter, or bundle does
+// not silently change an existing run" is the ADR's own framing.
+//
+// Keyed by (run_id, node_id), NOT (run_id, node_id, attempt): unlike
+// ExecutionAttemptStore, whose whole identity is per-attempt by design
+// (each retry is a fresh row), the pin is scoped one level up -- one
+// record survives every attempt of one node within one run. A task node
+// has no expansion sub-instances (its one instance IS the whole node,
+// per engine/task.go), so no instance_key is needed either.
+//
+// OPTIONAL capability, same shape and reasoning as TaskBundleV2Store:
+// callers type-assert (`if rs, ok := s.(store.ResolvedExecutionRecordStore); ok`)
+// so a store that hasn't adopted it yet keeps satisfying Store, and a
+// task node simply re-resolves fresh every attempt on such a store
+// (the pre-Phase-2d behavior) rather than panicking or 503ing outright.
+type ResolvedExecutionRecordStore interface {
+	// PutResolvedExecutionRecord pins record for (runID, nodeID) the
+	// first time only. Returns created=true when this pin is new,
+	// created=false (nil error) when an identical record is already
+	// pinned (a concurrent attempt-0 race resolving the same way), and
+	// ErrResolvedExecutionRecordConflict when a DIFFERENT record already
+	// occupies this (runID, nodeID) -- the pin is immutable once set,
+	// the same content-identity discipline TaskBundleV2Store already
+	// uses for archive bytes.
+	PutResolvedExecutionRecord(runID, nodeID string, record *taskruntime.ResolvedExecutionRecord) (created bool, err error)
+	// GetResolvedExecutionRecord returns the pinned record for
+	// (runID, nodeID), or ErrResolvedExecutionRecordNotFound when this
+	// node's lineage has not resolved (and pinned) one yet.
+	GetResolvedExecutionRecord(runID, nodeID string) (*taskruntime.ResolvedExecutionRecord, error)
+}
+
+// ErrResolvedExecutionRecordConflict reports that a different record is
+// already pinned for this (run_id, node_id) -- a determinism violation
+// that must surface loudly, never as a silent overwrite.
+var ErrResolvedExecutionRecordConflict = errors.New("a different resolved execution record is already pinned for this node")
+
+// ErrResolvedExecutionRecordNotFound reports that no record is pinned
+// yet for this (run_id, node_id).
+var ErrResolvedExecutionRecordNotFound = errors.New("resolved execution record not found")
 
 // ErrDuplicateScheduledRun reports that a scheduled run for this pipeline
 // and data interval already exists (ADR-028's dispatch-idempotency guard).

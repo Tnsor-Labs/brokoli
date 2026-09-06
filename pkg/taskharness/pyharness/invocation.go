@@ -25,6 +25,18 @@ import (
 //go:embed harness.py
 var harnessFS embed.FS
 
+// Adapter/AdapterVersion mirror harness.py's own ADAPTER/ADAPTER_VERSION
+// constants exactly -- kept independently here (rather than parsed out
+// of the embedded file) so a caller resolving an execution environment
+// digest (ADR-033 section 4, engine/task.go) can name the adapter
+// without invoking Python first. The two must be bumped together; there
+// is no automated check for that, the same trust harness.py's own
+// hand-kept version already relies on.
+const (
+	Adapter        = "brokoli-python-taskharness"
+	AdapterVersion = "0.1.0"
+)
+
 // Materialize writes this package's embedded harness.py into dir and
 // returns its path, so a caller can hand pkg/taskharness.Options.Command
 // a real file path without shipping harness.py separately from the
