@@ -1092,3 +1092,36 @@ This closes out ADR-032 rollout step 4 (issue #439): schema+fixtures
 typed run-parameter validation (step 4) are all shipped. Steps 3
 (SDK inference), 5 (runtime boundary validation via ADR-033 adapters),
 and 6 (require interfaces for new task kinds) remain open.
+
+## Update (2026-09-06) — rollout step 3 started: `task-interface-v1` advertised
+
+First slice of step 3 ("SDK inference and explicit-schema builders"),
+scoped per a deliberate decision recorded here: section 7's task-local
+`parameter_bindings`/`resource_bindings` (per-invocation binding of a
+task's own declared parameters) are explicitly deferred to step 5,
+alongside ADR-033's runtime adapters -- that mechanism has no execution
+consumer yet (code nodes still receive params via the untyped
+`BROKED_PARAMS` env var, `engine/codenode.go`), and building the binding
+IR/validator/engine-wiring from scratch is real, separate core work with
+nowhere to land until step 5 gives it one. Step 3 instead treats an
+SDK-inferred task keyword parameter as sugar for a **pipeline-level**
+parameter -- the mechanism step 4 already fully wired end to end -- and
+scopes row-schema inference to the implicit single `input`/`result`
+ports (section 6's default), leaving `task-ports-v1` and `models.Edge`
+port identity untouched.
+
+This PR adds `"task-interface-v1"` to `models.SupportedExecutionFeatures`
+(models/pipeline.go): the execution feature ADR-032 section 12 requires
+before an SDK may honestly emit a node's `interface` or a pipeline's
+`parameters` field. Both fields have persisted, validated, and (for
+pipeline parameters) executed correctly since steps 2/4 landed -- this
+PR is purely the capability advertisement that lets an SDK gate on that
+fact, following the same "server advertises first, SDK gates second"
+rule every other execution feature in this list already follows. Also
+corrected two doc comments on `Pipeline.Parameters` and
+`TaskInterfaceIRVersion` that still said step 4's consultation "hasn't
+happened yet," left stale since #446 merged.
+
+Verification: mutation-tested by removing the new list entry and
+confirming `TestCapabilitiesHandler` fails with a specific "missing
+task-interface-v1" message, then restoring. Full `./preflight.sh` green.

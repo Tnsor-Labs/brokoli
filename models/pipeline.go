@@ -30,9 +30,11 @@ type Pipeline struct {
 	// never silently merged with it. Free-form here (like Config on Node)
 	// because full BPTD typing lives in the JSON Schema and its own
 	// contract tests, not as a parallel Go type system -- see
-	// models/ir_schema_contract_test.go and issue #439 step 2. Not yet
-	// consulted by Validate() or by run admission: typed run-parameter
-	// validation is ADR-032 rollout step 4, not this field's existence.
+	// models/ir_schema_contract_test.go and issue #439 step 2. Consulted
+	// at run trigger time (ADR-032 rollout step 4, #445/#446):
+	// engine.runPipelineAsync resolves a submitted run's typed parameters
+	// against this declaration via taskinterface.ResolveParameters before
+	// creating any run, and the resolved snapshot persists on Run.Parameters.
 	Parameters       map[string]interface{} `json:"parameters,omitempty"`
 	Tags             []string               `json:"tags"`                        // labels for filtering/grouping
 	Hooks            map[string]Hook        `json:"hooks,omitempty"`             // on_start, on_success, on_failure, on_node_failure
@@ -75,11 +77,13 @@ const ConditionalEdgesIRVersion = "2.1"
 
 // TaskInterfaceIRVersion is the first IR version whose nodes/pipeline may
 // carry an ADR-032 'interface'/'parameters' object
-// (docs/schema/pipeline-ir-2.2.json). Structural acceptance only: nothing
-// in Validate() or run admission consults either field's contents yet
-// (ADR-032 rollout step 4 does) -- a server on this version merely
-// accepts and echoes them, the same forward-compatible treatment
-// Extensions already gets.
+// (docs/schema/pipeline-ir-2.2.json). engine/validate.go's
+// validateEdgeAssignability consults node Interface for edge assignability,
+// and a pipeline's Parameters are resolved and validated at run trigger
+// time (ADR-032 rollout step 4, #439/#443/#446) -- emitting either field
+// requires the server to advertise the "task-interface-v1" execution
+// feature (models.SupportedExecutionFeatures), not merely accept this IR
+// version.
 const TaskInterfaceIRVersion = "2.2"
 
 // SupportedIRVersions lists every ir_version this host can accept in a
@@ -131,6 +135,20 @@ var SupportedExecutionFeatures = []string{
 	// at deploy preflight -- "deployed, then fails at run time" is the
 	// exact failure mode this list exists to prevent.
 	"task-bundles",
+	// ADR-032 rollout step 3 (#439): a node's "interface" field and a
+	// pipeline's "parameters" field (IR 2.2) are honestly usable --
+	// persisted, edge-assignability-checked (engine/validate.go), and
+	// (for pipeline parameters) resolved and validated at trigger time
+	// via taskinterface.ResolveParameters (models/node_interfaces.go,
+	// pkg/taskinterface). Named for the schema these fields conform to
+	// (docs/schema/task-interface-v1.json), not a numbered ADR step,
+	// because it gates SDK emission of that schema, not the step
+	// number -- an SDK checks capabilities, not ADR rollout progress.
+	// Distinct from the separate, not-yet-built "task-ports-v1" (ADR-032
+	// section 12), which would additionally require port-identity fields
+	// on models.Edge; this feature covers only the node/pipeline-level
+	// fields that already exist and validate today.
+	"task-interface-v1",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

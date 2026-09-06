@@ -135,7 +135,10 @@ func TestCapabilitiesHandler(t *testing.T) {
 	// code-streaming-emit: the SDK gate for emit()/begin_emit() scripts
 	// matches the exact string (ADR-029); dropping or renaming it lets
 	// emit() scripts deploy ungated to servers again.
-	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false, "code-streaming-emit": false}
+	// task-interface-v1: the SDK gate for a node's "interface"/pipeline's
+	// "parameters" fields (ADR-032 rollout step 3, #439); dropping or
+	// renaming it lets SDK-inferred interfaces deploy ungated.
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false, "code-streaming-emit": false, "task-interface-v1": false}
 	for _, f := range features {
 		if s, ok := f.(string); ok {
 			if _, known := want[s]; known {
