@@ -746,14 +746,17 @@ func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt
 		NodeType: string(node.Type), Script: script, Config: configForScript,
 		ItemColumns: itemDS.Columns, ItemRow: itemRow,
 		RunParams: runParams, TimeoutSeconds: timeoutSec,
-	}, timeoutSec)
+	}, timeoutSec, nil)
 }
 
 // dispatchInstanceWorkOrderRemotely enqueues an already-built WorkOrder and
-// waits for its fenced execution attempt to settle. Expansion items and
-// pagination pages share this transport-side lifecycle; only their WorkOrder
-// payloads differ.
-func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt int, instanceKey string, execFencingGen int64, workOrder *extensions.InstanceWorkOrder, timeoutSec int) (*common.DataSet, error) {
+// waits for its fenced execution attempt to settle. Expansion items,
+// pagination pages, and task-node instances (engine/task.go) share this
+// transport-side lifecycle; only their WorkOrder payloads and
+// extraCapabilities differ. extraCapabilities are appended after
+// r.requiredCapabilities (the run-level tags every job already carries) —
+// nil for the two existing callers, which need nothing beyond that.
+func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt int, instanceKey string, execFencingGen int64, workOrder *extensions.InstanceWorkOrder, timeoutSec int, extraCapabilities []string) (*common.DataSet, error) {
 	execAttemptStore, ok := r.store.(store.ExecutionAttemptStore)
 	if !ok {
 		// Cannot happen through executeExpansionInstance's own call site
@@ -772,7 +775,7 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 		NodeID: nodeID, InstanceKey: instanceKey, Attempt: nodeAttempt,
 		IdempotencyKey: idempotencyKey, FencingGeneration: execFencingGen,
 		EnqueuedAt:           time.Now().UTC(),
-		RequiredCapabilities: append([]string(nil), r.requiredCapabilities...),
+		RequiredCapabilities: append(append([]string(nil), r.requiredCapabilities...), extraCapabilities...),
 		WorkOrder:            workOrder,
 	}
 	if err := r.instanceJobQueue.Enqueue(job); err != nil {
