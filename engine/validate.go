@@ -65,19 +65,18 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 			nodeIDs[n.ID] = true
 			nodeTypes[n.ID] = n.Type
 		}
-		// ADR-033 rollout phase 0 (#439 step 5): "task" is a recognized
-		// NodeType (it round-trips through JSON/model parsing fine) but
-		// has no execution path anywhere yet -- no brokoli.task-runtime/v1
-		// adapter, no task-bundle/v2 resolution, nothing in
-		// Runner.runNodeLogic. Refuse it here, by name, rather than let it
-		// fall through to the generic "unsupported type" message below
-		// (which reads as a typo, not "this is real and not finished
-		// yet") or silently pass validation with no executor able to run
-		// it. ADR-033 section 18 states this as policy: "compile-only
-		// task forms remain rejected until their payload and runtime
-		// semantics are represented by this protocol."
+		// ADR-033 rollout phase 2b (#439 step 5): a 'task' node has a real
+		// local execution path now (Runner.runTask), gated on its own
+		// task_bundle config being well-formed -- the same "re-verify at
+		// validate time, not just at run time" discipline the code-node
+		// task_bundle check below already uses. Remote/distributed
+		// dispatch of task nodes remains unbuilt (a later phase; see
+		// engine/task.go's doc comment), but that is a dispatch-routing
+		// concern, not something this structural check gates on.
 		if n.Type == models.NodeTypeTask {
-			ve.Add(fmt.Sprintf("Node %q (%s) has type \"task\", which this server recognizes but cannot yet execute (ADR-033 rollout phase 0 -- no task-runtime/v1 adapter exists; issue #439 step 5)", n.Name, n.ID))
+			if _, err := taskBundleV2Reference(n.Config); err != nil {
+				ve.Add(fmt.Sprintf("Node %q (%s): %s", n.Name, n.ID, err))
+			}
 		} else if !IsBuiltInNodeType(n.Type) && !executorCanHandle(n.Type, executors) {
 			ve.Add(fmt.Sprintf("Node %q (%s) has unsupported type %q", n.Name, n.ID, n.Type))
 		}
@@ -115,7 +114,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		ve.Add("Pipeline contains a cycle")
 	}
 
-	// Check at least one source node (dbt and migrate also produce/handle data without pipeline inputs)
+	// Check at least one source node (dbt, migrate, and task also produce/handle data without pipeline inputs)
 	hasSource := false
 	for _, n := range p.Nodes {
 		if nodeIsSourceCapable(n, executors) {
@@ -124,7 +123,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		}
 	}
 	if !hasSource {
-		ve.Add("Pipeline must have at least one source node (source_file, source_api, source_db, dbt, or migrate)")
+		ve.Add("Pipeline must have at least one source node (source_file, source_api, source_db, dbt, migrate, or task)")
 	}
 
 	// Check disconnected nodes
@@ -159,7 +158,7 @@ func IsBuiltInNodeType(nodeType models.NodeType) bool {
 	switch nodeType {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
 		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
-		models.NodeTypeCode, models.NodeTypeJoin, models.NodeTypeSinkFile,
+		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
 		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter,
@@ -417,7 +416,13 @@ func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) boo
 	}
 	switch n.Type {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeDBT, models.NodeTypeMigrate:
+		models.NodeTypeDBT, models.NodeTypeMigrate, models.NodeTypeTask:
+		// A task node (ADR-033) doesn't consume an upstream DataSet in
+		// phase 2b -- its inputs are its own run-parameter kwargs, not
+		// pipeline edges -- so it produces data from scratch exactly
+		// like dbt/migrate, and (like them) cannot receive incoming
+		// edges either (validateEdgeSemantics enforces that uniformly
+		// for every source-capable type).
 		return true
 	}
 	return false

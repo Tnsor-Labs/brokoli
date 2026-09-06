@@ -1317,3 +1317,86 @@ validates the produced candidate result against
 `docs/schema/task-result-v1.json` -- the whole phase 2a loop, no engine
 involved, skipped only when `python3` isn't on `PATH`. Full
 `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout phase 2b: local task-node dispatch through the real engine
+
+Ships phase 2b (issue #439 step 5's roadmap): the first real `task` IR
+node dispatch, wired into `Runner.runNodeLogic` and proven through the
+actual engine (`RunPipeline`, not just `pkg/taskharness` standalone).
+Local (in-process) execution only -- remote/distributed dispatch of task
+nodes is a later phase, matching a fact this phase's own investigation
+surfaced: `task_bundle`/1 code nodes are *also* local-only on the remote
+instance-worker path today (`executeCodeWorkOrder`'s own explicit
+refusal, pinned again here by
+`TestExecuteInstanceWorkOrder_RefusesTaskNodeType`). That finding
+changed this phase's shape from what issue #439 originally said: "EE
+coordination becomes a hard prerequisite starting here" describes a
+*remote* task-node dispatch phase, not this one -- getting a task node
+running at all needed no EE coordination, since it never leaves the
+process that already has the bundle.
+
+- **Storage**: new `store.TaskBundleV2Store` capability (`PutTaskBundleV2`/
+  `GetTaskBundleV2`), same content-addressed, org-scoped, immutable
+  contract as `TaskBundleStore` (ADR-031) against a separate
+  `task_bundles_v2` table -- a distinct namespace, never shared with
+  `task_bundles` (ADR-035 Decision 1). SQLite and Postgres implementations
+  mirror the v1 methods' race-safe `INSERT ... ON CONFLICT DO NOTHING`
+  exactly.
+- **API**: `POST`/`GET /api/task-bundles-v2/{digest}`, mirroring
+  `/api/task-bundles/{digest}`'s upload/fetch contract (URL-named digest,
+  re-hash-and-verify before persisting). Upload validates by fully
+  extracting into a scratch directory with `pkg/taskbundlev2.Extract`
+  (discarded after) rather than a lighter parse-only pass -- catching a
+  content/digest mismatch at upload time too, a real improvement over
+  v1's structural-only manifest check, made possible by v2's manifest
+  carrying a size+sha256 per declared file.
+- **`pkg/taskbundlev2.Assemble`**: added alongside `Extract` (mirrors
+  `pkg/taskbundle.Assemble`) so tests across `store`/`api`/`engine` build
+  real archives instead of hand-rolling tar bytes -- auto-computes
+  `Manifest.Files` from the given file contents when left nil, closing
+  off the exact by-hand-digest-transcription mistake that produced a real
+  bug in this ADR's own phase 0 fixtures.
+- **`engine/task.go`**: `taskBundleV2Reference` (parses+validates a task
+  node's mandatory `task_bundle` config, mirroring `taskBundleReference`
+  for code nodes) and `Runner.runTask` (fetch+extract the bundle, select
+  the python payload, build a `pyharness.Invocation`, run it through
+  `pkg/taskharness`, map the outcome). A task's keyword parameters come
+  from the pipeline's run parameters -- the same "sugar for a
+  pipeline-level parameter" mechanism ADR-032 step 3 already established
+  for an inferred task keyword parameter, since no typed per-node
+  parameter binding exists yet. The trusted-profile resource baseline is
+  `pkg/codeexec.Resolve`'s existing `Limits`, reused as-is: CPU/file-size/
+  open-files applied externally via `pkg/proctree` before the harness
+  starts, memory (`RLIMIT_AS`) applied by the harness process itself from
+  the same `BROKED_LIMIT_MEMORY_MB` env var a code node's wrapper reads
+  -- `pyharness/harness.py` gained the identical resource-ceiling
+  preamble `pkg/codeexec/pywrapper/wrapper.py` already has, verbatim.
+- **Output mapping (`readTaskResult`)**: phase 2b supports only the
+  `"scalar"` output kind, matching what the reference harness actually
+  produces -- `"dataset"`/`"artifact"`/`"collection"` kinds need a codec
+  reader this phase does not build, and fail with a named
+  not-yet-supported error rather than being silently mishandled.
+- **Validation**: phase 0's blanket `models.NodeTypeTask` refusal in
+  `engine/validate.go` is lifted, replaced by the same "is `task_bundle`
+  well-formed" check the code-node config validator already runs. A task
+  node is also now source-capable (`nodeIsSourceCapable`) -- like
+  dbt/migrate, it produces data from scratch and (by the same rule every
+  source-capable type gets) cannot receive incoming edges.
+- **Capabilities**: `"task-runtime-v1"` and `"task-bundle-v2"` join
+  `models.SupportedExecutionFeatures` for the first time (phase 0
+  deliberately deferred this until something real existed behind them).
+
+Verification: store/API layers get the exact same test shapes as their
+v1 counterparts (identical re-upload is a no-op, tenant isolation, digest
+mismatch refused, live-Postgres semantics). The real payoff test is
+`engine/task_exec_test.go`: a task-bundle/v2 archive is uploaded to a
+real `SQLiteStore`, a pipeline referencing it is created and run through
+`Engine.RunPipeline` for real, and the task's Python return value comes
+back out through the artifact store as a `DataSet` row -- covering the
+happy path, a raising task surfacing as `user_code`, a missing bundle
+failing clearly, and run parameters actually reaching the task as
+keyword arguments. Mutation-tested `readTaskResult`'s interface-digest
+check (disabled it, confirmed exactly
+`TestReadTaskResult_InterfaceDigestMismatchIsRefused` fails), then
+restored. Skipped only when `python3` isn't on `PATH`. Full
+`./preflight.sh` green.

@@ -149,6 +149,17 @@ var SupportedExecutionFeatures = []string{
 	// on models.Edge; this feature covers only the node/pipeline-level
 	// fields that already exist and validate today.
 	"task-interface-v1",
+	// ADR-033 rollout phase 2b (#439 step 5): a 'task' IR node whose
+	// config carries a task_bundle (task-bundle/v2) reference executes
+	// for real, locally, through pkg/taskharness's brokoli.task-runtime/v1
+	// duplex protocol and a Python reference harness -- trusted isolation
+	// profile only, "scalar" output kind only. Remote/distributed
+	// dispatch of task nodes is not yet built (see engine/task.go); an
+	// SDK gating on this name only needs the local-execution guarantee,
+	// the same scope task-bundles (v1) advertised for code nodes before
+	// remote task_bundle dispatch existed either.
+	"task-runtime-v1",
+	"task-bundle-v2",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

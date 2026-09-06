@@ -26,12 +26,39 @@ worker's forceful termination fallback (pkg/taskharness.Run's
 SIGTERM/SIGKILL escalation after the cancellation grace period) already
 covers this harness fully; only the cooperative, clean-shutdown path is
 unimplemented here.
+
+Resource ceilings (phase 2b, mirrors pkg/codeexec/pywrapper/wrapper.py's
+own preamble verbatim): applied first, before importing the task module,
+so its own imports count under the cap. RLIMIT_AS is address space, not
+RSS. engine.Runner.runTask sets the same BROKED_LIMIT_* env vars a code
+node's wrapper reads; CPU/file-size/open-files are additionally enforced
+externally via pkg/proctree before this process even starts, so this
+block's real job is memory -- the one ceiling that must be self-applied
+from inside the process pkg/taskharness.Options.Rlimits has no field for.
 """
 import importlib
 import json
 import os
 import sys
 import traceback
+
+try:
+    import resource as _resource
+
+    def _brokoli_rlimit(env_name, res, scale):
+        _v = int(os.environ.get(env_name, "0") or 0)
+        if _v > 0:
+            try:
+                _resource.setrlimit(res, (_v * scale, _v * scale))
+            except (ValueError, OSError):
+                pass
+
+    _brokoli_rlimit("BROKED_LIMIT_MEMORY_MB", _resource.RLIMIT_AS, 1024 * 1024)
+    _brokoli_rlimit("BROKED_LIMIT_CPU_SECONDS", _resource.RLIMIT_CPU, 1)
+    _brokoli_rlimit("BROKED_LIMIT_FILE_SIZE_MB", _resource.RLIMIT_FSIZE, 1024 * 1024)
+    _brokoli_rlimit("BROKED_LIMIT_OPEN_FILES", _resource.RLIMIT_NOFILE, 1)
+except ImportError:
+    pass
 
 PROTOCOL = "brokoli.task-runtime/v1"
 ADAPTER = "brokoli-python-taskharness"

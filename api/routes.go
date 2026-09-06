@@ -158,6 +158,12 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/task-bundles/{digest}", tbh.Upload)
 		r.Get("/task-bundles/{digest}", tbh.Get)
 
+		// Task bundles v2 (ADR-033) -- additive alongside the v1 endpoints
+		// above, same contract, distinct content-address namespace.
+		tbh2 := NewTaskBundleV2Handler(s)
+		r.With(requirePerm(models.PermPipelinesCreate)).Post("/task-bundles-v2/{digest}", tbh2.Upload)
+		r.Get("/task-bundles-v2/{digest}", tbh2.Get)
+
 		// Runs
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/run", rh.TriggerRun)
 		r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/dry-run", rh.DryRun)
