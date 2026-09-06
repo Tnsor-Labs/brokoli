@@ -11,6 +11,39 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-09-06
+
+### Added
+
+- **Task nodes execute for real, locally** (ADR-032/033, #454, #455) --
+  @hc12r. A `task` IR node -- the polyglot runtime this year's ADR-032/033
+  proposals described -- now actually runs: it fetches a versioned,
+  content-addressed `task-bundle/v2` archive, extracts and verifies it
+  (per-file digests, not just presence), and executes it through a new
+  duplex-protocol harness (`brokoli.task-runtime/v1`, JSON Lines
+  handshake with structured logs/progress/cancellation) and a Python
+  reference adapter, instead of a bare script. New
+  `POST`/`GET /api/task-bundles-v2/{digest}` upload/fetch endpoints
+  mirror the existing task-bundle/1 contract in a separate,
+  content-address namespace. Trusted isolation profile, Python payloads
+  only, for now -- the same staged scope this project's other polyglot
+  work (TypeScript code nodes, ADR-030) shipped with.
+- **Task nodes dispatch to a remote worker fleet** (ADR-033, #456) --
+  @hc12r. A task node whose deployment has an instance job queue and
+  execution-attempt store configured (the same condition dynamic
+  code-node expansion already uses) now runs on a remote worker instead
+  of in the pipeline engine's own process -- one instance job per node,
+  reusing the existing remote-dispatch transport dynamic expansion and
+  source_api pagination already share.
+- **Task node retries can no longer silently swap execution
+  environments** (ADR-033 section 4, #457) -- @hc12r. The exact
+  payload and execution environment a task attempt resolves (interpreter,
+  dependency lock, platform) is now pinned on first use and reused by
+  every later attempt of that node -- a worker-fleet change between
+  retries can no longer silently change what an already-running attempt
+  lineage executes. A pinned environment that becomes unavailable fails
+  named `platform`, not a generic error.
+
 ## [0.11.0] - 2026-08-30
 
 ### Added
