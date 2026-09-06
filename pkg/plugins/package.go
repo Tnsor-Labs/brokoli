@@ -7,9 +7,7 @@
 package plugins
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -24,6 +22,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/archiveextract"
 )
 
 // Extraction guards: a payload archive is untrusted input. Individual
@@ -83,68 +83,19 @@ func HashPayloadTree(root string) (string, error) {
 }
 
 // extractArchive unpacks a .bkg (gzipped tar) into destRoot, refusing
-// path traversal, links, and oversized content.
+// path traversal, links, and oversized content. The guard itself lives
+// in pkg/archiveextract, shared with the new task-bundle/v2 extraction
+// (ADR-033) — this package supplies only its own size caps.
 func extractArchive(archivePath, destRoot string) error {
 	f, err := os.Open(archivePath) // #nosec G304 -- the operator-supplied archive being installed
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	gz, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("not a gzip archive: %w", err)
-	}
-	defer gz.Close()
-	tr := tar.NewReader(gz)
-
-	var total int64
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read archive: %w", err)
-		}
-		name := filepath.FromSlash(hdr.Name)
-		if filepath.IsAbs(name) || strings.Contains(name, "..") {
-			return fmt.Errorf("archive entry %q escapes the extraction root", hdr.Name)
-		}
-		target := filepath.Join(destRoot, name)
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o750); err != nil {
-				return err
-			}
-		case tar.TypeReg:
-			if hdr.Size > maxArchiveFileBytes {
-				return fmt.Errorf("archive entry %q exceeds the %d-byte file limit", hdr.Name, int64(maxArchiveFileBytes))
-			}
-			total += hdr.Size
-			if total > maxArchiveTotalBytes {
-				return fmt.Errorf("archive exceeds the %d-byte total limit", int64(maxArchiveTotalBytes))
-			}
-			if err := os.MkdirAll(filepath.Dir(target), 0o750); err != nil {
-				return err
-			}
-			out, err := os.OpenFile(target, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) // #nosec G304 -- target is traversal-checked above
-			if err != nil {
-				return err
-			}
-			// LimitReader as defense in depth against a lying header.
-			_, copyErr := io.Copy(out, io.LimitReader(tr, maxArchiveFileBytes+1)) // #nosec G110 -- bounded by the per-file and total caps
-			if closeErr := out.Close(); closeErr != nil && copyErr == nil {
-				copyErr = closeErr
-			}
-			if copyErr != nil {
-				return copyErr
-			}
-		default:
-			// Symlinks, devices, fifos: nothing a plugin payload needs,
-			// everything an attacker wants.
-			return fmt.Errorf("archive entry %q has unsupported type %d", hdr.Name, hdr.Typeflag)
-		}
-	}
+	return archiveextract.Extract(f, destRoot, archiveextract.Options{
+		MaxFileBytes:  maxArchiveFileBytes,
+		MaxTotalBytes: maxArchiveTotalBytes,
+	})
 }
 
 // ResolvedRuntime is how a selected payload becomes launchable on this

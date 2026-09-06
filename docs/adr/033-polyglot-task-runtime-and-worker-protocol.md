@@ -1224,3 +1224,96 @@ the boundary-sensitive tests fail (`TestMatch_AdapterTooOld`,
 `TestMatch_AdapterVersionWithoutVPrefixComparesCorrectly`) while the
 worked-example test's exact-equality case coincidentally still passed --
 then restored. Full `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout phase 2a: harness protocol + Python reference harness
+
+Ships phase 2a (issue #439 step 5's roadmap): the `task-runtime/v1`
+duplex protocol client and a working Python reference harness, proven
+fully offline against a real `task-bundle/v2` archive. Nothing here is
+called from the engine's dispatch path yet -- that is phase 2b.
+
+- New `pkg/archiveextract`: the gzipped-tar traversal/size/entry-count
+  extraction guard, factored out of `pkg/plugins/package.go`'s
+  `extractArchive` (behavior-preserving migration, same tests unchanged)
+  so `task-bundle/v2` extraction doesn't become a third independent copy
+  of the same guard. `pkg/taskbundle`'s `task-bundle/1` `Extract` stays
+  frozen and independent per ADR-035 Decision 1 -- only `pkg/plugins`
+  and the new `pkg/taskbundlev2` build on this package.
+- New `pkg/taskbundlev2`: the `task-bundle/v2` manifest contract
+  (`docs/schema/task-bundle-v2.json`, section 2) as Go types plus
+  `Validate`/`Extract`/`SelectPythonPayload`. `Extract` verifies every
+  manifest-declared file's size *and* sha256 against its actual content
+  after extraction (section 2 rule 3's digest coverage) -- stronger than
+  `task-bundle/1`'s existence-only check, now that the manifest carries
+  per-file digests to check against. `SelectPythonPayload` only ever
+  resolves the `python` runtime class; every other class in the schema's
+  enum parses and validates, since phase 2a is trusted-profile Python
+  only (the OSS scoping decision recorded in this ADR's own rollout
+  history) -- selecting anything else is phase 4's job.
+- New `pkg/taskharness`: `Run` implements section 7's full
+  `start -> ready -> (log|progress|warning|metric)* -> completed|failed`
+  handshake over duplex JSON Lines, plus the framing rules a per-frame
+  JSON Schema can't express (duplicate-key rejection, UTF-8 validation,
+  the 1 MiB frame cap, one-JSON-object-per-line) -- `decodeFrameLine`
+  scans tokens itself rather than trusting `encoding/json`'s
+  last-value-wins duplicate-key behavior. Cancellation sends a protocol
+  `cancel` frame once `ready` has been observed and waits (bounded) for
+  `cancel_ack` before escalating to SIGTERM/SIGKILL via `pkg/proctree`
+  (reused, not reimplemented); before `ready`, there is nothing to
+  gracefully cancel, so `Run` terminates the process tree directly, per
+  section 7's own scoping of what `cancel` means. The framing doc's
+  "exiting before any terminal frame" and "a non-zero process exit after
+  `completed`" rules are both real checks here, not just prose --
+  the latter reclassifies a completed-but-then-crashed harness as a
+  protocol failure rather than trusting a candidate result that might
+  never have finished writing. A generic post-mortem failure is
+  reclassified as `resource_exhausted` when the exit signal is
+  attributable to a configured rlimit (`pkg/taskharness/limits_unix.go`),
+  mirroring `engine.signalBreachError`'s approach for code nodes.
+- New `pkg/taskharness/pyharness`: the Python reference harness
+  (embedded, materialized to disk the same way `pkg/codeexec` embeds its
+  ADR-029 wrapper) implementing the harness side of the same protocol,
+  plus this phase's own invocation-descriptor convention (`Invocation`
+  in `invocation.go`) for what lives at a `start` frame's
+  `invocation_path` -- the wire schema only promises that's a string;
+  phase 0 left what's actually there unspecified, since no adapter
+  existed yet to need an answer. An exception raised by the task itself
+  is reported as `user_code`; anything wrong with what the worker handed
+  the harness (a malformed `start` frame, an invocation descriptor
+  missing a required key) is `contract_violation` -- the harness never
+  claims a worker-only category (`runtime_protocol`/`platform`/
+  `resource_exhausted`/`lease_lost`), per section 14 rule 8.
+- Known, documented phase 2a limitation (not a silent gap): the
+  reference harness doesn't read for a mid-task `cancel` frame -- the
+  task call is one synchronous Python call with no natural interruption
+  point without threads or signals, which is real future work. `Run`'s
+  forceful SIGTERM/SIGKILL fallback after the cancellation grace period
+  already covers this harness fully; only the cooperative, clean-exit
+  path is unimplemented.
+- The trusted-profile resource baseline is `pkg/proctree.Rlimits` +
+  `ApplyRlimits`, reused as-is (no new limits model) -- the same
+  primitive ADR-029's code-node workers already apply.
+
+Verification: `pkg/taskharness`'s state machine is tested through a
+re-exec'd fake harness (the standard library's own `os/exec` test
+pattern) driven by a small script language, covering the happy path,
+every protocol-violation branch (output before ready, malformed/
+duplicate-key JSON, a frame after the terminal frame, a non-zero exit
+after `completed`, exiting before any terminal frame), both cancellation
+outcomes (`cancel_ack` received; grace period expires), and a real
+CPU-rlimit test that gets killed and reclassified as
+`resource_exhausted`. Mutation-tested the `cancel_ack` frame-type match
+(renamed the case label), confirming exactly
+`TestRun_CancellationAfterReadyReceivesCancelAck` fails with a
+`runtime_protocol`/`unexpected_frame_type` result instead -- then
+restored. Every encoded `start`/`cancel` frame and every existing
+`task-runtime-v1` positive fixture round-trips through this package's
+own encoder/decoder and validates against
+`docs/schema/task-runtime-v1.json` (reusing phase 0's fixtures, not
+duplicating them). An offline end-to-end test builds a real
+`task-bundle/v2` archive, extracts it with `pkg/taskbundlev2`, runs it
+through `pkg/taskharness`+`pyharness` with a real `python3`, and
+validates the produced candidate result against
+`docs/schema/task-result-v1.json` -- the whole phase 2a loop, no engine
+involved, skipped only when `python3` isn't on `PATH`. Full
+`./preflight.sh` green.
