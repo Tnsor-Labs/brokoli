@@ -1,0 +1,10 @@
+{
+  "_violation": "protocol names must match ^brokoli\\.[a-z][a-z-]*/v[0-9]+$ -- 'instance-v2' is missing the 'brokoli.' prefix and the '/' before the version.",
+  "worker_id": "worker-1",
+  "protocols": ["instance-v2"],
+  "platform": { "os": "linux", "arch": "amd64" },
+  "runtimes": [],
+  "io": ["batch-reference"],
+  "isolation": ["process"],
+  "resources": { "cpu_millis": 1000, "memory_bytes": 1073741824 }
+}

@@ -1,0 +1,9 @@
+{
+  "_violation": "resources is required -- a worker without declared cpu_millis/memory_bytes cannot be matched against any resource requirement.",
+  "worker_id": "worker-1",
+  "protocols": ["brokoli.instance/v2"],
+  "platform": { "os": "linux", "arch": "amd64" },
+  "runtimes": [],
+  "io": ["batch-reference"],
+  "isolation": ["process"]
+}

@@ -1171,3 +1171,56 @@ refusal message -- mutation-tested by disabling the refusal check and
 confirming the second test fails with the pipeline instead falling
 through to the generic "unsupported type" message, then restored. Full
 `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout phase 1: worker capabilities and placement predicate
+
+Ships the "worker capability model + resolved execution records"
+half of phase 1 (issue #439 step 5's roadmap): pure new types and a pure
+matching function, nothing wired into a worker registration endpoint,
+physical planning, or `ClaimAttempt` yet.
+
+- `docs/schema/worker-capabilities-v1.json` (section 5's worker
+  registration/heartbeat shape: protocols, platform, runtimes, io,
+  isolation, resources, labels) + fixtures, following the same
+  positive/negative/`_violation` pattern as every prior schema in this
+  arc. `isolation` is deliberately `array of string`, not a closed enum
+  -- section 12 names trust profiles, never a fixed mechanism vocabulary,
+  and this schema doesn't invent one.
+- `docs/schema/resolved-execution-record-v1.json` (section 4 rule 3's
+  pinned selection: runtime protocol, bundle/payload/environment/
+  interface digests, execution profile revision) + fixtures. Field names
+  mirror section 6's instance work-order `task` object exactly, so a
+  future implementation copies rather than re-derives them.
+- New `pkg/taskruntime` package: `WorkerCapabilities`/
+  `ResolvedExecutionRecord` Go types parsing both schemas, plus a pure
+  `Requirements`/`Match(Requirements, WorkerCapabilities) MatchResult`
+  function implementing section 5's AND-chain placement predicate
+  (protocol, runtime+version, adapter, io, isolation, resources) exactly
+  as worked out in that section's own example -- pinned verbatim as
+  `TestADR033WorkedExample`. Semver comparison for the adapter-version
+  lower bound uses `golang.org/x/mod/semver`, already in the module
+  graph as an indirect dependency (govulncheck's own tooling), moved to
+  direct via `go mod tidy` rather than adding a new one.
+- Deliberate scoping call, recorded in `Requirements.Isolation`'s doc
+  comment: section 5's own worked example writes `isolation >=process`,
+  implying a strength ordering between isolation mechanism names, but
+  section 12 never defines one (only trust profiles). `Match` checks
+  exact set membership, not an invented ordering -- asserting a ranking
+  ADR-033 itself doesn't state would be this package making policy, not
+  implementing it. `TestMatch_IsolationIsMembershipNotOrdering` pins this
+  choice explicitly so it isn't silently "fixed" into an assumed
+  ordering later without a real decision.
+- This package does not itself assemble a `Requirements` value from a
+  `ResolvedExecutionRecord` and a bundle payload -- that assembly is the
+  "physical planning" step section 4 describes, and stays out of scope
+  for this phase along with everything else that would need a live
+  bundle-resolution/dispatch path to be meaningful.
+
+Verification: fixture-conformance tests parse the real JSON fixtures
+(not just inline Go literals) for both new types. `TestADR033WorkedExample`
+reproduces section 5's own example verbatim. Mutation-tested `Match`'s
+adapter-version comparison (flipped `< 0` to `> 0`), confirming exactly
+the boundary-sensitive tests fail (`TestMatch_AdapterTooOld`,
+`TestMatch_AdapterVersionWithoutVPrefixComparesCorrectly`) while the
+worked-example test's exact-equality case coincidentally still passed --
+then restored. Full `./preflight.sh` green.

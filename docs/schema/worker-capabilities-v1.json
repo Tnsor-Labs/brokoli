@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/worker-capabilities-v1.json",
+  "title": "Brokoli worker capabilities v1 (ADR-033 section 5)",
+  "description": "Canonical machine-readable contract for a worker's structured capability advertisement on registration and heartbeat -- authenticated observations, never author assertions. This is a rollout-phase-1 artifact (ADR-032/033 rollout, issue #439 step 5): it defines the advertisement shape only. No Go code reads, writes, persists, or matches against this shape yet -- there is no worker registration endpoint, no placement predicate, and this does not extend extensions.InstanceWorkOrder (ADR-017) in this phase. A change here is a change to every worker implementation and the control plane at once: version it accordingly, per the same discipline as task-interface-v1.json.",
+  "$ref": "#/$defs/worker_capabilities",
+  "$defs": {
+    "worker_capabilities": {
+      "type": "object",
+      "required": ["worker_id", "protocols", "platform", "runtimes", "io", "isolation", "resources"],
+      "additionalProperties": false,
+      "properties": {
+        "worker_id": { "type": "string", "minLength": 1 },
+        "protocols": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/protocol_name" },
+          "description": "Every protocol this worker speaks, e.g. 'brokoli.instance/v2' (ADR-017) and 'brokoli.task-runtime/v1' (ADR-033 section 7). A worker missing a required protocol never receives work needing it -- absence fails closed."
+        },
+        "platform": { "$ref": "#/$defs/platform" },
+        "runtimes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/runtime_capability" },
+          "description": "May be empty for a worker that speaks no task-runtime adapter at all (e.g. an ADR-029 code-node-only worker)."
+        },
+        "io": {
+          "type": "array",
+          "items": { "type": "string", "enum": ["batch-reference", "batch-inline", "stream-v1"] },
+          "description": "ADR-033 section 9's physical I/O modes this worker supports."
+        },
+        "isolation": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Isolation mechanisms this worker can enforce, e.g. 'process', 'container'. Deliberately not a closed enum -- ADR-033 section 12 names profiles (trusted/tenant/untrusted), not a fixed mechanism vocabulary; new mechanisms (namespaces, gVisor, ...) are expected to be added without a schema version bump to this array's contents."
+        },
+        "resources": { "$ref": "#/$defs/resources" },
+        "labels": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Free-form scheduling hints (e.g. {\"accelerator\": \"none\"}). Per ADR-033 section 5: labels may refine placement after compatibility is already proven, but can never substitute for runtime/protocol matching."
+        }
+      }
+    },
+
+    "protocol_name": {
+      "type": "string",
+      "pattern": "^brokoli\\.[a-z][a-z-]*/v[0-9]+$"
+    },
+
+    "platform": {
+      "type": "object",
+      "required": ["os", "arch"],
+      "additionalProperties": false,
+      "properties": {
+        "os": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "runtime_capability": {
+      "type": "object",
+      "required": ["class", "versions"],
+      "additionalProperties": false,
+      "properties": {
+        "class": {
+          "type": "string",
+          "enum": ["python", "node", "native", "container", "wasi", "jvm"],
+          "description": "ADR-033 section 3's closed runtime-class vocabulary -- the same enum task-bundle-v2.json's payload.runtime uses."
+        },
+        "versions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Concrete runtime versions installed on this worker, e.g. ['3.11.9', '3.12.4'] -- not a range. Range matching against a bundle payload's 'requires' happens at placement time, not here."
+        },
+        "adapter": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The runtime adapter's own version (ADR-033 section 15). Optional: a 'native' or 'container' runtime class may have no separate adapter version to report."
+        }
+      }
+    },
+
+    "resources": {
+      "type": "object",
+      "required": ["cpu_millis", "memory_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "cpu_millis": { "type": "integer", "minimum": 0 },
+        "memory_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}
