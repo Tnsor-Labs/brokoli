@@ -15,6 +15,40 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Task bundles: a versioned, content-addressed project archive**
+  (ADR-031, #432, #433) -- @hc12r. `task()` compiles to a `task_bundle`
+  archive instead of a bare script -- multi-file projects with real
+  imports, executed through the same warm code-node pool (ADR-029) under
+  the same resource ceilings. `POST`/`GET /api/task-bundles/{digest}`
+  serve it content-addressed and org-scoped; a byte-identical re-upload
+  is a no-op, a colliding digest is a 409, never a silent overwrite.
+- **Portable task interfaces** (ADR-032 steps 1-2, #438, #440, #441) --
+  @hc12r. A task's row/parameter shape is now a typed, canonical schema
+  (BPTD: named ports, parameter declarations) attached to
+  `models.Node.Interface`/`models.Pipeline.Parameters`, not an implicit
+  "whatever columns show up" contract -- IR 2.2, with 13 of 19 built-in
+  node types declaring their interface out of the box.
+- **Graph assignability and typed run parameters** (ADR-032 step 4,
+  #442-#446) -- @hc12r. Twelve directional compatibility rules
+  (`pkg/taskinterface`) now gate every edge at validate time, and a
+  pipeline's typed parameters actually resolve (defaults applied, unknown/
+  missing-required rejected) at trigger time -- `TriggerRun` returns a
+  clean 400 on a bad submission instead of a 500. Fixed a real bug found
+  along the way: `Pipeline.Parameters` was decoded but never persisted by
+  either store backend, silently dropped on every read.
+- **SDK inference for task interfaces** (ADR-032 step 3, #447, #450) --
+  @hc12r. Python `@task` infers its row/parameter schema from type
+  annotations, `TypedDict`, and dataclasses; TypeScript gets explicit
+  schema/parameter builders (no erased-generic reflection). Six
+  cross-SDK differential fixtures prove equivalent declarations in both
+  languages normalize to the identical interface.
+- **The polyglot task runtime's schema and worker-capability foundation**
+  (ADR-033 phases 0-1, #452, #453) -- @hc12r. Canonical schemas and
+  fixtures for `task-bundle/v2`, `task-runtime/v1` (a duplex JSON Lines
+  protocol between a trusted worker and a task harness), and
+  `task-result/v1`; a structured worker-capability/placement model. A
+  `task` node is a recognized IR type from here on, but deliberately
+  refused at deploy time until the phases below give it somewhere to run.
 - **Task nodes execute for real, locally** (ADR-032/033, #454, #455) --
   @hc12r. A `task` IR node -- the polyglot runtime this year's ADR-032/033
   proposals described -- now actually runs: it fetches a versioned,
@@ -43,6 +77,13 @@ reconstruct from git archaeology.
   retries can no longer silently change what an already-running attempt
   lineage executes. A pinned environment that becomes unavailable fails
   named `platform`, not a generic error.
+
+### Changed
+
+- `./preflight.sh` runs ~45% faster (#448) -- @hc12r. The security-scan
+  stage was oversubscribing every CPU core; scans now share a capped,
+  persistent build cache instead of losing it (and re-fetching
+  `govulncheck`/`go-licenses`) on every single run.
 
 ## [0.11.0] - 2026-08-30
 
