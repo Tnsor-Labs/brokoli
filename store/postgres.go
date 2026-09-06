@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
 	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -479,6 +481,15 @@ func (s *PostgresStore) migrate() error {
 		archive BYTEA NOT NULL,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		PRIMARY KEY (org_id, digest))`)
+
+	// Resolved execution records (ADR-033 section 4) — see
+	// store/sqlite.go for the shared doc comment.
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS resolved_execution_records (
+		run_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		record_json JSONB NOT NULL,
+		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (run_id, node_id))`)
 
 	// Pipeline templates — see the matching table in store/sqlite.go for
 	// the full doc comment; kept in sync column-for-column between
@@ -2355,6 +2366,55 @@ func (s *PostgresStore) GetTaskBundleV2(orgID, digest string) ([]byte, error) {
 		return nil, err
 	}
 	return archive, nil
+}
+
+// --- Resolved execution records (ADR-033 section 4) ---
+// Shared doc comment in store/sqlite.go; the dialect split is $N
+// placeholders, JSONB, and the same race-safe INSERT ... ON CONFLICT DO
+// NOTHING.
+
+func (s *PostgresStore) PutResolvedExecutionRecord(runID, nodeID string, record *taskruntime.ResolvedExecutionRecord) (bool, error) {
+	raw, err := json.Marshal(record)
+	if err != nil {
+		return false, fmt.Errorf("marshal resolved execution record: %w", err)
+	}
+	res, err := s.db.Exec(
+		`INSERT INTO resolved_execution_records (run_id, node_id, record_json) VALUES ($1,$2,$3)
+		 ON CONFLICT (run_id, node_id) DO NOTHING`,
+		runID, nodeID, string(raw),
+	)
+	if err != nil {
+		return false, err
+	}
+	if n, err := res.RowsAffected(); err == nil && n > 0 {
+		return true, nil
+	}
+	existing, err := s.GetResolvedExecutionRecord(runID, nodeID)
+	if err != nil {
+		return false, err
+	}
+	if !reflect.DeepEqual(existing, record) {
+		return false, ErrResolvedExecutionRecordConflict
+	}
+	return false, nil
+}
+
+func (s *PostgresStore) GetResolvedExecutionRecord(runID, nodeID string) (*taskruntime.ResolvedExecutionRecord, error) {
+	var raw string
+	err := s.db.QueryRow(
+		`SELECT record_json FROM resolved_execution_records WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
+	).Scan(&raw)
+	if err == sql.ErrNoRows {
+		return nil, ErrResolvedExecutionRecordNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record taskruntime.ResolvedExecutionRecord
+	if err := json.Unmarshal([]byte(raw), &record); err != nil {
+		return nil, fmt.Errorf("unmarshal resolved execution record for node %s: %w", nodeID, err)
+	}
+	return &record, nil
 }
 
 func (s *PostgresStore) ListAlerts(orgID string, unreadOnly bool, limit int) ([]models.Alert, error) {

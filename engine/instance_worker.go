@@ -148,7 +148,7 @@ func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts Art
 	var result *common.DataSet
 	var execErr error
 	if job.WorkOrder.NodeType == string(models.NodeTypeTask) {
-		result, execErr = ExecuteTaskWorkOrderContext(ctx, s, job.WorkOrder)
+		result, execErr = ExecuteTaskWorkOrderContext(ctx, s, job.RunID, job.NodeID, job.WorkOrder)
 	} else {
 		result, execErr = ExecuteInstanceWorkOrderContext(ctx, job.WorkOrder)
 	}

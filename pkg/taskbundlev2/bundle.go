@@ -260,7 +260,7 @@ func SelectPythonPayload(m *Manifest) (*Payload, error) {
 			reasons = append(reasons, fmt.Sprintf("payload %q: runtime %q, not python", p.ID, p.Runtime))
 			continue
 		}
-		if !platformMatches(p.OS, p.Arch) {
+		if !PlatformMatches(p.OS, p.Arch) {
 			reasons = append(reasons, fmt.Sprintf("payload %q: built for %s/%s, host is %s/%s", p.ID, p.OS, p.Arch, runtime.GOOS, runtime.GOARCH))
 			continue
 		}
@@ -272,7 +272,23 @@ func SelectPythonPayload(m *Manifest) (*Payload, error) {
 	return nil, fmt.Errorf("no python payload is selectable on this host (%s/%s):\n  %s", runtime.GOOS, runtime.GOARCH, strings.Join(reasons, "\n  "))
 }
 
-func platformMatches(osName, arch string) bool {
+// FindPayload returns the manifest's payload with the given ID, or
+// ok=false if none matches -- used to re-locate a previously resolved
+// and pinned payload (ADR-033 section 4) rather than re-selecting one
+// fresh, and to check whether that pinned payload is still runnable on
+// the current host via PlatformMatches.
+func FindPayload(m *Manifest, id string) (*Payload, bool) {
+	for i := range m.Payloads {
+		if m.Payloads[i].ID == id {
+			return &m.Payloads[i], true
+		}
+	}
+	return nil, false
+}
+
+// PlatformMatches reports whether a payload declared for osName/arch
+// ("any" or empty meaning platform-independent) can run on this host.
+func PlatformMatches(osName, arch string) bool {
 	osOK := osName == "" || osName == "any" || osName == runtime.GOOS
 	archOK := arch == "" || arch == "any" || arch == runtime.GOARCH
 	return osOK && archOK

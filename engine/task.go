@@ -23,11 +23,16 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -39,6 +44,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/pyharness"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -114,21 +120,148 @@ func materializeTaskBundleV2(s store.Store, orgID, digest string) (*taskbundlev2
 	return m, dir, nil
 }
 
-// executeTaskBundle fetches+extracts digest, selects its python payload,
-// and runs it through pkg/taskharness+pyharness, mapping the outcome
-// into the DataSet contract every other node type returns. Shared by
-// Runner.runTask (local) and ExecuteTaskWorkOrderContext (remote) — see
-// this file's own doc comment.
-func executeTaskBundle(ctx context.Context, s store.Store, orgID, digest string, config map[string]interface{}, runParams map[string]string, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
+// executionProfile names the one resource/isolation policy this rollout
+// phase applies to every task attempt -- "trusted@1": the trusted
+// isolation profile (ADR-033 section 12), revision 1 of its concrete
+// resource baseline (pkg/codeexec.Resolve's limits, reused as-is per
+// executeTaskBundle). Pinned into every resolved execution record; a
+// future revision or profile bumps this string, the same "name@revision"
+// convention ADR-033 section 4's own examples use ("standard@7").
+const executionProfile = "trusted@1"
+
+// resolveExecutionRecord returns the payload a task attempt must run and
+// the execution record pinning that choice (ADR-033 section 4): the
+// first attempt for (runID, nodeID) resolves fresh and pins the result;
+// every later attempt (a retry, or a redelivery of the same remote job)
+// fetches that same pin and reuses it verbatim rather than re-resolving
+// -- so a worker-fleet change between attempts can never silently swap
+// out what an already-running attempt lineage executes. Degrades to
+// fresh resolution every time (the pre-phase-2d behavior) on a store
+// that has not adopted the optional ResolvedExecutionRecordStore
+// capability yet.
+func resolveExecutionRecord(s store.Store, runID, nodeID, digest string, manifest *taskbundlev2.Manifest) (*taskbundlev2.Payload, *taskruntime.ResolvedExecutionRecord, error) {
+	rs, ok := s.(store.ResolvedExecutionRecordStore)
+	if !ok {
+		payload, err := taskbundlev2.SelectPythonPayload(manifest)
+		if err != nil {
+			return nil, nil, fmt.Errorf("task bundle %s: %w", digest, err)
+		}
+		return payload, nil, nil
+	}
+
+	pinned, err := rs.GetResolvedExecutionRecord(runID, nodeID)
+	if err == nil {
+		payload, found := taskbundlev2.FindPayload(manifest, pinned.PayloadID)
+		if !found {
+			// Cannot happen for a content-addressed, immutable bundle (the
+			// same digest always yields the same manifest) short of a
+			// genuine bug -- named loudly rather than silently falling
+			// back to a fresh selection, which would be exactly the
+			// determinism violation this phase exists to prevent.
+			return nil, nil, fmt.Errorf("task bundle %s: resolved execution record pins payload %q, which is not in this bundle's manifest", digest, pinned.PayloadID)
+		}
+		if !taskbundlev2.PlatformMatches(payload.OS, payload.Arch) {
+			return nil, nil, fmt.Errorf(
+				"task bundle %s: platform: pinned payload %q (os=%s arch=%s) is not available on this host (%s/%s) -- retries reuse the resolved execution record rather than silently re-resolving to a different payload; an operator-approved re-resolution is required (not yet built)",
+				digest, payload.ID, payload.OS, payload.Arch, runtime.GOOS, runtime.GOARCH,
+			)
+		}
+		return payload, pinned, nil
+	}
+	if !errors.Is(err, store.ErrResolvedExecutionRecordNotFound) {
+		return nil, nil, fmt.Errorf("task bundle %s: read resolved execution record: %w", digest, err)
+	}
+
+	payload, err := taskbundlev2.SelectPythonPayload(manifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("task bundle %s: %w", digest, err)
+	}
+	envDigest, err := computeExecutionEnvironmentDigest(payload, manifest)
+	if err != nil {
+		return nil, nil, fmt.Errorf("task bundle %s: compute execution environment digest: %w", digest, err)
+	}
+	record := &taskruntime.ResolvedExecutionRecord{
+		RuntimeProtocol:            taskharness.Protocol,
+		BundleDigest:               digest,
+		PayloadID:                  payload.ID,
+		PayloadDigest:              payload.PayloadDigest,
+		ExecutionEnvironmentDigest: envDigest,
+		InterfaceDigest:            manifest.InterfaceDigest,
+		ExecutionProfile:           executionProfile,
+	}
+	if _, err := rs.PutResolvedExecutionRecord(runID, nodeID, record); err != nil {
+		if errors.Is(err, store.ErrResolvedExecutionRecordConflict) {
+			return nil, nil, fmt.Errorf("task bundle %s: a different execution environment is already pinned for this run's node -- refusing to run (this should be impossible for one serialized attempt lineage; investigate a concurrency bug rather than retrying)", digest)
+		}
+		return nil, nil, fmt.Errorf("task bundle %s: pin resolved execution record: %w", digest, err)
+	}
+	return payload, record, nil
+}
+
+// computeExecutionEnvironmentDigest hashes together everything ADR-033
+// section 4 rule 3 says an execution environment digest must cover that
+// this phase can actually observe: the harness adapter identity, the
+// resolved python interpreter's own reported version, the payload's
+// dependency lock digest (already verified by pkg/taskbundlev2.Extract's
+// own per-file digest check -- reused here, not rehashed), and the
+// platform ABI. "Declared system libraries" is the one listed component
+// with nothing to hash yet anywhere in this codebase -- a real,
+// documented gap, not silently ignored.
+func computeExecutionEnvironmentDigest(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest) (string, error) {
+	pythonPath, reason := plugins.ResolvePython("")
+	if reason != "" {
+		return "", fmt.Errorf("resolve python interpreter: %s", reason)
+	}
+	pyVersion, err := pythonVersionString(pythonPath)
+	if err != nil {
+		return "", err
+	}
+	depLockDigest := "none"
+	if payload.DependencyLock != "" {
+		for _, f := range manifest.Files {
+			if f.Path == payload.DependencyLock {
+				depLockDigest = f.SHA256
+				break
+			}
+		}
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf(
+		"adapter=%s;adapter_version=%s;python_version=%s;os=%s;arch=%s;dependency_lock_sha256=%s",
+		pyharness.Adapter, pyharness.AdapterVersion, pyVersion, runtime.GOOS, runtime.GOARCH, depLockDigest,
+	)))
+	return "sha256:" + hex.EncodeToString(sum[:]), nil
+}
+
+// pythonVersionString runs "<pythonPath> --version" and returns its
+// trimmed output (e.g. "Python 3.12.3") -- part of the execution
+// environment digest's "exact runtime build" coverage.
+func pythonVersionString(pythonPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, pythonPath, "--version").CombinedOutput() // #nosec G204 -- pythonPath is resolved via plugins.ResolvePython, not attacker input
+	if err != nil {
+		return "", fmt.Errorf("%s --version: %w", pythonPath, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// executeTaskBundle fetches+extracts digest, resolves (or reuses a
+// pinned) python payload, and runs it through pkg/taskharness+pyharness,
+// mapping the outcome into the DataSet contract every other node type
+// returns. Shared by Runner.runTask (local) and ExecuteTaskWorkOrderContext
+// (remote) — see this file's own doc comment. runID/nodeID identify the
+// execution lineage a resolved execution record (ADR-033 section 4) is
+// pinned against.
+func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config map[string]interface{}, runParams map[string]string, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
 	manifest, bundleDir, err := materializeTaskBundleV2(s, orgID, digest)
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(bundleDir)
 
-	payload, err := taskbundlev2.SelectPythonPayload(manifest)
+	payload, _, err := resolveExecutionRecord(s, runID, nodeID, digest, manifest)
 	if err != nil {
-		return nil, fmt.Errorf("task bundle %s: %w", digest, err)
+		return nil, err
 	}
 
 	pythonPath, reason := plugins.ResolvePython("")
@@ -246,7 +379,7 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 	limits := codeexec.Resolve(node.Config)
 	r.log(node.ID, models.LogLevelInfo, "task exec: bundle=%s %s", digest, limits)
-	return executeTaskBundle(ctx, r.store, r.orgID, digest, node.Config, runParams, timeoutSec, taskharness.Handlers{
+	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, runParams, timeoutSec, taskharness.Handlers{
 		OnLog: func(l taskharness.Log) {
 			level := models.LogLevelInfo
 			switch l.Level {
@@ -313,7 +446,14 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, t
 // nodes, exactly like task_bundle/1 code nodes already do on that same
 // path -- this function is the new, additional capability a dispatch
 // loop opts into, not a replacement.
-func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+//
+// runID/nodeID identify the execution lineage a resolved execution
+// record is pinned against (ADR-033 section 4) -- not carried on the
+// WorkOrder itself (which stays a self-contained work description);
+// callers with a extensions.RunJob already have both (job.RunID,
+// job.NodeID) at hand, exactly the values a matching local execution
+// would use (r.run.ID, node.ID).
+func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, nodeID string, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	if wo == nil {
 		return nil, fmt.Errorf("execute task instance work order: nil work order")
 	}
@@ -324,7 +464,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, wo *extensi
 	// No log/progress handlers: this function has no Runner (and so no
 	// run-scoped log sink) to attribute them to, matching
 	// executeCodeWorkOrder's own documented choice to drop stderr here.
-	return executeTaskBundle(ctx, s, wo.OrgID, digest, wo.Config, wo.RunParams, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.RunParams, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // readTaskResult reads and interprets a task-result-v1 candidate
