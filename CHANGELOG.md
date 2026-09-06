@@ -11,6 +11,23 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-09-07
+
+### Fixed
+
+- **Three dependency CVEs** (#460) -- @hc12r. `golang.org/x/crypto`
+  v0.54.0 to 0.55.0 (CVE-2026-56854, CRITICAL: ssh auth bypass via
+  unenforced source-address restrictions); `golang.org/x/mod` v0.37.0 to
+  0.40.0 (CVE-2026-56864/56865, HIGH: a malicious GOSUMDB could serve
+  arbitrary module content, and a transparency-log tile verification
+  bypass) -- this one came in via `pkg/taskruntime`'s semver dependency,
+  added in v0.11.1; `google.golang.org/grpc` v1.83.0 to 1.83.1
+  (CVE-2026-84304, HIGH). Caught by `brokoli-enterprise`'s Trivy scan,
+  which runs on every push there and flagged all three as soon as v0.11.1
+  landed in its dependency tree -- this repo's own `preflight.sh` doesn't
+  run Trivy locally and `govulncheck`'s database didn't have these
+  cataloged yet.
+
 ## [0.11.1] - 2026-09-06
 
 ### Added
