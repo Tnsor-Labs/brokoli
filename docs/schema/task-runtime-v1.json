@@ -1,0 +1,167 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/task-runtime-v1.json",
+  "title": "Brokoli task runtime protocol v1 (ADR-033 section 7)",
+  "description": "Canonical machine-readable contract for one brokoli.task-runtime/v1 control/event frame -- the duplex JSON Lines protocol between a trusted worker and the one-shot task harness process it launches for a 'task' node attempt. This schema validates one DECODED frame's shape; it cannot express the wire-level framing rules (UTF-8, LF-terminated, 1 MiB max, no duplicate keys, no literal unescaped newline) or the start->ready->events->completed|failed state machine -- see docs/schema/task-runtime-v1-framing.md for those. This is a rollout-phase-0 artifact (ADR-032/033 rollout, issue #439 step 5): no Go/Python/Node code speaks this protocol yet. Distinct from and does not replace ADR-029's framed binary pool protocol (pkg/codeexec), which continues to govern 'code' nodes exclusively per ADR-035 Decision 3.",
+  "$ref": "#/$defs/frame",
+  "$defs": {
+    "frame": {
+      "description": "Any valid v1 frame, either direction. worker_frame travels on the harness's stdin; harness_frame travels on its stdout.",
+      "oneOf": [
+        { "$ref": "#/$defs/worker_frame" },
+        { "$ref": "#/$defs/harness_frame" }
+      ]
+    },
+
+    "worker_frame": {
+      "description": "Frames the trusted worker sends to the harness (stdin).",
+      "oneOf": [
+        { "$ref": "#/$defs/start" },
+        { "$ref": "#/$defs/cancel" }
+      ]
+    },
+
+    "harness_frame": {
+      "description": "Frames the harness sends to the worker (stdout). The state machine is start->ready->(log|progress|warning|metric)*->(completed|cancel_ack)|failed -- see the framing companion doc for the full terminal-state rules this schema cannot express.",
+      "oneOf": [
+        { "$ref": "#/$defs/ready" },
+        { "$ref": "#/$defs/log" },
+        { "$ref": "#/$defs/progress" },
+        { "$ref": "#/$defs/warning" },
+        { "$ref": "#/$defs/metric" },
+        { "$ref": "#/$defs/completed" },
+        { "$ref": "#/$defs/failed" },
+        { "$ref": "#/$defs/cancel_ack" }
+      ]
+    },
+
+    "start": {
+      "type": "object",
+      "required": ["type", "protocol", "invocation_path", "result_path", "output_staging_dir", "event_stream"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "start" },
+        "protocol": { "const": "brokoli.task-runtime/v1" },
+        "invocation_path": { "type": "string", "minLength": 1, "description": "Fixed by the trusted worker, scoped beneath the attempt sandbox; the harness cannot be redirected to a different path by any frame." },
+        "result_path": { "type": "string", "minLength": 1 },
+        "output_staging_dir": { "type": "string", "minLength": 1 },
+        "event_stream": { "const": "stdout" }
+      }
+    },
+
+    "cancel": {
+      "type": "object",
+      "required": ["type", "reason"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "cancel" },
+        "reason": { "type": "string", "minLength": 1 },
+        "deadline": { "type": "string", "format": "date-time", "description": "The harness must reply cancel_ack and exit by this deadline." }
+      }
+    },
+
+    "ready": {
+      "type": "object",
+      "required": ["type", "protocol", "adapter", "adapter_version", "capabilities"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "ready" },
+        "protocol": { "const": "brokoli.task-runtime/v1" },
+        "adapter": { "type": "string", "minLength": 1 },
+        "adapter_version": { "type": "string", "minLength": 1 },
+        "capabilities": { "type": "array", "items": { "type": "string" }, "description": "Must satisfy every capability 'start' required, or the handshake fails (ADR-033 section 7 rule 4)." }
+      }
+    },
+
+    "log": {
+      "type": "object",
+      "required": ["type", "level", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "log" },
+        "level": { "type": "string", "enum": ["debug", "info", "warning", "error"] },
+        "message": { "type": "string" },
+        "fields": { "type": "object", "description": "Structured log fields -- replaces the legacy ADR-029 wrapper's stdout text-prefix convention entirely for task-runtime/v1." }
+      }
+    },
+
+    "progress": {
+      "type": "object",
+      "required": ["type", "completed"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "progress" },
+        "completed": { "type": "number", "minimum": 0, "description": "Monotonic per scope (ADR-033 section 7 rule 9) -- a future decreasing value is a protocol-level anomaly, not expressible as a single-frame schema constraint." },
+        "total": { "type": "number", "minimum": 0 },
+        "unit": { "type": "string", "minLength": 1 }
+      }
+    },
+
+    "warning": {
+      "type": "object",
+      "required": ["type", "code", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "warning" },
+        "code": { "type": "string", "minLength": 1 },
+        "message": { "type": "string" }
+      }
+    },
+
+    "metric": {
+      "type": "object",
+      "required": ["type", "name", "kind", "value"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "metric" },
+        "name": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "enum": ["counter", "gauge", "distribution"] },
+        "value": { "type": "number" }
+      }
+    },
+
+    "completed": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "completed" }
+      }
+    },
+
+    "failed": {
+      "type": "object",
+      "required": ["type", "failure"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "failed" },
+        "failure": {
+          "type": "object",
+          "required": ["category", "code", "message", "retryable"],
+          "additionalProperties": false,
+          "properties": {
+            "category": {
+              "type": "string",
+              "enum": ["user_code", "contract_violation", "dependency", "resource_exhausted", "cancelled", "deadline_exceeded", "runtime_protocol", "platform", "lease_lost"],
+              "description": "ADR-033 section 14's failure taxonomy. Task-supplied category/code/retryable are advisory only for user_code/contract_violation/dependency/resource_exhausted/cancelled/deadline_exceeded -- only the trusted worker may originate runtime_protocol/platform/resource_exhausted/lease_lost, and only the control plane determines final retryability (rule 8)."
+            },
+            "code": { "type": "string", "minLength": 1 },
+            "message": { "type": "string" },
+            "retryable": { "type": "boolean", "description": "Advisory hint only; see 'category' description." },
+            "details": { "type": "object" },
+            "stack": { "type": "string", "description": "Redacted according to policy before it leaves the worker." }
+          }
+        }
+      }
+    },
+
+    "cancel_ack": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "const": "cancel_ack" }
+      }
+    }
+  }
+}

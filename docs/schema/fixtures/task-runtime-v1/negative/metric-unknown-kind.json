@@ -1,0 +1,7 @@
+{
+  "_violation": "metric.kind must be one of counter/gauge/distribution (ADR-033 section 7 rule 9) -- 'histogram' is not one of them.",
+  "type": "metric",
+  "name": "rows_scored",
+  "kind": "histogram",
+  "value": 500
+}

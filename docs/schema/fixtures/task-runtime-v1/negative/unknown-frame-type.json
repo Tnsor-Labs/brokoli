@@ -1,0 +1,4 @@
+{
+  "_violation": "type must be one of the ten closed v1 frame names -- 'heartbeat' is not one of them (ADR-033 section 7 rule 4: event names in v1 are closed).",
+  "type": "heartbeat"
+}

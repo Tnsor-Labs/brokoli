@@ -1,0 +1,22 @@
+{
+  "_violation": "effects must be one of pure, idempotent_with_key, non_idempotent (ADR-033 section 14) -- 'maybe' is not a recognized effect class.",
+  "format": "brokoli.task-bundle/v2",
+  "name": "score-orders",
+  "interface_digest": "sha256:6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+  "source_digest": "sha256:d4735e3a265e16eee03f59718b9b5d03019c07d8b6c51f90da3a666eec13ab35",
+  "payloads": [
+    {
+      "id": "python-any",
+      "runtime": "python",
+      "os": "any",
+      "arch": "any",
+      "entrypoint": {
+        "module": "src.tasks",
+        "symbol": "score_orders"
+      },
+      "effects": "maybe",
+      "payload_digest": "sha256:4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a"
+    }
+  ],
+  "files": []
+}

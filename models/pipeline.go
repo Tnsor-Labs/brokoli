@@ -230,6 +230,19 @@ const (
 	// engine.runPartitionTransform). Emitted by brokoli-sdk's
 	// DatasetRef.filter(fn).
 	NodeTypeDatasetFilter NodeType = "dataset_filter"
+
+	// NodeTypeTask is ADR-033's polyglot task node: a task-bundle/v2
+	// implementation dispatched through the brokoli.task-runtime/v1
+	// protocol, additive alongside NodeTypeCode's existing task-bundle/1
+	// path (ADR-035 Decision 1 -- this is a new, separate node type, not
+	// a replacement). Rollout phase 0 (issue #439 step 5): recognized and
+	// round-trips through JSON/model parsing, but engine.ValidatePipeline
+	// hard-refuses any pipeline containing one -- "recognized but not yet
+	// executable" is a deliberate, named policy (ADR-033 section 18:
+	// "compile-only task forms remain rejected until their payload and
+	// runtime semantics are represented by this protocol"), not a gap.
+	// See docs/schema/task-bundle-v2.json and docs/schema/task-runtime-v1.json.
+	NodeTypeTask NodeType = "task"
 )
 
 // Position represents a node's position on the visual canvas.

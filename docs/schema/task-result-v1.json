@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/task-result-v1.json",
+  "title": "Brokoli task result manifest v1 (ADR-033 section 7 rule 5)",
+  "description": "Canonical machine-readable contract for the candidate result manifest a task-runtime/v1 harness writes to the worker-prescribed result_path before emitting 'completed'. This is the sole authoritative candidate result from untrusted code -- it lists declared output ports and relative files under output_staging_dir; it cannot mint artifact URIs or output capabilities. A candidate is not authoritative output until the trusted worker validates it (declared ports, codecs, interface digest, ADR-032 contracts) and commits it via CommitAttemptResult (ADR-033 section 7 rule 7), which this schema does not describe. Rollout phase 0 artifact (issue #439 step 5): no Go/Python/Node code reads or writes this manifest yet.",
+  "$ref": "#/$defs/task_result",
+  "$defs": {
+    "task_result": {
+      "type": "object",
+      "required": ["contract", "interface_digest", "outputs"],
+      "additionalProperties": false,
+      "properties": {
+        "contract": { "const": "brokoli.task-result/v1" },
+        "interface_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Must match the invocation's declared interface digest; a mismatch is a contract_violation failure, not a silently accepted result."
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": { "pattern": "^[A-Za-z_][A-Za-z0-9_]{0,127}$" },
+          "additionalProperties": { "$ref": "#/$defs/output_port_result" },
+          "description": "Keyed by the ADR-032 output port name (e.g. 'result'). Every declared required output must be present; an absent optional output is explicit by omission, never a null placeholder."
+        },
+        "metadata": {
+          "type": "object",
+          "description": "Free-form task-supplied diagnostic metadata (e.g. {\"rows_scored\": 500}). Never authoritative for scheduling or validation -- only 'outputs' is."
+        }
+      }
+    },
+
+    "output_port_result": {
+      "type": "object",
+      "required": ["kind"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["dataset", "scalar", "artifact", "collection"],
+          "description": "The ADR-032 value-contract kind this port produced. 'control' ports never appear here -- they carry no business value."
+        },
+        "path": { "type": "string", "minLength": 1, "description": "Relative to output_staging_dir. Required for dataset/artifact kinds; the trusted worker opens it relative to a trusted, no-follow/beneath staging descriptor (section 7 rule 6)." },
+        "codec": { "type": "string", "minLength": 1, "description": "e.g. 'arrow-ipc/v1' or 'ndjson/v1' (section 8)." },
+        "size_bytes": { "type": "integer", "minimum": 0 },
+        "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "value": { "description": "Present instead of path/codec/size_bytes/checksum for a small inline scalar value (section 8: 'small scalars and parameters may be inline JSON')." }
+      },
+      "if": { "properties": { "kind": { "enum": ["dataset", "artifact"] } }, "required": ["kind"] },
+      "then": { "required": ["path", "codec", "size_bytes", "checksum"] }
+    }
+  }
+}

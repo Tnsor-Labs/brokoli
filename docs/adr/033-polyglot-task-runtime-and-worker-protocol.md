@@ -1106,3 +1106,68 @@ additive, scoped to servers advertising `task-runtime-v1`; ADR-029's pool
 and protocol continue to govern `code` nodes (bare or carrying
 `task-bundle/1`) unchanged; this ADR's model and protocol apply to `task`
 nodes exclusively.
+
+## Update (2026-09-06) — rollout scoped as a phased roadmap; phase 0 shipped
+
+Scoped as issue #439 step 5 (tracking ADR-032/033's combined rollout).
+This ADR alone is 19 decision sections and a 15-item acceptance-gate
+list -- comparable to or larger than the entire ADR-029 arc, and its
+hardest part (§5's structured worker capability negotiation) has zero
+prior art anywhere in this codebase (confirmed by direct survey: nothing
+like it exists in `engine`/`extensions`). Staged as a 7-phase roadmap
+(full detail in issue #439's step-5 checklist) rather than attempted as
+one arc. Two scope decisions, confirmed with the repository owner before
+starting: OSS core targets the `trusted` isolation profile only (§12) --
+real OS/container sandboxing for `tenant`/`untrusted` is out of scope for
+this roadmap; EE coordination (worker protocol is one of three tight
+EE-core coupling seams, ee#55) is deferred until the phase that actually
+touches live worker dispatch, not required for this phase.
+
+This PR ships phase 0 -- schema, fixtures, and structural `task`-node
+acceptance, zero execution, mirroring ADR-032 step 1's proven pattern:
+
+- `docs/schema/task-bundle-v2.json` (§2's manifest shape) +
+  `task-bundle-v2-canonicalization.md` (the archive-level rules a schema
+  over the manifest *document* can't express) + fixtures. Additive
+  alongside `pkg/taskbundle`'s `task-bundle/1` (ADR-031) -- this phase
+  does not touch that package. Flagged, not fixed: `pkg/taskbundle`'s
+  `Extract` already independently duplicates `pkg/plugins/package.go`'s
+  safe-extraction logic; a real v2 `Extract` would be a third copy unless
+  a shared helper is carved out first -- deferred to the phase that
+  actually writes that code, with a real diff in hand, per the
+  canonicalization doc's own note.
+- `docs/schema/task-runtime-v1.json` (§7's ten frame types: `start`,
+  `cancel`, `ready`, `log`, `progress`, `warning`, `metric`, `completed`,
+  `failed`, `cancel_ack`) + `task-runtime-v1-framing.md` (the wire-level
+  rules -- 1 MiB/frame, LF-terminated, the state machine, cancellation
+  race resolution, result-collection order -- a per-frame JSON Schema
+  cannot express) + fixtures, one positive fixture per frame type.
+- `docs/schema/task-result-v1.json` (§7 rule 5's candidate result
+  manifest, its own separate contract name) + fixtures.
+- `models.NodeTypeTask` ("task"): a recognized `NodeType` that round-trips
+  through JSON/model parsing with zero schema changes needed (the IR
+  schema's `node.type` was already deliberately not enum-constrained, to
+  let executors/plugins claim types beyond the built-in set -- confirmed
+  by reading `pipeline-ir-2.2.json`'s own field description). The new
+  work is entirely in `engine.ValidatePipeline`: a `task` node is now
+  hard-refused with a specific, named message ("recognized but cannot yet
+  execute") instead of falling through to the generic "unsupported type"
+  message a real typo would produce -- matching ADR-033 §18's own stated
+  policy that compile-only task forms stay rejected until their runtime
+  semantics exist.
+- Deliberately did NOT advertise `task-runtime-v1`/`task-bundle-v2` as
+  execution features in `models.SupportedExecutionFeatures` this phase.
+  That list's own doc comment is explicit -- "a feature appears here only
+  when a pipeline using it runs, not when it merely persists" -- and
+  nothing runs yet. This is the one place this phase deliberately does
+  not follow ADR-035's own Follow-up list verbatim; that advertisement
+  moves to phase 1/2, once there is something real behind it.
+
+Verification: schema fixtures follow the exact positive/negative +
+`_violation` pattern `models/task_interface_schema_test.go` established
+for ADR-032 step 1. The `task`-node refusal is covered by two tests: one
+proving JSON round-trip (structural acceptance), one proving the specific
+refusal message -- mutation-tested by disabling the refusal check and
+confirming the second test fails with the pipeline instead falling
+through to the generic "unsupported type" message, then restored. Full
+`./preflight.sh` green.

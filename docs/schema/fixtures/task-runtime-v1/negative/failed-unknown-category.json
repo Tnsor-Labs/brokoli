@@ -1,0 +1,10 @@
+{
+  "_violation": "failure.category must be one of the nine closed ADR-033 section 14 categories -- 'network' is not one of them.",
+  "type": "failed",
+  "failure": {
+    "category": "network",
+    "code": "TIMEOUT",
+    "message": "connection timed out",
+    "retryable": true
+  }
+}

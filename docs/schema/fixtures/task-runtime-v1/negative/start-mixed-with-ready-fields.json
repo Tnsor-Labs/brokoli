@@ -1,0 +1,10 @@
+{
+  "_violation": "additionalProperties is false on every frame shape -- 'adapter' belongs to the ready frame, not start, and start's own oneOf branch rejects it as an unrecognized property.",
+  "type": "start",
+  "protocol": "brokoli.task-runtime/v1",
+  "invocation_path": "/work/invocation.json",
+  "result_path": "/work/result.json",
+  "output_staging_dir": "/work/output",
+  "event_stream": "stdout",
+  "adapter": "python"
+}

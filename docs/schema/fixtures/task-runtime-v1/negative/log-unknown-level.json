@@ -1,0 +1,6 @@
+{
+  "_violation": "level must be one of debug/info/warning/error -- 'trace' is not a recognized level.",
+  "type": "log",
+  "level": "trace",
+  "message": "x"
+}

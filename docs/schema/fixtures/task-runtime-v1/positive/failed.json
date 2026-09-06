@@ -1,0 +1,11 @@
+{
+  "type": "failed",
+  "failure": {
+    "category": "user_code",
+    "code": "VALUE_ERROR",
+    "message": "threshold must be positive",
+    "retryable": false,
+    "details": {},
+    "stack": "redacted according to policy"
+  }
+}
