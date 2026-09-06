@@ -57,18 +57,24 @@ type Runner struct {
 	dryRun               bool
 	dryRunMaxRows        int
 	dryRunResults        map[string]*DryRunNodeResult
-	params               map[string]string // runtime params
-	varCtx               *VariableContext
-	preRunID             string     // pre-generated run ID (for registration before Execute)
-	trigger              string     // what created this run ("scheduled", "" = manual)
-	intervalStart        *time.Time // ADR-028 data interval, stamped by the dispatcher
-	intervalEnd          *time.Time
-	acceptedRun          *models.Run                     // queued run already persisted and atomically claimed
-	orgID                string                          // tenant isolation for WebSocket events
-	alertRaised          bool                            // guards raiseFailureAlert against double-firing
-	traceID              string                          // distributed tracing correlation ID
-	executors            []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
-	notifier             extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+	params               map[string]string // legacy untyped runtime params (ADR-032 section 3)
+	// parameters is the resolved, typed run-parameter snapshot (ADR-032
+	// rollout step 4, issue #439): validated and defaulted by
+	// taskinterface.ResolveParameters against Pipeline.Parameters before
+	// this run was created. Nil when the pipeline declares no typed
+	// parameters.
+	parameters    map[string]interface{}
+	varCtx        *VariableContext
+	preRunID      string     // pre-generated run ID (for registration before Execute)
+	trigger       string     // what created this run ("scheduled", "" = manual)
+	intervalStart *time.Time // ADR-028 data interval, stamped by the dispatcher
+	intervalEnd   *time.Time
+	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
+	orgID         string                          // tenant isolation for WebSocket events
+	alertRaised   bool                            // guards raiseFailureAlert against double-firing
+	traceID       string                          // distributed tracing correlation ID
+	executors     []extensions.NodeExecutor       // enterprise: external executors (K8s, Docker)
+	notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 	// instanceID is this Runner's Engine's InstanceID (Tnsor-Labs/brokoli#90
 	// M3) — the claimedBy identity passed to store.ExecutionAttemptStore's
 	// ClaimAttempt/AckAttempt when the node dispatch loop wires through it.
@@ -316,6 +322,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			PipelineID:        r.pipe.ID,
 			Status:            models.RunStatusRunning,
 			Params:            r.params,
+			Parameters:        r.parameters,
 			StartedAt:         &now,
 			TraceID:           r.traceID,
 			PipelineVersion:   r.pipelineVersion,
