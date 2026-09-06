@@ -1807,6 +1807,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
 		}
 		return outputExecutionResult(r.runCode(ctx, node, input))
+	case models.NodeTypeTask:
+		// ADR-033 rollout phase 2b: local (in-process) task-runtime/v1
+		// dispatch only -- see engine/task.go's own doc comment for why
+		// remote dispatch is a later phase.
+		return outputExecutionResult(r.runTask(ctx, node, input))
 	case models.NodeTypeJoin:
 		return outputExecutionResult(r.runJoin(node, allInputs))
 	case models.NodeTypeSQLGenerate:

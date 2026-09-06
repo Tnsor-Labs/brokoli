@@ -687,6 +687,34 @@ var ErrTaskBundleCollision = errors.New("a different task bundle already occupie
 // a 404 without string-matching.
 var ErrTaskBundleNotFound = errors.New("task bundle not found")
 
+// TaskBundleV2Store persists task-bundle/v2 archives (ADR-033), the
+// content-addressed artifact a 'task' IR node references. Same shape and
+// same tenancy/immutability contract as TaskBundleStore above -- a
+// distinct interface, not an overload, because task-bundle/v2 is a
+// separate, additive format from task-bundle/1 (ADR-035 Decision 1): a
+// store may implement one, both, or neither, and a digest in one
+// namespace says nothing about the other.
+type TaskBundleV2Store interface {
+	// PutTaskBundleV2 content-addresses archive bytes for orgID under an
+	// already-verified digest reference, same semantics as
+	// TaskBundleStore.PutTaskBundle: created=true on a new archive,
+	// created=false (nil error) on a byte-identical re-upload, and
+	// ErrTaskBundleV2Collision when a different archive already occupies
+	// the digest.
+	PutTaskBundleV2(orgID, digest string, archive []byte) (bool, error)
+	// GetTaskBundleV2 returns the stored archive for orgID under digest,
+	// or ErrTaskBundleV2NotFound when the org has no such bundle.
+	GetTaskBundleV2(orgID, digest string) ([]byte, error)
+}
+
+// ErrTaskBundleV2Collision is TaskBundleV2Store's counterpart to
+// ErrTaskBundleCollision.
+var ErrTaskBundleV2Collision = errors.New("a different task bundle already occupies this digest")
+
+// ErrTaskBundleV2NotFound is TaskBundleV2Store's counterpart to
+// ErrTaskBundleNotFound.
+var ErrTaskBundleV2NotFound = errors.New("task bundle not found")
+
 // ErrDuplicateScheduledRun reports that a scheduled run for this pipeline
 // and data interval already exists (ADR-028's dispatch-idempotency guard).
 // It is the leader-failover race resolving correctly: the second instance

@@ -55,6 +55,26 @@ func TestExecuteInstanceWorkOrder_RefusesTaskBundleWorkOrder(t *testing.T) {
 	}
 }
 
+// TestExecuteInstanceWorkOrder_RefusesTaskNodeType pins a deliberate
+// ADR-033 phase 2b scope boundary: 'task' nodes execute locally
+// (Runner.runTask) but are NOT wired into the remote instance-worker
+// dispatch path -- the same boundary task_bundle/1 code nodes already
+// have (TestExecuteInstanceWorkOrder_RefusesTaskBundleWorkOrder above).
+// A future phase adds real remote task-node dispatch; until then this
+// must keep failing loudly, never silently succeed with an empty result.
+func TestExecuteInstanceWorkOrder_RefusesTaskNodeType(t *testing.T) {
+	_, err := ExecuteInstanceWorkOrder(&extensions.InstanceWorkOrder{
+		NodeType:       string(models.NodeTypeTask),
+		TimeoutSeconds: 5,
+	})
+	if err == nil {
+		t.Fatal("a task-node work order ran to success on the remote instance-worker path")
+	}
+	if !strings.Contains(err.Error(), "unsupported node type") {
+		t.Fatalf("failure does not name the unsupported node type: %s", err)
+	}
+}
+
 func TestExecuteInstanceWorkOrderContext_CancelsCodeProcess(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
