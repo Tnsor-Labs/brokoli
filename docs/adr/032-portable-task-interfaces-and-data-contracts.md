@@ -1154,3 +1154,37 @@ Verification: mutation-tested by corrupting one fixture's enum `values`
 to an empty array (violating the schema's `minItems: 1`), confirming
 the test fails naming that exact fixture, then restoring. Full
 `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout step 3 complete: both SDKs
+
+`brokoli-sdk` (Python) PR #94 taught `@task` to infer a node interface
+and pipeline parameters from type hints: `TypedDict`/dataclass rows and
+return values compile to a BPTD record (with nested records, enums via
+`Literal`, `Optional` nullability, `list`/`dict[str, V]` array/map, and
+`decimal`/`date`/`datetime`/`timedelta`), every other annotated keyword
+parameter promotes to a typed pipeline parameter, and an unannotated or
+unresolvable type stays honestly unknown with a visible warning rather
+than a guess. `brokoli-typescript` PR #12 shipped the same JSON shape
+from explicit `schema.*`/`parameter.*` builders instead, since
+TypeScript cannot recover erased generic types at runtime (section 8
+rule 6) -- along with a real gap found and fixed along the way:
+`validatePipeline()`'s vendored JSON Schema was still 2.1 with
+`additionalProperties: false`, so a typed pipeline would have compiled
+fine and then failed *local* validation before ever reaching a server.
+Both SDKs vendor the same differential fixtures from step 3's second PR
+and assert their own compiled output matches byte-for-byte, closing
+ADR-032 section 14's cross-SDK conformance requirement without a
+separate later PR -- `brokoli-typescript`'s own whole-pipeline
+differential oracle can't be reused for this, since a code/task node's
+packaged script text is inherently language-specific.
+
+Both SDKs made the identical scoping call recorded in the first PR of
+this step: an inferred/declared keyword parameter is pipeline-level
+sugar, not a task-interface-level `parameters` block, since section 7's
+`parameter_bindings` has no execution consumer in the core engine yet.
+
+This closes ADR-032 rollout step 3 in full (issue #439). Steps 5
+(runtime boundary validation via ADR-033 adapters) and 6 (require
+interfaces for new task kinds) remain open; both are substantially
+larger efforts than this arc and are deferred as separate, dedicated
+initiatives pending their own scoping pass.
