@@ -3,6 +3,7 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -66,16 +67,23 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Parse optional params from request body
+	// Parse optional params from request body. Params is the legacy untyped
+	// override map; Parameters is the typed run-parameter payload validated
+	// against the pipeline's declarations (ADR-032 section 3).
 	var req struct {
-		Params map[string]string `json:"params"`
+		Params     map[string]string      `json:"params"`
+		Parameters map[string]interface{} `json:"parameters"`
 	}
 	json.NewDecoder(r.Body).Decode(&req) // ignore error — body may be empty
 
 	// Async: return immediately with run ID. Pipeline executes in background.
 	// This prevents client timeouts from creating duplicate runs.
-	runID, err := h.engine.RunPipelineAsync(pipelineID, req.Params)
+	runID, err := h.engine.RunPipelineAsyncWithParameters(pipelineID, req.Params, req.Parameters)
 	if err != nil {
+		if errors.Is(err, engine.ErrParameterResolution) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

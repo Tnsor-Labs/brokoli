@@ -16,6 +16,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"go.opentelemetry.io/otel/attribute"
@@ -26,6 +27,12 @@ import (
 // ErrInvalidQueuedRun identifies a malformed or orphaned queue delivery that
 // cannot become valid through retry.
 var ErrInvalidQueuedRun = errors.New("invalid queued run")
+
+// ErrParameterResolution wraps a taskinterface.ResolveParameters failure
+// (ADR-032 section 3 rule 4) so callers -- notably the HTTP layer -- can
+// distinguish "the submitted run parameters are invalid" (client error) from
+// other runPipelineAsync failures via errors.Is.
+var ErrParameterResolution = errors.New("run parameter resolution failed")
 
 // Engine manages pipeline execution and event broadcasting.
 type Engine struct {
@@ -795,14 +802,28 @@ func hasTriggerOn(sum *models.PipelineDepSummary, upstreamID string) bool {
 // The pipeline runs in a background goroutine. Use WebSocket events or polling to track status.
 // If a JobQueue is configured, the run is enqueued for distributed execution instead.
 func (e *Engine) RunPipelineAsync(pipelineID string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(true, pipelineID, nil, params...)
+	return e.runPipelineAsync(true, pipelineID, nil, nil, params...)
+}
+
+// RunPipelineAsyncWithParameters is RunPipelineAsync plus a typed run
+// parameter submission (ADR-032 rollout step 4, issue #439), validated
+// against the pipeline's declared Parameters and resolved (defaults
+// applied, unknowns/missing-required rejected) before any run is
+// created. typedParams may be nil; a pipeline that declares no typed
+// Parameters ignores it entirely. Kept as a separate method rather than
+// widening the existing variadic params signature -- adding a second,
+// differently-typed variadic parameter isn't expressible in Go, and a
+// positional non-variadic parameter would break every existing caller
+// of the four RunPipelineAsync* methods.
+func (e *Engine) RunPipelineAsyncWithParameters(pipelineID string, legacyParams map[string]string, typedParams map[string]interface{}) (string, error) {
+	return e.runPipelineAsync(true, pipelineID, nil, typedParams, legacyParams)
 }
 
 // RunPipelineAsyncWithCapabilities starts a queued run whose workers must
 // advertise every requested capability. It is used by Enterprise Nodus when
 // a whole-pipeline fallback still needs placement constraints.
 func (e *Engine) RunPipelineAsyncWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(true, pipelineID, requiredCapabilities, params...)
+	return e.runPipelineAsync(true, pipelineID, requiredCapabilities, nil, params...)
 }
 
 // RunPipelineAsyncLocal starts a background run in this process even when a
@@ -810,17 +831,17 @@ func (e *Engine) RunPipelineAsyncWithCapabilities(pipelineID string, requiredCap
 // uses this mode so the control-plane engine can dispatch physical WorkOrders
 // to the pool instead of handing the entire pipeline to one worker.
 func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(false, pipelineID, nil, params...)
+	return e.runPipelineAsync(false, pipelineID, nil, nil, params...)
 }
 
 // RunPipelineAsyncLocalWithCapabilities starts a control-plane run whose
 // physical WorkOrders must be placed on workers advertising every requested
 // capability.
 func (e *Engine) RunPipelineAsyncLocalWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
-	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, params...)
+	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, nil, params...)
 }
 
-func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
+func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredCapabilities []string, typedParams map[string]interface{}, params ...map[string]string) (string, error) {
 	if e.closing() {
 		return "", ErrEngineClosed
 	}
@@ -832,6 +853,19 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 	// Validate before running
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return "", ve
+	}
+
+	// ADR-032 rollout step 4 (#439): validate and resolve typed run
+	// parameters against the pipeline's declarations before any run is
+	// created (ADR-032 section 3 rule 4). len(pipe.Parameters) == 0 skips
+	// this entirely -- a pipeline that declares no typed parameters never
+	// pays for or is affected by this check, and resolvedParams stays nil.
+	var resolvedParams map[string]interface{}
+	if len(pipe.Parameters) > 0 {
+		resolvedParams, err = taskinterface.ResolveParameters(pipe.Parameters, typedParams)
+		if err != nil {
+			return "", fmt.Errorf("%w: %v", ErrParameterResolution, err)
+		}
 	}
 
 	pipelineVersion, err := resolveRunPipelineVersion(e.store, pipe)
@@ -846,6 +880,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			ID:              common.NewID(),
 			PipelineID:      pipe.ID,
 			Status:          models.RunStatusBlocked,
+			Parameters:      resolvedParams,
 			Error:           reason,
 			StartedAt:       &now,
 			FinishedAt:      &now,
@@ -884,6 +919,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			Status:          models.RunStatusPending,
 			PipelineVersion: pipelineVersion,
 			OrgID:           pipe.OrgID,
+			Parameters:      resolvedParams,
 		}
 		if len(params) > 0 && params[0] != nil {
 			accepted.Params = params[0]
@@ -991,6 +1027,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 	if len(params) > 0 && params[0] != nil {
 		runner.params = params[0]
 	}
+	runner.parameters = resolvedParams
 
 	runner.preRunID = runID
 	e.mu.Lock()

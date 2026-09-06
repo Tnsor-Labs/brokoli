@@ -1046,3 +1046,49 @@ Still not done: `ResolveParameters` (from the prior update) is not yet
 called from `api/handlers_run.go`'s `TriggerRun` or `engine.
 runPipelineAsync` — this PR only makes the storage honest; the actual
 validation-at-trigger-time wiring is the next slice, tracked in #439.
+
+## Update (2026-09-06) — ResolveParameters wired into the trigger path
+
+Closes the item the prior update deferred. `engine.runPipelineAsync`
+gained a `typedParams map[string]interface{}` parameter; when the
+target pipeline declares any `Parameters` (ADR-032 section 3), it calls
+`taskinterface.ResolveParameters(pipe.Parameters, typedParams)` right
+after `ValidatePipeline` passes and before any run row is created
+(section 3 rule 4) — a bad submission never leaves a partial run
+behind. The resolved snapshot flows into every `models.Run{}`
+construction site: the blocked-run path, the job-queue "accepted" path,
+and the in-process path via a new `Runner.parameters` field.
+
+Added `Engine.RunPipelineAsyncWithParameters(pipelineID, legacyParams,
+typedParams)` rather than widening the four existing `RunPipelineAsync*`
+methods' variadic `params ...map[string]string` — Go cannot express two
+differently-typed variadic parameters on one function, and a positional
+non-variadic parameter would have broken every existing caller. The
+four existing methods now pass `nil` for `typedParams` and are
+otherwise unchanged.
+
+`api/handlers_run.go`'s `TriggerRun` decodes a new `parameters` request
+field alongside the legacy `params` map and calls
+`RunPipelineAsyncWithParameters`. A resolution failure is a client
+error, not a server one: a new sentinel `engine.ErrParameterResolution`
+(wrapped via `%w`, same pattern as the existing `ErrInvalidQueuedRun`)
+lets the handler map it to HTTP 400 via `errors.Is`, distinct from the
+500 every other `runPipelineAsync` failure still gets.
+
+Verification: mutation-tested both the resolution short-circuit
+(temporarily forced `runPipelineAsync` to skip
+`ResolveParameters` entirely — the three tests that assert resolved
+values/rejection failed, the no-declared-parameters test correctly did
+not, then restored) and the HTTP status mapping (temporarily dropped
+the `errors.Is` branch — the 400 test failed with 500 instead, then
+restored). New tests: `engine/run_parameters_trigger_test.go` (in-
+process path, job-queue path, missing-required rejection with an
+explicit run-count assertion that nothing was created, and a
+no-declared-parameters pass-through case) and
+`api/handlers_run_parameters_test.go` (HTTP-level 202 and 400 cases).
+
+This closes out ADR-032 rollout step 4 (issue #439): schema+fixtures
+(step 1), built-in node interfaces (step 2), and graph assignability +
+typed run-parameter validation (step 4) are all shipped. Steps 3
+(SDK inference), 5 (runtime boundary validation via ADR-033 adapters),
+and 6 (require interfaces for new task kinds) remain open.
