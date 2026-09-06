@@ -1,0 +1,10 @@
+{
+  "_violation": "io must be one of batch-reference/batch-inline/stream-v1 (ADR-033 section 9) -- 'stream-v2' does not exist yet.",
+  "worker_id": "worker-1",
+  "protocols": ["brokoli.instance/v2"],
+  "platform": { "os": "linux", "arch": "amd64" },
+  "runtimes": [],
+  "io": ["stream-v2"],
+  "isolation": ["process"],
+  "resources": { "cpu_millis": 1000, "memory_bytes": 1073741824 }
+}

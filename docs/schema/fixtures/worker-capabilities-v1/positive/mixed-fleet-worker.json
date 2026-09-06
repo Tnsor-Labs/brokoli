@@ -1,0 +1,13 @@
+{
+  "worker_id": "worker-17",
+  "protocols": ["brokoli.instance/v2", "brokoli.task-runtime/v1"],
+  "platform": { "os": "linux", "arch": "amd64" },
+  "runtimes": [
+    { "class": "python", "versions": ["3.11.9", "3.12.4"], "adapter": "1.2.0" },
+    { "class": "node", "versions": ["22.4.1"], "adapter": "1.1.0" }
+  ],
+  "io": ["batch-reference", "stream-v1"],
+  "isolation": ["process", "container"],
+  "resources": { "cpu_millis": 8000, "memory_bytes": 17179869184 },
+  "labels": { "accelerator": "none" }
+}

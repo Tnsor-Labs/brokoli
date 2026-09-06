@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/resolved-execution-record-v1.json",
+  "title": "Brokoli resolved execution record v1 (ADR-033 section 4)",
+  "description": "Canonical machine-readable contract for the deterministic, control-plane-owned payload selection ADR-033 section 4 requires before a 'task' node attempt is dispatched. Pinning this record before ClaimAttempt is what makes a retry reuse the exact same bytes: worker matching, requirements, and the eventual instance work-order's 'task' object (section 6) all derive from it, never from a worker's own independent choice. Rollout phase 1 artifact (issue #439 step 5): no Go code produces, persists, or consults this record yet -- there is no physical-planning integration, no ClaimAttempt wiring, and retries do not yet reuse it. Field names mirror the instance work-order envelope's 'task' object in ADR-033 section 6 exactly, so a future implementation copies rather than re-derives them.",
+  "$ref": "#/$defs/resolved_execution_record",
+  "$defs": {
+    "resolved_execution_record": {
+      "type": "object",
+      "required": ["runtime_protocol", "bundle_digest", "payload_id", "payload_digest", "execution_environment_digest", "interface_digest", "execution_profile"],
+      "additionalProperties": false,
+      "properties": {
+        "runtime_protocol": {
+          "type": "string",
+          "pattern": "^brokoli\\.[a-z][a-z-]*/v[0-9]+$",
+          "description": "e.g. 'brokoli.task-runtime/v1'. One of the placement predicate's own AND-clauses (section 5)."
+        },
+        "bundle_digest": { "$ref": "#/$defs/digest" },
+        "payload_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,127}$",
+          "description": "The selected payload's id within the bundle manifest's payloads[] (task-bundle-v2.json)."
+        },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "execution_environment_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "Covers adapter/harness bytes, the exact runtime build, dependency artifacts, platform ABI, and declared system libraries (section 4 rule 3) -- a superset of payload_digest, not a duplicate of it."
+        },
+        "interface_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "Must equal the referencing 'task' node's own declared interface digest (ADR-032); a mismatch is resolved at admission, never silently at dispatch."
+        },
+        "execution_profile": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_-]*@[0-9]+$",
+          "description": "Trust-profile name and policy revision, e.g. 'standard@7' (section 6's own worked example). The revision pins policy identity the same way a digest pins bytes -- a later policy change is a new revision, not a silent behavior change under the same name."
+        }
+      }
+    },
+
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "runtime_protocol": "brokoli.task-runtime/v1",
+  "bundle_digest": "sha256:ef2d127de37b942baad06145e54b0c619a1f22327b2ebbcfbec78f5564afe39d",
+  "payload_id": "container-any",
+  "payload_digest": "sha256:e7f6c011776e8db7cd330b54174fd76f7d0216b612387a5ffcfb81e6f0919683",
+  "execution_environment_digest": "sha256:7902699be42c8a8e46fbbb4501726517e86b22c56a189f7625a6da49081b2451",
+  "interface_digest": "sha256:2c624232cdd221771294dfbb310aca000a0df6ac8b66b696d90ef06fdefb64a3",
+  "execution_profile": "untrusted@1"
+}

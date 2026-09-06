@@ -1,0 +1,11 @@
+{
+  "_violation": "additionalProperties is false at the root -- 'hostname' is not a recognized field.",
+  "worker_id": "worker-1",
+  "hostname": "worker-1.internal",
+  "protocols": ["brokoli.instance/v2"],
+  "platform": { "os": "linux", "arch": "amd64" },
+  "runtimes": [],
+  "io": ["batch-reference"],
+  "isolation": ["process"],
+  "resources": { "cpu_millis": 1000, "memory_bytes": 1073741824 }
+}
