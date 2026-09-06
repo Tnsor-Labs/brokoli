@@ -1,0 +1,61 @@
+{
+  "description": "A record field whose type is itself a record -- a nested TypedDict/dataclass in Python, a nested schema.record() in TypeScript.",
+  "python": "class Address(TypedDict):\n    street: str\n    city: str\n\nclass Customer(TypedDict):\n    id: int\n    address: Address\n\n@task\ndef enrich(rows: list[Customer]) -> list[Customer]:\n    ...",
+  "typescript": "const Address = schema.record({ street: schema.string(), city: schema.string() });\nconst Customer = schema.record({ id: schema.int64(), address: Address });\nconst enrich = task({ input: Customer, output: Customer }, async (rows) => { /* ... */ });",
+  "expected_node_interface": {
+    "contract": "brokoli.task-interface/v1",
+    "inputs": {
+      "input": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "id", "type": { "kind": "int64" }, "required": true },
+              {
+                "name": "address",
+                "type": {
+                  "kind": "record",
+                  "fields": [
+                    { "name": "street", "type": { "kind": "string" }, "required": true },
+                    { "name": "city", "type": { "kind": "string" }, "required": true }
+                  ],
+                  "additional_fields": false
+                },
+                "required": true
+              }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    },
+    "outputs": {
+      "result": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "id", "type": { "kind": "int64" }, "required": true },
+              {
+                "name": "address",
+                "type": {
+                  "kind": "record",
+                  "fields": [
+                    { "name": "street", "type": { "kind": "string" }, "required": true },
+                    { "name": "city", "type": { "kind": "string" }, "required": true }
+                  ],
+                  "additional_fields": false
+                },
+                "required": true
+              }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    }
+  },
+  "expected_pipeline_parameters": null
+}

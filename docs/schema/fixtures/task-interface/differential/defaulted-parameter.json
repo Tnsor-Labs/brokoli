@@ -1,0 +1,9 @@
+{
+  "description": "A task keyword parameter with a type annotation and a default value -- the ADR-032 section 8 worked example's threshold=0.5, promoted to an optional pipeline-level parameter carrying that default.",
+  "python": "@task\ndef score(rows: list[dict], threshold: float = 0.5):\n    ...",
+  "typescript": "const score = task({ parameters: { threshold: parameter.number({ default: 0.5 }) } }, async (rows, ctx) => { /* ... */ });",
+  "expected_node_interface": null,
+  "expected_pipeline_parameters": {
+    "threshold": { "type": { "kind": "float64" }, "required": false, "default": 0.5 }
+  }
+}

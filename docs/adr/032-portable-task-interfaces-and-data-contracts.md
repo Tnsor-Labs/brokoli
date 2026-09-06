@@ -1125,3 +1125,32 @@ happened yet," left stale since #446 merged.
 Verification: mutation-tested by removing the new list entry and
 confirming `TestCapabilitiesHandler` fails with a specific "missing
 task-interface-v1" message, then restoring. Full `./preflight.sh` green.
+
+## Update (2026-09-06) — cross-SDK differential conformance fixtures
+
+Second slice of step 3: the core-owned "native-language mapping
+guidance" ADR-032 section 14 requires. New
+`docs/schema/fixtures/task-interface/differential/` directory: six
+vectors, each pairing an illustrative Python and TypeScript declaration
+with the single normalized JSON both must produce -- a simple record, a
+nullable-but-required field, a nested record, an enum field, a required
+parameter, and a defaulted parameter (the ADR's own `threshold=0.5`
+worked example). `models/task_interface_differential_fixtures_test.go`
+validates the vectors themselves structurally against
+`task-interface-v1.json` (the `task_interface` root shape for
+`expected_node_interface`, the `pipeline_parameters` `$def` for
+`expected_pipeline_parameters`) -- a drift guard, not a substitute for
+each SDK's own conformance test, which will load this same directory
+and assert its actual compiled output matches.
+
+Confirms, in fixture form, the same step-3 scoping decision the prior
+update recorded: `expected_node_interface` never carries its own
+`parameters` block (that's section 6/7's task-local, invocation-bound
+parameters -- deferred to step 5), and an inferred task keyword
+parameter is pinned as a **pipeline-level** parameter instead, reusing
+step 4's already-shipped mechanism.
+
+Verification: mutation-tested by corrupting one fixture's enum `values`
+to an empty array (violating the schema's `minItems: 1`), confirming
+the test fails naming that exact fixture, then restoring. Full
+`./preflight.sh` green.

@@ -1,0 +1,39 @@
+{
+  "description": "A dataset row with an int64 id and a float64 amount in, an int64 id and a float64 score out -- the ADR-032 section 8 worked example (ScoredRow). Neither side declares nullable or optional fields.",
+  "python": "class InputRow(TypedDict):\n    id: int\n    amount: float\n\nclass ScoredRow(TypedDict):\n    id: int\n    score: float\n\n@task\ndef score(rows: list[InputRow]) -> list[ScoredRow]:\n    ...",
+  "typescript": "const InputRow = schema.record({ id: schema.int64(), amount: schema.float64() });\nconst ScoredRow = schema.record({ id: schema.int64(), score: schema.float64() });\nconst score = task({ input: InputRow, output: ScoredRow }, async (rows) => { /* ... */ });",
+  "expected_node_interface": {
+    "contract": "brokoli.task-interface/v1",
+    "inputs": {
+      "input": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "id", "type": { "kind": "int64" }, "required": true },
+              { "name": "amount", "type": { "kind": "float64" }, "required": true }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    },
+    "outputs": {
+      "result": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "id", "type": { "kind": "int64" }, "required": true },
+              { "name": "score", "type": { "kind": "float64" }, "required": true }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    }
+  },
+  "expected_pipeline_parameters": null
+}

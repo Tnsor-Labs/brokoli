@@ -1,0 +1,9 @@
+{
+  "description": "A task keyword parameter with a type annotation and no default -- promoted to a required pipeline-level parameter (step 3's chosen sugar; see the differential/README for why this isn't a task-interface-level parameter yet).",
+  "python": "@task\ndef export(rows: list[dict], region: str):\n    ...",
+  "typescript": "const export_ = task({ parameters: { region: parameter.string({ required: true }) } }, async (rows, ctx) => { /* ... */ });",
+  "expected_node_interface": null,
+  "expected_pipeline_parameters": {
+    "region": { "type": { "kind": "string" }, "required": true }
+  }
+}
