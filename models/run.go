@@ -37,11 +37,19 @@ type Run struct {
 	PipelineID string            `json:"pipeline_id"`
 	Status     RunStatus         `json:"status"`
 	Error      string            `json:"error,omitempty"`  // top-level error (from first failed node)
-	Params     map[string]string `json:"params,omitempty"` // runtime parameter overrides
-	StartedAt  *time.Time        `json:"started_at"`
-	FinishedAt *time.Time        `json:"finished_at"`
-	TraceID    string            `json:"trace_id,omitempty"` // unique correlation ID for distributed tracing
-	NodeRuns   []NodeRun         `json:"node_runs"`
+	Params     map[string]string `json:"params,omitempty"` // legacy untyped runtime parameter overrides (ADR-032 section 3)
+	// Parameters is the resolved, typed run-parameter snapshot (ADR-032
+	// section 3 rule 5): the immutable object the control plane produces
+	// by validating submitted values against Pipeline.Parameters and
+	// applying declared defaults, at the point this run is created.
+	// Distinct from Params above and never silently merged with it. Empty
+	// when the pipeline declares no typed parameters -- not every run has
+	// one, and absence here is honest, not an omission.
+	Parameters map[string]interface{} `json:"parameters,omitempty"`
+	StartedAt  *time.Time             `json:"started_at"`
+	FinishedAt *time.Time             `json:"finished_at"`
+	TraceID    string                 `json:"trace_id,omitempty"` // unique correlation ID for distributed tracing
+	NodeRuns   []NodeRun              `json:"node_runs"`
 
 	// PipelineVersion pins this run to the exact store.PipelineVersion
 	// snapshot (store.Store.GetPipelineVersion) of the pipeline definition

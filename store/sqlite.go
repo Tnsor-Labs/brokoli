@@ -102,6 +102,11 @@ func (s *SQLiteStore) migrate() error {
 	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN extensions TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("add pipelines.extensions: %w", err)
 	}
+	// ADR-032 rollout step 4 (#439): typed pipeline parameter declarations,
+	// distinct from the legacy untyped params column.
+	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN parameters TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("add pipelines.parameters: %w", err)
+	}
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE variables ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
@@ -184,6 +189,11 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN error TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN params TEXT NOT NULL DEFAULT '{}'`)
+	// ADR-032 rollout step 4 (#439): the resolved, typed run-parameter
+	// snapshot, distinct from the legacy untyped params column above.
+	if _, err := s.db.Exec(`ALTER TABLE runs ADD COLUMN parameters TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("add runs.parameters: %w", err)
+	}
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN ready_at TEXT`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0`)
@@ -654,7 +664,7 @@ func (s *SQLiteStore) RawDB() interface{} { return s.db }
 
 // pipelineFields holds pre-marshaled JSON for pipeline storage operations.
 type pipelineFields struct {
-	nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON []byte
+	nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON []byte
 }
 
 // marshalPipelineJSON marshals the JSON fields of a pipeline for storage.
@@ -688,7 +698,11 @@ func marshalPipelineJSON(p *models.Pipeline) (*pipelineFields, error) {
 	if extensionsJSON == nil || string(extensionsJSON) == "null" {
 		extensionsJSON = []byte("{}")
 	}
-	return &pipelineFields{nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON}, nil
+	parametersJSON, _ := json.Marshal(p.Parameters)
+	if parametersJSON == nil || string(parametersJSON) == "null" {
+		parametersJSON = []byte("{}")
+	}
+	return &pipelineFields{nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON}, nil
 }
 
 func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
@@ -697,17 +711,17 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 		return wrapStoreErr("CreatePipeline", p.ID, err)
 	}
 	_, err = s.db.Exec(
-		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup),
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON),
 	)
 	return wrapStoreErr("CreatePipeline", p.ID, err)
 }
 
 func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines WHERE id = ?`, id,
 	)
 	p, err := scanPipeline(row)
@@ -719,7 +733,7 @@ func (s *SQLiteStore) GetPipeline(id string) (*models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -740,7 +754,7 @@ func (s *SQLiteStore) ListPipelines() ([]models.Pipeline, error) {
 
 func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines WHERE workspace_id = ? ORDER BY created_at DESC`, workspaceID,
 	)
 	if err != nil {
@@ -760,7 +774,7 @@ func (s *SQLiteStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pip
 
 func (s *SQLiteStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC`, orgID,
 	)
 	if err != nil {
@@ -782,7 +796,7 @@ func (s *SQLiteStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) (
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = ?`, orgID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines WHERE org_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`, orgID, limit, offset,
 	)
 	if err != nil {
@@ -806,11 +820,11 @@ func (s *SQLiteStore) ListPipelinesByOrgCursor(orgID string, afterID string, lim
 	var err error
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 			 FROM pipelines WHERE org_id = ? ORDER BY id DESC LIMIT ?`, orgID, fetchN)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 			 FROM pipelines WHERE org_id = ? AND id < ? ORDER BY id DESC LIMIT ?`, orgID, afterID, fetchN)
 	}
 	if err != nil {
@@ -873,10 +887,10 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 	}
 
 	result, err := s.db.Exec(
-		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?
+		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?, parameters=?
 		 WHERE id=?`,
 		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), p.ID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), p.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipeline", p.ID, err)
@@ -886,7 +900,7 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 
 func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
 	row := s.db.QueryRow(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
 		 FROM pipelines WHERE pipeline_id = ?`, pipelineID,
 	)
 	p, err := scanPipeline(row)
@@ -1015,10 +1029,10 @@ func (s *SQLiteStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
 		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
 	}
 	result, err := tx.Exec(
-		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?
+		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?, parameters=?
 		 WHERE id=?`,
 		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), p.ID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), p.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
@@ -1069,9 +1083,13 @@ func sqliteCreateRun(x sqlExecer, r *models.Run) error {
 	if err != nil {
 		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal params: %w", err))
 	}
+	parametersJSON, err := json.Marshal(r.Parameters)
+	if err != nil {
+		return wrapStoreErr("CreateRun", r.ID, fmt.Errorf("marshal parameters: %w", err))
+	}
 	_, err = x.Exec(
-		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID, r.OrgID, boolToInt(r.CancelRequested), r.Trigger, formatTimePtr(r.DataIntervalStart), formatTimePtr(r.DataIntervalEnd),
+		`INSERT INTO runs (id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end, parameters) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.PipelineID, string(r.Status), formatTimePtr(r.StartedAt), formatTimePtr(r.FinishedAt), r.TraceID, r.Error, string(paramsJSON), r.PipelineVersion, r.ResumedFromRunID, r.OrgID, boolToInt(r.CancelRequested), r.Trigger, formatTimePtr(r.DataIntervalStart), formatTimePtr(r.DataIntervalEnd), string(parametersJSON),
 	)
 	if isScheduledIntervalConflict(err) {
 		return ErrDuplicateScheduledRun
@@ -1206,13 +1224,36 @@ func (s *SQLiteStore) CancelPendingRun(runID string, finishedAt time.Time) (bool
 	return n == 1, nil
 }
 
+// GetRun does its own scan rather than the shared scanRun/runColumns path
+// (unlike List* below) so that adding the ADR-032 'parameters' column
+// (issue #439) here does not require touching runColumns and every List*
+// query that constant serves -- GetRun is the single-run detail fetch;
+// list views deliberately don't carry the resolved-parameter snapshot,
+// the same "skip the expensive blob for list shapes" precedent
+// ListPipelineDepsByOrg already established for pipelines.
 func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
-	row := s.db.QueryRow(
-		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end FROM runs WHERE id = ?`, id,
-	)
-	r, err := scanRun(row)
+	var r models.Run
+	var status string
+	var startedAt, finishedAt, intervalStart, intervalEnd sql.NullString
+	var paramsJSON, parametersJSON string
+	err := s.db.QueryRow(
+		`SELECT id, pipeline_id, status, started_at, finished_at, trace_id, error, params, pipeline_version, resumed_from_run_id, org_id, cancel_requested, trigger_type, data_interval_start, data_interval_end, parameters FROM runs WHERE id = ?`, id,
+	).Scan(&r.ID, &r.PipelineID, &status, &startedAt, &finishedAt, &r.TraceID, &r.Error, &paramsJSON, &r.PipelineVersion, &r.ResumedFromRunID, &r.OrgID, &r.CancelRequested, &r.Trigger, &intervalStart, &intervalEnd, &parametersJSON)
 	if err != nil {
 		return nil, wrapStoreErr("GetRun", id, err)
+	}
+	r.Status = models.RunStatus(status)
+	r.StartedAt = parseTimePtr(startedAt)
+	r.FinishedAt = parseTimePtr(finishedAt)
+	r.DataIntervalStart = parseTimePtr(intervalStart)
+	r.DataIntervalEnd = parseTimePtr(intervalEnd)
+	if err := json.Unmarshal([]byte(paramsJSON), &r.Params); err != nil {
+		return nil, wrapStoreErr("GetRun", id, fmt.Errorf("decode params: %w", err))
+	}
+	if parametersJSON != "" && parametersJSON != "null" && parametersJSON != "{}" {
+		if err := json.Unmarshal([]byte(parametersJSON), &r.Parameters); err != nil {
+			return nil, wrapStoreErr("GetRun", id, fmt.Errorf("decode parameters: %w", err))
+		}
 	}
 
 	nodeRuns, err := s.ListNodeRunsByRun(id)
@@ -1220,7 +1261,7 @@ func (s *SQLiteStore) GetRun(id string) (*models.Run, error) {
 		return nil, wrapStoreErr("GetRun", id, err)
 	}
 	r.NodeRuns = nodeRuns
-	return r, nil
+	return &r, nil
 }
 
 func (s *SQLiteStore) ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
@@ -2217,10 +2258,10 @@ type scanner interface {
 
 func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, createdAt, updatedAt string
+	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON, createdAt, updatedAt string
 	var enabled, catchup int
 
-	if err := sc.Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &catchup); err != nil {
+	if err := sc.Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON, &p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &enabled, &createdAt, &updatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &catchup, &parametersJSON); err != nil {
 		return nil, err
 	}
 
@@ -2250,6 +2291,11 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	if extensionsJSON != "" && extensionsJSON != "null" && extensionsJSON != "{}" {
 		if err := json.Unmarshal([]byte(extensionsJSON), &p.Extensions); err != nil {
 			return nil, fmt.Errorf("unmarshal extensions: %w", err)
+		}
+	}
+	if parametersJSON != "" && parametersJSON != "null" && parametersJSON != "{}" {
+		if err := json.Unmarshal([]byte(parametersJSON), &p.Parameters); err != nil {
+			return nil, fmt.Errorf("unmarshal parameters: %w", err)
 		}
 	}
 	if p.Tags == nil {

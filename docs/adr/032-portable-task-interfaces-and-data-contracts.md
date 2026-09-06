@@ -1006,3 +1006,43 @@ and persisting a resolved snapshot on `models.Run` (which has no typed
 field for it yet; `Run.Params` is the existing untyped legacy field).
 That wiring also touches the store layer (Postgres and SQLite schemas)
 and is a separate, real slice — tracked in issue #439.
+
+## Update (2026-09-05) — Pipeline.Parameters and Run.Parameters actually persist
+
+Found and fixed a real, silent bug while preparing to wire typed
+run-parameter validation: `models.Pipeline.Parameters` was decoded into
+the struct but never written to or read from either store backend —
+absent from every column list, the exact "decoded then discarded"
+failure `pipeline_hooks_test.go` had already pinned a fix for on
+`Hooks`/`Extensions`. A pipeline deployed with real ADR-032 parameter
+declarations silently lost them on the very next read.
+
+Fixed in both Postgres and SQLite: an additive `parameters` column on
+`pipelines` (mirroring the existing `params` column exactly — the same
+idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` pattern every
+other column on this table was added with, no migration-runner
+involved) threaded through `CreatePipeline`/`GetPipeline`/
+`GetPipelineByPipelineID`/`scanPipelineRow`/`UpdatePipeline`/
+`UpdatePipelineTx` (Postgres) and the shared `marshalPipelineJSON`/
+`scanPipelineFromScanner` helpers (SQLite, which centralizes this far
+more than Postgres does).
+
+`models.Run` gains its own `Parameters map[string]interface{}` (the
+resolved, typed run-parameter *snapshot* — distinct from `Pipeline.
+Parameters`, which is the *declaration*), with the identical column
+pattern on `runs`. Scoped deliberately to `CreateRun`/`GetRun` only —
+list views (`ListRuns*`) do not carry it, the same "skip the expensive
+blob for list shapes" precedent `ListPipelineDepsByOrg`'s own doc
+comment already established for pipelines; a caller who needs a run's
+resolved parameters fetches it directly.
+
+Verification: proved the round-trip tests are load-bearing by removing
+the `parameters` unmarshal in SQLite's shared pipeline scanner,
+confirming the read-back test fails with parameters silently nil'd out
+(compiles cleanly either way — a caught column, not a caught type
+error), then restoring. Full test suite green.
+
+Still not done: `ResolveParameters` (from the prior update) is not yet
+called from `api/handlers_run.go`'s `TriggerRun` or `engine.
+runPipelineAsync` — this PR only makes the storage honest; the actual
+validation-at-trigger-time wiring is the next slice, tracked in #439.
