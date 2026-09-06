@@ -1,0 +1,39 @@
+{
+  "description": "A record with a required non-null field and a required-but-nullable field -- nullable (may be present as null) is distinct from required (must appear at all).",
+  "python": "class Row(TypedDict):\n    name: str\n    nickname: Optional[str]\n\n@task\ndef greet(rows: list[Row]) -> list[Row]:\n    ...",
+  "typescript": "const Row = schema.record({ name: schema.string(), nickname: schema.nullable(schema.string()) });\nconst greet = task({ input: Row, output: Row }, async (rows) => { /* ... */ });",
+  "expected_node_interface": {
+    "contract": "brokoli.task-interface/v1",
+    "inputs": {
+      "input": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "name", "type": { "kind": "string" }, "required": true },
+              { "name": "nickname", "type": { "kind": "string", "nullable": true }, "required": true }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    },
+    "outputs": {
+      "result": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              { "name": "name", "type": { "kind": "string" }, "required": true },
+              { "name": "nickname", "type": { "kind": "string", "nullable": true }, "required": true }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    }
+  },
+  "expected_pipeline_parameters": null
+}

@@ -1,0 +1,45 @@
+{
+  "description": "A field constrained to a fixed set of string values -- Python's typing.Literal, TypeScript's explicit enum builder.",
+  "python": "class Row(TypedDict):\n    status: Literal[\"pending\", \"done\", \"failed\"]\n\n@task\ndef classify(rows: list[Row]) -> list[Row]:\n    ...",
+  "typescript": "const Row = schema.record({ status: schema.enum([\"pending\", \"done\", \"failed\"]) });\nconst classify = task({ input: Row, output: Row }, async (rows) => { /* ... */ });",
+  "expected_node_interface": {
+    "contract": "brokoli.task-interface/v1",
+    "inputs": {
+      "input": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "status",
+                "type": { "kind": "enum", "values": ["pending", "done", "failed"] },
+                "required": true
+              }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    },
+    "outputs": {
+      "result": {
+        "value": {
+          "kind": "dataset",
+          "row": {
+            "kind": "record",
+            "fields": [
+              {
+                "name": "status",
+                "type": { "kind": "enum", "values": ["pending", "done", "failed"] },
+                "required": true
+              }
+            ],
+            "additional_fields": false
+          }
+        }
+      }
+    }
+  },
+  "expected_pipeline_parameters": null
+}
