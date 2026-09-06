@@ -1,0 +1,5 @@
+{
+  "_violation": "log requires 'message'.",
+  "type": "log",
+  "level": "info"
+}

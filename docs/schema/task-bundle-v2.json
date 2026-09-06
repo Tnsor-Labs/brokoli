@@ -1,0 +1,152 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/task-bundle-v2.json",
+  "title": "Brokoli task bundle v2 manifest (ADR-033)",
+  "description": "Canonical machine-readable contract for a brokoli.task-bundle/v2 manifest (ADR-033 section 2) -- the deployment-scoped, content-addressed artifact a 'task' IR node references. This is a rollout-phase-0 artifact (ADR-032/033 rollout, issue #439 step 5): it defines the manifest shape and its fixtures without wiring archive extraction, digest verification, or dispatch -- see docs/schema/task-bundle-v2-canonicalization.md for the archive-level rules this schema cannot express (canonicalization, path safety, digest coverage). Distinct from and additive alongside pkg/taskbundle's task-bundle/1 (ADR-031), which this schema does not replace or describe (ADR-035 Decision 1). A change here is a change to every SDK and the core validator at once: version it accordingly, per the same discipline as task-interface-v1.json.",
+  "$ref": "#/$defs/manifest",
+  "$defs": {
+    "manifest": {
+      "type": "object",
+      "required": ["format", "name", "interface_digest", "source_digest", "payloads", "files"],
+      "additionalProperties": false,
+      "properties": {
+        "format": { "const": "brokoli.task-bundle/v2" },
+        "name": { "type": "string", "minLength": 1 },
+        "interface_digest": {
+          "$ref": "#/$defs/digest",
+          "description": "The ADR-032 task interface digest this bundle implements, verified against the referencing 'task' node's logical IR at admission (ADR-033 section 2 rule 4)."
+        },
+        "source_digest": { "$ref": "#/$defs/digest" },
+        "build": { "$ref": "#/$defs/build" },
+        "payloads": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/payload" }
+        },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/file_entry" }
+        }
+      }
+    },
+
+    "build": {
+      "type": "object",
+      "description": "Additive build provenance (ADR-033 section 2 rule 6). Optional in v1: digest verification of the manifest/payloads is mandatory regardless of whether build provenance is present.",
+      "required": ["builder"],
+      "additionalProperties": false,
+      "properties": {
+        "builder": { "type": "string", "minLength": 1, "description": "The SDK/tool identity that produced this bundle, e.g. 'brokoli-python-sdk/0.9.0'." },
+        "attestation": { "$ref": "#/$defs/digest" }
+      }
+    },
+
+    "payload": {
+      "type": "object",
+      "required": ["id", "runtime", "os", "arch", "entrypoint", "effects", "payload_digest"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "runtime": {
+          "type": "string",
+          "enum": ["python", "node", "native", "container", "wasi", "jvm"],
+          "description": "Runtime class (ADR-033 section 3) -- how this payload is launched, not the task's business semantics."
+        },
+        "requires": {
+          "type": "string",
+          "description": "Runtime version range this payload requires, e.g. '>=3.11,<3.14'. Absent for runtime classes with no interpreter version (native, container)."
+        },
+        "os": { "type": "string", "minLength": 1, "description": "'any' or a specific OS name (ADR-033 section 2 rule 10)." },
+        "arch": { "type": "string", "minLength": 1, "description": "'any' or a specific architecture name (ADR-033 section 2 rule 10)." },
+        "entrypoint": { "$ref": "#/$defs/entrypoint" },
+        "effects": {
+          "type": "string",
+          "enum": ["pure", "idempotent_with_key", "non_idempotent"],
+          "description": "Effect class (ADR-033 section 14). Changing it changes implementation identity."
+        },
+        "dependency_lock": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Relative path (within 'files') to this payload's hash-verifiable dependency lock (ADR-033 section 2 rule 5). Absent only when the payload has no dependencies."
+        },
+        "payload_digest": { "$ref": "#/$defs/digest" },
+        "image": {
+          "$ref": "#/$defs/oci_image",
+          "description": "Present only when runtime is 'container' (ADR-033 section 2 rule 11): an immutable external OCI image reference. Its layers need not be copied into the bundle archive, but this reference is covered by the bundle digest."
+        }
+      },
+      "if": { "properties": { "runtime": { "const": "container" } }, "required": ["runtime"] },
+      "then": { "required": ["image"] }
+    },
+
+    "oci_image": {
+      "type": "object",
+      "required": ["digest"],
+      "additionalProperties": false,
+      "properties": {
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "OCI image manifest digest -- a different digest namespace than this schema's own 'sha256:...' content-address digests, but the same syntax."
+        },
+        "reference": { "type": "string", "minLength": 1, "description": "Optional human-readable image reference (registry/repo:tag) for diagnostics only; the digest is authoritative." }
+      }
+    },
+
+    "entrypoint": {
+      "description": "One structured entrypoint grammar (ADR-033 section 2 rule 9). Free-form colon/dot strings are not a portable entrypoint.",
+      "oneOf": [
+        {
+          "type": "object",
+          "title": "managed-language entrypoint",
+          "required": ["module", "symbol"],
+          "additionalProperties": false,
+          "properties": {
+            "module": { "type": "string", "minLength": 1 },
+            "symbol": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "title": "native entrypoint",
+          "required": ["executable"],
+          "additionalProperties": false,
+          "properties": {
+            "executable": { "type": "string", "minLength": 1, "description": "Relative path (within 'files') to the native executable." }
+          }
+        },
+        {
+          "type": "object",
+          "title": "OCI entrypoint",
+          "required": ["command"],
+          "additionalProperties": false,
+          "properties": {
+            "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+            "args": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+
+    "file_entry": {
+      "type": "object",
+      "required": ["path", "size", "sha256"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "description": "Relative, normalized path (ADR-033 section 2 rule 2) -- absolute paths and '..' segments are archive-level rejections, not expressible as a JSON string pattern here; see the canonicalization companion doc." },
+        "size": { "type": "integer", "minimum": 0 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+
+    "identifier": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_-]{0,127}$"
+    }
+  }
+}

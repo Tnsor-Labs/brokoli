@@ -65,7 +65,20 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 			nodeIDs[n.ID] = true
 			nodeTypes[n.ID] = n.Type
 		}
-		if !IsBuiltInNodeType(n.Type) && !executorCanHandle(n.Type, executors) {
+		// ADR-033 rollout phase 0 (#439 step 5): "task" is a recognized
+		// NodeType (it round-trips through JSON/model parsing fine) but
+		// has no execution path anywhere yet -- no brokoli.task-runtime/v1
+		// adapter, no task-bundle/v2 resolution, nothing in
+		// Runner.runNodeLogic. Refuse it here, by name, rather than let it
+		// fall through to the generic "unsupported type" message below
+		// (which reads as a typo, not "this is real and not finished
+		// yet") or silently pass validation with no executor able to run
+		// it. ADR-033 section 18 states this as policy: "compile-only
+		// task forms remain rejected until their payload and runtime
+		// semantics are represented by this protocol."
+		if n.Type == models.NodeTypeTask {
+			ve.Add(fmt.Sprintf("Node %q (%s) has type \"task\", which this server recognizes but cannot yet execute (ADR-033 rollout phase 0 -- no task-runtime/v1 adapter exists; issue #439 step 5)", n.Name, n.ID))
+		} else if !IsBuiltInNodeType(n.Type) && !executorCanHandle(n.Type, executors) {
 			ve.Add(fmt.Sprintf("Node %q (%s) has unsupported type %q", n.Name, n.ID, n.Type))
 		}
 	}
