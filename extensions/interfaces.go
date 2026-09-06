@@ -506,6 +506,14 @@ type InstanceWorkOrder struct {
 	// claimant needs this to know how to interpret Script/Config, mirroring
 	// models.Node.Type.
 	NodeType string `json:"node_type"`
+	// OrgID is the owning pipeline's tenant (mirrors RunJob.OrgID). Added
+	// for ADR-033's task-node dispatch: a remote claimant fetching a
+	// task-bundle/v2 archive needs the org to scope
+	// store.TaskBundleV2Store.GetTaskBundleV2 (or the equivalent
+	// fetch-by-digest HTTP call) the same way every other org-scoped
+	// lookup is scoped. Every other node type dispatched so far carries
+	// its work inline (Script/Config) and never needed this.
+	OrgID string `json:"org_id,omitempty"`
 	// Script is the node's executable script body, mirroring
 	// models.Node.Config["script"].
 	Script string `json:"script,omitempty"`

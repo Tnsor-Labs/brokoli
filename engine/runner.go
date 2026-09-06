@@ -1154,12 +1154,12 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					if merr != nil {
 						e = merr
 					} else {
-						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 					}
 				} else if streamable {
 					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs)
 				} else {
-					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx)
+					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
 			}
 			resultCh <- nodeResult{result, e}
@@ -1731,7 +1731,14 @@ func (r *Runner) checkNodeTypeGate(node models.Node) error {
 	return nil
 }
 
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context) (nodeExecutionResult, error) {
+// execFencingGen is the fencing generation the caller already claimed
+// this node's own whole-node execution attempt (run, node.ID, "",
+// attempt) under, before calling here -- 0 and unused by every case
+// except NodeTypeTask, which reuses that same already-held attempt for
+// its own remote dispatch (ADR-033) rather than claiming a second,
+// competing one at the same key: a task node's one instance IS the
+// whole node, unlike an expansion item's own distinct "idx:N" key.
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1808,10 +1815,9 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		}
 		return outputExecutionResult(r.runCode(ctx, node, input))
 	case models.NodeTypeTask:
-		// ADR-033 rollout phase 2b: local (in-process) task-runtime/v1
-		// dispatch only -- see engine/task.go's own doc comment for why
-		// remote dispatch is a later phase.
-		return outputExecutionResult(r.runTask(ctx, node, input))
+		// ADR-033 rollout phase 2c: local or remote task-runtime/v1
+		// dispatch -- see engine/task.go's own doc comment.
+		return outputExecutionResult(r.runTask(ctx, node, input, attempt, execFencingGen))
 	case models.NodeTypeJoin:
 		return outputExecutionResult(r.runJoin(node, allInputs))
 	case models.NodeTypeSQLGenerate:

@@ -160,7 +160,7 @@ func (r *Runner) dispatchSourceAPIPage(node models.Node, source, sourceType stri
 			PageParams:     spec.params,
 			TimeoutSeconds: timeoutSec,
 		}
-		data, dispatchErr := r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, spec.instanceKey, fencingGeneration, workOrder, timeoutSec)
+		data, dispatchErr := r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, spec.instanceKey, fencingGeneration, workOrder, timeoutSec, nil)
 		if dispatchErr == nil {
 			return remotePageResult{data: data}
 		}

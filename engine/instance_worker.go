@@ -139,7 +139,19 @@ func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts Art
 		return fmt.Errorf("execute instance job: store does not support execution attempts")
 	}
 
-	result, execErr := ExecuteInstanceWorkOrderContext(ctx, job.WorkOrder)
+	// Task nodes are the one node type whose work order can't be executed
+	// self-containedly (ExecuteInstanceWorkOrderContext has no store to
+	// fetch a bundle with) -- routed here, before that function, to the
+	// store-aware executor instead. See ExecuteTaskWorkOrderContext's own
+	// doc comment for why this isn't just a case inside
+	// ExecuteInstanceWorkOrderContext itself.
+	var result *common.DataSet
+	var execErr error
+	if job.WorkOrder.NodeType == string(models.NodeTypeTask) {
+		result, execErr = ExecuteTaskWorkOrderContext(ctx, s, job.WorkOrder)
+	} else {
+		result, execErr = ExecuteInstanceWorkOrderContext(ctx, job.WorkOrder)
+	}
 	if execErr != nil {
 		if failErr := attemptStore.FailAttempt(job.RunID, job.NodeID, job.InstanceKey, job.Attempt, job.FencingGeneration, execErr.Error()); failErr != nil {
 			return fmt.Errorf("execute instance job: instance failed (%v), and settling that failure also failed: %w", execErr, failErr)

@@ -1400,3 +1400,79 @@ check (disabled it, confirmed exactly
 `TestReadTaskResult_InterfaceDigestMismatchIsRefused` fails), then
 restored. Skipped only when `python3` isn't on `PATH`. Full
 `./preflight.sh` green.
+
+## Update (2026-09-06) — rollout phase 2c: remote task-node dispatch
+
+Ships phase 2c: a task node whose Runner has both an execution-attempt
+store and an instance job queue wired (the same condition code-node
+dynamic expansion already uses) now dispatches through the existing
+instance job queue instead of running in-process. This is the phase
+issue #439 actually meant by "EE coordination becomes a hard
+prerequisite" — confirmed for real this time, since phase 2b's own
+investigation found remote dispatch has no scheduler-side placement step
+anywhere in this codebase: it is pull-based self-selection by a worker's
+own queue backend, filtering on `RequiredCapabilities` tags it is handed
+opaquely. `pkg/taskruntime.Match` (phase 1) still has no call site in
+OSS and, per the design below, is not expected to gain one here either —
+its real consumer, if it has one, is a queue backend's own filtering
+logic (EE's), not OSS engine code.
+
+- **`extensions.InstanceWorkOrder` gains one new field: `OrgID`.** Every
+  other node type dispatched so far carries its work inline (Script/
+  Config) and never needed the org; a task node's work is "go fetch this
+  bundle," which is inherently org-scoped. No new bundle-specific fields
+  were needed — the digest already flows through the existing `Config`
+  field exactly like a code node's `task_bundle` reference does, re-parsed
+  worker-side by the same `taskBundleV2Reference` phase 2b already wrote.
+- **`engine/task.go`** gained `executeTaskBundle`, the shared core both
+  local and remote execution now call (extracted from phase 2b's
+  `Runner.runTask`, which is now a thin router), `Runner.dispatchTaskInstanceRemotely`,
+  and the new exported `ExecuteTaskWorkOrderContext(ctx, store.Store, *extensions.InstanceWorkOrder)`
+  — the worker-side executor a store-aware dispatch loop calls.
+  `ExecuteInstanceWorkOrderContext` itself is deliberately UNCHANGED:
+  giving it a store parameter would ripple to every existing caller
+  (including the enterprise WorkPool worker) for a capability only the
+  shared-store worker path can support today. `engine/instance_worker.go`'s
+  `executeInstanceJobContext` routes `NodeType == "task"` to the new
+  function before reaching the old one; a caller still calling
+  `ExecuteInstanceWorkOrderContext` directly gets today's "unsupported
+  node type" refusal for task nodes, exactly like `task_bundle`/1 code
+  nodes already do there (`TestExecuteInstanceWorkOrder_RefusesTaskNodeType`,
+  phase 2b, is unchanged and still passes) — this is a new, additional
+  capability a dispatch loop opts into, not a signature change existing
+  callers must absorb.
+- **A real architectural correction found while wiring this up**: a task
+  node's single instance is NOT a new, separate execution attempt the way
+  an expansion item or pagination page is — `engine/runner.go`'s outer
+  per-node wrapper already claims and renews `(run, node.ID, "", attempt)`
+  before `runNodeLogic` ever runs, for every node type uniformly (crash-
+  recovery bookkeeping predating this ADR entirely), and settles it
+  (Complete/FailAttempt) generically after. A first draft had
+  `dispatchTaskInstanceRemotely` claim a SECOND, competing attempt at the
+  same key, which collided immediately ("already claimed"). Fixed by
+  threading the outer already-claimed `execFencingGen` (and the node's
+  own `attempt` number) into `runNodeLogic` as a new parameter — task
+  dispatch reuses that same row and fencing generation instead of
+  claiming a new one, exactly matching how a task node's local execution
+  (phase 2b) never needed its own attempt bookkeeping either.
+  `dispatchInstanceWorkOrderRemotely` gained an `extraCapabilities []string`
+  parameter (nil for its two existing callers) so a task job's
+  `RequiredCapabilities` can carry `"task-runtime-v1"` alongside the
+  run-level tags every job already gets — the coarse capability tag this
+  phase ships; a finer per-adapter-version tier scheme stays deferred
+  exactly as recorded on the private EE coordination thread, since
+  computing one would require the dispatcher to fetch and inspect the
+  bundle manifest before dispatching it, which defeats dispatching at all.
+
+Verification: `engine/task_remote_dispatch_test.go` reuses
+`fakeInstanceJobQueue` (the existing code-node remote-dispatch test
+harness) but has its simulated worker call the REAL
+`ExecuteTaskWorkOrderContext` against a real store, proving the actual
+worker-side execution path end to end (happy path and a raising task
+surfacing through the real run) rather than only the generic dispatch-
+and-wait machinery the code-node tests already cover. A separate test
+drives `ExecuteInstanceJob`/`executeInstanceJobContext` directly to pin
+the routing decision itself. Mutation-tested that routing check (forced
+it permanently false), confirmed the routing test fails for the right
+reason (attempt settles failed via the generic refusal instead of
+completed), then restored. Full `./preflight.sh` green.
