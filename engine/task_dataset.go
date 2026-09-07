@@ -178,7 +178,14 @@ func decodeNDJSONRows(r io.Reader) ([]common.DataRow, error) {
 			return nil, fmt.Errorf("more than %d rows, over this server's cap", maxTaskDatasetRows)
 		}
 		var row common.DataRow
-		if err := json.Unmarshal([]byte(raw), &row); err != nil {
+		// decodeRow, not json.Unmarshal: plain unmarshalling turns every
+		// number into a float64, which cannot hold an integer above
+		// 2^53 -- a 64-bit id of 9007199254740993 came back as
+		// ...992, altered and unflagged. The spilled-dataset path has
+		// always used this decoder; the two disagreeing meant the same
+		// bytes decoded differently depending on which path read them.
+		dec := json.NewDecoder(strings.NewReader(raw))
+		if err := decodeRow(dec, &row); err != nil {
 			return nil, fmt.Errorf("line %d is not a JSON object: %w", line, err)
 		}
 		rows = append(rows, row)

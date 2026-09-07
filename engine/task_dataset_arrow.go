@@ -91,34 +91,7 @@ func decodeArrowIPCRows(r io.Reader) ([]common.DataRow, []string, error) {
 // producer can always fall back to NDJSON, which is exactly why the
 // baseline exists.
 func arrowValue(col arrow.Array, i int) (interface{}, error) {
-	return arrowValueAs(col, i, false)
-}
-
-// arrowValueAs decodes one cell, choosing how whole numbers surface.
-//
-// This exists because the two NDJSON decoders in this package DISAGREE,
-// and Arrow has to match whichever one it is standing in for:
-//
-//   - task dataset outputs decode with plain json.Unmarshal
-//     (task_dataset.go), so every number is float64. ADR-032's
-//     validateInt64Value depends on that -- it accepts a whole float64
-//     as an int64's convenience form and would reject a Go int64.
-//   - spilled dataset refs decode with decodeRow (arrow_transfer.go),
-//     which uses UseNumber and prefers int64 for any integer that fits.
-//
-// Same bytes, different Go types, depending on which path reads them.
-// That divergence predates Arrow; Arrow merely had to pick a side and
-// so made the choice explicit. Resolving it properly means making the
-// two agree, which is a behaviour change to one of those paths and
-// belongs in its own change -- noted rather than quietly papered over.
-func arrowValueAs(col arrow.Array, i int, preferInt bool) (interface{}, error) {
-	num := func(f float64) interface{} {
-		if preferInt {
-			return numericValue(f)
-		}
-		return f
-	}
-
+	num := func(f float64) interface{} { return numericValue(f) }
 	if col.IsNull(i) {
 		return nil, nil
 	}
@@ -174,7 +147,7 @@ func arrowValueAs(col arrow.Array, i int, preferInt bool) (interface{}, error) {
 }
 
 // numericValue mirrors normalizeJSONNumbers (engine/arrow_transfer.go)
-// so the two codecs return the SAME Go type for the same value.
+// so every codec returns the SAME Go type for the same value.
 //
 // NDJSON decodes with UseNumber and then prefers int64 for any integer
 // that fits -- so a whole number written by an NDJSON producer comes

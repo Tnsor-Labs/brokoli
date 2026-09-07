@@ -121,6 +121,15 @@ func validateInt64Value(raw interface{}, t Type, path string) error {
 			return fmt.Errorf("%s: tagged int64 value must carry a string 'value'", path)
 		}
 		s = sv
+	} else if i, ok := raw.(int64); ok {
+		// A Go int64 is the EXACT representation, and the one a decoder
+		// that preserves integers produces. It was rejected here while
+		// a whole float64 was accepted, which had the effect of
+		// preferring the lossy form: a float64 cannot hold an integer
+		// above 2^53, so a 64-bit ID round-tripped through it comes back
+		// altered (9007199254740993 becomes ...992). Accepting the exact
+		// form is what lets a decoder stop being lossy.
+		s = fmt.Sprintf("%d", i)
 	} else if f, ok := raw.(float64); ok {
 		// Plain JSON number convenience form, valid only when it is a
 		// whole number (a fractional int64 value makes no sense either
@@ -132,7 +141,7 @@ func validateInt64Value(raw interface{}, t Type, path string) error {
 		}
 		s = fmt.Sprintf("%d", int64(f))
 	} else {
-		return fmt.Errorf("%s: expected an int64 (a whole JSON number or a tagged {\"$bptd\":\"int64\",...} value), got %T", path, raw)
+		return fmt.Errorf("%s: expected an int64 (a whole JSON number, an integer, or a tagged {\"$bptd\":\"int64\",...} value), got %T", path, raw)
 	}
 	if !canonicalInt64Pattern.MatchString(s) {
 		return fmt.Errorf("%s: %q is not a canonical int64 string", path, s)
