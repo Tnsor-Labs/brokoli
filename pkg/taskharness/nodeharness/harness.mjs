@@ -40,6 +40,7 @@
 // and open files are enforced externally via pkg/proctree before this
 // process starts, exactly as they are for Python.
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -119,6 +120,58 @@ function resolveModuleFile(roots, moduleName) {
   throw new Error(`cannot resolve module '${moduleName}'; tried: ${tried.join(", ")}`);
 }
 
+const DATASET_FILENAME = "result.ndjson";
+
+// writeDatasetOutput serializes rows to NDJSON in stagingDir and
+// describes them by reference.
+//
+// The declared interface, not the value's runtime shape, is what says a
+// port is a dataset (see the invocation descriptor's output_kind), so a
+// task that declared one and returned something that is not an iterable
+// of row objects is a contract violation with a precise message rather
+// than a confusing serialization error. Async iterables are accepted
+// too -- a Node task streaming rows is idiomatic, and refusing it would
+// make the adapter worse than the language it wraps.
+//
+// Size and checksum are computed from the bytes actually written, in
+// the same pass, so the worker's own verification (ADR-033 section 7
+// rule 6) compares against what is really on disk.
+async function writeDatasetOutput(stagingDir, rows) {
+  if (rows === null || typeof rows !== "object" || (!rows[Symbol.iterator] && !rows[Symbol.asyncIterator])) {
+    throw new TypeError(
+      `task declares a dataset output but returned ${rows === null ? "null" : typeof rows}; expected an iterable of row objects`,
+    );
+  }
+  const full = path.join(stagingDir, DATASET_FILENAME);
+  const hash = crypto.createHash("sha256");
+  const handle = fs.openSync(full, "w");
+  let size = 0;
+  let i = 0;
+  try {
+    for await (const row of rows) {
+      if (row === null || typeof row !== "object" || Array.isArray(row)) {
+        throw new TypeError(
+          `task declares a dataset output but row ${i} is ${row === null ? "null" : typeof row}; every row must be an object`,
+        );
+      }
+      const line = Buffer.from(JSON.stringify(row) + "\n", "utf8");
+      fs.writeSync(handle, line);
+      hash.update(line);
+      size += line.length;
+      i++;
+    }
+  } finally {
+    fs.closeSync(handle);
+  }
+  return {
+    kind: "dataset",
+    path: DATASET_FILENAME,
+    codec: "ndjson/v1",
+    size_bytes: size,
+    checksum: "sha256:" + hash.digest("hex"),
+  };
+}
+
 async function main() {
   const start = await readStartFrame();
   emit({
@@ -161,12 +214,16 @@ async function main() {
 
   try {
     fs.mkdirSync(start.output_staging_dir, { recursive: true });
+    const port =
+      inv.output_kind === "dataset"
+        ? await writeDatasetOutput(start.output_staging_dir, result)
+        : { kind: "scalar", value: result === undefined ? null : result };
     fs.writeFileSync(
       start.result_path,
       JSON.stringify({
         contract: "brokoli.task-result/v1",
         interface_digest: inv.interface_digest,
-        outputs: { result: { kind: "scalar", value: result === undefined ? null : result } },
+        outputs: { result: port },
       }),
       "utf8",
     );

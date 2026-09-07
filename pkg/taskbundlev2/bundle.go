@@ -15,7 +15,9 @@
 package taskbundlev2
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -284,6 +286,55 @@ func SelectPayload(m *Manifest, runtimes []string) (*Payload, error) {
 		return nil, fmt.Errorf("manifest has no payloads")
 	}
 	return nil, fmt.Errorf("no payload is selectable on this host (%s/%s):\n  %s", runtime.GOOS, runtime.GOARCH, strings.Join(reasons, "\n  "))
+}
+
+// ReadManifest parses just the manifest out of an archive, without
+// extracting anything to disk or verifying file digests -- Extract
+// remains the only way to stage a bundle for execution, and the only
+// one that proves its contents match what the manifest claims.
+//
+// This exists for the control plane, which needs to know what runtime
+// classes a bundle offers in order to tag a dispatched job (see
+// engine.taskRuntimeCapabilities) but has no reason to pay for a full
+// extraction of a bundle it is not going to run. Because it verifies
+// nothing beyond manifest well-formedness, its result must only be used
+// for decisions a later Extract re-derives safely -- never as evidence
+// about the archive's actual contents.
+func ReadManifest(b []byte) (*Manifest, error) {
+	if int64(len(b)) > MaxArchiveBytes {
+		return nil, fmt.Errorf("task bundle archive %d bytes exceeds the %d-byte cap", len(b), int64(MaxArchiveBytes))
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("task bundle archive is not gzip: %w", err)
+	}
+	defer gz.Close()
+	tr := tar.NewReader(gz)
+	for entries := 0; entries < MaxArchiveEntries; entries++ {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read task bundle archive: %w", err)
+		}
+		if filepath.ToSlash(filepath.Clean(h.Name)) != "manifest.json" {
+			continue
+		}
+		raw, err := io.ReadAll(io.LimitReader(tr, MaxArchiveBytes))
+		if err != nil {
+			return nil, fmt.Errorf("read task bundle manifest: %w", err)
+		}
+		var m Manifest
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, fmt.Errorf("parse task bundle manifest: %w", err)
+		}
+		if err := m.Validate(); err != nil {
+			return nil, err
+		}
+		return &m, nil
+	}
+	return nil, fmt.Errorf("task bundle archive contains no manifest.json at its root")
 }
 
 // FindPayload returns the manifest's payload with the given ID, or
