@@ -127,13 +127,15 @@ func TestReadTaskDatasetOutput_NonRegularFileIsRefused(t *testing.T) {
 	}
 }
 
-// Arrow IPC is ADR-033 section 8's preferred optional transport, but
-// this server does not read it yet -- an unknown codec must be named,
-// never guessed at as if it were the baseline.
+// An unknown codec must be named, never guessed at as if it were the
+// baseline. This used arrow-ipc/v1 as its example until Arrow gained a
+// real reader; the fuller version of this assertion, which also checks
+// that the message names every codec this server DOES support, lives in
+// TestUnknownCodecNamesWhatIsSupported (task_dataset_arrow_test.go).
 func TestReadTaskDatasetOutput_UnknownCodecIsRefusedByName(t *testing.T) {
 	dir, size, checksum := stageNDJSON(t, "result.ndjson", `{"a":1}`+"\n")
-	_, err := readTaskDatasetOutput(dir, "result.ndjson", "arrow-ipc/v1", size, checksum)
-	if err == nil || !strings.Contains(err.Error(), "arrow-ipc/v1") {
+	_, err := readTaskDatasetOutput(dir, "result.ndjson", "parquet/v1", size, checksum)
+	if err == nil || !strings.Contains(err.Error(), "parquet/v1") {
 		t.Fatalf("err = %v, want the unsupported codec named", err)
 	}
 }

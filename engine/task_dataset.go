@@ -54,7 +54,10 @@ const maxTaskDatasetBytes = 64 << 20 // 64 MiB
 // because a file of tiny rows can hold far more of them than the byte
 // cap suggests -- the same reasoning pkg/taskbundlev2 gives for capping
 // archive entries alongside archive bytes.
-const maxTaskDatasetRows = 1_000_000
+// A var rather than a const so a benchmark can raise it to measure what
+// lies beyond -- the same reason remoteInstanceDispatchMargin is one.
+// Production never changes it.
+var maxTaskDatasetRows = 1_000_000
 
 // openStagedOutput opens a file the TASK wrote, under ADR-033 section 7
 // rule 6's rules, and is the single place those rules live -- dataset and
@@ -115,8 +118,8 @@ func openStagedOutput(stagingDir, rel string, maxBytes int64, wantSize int64) (*
 // bytes actually read -- a task that misreports either is a contract
 // violation, not something to accept because the file happened to open.
 func readTaskDatasetOutput(stagingDir, rel, codec string, wantSize int64, wantChecksum string) (*common.DataSet, error) {
-	if codec != CodecNDJSON {
-		return nil, fmt.Errorf("task dataset output declares codec %q, which this server cannot read (supported: %s)", codec, CodecNDJSON)
+	if codec != CodecNDJSON && codec != CodecArrowIPC {
+		return nil, fmt.Errorf("task dataset output declares codec %q, which this server cannot read (supported: %s, %s)", codec, CodecNDJSON, CodecArrowIPC)
 	}
 	f, _, err := openStagedOutput(stagingDir, rel, maxTaskDatasetBytes, wantSize)
 	if err != nil {
@@ -128,15 +131,32 @@ func readTaskDatasetOutput(stagingDir, rel, codec string, wantSize int64, wantCh
 	// every byte the decoder consumes into the digest, so the checksum
 	// covers exactly what was parsed.
 	sum := sha256.New()
-	rows, err := decodeNDJSONRows(io.TeeReader(io.LimitReader(f, maxTaskDatasetBytes), sum))
+	src := io.TeeReader(io.LimitReader(f, maxTaskDatasetBytes), sum)
+	var (
+		rows    []common.DataRow
+		columns []string
+	)
+	if codec == CodecArrowIPC {
+		rows, columns, err = decodeArrowIPCRows(src)
+	} else {
+		rows, err = decodeNDJSONRows(src)
+		columns = datasetColumns(rows)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("task dataset output %q: %w", rel, err)
+	}
+	// The checksum must still cover the WHOLE file: a decoder that stops
+	// early (Arrow's reader stops at the end-of-stream marker, not at
+	// EOF) would otherwise hash only the part it read and accept a file
+	// with extra bytes appended after it.
+	if _, err := io.Copy(io.Discard, src); err != nil {
+		return nil, fmt.Errorf("task dataset output %q: read to end: %w", rel, err)
 	}
 	if got := "sha256:" + hex.EncodeToString(sum.Sum(nil)); !strings.EqualFold(got, wantChecksum) {
 		return nil, fmt.Errorf("task dataset output %q failed integrity verification: manifest declares %s, content hashes to %s", rel, wantChecksum, got)
 	}
 
-	return &common.DataSet{Columns: datasetColumns(rows), Rows: rows}, nil
+	return &common.DataSet{Columns: columns, Rows: rows}, nil
 }
 
 // decodeNDJSONRows reads newline-delimited JSON objects. Blank lines are
