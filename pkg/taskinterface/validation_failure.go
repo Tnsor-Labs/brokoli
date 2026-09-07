@@ -13,17 +13,23 @@ const (
 )
 
 // ValidationMode is the enforcement level a boundary checked a value
-// under (ADR-032 section 10's none/sample/full). ModeFull is the only
-// mode this package ever produces today: ModeSample has no reachable
-// target yet anywhere in this codebase (nothing produces or consumes a
-// dataset-kind task value), and ModeNone is a deployment policy choice
-// this package never makes for itself. The type exists now so a future
-// sample-mode implementation is an additive value, not another breaking
-// field change.
+// under (ADR-032 section 10's none/sample/full).
+//
+// ModeSample was declared unreachable when this type was introduced --
+// true then, because a task produced one inline scalar and consumed
+// nothing, so there was never a dataset to sample. Task nodes now carry
+// datasets in both directions, and engine.validateTaskInputDataset
+// picks the mode by size, exactly as section 10 prescribes (`full` for
+// scalars and parameters, `sample` for datasets).
+//
+// ModeNone stays a deployment policy choice this package never makes
+// for itself: a caller that wants no validation does not call a
+// validator.
 type ValidationMode string
 
 const (
-	ModeFull ValidationMode = "full"
+	ModeFull   ValidationMode = "full"
+	ModeSample ValidationMode = "sample"
 )
 
 // ValidationFailure is ADR-032 section 10's "first-class task failure"

@@ -9,10 +9,15 @@ package engine
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 )
 
 // stageNDJSON writes content into a fresh staging dir and returns the
@@ -139,5 +144,118 @@ func TestReadTaskDatasetOutput_NonObjectLineNamesTheLine(t *testing.T) {
 	_, err := readTaskDatasetOutput(dir, "result.ndjson", CodecNDJSON, size, checksum)
 	if err == nil || !strings.Contains(err.Error(), "line 2") {
 		t.Fatalf("err = %v, want the offending line number named", err)
+	}
+}
+
+// Input-boundary validation (ADR-032 section 10: "Input validation
+// occurs before user code observes a value").
+
+func datasetPortWithRow(t *testing.T, rowJSON string) taskinterface.PortValue {
+	t.Helper()
+	var raw interface{}
+	if err := json.Unmarshal([]byte(`{"kind":"dataset","row":`+rowJSON+`}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	pv, err := taskinterface.ParsePortValue(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pv
+}
+
+func TestValidateTaskInputDataset_AcceptsConformingRows(t *testing.T) {
+	port := datasetPortWithRow(t, `{"kind":"record","fields":[{"name":"n","type":{"kind":"int64"},"required":true}]}`)
+	ds := &common.DataSet{Rows: []common.DataRow{{"n": float64(1)}, {"n": float64(2)}}}
+	if err := validateTaskInputDataset(port, ds); err != nil {
+		t.Fatalf("conforming rows rejected: %v", err)
+	}
+}
+
+func TestValidateTaskInputDataset_RejectsAndBlamesTheInput(t *testing.T) {
+	port := datasetPortWithRow(t, `{"kind":"record","fields":[{"name":"n","type":{"kind":"int64"},"required":true}]}`)
+	ds := &common.DataSet{Rows: []common.DataRow{{"n": float64(1)}, {"n": "not-an-int"}}}
+	err := validateTaskInputDataset(port, ds)
+	if err == nil {
+		t.Fatal("a row violating the declared input type was accepted")
+	}
+	if !errors.Is(err, ErrTaskInputContractViolation) {
+		t.Fatalf("err = %v, want ErrTaskInputContractViolation", err)
+	}
+	// The offending row's index has to be nameable, or an author of a
+	// 900-row upstream has nothing to go on.
+	if !strings.Contains(err.Error(), "$[1]") {
+		t.Errorf("err = %v, want the offending row index named", err)
+	}
+	// An input violation is the UPSTREAM's fault; conflating it with the
+	// output sentinel would send an author to the wrong file.
+	if errors.Is(err, ErrTaskOutputContractViolation) {
+		t.Error("an input violation also matched the output sentinel")
+	}
+}
+
+// A dataset port that declares no row shape accepts any row: ADR-032
+// section 6's "absence is honest" -- inventing a constraint the contract
+// never stated would reject data the author meant to allow.
+func TestValidateTaskInputDataset_NoDeclaredRowAcceptsAnything(t *testing.T) {
+	var raw interface{}
+	if err := json.Unmarshal([]byte(`{"kind":"dataset"}`), &raw); err != nil {
+		t.Fatal(err)
+	}
+	port, err := taskinterface.ParsePortValue(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds := &common.DataSet{Rows: []common.DataRow{{"anything": []interface{}{1, "two"}}}}
+	if err := validateTaskInputDataset(port, ds); err != nil {
+		t.Fatalf("an undeclared row shape rejected rows: %v", err)
+	}
+}
+
+// Section 10: sampling "never permits the system to claim ... that an
+// entire dataset was valid", so the failure has to carry what was
+// actually checked and under which mode.
+func TestValidateTaskInputDataset_LargeInputSamplesAndReportsHonestly(t *testing.T) {
+	port := datasetPortWithRow(t, `{"kind":"record","fields":[{"name":"n","type":{"kind":"int64"},"required":true}]}`)
+	rows := make([]common.DataRow, maxFullValidationRows+sampleValidationRate+1)
+	for i := range rows {
+		rows[i] = common.DataRow{"n": float64(i)}
+	}
+	// Index 10 is on the sampled stride; index 11 is not.
+	rows[10] = common.DataRow{"n": "bad"}
+	err := validateTaskInputDataset(port, &common.DataSet{Rows: rows})
+	if err == nil {
+		t.Fatal("a bad row on the sampled stride was missed")
+	}
+	var failure *taskinterface.ValidationFailure
+	if !errors.As(err, &failure) {
+		t.Fatalf("err = %v, want a structured ValidationFailure", err)
+	}
+	if failure.Mode != taskinterface.ModeSample {
+		t.Errorf("Mode = %q, want sample for a dataset over the full-validation cap", failure.Mode)
+	}
+	if failure.CheckedRows >= len(rows) {
+		t.Errorf("CheckedRows = %d, which claims more than sampling actually checked (%d rows)", failure.CheckedRows, len(rows))
+	}
+}
+
+// "Retries validate the same rows" (section 10): selection is by index,
+// never random, so the same input yields the same verdict every time.
+func TestValidateTaskInputDataset_SamplingIsDeterministicAcrossRetries(t *testing.T) {
+	port := datasetPortWithRow(t, `{"kind":"record","fields":[{"name":"n","type":{"kind":"int64"},"required":true}]}`)
+	rows := make([]common.DataRow, maxFullValidationRows*2)
+	for i := range rows {
+		rows[i] = common.DataRow{"n": float64(i)}
+	}
+	// Deliberately OFF the sampled stride: a sampling scheme that drifted
+	// between runs would sometimes catch this and sometimes not, which is
+	// exactly the nondeterminism the rule forbids.
+	rows[maxFullValidationRows+1] = common.DataRow{"n": "bad"}
+	ds := &common.DataSet{Rows: rows}
+
+	first := validateTaskInputDataset(port, ds)
+	for i := 0; i < 5; i++ {
+		if got := validateTaskInputDataset(port, ds); (got == nil) != (first == nil) {
+			t.Fatalf("run %d disagreed with the first: %v vs %v", i, got, first)
+		}
 	}
 }

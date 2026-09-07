@@ -33,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 )
 
 // CodecNDJSON is ADR-033 section 8's baseline interoperable dataset
@@ -209,4 +210,87 @@ func writeTaskInputDataset(dir string, input *common.DataSet) (string, error) {
 		return "", fmt.Errorf("stage task input dataset: %w", err)
 	}
 	return path, nil
+}
+
+// maxFullValidationRows is where input validation switches from
+// checking every row to checking a deterministic sample (ADR-032
+// section 10's `full` vs `sample` modes). Section 10 makes `sample` the
+// default for datasets precisely because validating every row of a
+// large one costs more than the guarantee is worth, while `full` stays
+// the default for scalars and parameters.
+//
+// Phase 3 deferred sampling as having "no reachable target" -- true
+// then, because a task produced one scalar and consumed nothing. Rows
+// exist now, so the mode is real.
+const maxFullValidationRows = 1000
+
+// sampleValidationRate is how many rows the sample mode checks out of
+// every N once a dataset is over maxFullValidationRows: every 10th row,
+// deterministically by index rather than randomly, so a retry validates
+// exactly the same rows as the attempt before it (section 10: "retries
+// validate the same rows").
+const sampleValidationRate = 10
+
+// validateTaskInputDataset checks rows crossing INTO a task against the
+// row type its input port declares.
+//
+// Skipped entirely when the port declares no row shape -- ADR-032
+// section 6's "absence is honest": a dataset port with no declared row
+// accepts any row, and inventing a constraint the contract never stated
+// would reject data the author meant to allow.
+//
+// The report never claims more than was checked (section 10: "Sampling
+// never permits the system to claim ... that an entire dataset was
+// valid"), which is why CheckedRows and Mode are carried on the failure
+// rather than implied.
+func validateTaskInputDataset(port taskinterface.PortValue, input *common.DataSet) error {
+	return validateDatasetRows(port, input, taskinterface.DirectionInput, "input", ErrTaskInputContractViolation)
+}
+
+// validateTaskDatasetOutput is the output boundary's half of the same
+// rule (section 10: "output validation occurs before the trusted worker
+// commits it"). Same sampling, same honesty about what was checked --
+// only the direction, port name and sentinel differ, because an output
+// violation is the task's own contract error while an input violation
+// is the upstream's.
+func validateTaskDatasetOutput(port taskinterface.PortValue, out *common.DataSet) error {
+	return validateDatasetRows(port, out, taskinterface.DirectionOutput, "result", ErrTaskOutputContractViolation)
+}
+
+func validateDatasetRows(port taskinterface.PortValue, ds *common.DataSet, direction taskinterface.Direction, portName string, sentinel error) error {
+	if ds == nil || len(ds.Rows) == 0 {
+		return nil
+	}
+	if port.Kind != taskinterface.ValueDataset || port.Row == nil {
+		return nil
+	}
+
+	mode := taskinterface.ModeFull
+	stride := 1
+	if len(ds.Rows) > maxFullValidationRows {
+		mode = taskinterface.ModeSample
+		stride = sampleValidationRate
+	}
+
+	checked := 0
+	for i := 0; i < len(ds.Rows); i += stride {
+		checked++
+		if err := taskinterface.ValidateValue(map[string]interface{}(ds.Rows[i]), *port.Row, fmt.Sprintf("$[%d]", i)); err != nil {
+			failure := taskinterface.NewValidationFailure(
+				direction, portName, *port.Row,
+				map[string]interface{}(ds.Rows[i]), err, fmt.Sprintf("$[%d]", i), false,
+			)
+			failure.CheckedRows = checked
+			failure.Mode = mode
+			// Both verbs are %w on purpose: callers match the sentinel
+			// with errors.Is to classify the fault, and reach the
+			// structured ValidationFailure with errors.As to read what
+			// section 10 requires a report to carry (mode, checked row
+			// count, contract path). A %v here would render those fields
+			// into a string and put them out of reach, which defeats
+			// having built them.
+			return fmt.Errorf("%w: %w", sentinel, failure)
+		}
+	}
+	return nil
 }
