@@ -114,6 +114,23 @@ def load_invocation(invocation_path):
 DATASET_FILENAME = "result.ndjson"
 
 
+def read_input_rows(path):
+    """Read the NDJSON rows the trusted worker staged for this attempt.
+
+    Written by the worker, not the task, so this is a cooperating file
+    rather than untrusted input -- a malformed line here is a bug in the
+    worker, reported as contract_violation because the harness cannot
+    tell the task anything useful about it.
+    """
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
 def write_dataset_output(staging_dir, rows):
     """Serialize rows to NDJSON in staging_dir and describe them by reference.
 
@@ -175,10 +192,18 @@ def main():
         if p not in sys.path:
             sys.path.insert(0, p)
 
+    kwargs = dict(inv.get("kwargs", {}))
+    if inv.get("input_path"):
+        try:
+            kwargs["input"] = read_input_rows(inv["input_path"])
+        except Exception as exc:
+            fail("contract_violation", "invalid_input", str(exc))
+            sys.exit(1)
+
     try:
         module = importlib.import_module(inv["module"])
         func = getattr(module, inv["symbol"])
-        result = func(**inv.get("kwargs", {}))
+        result = func(**kwargs)
     except Exception:
         fail("user_code", "task_raised", traceback.format_exc())
         sys.exit(1)

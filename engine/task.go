@@ -330,7 +330,7 @@ func runtimeVersionString(binPath string) (string, error) {
 // (remote) — see this file's own doc comment. runID/nodeID identify the
 // execution lineage a resolved execution record (ADR-033 section 4) is
 // pinned against.
-func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
+func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, input *common.DataSet, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
 	manifest, bundleDir, err := materializeTaskBundleV2(s, orgID, digest)
 	if err != nil {
 		return nil, err
@@ -372,7 +372,17 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	// the same ADR-029 primitive a code node is bounded by.
 	limits := codeexec.Resolve(config)
 
-	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, nodeInterface, limits)
+	// Only stage input for a node that actually declares an input port:
+	// handing rows to a task whose contract never mentioned them would
+	// invent a parameter the task author did not declare.
+	var inputPath string
+	if _, declaresInput := portValueFromInterface(nodeInterface, "inputs", "input"); declaresInput {
+		if inputPath, err = writeTaskInputDataset(attemptDir, input); err != nil {
+			return nil, err
+		}
+	}
+
+	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, nodeInterface, inputPath, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -412,6 +422,16 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	return readTaskResult(resultPath, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
 }
 
+// inputCodecFor names how a staged input file is encoded, and says
+// nothing at all when there is no input -- an empty path with a codec
+// would claim a format for a file that does not exist.
+func inputCodecFor(inputPath string) string {
+	if inputPath == "" {
+		return ""
+	}
+	return CodecNDJSON
+}
+
 // declaredOutputKind reports the ADR-032 value kind the node's declared
 // interface says its "result" port produces, or "" when the node
 // declares no interface (absence stays honest -- the harness then uses
@@ -442,7 +462,7 @@ var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.Ru
 // and protocol version"). Everything after it -- the JSONL protocol
 // exchange, resource ceilings, result reading, contract validation -- is
 // identical for every adapter.
-func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, limits codeexec.Limits) ([]string, error) {
+func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, inputPath string, limits codeexec.Limits) ([]string, error) {
 	outputKind := declaredOutputKind(nodeInterface)
 	switch payload.Runtime {
 	case taskbundlev2.RuntimePython:
@@ -461,6 +481,8 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
 			OutputKind:      outputKind,
+			InputPath:       inputPath,
+			InputCodec:      inputCodecFor(inputPath),
 		}); err != nil {
 			return nil, fmt.Errorf("write task invocation: %w", err)
 		}
@@ -481,6 +503,8 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
 			OutputKind:      outputKind,
+			InputPath:       inputPath,
+			InputCodec:      inputCodecFor(inputPath),
 		}); err != nil {
 			return nil, fmt.Errorf("write task invocation: %w", err)
 		}
@@ -518,7 +542,7 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 
 	if _, ok := r.store.(store.ExecutionAttemptStore); ok && r.instanceJobQueue != nil {
-		return r.dispatchTaskInstanceRemotely(node, digest, timeoutSec, attempt, execFencingGen)
+		return r.dispatchTaskInstanceRemotely(node, digest, input, timeoutSec, attempt, execFencingGen)
 	}
 
 	var runParams map[string]string
@@ -527,7 +551,7 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 	limits := codeexec.Resolve(node.Config)
 	r.log(node.ID, models.LogLevelInfo, "task exec: bundle=%s %s", digest, limits)
-	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, timeoutSec, taskharness.Handlers{
+	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, input, timeoutSec, taskharness.Handlers{
 		OnLog: func(l taskharness.Log) {
 			level := models.LogLevelInfo
 			switch l.Level {
@@ -542,6 +566,40 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 			r.log(node.ID, models.LogLevelInfo, "progress: %v", p.Completed)
 		},
 	})
+}
+
+// maxInlineTaskInputRows bounds what dispatchTaskInstanceRemotely will
+// inline into a job payload. A task node's input travels inside the
+// WorkOrder (no second fetch for the claimant), which is fine for the
+// modest datasets this phase's tasks pass around and wrong for a large
+// one -- ADR-033's own follow-up list carries "move large
+// InstanceWorkOrder inputs to ADR-012 references" for exactly that. The
+// cap makes the boundary explicit instead of letting a big upstream
+// silently produce a huge queue message.
+const maxInlineTaskInputRows = 10000
+
+// taskWorkOrderInput prepares a task node's input for remote dispatch,
+// or nothing at all when the node declares no input port (a task that
+// consumes nothing must not have rows attached just because an edge
+// happens to feed it).
+func taskWorkOrderInput(node models.Node, input *common.DataSet) ([]string, []map[string]interface{}, error) {
+	if _, declaresInput := portValueFromInterface(effectiveNodeInterface(node), "inputs", "input"); !declaresInput {
+		return nil, nil, nil
+	}
+	if input == nil || len(input.Rows) == 0 {
+		return nil, nil, nil
+	}
+	if len(input.Rows) > maxInlineTaskInputRows {
+		return nil, nil, fmt.Errorf(
+			"task node %q has %d input rows, over the %d-row cap for remote dispatch: a dataset this size needs reference-based input (an ADR-033 follow-up), or run this pipeline without remote workers",
+			node.ID, len(input.Rows), maxInlineTaskInputRows,
+		)
+	}
+	rows := make([]map[string]interface{}, 0, len(input.Rows))
+	for _, r := range input.Rows {
+		rows = append(rows, map[string]interface{}(r))
+	}
+	return input.Columns, rows, nil
 }
 
 // dispatchTaskInstanceRemotely enqueues this task node as a single
@@ -564,16 +622,22 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 // then redundantly (but harmlessly -- RenewLease is idempotent per
 // fencing generation) renews the same lease the outer caller is already
 // renewing.
-func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, timeoutSec, attempt int, execFencingGen int64) (*common.DataSet, error) {
+func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, input *common.DataSet, timeoutSec, attempt int, execFencingGen int64) (*common.DataSet, error) {
 	var runParams map[string]string
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
+	}
+	inputColumns, inputRows, err := taskWorkOrderInput(node, input)
+	if err != nil {
+		return nil, err
 	}
 	workOrder := &extensions.InstanceWorkOrder{
 		NodeType:       string(models.NodeTypeTask),
 		OrgID:          r.pipe.OrgID,
 		Config:         node.Config,
 		NodeInterface:  node.Interface,
+		InputColumns:   inputColumns,
+		InputRows:      inputRows,
 		RunParams:      runParams,
 		TimeoutSeconds: timeoutSec,
 	}
@@ -639,7 +703,15 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 	// No log/progress handlers: this function has no Runner (and so no
 	// run-scoped log sink) to attribute them to, matching
 	// executeCodeWorkOrder's own documented choice to drop stderr here.
-	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, wo.TimeoutSeconds, taskharness.Handlers{})
+	var input *common.DataSet
+	if len(wo.InputRows) > 0 {
+		rows := make([]common.DataRow, 0, len(wo.InputRows))
+		for _, r := range wo.InputRows {
+			rows = append(rows, common.DataRow(r))
+		}
+		input = &common.DataSet{Columns: wo.InputColumns, Rows: rows}
+	}
+	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // readTaskResult reads and interprets a task-result-v1 candidate

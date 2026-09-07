@@ -415,14 +415,24 @@ func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) boo
 		return false
 	}
 	switch n.Type {
+	case models.NodeTypeTask:
+		// A task node is a source only while it consumes nothing. With
+		// no declared input port its kwargs come from run parameters
+		// alone, so it produces data from scratch exactly like
+		// dbt/migrate -- and, like them, must not receive incoming
+		// edges (validateEdgeSemantics enforces that uniformly for
+		// every source-capable type).
+		//
+		// Declaring an input port (ADR-033 phase 5b) makes it a
+		// consumer instead, and a consumer has to be allowed the edge
+		// that feeds it. The DECLARED contract decides, which is the
+		// same authority phase 3b uses for outputs -- a task with no
+		// interface at all stays a source, since absence is honest and
+		// nothing said it consumes anything.
+		_, declaresInput := portValueFromInterface(effectiveNodeInterface(n), "inputs", "input")
+		return !declaresInput
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeDBT, models.NodeTypeMigrate, models.NodeTypeTask:
-		// A task node (ADR-033) doesn't consume an upstream DataSet in
-		// phase 2b -- its inputs are its own run-parameter kwargs, not
-		// pipeline edges -- so it produces data from scratch exactly
-		// like dbt/migrate, and (like them) cannot receive incoming
-		// edges either (validateEdgeSemantics enforces that uniformly
-		// for every source-capable type).
+		models.NodeTypeDBT, models.NodeTypeMigrate:
 		return true
 	}
 	return false

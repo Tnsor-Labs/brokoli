@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -167,4 +168,45 @@ func datasetColumns(rows []common.DataRow) []string {
 	}
 	sort.Strings(cols)
 	return cols
+}
+
+// inputDatasetFilename is where executeTaskBundle stages a task's input
+// rows for the harness to read. Written by the trusted worker into the
+// attempt directory (not the output staging dir, which is the sandbox's
+// to write), so the harness only ever reads it.
+const inputDatasetFilename = "input.ndjson"
+
+// writeTaskInputDataset serializes a task's input rows to NDJSON in dir
+// and returns the file's path, or "" when there is nothing to write.
+//
+// The same codec the output side reads (ADR-033 section 8's baseline),
+// deliberately: one wire format in both directions means a task's output
+// feeding another task's input is the same bytes decoded the same way,
+// which is exactly what the cross-language gate exercises.
+//
+// Column order is not encoded -- NDJSON rows are self-describing
+// objects, and a task reading them gets the row's own keys. A column
+// present on some rows and absent on others stays absent rather than
+// being filled with a null the producer never emitted.
+func writeTaskInputDataset(dir string, input *common.DataSet) (string, error) {
+	if input == nil || len(input.Rows) == 0 {
+		return "", nil
+	}
+	path := filepath.Join(dir, inputDatasetFilename)
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- dir is this attempt's own worker-created scratch directory and the filename is a constant; O_EXCL additionally refuses a pre-existing path rather than writing through one
+	if err != nil {
+		return "", fmt.Errorf("stage task input dataset: %w", err)
+	}
+	defer f.Close()
+	w := bufio.NewWriter(f)
+	enc := json.NewEncoder(w)
+	for i, row := range input.Rows {
+		if err := enc.Encode(row); err != nil { // Encode writes its own newline
+			return "", fmt.Errorf("stage task input dataset: row %d: %w", i, err)
+		}
+	}
+	if err := w.Flush(); err != nil {
+		return "", fmt.Errorf("stage task input dataset: %w", err)
+	}
+	return path, nil
 }
