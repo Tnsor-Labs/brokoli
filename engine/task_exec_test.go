@@ -7,6 +7,7 @@ package engine
 // becomes the node's DataSet the same way every other node type's does.
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -93,6 +94,35 @@ func (e *taskTestEngine) runPipeline(t *testing.T, id, digest string, params map
 	return e.eng.RunPipeline(pipeline.ID)
 }
 
+// runPipelineWithOutputInterface is runPipeline plus an explicit ADR-032
+// Interface on the task node declaring its "result" output port as
+// scalar-kind outputType -- exercising phase 3b's output-boundary
+// validation, which only runs when the node carries an explicit
+// Interface (models.Node.Interface) in the first place.
+func (e *taskTestEngine) runPipelineWithOutputInterface(t *testing.T, id, digest string, outputType map[string]interface{}) (*models.Run, error) {
+	t.Helper()
+	pipeline := &models.Pipeline{
+		ID: id, Name: id, Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "task", Type: models.NodeTypeTask, Name: "Task", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs": map[string]interface{}{
+					"result": map[string]interface{}{
+						"value": map[string]interface{}{"kind": "scalar", "type": outputType},
+					},
+				},
+			}},
+		},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	return e.eng.RunPipeline(pipeline.ID)
+}
+
 func (e *taskTestEngine) firstTaskRow(t *testing.T, run *models.Run) map[string]interface{} {
 	t.Helper()
 	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
@@ -134,6 +164,46 @@ func TestTaskNodeRaisingFailsTheRunWithUserCode(t *testing.T) {
 	}
 }
 
+// ADR-032 section 10 / phase 3b: a task's own claim that it produced
+// valid output is no longer trusted uncritically once it declares an
+// output contract. A task declaring an int64 "result" that actually
+// returns a string must fail the run instead of silently flowing a
+// string downstream as if it were the declared type.
+func TestTaskNodeOutputContractViolationFailsTheRun(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return 'not-a-number'\n")
+	_, execErr := e.runPipelineWithOutputInterface(t, "p-task-output-violation", digest, map[string]interface{}{"kind": "int64"})
+	if execErr == nil {
+		t.Fatal("a task returning a string against a declared int64 output ran to success")
+	}
+	if !errors.Is(execErr, ErrTaskOutputContractViolation) {
+		t.Fatalf("error does not wrap ErrTaskOutputContractViolation: %v", execErr)
+	}
+	if !strings.Contains(execErr.Error(), "output") || !strings.Contains(execErr.Error(), "int64") {
+		t.Fatalf("failure does not name the direction and expected type: %s", execErr)
+	}
+	if strings.Contains(execErr.Error(), "not-a-number") {
+		t.Fatalf("failure leaked the observed value instead of a redacted kind/shape summary: %s", execErr)
+	}
+}
+
+// The same declared contract, satisfied, must not change the happy path
+// -- validation is an added check, not a new transform.
+func TestTaskNodeOutputSatisfyingItsContractRunsNormally(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return 42\n")
+	run, execErr := e.runPipelineWithOutputInterface(t, "p-task-output-ok", digest, map[string]interface{}{"kind": "int64"})
+	if execErr != nil {
+		t.Fatalf("run returned error: %v", execErr)
+	}
+	row := e.firstTaskRow(t, run)
+	if got := toF64(row["result"]); got != 42 {
+		t.Fatalf("task output result = %v (type %T), want 42", row["result"], row["result"])
+	}
+}
+
 func TestTaskNodeMissingFromStoreFailsTheRun(t *testing.T) {
 	skipIfNoPython3(t)
 	e := newTaskEngine(t)
@@ -172,7 +242,7 @@ func TestReadTaskResult_DatasetOutputKindIsNotYetSupported(t *testing.T) {
 		"interface_digest": "`+digest+`",
 		"outputs": {"result": {"kind": "dataset", "path": "out.ndjson", "codec": "ndjson/v1", "size_bytes": 0, "checksum": "sha256:`+strings.Repeat("0", 64)+`"}}
 	}`)
-	if _, err := readTaskResult(resultPath, digest); err == nil || !strings.Contains(err.Error(), "not yet supported") {
+	if _, err := readTaskResult(resultPath, digest, nil); err == nil || !strings.Contains(err.Error(), "not yet supported") {
 		t.Fatalf("expected a clear not-yet-supported error, got: %v", err)
 	}
 }
@@ -186,7 +256,7 @@ func TestReadTaskResult_InterfaceDigestMismatchIsRefused(t *testing.T) {
 		"interface_digest": "`+other+`",
 		"outputs": {"result": {"kind": "scalar", "value": 1}}
 	}`)
-	if _, err := readTaskResult(resultPath, digest); err == nil {
+	if _, err := readTaskResult(resultPath, digest, nil); err == nil {
 		t.Fatal("expected an interface_digest mismatch to be refused")
 	}
 }

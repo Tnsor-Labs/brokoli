@@ -37,6 +37,25 @@ func taskRemoteDispatchPipeline(id, digest string) *models.Pipeline {
 	}
 }
 
+// taskRemoteDispatchPipelineWithOutputInterface is taskRemoteDispatchPipeline
+// plus an explicit ADR-032 Interface declaring the task's "result" output
+// port as scalar-kind outputType, proving phase 3b's output-boundary
+// validation travels through remote dispatch's WorkOrder (extensions.
+// InstanceWorkOrder.NodeInterface), not just local execution.
+func taskRemoteDispatchPipelineWithOutputInterface(id, digest string, outputType map[string]interface{}) *models.Pipeline {
+	p := taskRemoteDispatchPipeline(id, digest)
+	p.Nodes[0].Interface = map[string]interface{}{
+		"contract": "brokoli.task-interface/v1",
+		"inputs":   map[string]interface{}{},
+		"outputs": map[string]interface{}{
+			"result": map[string]interface{}{
+				"value": map[string]interface{}{"kind": "scalar", "type": outputType},
+			},
+		},
+	}
+	return p
+}
+
 func seedRemoteTaskBundle(t *testing.T, s *store.SQLiteStore, source string) string {
 	t.Helper()
 	placeholderDigest := "sha256:" + strings.Repeat("0", 62) + "aa"
@@ -176,6 +195,61 @@ func TestTaskNodeRemoteDispatch_WorkerFailureFailsTheRun(t *testing.T) {
 	}
 	if attempt.Status != models.AttemptStatusFailed || !strings.Contains(attempt.Error, "remote boom") {
 		t.Errorf("attempt = %+v, want status=failed error containing \"remote boom\"", attempt)
+	}
+}
+
+// ADR-032 section 10 / phase 3b, remote path: the node's declared output
+// Interface must actually travel over the WorkOrder
+// (extensions.InstanceWorkOrder.NodeInterface) to a remote worker, not
+// just be enforced locally -- a task returning a string against a
+// declared int64 output must fail the same way it does in the local
+// dispatch test (TestTaskNodeOutputContractViolationFailsTheRun,
+// task_exec_test.go), proving the field is threaded through dispatch
+// rather than silently dropped.
+func TestTaskNodeRemoteDispatch_OutputContractViolationFailsTheRun(t *testing.T) {
+	skipIfNoPython3(t)
+	realStore := newExpansionTestStore(t, "task-remote-contract")
+	real := realStore.(*store.SQLiteStore)
+	digest := seedRemoteTaskBundle(t, real, "def run():\n    return 'not-a-number'\n")
+
+	pipeline := taskRemoteDispatchPipelineWithOutputInterface("task-remote-contract-pipeline", digest, map[string]interface{}{"kind": "int64"})
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			if job.WorkOrder == nil || job.WorkOrder.NodeInterface == nil {
+				t.Fatal("enqueued job's WorkOrder carries no NodeInterface")
+			}
+			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.RunID, job.NodeID, job.WorkOrder)
+			if err != nil {
+				return nil, nil, err.Error()
+			}
+			return ds.Columns, ds.Rows, ""
+		},
+	}
+
+	run, err := eng.RunPipeline(pipeline.ID)
+	if err == nil {
+		t.Fatal("expected RunPipeline to fail when the remote task's output violates its declared contract")
+	}
+	if run == nil || run.Status != models.RunStatusFailed {
+		t.Fatalf("expected a failed run, got %+v", run)
+	}
+	attempt, aerr := real.GetExecutionAttempt(run.ID, "task", "", 0)
+	if aerr != nil {
+		t.Fatalf("GetExecutionAttempt: %v", aerr)
+	}
+	if !strings.Contains(attempt.Error, "violates its declared contract") {
+		t.Errorf("attempt error = %q, want it to name the contract violation", attempt.Error)
+	}
+	if strings.Contains(attempt.Error, "not-a-number") {
+		t.Errorf("attempt error leaked the observed value: %q", attempt.Error)
 	}
 }
 
