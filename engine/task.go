@@ -51,6 +51,15 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
+// ErrTaskInputContractViolation reports rows reaching a task node that
+// its own declared input port refuses. Distinct from
+// ErrTaskOutputContractViolation because the two name different faults:
+// an output violation is the task's own code getting its contract
+// wrong, while an input violation means an UPSTREAM node produced
+// something this task never agreed to accept -- the task itself is
+// blameless, and pointing at it would send an author to the wrong file.
+var ErrTaskInputContractViolation = errors.New("task input violates its declared contract")
+
 // ErrTaskOutputContractViolation reports a task node whose returned value
 // does not conform to its own declared output port type (ADR-032 section
 // 10, ADR-033 rollout phase 3b). This is the engine's own post-hoc check
@@ -376,7 +385,16 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	// handing rows to a task whose contract never mentioned them would
 	// invent a parameter the task author did not declare.
 	var inputPath string
-	if _, declaresInput := portValueFromInterface(nodeInterface, "inputs", "input"); declaresInput {
+	if inPort, declaresInput := portValueFromInterface(nodeInterface, "inputs", "input"); declaresInput {
+		// ADR-032 section 10: "Input validation occurs before user code
+		// observes a value." Checked here, before the rows are staged --
+		// a task that would receive data its own declared contract
+		// rejects should never be started at all, so the failure names
+		// the contract rather than surfacing later as a confusing error
+		// inside the task.
+		if err := validateTaskInputDataset(inPort, input); err != nil {
+			return nil, err
+		}
 		if inputPath, err = writeTaskInputDataset(attemptDir, input); err != nil {
 			return nil, err
 		}
@@ -768,7 +786,20 @@ func readTaskResult(resultPath, outputStagingDir, wantInterfaceDigest string, no
 	// have no reader (each needs its own reference-handling contract) and
 	// are refused by name rather than mishandled.
 	if out.Kind == "dataset" {
-		return readTaskDatasetOutput(outputStagingDir, out.Path, out.Codec, out.SizeBytes, out.Checksum)
+		ds, err := readTaskDatasetOutput(outputStagingDir, out.Path, out.Codec, out.SizeBytes, out.Checksum)
+		if err != nil {
+			return nil, err
+		}
+		// Section 10's output half: check the rows against the declared
+		// row type before they are committed and flow downstream, the
+		// same way the scalar branch below checks a scalar. Skipped when
+		// the port declares no row shape (absence is honest).
+		if pv, ok := portValueFromInterface(nodeInterface, "outputs", "result"); ok {
+			if verr := validateTaskDatasetOutput(pv, ds); verr != nil {
+				return nil, verr
+			}
+		}
+		return ds, nil
 	}
 	if out.Kind != "scalar" {
 		return nil, fmt.Errorf("task output kind %q is not yet supported (this server reads \"scalar\" and \"dataset\")", out.Kind)
@@ -779,7 +810,10 @@ func readTaskResult(resultPath, outputStagingDir, wantInterfaceDigest string, no
 			// ParameterDeclaration does -- see NewValidationFailure's own
 			// doc comment), so a task output is never redacted here.
 			failure := taskinterface.NewValidationFailure(taskinterface.DirectionOutput, "result", *pv.ScalarType, out.Value, verr, "$", false)
-			return nil, fmt.Errorf("%w: %v", ErrTaskOutputContractViolation, failure)
+			// Multi-%w for the same reason the input boundary uses it
+			// (engine/task_dataset.go): errors.Is classifies the fault,
+			// errors.As reaches the structured report's own fields.
+			return nil, fmt.Errorf("%w: %w", ErrTaskOutputContractViolation, failure)
 		}
 	}
 	return &common.DataSet{

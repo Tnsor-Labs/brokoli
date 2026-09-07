@@ -624,3 +624,101 @@ func TestTaskNodeDeclaringAnInputPortMayReceiveEdges(t *testing.T) {
 		t.Error("a task with no declared input stopped being source-capable, which breaks single-task pipelines")
 	}
 }
+
+// ADR-032 section 10: "Input validation occurs before user code
+// observes a value." A producer emitting rows the consumer's declared
+// input type refuses must fail the run at the boundary -- the consuming
+// task should never start, so the error names the contract instead of
+// surfacing as a confusing failure inside a task that did nothing wrong.
+func TestCrossLanguage_InputViolatingTheConsumersContractFailsAtTheBoundary(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	producer := e.bundle(t, "def run():\n    return [{'n': 'not-an-int'}]\n")
+	// The consumer would happily run -- it is the CONTRACT that refuses.
+	consumer := e.bundle(t, "def run(input):\n    return [{'n': r['n']} for r in input]\n")
+
+	datasetPort := map[string]interface{}{"value": map[string]interface{}{"kind": "dataset"}}
+	typedInput := map[string]interface{}{"value": map[string]interface{}{
+		"kind": "dataset",
+		"row": map[string]interface{}{
+			"kind":   "record",
+			"fields": []interface{}{map[string]interface{}{"name": "n", "type": map[string]interface{}{"kind": "int64"}, "required": true}},
+		},
+	}}
+	pipeline := &models.Pipeline{
+		ID: "p-xlang-bad-input", Name: "p-xlang-bad-input", Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "producer", Type: models.NodeTypeTask, Name: "Producer", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": producer, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs":  map[string]interface{}{"result": datasetPort},
+			}},
+			{ID: "consumer", Type: models.NodeTypeTask, Name: "Consumer", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": consumer, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{"input": typedInput},
+				"outputs":  map[string]interface{}{"result": datasetPort},
+			}},
+		},
+		Edges: []models.Edge{{From: "producer", To: "consumer"}},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	_, execErr := e.eng.RunPipeline(pipeline.ID)
+	if execErr == nil {
+		t.Fatal("rows violating the consumer's declared input type were accepted")
+	}
+	if !errors.Is(execErr, ErrTaskInputContractViolation) {
+		t.Fatalf("err = %v, want ErrTaskInputContractViolation", execErr)
+	}
+}
+
+// The output half of ADR-032 section 10, symmetric with the input test
+// above: a task producing rows its OWN declared output type refuses must
+// fail before those rows are committed and flow downstream. Without this
+// the boundary was one-sided -- inputs checked, outputs trusted.
+func TestTaskNodeDatasetOutputRowsAreValidatedAgainstTheDeclaredRowType(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return [{'n': 1}, {'n': 'not-an-int'}]\n")
+
+	pipeline := &models.Pipeline{
+		ID: "p-task-bad-output-rows", Name: "p-task-bad-output-rows", Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "task", Type: models.NodeTypeTask, Name: "Task", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs": map[string]interface{}{"result": map[string]interface{}{
+					"value": map[string]interface{}{
+						"kind": "dataset",
+						"row": map[string]interface{}{
+							"kind":   "record",
+							"fields": []interface{}{map[string]interface{}{"name": "n", "type": map[string]interface{}{"kind": "int64"}, "required": true}},
+						},
+					},
+				}},
+			}},
+		},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	_, execErr := e.eng.RunPipeline(pipeline.ID)
+	if execErr == nil {
+		t.Fatal("a task emitting rows its declared output type refuses ran to success")
+	}
+	if !errors.Is(execErr, ErrTaskOutputContractViolation) {
+		t.Fatalf("err = %v, want ErrTaskOutputContractViolation", execErr)
+	}
+	if !strings.Contains(execErr.Error(), "$[1]") {
+		t.Errorf("err = %v, want the offending row index named", execErr)
+	}
+}
