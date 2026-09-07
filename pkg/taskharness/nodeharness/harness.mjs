@@ -186,6 +186,39 @@ async function writeDatasetOutput(stagingDir, rows) {
   };
 }
 
+const ARTIFACT_FILENAME = "result.bin";
+
+// writeArtifactOutput writes opaque bytes to stagingDir and describes
+// them by reference. A task declaring an artifact output returns the
+// bytes themselves -- a Buffer/TypedArray, or a string encoded UTF-8.
+// Anything else is a contract violation named precisely, since
+// "expected bytes, got object" is the only form of that error an author
+// can act on.
+function writeArtifactOutput(stagingDir, payload, mediaType) {
+  let buf;
+  if (typeof payload === "string") {
+    buf = Buffer.from(payload, "utf8");
+  } else if (Buffer.isBuffer(payload)) {
+    buf = payload;
+  } else if (ArrayBuffer.isView(payload) || payload instanceof ArrayBuffer) {
+    buf = Buffer.from(payload.buffer ?? payload);
+  } else {
+    throw new TypeError(
+      `task declares an artifact output but returned ${payload === null ? "null" : typeof payload}; expected bytes or a string`,
+    );
+  }
+  fs.writeFileSync(path.join(stagingDir, ARTIFACT_FILENAME), buf);
+  return {
+    kind: "artifact",
+    path: ARTIFACT_FILENAME,
+    // The manifest has no media_type field, so an artifact states its
+    // media type in codec -- see the engine's artifactMediaType.
+    codec: mediaType || "application/octet-stream",
+    size_bytes: buf.length,
+    checksum: "sha256:" + crypto.createHash("sha256").update(buf).digest("hex"),
+  };
+}
+
 async function main() {
   const start = await readStartFrame();
   emit({
@@ -238,10 +271,14 @@ async function main() {
 
   try {
     fs.mkdirSync(start.output_staging_dir, { recursive: true });
-    const port =
-      inv.output_kind === "dataset"
-        ? await writeDatasetOutput(start.output_staging_dir, result)
-        : { kind: "scalar", value: result === undefined ? null : result };
+    let port;
+    if (inv.output_kind === "dataset") {
+      port = await writeDatasetOutput(start.output_staging_dir, result);
+    } else if (inv.output_kind === "artifact") {
+      port = writeArtifactOutput(start.output_staging_dir, result, inv.output_media_type);
+    } else {
+      port = { kind: "scalar", value: result === undefined ? null : result };
+    }
     fs.writeFileSync(
       start.result_path,
       JSON.stringify({

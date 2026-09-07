@@ -56,6 +56,56 @@ const maxTaskDatasetBytes = 64 << 20 // 64 MiB
 // archive entries alongside archive bytes.
 const maxTaskDatasetRows = 1_000_000
 
+// openStagedOutput opens a file the TASK wrote, under ADR-033 section 7
+// rule 6's rules, and is the single place those rules live -- dataset and
+// artifact outputs both go through it, because "the sandbox named a file
+// and we are about to read it" is one problem with one answer, not two.
+//
+// os.Root gives beneath/no-follow resolution: a path escaping the staging
+// dir, or reached through a symlink out of it, fails here rather than
+// reading something the task was never allowed to name. The returned
+// handle is the ONLY way callers should touch the file -- never a second
+// path lookup -- so the bytes they hash are provably the bytes they read
+// even if the task replaces the name concurrently.
+//
+// The caller closes the file. Size is checked against both the server's
+// cap and the manifest's own claim, since a task that misreports its
+// output's length has already broken the contract the checksum is meant
+// to confirm.
+func openStagedOutput(stagingDir, rel string, maxBytes int64, wantSize int64) (*os.File, os.FileInfo, error) {
+	if rel == "" {
+		return nil, nil, fmt.Errorf("task output declares no path")
+	}
+	root, err := os.OpenRoot(stagingDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open task output staging dir: %w", err)
+	}
+	defer root.Close()
+
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open task output %q: %w", rel, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("stat task output %q: %w", rel, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("task output %q is not a regular file", rel)
+	}
+	if info.Size() > maxBytes {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("task output %q is %d bytes, over the %d-byte cap", rel, info.Size(), maxBytes)
+	}
+	if wantSize != info.Size() {
+		_ = f.Close()
+		return nil, nil, fmt.Errorf("task output %q is %d bytes, but the result manifest declares %d", rel, info.Size(), wantSize)
+	}
+	return f, info, nil
+}
+
 // readTaskDatasetOutput reads and verifies one dataset-kind output port,
 // returning it as the row-shaped DataSet every other node type produces.
 //
@@ -68,41 +118,11 @@ func readTaskDatasetOutput(stagingDir, rel, codec string, wantSize int64, wantCh
 	if codec != CodecNDJSON {
 		return nil, fmt.Errorf("task dataset output declares codec %q, which this server cannot read (supported: %s)", codec, CodecNDJSON)
 	}
-	if rel == "" {
-		return nil, fmt.Errorf("task dataset output declares no path")
-	}
-
-	root, err := os.OpenRoot(stagingDir)
+	f, _, err := openStagedOutput(stagingDir, rel, maxTaskDatasetBytes, wantSize)
 	if err != nil {
-		return nil, fmt.Errorf("open task output staging dir: %w", err)
-	}
-	defer root.Close()
-
-	// Beneath-semantics open: a path escaping the staging dir, or
-	// reached through a symlink out of it, fails here rather than
-	// reading something the task was never allowed to name.
-	f, err := root.Open(rel)
-	if err != nil {
-		return nil, fmt.Errorf("open task dataset output %q: %w", rel, err)
+		return nil, err
 	}
 	defer f.Close()
-
-	// Everything below runs against this one handle -- never a second
-	// path lookup -- so the bytes hashed are provably the bytes decoded
-	// even if the task replaces the name concurrently.
-	info, err := f.Stat()
-	if err != nil {
-		return nil, fmt.Errorf("stat task dataset output %q: %w", rel, err)
-	}
-	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("task dataset output %q is not a regular file", rel)
-	}
-	if info.Size() > maxTaskDatasetBytes {
-		return nil, fmt.Errorf("task dataset output %q is %d bytes, over the %d-byte cap", rel, info.Size(), int64(maxTaskDatasetBytes))
-	}
-	if wantSize != info.Size() {
-		return nil, fmt.Errorf("task dataset output %q is %d bytes, but the result manifest declares %d", rel, info.Size(), wantSize)
-	}
 
 	// Hash and decode in one pass over the same handle: TeeReader feeds
 	// every byte the decoder consumes into the digest, so the checksum

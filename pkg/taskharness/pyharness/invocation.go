@@ -96,7 +96,11 @@ type Invocation struct {
 	// kwargs. The harness reads it and passes the rows to the task under
 	// the port's own name, so a task's signature names its input the way
 	// the interface does.
-	InputPath string `json:"input_path,omitempty"`
+	// OutputMediaType labels an artifact this task writes (the first
+	// media type its output port allows). Ignored for other output
+	// kinds; empty means the port constrained nothing.
+	OutputMediaType string `json:"output_media_type,omitempty"`
+	InputPath       string `json:"input_path,omitempty"`
 	// InputCodec is how InputPath is encoded -- always ndjson/v1 today
 	// (ADR-033 section 8's baseline), carried explicitly so a future
 	// Arrow IPC input is a value change rather than a format guess.

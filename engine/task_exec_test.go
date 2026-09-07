@@ -7,6 +7,7 @@ package engine
 // becomes the node's DataSet the same way every other node type's does.
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -339,30 +340,44 @@ func TestTaskNodeReceivesRunParametersAsKwargs(t *testing.T) {
 	}
 }
 
-// readTaskResult's own unit coverage lives here (not the engine test
-// suite above) since the reference harnesses only ever emit the kinds
-// the engine asked them for -- there is no way to drive an
-// "artifact"-kind candidate through a real run without an adapter that
-// produces one, which no phase has built.
+// readTaskResult's own unit coverage lives here (not the engine suite
+// above) since the reference harnesses only ever emit the kinds the
+// engine asked them for.
 //
-// "dataset" WAS in this list until phase 5a gave it a reader; what
-// remains are the two kinds that still have none, each needing its own
-// reference-handling contract rather than a decoder.
-func TestReadTaskResult_ArtifactAndCollectionKindsAreNotYetSupported(t *testing.T) {
+// "dataset" left this list when phase 5a gave it a reader, and
+// "artifact" when it got one too. Only "collection" remains: the
+// task-result-v1 manifest has no field able to express N separately
+// addressable items (it is deliberately excluded from the
+// path/codec/size/checksum rule that covers dataset and artifact), so
+// reading one needs a wire-contract decision, not a decoder.
+func TestReadTaskResult_CollectionKindIsNotYetSupported(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
-	for _, kind := range []string{"artifact", "collection"} {
-		t.Run(kind, func(t *testing.T) {
-			dir := t.TempDir()
-			resultPath := writeTestResult(t, dir, `{
-				"contract": "brokoli.task-result/v1",
-				"interface_digest": "`+digest+`",
-				"outputs": {"result": {"kind": "`+kind+`", "path": "out.bin"}}
-			}`)
-			_, err := readTaskResult(resultPath, dir, digest, nil)
-			if err == nil || !strings.Contains(err.Error(), "not yet supported") {
-				t.Fatalf("expected a clear not-yet-supported error for %q, got: %v", kind, err)
-			}
-		})
+	dir := t.TempDir()
+	resultPath := writeTestResult(t, dir, `{
+		"contract": "brokoli.task-result/v1",
+		"interface_digest": "`+digest+`",
+		"outputs": {"result": {"kind": "collection"}}
+	}`)
+	_, err := readTaskResult(context.Background(), nil, "run-1", resultPath, dir, digest, nil)
+	if err == nil || !strings.Contains(err.Error(), "not yet supported") {
+		t.Fatalf("expected a clear not-yet-supported error, got: %v", err)
+	}
+}
+
+// With nowhere to put the bytes there is no reference to return, and
+// inlining the content would defeat the artifact kind entirely -- so
+// this refuses by name rather than falling back silently.
+func TestReadTaskResult_ArtifactWithoutABlobStoreIsRefusedByName(t *testing.T) {
+	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	dir := t.TempDir()
+	resultPath := writeTestResult(t, dir, `{
+		"contract": "brokoli.task-result/v1",
+		"interface_digest": "`+digest+`",
+		"outputs": {"result": {"kind": "artifact", "path": "out.bin", "codec": "application/pdf", "size_bytes": 3, "checksum": "sha256:`+strings.Repeat("0", 64)+`"}}
+	}`)
+	_, err := readTaskResult(context.Background(), nil, "run-1", resultPath, dir, digest, nil)
+	if err == nil || !strings.Contains(err.Error(), "no artifact blob store") {
+		t.Fatalf("err = %v, want a named refusal about the missing blob store", err)
 	}
 }
 
@@ -375,7 +390,7 @@ func TestReadTaskResult_InterfaceDigestMismatchIsRefused(t *testing.T) {
 		"interface_digest": "`+other+`",
 		"outputs": {"result": {"kind": "scalar", "value": 1}}
 	}`)
-	if _, err := readTaskResult(resultPath, dir, digest, nil); err == nil {
+	if _, err := readTaskResult(context.Background(), nil, "run-1", resultPath, dir, digest, nil); err == nil {
 		t.Fatal("expected an interface_digest mismatch to be refused")
 	}
 }
@@ -720,5 +735,84 @@ func TestTaskNodeDatasetOutputRowsAreValidatedAgainstTheDeclaredRowType(t *testi
 	}
 	if !strings.Contains(execErr.Error(), "$[1]") {
 		t.Errorf("err = %v, want the offending row index named", execErr)
+	}
+}
+
+// runPipelineWithArtifactOutput declares the task's "result" port as an
+// artifact, optionally constraining its media types.
+func (e *taskTestEngine) runPipelineWithArtifactOutput(t *testing.T, id, digest string, mediaTypes []string) (*models.Run, error) {
+	t.Helper()
+	value := map[string]interface{}{"kind": "artifact"}
+	if len(mediaTypes) > 0 {
+		mt := make([]interface{}, 0, len(mediaTypes))
+		for _, m := range mediaTypes {
+			mt = append(mt, m)
+		}
+		value["media_types"] = mt
+	}
+	pipeline := &models.Pipeline{
+		ID: id, Name: id, Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "task", Type: models.NodeTypeTask, Name: "Task", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs":  map[string]interface{}{"result": map[string]interface{}{"value": value}},
+			}},
+		},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	return e.eng.RunPipeline(pipeline.ID)
+}
+
+// A task's opaque bytes become a REFERENCE, never inline content: the
+// node's output is the same four-column uri/media_type/size/checksum row
+// a source_api artifact response already produces, so downstream has one
+// representation to understand rather than two.
+func TestTaskNodeProducesAnArtifactOutput(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return b'%PDF-1.4 fake bytes'\n")
+	run, err := e.runPipelineWithArtifactOutput(t, "p-task-artifact", digest, []string{"application/pdf"})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("read task artifact: %v", err)
+	}
+	if len(ds.Rows) != 1 {
+		t.Fatalf("rows = %v, want one reference row", ds.Rows)
+	}
+	row := ds.Rows[0]
+	if row["media_type"] != "application/pdf" {
+		t.Errorf("media_type = %v, want application/pdf", row["media_type"])
+	}
+	if uri, _ := row["uri"].(string); uri == "" {
+		t.Errorf("uri is empty; the bytes were not stored by reference: %v", row)
+	}
+	// The bytes themselves must NOT be inlined into the row.
+	for _, v := range row {
+		if s, ok := v.(string); ok && strings.Contains(s, "fake bytes") {
+			t.Errorf("artifact content leaked into the output row: %v", row)
+		}
+	}
+}
+
+// Declaring an artifact and returning something that is not bytes is a
+// contract violation with a precise message.
+func TestTaskNodeArtifactOutputRejectsANonBytesReturn(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return {'not': 'bytes'}\n")
+	_, execErr := e.runPipelineWithArtifactOutput(t, "p-task-artifact-nonbytes", digest, nil)
+	if execErr == nil {
+		t.Fatal("a task declaring an artifact output but returning a dict ran to success")
+	}
+	if !strings.Contains(execErr.Error(), "artifact output") {
+		t.Fatalf("failure does not explain the artifact contract violation: %s", execErr)
 	}
 }
