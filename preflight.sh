@@ -84,9 +84,22 @@ say "launching parallel security scans (gosec / govulncheck / licenses)"
       -e GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" --cpus="$PREFLIGHT_SCAN_PROCS" \
       ghcr.io/securego/gosec@sha256:4342ad119a7c69f3f4e4ce78d81ba183dc774a70a7a4c6eeb15fe9e511f214f0 \
       -no-fail -fmt=json -out=/src/$LOGDIR/gosec.json -exclude-dir=.preflight ./... >/dev/null 2>&1
+    # Assert the scan happened before trusting its verdict: a baseline
+    # comparison treats "0 findings" as the best possible outcome, so a
+    # gosec run that inspected nothing passes while suggesting the
+    # baseline be lowered to 0. Mirrors ci parity with security.yml, and
+    # the reason both now check is scripts/check-licenses.sh.
+    files=$(jq -r '.Stats.files // 0' "$LOGDIR/gosec.json" 2>/dev/null || echo 0)
+    errs=$(jq -r '(."Golang errors" // {}) | length' "$LOGDIR/gosec.json" 2>/dev/null || echo 0)
+    if [ "$files" -lt 1 ]; then
+      echo "gosec scanned $files files — the scan inspected nothing" > "$LOGDIR/gosec.verdict"; exit 1
+    fi
+    if [ "$errs" -gt 0 ]; then
+      echo "gosec hit $errs Go build error(s) — partial scan, verdict not comparable to the baseline" > "$LOGDIR/gosec.verdict"; exit 1
+    fi
     findings=$(jq '[.Issues[]] | length' "$LOGDIR/gosec.json")
     baseline=$(jq -r '.issues' security/gosec-baseline.json)
-    echo "gosec findings: $findings (baseline: $baseline)" > "$LOGDIR/gosec.verdict"
+    echo "gosec findings: $findings (baseline: $baseline) across $files files" > "$LOGDIR/gosec.verdict"
     if [ "$findings" -gt "$baseline" ]; then exit 1; fi
     if [ "$findings" -lt "$baseline" ]; then echo "note: baseline can be reduced to $findings" >> "$LOGDIR/gosec.verdict"; fi
   else
