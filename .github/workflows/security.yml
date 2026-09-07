@@ -72,25 +72,22 @@ jobs:
           # setup-go installed -- once per job, every run.
           go-version: "1.26.6"
 
-      - name: Install go-licenses
-        run: go install github.com/google/go-licenses@latest
+      # The gate's own tests run first: this job previously reported
+      # "No forbidden licenses found" on every run while inspecting zero
+      # dependencies (go-licenses cannot load a Go 1.24+ stdlib, exited
+      # fatally, and `|| true` fed an empty file to the grep). A gate
+      # that cannot be observed to fail is what produced that, so the
+      # cases proving it still catches GPL/AGPL/SSPL gate the scan.
+      - name: Test the license gate
+        run: bash scripts/check-licenses_test.sh
 
       - name: Check for forbidden licenses
-        run: |
-          echo "Scanning dependency licenses..."
-          go-licenses report ./... 2>/dev/null | tee /tmp/licenses.txt || true
-
-          FORBIDDEN="GPL-2.0\|GPL-3.0\|AGPL\|SSPL\|EUPL"
-          if grep -i "$FORBIDDEN" /tmp/licenses.txt; then
-            echo "::error::Forbidden license detected! GPL/AGPL/SSPL dependencies cannot be used."
-            exit 1
-          fi
-          echo "✓ No forbidden licenses found"
+        run: bash scripts/check-licenses.sh | tee /tmp/licenses.txt
 
       - name: License summary
         if: always()
         run: |
           echo "## License Summary" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          go-licenses report ./... 2>/dev/null | sort -t, -k3 | awk -F, '{print $3}' | sort | uniq -c | sort -rn >> $GITHUB_STEP_SUMMARY || true
+          cat /tmp/licenses.txt >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "scan did not run" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY

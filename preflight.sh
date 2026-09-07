@@ -109,7 +109,6 @@ MOD_TOOLCHAIN=$(awk '/^toolchain /{print $2}' go.mod)
 # module each time. Bump these deliberately, the same way the gosec
 # digest above is a deliberate, reviewed bump.
 GOVULNCHECK_VERSION=v1.7.0
-GOLICENSES_VERSION=v1.6.0
 # `go install` honors $GOBIN when set, falling back to $GOPATH/bin
 # otherwise -- resolve the same way here rather than assuming the
 # default, so this doesn't silently look in the wrong place on a machine
@@ -123,11 +122,12 @@ GOBIN_DIR=$(go env GOBIN)
 VULN_PID=$!
 
 (
-  GOTOOLCHAIN="${MOD_TOOLCHAIN:-auto}" go install github.com/google/go-licenses@$GOLICENSES_VERSION
-  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" "$GOBIN_DIR/go-licenses" report ./... 2>/dev/null > "$LOGDIR/licenses.txt" || true
-  if grep -iE 'GPL-2\.0|GPL-3\.0|AGPL|SSPL|EUPL' "$LOGDIR/licenses.txt"; then
-    echo "forbidden license found"; exit 1
-  fi
+  # scripts/check-licenses.sh, not go-licenses: go-licenses cannot load a
+  # Go 1.24+ stdlib (every package trips "does not have module info"),
+  # exits fatally having printed nothing, and the old `|| true` + grep
+  # over that empty output passed unconditionally. See the script header.
+  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" bash scripts/check-licenses.sh > "$LOGDIR/licenses.txt"
+  bash scripts/check-licenses_test.sh
 ) > "$LOGDIR/licenses.log" 2>&1 &
 LIC_PID=$!
 
