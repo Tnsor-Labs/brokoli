@@ -10,8 +10,9 @@ package engine
 //
 // executeTaskBundle is the shared core both paths call: given a resolved
 // task_bundle digest, an org, and run parameters, fetch+extract the
-// bundle, select its python payload, and run it through
-// pkg/taskharness+pyharness. Runner.runTask supplies these from its own
+// bundle, select a payload whose runtime class this build has a
+// reference adapter for (phase 4a added the second one, node, alongside
+// python), and run it through pkg/taskharness. Runner.runTask supplies these from its own
 // fields for local execution; ExecuteTaskWorkOrderContext supplies them
 // from an extensions.InstanceWorkOrder for remote execution — "how do I
 // actually run a task bundle" is answered once, not once per transport,
@@ -43,6 +44,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/proctree"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/nodeharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/pyharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
@@ -153,7 +155,7 @@ const executionProfile = "trusted@1"
 func resolveExecutionRecord(s store.Store, runID, nodeID, digest string, manifest *taskbundlev2.Manifest) (*taskbundlev2.Payload, *taskruntime.ResolvedExecutionRecord, error) {
 	rs, ok := s.(store.ResolvedExecutionRecordStore)
 	if !ok {
-		payload, err := taskbundlev2.SelectPythonPayload(manifest)
+		payload, err := taskbundlev2.SelectPayload(manifest, supportedTaskRuntimes)
 		if err != nil {
 			return nil, nil, fmt.Errorf("task bundle %s: %w", digest, err)
 		}
@@ -183,7 +185,7 @@ func resolveExecutionRecord(s store.Store, runID, nodeID, digest string, manifes
 		return nil, nil, fmt.Errorf("task bundle %s: read resolved execution record: %w", digest, err)
 	}
 
-	payload, err := taskbundlev2.SelectPythonPayload(manifest)
+	payload, err := taskbundlev2.SelectPayload(manifest, supportedTaskRuntimes)
 	if err != nil {
 		return nil, nil, fmt.Errorf("task bundle %s: %w", digest, err)
 	}
@@ -212,18 +214,38 @@ func resolveExecutionRecord(s store.Store, runID, nodeID, digest string, manifes
 // computeExecutionEnvironmentDigest hashes together everything ADR-033
 // section 4 rule 3 says an execution environment digest must cover that
 // this phase can actually observe: the harness adapter identity, the
-// resolved python interpreter's own reported version, the payload's
-// dependency lock digest (already verified by pkg/taskbundlev2.Extract's
-// own per-file digest check -- reused here, not rehashed), and the
-// platform ABI. "Declared system libraries" is the one listed component
-// with nothing to hash yet anywhere in this codebase -- a real,
-// documented gap, not silently ignored.
+// resolved runtime's own reported version, the payload's dependency lock
+// digest (already verified by pkg/taskbundlev2.Extract's own per-file
+// digest check -- reused here, not rehashed), and the platform ABI.
+// "Declared system libraries" is the one listed component with nothing
+// to hash yet anywhere in this codebase -- a real, documented gap, not
+// silently ignored.
+//
+// The adapter identity and runtime version are per runtime class, so a
+// python payload and a node payload of the same bundle never collide on
+// one environment digest -- exactly the distinction a pinned record
+// exists to preserve across retries.
 func computeExecutionEnvironmentDigest(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest) (string, error) {
-	pythonPath, reason := plugins.ResolvePython("")
-	if reason != "" {
-		return "", fmt.Errorf("resolve python interpreter: %s", reason)
+	var adapter, adapterVersion, runtimeBin string
+	switch payload.Runtime {
+	case taskbundlev2.RuntimePython:
+		adapter, adapterVersion = pyharness.Adapter, pyharness.AdapterVersion
+		path, reason := plugins.ResolvePython("")
+		if reason != "" {
+			return "", fmt.Errorf("resolve python interpreter: %s", reason)
+		}
+		runtimeBin = path
+	case taskbundlev2.RuntimeNode:
+		adapter, adapterVersion = nodeharness.Adapter, nodeharness.AdapterVersion
+		path, reason := plugins.ResolveNode("")
+		if reason != "" {
+			return "", fmt.Errorf("resolve node runtime: %s", reason)
+		}
+		runtimeBin = path
+	default:
+		return "", fmt.Errorf("payload %q declares runtime %q, which this server has no adapter for (supported: %s)", payload.ID, payload.Runtime, strings.Join(supportedTaskRuntimes, ", "))
 	}
-	pyVersion, err := pythonVersionString(pythonPath)
+	runtimeVersion, err := runtimeVersionString(runtimeBin)
 	if err != nil {
 		return "", err
 	}
@@ -237,27 +259,29 @@ func computeExecutionEnvironmentDigest(payload *taskbundlev2.Payload, manifest *
 		}
 	}
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"adapter=%s;adapter_version=%s;python_version=%s;os=%s;arch=%s;dependency_lock_sha256=%s",
-		pyharness.Adapter, pyharness.AdapterVersion, pyVersion, runtime.GOOS, runtime.GOARCH, depLockDigest,
+		"adapter=%s;adapter_version=%s;runtime=%s;runtime_version=%s;os=%s;arch=%s;dependency_lock_sha256=%s",
+		adapter, adapterVersion, payload.Runtime, runtimeVersion, runtime.GOOS, runtime.GOARCH, depLockDigest,
 	)))
 	return "sha256:" + hex.EncodeToString(sum[:]), nil
 }
 
-// pythonVersionString runs "<pythonPath> --version" and returns its
-// trimmed output (e.g. "Python 3.12.3") -- part of the execution
-// environment digest's "exact runtime build" coverage.
-func pythonVersionString(pythonPath string) (string, error) {
+// runtimeVersionString runs "<binPath> --version" and returns its
+// trimmed output (e.g. "Python 3.12.3", "v20.20.2") -- part of the
+// execution environment digest's "exact runtime build" coverage. Both
+// reference adapters' runtimes answer the same flag.
+func runtimeVersionString(binPath string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, pythonPath, "--version").CombinedOutput() // #nosec G204 -- pythonPath is resolved via plugins.ResolvePython, not attacker input
+	out, err := exec.CommandContext(ctx, binPath, "--version").CombinedOutput() // #nosec G204 -- binPath is resolved via pkg/plugins' runtime resolution, not attacker input
 	if err != nil {
-		return "", fmt.Errorf("%s --version: %w", pythonPath, err)
+		return "", fmt.Errorf("%s --version: %w", binPath, err)
 	}
 	return strings.TrimSpace(string(out)), nil
 }
 
 // executeTaskBundle fetches+extracts digest, resolves (or reuses a
-// pinned) python payload, and runs it through pkg/taskharness+pyharness,
+// pinned) payload, and runs it through pkg/taskharness and that
+// payload's own reference adapter,
 // mapping the outcome into the DataSet contract every other node type
 // returns. Shared by Runner.runTask (local) and ExecuteTaskWorkOrderContext
 // (remote) — see this file's own doc comment. runID/nodeID identify the
@@ -275,21 +299,11 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 		return nil, err
 	}
 
-	pythonPath, reason := plugins.ResolvePython("")
-	if reason != "" {
-		return nil, fmt.Errorf("task node requires a python interpreter: %s", reason)
-	}
-
 	attemptDir, err := os.MkdirTemp("", "brokoli-task-attempt-")
 	if err != nil {
 		return nil, err
 	}
 	defer os.RemoveAll(attemptDir)
-
-	harnessPath, err := pyharness.Materialize(attemptDir)
-	if err != nil {
-		return nil, fmt.Errorf("materialize task harness: %w", err)
-	}
 
 	outputStagingDir := filepath.Join(attemptDir, "out")
 	if err := os.MkdirAll(outputStagingDir, 0o750); err != nil {
@@ -311,14 +325,13 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 		}
 	}
 
-	if err := pyharness.WriteInvocation(invocationPath, pyharness.Invocation{
-		SysPath:         []string{bundleDir},
-		Module:          payload.Entrypoint.Module,
-		Symbol:          payload.Entrypoint.Symbol,
-		Kwargs:          kwargs,
-		InterfaceDigest: manifest.InterfaceDigest,
-	}); err != nil {
-		return nil, fmt.Errorf("write task invocation: %w", err)
+	// Trusted-profile resource baseline: reused, not reimplemented, from
+	// the same ADR-029 primitive a code node is bounded by.
+	limits := codeexec.Resolve(config)
+
+	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, limits)
+	if err != nil {
+		return nil, err
 	}
 
 	if timeoutSec <= 0 {
@@ -327,18 +340,18 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
 	defer cancel()
 
-	// Trusted-profile resource baseline: reused, not reimplemented, from
-	// the same ADR-029 primitive a code node is bounded by. Memory
-	// (RLIMIT_AS) is applied by the harness process itself, reading the
-	// same BROKED_LIMIT_MEMORY_MB env var a code node's wrapper reads --
-	// pkg/proctree.Rlimits has no memory field (ADR-030: RLIMIT_AS is
-	// wrong for a Node worker, but a task harness is always Python here).
-	limits := codeexec.Resolve(config)
+	// The memory ceiling is applied per adapter, not here: harness.py
+	// self-applies RLIMIT_AS from the BROKED_LIMIT_MEMORY_MB env var
+	// below, while the Node adapter takes V8's --max-old-space-size in
+	// its argv (pkg/proctree.Rlimits has no memory field, and ADR-030
+	// records why RLIMIT_AS is the wrong instrument for Node) -- see
+	// prepareTaskHarness. CPU, file size and open files are enforced
+	// externally, identically, for both.
 	env := append(os.Environ(), limits.Env()...)
 
 	start := taskharness.NewStartFrame(invocationPath, resultPath, outputStagingDir)
 	result, err := taskharness.Run(runCtx, start, taskharness.Options{
-		Command: pyharness.Command(pythonPath, harnessPath),
+		Command: command,
 		Env:     env,
 		Rlimits: proctree.Rlimits{
 			CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
@@ -354,6 +367,71 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	}
 
 	return readTaskResult(resultPath, manifest.InterfaceDigest, nodeInterface)
+}
+
+// supportedTaskRuntimes are the runtime classes this build has a
+// reference adapter for (ADR-033 section 3's required two). Order here
+// does not express a preference -- taskbundlev2.SelectPayload takes the
+// first payload in MANIFEST order whose runtime is in this set, so a
+// bundle author picks between equivalent payloads, not this list.
+var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.RuntimeNode}
+
+// prepareTaskHarness materializes the reference adapter for payload's
+// runtime class into attemptDir, writes that adapter's own invocation
+// descriptor, and returns the argv to launch it.
+//
+// This switch is the ONLY language-specific invocation code in the
+// engine (ADR-033 section 3: "the scheduler does not contain Python- or
+// Node-specific invocation code. It selects an adapter by runtime class
+// and protocol version"). Everything after it -- the JSONL protocol
+// exchange, resource ceilings, result reading, contract validation -- is
+// identical for every adapter.
+func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, limits codeexec.Limits) ([]string, error) {
+	switch payload.Runtime {
+	case taskbundlev2.RuntimePython:
+		pythonPath, reason := plugins.ResolvePython("")
+		if reason != "" {
+			return nil, fmt.Errorf("task node requires a python interpreter: %s", reason)
+		}
+		harnessPath, err := pyharness.Materialize(attemptDir)
+		if err != nil {
+			return nil, fmt.Errorf("materialize task harness: %w", err)
+		}
+		if err := pyharness.WriteInvocation(invocationPath, pyharness.Invocation{
+			SysPath:         []string{bundleDir},
+			Module:          payload.Entrypoint.Module,
+			Symbol:          payload.Entrypoint.Symbol,
+			Kwargs:          kwargs,
+			InterfaceDigest: manifest.InterfaceDigest,
+		}); err != nil {
+			return nil, fmt.Errorf("write task invocation: %w", err)
+		}
+		return pyharness.Command(pythonPath, harnessPath), nil
+	case taskbundlev2.RuntimeNode:
+		nodePath, reason := plugins.ResolveNode("")
+		if reason != "" {
+			return nil, fmt.Errorf("task node requires a node runtime: %s", reason)
+		}
+		harnessPath, err := nodeharness.Materialize(attemptDir)
+		if err != nil {
+			return nil, fmt.Errorf("materialize task harness: %w", err)
+		}
+		if err := nodeharness.WriteInvocation(invocationPath, nodeharness.Invocation{
+			ModuleRoots:     []string{bundleDir},
+			Module:          payload.Entrypoint.Module,
+			Symbol:          payload.Entrypoint.Symbol,
+			Kwargs:          kwargs,
+			InterfaceDigest: manifest.InterfaceDigest,
+		}); err != nil {
+			return nil, fmt.Errorf("write task invocation: %w", err)
+		}
+		return nodeharness.Command(nodePath, harnessPath, limits.MemoryMB), nil
+	default:
+		return nil, fmt.Errorf(
+			"task payload %q declares runtime %q, which this server has no adapter for (supported: %s)",
+			payload.ID, payload.Runtime, strings.Join(supportedTaskRuntimes, ", "),
+		)
+	}
 }
 
 // runTask executes a 'task' IR node. Local (in-process) when this Runner

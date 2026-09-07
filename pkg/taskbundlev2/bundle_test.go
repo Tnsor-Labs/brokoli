@@ -113,31 +113,52 @@ func TestValidateRejectsPathTraversalFileEntry(t *testing.T) {
 	}
 }
 
-func TestSelectPythonPayloadPrefersMatchingHost(t *testing.T) {
+func TestSelectPayloadPrefersMatchingHost(t *testing.T) {
 	m := validManifest()
-	got, err := SelectPythonPayload(m)
+	got, err := SelectPayload(m, []string{RuntimePython})
 	if err != nil {
-		t.Fatalf("SelectPythonPayload: %v", err)
+		t.Fatalf("SelectPayload: %v", err)
 	}
 	if got.ID != "python-any" {
 		t.Errorf("selected %q, want python-any", got.ID)
 	}
 }
 
-func TestSelectPythonPayloadSkipsNonPythonRuntime(t *testing.T) {
+func TestSelectPayloadSkipsUnsupportedRuntime(t *testing.T) {
 	m := validManifest()
 	m.Payloads[0].Runtime = RuntimeNode
 	m.Payloads[0].Entrypoint = Entrypoint{Executable: "index.js"}
-	if _, err := SelectPythonPayload(m); err == nil {
+	if _, err := SelectPayload(m, []string{RuntimePython}); err == nil {
 		t.Fatal("expected no python payload to be selectable")
 	}
 }
 
-func TestSelectPythonPayloadRejectsWrongPlatform(t *testing.T) {
+// A caller that supports both adapters takes whichever payload the
+// manifest lists first -- manifest order is the deterministic
+// tie-breaker (ADR-033 section 4), not a runtime preference baked into
+// this package.
+func TestSelectPayloadHonorsManifestOrderAcrossRuntimes(t *testing.T) {
+	m := validManifest()
+	nodeFirst := Payload{
+		ID: "node-any", Runtime: RuntimeNode, OS: "any", Arch: "any",
+		Entrypoint: Entrypoint{Module: "task", Symbol: "run"}, Effects: EffectPure,
+		PayloadDigest: m.Payloads[0].PayloadDigest,
+	}
+	m.Payloads = append([]Payload{nodeFirst}, m.Payloads...)
+	got, err := SelectPayload(m, []string{RuntimePython, RuntimeNode})
+	if err != nil {
+		t.Fatalf("SelectPayload: %v", err)
+	}
+	if got.ID != "node-any" {
+		t.Errorf("selected %q, want node-any (first in manifest order)", got.ID)
+	}
+}
+
+func TestSelectPayloadRejectsWrongPlatform(t *testing.T) {
 	m := validManifest()
 	m.Payloads[0].OS = "plan9"
 	m.Payloads[0].Arch = "mips"
-	if _, err := SelectPythonPayload(m); err == nil {
+	if _, err := SelectPayload(m, []string{RuntimePython}); err == nil {
 		t.Fatal("expected a platform-mismatched payload to be rejected")
 	}
 }

@@ -75,6 +75,40 @@ func (e *taskTestEngine) bundle(t *testing.T, source string) string {
 	return digest
 }
 
+// nodeBundle is bundle's node counterpart (ADR-033 phase 4a): the same
+// one-file, one-payload shape, declaring the "node" runtime class so the
+// engine selects the Node reference adapter for it.
+func (e *taskTestEngine) nodeBundle(t *testing.T, source string) string {
+	t.Helper()
+	placeholderDigest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	archive, err := taskbundlev2.Assemble(
+		map[string]string{"fixture_task.mjs": source},
+		&taskbundlev2.Manifest{
+			Format:          taskbundlev2.Format,
+			Name:            "fixture-task",
+			InterfaceDigest: placeholderDigest,
+			SourceDigest:    placeholderDigest,
+			Payloads: []taskbundlev2.Payload{{
+				ID:            "node-any",
+				Runtime:       taskbundlev2.RuntimeNode,
+				OS:            "any",
+				Arch:          "any",
+				Entrypoint:    taskbundlev2.Entrypoint{Module: "fixture_task", Symbol: "run"},
+				Effects:       taskbundlev2.EffectPure,
+				PayloadDigest: placeholderDigest,
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := taskbundlev2.DigestOf(archive)
+	if created, err := e.s.PutTaskBundleV2(taskOrg, digest, archive); err != nil || !created {
+		t.Fatalf("seed task bundle v2: created=%v err=%v", created, err)
+	}
+	return digest
+}
+
 func (e *taskTestEngine) runPipeline(t *testing.T, id, digest string, params map[string]string) (*models.Run, error) {
 	t.Helper()
 	pipeline := &models.Pipeline{
@@ -201,6 +235,81 @@ func TestTaskNodeOutputSatisfyingItsContractRunsNormally(t *testing.T) {
 	row := e.firstTaskRow(t, run)
 	if got := toF64(row["result"]); got != 42 {
 		t.Fatalf("task output result = %v (type %T), want 42", row["result"], row["result"])
+	}
+}
+
+func skipIfNoNode(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not on PATH")
+	}
+}
+
+// ADR-033 phase 4a: the second required reference adapter. A task bundle
+// declaring only a "node" payload runs end to end through the real
+// engine and a real node subprocess -- the same pipeline shape, store,
+// dispatch path and result contract a python task uses, with only the
+// adapter differing.
+func TestTaskNodeRunsANodePayloadEndToEnd(t *testing.T) {
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	digest := e.nodeBundle(t, "export function run() {\n  return 42;\n}\n")
+	run, err := e.runPipeline(t, "p-task-node", digest, nil)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	row := e.firstTaskRow(t, run)
+	if got := toF64(row["result"]); got != 42 {
+		t.Fatalf("task output result = %v (type %T), want 42", row["result"], row["result"])
+	}
+}
+
+// Run parameters reach a node task as ONE object argument, the forced
+// difference from Python's func(**kwargs) -- proving the kwargs
+// convention each adapter documents is the one actually delivered.
+func TestTaskNodeNodePayloadReceivesRunParametersAsAnObject(t *testing.T) {
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	digest := e.nodeBundle(t, "export function run({ name }) {\n  return `hello ${name}`;\n}\n")
+	run, err := e.runPipeline(t, "p-task-node-kwargs", digest, map[string]string{"name": "world"})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	row := e.firstTaskRow(t, run)
+	if got := row["result"]; got != "hello world" {
+		t.Fatalf("task output result = %v, want %q", got, "hello world")
+	}
+}
+
+// A node task's throw maps into the same failure taxonomy a python
+// task's does -- the taxonomy belongs to the protocol, not to either
+// adapter.
+func TestTaskNodeNodePayloadThrowingFailsTheRunWithUserCode(t *testing.T) {
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	digest := e.nodeBundle(t, "export function run() {\n  throw new Error('node boom');\n}\n")
+	_, execErr := e.runPipeline(t, "p-task-node-raises", digest, nil)
+	if execErr == nil {
+		t.Fatal("a throwing node task ran to success")
+	}
+	if !strings.Contains(execErr.Error(), "user_code") || !strings.Contains(execErr.Error(), "node boom") {
+		t.Fatalf("failure does not name the user_code category and message: %s", execErr)
+	}
+}
+
+// Phase 3b's output-contract validation is adapter-independent: the same
+// declared int64 output rejects a node task's string return exactly as
+// it rejects a python one.
+func TestTaskNodeNodePayloadOutputContractIsEnforced(t *testing.T) {
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	digest := e.nodeBundle(t, "export function run() {\n  return 'not-a-number';\n}\n")
+	_, execErr := e.runPipelineWithOutputInterface(t, "p-task-node-contract", digest, map[string]interface{}{"kind": "int64"})
+	if execErr == nil {
+		t.Fatal("a node task violating its declared output contract ran to success")
+	}
+	if !errors.Is(execErr, ErrTaskOutputContractViolation) {
+		t.Fatalf("error does not wrap ErrTaskOutputContractViolation: %v", execErr)
 	}
 }
 

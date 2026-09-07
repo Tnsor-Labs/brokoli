@@ -4,14 +4,14 @@
 // pkg/taskbundle's task-bundle/1 (ADR-031, frozen per ADR-035 Decision
 // 1) — this package never reads or writes a v1 archive, and vice versa.
 //
-// This is Phase 2a of the ADR-033 rollout (issue #439 step 5): enough
-// of the manifest contract and safe extraction to let a trusted worker
-// stage a bundle's python payload on disk before launching a
-// pkg/taskharness harness process against it. Payload selection today
-// only resolves the "python" runtime class — every other class in the
-// schema's enum parses and validates, but SelectPythonPayload only ever
-// returns a python payload, since Phase 2a is trusted-profile Python
-// only (ee/roadmap decisions recorded on issue #439).
+// Introduced in Phase 2a of the ADR-033 rollout (issue #439 step 5):
+// enough of the manifest contract and safe extraction to let a trusted
+// worker stage a bundle's payload on disk before launching a
+// pkg/taskharness harness process against it. SelectPayload resolves
+// whichever runtime classes its caller declares an adapter for --
+// "python" and "node" as of phase 4a, ADR-033 section 3's two required
+// reference adapters. Every other class in the schema's enum parses and
+// validates but has no adapter behind it yet.
 package taskbundlev2
 
 import (
@@ -247,17 +247,31 @@ func cleanRelativePath(name string) (string, bool) {
 	return clean, true
 }
 
-// SelectPythonPayload returns the manifest's python payload matching
-// this host's OS/arch (or declared "any"), or an error naming why none
-// qualifies. Phase 2a is trusted-profile Python only -- selecting any
-// other runtime class is Phase 4's job (the Node reference adapter) and
-// beyond.
-func SelectPythonPayload(m *Manifest) (*Payload, error) {
+// SelectPayload returns the first payload, in manifest order, whose
+// runtime class is one the caller supports and whose OS/arch matches
+// this host (or is declared "any") -- or an error naming why every
+// payload was rejected.
+//
+// Manifest order is the tie-breaker on purpose: it is digest-covered and
+// immutable, so selection is deterministic (ADR-033 section 4) and a
+// bundle author controls preference between equivalent payloads by
+// ordering them. Runtime support is a property of the caller (which
+// adapters it has), not of this package -- hence the parameter rather
+// than a package-level list.
+func SelectPayload(m *Manifest, runtimes []string) (*Payload, error) {
+	supported := func(r string) bool {
+		for _, want := range runtimes {
+			if r == want {
+				return true
+			}
+		}
+		return false
+	}
 	var reasons []string
 	for i := range m.Payloads {
 		p := &m.Payloads[i]
-		if p.Runtime != RuntimePython {
-			reasons = append(reasons, fmt.Sprintf("payload %q: runtime %q, not python", p.ID, p.Runtime))
+		if !supported(p.Runtime) {
+			reasons = append(reasons, fmt.Sprintf("payload %q: runtime %q is not one this server can run (%s)", p.ID, p.Runtime, strings.Join(runtimes, ", ")))
 			continue
 		}
 		if !PlatformMatches(p.OS, p.Arch) {
@@ -269,7 +283,7 @@ func SelectPythonPayload(m *Manifest) (*Payload, error) {
 	if len(reasons) == 0 {
 		return nil, fmt.Errorf("manifest has no payloads")
 	}
-	return nil, fmt.Errorf("no python payload is selectable on this host (%s/%s):\n  %s", runtime.GOOS, runtime.GOARCH, strings.Join(reasons, "\n  "))
+	return nil, fmt.Errorf("no payload is selectable on this host (%s/%s):\n  %s", runtime.GOOS, runtime.GOARCH, strings.Join(reasons, "\n  "))
 }
 
 // FindPayload returns the manifest's payload with the given ID, or
