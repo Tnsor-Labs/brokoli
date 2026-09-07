@@ -58,17 +58,26 @@ func taskRemoteDispatchPipelineWithOutputInterface(id, digest string, outputType
 
 func seedRemoteTaskBundle(t *testing.T, s *store.SQLiteStore, source string) string {
 	t.Helper()
+	return seedRemoteTaskBundleFor(t, s, taskbundlev2.RuntimePython, "fixture_task.py", source)
+}
+
+// seedRemoteTaskBundleFor builds and stores a one-file, one-payload
+// bundle for the given runtime class -- the same fixture shape for both
+// reference adapters, since what differs between them is the adapter the
+// engine selects, not anything about the bundle's structure.
+func seedRemoteTaskBundleFor(t *testing.T, s *store.SQLiteStore, runtimeClass, fileName, source string) string {
+	t.Helper()
 	placeholderDigest := "sha256:" + strings.Repeat("0", 62) + "aa"
 	archive, err := taskbundlev2.Assemble(
-		map[string]string{"fixture_task.py": source},
+		map[string]string{fileName: source},
 		&taskbundlev2.Manifest{
 			Format:          taskbundlev2.Format,
 			Name:            "fixture-task",
 			InterfaceDigest: placeholderDigest,
 			SourceDigest:    placeholderDigest,
 			Payloads: []taskbundlev2.Payload{{
-				ID:            "python-any",
-				Runtime:       taskbundlev2.RuntimePython,
+				ID:            runtimeClass + "-any",
+				Runtime:       runtimeClass,
 				OS:            "any",
 				Arch:          "any",
 				Entrypoint:    taskbundlev2.Entrypoint{Module: "fixture_task", Symbol: "run"},
@@ -250,6 +259,66 @@ func TestTaskNodeRemoteDispatch_OutputContractViolationFailsTheRun(t *testing.T)
 	}
 	if strings.Contains(attempt.Error, "not-a-number") {
 		t.Errorf("attempt error leaked the observed value: %q", attempt.Error)
+	}
+}
+
+// ADR-033 phase 4a on the remote path: adapter selection happens
+// worker-side, inside ExecuteTaskWorkOrderContext, so a node payload has
+// to work through remote dispatch too -- and that is worth proving
+// rather than inferring from "both paths call executeTaskBundle." The
+// WorkOrder carries only the bundle digest, with no hint of the runtime
+// class anywhere in it, which is exactly why the dispatcher cannot tag
+// the job by runtime today (the deferred per-runtime capability work).
+func TestTaskNodeRemoteDispatch_NodePayloadSucceeds(t *testing.T) {
+	skipIfNoNode(t)
+	realStore := newExpansionTestStore(t, "task-remote-node")
+	real := realStore.(*store.SQLiteStore)
+	digest := seedRemoteTaskBundleFor(t, real, taskbundlev2.RuntimeNode, "fixture_task.mjs",
+		"export function run() {\n  return 99;\n}\n")
+
+	pipeline := taskRemoteDispatchPipeline("task-remote-node-pipeline", digest)
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.RunID, job.NodeID, job.WorkOrder)
+			if err != nil {
+				return nil, nil, err.Error()
+			}
+			return ds.Columns, ds.Rows, ""
+		},
+	}
+
+	run, err := eng.RunPipeline(pipeline.ID)
+	if err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %s, want success", run.Status)
+	}
+	ds, err := eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
+	}
+	if len(ds.Rows) != 1 || toF64(ds.Rows[0]["result"]) != 99 {
+		t.Errorf("artifact rows = %v, want one row result=99", ds.Rows)
+	}
+
+	// The pinned execution record must name the node adapter's own
+	// environment, not a python one -- the digest covers adapter identity
+	// per runtime class precisely so these cannot collide.
+	rec, err := real.GetResolvedExecutionRecord(run.ID, "task")
+	if err != nil {
+		t.Fatalf("GetResolvedExecutionRecord: %v", err)
+	}
+	if rec.PayloadID != "node-any" {
+		t.Errorf("pinned payload = %q, want node-any", rec.PayloadID)
 	}
 }
 
