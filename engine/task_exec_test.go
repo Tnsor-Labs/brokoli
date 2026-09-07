@@ -536,3 +536,110 @@ func TestTaskNodeDatasetOutputRejectsANonRowReturn(t *testing.T) {
 		t.Fatalf("failure does not explain the dataset contract violation: %s", execErr)
 	}
 }
+
+// crossLanguagePipeline wires a producing task to a consuming task:
+// producer declares a dataset output, consumer declares a dataset input
+// AND output, so the consumer stops being source-capable and may
+// receive the edge (engine/validate.go's nodeIsSourceCapable).
+func (e *taskTestEngine) crossLanguagePipeline(t *testing.T, id, producerDigest, consumerDigest string) (*models.Run, error) {
+	t.Helper()
+	datasetPort := map[string]interface{}{
+		"value": map[string]interface{}{"kind": "dataset"},
+	}
+	pipeline := &models.Pipeline{
+		ID: id, Name: id, Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "producer", Type: models.NodeTypeTask, Name: "Producer", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": producerDigest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs":  map[string]interface{}{"result": datasetPort},
+			}},
+			{ID: "consumer", Type: models.NodeTypeTask, Name: "Consumer", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": consumerDigest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{"input": datasetPort},
+				"outputs":  map[string]interface{}{"result": datasetPort},
+			}},
+		},
+		Edges: []models.Edge{{From: "producer", To: "consumer"}},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	return e.eng.RunPipeline(pipeline.ID)
+}
+
+// ADR-033's own acceptance gate: "one Python task feeds a Node task and
+// one Node task feeds a Python task through the same pinned backend."
+// This is the first direction.
+func TestCrossLanguage_PythonTaskFeedsNodeTask(t *testing.T) {
+	skipIfNoPython3(t)
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	producer := e.bundle(t, "def run():\n    return [{'n': 1}, {'n': 2}, {'n': 3}]\n")
+	consumer := e.nodeBundle(t, "export function run({ input }) {\n  return input.map((r) => ({ n: r.n, doubled: r.n * 2 }));\n}\n")
+
+	run, err := e.crossLanguagePipeline(t, "p-xlang-py-to-node", producer, consumer)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "consumer", "")
+	if err != nil {
+		t.Fatalf("read consumer artifact: %v", err)
+	}
+	if len(ds.Rows) != 3 {
+		t.Fatalf("consumer rows = %v, want the producer's 3 rows transformed", ds.Rows)
+	}
+	if toF64(ds.Rows[2]["doubled"]) != 6 {
+		t.Errorf("row 2 = %v, want doubled=6", ds.Rows[2])
+	}
+}
+
+// The other direction, which is the half that proves the boundary is the
+// protocol's rather than one language's serialization habits.
+func TestCrossLanguage_NodeTaskFeedsPythonTask(t *testing.T) {
+	skipIfNoPython3(t)
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	producer := e.nodeBundle(t, "export function run() {\n  return [{ n: 10 }, { n: 20 }];\n}\n")
+	consumer := e.bundle(t, "def run(input):\n    return [{'n': r['n'], 'halved': r['n'] / 2} for r in input]\n")
+
+	run, err := e.crossLanguagePipeline(t, "p-xlang-node-to-py", producer, consumer)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "consumer", "")
+	if err != nil {
+		t.Fatalf("read consumer artifact: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("consumer rows = %v, want 2", ds.Rows)
+	}
+	if toF64(ds.Rows[1]["halved"]) != 10 {
+		t.Errorf("row 1 = %v, want halved=10", ds.Rows[1])
+	}
+}
+
+// A task declaring an input port is a consumer, not a source, so an edge
+// into it must validate -- the rule that previously made this shape
+// impossible keyed on node TYPE rather than declared contract.
+func TestTaskNodeDeclaringAnInputPortMayReceiveEdges(t *testing.T) {
+	consumer := models.Node{ID: "c", Type: models.NodeTypeTask, Interface: map[string]interface{}{
+		"contract": "brokoli.task-interface/v1",
+		"inputs":   map[string]interface{}{"input": map[string]interface{}{"value": map[string]interface{}{"kind": "dataset"}}},
+		"outputs":  map[string]interface{}{},
+	}}
+	if nodeIsSourceCapable(consumer, nil) {
+		t.Error("a task declaring an input port is still treated as a source, so edges into it are rejected")
+	}
+
+	// ...while a task that declares nothing stays a source, since
+	// absence is honest and nothing said it consumes anything.
+	bare := models.Node{ID: "b", Type: models.NodeTypeTask}
+	if !nodeIsSourceCapable(bare, nil) {
+		t.Error("a task with no declared input stopped being source-capable, which breaks single-task pipelines")
+	}
+}

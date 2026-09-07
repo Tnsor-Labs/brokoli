@@ -90,6 +90,17 @@ type Invocation struct {
 	// make "list of dicts" mean something different than the interface
 	// says.
 	OutputKind string `json:"output_kind,omitempty"`
+	// InputPath names an NDJSON file of input rows the trusted worker
+	// staged for this attempt, when the node declares an input port
+	// (ADR-033 phase 5b). Empty means the task consumes nothing but its
+	// kwargs. The harness reads it and passes the rows to the task under
+	// the port's own name, so a task's signature names its input the way
+	// the interface does.
+	InputPath string `json:"input_path,omitempty"`
+	// InputCodec is how InputPath is encoded -- always ndjson/v1 today
+	// (ADR-033 section 8's baseline), carried explicitly so a future
+	// Arrow IPC input is a value change rather than a format guess.
+	InputCodec string `json:"input_codec,omitempty"`
 }
 
 // WriteInvocation writes inv as JSON to path.

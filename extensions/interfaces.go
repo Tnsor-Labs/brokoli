@@ -521,6 +521,17 @@ type InstanceWorkOrder struct {
 	// strips script/expansion metadata before populating it; source_api page
 	// dispatch carries the request/response config needed to parse one page.
 	Config map[string]interface{} `json:"config,omitempty"`
+	// InputColumns/InputRows carry a task node's whole input dataset
+	// (ADR-033 phase 5b), as opposed to ItemColumns/ItemRow above, which
+	// carry ONE expansion item. Inline like every other WorkOrder field
+	// so a claimant needs no second fetch, and bounded for exactly that
+	// reason: ADR-033's own follow-up list has "move large
+	// InstanceWorkOrder inputs to ADR-012 references", which is what a
+	// dataset too big to inline needs. Until then a task whose input
+	// exceeds the cap is refused by name rather than silently producing
+	// an enormous job payload.
+	InputColumns []string                 `json:"input_columns,omitempty"`
+	InputRows    []map[string]interface{} `json:"input_rows,omitempty"`
 	// NodeInterface is the node's own ADR-032 Interface (models.Node.Interface),
 	// carried alongside Config for ADR-033's task-node dispatch: a remote
 	// claimant validates the task's returned value against its declared
