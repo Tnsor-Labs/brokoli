@@ -11,6 +11,47 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.5] - 2026-09-07
+
+### Added
+
+- **`task` nodes can emit artifacts and collections** (#470, #471) --
+  @hc12r. Completes the four value kinds ADR-032 section 6 defines: as
+  of v0.11.4 a task could emit a scalar or a dataset, and the other two
+  were refused by name. An **artifact** output keeps its bytes opaque --
+  they move into the content-addressed blob store and the node's output
+  becomes the reference, in the same four-column
+  uri/media_type/size_bytes/checksum row a `source_api` artifact
+  response already produces, so downstream has one representation to
+  understand rather than two. Media type comes from the result
+  manifest and is checked against the port's declared `media_types`.
+  With no blob store configured an artifact output is refused by name
+  rather than inlined, since inlining would defeat the kind entirely
+  and can be enormous.
+  A **collection** output becomes one row per separately addressable
+  item, each row in the shape that item's own kind already produces --
+  so a collection of artifacts is N reference rows, a collection of
+  scalars is N value rows, and downstream reads collections with the
+  machinery it already has. Each item is read by the same reader its
+  kind uses standalone, so artifact items get identical safe-open and
+  integrity verification. ADR-032 section 6's rule that duplicate item
+  keys are invalid (even when duplicate values are allowed) is
+  enforced, naming both colliding positions.
+
+### Changed
+
+- **`task-result/v1` gained a recursive `items` field** (#471) --
+  @hc12r. Required for the `collection` kind and only that kind. Each
+  entry is an output port result in its own right, carrying whatever
+  its own kind requires, so a collection of artifacts holds per-item
+  path and checksum. Additive: no existing producer emits collections,
+  and the dataset, artifact and scalar rules are unchanged.
+- **Reading a task-written file is now one code path** (#470) --
+  @hc12r. `openStagedOutput` holds ADR-033 section 7 rule 6 in a single
+  place -- beneath/no-follow resolution, regular files only, size
+  checked against both the server's cap and the manifest's own claim --
+  and every output kind that reads a staged file goes through it.
+
 ## [0.11.4] - 2026-09-07
 
 ### Added
