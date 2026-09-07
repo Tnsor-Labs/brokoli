@@ -106,6 +106,23 @@ var remoteInstanceDispatchMargin = 2 * time.Minute
 // up until 5 seconds later.
 var remoteInstanceStatusPollInterval = time.Second
 
+// remoteInstanceInitialPollInterval is where that polling STARTS, before
+// backing off toward remoteInstanceStatusPollInterval.
+//
+// A fixed one-second tick means an instance whose worker finished a
+// millisecond after the previous check waits out the rest of the second
+// for nothing, and a pipeline of N remote instances pays that up to N
+// times. The interval's own job, per the note above, is user-facing
+// latency after a worker actually finishes -- so it should be short
+// exactly when a result is most likely to have just landed, and only
+// coarse once waiting has clearly become the norm.
+//
+// Backing off preserves the old steady-state cost: a long-running
+// instance settles at the same one-second cadence it polled at before,
+// so nothing polls harder than it used to for the case the ceiling was
+// chosen for.
+var remoteInstanceInitialPollInterval = 25 * time.Millisecond
+
 // maxConcurrentRemoteExpansionDispatch bounds how many of one expansion
 // node's instances runCodeExpansion dispatches to remote workers at once.
 // Not unbounded: defaultMaxExpansionInstances allows up to 1000 items, and
@@ -820,8 +837,13 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 		return result, err
 	}
 
-	ticker := time.NewTicker(remoteInstanceStatusPollInterval)
-	defer ticker.Stop()
+	// Adaptive: start fast, double on each miss, settle at the ceiling.
+	interval := remoteInstanceInitialPollInterval
+	if interval > remoteInstanceStatusPollInterval {
+		interval = remoteInstanceStatusPollInterval
+	}
+	timer := time.NewTimer(interval)
+	defer timer.Stop()
 	for {
 		select {
 		case <-waitCtx.Done():
@@ -838,10 +860,17 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 				r.log(nodeID, models.LogLevelWarning, "failed to settle timed-out remote instance %s: %v", instanceKey, failErr)
 			}
 			return nil, fmt.Errorf("%s", reason)
-		case <-ticker.C:
+		case <-timer.C:
 			if result, err, ok := checkAttempt(); ok {
 				return result, err
 			}
+			if interval < remoteInstanceStatusPollInterval {
+				interval *= 2
+				if interval > remoteInstanceStatusPollInterval {
+					interval = remoteInstanceStatusPollInterval
+				}
+			}
+			timer.Reset(interval)
 		}
 	}
 }
