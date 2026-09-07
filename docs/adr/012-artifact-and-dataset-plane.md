@@ -121,3 +121,54 @@ Still Deferred, and now scoped to their own future work rather than blocking thi
 - **Reads stream too, with a real tradeoff.** `LocalDiskStore.Open` verifies a checksum eagerly (cheap on local disk) before returning any bytes. Doing the same against S3 would mean buffering a full download before the caller sees a single byte — reintroducing the exact problem this ADR exists to prevent, just on the read side. `S3Store.Open` instead verifies incrementally: bytes are hashed as the caller reads them, and a mismatch surfaces as `ErrChecksumMismatch` from the read call that would otherwise report `io.EOF`. A caller that reads the whole stream gets the same correctness guarantee; a caller that reads only part and stops will not learn whether the unread remainder was corrupted. Recorded here as a deliberate, disclosed choice, not an oversight.
 
 **What this does not include, and why:** wiring this into `engine.ArtifactStore` (the interface `LocalDiskArtifactStore`/`SQLArtifactStore` implement) was originally scoped as this same issue's M2. Reading `LocalDiskArtifactStore` in full changed that plan — its manifest layer is inseparable from `WriteArtifactFenced`'s fencing-generation safety (the exact mechanism `#240` found a real gap in once already) and a legacy pre-manifest read fallback specific to the local-disk file layout. Building a second, independent implementation of that fencing contract without the same scrutiny the original got risks quietly reintroducing the class of bug `#240` fixed. `pkg/artifact.S3Store` is deliberately scoped to the low-level `Store` interface only — content in, content out, no manifest/fencing semantics at all — and left for whoever builds a full `engine.ArtifactStore` on top of it to design that layer with its own real design attention, the same way `SQLArtifactStore` got its own.
+## Update — 2026-09-08: staging objects, and when a blob becomes authoritative
+
+Required by ADR-033 §7 point 7 (*"ADR-012 and ADR-017 must be updated
+with this publication operation before acceptance"*). The companion
+change is the ADR-017 update of the same date, which defines
+`CommitAttemptResult`; this half records what that means for the artifact
+plane.
+
+**The distinction this ADR did not previously need.** Until now, a blob
+in the store *was* the result: `WriteArtifact` was called once per node
+output, and a written blob was a published one. A task attempt producing
+several output ports (ADR-032 §6) cannot work that way — its ports are
+uploaded one at a time and become real together or not at all — so the
+store now holds two kinds of object:
+
+- **Staging objects.** Bytes uploaded by an in-flight attempt, before
+  that attempt has committed. They are addressable by the attempt that
+  wrote them and by nothing else. No reader resolves one, no manifest
+  references one, and a run that reads a node's output can never observe
+  one.
+- **Authoritative objects.** Bytes referenced by a committed manifest.
+  These are what every existing reader in this ADR already deals with,
+  unchanged.
+
+Promotion happens exactly once, at `CommitAttemptResult`, and it is a
+metadata event: **no bytes move.** A staging object becomes authoritative
+by being named in a manifest that commits, which is what keeps the
+promotion atomic across every port without copying anything.
+
+**Orphans are expected, not exceptional.** An attempt that uploads two of
+three ports and then loses its lease leaves two staging objects nothing
+will ever reference. That is the designed outcome — the alternative is
+publishing a partial result — and it means the artifact plane now
+*routinely* accumulates garbage rather than only doing so after a crash.
+Retention must reclaim staging objects by attempt, not merely by run:
+the run may be long-lived and healthy while individual attempts inside it
+retry repeatedly.
+
+This is a real cost, and it is the reason this ADR's existing "retention
+beyond per-run deletion" Deferred item stops being optional. Per-run
+deletion alone leaves every failed attempt's staging bytes in the store
+for the life of the run.
+
+**What is unchanged.** Content addressing, namespace scoping, the
+inline-vs-spill threshold, and both `Store` implementations' streaming
+behavior are all untouched. `pkg/artifact.Store` in particular gains
+nothing: staging versus authoritative is a fact about whether a committed
+manifest names an object, and manifests live in the `engine.ArtifactStore`
+layer above it. That boundary is the one the 2026-08-22 update drew
+deliberately, and this update keeps it — the low-level store still just
+puts bytes in and gets bytes out.

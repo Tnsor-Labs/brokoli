@@ -561,3 +561,75 @@ prove different things, and this ADR now has both.
 [#161](https://github.com/Tnsor-Labs/brokoli/issues/161) (the local-disk-only `ArtifactStore` gap named as the third real bug above, previously worked around with a shared hostPath volume) is closed: `engine.SQLArtifactStore` stores artifact data in the same SQL database every pod already connects to, so a remote-dispatched instance's result is readable back by the dispatcher pod without a shared volume. It activates alongside `BROKOLI_INSTANCE_DISPATCH=1`; every other deployment keeps the local-disk default (ADR-012's unchanged first backend).
 
 All three real bugs found deploying this are now fixed. Remaining open items are the ones already named above and not specific to this promotion: enterprise-side WorkPool transport verification (tracked in the enterprise repo), and the open co-design questions this ADR never resolved unilaterally (job-table shape, Redis/WorkPool claim-model convergence, real-network reclaim-latency budget, SODP-unification sequencing).
+
+## Update — 2026-09-08: `CommitAttemptResult`, the multi-port publication operation
+
+ADR-033 §7 point 7 requires this update by name — *"ADR-012 and ADR-017
+must be updated with this publication operation before acceptance"* — so
+this section is the prerequisite it names, not an optional refinement.
+
+**What changed underneath the 2026-08-12 design.** That design settled
+result delivery for a node producing *one* output: the worker pushes a
+result, the server writes it through `ArtifactStore`, then calls
+`CompleteAttempt`/`FailAttempt`. Two steps, and for a single output that
+is sufficient — a crash between them leaves an artifact nothing points
+at, which the waiting side simply never observes, and the attempt times
+out and retries cleanly.
+
+ADR-032/ADR-033 task nodes break that sufficiency. One attempt can now
+produce **several output ports** (a dataset on one, an artifact on
+another, a collection on a third), and the two-step shape admits an
+outcome the single-output case could not reach: some ports written, then
+a crash, then a retry that writes *different* values for the rest. The
+attempt would settle with a manifest assembled from two different
+executions. Nothing in the current design forbids it, because with one
+output there was nothing to be inconsistent with.
+
+**Decision: one fenced compare-and-swap publishes every port and settles
+the attempt together.**
+
+```
+CommitAttemptResult(runID, nodeID, instanceKey string, attempt int,
+                    fencingGeneration int64, manifest OutputManifest) (ok bool, err error)
+```
+
+- **All ports or none.** The manifest covers every declared output port
+  of the attempt, and is written in the same transaction that settles
+  the attempt. There is no state in which the attempt is complete and
+  its manifest is partial, and none in which two executions each
+  contributed part of one manifest.
+- **Fencing-checked, like every other settlement path in this ADR.** A
+  stale generation returns `ok=false` with no error and no state change,
+  matching `CompleteAttempt`'s existing contract exactly. A worker that
+  lost its lease mid-upload cannot publish over the winner.
+- **Idempotent.** Re-committing the same attempt at the same generation
+  with the same manifest is a no-op success, the same duplicate-delivery
+  contract `AckAttempt` and `CompleteAttempt` already promise.
+- **Uploaded blobs are not authoritative until this CAS succeeds.** They
+  are attempt-scoped staging objects; see the companion ADR-012 update
+  for what that means on the storage side. A crash after upload but
+  before commit therefore leaves *invisible* orphans rather than
+  half-published results — the failure mode is wasted bytes, which
+  retention reclaims, never a wrong answer.
+
+**What this deliberately does not change.** `ExecutionAttempt` still
+carries no result payload — the 2026-08-12 design's separation holds, and
+the manifest is a data-plane record the control-plane row references, not
+a column on it. The transport half is unchanged too: still push, still
+job-scoped, still identity forced from the job row and never trusted from
+the payload. This update narrows *when* a result becomes visible; it does
+not revisit how it travels.
+
+**Why a CAS rather than a transaction the worker opens.** The worker has
+no database connection and must not have one — every existing
+worker→server interaction goes through a job-scoped endpoint precisely so
+a worker never holds server-side transactional state. The commit is one
+request the server executes atomically on the worker's behalf, which
+keeps that property intact.
+
+**Relationship to `WriteArtifactFenced`.** That call already carries the
+fencing-generation safety this operation needs, and `#240` found a real
+gap in it once. `CommitAttemptResult` is the multi-port generalization of
+the same idea, and should be built on that mechanism rather than beside
+it — a second independent implementation of a fencing contract is exactly
+what the 2026-08-22 ADR-012 update warned against.
