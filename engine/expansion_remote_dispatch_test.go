@@ -425,3 +425,67 @@ func TestPipeline_ExpandRemoteDispatch_InstancesDispatchConcurrently(t *testing.
 	}
 	t.Logf("%d items, %s each, ran in %s (max %d concurrent)", itemCount, perItemDelay, elapsed, observedMaxInFlight)
 }
+
+// The poll interval exists to bound user-facing latency after a worker
+// finishes (see its own doc comment), and a fixed tick spent that budget
+// on every instance whether or not a result had landed. Backing off from
+// a short first check keeps the ceiling for genuinely slow instances
+// while making a fast one fast.
+func TestRemoteInstancePollBacksOffFromAShortFirstCheck(t *testing.T) {
+	if remoteInstanceInitialPollInterval >= remoteInstanceStatusPollInterval {
+		t.Fatalf("initial interval %v must start below the ceiling %v, or there is no back-off",
+			remoteInstanceInitialPollInterval, remoteInstanceStatusPollInterval)
+	}
+
+	// The doubling reaches the ceiling rather than overshooting it or
+	// stalling below it -- the steady-state cadence must be exactly the
+	// interval the ceiling was chosen for.
+	interval := remoteInstanceInitialPollInterval
+	for i := 0; i < 64 && interval < remoteInstanceStatusPollInterval; i++ {
+		interval *= 2
+		if interval > remoteInstanceStatusPollInterval {
+			interval = remoteInstanceStatusPollInterval
+		}
+	}
+	if interval != remoteInstanceStatusPollInterval {
+		t.Errorf("back-off settled at %v, want the ceiling %v", interval, remoteInstanceStatusPollInterval)
+	}
+}
+
+// The latency this removes, measured rather than asserted in prose: a
+// worker that settles almost immediately must be noticed in well under
+// the old fixed tick.
+func TestRemoteInstanceDispatchNoticesAFastWorkerQuickly(t *testing.T) {
+	realStore := newExpansionTestStore(t, "fast-notice")
+	real := realStore.(*store.SQLiteStore)
+
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path\na.csv\n")
+	pipeline := remoteDispatchTestPipeline("fast-notice-pipeline")
+	pipeline.Nodes[0].Config["path"] = filesCSV
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: time.Millisecond,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			return []string{"path", "from"}, []common.DataRow{{"path": "a.csv", "from": "remote-worker"}}, ""
+		},
+	}
+
+	start := time.Now()
+	if _, err := eng.RunPipeline(pipeline.ID); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+	elapsed := time.Since(start)
+	// Generous against the old floor: the fixed tick made this at least
+	// one full interval per instance, so anything near that means the
+	// back-off is not taking effect.
+	if elapsed >= remoteInstanceStatusPollInterval {
+		t.Errorf("a worker settling in ~1ms took %v to be noticed; the old fixed %v floor appears to still apply",
+			elapsed, remoteInstanceStatusPollInterval)
+	}
+}
