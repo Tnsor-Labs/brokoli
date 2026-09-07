@@ -11,6 +11,49 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-09-07
+
+### Added
+
+- **`task` nodes join the data plane: datasets in and out** (ADR-033
+  phases 4b/5a/5b, #465, #467) -- @hc12r. A task could previously return
+  exactly one inline scalar, so nothing downstream could consume real
+  data from one. Tasks now produce and consume NDJSON datasets (ADR-033
+  section 8's baseline interoperable format; Arrow IPC remains the named
+  optional upgrade), which also closes ADR-033's cross-language
+  acceptance gate: a Python task feeding a Node task and a Node task
+  feeding a Python task both run through the same backend. Which kind a
+  port carries is decided by the node's declared interface, never
+  guessed from a return value's runtime shape. A task declaring an input
+  port is a consumer and may receive edges; one declaring nothing stays
+  a source, so existing single-task pipelines are unaffected.
+  Reading a task-written dataset follows ADR-033 section 7 rule 6: the
+  file is opened beneath a trusted staging descriptor with no-follow
+  semantics, and stat, hash and decode all run through that one handle,
+  so a symlink or replacement race cannot swap the bytes between the
+  check and the read. Declared size and checksum are verified against
+  what was actually read; traversal, symlink escape, non-regular files,
+  oversize, unknown codecs and non-object rows are each refused by name.
+- **Runtime-aware placement for task jobs** (#465, with
+  `brokoli-enterprise` #187) -- @hc12r. A task job now carries a
+  per-runtime capability tag alongside the protocol tag, so a node
+  bundle stops being dispatched to a worker that has no node runtime. A
+  bundle offering a choice of runtimes carries only the protocol tag,
+  since capability matching is AND-superset and naming either class
+  would exclude a worker that has the other. New
+  `taskbundlev2.ReadManifest` lets the dispatcher see what a bundle
+  offers without paying for a full extraction.
+- **Contract validation on both task boundaries** (ADR-032 section 10,
+  #468) -- @hc12r. Rows crossing into a task are validated before it
+  starts, and rows coming out before they are committed downstream --
+  previously only scalar outputs were checked. An input violation
+  reports separately from an output one, because an input violation is
+  the upstream's fault and pointing at the consuming task would send an
+  author to the wrong file. Large datasets are validated by
+  deterministic sampling chosen by row index, so retries check the same
+  rows, and a failure states how many rows were actually checked and
+  under which mode rather than implying the whole dataset was verified.
+
 ## [0.11.3] - 2026-09-07
 
 ### Added
