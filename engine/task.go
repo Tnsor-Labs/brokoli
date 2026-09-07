@@ -419,7 +419,15 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 	// records why RLIMIT_AS is the wrong instrument for Node) -- see
 	// prepareTaskHarness. CPU, file size and open files are enforced
 	// externally, identically, for both.
-	env := append(os.Environ(), limits.Env()...)
+	// codeexec.WorkerEnv, not os.Environ: a task runs user code, and
+	// handing it the engine's whole environment hands it whatever
+	// credentials the engine holds. ADR-029 found and fixed exactly that
+	// for code nodes; task nodes reintroduced it by inheriting the
+	// parent environment wholesale, which a test now proves is not the
+	// case. Same policy, same escape hatch (BROKOLI_CODE_PASS_ENV),
+	// because "what may user code see" should not differ by which
+	// execution path happened to run it.
+	env := append(codeexec.WorkerEnv(), limits.Env()...)
 
 	start := taskharness.NewStartFrame(invocationPath, resultPath, outputStagingDir)
 	result, err := taskharness.Run(runCtx, start, taskharness.Options{
