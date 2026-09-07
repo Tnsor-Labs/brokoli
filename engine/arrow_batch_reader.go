@@ -94,9 +94,7 @@ func (b *ArrowBatchReader) Next() (*common.DataSet, error) {
 	for i := int64(0); i < rec.NumRows(); i++ {
 		row := make(common.DataRow, rec.NumCols())
 		for c, col := range rec.Columns() {
-			// preferInt: this path stands in for decodeRow, which
-			// prefers int64 for whole numbers -- see arrowValueAs.
-			v, err := arrowValueAs(col, int(i), true)
+			v, err := arrowValue(col, int(i))
 			if err != nil {
 				b.done = true
 				return nil, fmt.Errorf("arrow batch decode: column %q: %w", schemaNames[c], err)

@@ -48,7 +48,9 @@ func TestReadTaskDatasetOutput_DecodesRowsAndUnionsColumns(t *testing.T) {
 	if strings.Join(ds.Columns, ",") != "a,b,c" {
 		t.Errorf("columns = %v, want the sorted union [a b c]", ds.Columns)
 	}
-	if ds.Rows[0]["a"] != float64(1) || ds.Rows[1]["c"] != float64(4) {
+	// int64, not float64: whole numbers decode exactly, so an integer
+	// larger than 2^53 survives instead of being silently rounded.
+	if ds.Rows[0]["a"] != int64(1) || ds.Rows[1]["c"] != int64(4) {
 		t.Errorf("rows decoded wrong: %v", ds.Rows)
 	}
 }
@@ -259,5 +261,26 @@ func TestValidateTaskInputDataset_SamplingIsDeterministicAcrossRetries(t *testin
 		if got := validateTaskInputDataset(port, ds); (got == nil) != (first == nil) {
 			t.Fatalf("run %d disagreed with the first: %v vs %v", i, got, first)
 		}
+	}
+}
+
+// The bug the decoder unification fixes, pinned so it cannot come back:
+// json.Unmarshal turns every JSON number into a float64, which cannot
+// represent an integer above 2^53 -- a 64-bit id came back altered,
+// with no error to notice.
+func TestReadTaskDatasetOutput_LargeIntegersSurviveExactly(t *testing.T) {
+	const id = 9007199254740993 // 2^53 + 1: unrepresentable as float64
+	dir, size, checksum := stageNDJSON(t, "result.ndjson", `{"id":9007199254740993}`+"\n")
+
+	ds, err := readTaskDatasetOutput(dir, "result.ndjson", CodecNDJSON, size, checksum)
+	if err != nil {
+		t.Fatalf("readTaskDatasetOutput: %v", err)
+	}
+	got, ok := ds.Rows[0]["id"].(int64)
+	if !ok {
+		t.Fatalf("id decoded as %T, want int64 -- a float64 cannot hold this value exactly", ds.Rows[0]["id"])
+	}
+	if got != id {
+		t.Errorf("id = %d, want %d (the value was altered in decoding)", got, id)
 	}
 }
