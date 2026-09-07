@@ -122,6 +122,20 @@ function resolveModuleFile(roots, moduleName) {
 
 const DATASET_FILENAME = "result.ndjson";
 
+// readInputRows reads the NDJSON rows the trusted worker staged for this
+// attempt. Written by the worker, not the task, so this is a cooperating
+// file rather than untrusted input -- a malformed line here is a bug in
+// the worker, reported as contract_violation because the harness cannot
+// tell the task anything useful about it.
+function readInputRows(inputPath) {
+  const rows = [];
+  for (const line of fs.readFileSync(inputPath, "utf8").split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed) rows.push(JSON.parse(trimmed));
+  }
+  return rows;
+}
+
 // writeDatasetOutput serializes rows to NDJSON in stagingDir and
 // describes them by reference.
 //
@@ -192,6 +206,16 @@ async function main() {
     process.exit(1);
   }
 
+  const args = { ...(inv.kwargs ?? {}) };
+  if (inv.input_path) {
+    try {
+      args.input = readInputRows(inv.input_path);
+    } catch (err) {
+      fail("contract_violation", "invalid_input", err.message);
+      process.exit(1);
+    }
+  }
+
   let result;
   try {
     const mod = await import(pathToFileURL(modulePath).href);
@@ -206,7 +230,7 @@ async function main() {
       );
       process.exit(1);
     }
-    result = await fn(inv.kwargs ?? {});
+    result = await fn(args);
   } catch (err) {
     fail("user_code", "task_raised", err && err.stack ? err.stack : String(err));
     process.exit(1);
