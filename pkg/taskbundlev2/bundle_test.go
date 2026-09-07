@@ -264,3 +264,62 @@ func TestFindPayloadMissingIDReturnsNotOK(t *testing.T) {
 		t.Fatal("expected a missing payload ID to return ok=false")
 	}
 }
+
+func TestReadManifestParsesWithoutExtracting(t *testing.T) {
+	m := validManifest()
+	m.Files = []FileEntry{{Path: "tasks/score.py", Size: 5, SHA256: fileDigest("hello")}}
+	archive := buildTaskBundleV2Archive(t, m, map[string]string{"tasks/score.py": "hello"})
+	got, err := ReadManifest(archive)
+	if err != nil {
+		t.Fatalf("ReadManifest: %v", err)
+	}
+	if got.Name != m.Name || len(got.Payloads) != len(m.Payloads) {
+		t.Errorf("ReadManifest returned %+v, want the manifest that was packed", got)
+	}
+}
+
+// ReadManifest verifies manifest well-formedness but explicitly NOT file
+// integrity -- that is Extract's job, and the doc comment promises the
+// result is only safe for decisions a later Extract re-derives. A bundle
+// whose declared file is absent from the archive must therefore still
+// parse here, and still be rejected by Extract.
+func TestReadManifestDoesNotVerifyFileContents(t *testing.T) {
+	m := validManifest()
+	m.Files = []FileEntry{{Path: "absent.py", Size: 3, SHA256: fileDigest("abc")}}
+	archive := buildTaskBundleV2Archive(t, m, nil) // manifest.json only
+
+	if _, err := ReadManifest(archive); err != nil {
+		t.Fatalf("ReadManifest rejected a manifest whose file integrity it does not check: %v", err)
+	}
+	if _, err := Extract(archive, t.TempDir()); err == nil {
+		t.Fatal("Extract accepted a bundle missing a declared file")
+	}
+}
+
+func TestReadManifestRejectsAnArchiveWithoutAManifest(t *testing.T) {
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	content := []byte("x = 1\n")
+	if err := tw.WriteHeader(&tar.Header{Name: "stray.py", Size: int64(len(content)), Mode: 0o644}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ReadManifest(buf.Bytes()); err == nil {
+		t.Fatal("expected an archive with no manifest.json to be rejected")
+	}
+}
+
+func TestReadManifestRejectsNonGzip(t *testing.T) {
+	if _, err := ReadManifest([]byte("not a gzip archive at all")); err == nil {
+		t.Fatal("expected non-gzip input to be rejected")
+	}
+}

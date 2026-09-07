@@ -105,6 +105,11 @@ type Invocation struct {
 	// InterfaceDigest is stamped into the candidate task-result-v1
 	// manifest's own interface_digest field.
 	InterfaceDigest string `json:"interface_digest"`
+	// OutputKind carries the declared output kind, same meaning and same
+	// engine-is-authoritative reasoning as pyharness.Invocation's own
+	// field: "dataset" makes this harness write NDJSON to the staging
+	// dir and report it by reference instead of inlining a scalar.
+	OutputKind string `json:"output_kind,omitempty"`
 }
 
 // WriteInvocation writes inv as JSON to path.

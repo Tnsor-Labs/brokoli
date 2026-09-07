@@ -36,6 +36,7 @@ externally via pkg/proctree before this process even starts, so this
 block's real job is memory -- the one ceiling that must be self-applied
 from inside the process pkg/taskharness.Options.Rlimits has no field for.
 """
+import hashlib
 import importlib
 import json
 import os
@@ -110,6 +111,50 @@ def load_invocation(invocation_path):
     return inv
 
 
+DATASET_FILENAME = "result.ndjson"
+
+
+def write_dataset_output(staging_dir, rows):
+    """Serialize rows to NDJSON in staging_dir and describe them by reference.
+
+    The declared interface, not this value's runtime shape, is what says
+    a port is a dataset (see the invocation descriptor's output_kind), so
+    a task that declared one and returned something that is not a
+    sequence of mappings is a contract violation with a precise message
+    rather than a confusing serialization error.
+
+    Size and checksum are computed from the bytes actually written, in
+    the same pass, so the worker's own verification (ADR-033 section 7
+    rule 6) compares against what is really on disk.
+    """
+    if isinstance(rows, (str, bytes, dict)) or not hasattr(rows, "__iter__"):
+        raise TypeError(
+            "task declares a dataset output but returned %s; expected an "
+            "iterable of row objects" % type(rows).__name__
+        )
+    path = os.path.join(staging_dir, DATASET_FILENAME)
+    digest = hashlib.sha256()
+    size = 0
+    with open(path, "wb") as f:
+        for i, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise TypeError(
+                    "task declares a dataset output but row %d is %s; every "
+                    "row must be an object" % (i, type(row).__name__)
+                )
+            line = (json.dumps(row, separators=(",", ":")) + "\n").encode("utf-8")
+            f.write(line)
+            digest.update(line)
+            size += len(line)
+    return {
+        "kind": "dataset",
+        "path": DATASET_FILENAME,
+        "codec": "ndjson/v1",
+        "size_bytes": size,
+        "checksum": "sha256:" + digest.hexdigest(),
+    }
+
+
 def main():
     start = load_start_frame()
     emit({
@@ -140,11 +185,15 @@ def main():
 
     try:
         os.makedirs(start["output_staging_dir"], exist_ok=True)
+        if inv.get("output_kind") == "dataset":
+            port = write_dataset_output(start["output_staging_dir"], result)
+        else:
+            port = {"kind": "scalar", "value": result}
         candidate = {
             "contract": "brokoli.task-result/v1",
             "interface_digest": inv["interface_digest"],
             "outputs": {
-                "result": {"kind": "scalar", "value": result},
+                "result": port,
             },
         }
         with open(start["result_path"], "w", encoding="utf-8") as f:

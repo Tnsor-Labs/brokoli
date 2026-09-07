@@ -387,3 +387,63 @@ func TestExecuteInstanceJobContext_RoutesTaskNodesToTheTaskExecutor(t *testing.T
 		t.Errorf("artifact rows = %v, want one row result=7", ds.Rows)
 	}
 }
+
+// ADR-033 phase 4b (runtime-aware placement): a task job now carries a
+// per-runtime capability tag alongside the protocol tag, so a node
+// bundle is not handed to a worker that only has python. The tag has to
+// reach the ENQUEUED job -- that is the only place a queue backend can
+// filter on it.
+func TestTaskNodeRemoteDispatch_CarriesPerRuntimeCapabilityTag(t *testing.T) {
+	// No skipIfNoNode: nothing here executes the bundle, so this runs
+	// (and guards the tagging) even on a host without a node runtime.
+	realStore := newExpansionTestStore(t, "task-remote-caps")
+	real := realStore.(*store.SQLiteStore)
+	digest := seedRemoteTaskBundleFor(t, real, taskbundlev2.RuntimeNode, "fixture_task.mjs",
+		"export function run() {\n  return 1;\n}\n")
+
+	pipeline := taskRemoteDispatchPipeline("task-remote-caps-pipeline", digest)
+	if err := real.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	eng.ArtifactStore = NewLocalDiskArtifactStore(filepath.Join(dir, "artifacts"))
+	var gotCaps []string
+	eng.InstanceJobQueue = &fakeInstanceJobQueue{
+		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
+		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			// Capture and answer without executing: this test is about
+			// what the DISPATCHER enqueues, and running the bundle for
+			// real would cost a node subprocess to prove nothing extra
+			// (TestTaskNodeRemoteDispatch_NodePayloadSucceeds already
+			// covers worker-side execution). The engine package runs
+			// close to its CI timeout -- see #329 -- so a full run per
+			// assertion is a cost worth not paying twice.
+			gotCaps = job.RequiredCapabilities
+			return []string{"result"}, []common.DataRow{{"result": float64(1)}}, ""
+		},
+	}
+
+	if _, err := eng.RunPipeline(pipeline.ID); err != nil {
+		t.Fatalf("RunPipeline: %v", err)
+	}
+
+	var hasProtocol, hasRuntime bool
+	for _, c := range gotCaps {
+		if c == taskRuntimeCapability {
+			hasProtocol = true
+		}
+		if c == taskRuntimeCapabilityFor(taskbundlev2.RuntimeNode) {
+			hasRuntime = true
+		}
+	}
+	if !hasProtocol || !hasRuntime {
+		t.Errorf("RequiredCapabilities = %v, want both %q and %q", gotCaps, taskRuntimeCapability, taskRuntimeCapabilityFor(taskbundlev2.RuntimeNode))
+	}
+	for _, c := range gotCaps {
+		if c == taskRuntimeCapabilityFor(taskbundlev2.RuntimePython) {
+			t.Errorf("a node-only bundle asked for the python runtime tag: %v", gotCaps)
+		}
+	}
+}

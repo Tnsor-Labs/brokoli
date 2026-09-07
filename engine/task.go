@@ -73,6 +73,49 @@ var ErrTaskOutputContractViolation = errors.New("task output violates its declar
 // recorded on ee#55.
 const taskRuntimeCapability = "task-runtime-v1"
 
+// taskRuntimeCapabilityFor names the capability a worker advertises when
+// it can actually run a given runtime class, e.g. "task-runtime-v1:node".
+// The protocol tag above says "I speak task-runtime/v1"; this one says
+// "and I have this adapter's runtime available" -- two separate claims,
+// because phase 4a made them genuinely separable (a host with python but
+// no node satisfies the first and only one half of the second).
+func taskRuntimeCapabilityFor(runtimeClass string) string {
+	return taskRuntimeCapability + ":" + runtimeClass
+}
+
+// taskRuntimeCapabilities returns the capability tags a task job should
+// require, given the bundle it will run.
+//
+// Capability matching is AND-superset (a worker must advertise every tag
+// a job asks for), which cannot express "python OR node". So a bundle
+// whose payloads all share one runtime class gets that class's tag; a
+// bundle offering a CHOICE of runtimes gets only the protocol tag, since
+// any task-capable worker can pick a payload it can run -- and would be
+// wrongly excluded by a tag naming a class it happens to lack.
+//
+// This deliberately does NOT resolve or pin a payload control-plane-side
+// the way ADR-033 section 4 ultimately calls for. Payload selection is
+// platform-dependent (taskbundlev2.PlatformMatches compares against the
+// resolving host's own GOOS/GOARCH), so pinning here would pin for the
+// CONTROL PLANE's platform and silently change which payload a
+// heterogeneous fleet runs. Resolution stays worker-side until workers
+// advertise their platform and the control plane can resolve against
+// the target rather than itself; this function only reads what the
+// manifest offers, and changes nothing about who decides.
+func taskRuntimeCapabilities(manifest *taskbundlev2.Manifest) []string {
+	caps := []string{taskRuntimeCapability}
+	if manifest == nil || len(manifest.Payloads) == 0 {
+		return caps
+	}
+	first := manifest.Payloads[0].Runtime
+	for _, p := range manifest.Payloads[1:] {
+		if p.Runtime != first {
+			return caps // a choice of runtimes: no single tag can describe it
+		}
+	}
+	return append(caps, taskRuntimeCapabilityFor(first))
+}
+
 // taskBundleV2Reference parses a task node's 'task_bundle' config object
 // into the digest it names. Unlike a code node (where task_bundle is one
 // of two mutually exclusive script sources), a 'task' node has no
@@ -329,7 +372,7 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 	// the same ADR-029 primitive a code node is bounded by.
 	limits := codeexec.Resolve(config)
 
-	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, limits)
+	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, nodeInterface, limits)
 	if err != nil {
 		return nil, err
 	}
@@ -366,7 +409,20 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 		return nil, fmt.Errorf("task bundle %s: %s: %s", digest, result.Failure.Category, result.Failure.Message)
 	}
 
-	return readTaskResult(resultPath, manifest.InterfaceDigest, nodeInterface)
+	return readTaskResult(resultPath, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
+}
+
+// declaredOutputKind reports the ADR-032 value kind the node's declared
+// interface says its "result" port produces, or "" when the node
+// declares no interface (absence stays honest -- the harness then uses
+// its inline scalar default rather than being told to produce something
+// nothing asked for).
+func declaredOutputKind(nodeInterface map[string]interface{}) string {
+	pv, ok := portValueFromInterface(nodeInterface, "outputs", "result")
+	if !ok {
+		return ""
+	}
+	return string(pv.Kind)
 }
 
 // supportedTaskRuntimes are the runtime classes this build has a
@@ -386,7 +442,8 @@ var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.Ru
 // and protocol version"). Everything after it -- the JSONL protocol
 // exchange, resource ceilings, result reading, contract validation -- is
 // identical for every adapter.
-func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, limits codeexec.Limits) ([]string, error) {
+func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, limits codeexec.Limits) ([]string, error) {
+	outputKind := declaredOutputKind(nodeInterface)
 	switch payload.Runtime {
 	case taskbundlev2.RuntimePython:
 		pythonPath, reason := plugins.ResolvePython("")
@@ -403,6 +460,7 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Symbol:          payload.Entrypoint.Symbol,
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
+			OutputKind:      outputKind,
 		}); err != nil {
 			return nil, fmt.Errorf("write task invocation: %w", err)
 		}
@@ -422,6 +480,7 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Symbol:          payload.Entrypoint.Symbol,
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
+			OutputKind:      outputKind,
 		}); err != nil {
 			return nil, fmt.Errorf("write task invocation: %w", err)
 		}
@@ -518,7 +577,33 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, t
 		RunParams:      runParams,
 		TimeoutSeconds: timeoutSec,
 	}
-	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, "", execFencingGen, workOrder, timeoutSec, []string{taskRuntimeCapability})
+	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, "", execFencingGen, workOrder, timeoutSec, r.taskJobCapabilities(digest))
+}
+
+// taskJobCapabilities reads the bundle's manifest to learn which runtime
+// classes it offers, so the job only goes to a worker that actually has
+// the right runtime (see taskRuntimeCapabilities).
+//
+// Best-effort by design: a bundle this Runner cannot read here is NOT a
+// dispatch failure, because the worker fetches and validates the bundle
+// itself anyway and will report a far better error than "could not
+// pre-read the manifest" -- and failing dispatch here would turn a
+// placement optimization into a new way for runs to break. Falling back
+// to the bare protocol tag restores exactly the pre-phase-4b behavior.
+func (r *Runner) taskJobCapabilities(digest string) []string {
+	sb, ok := r.store.(store.TaskBundleV2Store)
+	if !ok {
+		return []string{taskRuntimeCapability}
+	}
+	archive, err := sb.GetTaskBundleV2(r.pipe.OrgID, digest)
+	if err != nil {
+		return []string{taskRuntimeCapability}
+	}
+	manifest, err := taskbundlev2.ReadManifest(archive)
+	if err != nil {
+		return []string{taskRuntimeCapability}
+	}
+	return taskRuntimeCapabilities(manifest)
 }
 
 // ExecuteTaskWorkOrderContext runs a task-node WorkOrder's actual work --
@@ -576,7 +661,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 // collection output has nothing here to check against and is silently
 // skipped, exactly like effectiveNodeInterface's own "absence is honest"
 // rule for a genuinely unknown case.
-func readTaskResult(resultPath, wantInterfaceDigest string, nodeInterface map[string]interface{}) (*common.DataSet, error) {
+func readTaskResult(resultPath, outputStagingDir, wantInterfaceDigest string, nodeInterface map[string]interface{}) (*common.DataSet, error) {
 	raw, err := os.ReadFile(resultPath) // #nosec G304 -- resultPath is this attempt's own worker-generated scratch path, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read task result: %w", err)
@@ -585,8 +670,12 @@ func readTaskResult(resultPath, wantInterfaceDigest string, nodeInterface map[st
 		Contract        string `json:"contract"`
 		InterfaceDigest string `json:"interface_digest"`
 		Outputs         map[string]struct {
-			Kind  string      `json:"kind"`
-			Value interface{} `json:"value"`
+			Kind      string      `json:"kind"`
+			Value     interface{} `json:"value"`
+			Path      string      `json:"path"`
+			Codec     string      `json:"codec"`
+			SizeBytes int64       `json:"size_bytes"`
+			Checksum  string      `json:"checksum"`
 		} `json:"outputs"`
 	}
 	if err := json.Unmarshal(raw, &candidate); err != nil {
@@ -602,8 +691,15 @@ func readTaskResult(resultPath, wantInterfaceDigest string, nodeInterface map[st
 	if !ok {
 		return nil, fmt.Errorf("task result has no \"result\" output port")
 	}
+	// A dataset output is rows the task wrote to a staging file; a
+	// scalar is one value carried inline. "artifact"/"collection" still
+	// have no reader (each needs its own reference-handling contract) and
+	// are refused by name rather than mishandled.
+	if out.Kind == "dataset" {
+		return readTaskDatasetOutput(outputStagingDir, out.Path, out.Codec, out.SizeBytes, out.Checksum)
+	}
 	if out.Kind != "scalar" {
-		return nil, fmt.Errorf("task output kind %q is not yet supported (phase 2b handles \"scalar\" only)", out.Kind)
+		return nil, fmt.Errorf("task output kind %q is not yet supported (this server reads \"scalar\" and \"dataset\")", out.Kind)
 	}
 	if pv, ok := portValueFromInterface(nodeInterface, "outputs", "result"); ok && pv.Kind == taskinterface.ValueScalar && pv.ScalarType != nil {
 		if verr := taskinterface.ValidateValue(out.Value, *pv.ScalarType, "$"); verr != nil {

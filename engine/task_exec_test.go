@@ -340,19 +340,29 @@ func TestTaskNodeReceivesRunParametersAsKwargs(t *testing.T) {
 }
 
 // readTaskResult's own unit coverage lives here (not the engine test
-// suite above) since the reference harness always emits "scalar" --
-// there is no way to drive a "dataset"-kind candidate through a real
-// run without a second harness this phase doesn't build.
-func TestReadTaskResult_DatasetOutputKindIsNotYetSupported(t *testing.T) {
-	dir := t.TempDir()
+// suite above) since the reference harnesses only ever emit the kinds
+// the engine asked them for -- there is no way to drive an
+// "artifact"-kind candidate through a real run without an adapter that
+// produces one, which no phase has built.
+//
+// "dataset" WAS in this list until phase 5a gave it a reader; what
+// remains are the two kinds that still have none, each needing its own
+// reference-handling contract rather than a decoder.
+func TestReadTaskResult_ArtifactAndCollectionKindsAreNotYetSupported(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
-	resultPath := writeTestResult(t, dir, `{
-		"contract": "brokoli.task-result/v1",
-		"interface_digest": "`+digest+`",
-		"outputs": {"result": {"kind": "dataset", "path": "out.ndjson", "codec": "ndjson/v1", "size_bytes": 0, "checksum": "sha256:`+strings.Repeat("0", 64)+`"}}
-	}`)
-	if _, err := readTaskResult(resultPath, digest, nil); err == nil || !strings.Contains(err.Error(), "not yet supported") {
-		t.Fatalf("expected a clear not-yet-supported error, got: %v", err)
+	for _, kind := range []string{"artifact", "collection"} {
+		t.Run(kind, func(t *testing.T) {
+			dir := t.TempDir()
+			resultPath := writeTestResult(t, dir, `{
+				"contract": "brokoli.task-result/v1",
+				"interface_digest": "`+digest+`",
+				"outputs": {"result": {"kind": "`+kind+`", "path": "out.bin"}}
+			}`)
+			_, err := readTaskResult(resultPath, dir, digest, nil)
+			if err == nil || !strings.Contains(err.Error(), "not yet supported") {
+				t.Fatalf("expected a clear not-yet-supported error for %q, got: %v", kind, err)
+			}
+		})
 	}
 }
 
@@ -365,7 +375,7 @@ func TestReadTaskResult_InterfaceDigestMismatchIsRefused(t *testing.T) {
 		"interface_digest": "`+other+`",
 		"outputs": {"result": {"kind": "scalar", "value": 1}}
 	}`)
-	if _, err := readTaskResult(resultPath, digest, nil); err == nil {
+	if _, err := readTaskResult(resultPath, dir, digest, nil); err == nil {
 		t.Fatal("expected an interface_digest mismatch to be refused")
 	}
 }
@@ -390,5 +400,120 @@ func TestValidateTaskRuntimeV1_CapabilitiesAdvertiseTheFeatures(t *testing.T) {
 		if !found {
 			t.Fatalf("%q is not in models.SupportedExecutionFeatures; the capabilities endpoint and SDK preflight cannot see it", name)
 		}
+	}
+}
+
+// Capability matching is AND-superset, so it cannot express "python OR
+// node". A bundle offering a CHOICE of runtimes therefore gets only the
+// protocol tag: naming either class would wrongly exclude a worker that
+// has the other one and could have run the bundle fine.
+func TestTaskRuntimeCapabilities_RuntimeChoiceGetsOnlyTheProtocolTag(t *testing.T) {
+	pythonOnly := &taskbundlev2.Manifest{Payloads: []taskbundlev2.Payload{
+		{ID: "p", Runtime: taskbundlev2.RuntimePython},
+	}}
+	if got := taskRuntimeCapabilities(pythonOnly); len(got) != 2 || got[1] != taskRuntimeCapabilityFor(taskbundlev2.RuntimePython) {
+		t.Errorf("single-runtime bundle caps = %v, want the protocol tag plus the python tag", got)
+	}
+
+	mixed := &taskbundlev2.Manifest{Payloads: []taskbundlev2.Payload{
+		{ID: "p", Runtime: taskbundlev2.RuntimePython},
+		{ID: "n", Runtime: taskbundlev2.RuntimeNode},
+	}}
+	if got := taskRuntimeCapabilities(mixed); len(got) != 1 || got[0] != taskRuntimeCapability {
+		t.Errorf("multi-runtime bundle caps = %v, want only the bare protocol tag", got)
+	}
+
+	if got := taskRuntimeCapabilities(nil); len(got) != 1 || got[0] != taskRuntimeCapability {
+		t.Errorf("nil manifest caps = %v, want only the bare protocol tag", got)
+	}
+}
+
+// runPipelineWithDatasetOutput declares the task's "result" port as a
+// dataset, which is what tells the harness to serialize returned rows to
+// a staging file instead of inlining one scalar (ADR-033 phase 5a).
+func (e *taskTestEngine) runPipelineWithDatasetOutput(t *testing.T, id, digest string) (*models.Run, error) {
+	t.Helper()
+	pipeline := &models.Pipeline{
+		ID: id, Name: id, Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "task", Type: models.NodeTypeTask, Name: "Task", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs": map[string]interface{}{
+					"result": map[string]interface{}{
+						"value": map[string]interface{}{"kind": "dataset"},
+					},
+				},
+			}},
+		},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	return e.eng.RunPipeline(pipeline.ID)
+}
+
+// The data-plane payoff: a task node can finally produce ROWS, not just
+// one scalar, so downstream nodes have real data to consume.
+func TestTaskNodeProducesADatasetOutput_Python(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return [{'id': 1, 'name': 'a'}, {'id': 2, 'name': 'b'}]\n")
+	run, err := e.runPipelineWithDatasetOutput(t, "p-task-dataset-py", digest)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("read task artifact: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("rows = %v, want 2", ds.Rows)
+	}
+	if toF64(ds.Rows[1]["id"]) != 2 || ds.Rows[0]["name"] != "a" {
+		t.Errorf("rows decoded wrong: %v", ds.Rows)
+	}
+	if strings.Join(ds.Columns, ",") != "id,name" {
+		t.Errorf("columns = %v, want [id name]", ds.Columns)
+	}
+}
+
+// The same contract, the same result, through the other adapter -- the
+// portable data boundary is the protocol's, not either language's.
+func TestTaskNodeProducesADatasetOutput_Node(t *testing.T) {
+	skipIfNoNode(t)
+	e := newTaskEngine(t)
+	digest := e.nodeBundle(t, "export function run() {\n  return [{ id: 1, name: 'a' }, { id: 2, name: 'b' }];\n}\n")
+	run, err := e.runPipelineWithDatasetOutput(t, "p-task-dataset-node", digest)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("read task artifact: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("rows = %v, want 2", ds.Rows)
+	}
+	if toF64(ds.Rows[1]["id"]) != 2 || ds.Rows[0]["name"] != "a" {
+		t.Errorf("rows decoded wrong: %v", ds.Rows)
+	}
+}
+
+// Declaring a dataset and returning something that is not rows is a
+// contract violation with a precise message, not a confusing
+// serialization error.
+func TestTaskNodeDatasetOutputRejectsANonRowReturn(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return 42\n")
+	_, execErr := e.runPipelineWithDatasetOutput(t, "p-task-dataset-bad", digest)
+	if execErr == nil {
+		t.Fatal("a task declaring a dataset output but returning a scalar ran to success")
+	}
+	if !strings.Contains(execErr.Error(), "dataset output") {
+		t.Fatalf("failure does not explain the dataset contract violation: %s", execErr)
 	}
 }

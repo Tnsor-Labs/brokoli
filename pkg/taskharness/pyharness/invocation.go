@@ -80,6 +80,16 @@ type Invocation struct {
 	// InterfaceDigest is stamped into the candidate task-result-v1
 	// manifest's own interface_digest field.
 	InterfaceDigest string `json:"interface_digest"`
+	// OutputKind is the ADR-032 value kind the node's declared interface
+	// says this task's "result" port produces -- "dataset" makes the
+	// harness serialize the returned rows to a staging file and report
+	// them by reference; anything else (including absent) keeps the
+	// inline scalar form. The ENGINE decides this, not the task: the
+	// declared contract is the authority on what a port produces, and a
+	// harness guessing from the runtime shape of a return value would
+	// make "list of dicts" mean something different than the interface
+	// says.
+	OutputKind string `json:"output_kind,omitempty"`
 }
 
 // WriteInvocation writes inv as JSON to path.
