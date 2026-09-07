@@ -1,0 +1,181 @@
+#!/usr/bin/env node
+// Reference brokoli.task-runtime/v1 harness for the `node` runtime class
+// (ADR-033 sections 3 and 7) -- the second required reference adapter
+// alongside pkg/taskharness/pyharness, and the proof that this protocol
+// is genuinely language-neutral rather than "whatever Python happens to
+// do."
+//
+// Mirrors harness.py's behavior frame for frame: read exactly one
+// 'start' frame from stdin, emit 'ready', load the invocation descriptor
+// it points to (this adapter's own convention -- see invocation.go's
+// Invocation type), import the named module, call the named symbol, and
+// write a task-result-v1 candidate manifest to result_path before
+// emitting 'completed'.
+//
+// Two deliberate differences from harness.py, both forced by the
+// language rather than chosen:
+//
+//   - Kwargs are passed as ONE object argument (`fn(kwargs)`), since
+//     JavaScript has no keyword arguments. Python's `func(**kwargs)` has
+//     no faithful JS equivalent; an options object is the idiomatic one.
+//   - The result is awaited, so an `async` task function works. Python's
+//     reference harness calls synchronously.
+//
+// Failure taxonomy (ADR-033 section 14), identical to harness.py: a
+// throw from the task itself is 'user_code'; anything wrong with what
+// the worker handed this harness is 'contract_violation'. Categories
+// only a trusted worker may originate (runtime_protocol, platform,
+// resource_exhausted, lease_lost) are never emitted here.
+//
+// Known limitation, identical to harness.py and named rather than
+// hidden: this harness does not read a mid-task 'cancel' frame. The
+// worker's SIGTERM/SIGKILL escalation after the cancellation grace
+// period (pkg/taskharness.Run) covers it fully; only the cooperative
+// shutdown path is unimplemented.
+//
+// Resource ceilings: unlike harness.py, which self-applies RLIMIT_AS,
+// the memory ceiling is applied by the parent as V8's
+// --max-old-space-size flag (see invocation.go's Command, mirroring
+// pkg/codeexec/worker.go's own TypeScript convention). CPU, file size
+// and open files are enforced externally via pkg/proctree before this
+// process starts, exactly as they are for Python.
+
+import fs from "node:fs";
+import path from "node:path";
+import process from "node:process";
+import readline from "node:readline";
+import { pathToFileURL } from "node:url";
+
+const PROTOCOL = "brokoli.task-runtime/v1";
+const ADAPTER = "brokoli-node-taskharness";
+const ADAPTER_VERSION = "0.1.0";
+
+function emit(frame) {
+  process.stdout.write(JSON.stringify(frame) + "\n");
+}
+
+function fail(category, code, message, retryable = false) {
+  emit({ type: "failed", failure: { category, code, message, retryable } });
+}
+
+async function readStartFrame() {
+  const rl = readline.createInterface({ input: process.stdin });
+  let line = null;
+  for await (const l of rl) {
+    line = l;
+    break;
+  }
+  rl.close();
+  if (line === null) {
+    // No frame to report a failure into (ready was never sent) -- the
+    // worker's own "exited before any terminal frame" detection is where
+    // this belongs, not something this harness narrates.
+    process.exit(1);
+  }
+  let start;
+  try {
+    start = JSON.parse(line);
+  } catch (err) {
+    fail("contract_violation", "malformed_start", `start frame is not valid JSON: ${err.message}`);
+    process.exit(1);
+  }
+  if (start.type !== "start" || start.protocol !== PROTOCOL) {
+    fail("contract_violation", "unexpected_start", "first frame was not a valid start frame");
+    process.exit(1);
+  }
+  return start;
+}
+
+function loadInvocation(invocationPath) {
+  const inv = JSON.parse(fs.readFileSync(invocationPath, "utf8"));
+  for (const key of ["module", "symbol", "interface_digest"]) {
+    if (!(key in inv)) {
+      throw new Error(`invocation descriptor is missing required key '${key}'`);
+    }
+  }
+  return inv;
+}
+
+// resolveModuleFile mirrors Python's "module name resolved against a
+// search path" convention, which Node has no direct equivalent for: it
+// tries each root for the candidate filenames a bundled task module can
+// plausibly use, in a fixed order, and names every path it tried when
+// none exists (rather than surfacing Node's own resolver error, which
+// would name only the last attempt).
+function resolveModuleFile(roots, moduleName) {
+  const tried = [];
+  for (const root of roots) {
+    for (const candidate of [
+      `${moduleName}.mjs`,
+      `${moduleName}.js`,
+      path.join(moduleName, "index.mjs"),
+      path.join(moduleName, "index.js"),
+    ]) {
+      const full = path.join(root, candidate);
+      tried.push(full);
+      if (fs.existsSync(full)) return full;
+    }
+  }
+  throw new Error(`cannot resolve module '${moduleName}'; tried: ${tried.join(", ")}`);
+}
+
+async function main() {
+  const start = await readStartFrame();
+  emit({
+    type: "ready",
+    protocol: PROTOCOL,
+    adapter: ADAPTER,
+    adapter_version: ADAPTER_VERSION,
+    capabilities: [],
+  });
+
+  let inv;
+  let modulePath;
+  try {
+    inv = loadInvocation(start.invocation_path);
+    modulePath = resolveModuleFile(inv.module_roots ?? [], inv.module);
+  } catch (err) {
+    fail("contract_violation", "invalid_invocation", err.message);
+    process.exit(1);
+  }
+
+  let result;
+  try {
+    const mod = await import(pathToFileURL(modulePath).href);
+    // `mod.default?.[symbol]` covers a CommonJS bundle, whose exports
+    // arrive under default rather than as namespace members.
+    const fn = mod[inv.symbol] ?? mod.default?.[inv.symbol];
+    if (typeof fn !== "function") {
+      fail(
+        "contract_violation",
+        "symbol_not_callable",
+        `module '${inv.module}' has no callable export named '${inv.symbol}'`,
+      );
+      process.exit(1);
+    }
+    result = await fn(inv.kwargs ?? {});
+  } catch (err) {
+    fail("user_code", "task_raised", err && err.stack ? err.stack : String(err));
+    process.exit(1);
+  }
+
+  try {
+    fs.mkdirSync(start.output_staging_dir, { recursive: true });
+    fs.writeFileSync(
+      start.result_path,
+      JSON.stringify({
+        contract: "brokoli.task-result/v1",
+        interface_digest: inv.interface_digest,
+        outputs: { result: { kind: "scalar", value: result === undefined ? null : result } },
+      }),
+      "utf8",
+    );
+  } catch (err) {
+    fail("contract_violation", "result_write_failed", err.message);
+    process.exit(1);
+  }
+
+  emit({ type: "completed" });
+}
+
+await main();
