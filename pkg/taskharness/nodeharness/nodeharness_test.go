@@ -239,3 +239,60 @@ func TestOfflineEndToEnd_UnresolvableModuleNamesWhatItTried(t *testing.T) {
 		t.Errorf("message = %q, want it to name the paths tried", res.Failure.Message)
 	}
 }
+
+// An async generator is the streaming shape a Node task author reaches
+// for, and the adapter iterates it into the same NDJSON a plain array
+// produces. Proven here rather than through the engine: this is adapter
+// behavior, and the engine package already runs close to its CI timeout
+// (Tnsor-Labs/brokoli#329), so spending a full pipeline run to assert an
+// adapter detail is a cost worth not paying.
+func TestOfflineEndToEnd_AsyncGeneratorBecomesADataset(t *testing.T) {
+	root, module := buildFixtureBundle(t, "export async function* run() {\n  yield { n: 1 };\n  yield { n: 2 };\n}\n")
+
+	node := nodeBinary(t)
+	harnessDir := t.TempDir()
+	harnessPath, err := Materialize(harnessDir)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	attemptDir := t.TempDir()
+	resultPath := filepath.Join(attemptDir, "result.json")
+	stagingDir := filepath.Join(attemptDir, "out")
+	invocationPath := filepath.Join(attemptDir, "invocation.json")
+	if err := WriteInvocation(invocationPath, Invocation{
+		ModuleRoots:     []string{root},
+		Module:          module,
+		Symbol:          "run",
+		InterfaceDigest: "sha256:" + strings.Repeat("0", 62) + "aa",
+		OutputKind:      "dataset",
+	}); err != nil {
+		t.Fatalf("WriteInvocation: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := taskharness.Run(ctx, taskharness.NewStartFrame(invocationPath, resultPath, stagingDir),
+		taskharness.Options{Command: Command(node, harnessPath, 0)}, taskharness.Handlers{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+
+	staged, err := os.ReadFile(filepath.Join(stagingDir, "result.ndjson"))
+	if err != nil {
+		t.Fatalf("read staged dataset: %v", err)
+	}
+	if got := strings.Count(strings.TrimSpace(string(staged)), "\n") + 1; got != 2 {
+		t.Errorf("staged %d NDJSON rows, want 2:\n%s", got, staged)
+	}
+
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"kind":"dataset"`) || !strings.Contains(string(raw), `"codec":"ndjson/v1"`) {
+		t.Errorf("result manifest does not describe a dataset: %s", raw)
+	}
+}

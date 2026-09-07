@@ -502,25 +502,6 @@ func TestTaskNodeProducesADatasetOutput_Node(t *testing.T) {
 	}
 }
 
-// A Node task may stream rows -- refusing an async generator would make
-// the adapter worse than the language it wraps.
-func TestTaskNodeProducesADatasetOutput_NodeAsyncGenerator(t *testing.T) {
-	skipIfNoNode(t)
-	e := newTaskEngine(t)
-	digest := e.nodeBundle(t, "export async function* run() {\n  yield { id: 1 };\n  yield { id: 2 };\n  yield { id: 3 };\n}\n")
-	run, err := e.runPipelineWithDatasetOutput(t, "p-task-dataset-node-stream", digest)
-	if err != nil {
-		t.Fatalf("run returned error: %v", err)
-	}
-	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
-	if err != nil {
-		t.Fatalf("read task artifact: %v", err)
-	}
-	if len(ds.Rows) != 3 {
-		t.Fatalf("rows = %v, want 3 streamed rows", ds.Rows)
-	}
-}
-
 // Declaring a dataset and returning something that is not rows is a
 // contract violation with a precise message, not a confusing
 // serialization error.

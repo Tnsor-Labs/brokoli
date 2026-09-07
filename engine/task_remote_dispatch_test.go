@@ -394,7 +394,8 @@ func TestExecuteInstanceJobContext_RoutesTaskNodesToTheTaskExecutor(t *testing.T
 // reach the ENQUEUED job -- that is the only place a queue backend can
 // filter on it.
 func TestTaskNodeRemoteDispatch_CarriesPerRuntimeCapabilityTag(t *testing.T) {
-	skipIfNoNode(t)
+	// No skipIfNoNode: nothing here executes the bundle, so this runs
+	// (and guards the tagging) even on a host without a node runtime.
 	realStore := newExpansionTestStore(t, "task-remote-caps")
 	real := realStore.(*store.SQLiteStore)
 	digest := seedRemoteTaskBundleFor(t, real, taskbundlev2.RuntimeNode, "fixture_task.mjs",
@@ -412,12 +413,15 @@ func TestTaskNodeRemoteDispatch_CarriesPerRuntimeCapabilityTag(t *testing.T) {
 	eng.InstanceJobQueue = &fakeInstanceJobQueue{
 		attempts: real, artifacts: eng.ArtifactStore, delay: 10 * time.Millisecond,
 		respond: func(job extensions.RunJob) ([]string, []common.DataRow, string) {
+			// Capture and answer without executing: this test is about
+			// what the DISPATCHER enqueues, and running the bundle for
+			// real would cost a node subprocess to prove nothing extra
+			// (TestTaskNodeRemoteDispatch_NodePayloadSucceeds already
+			// covers worker-side execution). The engine package runs
+			// close to its CI timeout -- see #329 -- so a full run per
+			// assertion is a cost worth not paying twice.
 			gotCaps = job.RequiredCapabilities
-			ds, err := ExecuteTaskWorkOrderContext(context.Background(), real, job.RunID, job.NodeID, job.WorkOrder)
-			if err != nil {
-				return nil, nil, err.Error()
-			}
-			return ds.Columns, ds.Rows, ""
+			return []string{"result"}, []common.DataRow{{"result": float64(1)}}, ""
 		},
 	}
 
