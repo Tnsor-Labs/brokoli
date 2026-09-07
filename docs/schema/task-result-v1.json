@@ -43,10 +43,24 @@
         "codec": { "type": "string", "minLength": 1, "description": "e.g. 'arrow-ipc/v1' or 'ndjson/v1' (section 8)." },
         "size_bytes": { "type": "integer", "minimum": 0 },
         "checksum": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-        "value": { "description": "Present instead of path/codec/size_bytes/checksum for a small inline scalar value (section 8: 'small scalars and parameters may be inline JSON')." }
+        "value": { "description": "Present instead of path/codec/size_bytes/checksum for a small inline scalar value (section 8: 'small scalars and parameters may be inline JSON')." },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/output_port_result" },
+          "description": "Required for the 'collection' kind, and only that kind. One entry per separately addressable item, each carrying its own kind and whatever that kind requires -- so a collection of artifacts holds per-item path and checksum, and a collection of scalars holds per-item inline values (section 8: collections 'contain references/items according to their declared contract'). Recursive by $ref because ADR-032 section 6 declares a collection's items as a nested value contract, which may itself be a collection."
+        },
+        "item_key": { "description": "This item's value for the collection's declared item_key descriptor (ADR-032 section 6). Present on entries INSIDE an items array, not on the collection port itself. Duplicate keys are invalid even when duplicate values are allowed." }
       },
-      "if": { "properties": { "kind": { "enum": ["dataset", "artifact"] } }, "required": ["kind"] },
-      "then": { "required": ["path", "codec", "size_bytes", "checksum"] }
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "enum": ["dataset", "artifact"] } }, "required": ["kind"] },
+          "then": { "required": ["path", "codec", "size_bytes", "checksum"] }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "collection" } }, "required": ["kind"] },
+          "then": { "required": ["items"] }
+        }
+      ]
     }
   }
 }

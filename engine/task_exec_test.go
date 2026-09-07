@@ -340,27 +340,21 @@ func TestTaskNodeReceivesRunParametersAsKwargs(t *testing.T) {
 	}
 }
 
-// readTaskResult's own unit coverage lives here (not the engine suite
-// above) since the reference harnesses only ever emit the kinds the
-// engine asked them for.
-//
-// "dataset" left this list when phase 5a gave it a reader, and
-// "artifact" when it got one too. Only "collection" remains: the
-// task-result-v1 manifest has no field able to express N separately
-// addressable items (it is deliberately excluded from the
-// path/codec/size/checksum rule that covers dataset and artifact), so
-// reading one needs a wire-contract decision, not a decoder.
-func TestReadTaskResult_CollectionKindIsNotYetSupported(t *testing.T) {
+// An unrecognised output kind is refused by name. All four kinds the
+// contract defines -- scalar, dataset, artifact, collection -- now have
+// readers, so this guards a candidate claiming something outside the
+// enum rather than a not-yet-built branch.
+func TestReadTaskResult_UnknownOutputKindIsRefusedByName(t *testing.T) {
 	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
 	dir := t.TempDir()
 	resultPath := writeTestResult(t, dir, `{
 		"contract": "brokoli.task-result/v1",
 		"interface_digest": "`+digest+`",
-		"outputs": {"result": {"kind": "collection"}}
+		"outputs": {"result": {"kind": "hologram"}}
 	}`)
 	_, err := readTaskResult(context.Background(), nil, "run-1", resultPath, dir, digest, nil)
-	if err == nil || !strings.Contains(err.Error(), "not yet supported") {
-		t.Fatalf("expected a clear not-yet-supported error, got: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "hologram") {
+		t.Fatalf("expected the unrecognised kind named, got: %v", err)
 	}
 }
 
@@ -814,5 +808,104 @@ func TestTaskNodeArtifactOutputRejectsANonBytesReturn(t *testing.T) {
 	}
 	if !strings.Contains(execErr.Error(), "artifact output") {
 		t.Fatalf("failure does not explain the artifact contract violation: %s", execErr)
+	}
+}
+
+// runPipelineWithCollectionOutput declares the task's "result" port as a
+// collection of the given item kind.
+func (e *taskTestEngine) runPipelineWithCollectionOutput(t *testing.T, id, digest string, itemValue map[string]interface{}) (*models.Run, error) {
+	t.Helper()
+	pipeline := &models.Pipeline{
+		ID: id, Name: id, Enabled: true, OrgID: taskOrg,
+		Nodes: []models.Node{
+			{ID: "task", Type: models.NodeTypeTask, Name: "Task", Config: map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundlev2.Format},
+			}, Interface: map[string]interface{}{
+				"contract": "brokoli.task-interface/v1",
+				"inputs":   map[string]interface{}{},
+				"outputs": map[string]interface{}{"result": map[string]interface{}{
+					"value": map[string]interface{}{
+						"kind":     "collection",
+						"items":    itemValue,
+						"ordered":  true,
+						"item_key": map[string]interface{}{"kind": "string"},
+					},
+				}},
+			}},
+		},
+	}
+	if err := e.s.CreatePipeline(pipeline); err != nil {
+		t.Fatal(err)
+	}
+	return e.eng.RunPipeline(pipeline.ID)
+}
+
+// A collection becomes one row per item, each carrying its declared key
+// so the items stay separately addressable downstream.
+func TestTaskNodeProducesACollectionOfScalars(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return {'alpha': 1, 'beta': 2}\n")
+	run, err := e.runPipelineWithCollectionOutput(t, "p-task-coll-scalar", digest,
+		map[string]interface{}{"kind": "scalar", "type": map[string]interface{}{"kind": "int64"}})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("read task artifact: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("rows = %v, want one row per item", ds.Rows)
+	}
+	keys := map[string]bool{}
+	for _, r := range ds.Rows {
+		k, _ := r[ItemKeyColumn].(string)
+		keys[k] = true
+		if _, hasValue := r["value"]; !hasValue {
+			t.Errorf("row %v carries no value column", r)
+		}
+	}
+	if !keys["alpha"] || !keys["beta"] {
+		t.Errorf("item keys = %v, want alpha and beta", keys)
+	}
+}
+
+// Items that are bytes become artifacts — each staged separately, each
+// with its own checksum, each stored by reference exactly as a top-level
+// artifact output is. There is no weaker path into the store just
+// because the bytes arrived inside a collection.
+func TestTaskNodeProducesACollectionOfArtifacts(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return {'first': b'one bytes', 'second': b'two bytes'}\n")
+	run, err := e.runPipelineWithCollectionOutput(t, "p-task-coll-artifact", digest,
+		map[string]interface{}{"kind": "artifact"})
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "task", "")
+	if err != nil {
+		t.Fatalf("read task artifact: %v", err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("rows = %v, want one reference row per item", ds.Rows)
+	}
+	for _, r := range ds.Rows {
+		if uri, _ := r["uri"].(string); uri == "" {
+			t.Errorf("row %v has no uri; the item was not stored by reference", r)
+		}
+		if k, _ := r[ItemKeyColumn].(string); k == "" {
+			t.Errorf("row %v has no item key", r)
+		}
+		for _, v := range r {
+			if s, ok := v.(string); ok && strings.Contains(s, "bytes") && !strings.HasPrefix(s, "local://") {
+				t.Errorf("item content leaked into the row: %v", r)
+			}
+		}
+	}
+	// Distinct content must yield distinct references.
+	if ds.Rows[0]["uri"] == ds.Rows[1]["uri"] {
+		t.Errorf("both items share a uri (%v); distinct content must not collide", ds.Rows[0]["uri"])
 	}
 }
