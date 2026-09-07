@@ -34,9 +34,32 @@ jobs:
 
       - name: Enforce Gosec baseline
         run: |
+          # Assert the scan actually happened before trusting its verdict.
+          # A comparison against a baseline treats "0 findings" as the best
+          # possible result, so a gosec run that scanned nothing -- wrong
+          # path, build failure, changed output format -- passes this gate
+          # while inspecting no code, and merely suggests lowering the
+          # baseline to 0. The license gate failed exactly that way for its
+          # whole life (see scripts/check-licenses.sh); an empty scan must
+          # never read as a clean scan.
+          files=$(jq -r '.Stats.files // 0' gosec-report.json)
+          if [ "$files" -lt 1 ]; then
+            echo "::error::Gosec reported $files files scanned -- the scan inspected nothing, so its findings count is meaningless"
+            exit 1
+          fi
+          # gosec still emits a report when packages fail to compile, with
+          # the uncompiled ones simply absent from it. That is a partial
+          # scan reporting a full-looking verdict.
+          errs=$(jq -r '(."Golang errors" // {}) | length' gosec-report.json)
+          if [ "$errs" -gt 0 ]; then
+            echo "::error::Gosec hit $errs Go build error(s); the scan is partial and its findings count cannot be compared to the baseline"
+            jq -r '."Golang errors"' gosec-report.json
+            exit 1
+          fi
+
           findings=$(jq '[.Issues[]] | length' gosec-report.json)
           baseline=$(jq -r '.issues' security/gosec-baseline.json)
-          echo "Gosec findings: $findings (baseline: $baseline)"
+          echo "Gosec findings: $findings (baseline: $baseline) across $files files"
           if [ "$findings" -gt "$baseline" ]; then
             echo "::error::Gosec findings increased from $baseline to $findings"
             exit 1
