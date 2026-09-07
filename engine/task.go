@@ -766,6 +766,22 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 	return executeTaskBundle(ctx, s, nil, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
+// taskOutputPort is one entry of a task-result-v1 candidate's outputs,
+// and — via Items — one entry of a collection's item list too, since the
+// contract defines those recursively (a collection's items are output
+// port results in their own right, each carrying whatever its own kind
+// requires).
+type taskOutputPort struct {
+	Kind      string           `json:"kind"`
+	Value     interface{}      `json:"value"`
+	Path      string           `json:"path"`
+	Codec     string           `json:"codec"`
+	SizeBytes int64            `json:"size_bytes"`
+	Checksum  string           `json:"checksum"`
+	Items     []taskOutputPort `json:"items"`
+	ItemKey   interface{}      `json:"item_key"`
+}
+
 // readTaskResult reads and interprets a task-result-v1 candidate
 // manifest, mapping its single "result" output port into the row-shaped
 // DataSet contract every other node type returns downstream. Phase 2b
@@ -791,16 +807,9 @@ func readTaskResult(ctx context.Context, blobs artifact.Store, runID, resultPath
 		return nil, fmt.Errorf("read task result: %w", err)
 	}
 	var candidate struct {
-		Contract        string `json:"contract"`
-		InterfaceDigest string `json:"interface_digest"`
-		Outputs         map[string]struct {
-			Kind      string      `json:"kind"`
-			Value     interface{} `json:"value"`
-			Path      string      `json:"path"`
-			Codec     string      `json:"codec"`
-			SizeBytes int64       `json:"size_bytes"`
-			Checksum  string      `json:"checksum"`
-		} `json:"outputs"`
+		Contract        string                    `json:"contract"`
+		InterfaceDigest string                    `json:"interface_digest"`
+		Outputs         map[string]taskOutputPort `json:"outputs"`
 	}
 	if err := json.Unmarshal(raw, &candidate); err != nil {
 		return nil, fmt.Errorf("task result is not valid JSON: %w", err)
@@ -843,8 +852,12 @@ func readTaskResult(ctx context.Context, blobs artifact.Store, runID, resultPath
 		pv, _ := portValueFromInterface(nodeInterface, "outputs", "result")
 		return readTaskArtifactOutput(ctx, blobs, runID, outputStagingDir, out.Path, out.Codec, out.SizeBytes, out.Checksum, pv)
 	}
+	if out.Kind == "collection" {
+		pv, _ := portValueFromInterface(nodeInterface, "outputs", "result")
+		return readTaskCollectionOutput(ctx, blobs, runID, outputStagingDir, out.Items, pv)
+	}
 	if out.Kind != "scalar" {
-		return nil, fmt.Errorf("task output kind %q is not yet supported (this server reads \"scalar\", \"dataset\" and \"artifact\")", out.Kind)
+		return nil, fmt.Errorf("task output kind %q is not recognised (this server reads \"scalar\", \"dataset\", \"artifact\" and \"collection\")", out.Kind)
 	}
 	if pv, ok := portValueFromInterface(nodeInterface, "outputs", "result"); ok && pv.Kind == taskinterface.ValueScalar && pv.ScalarType != nil {
 		if verr := taskinterface.ValidateValue(out.Value, *pv.ScalarType, "$"); verr != nil {

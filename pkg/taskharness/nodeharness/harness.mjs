@@ -219,6 +219,51 @@ function writeArtifactOutput(stagingDir, payload, mediaType) {
   };
 }
 
+// writeCollectionOutput describes separately addressable items, each by
+// its own contract. A task declaring a collection returns a Map, a plain
+// object, or an iterable of [key, value] pairs. The key is what makes an
+// item separately addressable (ADR-032 section 6), so it is required
+// rather than derived from position -- positional identity is exactly
+// what a key exists to replace.
+//
+// Buffer/TypedArray items become artifacts, each staged as its own file
+// with its own checksum; everything else is an inline scalar.
+function writeCollectionOutput(stagingDir, items, mediaType) {
+  let pairs;
+  if (items instanceof Map) {
+    pairs = [...items.entries()];
+  } else if (Array.isArray(items)) {
+    pairs = items;
+  } else if (items && typeof items === "object") {
+    pairs = Object.entries(items);
+  } else {
+    throw new TypeError(
+      `task declares a collection output but returned ${items === null ? "null" : typeof items}; expected a Map, object, or iterable of [key, value] pairs`,
+    );
+  }
+
+  const out = pairs.map(([key, value], i) => {
+    if (key === undefined) {
+      throw new TypeError(`task collection item ${i} has no key; a collection's items must be separately addressable`);
+    }
+    if (Buffer.isBuffer(value) || ArrayBuffer.isView(value)) {
+      const buf = Buffer.isBuffer(value) ? value : Buffer.from(value.buffer ?? value);
+      const name = `item-${i}.bin`;
+      fs.writeFileSync(path.join(stagingDir, name), buf);
+      return {
+        kind: "artifact",
+        path: name,
+        codec: mediaType || "application/octet-stream",
+        size_bytes: buf.length,
+        checksum: "sha256:" + crypto.createHash("sha256").update(buf).digest("hex"),
+        item_key: key,
+      };
+    }
+    return { kind: "scalar", value, item_key: key };
+  });
+  return { kind: "collection", items: out };
+}
+
 async function main() {
   const start = await readStartFrame();
   emit({
@@ -276,6 +321,8 @@ async function main() {
       port = await writeDatasetOutput(start.output_staging_dir, result);
     } else if (inv.output_kind === "artifact") {
       port = writeArtifactOutput(start.output_staging_dir, result, inv.output_media_type);
+    } else if (inv.output_kind === "collection") {
+      port = writeCollectionOutput(start.output_staging_dir, result, inv.output_media_type);
     } else {
       port = { kind: "scalar", value: result === undefined ? null : result };
     }

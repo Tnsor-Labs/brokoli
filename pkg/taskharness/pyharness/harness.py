@@ -205,6 +205,51 @@ def write_artifact_output(staging_dir, payload, media_type):
     }
 
 
+def write_collection_output(staging_dir, items, media_type):
+    """Describe separately addressable items, each by its own contract.
+
+    A task declaring a collection output returns an iterable of
+    (key, value) pairs -- a mapping, or any iterable of two-item
+    sequences. The key is what makes each item separately addressable
+    (ADR-032 section 6), so it is required rather than derived from
+    position: positional identity is exactly what a key exists to
+    replace.
+
+    bytes items become artifacts, each staged as its own file with its
+    own checksum; everything else is an inline scalar.
+    """
+    if isinstance(items, dict):
+        pairs = list(items.items())
+    else:
+        try:
+            pairs = [(k, v) for k, v in items]
+        except (TypeError, ValueError):
+            raise TypeError(
+                "task declares a collection output but returned %s; expected a "
+                "mapping or an iterable of (key, value) pairs"
+                % type(items).__name__
+            )
+
+    out = []
+    for i, (key, value) in enumerate(pairs):
+        if isinstance(value, (bytes, bytearray)):
+            payload = bytes(value)
+            name = "item-%d.bin" % i
+            with open(os.path.join(staging_dir, name), "wb") as f:
+                f.write(payload)
+            out.append({
+                "kind": "artifact",
+                "path": name,
+                "codec": media_type or "application/octet-stream",
+                "size_bytes": len(payload),
+                "checksum": "sha256:" + hashlib.sha256(payload).hexdigest(),
+                "item_key": key,
+            })
+        else:
+            out.append({"kind": "scalar", "value": value, "item_key": key})
+    return {"kind": "collection", "items": out}
+
+
 def main():
     start = load_start_frame()
     emit({
@@ -247,6 +292,8 @@ def main():
             port = write_dataset_output(start["output_staging_dir"], result)
         elif inv.get("output_kind") == "artifact":
             port = write_artifact_output(start["output_staging_dir"], result, inv.get("output_media_type"))
+        elif inv.get("output_kind") == "collection":
+            port = write_collection_output(start["output_staging_dir"], result, inv.get("output_media_type"))
         else:
             port = {"kind": "scalar", "value": result}
         candidate = {
