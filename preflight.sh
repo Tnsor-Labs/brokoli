@@ -156,6 +156,23 @@ else
 fi
 pass node-guard
 
+# ---- 3b. go toolchain parity with the workflows ----
+# The workflows pin setup-go to an exact version so Go does not download
+# a SECOND toolchain per job on top of the one setup-go installed (which
+# it does whenever that version differs from go.mod's toolchain
+# directive). Same class of drift the node guard above catches, so the
+# same treatment: notice it here rather than in a CI bill.
+stage "go toolchain parity (advisory)"
+mod_toolchain=$(awk '/^toolchain /{print substr($2,3)}' go.mod)
+wf_toolchain=$(grep -ho 'go-version: "[^"]*"' .github/workflows/ci.yml | head -1 | sed 's/.*"\(.*\)"/\1/')
+if [ -n "$mod_toolchain" ] && [ "$mod_toolchain" != "$wf_toolchain" ]; then
+  printf '\033[33mWARN\033[0m go.mod toolchain (%s) != ci.yml go-version (%s) -- CI will download a second toolchain per job\n' \
+    "$mod_toolchain" "$wf_toolchain"
+else
+  echo "go toolchain $mod_toolchain matches the workflows"
+fi
+pass go-toolchain-guard
+
 # ---- 4. UI build (go:embed prerequisite) ----
 stage "UI build"
 pushd ui >/dev/null

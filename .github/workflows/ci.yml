@@ -30,7 +30,10 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          # Matches go.mod's own toolchain directive. When these differ,
+          # Go downloads the toolchain go.mod asks for on top of the one
+          # setup-go installed -- once per job, every run.
+          go-version: "1.26.6"
 
       - name: Check formatting
         run: |
@@ -147,15 +150,31 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          # Matches go.mod's own toolchain directive. When these differ,
+          # Go downloads the toolchain go.mod asks for on top of the one
+          # setup-go installed -- once per job, every run.
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          # npm ci refetched every package on every job before this.
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
       - name: Code-node JavaScript wrapper contract tests
         run: node --test pkg/codeexec/jswrapper/tests/*.test.mjs
+
+      # Chromium, Firefox and FFmpeg were re-downloaded on every run.
+      # Keyed on the lockfile: a @playwright/test bump changes the key,
+      # so a stale browser build can never be served to a newer client.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ui/package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
 
       - name: Build UI (required for go:embed)
         working-directory: ui
@@ -202,12 +221,18 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          # Matches go.mod's own toolchain directive. When these differ,
+          # Go downloads the toolchain go.mod asks for on top of the one
+          # setup-go installed -- once per job, every run.
+          go-version: "1.26.6"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          # npm ci refetched every package on every job before this.
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
 
       - name: Build UI
         working-directory: ui
