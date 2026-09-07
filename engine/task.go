@@ -44,9 +44,20 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/pyharness"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
+
+// ErrTaskOutputContractViolation reports a task node whose returned value
+// does not conform to its own declared output port type (ADR-032 section
+// 10, ADR-033 rollout phase 3b). This is the engine's own post-hoc check
+// on a harness that already claimed "completed" -- independent of
+// pkg/taskharness's wire-level failure taxonomy (FailureContractViolation
+// there covers a harness's OWN self-reported failures; this sentinel
+// covers a claim the engine itself caught being wrong). Mirrors
+// ErrParameterResolution's wrapping pattern.
+var ErrTaskOutputContractViolation = errors.New("task output violates its declared contract")
 
 // taskRuntimeCapability is the flat capability tag a remote worker must
 // advertise to be eligible for any task-node job (the OSS-side half of
@@ -252,7 +263,7 @@ func pythonVersionString(pythonPath string) (string, error) {
 // (remote) — see this file's own doc comment. runID/nodeID identify the
 // execution lineage a resolved execution record (ADR-033 section 4) is
 // pinned against.
-func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config map[string]interface{}, runParams map[string]string, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
+func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
 	manifest, bundleDir, err := materializeTaskBundleV2(s, orgID, digest)
 	if err != nil {
 		return nil, err
@@ -342,7 +353,7 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 		return nil, fmt.Errorf("task bundle %s: %s: %s", digest, result.Failure.Category, result.Failure.Message)
 	}
 
-	return readTaskResult(resultPath, manifest.InterfaceDigest)
+	return readTaskResult(resultPath, manifest.InterfaceDigest, nodeInterface)
 }
 
 // runTask executes a 'task' IR node. Local (in-process) when this Runner
@@ -379,7 +390,7 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 	limits := codeexec.Resolve(node.Config)
 	r.log(node.ID, models.LogLevelInfo, "task exec: bundle=%s %s", digest, limits)
-	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, runParams, timeoutSec, taskharness.Handlers{
+	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, timeoutSec, taskharness.Handlers{
 		OnLog: func(l taskharness.Log) {
 			level := models.LogLevelInfo
 			switch l.Level {
@@ -425,6 +436,7 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, t
 		NodeType:       string(models.NodeTypeTask),
 		OrgID:          r.pipe.OrgID,
 		Config:         node.Config,
+		NodeInterface:  node.Interface,
 		RunParams:      runParams,
 		TimeoutSeconds: timeoutSec,
 	}
@@ -464,7 +476,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 	// No log/progress handlers: this function has no Runner (and so no
 	// run-scoped log sink) to attribute them to, matching
 	// executeCodeWorkOrder's own documented choice to drop stderr here.
-	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.RunParams, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // readTaskResult reads and interprets a task-result-v1 candidate
@@ -474,7 +486,19 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 // "collection" kinds need a codec reader this phase does not build; a
 // task declaring one of those fails clearly rather than silently
 // mishandling it.
-func readTaskResult(resultPath, wantInterfaceDigest string) (*common.DataSet, error) {
+//
+// nodeInterface is the task node's own ADR-032 Interface (nil when the
+// node carries none -- a hand-authored task with no SDK-inferred
+// contract), consulted to validate the harness's claimed value before
+// trusting it downstream (ADR-032 section 10, phase 3b): a task's own
+// claim that it produced valid output is not trusted uncritically. Only
+// validated when the declared output port is itself scalar-kind --
+// nothing in this codebase can produce a non-scalar candidate yet (the
+// "not yet supported" refusal above), so a declared dataset/artifact/
+// collection output has nothing here to check against and is silently
+// skipped, exactly like effectiveNodeInterface's own "absence is honest"
+// rule for a genuinely unknown case.
+func readTaskResult(resultPath, wantInterfaceDigest string, nodeInterface map[string]interface{}) (*common.DataSet, error) {
 	raw, err := os.ReadFile(resultPath) // #nosec G304 -- resultPath is this attempt's own worker-generated scratch path, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read task result: %w", err)
@@ -502,6 +526,15 @@ func readTaskResult(resultPath, wantInterfaceDigest string) (*common.DataSet, er
 	}
 	if out.Kind != "scalar" {
 		return nil, fmt.Errorf("task output kind %q is not yet supported (phase 2b handles \"scalar\" only)", out.Kind)
+	}
+	if pv, ok := portValueFromInterface(nodeInterface, "outputs", "result"); ok && pv.Kind == taskinterface.ValueScalar && pv.ScalarType != nil {
+		if verr := taskinterface.ValidateValue(out.Value, *pv.ScalarType, "$"); verr != nil {
+			// Output ports carry no "sensitive" flag today (only
+			// ParameterDeclaration does -- see NewValidationFailure's own
+			// doc comment), so a task output is never redacted here.
+			failure := taskinterface.NewValidationFailure(taskinterface.DirectionOutput, "result", *pv.ScalarType, out.Value, verr, "$", false)
+			return nil, fmt.Errorf("%w: %v", ErrTaskOutputContractViolation, failure)
+		}
 	}
 	return &common.DataSet{
 		Columns: []string{"result"},

@@ -521,6 +521,14 @@ type InstanceWorkOrder struct {
 	// strips script/expansion metadata before populating it; source_api page
 	// dispatch carries the request/response config needed to parse one page.
 	Config map[string]interface{} `json:"config,omitempty"`
+	// NodeInterface is the node's own ADR-032 Interface (models.Node.Interface),
+	// carried alongside Config for ADR-033's task-node dispatch: a remote
+	// claimant validates the task's returned value against its declared
+	// output port type (ADR-032 section 10) the same way local execution
+	// does, rather than trusting a remote harness's claim uncritically.
+	// nil when the node carries no explicit interface -- absence is honest
+	// (ADR-032 section 6), and validation is skipped rather than guessed.
+	NodeInterface map[string]interface{} `json:"node_interface,omitempty"`
 	// ItemColumns/ItemRow is this instance's one-row input dataset (a
 	// dynamic-expansion item).
 	ItemColumns []string               `json:"item_columns,omitempty"`
