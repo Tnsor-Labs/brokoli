@@ -172,6 +172,39 @@ def write_dataset_output(staging_dir, rows):
     }
 
 
+ARTIFACT_FILENAME = "result.bin"
+
+
+def write_artifact_output(staging_dir, payload, media_type):
+    """Write opaque bytes to staging_dir and describe them by reference.
+
+    A task declaring an artifact output returns the bytes themselves --
+    bytes, or str which is encoded UTF-8. Anything else is a contract
+    violation named precisely, since "expected bytes, got dict" is the
+    only form of that error an author can act on.
+    """
+    if isinstance(payload, str):
+        payload = payload.encode("utf-8")
+    if not isinstance(payload, (bytes, bytearray)):
+        raise TypeError(
+            "task declares an artifact output but returned %s; expected bytes "
+            "or str" % type(payload).__name__
+        )
+    payload = bytes(payload)
+    path = os.path.join(staging_dir, ARTIFACT_FILENAME)
+    with open(path, "wb") as f:
+        f.write(payload)
+    return {
+        "kind": "artifact",
+        "path": ARTIFACT_FILENAME,
+        # The manifest has no media_type field, so an artifact states its
+        # media type in codec -- see engine's artifactMediaType.
+        "codec": media_type or "application/octet-stream",
+        "size_bytes": len(payload),
+        "checksum": "sha256:" + hashlib.sha256(payload).hexdigest(),
+    }
+
+
 def main():
     start = load_start_frame()
     emit({
@@ -212,6 +245,8 @@ def main():
         os.makedirs(start["output_staging_dir"], exist_ok=True)
         if inv.get("output_kind") == "dataset":
             port = write_dataset_output(start["output_staging_dir"], result)
+        elif inv.get("output_kind") == "artifact":
+            port = write_artifact_output(start["output_staging_dir"], result, inv.get("output_media_type"))
         else:
             port = {"kind": "scalar", "value": result}
         candidate = {

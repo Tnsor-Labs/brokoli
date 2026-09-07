@@ -38,6 +38,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
@@ -339,7 +340,7 @@ func runtimeVersionString(binPath string) (string, error) {
 // (remote) — see this file's own doc comment. runID/nodeID identify the
 // execution lineage a resolved execution record (ADR-033 section 4) is
 // pinned against.
-func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, input *common.DataSet, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
+func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, input *common.DataSet, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
 	manifest, bundleDir, err := materializeTaskBundleV2(s, orgID, digest)
 	if err != nil {
 		return nil, err
@@ -437,7 +438,21 @@ func executeTaskBundle(ctx context.Context, s store.Store, orgID, runID, nodeID,
 		return nil, fmt.Errorf("task bundle %s: %s: %s", digest, result.Failure.Category, result.Failure.Message)
 	}
 
-	return readTaskResult(resultPath, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
+	return readTaskResult(ctx, blobs, runID, resultPath, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
+}
+
+// declaredOutputMediaType is the first media type the node's output port
+// allows, handed to the harness so an artifact it writes is labelled the
+// way the contract says rather than defaulting to opaque bytes. Empty
+// when the port constrains nothing -- the harness then says
+// octet-stream, and artifactMediaType accepts it because an
+// unconstrained port accepts anything.
+func declaredOutputMediaType(nodeInterface map[string]interface{}) string {
+	pv, ok := portValueFromInterface(nodeInterface, "outputs", "result")
+	if !ok || len(pv.MediaTypes) == 0 {
+		return ""
+	}
+	return pv.MediaTypes[0]
 }
 
 // inputCodecFor names how a staged input file is encoded, and says
@@ -463,6 +478,22 @@ func declaredOutputKind(nodeInterface map[string]interface{}) string {
 	return string(pv.Kind)
 }
 
+// taskBlobStore returns this Runner's blob store when it has one, for a
+// task producing an artifact output.
+//
+// Optional by the same type assertion attachArtifactSink uses: an
+// ArtifactStore that is not a BlobStoreProvider has nowhere to put
+// bytes. nil is a legitimate answer -- readTaskArtifactOutput then
+// refuses an artifact output by name, which is the honest result when
+// there is nowhere to store one.
+func (r *Runner) taskBlobStore() artifact.Store {
+	provider, ok := r.artifactStore.(BlobStoreProvider)
+	if !ok {
+		return nil
+	}
+	return provider.Blobs()
+}
+
 // supportedTaskRuntimes are the runtime classes this build has a
 // reference adapter for (ADR-033 section 3's required two). Order here
 // does not express a preference -- taskbundlev2.SelectPayload takes the
@@ -482,6 +513,7 @@ var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.Ru
 // identical for every adapter.
 func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, inputPath string, limits codeexec.Limits) ([]string, error) {
 	outputKind := declaredOutputKind(nodeInterface)
+	outputMediaType := declaredOutputMediaType(nodeInterface)
 	switch payload.Runtime {
 	case taskbundlev2.RuntimePython:
 		pythonPath, reason := plugins.ResolvePython("")
@@ -499,6 +531,7 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
 			OutputKind:      outputKind,
+			OutputMediaType: outputMediaType,
 			InputPath:       inputPath,
 			InputCodec:      inputCodecFor(inputPath),
 		}); err != nil {
@@ -521,6 +554,7 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			Kwargs:          kwargs,
 			InterfaceDigest: manifest.InterfaceDigest,
 			OutputKind:      outputKind,
+			OutputMediaType: outputMediaType,
 			InputPath:       inputPath,
 			InputCodec:      inputCodecFor(inputPath),
 		}); err != nil {
@@ -569,7 +603,7 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 	limits := codeexec.Resolve(node.Config)
 	r.log(node.ID, models.LogLevelInfo, "task exec: bundle=%s %s", digest, limits)
-	return executeTaskBundle(ctx, r.store, r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, input, timeoutSec, taskharness.Handlers{
+	return executeTaskBundle(ctx, r.store, r.taskBlobStore(), r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, input, timeoutSec, taskharness.Handlers{
 		OnLog: func(l taskharness.Log) {
 			level := models.LogLevelInfo
 			switch l.Level {
@@ -729,7 +763,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 		}
 		input = &common.DataSet{Columns: wo.InputColumns, Rows: rows}
 	}
-	return executeTaskBundle(ctx, s, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, nil, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // readTaskResult reads and interprets a task-result-v1 candidate
@@ -751,7 +785,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 // collection output has nothing here to check against and is silently
 // skipped, exactly like effectiveNodeInterface's own "absence is honest"
 // rule for a genuinely unknown case.
-func readTaskResult(resultPath, outputStagingDir, wantInterfaceDigest string, nodeInterface map[string]interface{}) (*common.DataSet, error) {
+func readTaskResult(ctx context.Context, blobs artifact.Store, runID, resultPath, outputStagingDir, wantInterfaceDigest string, nodeInterface map[string]interface{}) (*common.DataSet, error) {
 	raw, err := os.ReadFile(resultPath) // #nosec G304 -- resultPath is this attempt's own worker-generated scratch path, not attacker-controlled
 	if err != nil {
 		return nil, fmt.Errorf("read task result: %w", err)
@@ -801,8 +835,16 @@ func readTaskResult(resultPath, outputStagingDir, wantInterfaceDigest string, no
 		}
 		return ds, nil
 	}
+	if out.Kind == "artifact" {
+		// An artifact's bytes stay opaque: they move into the
+		// content-addressed blob store and the node's output is the
+		// REFERENCE, in the same four-column shape a source_api node
+		// with response="artifact" already produces.
+		pv, _ := portValueFromInterface(nodeInterface, "outputs", "result")
+		return readTaskArtifactOutput(ctx, blobs, runID, outputStagingDir, out.Path, out.Codec, out.SizeBytes, out.Checksum, pv)
+	}
 	if out.Kind != "scalar" {
-		return nil, fmt.Errorf("task output kind %q is not yet supported (this server reads \"scalar\" and \"dataset\")", out.Kind)
+		return nil, fmt.Errorf("task output kind %q is not yet supported (this server reads \"scalar\", \"dataset\" and \"artifact\")", out.Kind)
 	}
 	if pv, ok := portValueFromInterface(nodeInterface, "outputs", "result"); ok && pv.Kind == taskinterface.ValueScalar && pv.ScalarType != nil {
 		if verr := taskinterface.ValidateValue(out.Value, *pv.ScalarType, "$"); verr != nil {
