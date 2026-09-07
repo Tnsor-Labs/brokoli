@@ -281,3 +281,79 @@ func TestNewOutputs_DryRunNeverSpills(t *testing.T) {
 		t.Fatal("fixture broken: the non-dry runner should be able to spill")
 	}
 }
+
+// A spilled dataset that Arrow can represent exactly is written as
+// Arrow, and comes back unchanged. Asserted explicitly because the
+// choice is silent: if inference regressed and every dataset quietly
+// fell back to NDJSON, every other test would still pass and the whole
+// point of the encoder would be gone.
+func TestNodeOutputs_SpillsTypedDatasetsAsArrow(t *testing.T) {
+	store := artifact.NewLocalDiskStore(t.TempDir())
+	out := newNodeOutputs(store, "run-arrow", 1)
+
+	ds := &common.DataSet{
+		Columns: []string{"name", "amount", "active"},
+		Rows: []common.DataRow{
+			{"name": "alpha", "amount": float64(1.5), "active": true},
+			{"name": "beta", "amount": float64(2), "active": false},
+		},
+	}
+	// A whole float64 returns as int64, matching what the NDJSON path
+	// has always produced -- the transport must not change the contract.
+	want := []common.DataRow{
+		{"name": "alpha", "amount": float64(1.5), "active": true},
+		{"name": "beta", "amount": int64(2), "active": false},
+	}
+	if err := out.Put("n1", ds); err != nil {
+		t.Fatal(err)
+	}
+	if out.spilledCount() == 0 {
+		t.Fatal("fixture did not spill; the threshold is meant to force it")
+	}
+	ref := out.spilled["n1"]
+	if ref.Format != artifact.FormatArrowIPC {
+		t.Fatalf("spilled format = %q, want %q", ref.Format, artifact.FormatArrowIPC)
+	}
+
+	got, ok, err := out.Get("n1")
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if len(got.Rows) != len(ds.Rows) {
+		t.Fatalf("rows = %d, want %d", len(got.Rows), len(ds.Rows))
+	}
+	for i, wantRow := range want {
+		for _, c := range ds.Columns {
+			if got.Rows[i][c] != wantRow[c] {
+				t.Errorf("row %d column %q = %#v, want %#v", i, c, got.Rows[i][c], wantRow[c])
+			}
+		}
+	}
+}
+
+// And the other half of that choice: a dataset Arrow cannot represent
+// exactly keeps NDJSON, which can. Correctness beats the faster codec.
+func TestNodeOutputs_SpillsUnrepresentableDatasetsAsNDJSON(t *testing.T) {
+	store := artifact.NewLocalDiskStore(t.TempDir())
+	out := newNodeOutputs(store, "run-ndjson", 1)
+
+	// Mixed types in one column: no single Arrow type can hold it.
+	ds := &common.DataSet{
+		Columns: []string{"v"},
+		Rows:    []common.DataRow{{"v": "a string"}, {"v": float64(2)}},
+	}
+	if err := out.Put("n1", ds); err != nil {
+		t.Fatal(err)
+	}
+	ref := out.spilled["n1"]
+	if ref.Format != artifact.FormatNDJSON {
+		t.Fatalf("spilled format = %q, want %q for a dataset Arrow cannot round-trip", ref.Format, artifact.FormatNDJSON)
+	}
+	got, ok, err := out.Get("n1")
+	if err != nil || !ok {
+		t.Fatalf("Get: ok=%v err=%v", ok, err)
+	}
+	if got.Rows[0]["v"] != "a string" || got.Rows[1]["v"] != int64(2) {
+		t.Errorf("mixed-type rows changed in transit: %#v", got.Rows)
+	}
+}
