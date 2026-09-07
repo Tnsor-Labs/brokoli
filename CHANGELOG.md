@@ -11,6 +11,41 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-09-07
+
+### Added
+
+- **The Node reference adapter: `task` nodes are no longer Python-only**
+  (ADR-033 phase 4a, #463) -- @hc12r. `pkg/taskharness/nodeharness` is
+  the second of ADR-033's two required reference adapters, making the
+  runtime protocol's language-neutrality demonstrated rather than
+  asserted. A bundle declaring a `node` payload runs through a real
+  `node` subprocess -- local and remote dispatch alike -- under the same
+  protocol, failure taxonomy, resource ceilings and output-contract
+  validation a Python task gets. Three differences are forced by the
+  language, not chosen: keyword arguments arrive as one object argument,
+  the result is awaited (so `async` tasks work), and the memory ceiling
+  comes from V8's `--max-old-space-size` rather than a self-applied
+  `RLIMIT_AS` -- the same mechanism a TypeScript code node already uses.
+  `taskbundlev2.SelectPayload` replaces the Python-only selector, taking
+  the first payload in manifest order whose runtime class the server
+  supports, so a bundle author controls preference between equivalent
+  payloads and selection stays deterministic. Placement is not yet
+  runtime-aware: a node bundle can still be dispatched to a worker
+  without a node runtime, where it fails with a clear error rather than
+  anything silent (per-runtime capability tags are tracked as their own
+  follow-up).
+- **Task outputs are validated against their declared contract**
+  (ADR-032 section 10, #462) -- @hc12r. A task that declares an output
+  type and returns something else now fails its run instead of flowing
+  the wrong value downstream. `pkg/taskinterface.ValidationFailure` gives
+  a runtime contract violation real structure -- direction, port name,
+  contract path, expected descriptor, checked row count, validation mode
+  -- rather than a flat string. Failure reports never carry the offending
+  value's content, only its kind and shape, and suppress even that for a
+  declaration marked `sensitive`. A node carrying no declared interface
+  is not second-guessed: absence stays honest and the check is skipped.
+
 ## [0.11.2] - 2026-09-07
 
 ### Fixed
