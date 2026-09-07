@@ -468,10 +468,28 @@ func (o *nodeOutputs) GetRef(nodeID string) (*artifact.DatasetRef, bool) {
 // GetRef, using the ref's own recorded column order. Caller closes the
 // returned closer when done (also on error paths — the reader holds an
 // open blob).
-func (o *nodeOutputs) OpenBatches(ref *artifact.DatasetRef) (*NDJSONBatchReader, io.Closer, error) {
+func (o *nodeOutputs) OpenBatches(ref *artifact.DatasetRef) (DatasetBatchReader, io.Closer, error) {
 	rc, err := o.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
 		return nil, nil, err
 	}
-	return NewNDJSONBatchReader(rc, ref.Columns, 0), rc, nil
+	// The ref names its own format, so a dataset written before Arrow
+	// existed keeps saying "ndjson" and keeps being read as NDJSON. An
+	// empty format means the same thing, since that is what every ref
+	// predating the field's second value carries.
+	switch ref.Format {
+	case artifact.FormatArrowIPC:
+		br, err := NewArrowBatchReader(rc, ref.Columns)
+		if err != nil {
+			_ = rc.Close()
+			return nil, nil, err
+		}
+		return br, rc, nil
+	case artifact.FormatNDJSON, "":
+		return NewNDJSONBatchReader(rc, ref.Columns, 0), rc, nil
+	default:
+		_ = rc.Close()
+		return nil, nil, fmt.Errorf("dataset ref declares format %q, which this server cannot read (supported: %s, %s)",
+			ref.Format, artifact.FormatNDJSON, artifact.FormatArrowIPC)
+	}
 }
