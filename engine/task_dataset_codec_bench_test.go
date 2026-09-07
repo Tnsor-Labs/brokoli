@@ -241,10 +241,14 @@ func TestBenchFixturesAgreeAcrossCodecs(t *testing.T) {
 	if len(viaND.Rows) != len(viaAR.Rows) {
 		t.Fatalf("row counts differ: ndjson=%d arrow=%d", len(viaND.Rows), len(viaAR.Rows))
 	}
+	// Compared with != rather than by rendering: an earlier version of
+	// this used fmt.Sprintf("%v") and was blind to the difference that
+	// mattered, since int64(2) and float64(2) both print as "2". The
+	// codecs really did disagree on numeric types until that was found.
 	for _, c := range []string{"id", "name", "amount", "active", "category", "note"} {
 		a, n := viaAR.Rows[499][c], viaND.Rows[499][c]
-		if fmt.Sprintf("%v", a) != fmt.Sprintf("%v", n) {
-			t.Errorf("column %q differs by codec: arrow=%#v ndjson=%#v", c, a, n)
+		if a != n {
+			t.Errorf("column %q differs by codec: arrow=%#v (%T) ndjson=%#v (%T)", c, a, a, n, n)
 		}
 	}
 }

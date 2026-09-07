@@ -123,6 +123,10 @@ const FormatArrowIPC = "arrow-ipc"
 // MediaTypeNDJSON is the media type recorded for FormatNDJSON datasets.
 const MediaTypeNDJSON = "application/x-ndjson"
 
+// MediaTypeArrowIPC is the media type recorded for FormatArrowIPC
+// datasets -- the IANA-registered type for an Arrow IPC stream.
+const MediaTypeArrowIPC = "application/vnd.apache.arrow.stream"
+
 // MediaTypeOctetStream is the fallback for artifacts whose producer did not
 // say what they are.
 const MediaTypeOctetStream = "application/octet-stream"

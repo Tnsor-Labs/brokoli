@@ -91,6 +91,34 @@ func decodeArrowIPCRows(r io.Reader) ([]common.DataRow, []string, error) {
 // producer can always fall back to NDJSON, which is exactly why the
 // baseline exists.
 func arrowValue(col arrow.Array, i int) (interface{}, error) {
+	return arrowValueAs(col, i, false)
+}
+
+// arrowValueAs decodes one cell, choosing how whole numbers surface.
+//
+// This exists because the two NDJSON decoders in this package DISAGREE,
+// and Arrow has to match whichever one it is standing in for:
+//
+//   - task dataset outputs decode with plain json.Unmarshal
+//     (task_dataset.go), so every number is float64. ADR-032's
+//     validateInt64Value depends on that -- it accepts a whole float64
+//     as an int64's convenience form and would reject a Go int64.
+//   - spilled dataset refs decode with decodeRow (arrow_transfer.go),
+//     which uses UseNumber and prefers int64 for any integer that fits.
+//
+// Same bytes, different Go types, depending on which path reads them.
+// That divergence predates Arrow; Arrow merely had to pick a side and
+// so made the choice explicit. Resolving it properly means making the
+// two agree, which is a behaviour change to one of those paths and
+// belongs in its own change -- noted rather than quietly papered over.
+func arrowValueAs(col arrow.Array, i int, preferInt bool) (interface{}, error) {
+	num := func(f float64) interface{} {
+		if preferInt {
+			return numericValue(f)
+		}
+		return f
+	}
+
 	if col.IsNull(i) {
 		return nil, nil
 	}
@@ -102,25 +130,25 @@ func arrowValue(col arrow.Array, i int) (interface{}, error) {
 	case *array.LargeString:
 		return c.Value(i), nil
 	case *array.Int8:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Int16:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Int32:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Int64:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Uint8:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Uint16:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Uint32:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Uint64:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Float32:
-		return float64(c.Value(i)), nil
+		return num(float64(c.Value(i))), nil
 	case *array.Float64:
-		return c.Value(i), nil
+		return num(c.Value(i)), nil
 	case *array.Date32:
 		// RFC 3339 full-date, matching ADR-032 section 4's date encoding
 		// -- the same string an NDJSON producer would have written.
@@ -143,6 +171,27 @@ func arrowValue(col arrow.Array, i int) (interface{}, error) {
 	default:
 		return nil, fmt.Errorf("arrow column type %s is not supported by this server's reader (use %s instead)", col.DataType(), CodecNDJSON)
 	}
+}
+
+// numericValue mirrors normalizeJSONNumbers (engine/arrow_transfer.go)
+// so the two codecs return the SAME Go type for the same value.
+//
+// NDJSON decodes with UseNumber and then prefers int64 for any integer
+// that fits -- so a whole number written by an NDJSON producer comes
+// back as int64, not float64. Arrow knows its column is Float64 and
+// would naturally return float64, and that difference is exactly what
+// ADR-033 section 8 forbids: downstream code type-switches on these
+// values, so the transport would be changing behaviour.
+//
+// NDJSON is the incumbent, so Arrow matches it rather than the reverse.
+// An equivalence test that compares rendered strings cannot see this --
+// int64(2) and float64(2) both print as "2" -- so the test that guards
+// it compares types.
+func numericValue(f float64) interface{} {
+	if i := int64(f); float64(i) == f {
+		return i
+	}
+	return f
 }
 
 // decimal128String renders an Arrow decimal exactly, as the canonical
