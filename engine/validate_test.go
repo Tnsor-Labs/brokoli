@@ -667,3 +667,55 @@ func TestValidate_PluginSourceType_NoManualCapabilities(t *testing.T) {
 		t.Fatalf("plugin transform errors = %v, want unsupported type", ve.Errors)
 	}
 }
+
+// ADR-032 section 12 / ADR-033's capability-negotiation gate: a pipeline
+// declaring something this host cannot honour must be refused, not
+// quietly reinterpreted.
+//
+// Port-aware edges are the sharp case. Before models.Edge carried the
+// fields, Go dropped from_port/to_port as unknown JSON and the edge
+// became the conventional result -> input connection -- so an author
+// wiring one named output to one named input silently got a different
+// one. That is wrong data downstream, which is worse than an
+// unsupported-feature error.
+func TestValidate_PortAwareEdgeIsRefusedWhileUnsupported(t *testing.T) {
+	for _, tc := range []struct{ name, from, to string }{
+		{"both ports named", "metrics", "orders"},
+		{"only the output port named", "metrics", ""},
+		{"only the input port named", "", "orders"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &models.Pipeline{
+				Name: "ports", IRVersion: models.CurrentIRVersion,
+				Nodes: []models.Node{
+					{ID: "src", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": "x.csv"}},
+					{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": "out.csv"}},
+				},
+				Edges: []models.Edge{{From: "src", To: "sink", FromPort: tc.from, ToPort: tc.to}},
+			}
+			ve := ValidatePipeline(p)
+			if !ve.HasErrors() {
+				t.Fatal("a port-aware edge was accepted while port routing is unsupported")
+			}
+			if !strings.Contains(ve.Error(), models.FeatureTaskPortsV1) {
+				t.Errorf("err = %v, want it to name the missing execution feature", ve.Error())
+			}
+		})
+	}
+}
+
+// The conventional portless edge stays valid -- refusing ports must not
+// refuse every pipeline that never mentioned them.
+func TestValidate_PortlessEdgeStillValid(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "portless", IRVersion: models.CurrentIRVersion,
+		Nodes: []models.Node{
+			{ID: "src", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": "x.csv"}},
+			{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Sink", Config: map[string]interface{}{"path": "out.csv"}},
+		},
+		Edges: []models.Edge{{From: "src", To: "sink"}},
+	}
+	if ve := ValidatePipeline(p); ve.HasErrors() {
+		t.Fatalf("a conventional edge was refused: %v", ve.Error())
+	}
+}

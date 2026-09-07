@@ -93,6 +93,18 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		if e.From == e.To {
 			ve.Add(fmt.Sprintf("Self-loop on node: %s", e.From))
 		}
+		// ADR-032 section 12: port-aware edges additionally require the
+		// "task-ports-v1" execution feature, which this host does not
+		// advertise because port routing is not implemented. Refusing is
+		// the fail-closed behaviour that capability negotiation is for:
+		// accepting the pipeline would silently route the default
+		// result -> input edge instead of the ports the author named,
+		// which is the wrong data rather than a missing feature.
+		if e.FromPort != "" || e.ToPort != "" {
+			ve.Add(fmt.Sprintf(
+				"Edge %s -> %s names ports (%s -> %s), which this server cannot route: it does not advertise the %q execution feature. Remove the port names to use the conventional single result/input connection",
+				e.From, e.To, portOrDefault(e.FromPort, "result"), portOrDefault(e.ToPort, "input"), models.FeatureTaskPortsV1))
+		}
 		if e.Condition != nil {
 			if p.IRVersion != models.ConditionalEdgesIRVersion {
 				ve.Add(fmt.Sprintf("Conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, models.ConditionalEdgesIRVersion))
@@ -287,6 +299,15 @@ func validateEdgeAssignability(fromNode, toNode models.Node, ve *ValidationError
 	if res.Verdict == taskinterface.Incompatible {
 		ve.Add(fmt.Sprintf("Invalid connection: %s -> %s: %s: %s", fromNode.ID, toNode.ID, res.Path, res.Reason))
 	}
+}
+
+// portOrDefault names a port for an error message, falling back to the
+// conventional name when only one side of the edge declared one.
+func portOrDefault(name, fallback string) string {
+	if name == "" {
+		return fallback
+	}
+	return name
 }
 
 // effectiveNodeInterface returns n's own declared ADR-032 interface if

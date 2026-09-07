@@ -91,6 +91,15 @@ const TaskInterfaceIRVersion = "2.2"
 // an old entry when formally deprecating it.
 var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion, TaskInterfaceIRVersion}
 
+// FeatureTaskPortsV1 is ADR-032 section 12's execution feature for
+// port-aware interfaces and edges. Deliberately NOT in
+// SupportedExecutionFeatures: this host parses port names but cannot
+// route by them, and the honesty rule for that list is that a feature
+// appears only when a pipeline using it RUNS. Named as a constant so
+// validation refuses ports against the same string the capabilities
+// endpoint would advertise if it were ever supported.
+const FeatureTaskPortsV1 = "task-ports-v1"
+
 // SupportedExecutionFeatures names the pipeline semantics this host can
 // actually EXECUTE, advertised at /api/capabilities (ADR-014 rule 5) so
 // client preflight can gate features instead of only IR versions. The
@@ -425,4 +434,17 @@ type Edge struct {
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Condition *bool  `json:"condition,omitempty"`
+
+	// FromPort/ToPort name the specific output and input ports this edge
+	// connects (ADR-032 section 6). Parsed rather than ignored so the
+	// engine can REFUSE them: port routing is not implemented, and
+	// "task-ports-v1" is deliberately absent from
+	// SupportedExecutionFeatures because of that. Without these fields
+	// Go dropped them silently as unknown JSON, and an author wiring
+	// from_port "metrics" to to_port "orders" got the default
+	// result -> input edge instead -- the wrong data, downstream, with
+	// nothing to notice it by. Reading them is what lets validation say
+	// no (engine/validate.go).
+	FromPort string `json:"from_port,omitempty"`
+	ToPort   string `json:"to_port,omitempty"`
 }
