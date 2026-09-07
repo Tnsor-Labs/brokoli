@@ -1549,3 +1549,80 @@ test now fails via the store's own conflict detection (a second, different
 resolution correctly refuses to silently overwrite the first), then
 restored. Full existing local/remote task-node test suites pass
 unchanged. Full `./preflight.sh` green.
+
+## Update (2026-09-07) — the acceptance gates split by distribution
+
+The gate list above was written as one undivided bar, and that turned out
+to make this ADR unable to reach `accepted` for a reason unrelated to the
+work: several gates describe properties an open-source, trusted-profile
+engine cannot demonstrate by construction, not properties it has failed
+to implement.
+
+The clearest case is "tenant tasks are rejected on workers lacking the
+required sandbox". This engine targets the `trusted` isolation profile
+only — a deliberate scoping decision recorded on the rollout issue — so
+there is no second isolation tier to reject against and no tenant
+boundary to enforce. That gate is not failing; it is unaddressable here.
+Left undivided, the list would hold this ADR at `proposed` indefinitely
+while the runtime it describes runs in production.
+
+So the gates divide by which distribution can honestly demonstrate them.
+
+**Demonstrable in this engine** (the open-source runtime and data plane):
+
+1. ADR-017 claim/lease ownership: dispatcher-owned claim and renewal,
+   environment pinned before claim, no competing worker claim.
+2. Protocol v1 remote dispatch — materialized today, reference-based once
+   large inputs stop travelling inline — and fenced cleanup.
+3. `task-bundle/v2` canonicalization, dependency identity, environment
+   digest, and malicious-archive vectors.
+4. The JSON Lines state machine: malformed frame, handshake timeout,
+   cancellation race, process-exit race, oversized frame.
+5. Output collection refusing symlink swaps, path replacement,
+   non-regular files, descendant writers and aggregate-limit violations,
+   without TOCTOU reads.
+6. Python and Node adapters executing equivalent tasks cold and warm,
+   without state, secret or descriptor leakage, preserving ADR-032 values
+   losslessly.
+7. A Python task feeding a Node task and the reverse, through one pinned
+   backend and data plane.
+8. Retries reusing an identical execution-environment digest, and
+   explicit re-resolution producing visibly non-equivalent lineage.
+9. Effect-class fixtures — pure, keyed-idempotent, non-idempotent —
+   covering retry after an external effect, lost response, commit
+   uncertainty, stable effect keys across changing attempt IDs, and
+   exhausted elapsed budgets.
+10. Local-run tooling reporting adapter, environment, codec, contract and
+    sandbox parity, and never claiming isolation it did not provide.
+11. Capability negotiation failing closed for bundle, protocol, runtime
+    and codec requirements.
+
+**Demonstrable only in a distribution providing tenant isolation and more
+than one execution profile:**
+
+12. Candidate outputs invisible until one trusted, atomic, fenced
+    `CommitAttemptResult`; a stale worker publishing no port; crash
+    recovery proving upload-before-CAS orphan cleanup and all-or-nothing
+    multi-port publication. The single-tenant engine has per-node attempt
+    fencing, but multi-port atomic publication and its recovery story are
+    properties of a durable, tenant-scoped control plane.
+13. Opaque capabilities rejecting path traversal, general URLs, expired
+    grants, cross-tenant objects, wrong direction, wrong checksum and
+    stale fencing. "Cross-tenant" has no meaning in a single-tenant
+    engine, and the grant model belongs with the isolation boundary.
+14. Tenant tasks rejected on workers lacking the required sandbox rather
+    than degrading to process isolation. Requires a second isolation
+    profile to reject against.
+15. Capability negotiation failing closed for interface and isolation
+    requirements — the isolation half of gate 11, which needs profiles
+    that actually differ.
+
+This ADR moves from `proposed` to `accepted` when the first group is
+demonstrated. The second group is the acceptance bar for the distribution
+that owns tenant isolation, tracked there, and this ADR does not wait on
+it.
+
+Splitting the list is not lowering the bar: every gate survives, with an
+owner that can clear it. What changes is that `accepted` stops meaning
+"the open-source engine has implemented multi-tenancy it deliberately
+does not implement".
