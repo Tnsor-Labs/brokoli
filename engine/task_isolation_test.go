@@ -9,6 +9,8 @@ package engine
 // question, and the only one an attacker would ask.
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -82,4 +84,70 @@ def run():
 			t.Errorf("run %d saw state from an earlier attempt: %v", i, got)
 		}
 	}
+}
+
+// The descriptor half of ADR-033's "no state, secret or descriptor
+// leakage" gate.
+//
+// Go opens files with O_CLOEXEC and exec.Cmd passes only stdin, stdout,
+// stderr plus any explicit ExtraFiles (the harness sets none), so the
+// property should hold by construction. "Should hold by construction"
+// is exactly the kind of claim worth a test: it is one ExtraFiles line,
+// or one file opened by a future dependency without CLOEXEC, away from
+// being false, and nothing else would notice.
+func TestTaskCannotReachTheEnginesFileDescriptors(t *testing.T) {
+	skipIfNoPython3(t)
+
+	// A file the ENGINE holds open for the whole run, standing in for a
+	// blob handle, a database socket, or a credentials file.
+	secretPath := filepath.Join(t.TempDir(), "engine-held.txt")
+	if err := os.WriteFile(secretPath, []byte("engine-only-secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	held, err := os.Open(secretPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer held.Close()
+
+	e := newTaskEngine(t)
+	// Walk every descriptor a child could plausibly have inherited and
+	// report anything readable beyond the three standard streams.
+	digest := e.bundle(t, `import os
+def run():
+    leaked = []
+    for fd in range(3, 64):
+        try:
+            os.fstat(fd)
+        except OSError:
+            continue
+        try:
+            with open(fd, "rb", closefd=False) as f:
+                f.seek(0)
+                head = f.read(64)
+            leaked.append("%d:%s" % (fd, head[:32]))
+        except Exception as exc:
+            leaked.append("%d:<open %s>" % (fd, type(exc).__name__))
+    return "|".join(leaked) or "<none>"
+`)
+	run, rerr := e.runPipeline(t, "p-no-fd-leak", digest, nil)
+	if rerr != nil {
+		t.Fatalf("run: %v", rerr)
+	}
+	got, _ := e.firstTaskRow(t, run)["result"].(string)
+	// Strictly "<none>", not merely "does not contain the fixture's
+	// secret". An earlier version of this asserted only the latter and
+	// still PASSED when a descriptor was deliberately leaked into the
+	// child -- a leaked database socket or blob handle would not have
+	// contained the fixture string either. Any descriptor beyond the
+	// three standard streams is the failure.
+	if got != "<none>" {
+		t.Errorf("task inherited descriptors beyond stdin/stdout/stderr: %s", got)
+	}
+	// Keep the engine's handle alive until after the task ran, so the
+	// test would actually have something to find if inheritance leaked.
+	if _, err := held.Stat(); err != nil {
+		t.Fatalf("engine handle closed early, so this proved nothing: %v", err)
+	}
+	t.Logf("descriptors visible to the task: %s", got)
 }
