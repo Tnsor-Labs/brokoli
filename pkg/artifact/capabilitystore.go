@@ -10,6 +10,9 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 // CapabilityStore is the Store a remote task worker uses: it holds no
@@ -43,7 +46,7 @@ type CapabilityStore struct {
 	// object are different tokens; whichever operation is attempted must
 	// find one that permits it, and the server has the final say.
 	Capabilities map[string]string
-	// HTTPClient is optional; http.DefaultClient is used when nil.
+	// HTTPClient is optional; a netguard-policied client is used when nil.
 	HTTPClient *http.Client
 	// WriteObjectID is the digest a Put is pre-authorized to create. The
 	// control plane allocates it before dispatch, because a write
@@ -56,8 +59,26 @@ func (c *CapabilityStore) client() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
 	}
-	return http.DefaultClient
+	// Through netguard, never http.DefaultClient: ADR-022 routes every
+	// outbound request through the policy, and internal/cmd/netguardcheck
+	// enforces it at build time.
+	//
+	// A permissive policy, matching the precedent RESTFetcher's
+	// selfRefClient sets for calls back to Brokoli itself. The default
+	// outbound policy exists to stop a PIPELINE AUTHOR's URL reaching
+	// internal services; this address is the worker's own control plane,
+	// configured by the operator, and a self-hosted deployment puts it on
+	// exactly the private network the default policy blocks. Applying the
+	// author-facing policy here would break the ordinary case while
+	// preventing nothing an author controls.
+	return netguard.Policy{AllowLoopback: true, AllowPrivate: true}.Client(controlPlaneTimeout)
 }
+
+// controlPlaneTimeout bounds one blob request. Generous because a
+// dataset can be large and the task contract's own size caps are what
+// actually bound it, short enough that a hung control plane fails the
+// attempt rather than holding a worker forever.
+const controlPlaneTimeout = 5 * time.Minute
 
 func (c *CapabilityStore) objectURL(objectID string) string {
 	return fmt.Sprintf("%s/api/runs/%s/nodes/%s/attempts/%d/blobs/%s",

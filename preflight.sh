@@ -55,7 +55,17 @@ if [ -n "$UNFORMATTED" ]; then
 fi
 pass gofmt
 
-# ---- 2. go vet (not in CI's lint job — deliberate extra rigor) ----
+# ---- 2. outbound HTTP policy (CI parity: ci.yml's lint job) ----
+#
+# This was missing while CI ran it, so a violation cost a full CI
+# round-trip to discover -- exactly what this script exists to prevent.
+# It is cheap and it guards ADR-022, so it runs before the long stages
+# rather than alongside them.
+stage "outbound HTTP policy (netguardcheck)"
+go run ./internal/cmd/netguardcheck ./... 2>&1 | tee "$LOGDIR/netguard.log"
+pass netguard
+
+# ---- 3. go vet (not in CI's lint job — deliberate extra rigor) ----
 stage "go vet"
 go vet ./... 2>&1 | tee "$LOGDIR/vet.log"
 pass vet
