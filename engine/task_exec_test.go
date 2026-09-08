@@ -8,7 +8,9 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -926,6 +928,61 @@ func skipIfNoJDK(t *testing.T) {
 // carries bytecode -- that is what makes it a different bundle shape
 // from python's and node's, and testing against source would test
 // something no real bundle looks like.
+// jvmBundlePackaged compiles a package-qualified class and packages it
+// under the package path a classloader expects (com/example/X.class),
+// which is what a real build tool's output looks like.
+func (e *taskTestEngine) jvmBundlePackaged(t *testing.T, pkg, simpleName, source string) string {
+	t.Helper()
+	tc, err := jvmharness.Resolve()
+	if err != nil {
+		t.Skipf("no usable JDK: %v", err)
+	}
+	work := t.TempDir()
+	srcDir := filepath.Join(work, "src", filepath.FromSlash(strings.ReplaceAll(pkg, ".", "/")))
+	if err := os.MkdirAll(srcDir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	srcPath := filepath.Join(srcDir, simpleName+".java")
+	if err := os.WriteFile(srcPath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	outDir := filepath.Join(work, "classes")
+	if out, err := exec.Command(tc.Javac, "-d", outDir, srcPath).CombinedOutput(); err != nil { // #nosec G204 -- resolved toolchain
+		t.Fatalf("compile fixture: %v\n%s", err, out)
+	}
+	rel := filepath.ToSlash(filepath.Join(strings.ReplaceAll(pkg, ".", "/"), simpleName+".class"))
+	classBytes, err := os.ReadFile(filepath.Join(outDir, filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatalf("read compiled class: %v", err)
+	}
+
+	placeholderDigest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	archive, err := taskbundlev2.Assemble(
+		map[string]string{rel: string(classBytes)},
+		&taskbundlev2.Manifest{
+			Format:          taskbundlev2.Format,
+			Name:            "fixture-task",
+			InterfaceDigest: placeholderDigest,
+			SourceDigest:    placeholderDigest,
+			Payloads: []taskbundlev2.Payload{{
+				ID: "jvm-any", Runtime: taskbundlev2.RuntimeJVM, OS: "any", Arch: "any",
+				Entrypoint:    taskbundlev2.Entrypoint{Module: pkg + "." + simpleName, Symbol: "run"},
+				Effects:       taskbundlev2.EffectPure,
+				PayloadDigest: placeholderDigest,
+			}},
+			Files: []taskbundlev2.FileEntry{{Path: rel, Size: int64(len(classBytes)), SHA256: fmt.Sprintf("%x", sha256.Sum256(classBytes))}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := taskbundlev2.DigestOf(archive)
+	if created, err := e.s.PutTaskBundleV2(taskOrg, digest, archive); err != nil || !created {
+		t.Fatalf("seed task bundle v2: created=%v err=%v", created, err)
+	}
+	return digest
+}
+
 func (e *taskTestEngine) jvmBundle(t *testing.T, className, source string) string {
 	t.Helper()
 	tc, err := jvmharness.Resolve()
@@ -1089,6 +1146,29 @@ func TestTaskDeclaredInt64PortAcceptsAnExactValue(t *testing.T) {
 		map[string]interface{}{"kind": "int64"})
 	if err != nil {
 		t.Fatalf("a declared int64 port refused an exact 64-bit value: %v", err)
+	}
+	got := e.firstTaskRow(t, run)["result"]
+	n, ok := got.(int64)
+	if !ok || n != 9007199254740993 {
+		t.Fatalf("result = %#v (%T), want int64(9007199254740993)", got, got)
+	}
+}
+
+// A package-qualified class -- what any real build tool emits -- must
+// run, not just a default-package one. A classloader resolves
+// com.example.Rollup at com/example/Rollup.class beneath the bundle
+// root, so this is what proves the layout `brokoli bundle jvm` produces
+// is the layout the runtime needs. Flattening the package path would
+// still yield a well-formed bundle whose classes simply cannot be
+// found, and nothing else would catch that.
+func TestTaskRunsAPackageQualifiedJVMClass(t *testing.T) {
+	skipIfNoJDK(t)
+	e := newTaskEngine(t)
+	digest := e.jvmBundlePackaged(t, "com.example", "Rollup",
+		"package com.example;\npublic final class Rollup {\n    public static Object run() { return 9007199254740993L; }\n}\n")
+	run, err := e.runPipeline(t, "p-jvm-packaged", digest, nil)
+	if err != nil {
+		t.Fatalf("a package-qualified JVM class failed to run: %v", err)
 	}
 	got := e.firstTaskRow(t, run)["result"]
 	n, ok := got.(int64)
