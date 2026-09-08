@@ -129,11 +129,77 @@ const DATASET_FILENAME = "result.ndjson";
 // tell the task anything useful about it.
 function readInputRows(inputPath) {
   const rows = [];
+  let lineNo = 0;
   for (const line of fs.readFileSync(inputPath, "utf8").split("\n")) {
+    lineNo++;
     const trimmed = line.trim();
-    if (trimmed) rows.push(JSON.parse(trimmed));
+    if (!trimmed) continue;
+    const unsafe = unsafeIntegerLiteral(trimmed);
+    if (unsafe !== null) {
+      // Thrown, not failed directly: the caller already wraps this in the
+      // contract_violation/invalid_input handler that also exits. Calling
+      // fail() here would emit a terminal frame and then keep going,
+      // emitting "completed" after it -- a protocol violation the
+      // worker correctly rejects.
+      throw new Error(
+        `input row ${lineNo} contains the integer ${unsafe}, which JavaScript cannot represent ` +
+          `exactly (|value| > Number.MAX_SAFE_INTEGER). JSON.parse would silently return a ` +
+          `different number, so this task is refused rather than run against altered data. Use a ` +
+          `string for 64-bit identifiers, or run this task on a runtime with exact 64-bit ` +
+          `integers (python, jvm).`,
+      );
+    }
+    rows.push(JSON.parse(trimmed));
   }
   return rows;
+}
+
+// unsafeIntegerLiteral finds an integer literal the JS number type
+// cannot hold exactly, WITHOUT parsing -- parsing is what loses it.
+//
+// brokoli#479 fixed exactly this class of defect on the Go side: a
+// decoder that turned every JSON number into a float64 silently altered
+// 9007199254740993 to ...992. JavaScript has no wider number, so the
+// harness cannot fix the value the way Go could; refusing is the honest
+// remaining option, and it beats handing a task an id that is quietly
+// off by one.
+//
+// The check that looks obvious does not work: `v === 9007199254740993`
+// is TRUE after the value has been altered, because the literal in the
+// comparison rounds identically. Only the raw text knows.
+//
+// Strings are skipped so digits inside them never match, escapes
+// included. A literal with a fraction or exponent is left alone: it was
+// never a claim to an exact integer.
+function unsafeIntegerLiteral(line) {
+  let i = 0;
+  const n = line.length;
+  while (i < n) {
+    const c = line[i];
+    if (c === '"') {
+      i++;
+      while (i < n) {
+        if (line[i] === "\\") { i += 2; continue; }
+        if (line[i] === '"') { i++; break; }
+        i++;
+      }
+      continue;
+    }
+    if (c === "-" || (c >= "0" && c <= "9")) {
+      const start = i;
+      if (line[i] === "-") i++;
+      while (i < n && line[i] >= "0" && line[i] <= "9") i++;
+      if (line[i] === "." || line[i] === "e" || line[i] === "E") {
+        while (i < n && /[0-9.eE+-]/.test(line[i])) i++;
+        continue;
+      }
+      const lit = line.slice(start, i);
+      if (lit !== "-" && !Number.isSafeInteger(Number(lit))) return lit;
+      continue;
+    }
+    i++;
+  }
+  return null;
 }
 
 // writeDatasetOutput serializes rows to NDJSON in stagingDir and

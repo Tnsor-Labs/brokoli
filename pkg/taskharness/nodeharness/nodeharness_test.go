@@ -296,3 +296,80 @@ func TestOfflineEndToEnd_AsyncGeneratorBecomesADataset(t *testing.T) {
 		t.Errorf("result manifest does not describe a dataset: %s", raw)
 	}
 }
+
+// runFixtureWithInput is runFixture plus a staged NDJSON input file, so
+// the harness's readInputRows actually runs.
+func runFixtureWithInput(t *testing.T, root, module, symbol, ndjson string) (taskharness.Result, string) {
+	t.Helper()
+	node := nodeBinary(t)
+
+	harnessDir := t.TempDir()
+	harnessPath, err := Materialize(harnessDir)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	attemptDir := t.TempDir()
+	inputPath := filepath.Join(attemptDir, "input.ndjson")
+	if err := os.WriteFile(inputPath, []byte(ndjson), 0o600); err != nil {
+		t.Fatalf("stage input: %v", err)
+	}
+	resultPath := filepath.Join(attemptDir, "result.json")
+	invocationPath := filepath.Join(attemptDir, "invocation.json")
+	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	if err := WriteInvocation(invocationPath, Invocation{
+		ModuleRoots:     []string{root},
+		Module:          module,
+		Symbol:          symbol,
+		InterfaceDigest: digest,
+		InputPath:       inputPath,
+		InputCodec:      "ndjson/v1",
+	}); err != nil {
+		t.Fatalf("WriteInvocation: %v", err)
+	}
+
+	start := taskharness.NewStartFrame(invocationPath, resultPath, filepath.Join(attemptDir, "out"))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	res, err := taskharness.Run(ctx, start, taskharness.Options{
+		Command: Command(node, harnessPath, 0),
+	}, taskharness.Handlers{})
+	if err != nil {
+		t.Fatalf("harness run: %v", err)
+	}
+	return res, resultPath
+}
+
+// brokoli#492. JavaScript's number type cannot hold 9007199254740993, so
+// JSON.parse silently returns ...992 -- the same class of silent
+// corruption #479 fixed on the Go side, which JS cannot fix the same way
+// because it has no wider number. Refusing beats handing a task an id
+// that is quietly off by one.
+func TestOfflineEndToEnd_UnrepresentableIntegerIsRefusedNotCorrupted(t *testing.T) {
+	root, module := buildFixtureBundle(t, "export function run(rows) {\n  return rows;\n}\n")
+	res, _ := runFixtureWithInput(t, root, module, "run", "{\"id\":9007199254740993}\n")
+	if res.Failure == nil {
+		t.Fatal("a 64-bit integer JavaScript cannot represent was accepted; it would have been silently altered")
+	}
+	if res.Failure.Category != taskharness.FailureContractViolation {
+		t.Errorf("category = %q, want %q", res.Failure.Category, taskharness.FailureContractViolation)
+	}
+	// The message must name the actual value, from the raw text -- the
+	// parsed one is already wrong, so reporting it would misdescribe the
+	// problem.
+	if !strings.Contains(res.Failure.Message, "9007199254740993") {
+		t.Errorf("message = %q, want it to name the original literal exactly", res.Failure.Message)
+	}
+}
+
+// The refusal must be narrow: ordinary integers, fractions and digits
+// inside strings are all still fine, or the guard would break every
+// Node task that handles numbers.
+func TestOfflineEndToEnd_RepresentableInputIsUnaffected(t *testing.T) {
+	root, module := buildFixtureBundle(t, "export function run(rows) {\n  return rows;\n}\n")
+	res, _ := runFixtureWithInput(t, root, module, "run",
+		"{\"small\":42,\"max_safe\":9007199254740991,\"frac\":0.5,\"exp\":1e300,\"s\":\"9007199254740993\"}\n")
+	if res.Failure != nil {
+		t.Fatalf("representable input was refused: %s: %s", res.Failure.Category, res.Failure.Message)
+	}
+}
