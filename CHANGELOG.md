@@ -11,6 +11,69 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.8] - 2026-09-08
+
+### Fixed
+
+- **64-bit integers now survive a task end to end** (#492, #496, #504) --
+  @hc12r. Three separate places were losing them, and the last one was
+  the engine itself:
+  - **Node tasks now carry them** instead of refusing them. v0.11.7 made
+    the harness refuse a value JavaScript cannot represent, which beat
+    corrupting it but left Node unable to process ordinary bigint keys.
+    It now handles the literal before `JSON.parse` can destroy it and
+    hands the task a `BigInt`, with the reverse on output. Works on the
+    supported Node range; no runtime floor change.
+  - **The engine was corrupting them regardless of adapter.**
+    `readTaskResult` decoded the result manifest with a plain
+    `json.Unmarshal`, so every number became a `float64` -- which cannot
+    hold an integer above 2^53. Python, Node and JVM all emitted
+    `9007199254740993` correctly and the pipeline received `...992`.
+    This is the same defect as v0.11.6's dataset-decode fix, surviving
+    on a second path.
+
+  **If a task of yours handles 64-bit identifiers, its results may have
+  been wrong.** Re-run anything whose output depended on one.
+- **The code-worker socket path could collide** (#449, #505) -- @hc12r.
+  It was built from `time.Now().UnixNano()`, which looks unique and is
+  not: two workers spawned in the same clock tick got the same path and
+  the second died with `bind: address already in use`. Each worker now
+  gets a kernel-guaranteed unique directory, so the outcome no longer
+  depends on clock granularity.
+
+### Added
+
+- **`brokoli bundle jvm`** (#507) -- @hc12r. Packages compiled JVM
+  bytecode into a task bundle a server can run:
+
+  ```
+  brokoli bundle jvm --classes build/classes/java/main     --entrypoint com.example.tasks.Transforms#dailyRollup     --name daily-rollup
+  ```
+
+  Until now the runtime could run a JVM task bundle and nothing could
+  produce one. Because the adapter loads **bytecode**, one command serves
+  Java, Kotlin, Scala and Groovy alike, and adds no dependency to your
+  project. A class compiled from a language other than Java needs that
+  language's runtime at load time, so pass its jar with `--jar` and the
+  bundle carries it.
+- **A second JVM language is verified, not assumed** (#504) -- @hc12r. A
+  Groovy task runs through the adapter unchanged, which is what makes
+  "every JVM language" a tested claim. A missing language runtime now
+  reports a `contract_violation` naming the jar to add, rather than a
+  `platform` failure implying the server is broken.
+
+### Changed
+
+- **The engine package has its own CI job** (#504) -- @hc12r. It was
+  sharing one 20-minute budget with a UI build, a Playwright install and
+  a second full pass for coverage, and its per-package timeout kept
+  firing -- naming whichever innocent test held the baton. It does not
+  import the web package, so its own job skips the UI pipeline entirely.
+  No test was shortened or skipped to achieve this.
+- **ADR-037 proposes editor integration** (#506) -- @hc12r, scoped around
+  moving deploy-time preflight into the editor rather than around
+  visualisation.
+
 ## [0.11.7] - 2026-09-08
 
 ### Added
