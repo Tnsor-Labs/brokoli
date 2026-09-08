@@ -233,12 +233,12 @@ type codeStreamResult struct {
 // lattice is battle-tested and this path never needs it — a streamed
 // invocation is by definition the large-NDJSON case. The subprocess
 // mechanics (env, timeout, progress-line filtering) mirror it exactly.
-func executeCodeNodeStreamed(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamed(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	if _, err := validateCodeRuntimeConstraint(nodeConfig); err != nil {
 		return nil, err
 	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodeStreamedPooled(parent, script, bundle, inputNDJSONPath, inputColumns, nodeConfig, runParams, timeoutSec, progress)
+		return executeCodeNodeStreamedPooled(parent, script, bundle, inputNDJSONPath, inputColumns, nodeConfig, runParams, taskParams, timeoutSec, progress)
 	}
 	if script == "" {
 		return nil, fmt.Errorf("task bundles require the warm code pool (BROKOLI_CODE_POOL is off for this run)")
@@ -267,6 +267,7 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 
 	configJSON, _ := json.Marshal(nodeConfig)
 	paramsJSON, _ := json.Marshal(runParams)
+	taskParamsJSON := marshalTaskParams(taskParams)
 	pythonPath := "python3"
 	if pp, ok := nodeConfig["python_path"].(string); ok && pp != "" {
 		pythonPath = pp
@@ -282,6 +283,7 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 		"BROKED_SCRIPT="+scriptFile,
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),
+		"BROKED_TASK_PARAMS="+string(taskParamsJSON),
 		"BROKED_OUTPUT_NDJSON="+outputNDJSON,
 		"BROKED_OUTPUT_COLUMNS="+outputCols,
 	)
@@ -627,7 +629,7 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 	if inputRef != nil {
 		inputCols = inputRef.Columns
 	}
-	res, err := executeCodeNodeStreamed(ctx, script, bundle, stagedInput, inputCols, configForScript, runParams, timeoutSec,
+	res, err := executeCodeNodeStreamed(ctx, script, bundle, stagedInput, inputCols, configForScript, runParams, r.parameters, timeoutSec,
 		func(percent int, message string) {
 			r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 		})

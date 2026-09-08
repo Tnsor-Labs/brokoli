@@ -87,7 +87,7 @@ func scriptErrorToEngineError(err error, language string, limits codeexec.Limits
 	return fmt.Errorf("script failed: %w\nstderr: %s", err, stderr)
 }
 
-func executeCodeNodePooled(parent context.Context, script string, bundle *codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
+func executeCodeNodePooled(parent context.Context, script string, bundle *codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	language, interpreter, err := resolveCodeRuntime(nodeConfig)
 	if err != nil {
@@ -102,6 +102,7 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 		Script:       script,
 		Config:       nodeConfig,
 		Params:       runParams,
+		TaskParams:   taskParams,
 		Timeout:      time.Duration(timeoutSec) * time.Second,
 		Interpreter:  interpreter,
 		Limits:       limits,
@@ -170,7 +171,7 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	return ds, stderrStr, nil
 }
 
-func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
+func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle *codeBundleSpec, inputNDJSONPath string, inputColumns []string, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int, progress func(int, string)) (*codeStreamResult, error) {
 	limits := codeexec.Resolve(nodeConfig)
 	language, interpreter, err := resolveCodeRuntime(nodeConfig)
 	if err != nil {
@@ -183,6 +184,7 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle
 		Script:       script,
 		Config:       nodeConfig,
 		Params:       runParams,
+		TaskParams:   taskParams,
 		Timeout:      time.Duration(timeoutSec) * time.Second,
 		Interpreter:  interpreter,
 		Limits:       limits,

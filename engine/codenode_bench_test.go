@@ -22,7 +22,7 @@ func BenchmarkCodeNodeExpansionShape(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			b.Setenv("BROKOLI_CODE_POOL", mode)
 			for i := 0; i < b.N; i++ {
-				_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{}, nil, 30)
+				_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{}, nil, nil, 30)
 				if err != nil {
 					b.Fatal(err)
 				}

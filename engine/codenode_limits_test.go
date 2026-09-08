@@ -22,7 +22,7 @@ for _ in range(64):
     chunks.append(bytearray(64 * 1024 * 1024))
 `
 	input := &common.DataSet{Columns: []string{"a"}, Rows: []common.DataRow{{"a": 1}}}
-	_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{"max_memory_mb": float64(384)}, nil, 60)
+	_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{"max_memory_mb": float64(384)}, nil, nil, 60)
 	if err == nil {
 		t.Fatal("expected a memory-limit failure")
 	}
@@ -38,7 +38,7 @@ while True:
 `
 	input := &common.DataSet{Columns: []string{"a"}, Rows: []common.DataRow{{"a": 1}}}
 	// Wall timeout far above the CPU limit so the CPU ceiling wins.
-	_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{"max_cpu_seconds": float64(1)}, nil, 30)
+	_, _, err := ExecuteCodeNode(script, input, map[string]interface{}{"max_cpu_seconds": float64(1)}, nil, nil, 30)
 	if err == nil {
 		t.Fatal("expected a CPU-limit failure")
 	}
@@ -53,7 +53,7 @@ func TestCodeNode_RunsNormallyUnderLimits(t *testing.T) {
 	ds, _, err := ExecuteCodeNode(script, input, map[string]interface{}{
 		"max_memory_mb":   float64(512),
 		"max_cpu_seconds": float64(30),
-	}, nil, 30)
+	}, nil, nil, 30)
 	if err != nil {
 		t.Fatalf("script under limits failed: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestCodeNode_UnlimitedByDefaultKeepsWorking(t *testing.T) {
 	// No limits configured: the preamble must be a no-op, not a floor.
 	script := `output_data = {"columns": columns, "rows": rows}`
 	input := &common.DataSet{Columns: []string{"a"}, Rows: []common.DataRow{{"a": float64(1)}}}
-	if _, _, err := ExecuteCodeNode(script, input, map[string]interface{}{}, nil, 30); err != nil {
+	if _, _, err := ExecuteCodeNode(script, input, map[string]interface{}{}, nil, nil, 30); err != nil {
 		t.Fatalf("passthrough with no limits failed: %v", err)
 	}
 }

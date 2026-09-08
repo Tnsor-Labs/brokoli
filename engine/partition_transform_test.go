@@ -27,7 +27,7 @@ output_data = {"columns": columns, "rows": rows}
 		},
 	}
 
-	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, "dataset_map")
+	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, nil, "dataset_map")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -61,7 +61,7 @@ output_data = {"columns": columns, "rows": filtered}
 		},
 	}
 
-	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, "dataset_filter")
+	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, nil, "dataset_filter")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -84,7 +84,7 @@ output_data = {"columns": columns, "rows": filtered}
 func TestExecutePartitionTransform_MissingFunction(t *testing.T) {
 	ds := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": "1"}}}
 
-	_, _, _, err := ExecutePartitionTransform(map[string]interface{}{}, ds, nil, "dataset_map")
+	_, _, _, err := ExecutePartitionTransform(map[string]interface{}{}, ds, nil, nil, "dataset_map")
 	if err == nil {
 		t.Fatal("expected error for missing 'function' reference, got nil")
 	}
@@ -97,12 +97,12 @@ func TestExecutePartitionTransform_InvalidFunctionShape(t *testing.T) {
 	ds := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": "1"}}}
 
 	cfg := map[string]interface{}{"function": "not-an-object"}
-	if _, _, _, err := ExecutePartitionTransform(cfg, ds, nil, "dataset_filter"); err == nil {
+	if _, _, _, err := ExecutePartitionTransform(cfg, ds, nil, nil, "dataset_filter"); err == nil {
 		t.Fatal("expected error for non-object 'function' config, got nil")
 	}
 
 	cfg = map[string]interface{}{"function": map[string]interface{}{}}
-	if _, _, _, err := ExecutePartitionTransform(cfg, ds, nil, "dataset_filter"); err == nil {
+	if _, _, _, err := ExecutePartitionTransform(cfg, ds, nil, nil, "dataset_filter"); err == nil {
 		t.Fatal("expected error for 'function' object missing 'name', got nil")
 	}
 }
@@ -128,7 +128,7 @@ func TestExecutePartitionTransform_NameOnlyReference(t *testing.T) {
 		},
 	}
 
-	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, "dataset_map")
+	result, fnName, _, err := ExecutePartitionTransform(cfg, ds, nil, nil, "dataset_map")
 	if err == nil {
 		t.Fatal("expected an execution error for a name-only function reference (no script), got nil — " +
 			"this must not silently pass through")

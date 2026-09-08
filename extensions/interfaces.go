@@ -547,6 +547,12 @@ type InstanceWorkOrder struct {
 	// RunParams carries the run's own params (${param.x} interpolation),
 	// mirroring RunJob.Params.
 	RunParams map[string]string `json:"run_params,omitempty"`
+	// TypedParams carries the run's resolved ADR-032 section 7 declared
+	// parameters. RunParams cannot carry them: its values are strings, so
+	// a declared float would arrive as "0.9" -- a wrong type rather than a
+	// missing one. Additive and omitempty, so an older claimant ignores it
+	// and reads RunParams exactly as before.
+	TypedParams map[string]interface{} `json:"typed_params,omitempty"`
 	// TimeoutSeconds bounds this instance's execution — mirrors
 	// executeExpansionInstance's timeoutSec parameter, and is what a
 	// remote claimant's own lease duration should be derived from (see

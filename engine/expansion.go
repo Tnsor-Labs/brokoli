@@ -665,7 +665,7 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 	if execAttemptStore != nil && r.instanceJobQueue != nil {
 		result, err = r.dispatchExpansionInstanceRemotely(node, nodeAttempt, instanceKey, execFencingGen, itemDS, script, configForScript, runParams, timeoutSec)
 	} else {
-		result, stderr, err = ExecuteCodeNode(script, itemDS, configForScript, runParams, timeoutSec)
+		result, stderr, err = ExecuteCodeNode(script, itemDS, configForScript, runParams, r.parameters, timeoutSec)
 	}
 	if stderr != "" {
 		for _, line := range splitLines(stderr) {
@@ -762,7 +762,7 @@ func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt
 	return r.dispatchInstanceWorkOrderRemotely(node.ID, nodeAttempt, instanceKey, execFencingGen, &extensions.InstanceWorkOrder{
 		NodeType: string(node.Type), Script: script, Config: configForScript,
 		ItemColumns: itemDS.Columns, ItemRow: itemRow,
-		RunParams: runParams, TimeoutSeconds: timeoutSec,
+		RunParams: runParams, TypedParams: r.parameters, TimeoutSeconds: timeoutSec,
 	}, timeoutSec, nil)
 }
 

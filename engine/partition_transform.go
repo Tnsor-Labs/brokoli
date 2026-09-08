@@ -69,7 +69,7 @@ func functionRefScript(cfg map[string]interface{}, kind string) (name, script st
 // It is a free function (not a Runner method) so it can be unit tested
 // directly without a full Runner/store, matching this package's existing
 // convention for node logic (JoinDatasets, ExecuteCodeNode).
-func ExecutePartitionTransform(cfg map[string]interface{}, input *common.DataSet, runParams map[string]string, kind string) (result *common.DataSet, fnName string, stderr string, err error) {
+func ExecutePartitionTransform(cfg map[string]interface{}, input *common.DataSet, runParams map[string]string, taskParams map[string]interface{}, kind string) (result *common.DataSet, fnName string, stderr string, err error) {
 	fnName, script, err := functionRefScript(cfg, kind)
 	if err != nil {
 		return nil, fnName, "", err
@@ -90,6 +90,6 @@ func ExecutePartitionTransform(cfg map[string]interface{}, input *common.DataSet
 		}
 	}
 
-	result, stderr, err = ExecuteCodeNode(script, input, configForScript, runParams, timeoutSec)
+	result, stderr, err = ExecuteCodeNode(script, input, configForScript, runParams, taskParams, timeoutSec)
 	return result, fnName, stderr, err
 }

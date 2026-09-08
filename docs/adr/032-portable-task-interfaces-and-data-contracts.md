@@ -1188,3 +1188,47 @@ This closes ADR-032 rollout step 3 in full (issue #439). Steps 5
 interfaces for new task kinds) remain open; both are substantially
 larger efforts than this arc and are deferred as separate, dedicated
 initiatives pending their own scoping pass.
+
+## Update (2026-09-08) — declared parameters are actually delivered
+
+Section 7 describes parameter bindings as though declaring a parameter
+causes its value to reach the task. Until now it did not, and the gap
+was invisible from every angle except the running task
+([#487](https://github.com/Tnsor-Labs/brokoli/issues/487)):
+`taskinterface.ResolveParameters` validated a submitted value against
+its declaration, `engine.runPipelineAsync` recorded the resolved
+snapshot on the run row, and `Runner.parameters` was then read exactly
+once — to persist it. Node execution never consulted it. A run
+triggered with `threshold=0.9` validated, recorded 0.9, and executed
+with the task's own default. **A green run with a wrong answer**, which
+is the worst failure this ADR could have produced.
+
+**Delivery is a separate binding, not a merge.** A first attempt merged
+the resolved values into the `params` object scripts already see. That
+is the smaller change and it contradicts this repo's own stated
+invariant: `models.Pipeline.Parameters` is documented as "distinct from
+the legacy `Params` above and never silently merged with it". The two
+also differ in kind — `params` values are always strings, declared ones
+keep their declared type. A task therefore now sees its own
+`parameters` binding, and `params` is untouched.
+
+That distinction is load-bearing rather than stylistic: a
+`map[string]string` would have delivered a declared `float64` of `0.9`
+as `"0.9"`, giving the task a *wrong type* rather than a missing value —
+the same class of defect as the int64 truncation in #479, arriving by a
+different route.
+
+**Understanding a declaration and honouring it are different
+capabilities**, so they now have different names. `task-interface-v1`
+only ever meant the server accepts the IR; every server advertising it
+so far ignored the values. The new `task-parameters-v1` is what an SDK
+asks when it wants to know whether the value it sends will be honoured,
+and both SDKs refuse a deploy without it rather than let a user collect
+a green run built on a default they did not choose.
+
+**Consequence worth stating plainly:** annotating a keyword argument on
+an existing task still changes where that pipeline can deploy — it bumps
+`ir_version` to 2.2 and now also requires `task-parameters-v1`. That is
+deliberate. The alternative is deploying to a server that silently
+ignores the annotation, which is the bug this update closes. A louder
+refusal is the correct trade against a quieter wrong answer.

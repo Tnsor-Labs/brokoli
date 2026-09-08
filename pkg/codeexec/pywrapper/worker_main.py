@@ -66,6 +66,7 @@ _ENV_KEYS = (
     "BROKED_SCRIPT",
     "BROKED_CONFIG",
     "BROKED_PARAMS",
+    "BROKED_TASK_PARAMS",
     "BROKED_INPUT_NDJSON",
     "BROKED_OUTPUT_NDJSON",
     "BROKED_INPUT_COLUMNS",
@@ -230,6 +231,8 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
     os.environ["BROKED_SCRIPT"] = script_path
     os.environ["BROKED_CONFIG"] = json.dumps(msg.get("config") or {}, ensure_ascii=False)
     os.environ["BROKED_PARAMS"] = json.dumps(msg.get("params") or {}, ensure_ascii=False)
+    # ADR-032 declared parameters, kept distinct from "params" (see wrapper.py).
+    os.environ["BROKED_TASK_PARAMS"] = json.dumps(msg.get("task_params") or {}, ensure_ascii=False)
     output_path = ""
     if input_path:
         os.environ["BROKED_INPUT_NDJSON"] = input_path
