@@ -55,11 +55,31 @@ func spawnWorker(ctx context.Context, language, interpreter string, limits Limit
 		return nil, err
 	}
 
-	sockPath := filepath.Join(sockDir, fmt.Sprintf("w-%d.sock", time.Now().UnixNano()))
+	// A unique path per worker, from the OS rather than the clock.
+	// time.Now().UnixNano() looks unique and is not: two workers spawned
+	// in the same nanosecond tick -- which the pool does routinely when
+	// it fills, and which CI reproduces -- get the same path, and the
+	// second fails with "bind: address already in use" (#449).
+	//
+	// os.MkdirTemp is the uniqueness primitive: the kernel guarantees the
+	// directory name is unused, so the socket inside it cannot collide
+	// however many workers start at once.
+	sockHome, err := os.MkdirTemp(sockDir, "w-")
+	if err != nil {
+		return nil, fmt.Errorf("create worker socket dir: %w", err)
+	}
+	sockPath := filepath.Join(sockHome, "w.sock")
 	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		return nil, fmt.Errorf("listen %s: %w", sockPath, err)
 	}
+	// Safe to remove on return, including every error path: this
+	// function blocks on listener.Accept() below, so the child has
+	// already connected by the time it returns, and a Unix socket keeps
+	// working once its path is unlinked. Without this the directory
+	// would leak per worker -- Worker.cleanup only knows the socket
+	// file, whose removal is now redundant but harmless.
+	defer func() { _ = os.RemoveAll(sockHome) }()
 	defer listener.Close()
 
 	args := []string{workerMain, "--socket", sockPath}

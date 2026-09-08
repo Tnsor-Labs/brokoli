@@ -455,3 +455,55 @@ func TestPoolDeliversTypedProgress(t *testing.T) {
 		t.Fatalf("typed progress not delivered: %v", progress)
 	}
 }
+
+// #449: the pool spawns workers concurrently onto one shared socket
+// directory, and the path was built from time.Now().UnixNano() -- which
+// looks unique and is not. Two spawns landing in the same clock tick get
+// the same path and the second dies with "bind: address already in use",
+// which is exactly how CI failed.
+//
+// The interpreter here exits immediately, so this exercises the bind and
+// nothing else: every spawn must get its own path and fail for its own
+// reason, never because a sibling took the address.
+//
+// Note this cannot fail on a host whose clock has real nanosecond
+// resolution, which is why the fix is not "collide less often" but
+// os.MkdirTemp, whose uniqueness the kernel guarantees regardless of
+// clock granularity.
+func TestConcurrentSpawnsNeverCollideOnASocketPath(t *testing.T) {
+	interpreter := filepath.Join(t.TempDir(), "exit-worker")
+	if err := os.WriteFile(interpreter, []byte("#!/bin/sh\nexit 0\n"), 0o700); err != nil { // #nosec G306 -- test fixture that must be executable
+		t.Fatal(err)
+	}
+	sockDir := t.TempDir()
+
+	const spawns = 64
+	errs := make(chan error, spawns)
+	var wg sync.WaitGroup
+	for i := 0; i < spawns; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := spawnWorker(context.Background(), "python", interpreter, Limits{}, sockDir, false)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil && strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("two concurrent spawns collided on one socket path: %v", err)
+		}
+	}
+
+	// And nothing is left behind: a per-worker directory that outlived
+	// its worker would leak one inode per spawn forever.
+	entries, err := os.ReadDir(sockDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("socket directory still holds %d entries after every worker exited: %v", len(entries), entries)
+	}
+}
