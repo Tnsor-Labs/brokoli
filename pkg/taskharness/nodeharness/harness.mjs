@@ -134,72 +134,110 @@ function readInputRows(inputPath) {
     lineNo++;
     const trimmed = line.trim();
     if (!trimmed) continue;
-    const unsafe = unsafeIntegerLiteral(trimmed);
-    if (unsafe !== null) {
-      // Thrown, not failed directly: the caller already wraps this in the
-      // contract_violation/invalid_input handler that also exits. Calling
-      // fail() here would emit a terminal frame and then keep going,
-      // emitting "completed" after it -- a protocol violation the
-      // worker correctly rejects.
-      throw new Error(
-        `input row ${lineNo} contains the integer ${unsafe}, which JavaScript cannot represent ` +
-          `exactly (|value| > Number.MAX_SAFE_INTEGER). JSON.parse would silently return a ` +
-          `different number, so this task is refused rather than run against altered data. Use a ` +
-          `string for 64-bit identifiers, or run this task on a runtime with exact 64-bit ` +
-          `integers (python, jvm).`,
-      );
+    try {
+      rows.push(parsePreservingBigInts(trimmed));
+    } catch (err) {
+      throw new Error(`input row ${lineNo} is not valid JSON: ${err.message}`);
     }
-    rows.push(JSON.parse(trimmed));
   }
   return rows;
 }
 
-// unsafeIntegerLiteral finds an integer literal the JS number type
-// cannot hold exactly, WITHOUT parsing -- parsing is what loses it.
+// BIGINT_SENTINEL prefixes a string standing in for an integer literal
+// JavaScript's number type cannot hold. The leading space makes an
+// accidental collision with real task data essentially impossible while
+// staying valid JSON.
+const BIGINT_SENTINEL = " \u0000brokoli:bigint:";
+
+// parsePreservingBigInts decodes one JSON document, yielding a BigInt
+// for any integer literal outside the exactly-representable range.
 //
-// brokoli#479 fixed exactly this class of defect on the Go side: a
-// decoder that turned every JSON number into a float64 silently altered
-// 9007199254740993 to ...992. JavaScript has no wider number, so the
-// harness cannot fix the value the way Go could; refusing is the honest
-// remaining option, and it beats handing a task an id that is quietly
-// off by one.
+// brokoli#479 lost 64-bit integers in Go; #492 found the same class live
+// here. JavaScript has no wider number, so the fix is BigInt -- but
+// JSON.parse has already destroyed the value by the time any reviver
+// sees it, and the ES2025 reviver source access that would solve it
+// cleanly works on Node 24 and SILENTLY does nothing on Node 20, which
+// is still supported.
 //
-// The check that looks obvious does not work: `v === 9007199254740993`
+// So the numbers are handled before the parse and everything else is
+// left to JSON.parse: out-of-range integer literals are rewritten as
+// sentinel strings, then revived as BigInt. Escapes, unicode, nesting
+// and duplicate keys stay JSON.parse's problem, which is the point --
+// a hand-written JSON parser to fix numbers would be a much larger
+// surface to get wrong.
+//
+// Note the check that looks obvious does not work: `v === 9007199254740993`
 // is TRUE after the value has been altered, because the literal in the
 // comparison rounds identically. Only the raw text knows.
+function parsePreservingBigInts(text) {
+  return JSON.parse(quoteUnsafeIntegers(text), (_k, v) =>
+    typeof v === "string" && v.startsWith(BIGINT_SENTINEL)
+      ? BigInt(v.slice(BIGINT_SENTINEL.length))
+      : v,
+  );
+}
+
+// quoteUnsafeIntegers rewrites every out-of-range integer literal as a
+// sentinel string, leaving everything else byte-identical.
 //
-// Strings are skipped so digits inside them never match, escapes
-// included. A literal with a fraction or exponent is left alone: it was
-// never a claim to an exact integer.
-function unsafeIntegerLiteral(line) {
+// Strings are skipped so digits inside them are never touched, escapes
+// included. A literal carrying a fraction or exponent is left alone: it
+// never claimed to be an exact integer.
+function quoteUnsafeIntegers(raw) {
+  let out = "";
   let i = 0;
-  const n = line.length;
-  while (i < n) {
-    const c = line[i];
+  while (i < raw.length) {
+    const c = raw[i];
     if (c === '"') {
+      const start = i;
       i++;
-      while (i < n) {
-        if (line[i] === "\\") { i += 2; continue; }
-        if (line[i] === '"') { i++; break; }
+      while (i < raw.length) {
+        if (raw[i] === "\\") { i += 2; continue; }
+        if (raw[i] === '"') { i++; break; }
         i++;
       }
+      out += raw.slice(start, i);
       continue;
     }
     if (c === "-" || (c >= "0" && c <= "9")) {
       const start = i;
-      if (line[i] === "-") i++;
-      while (i < n && line[i] >= "0" && line[i] <= "9") i++;
-      if (line[i] === "." || line[i] === "e" || line[i] === "E") {
-        while (i < n && /[0-9.eE+-]/.test(line[i])) i++;
+      if (raw[i] === "-") i++;
+      while (i < raw.length && raw[i] >= "0" && raw[i] <= "9") i++;
+      if (raw[i] === "." || raw[i] === "e" || raw[i] === "E") {
+        while (i < raw.length && /[0-9.eE+-]/.test(raw[i])) i++;
+        out += raw.slice(start, i);
         continue;
       }
-      const lit = line.slice(start, i);
-      if (lit !== "-" && !Number.isSafeInteger(Number(lit))) return lit;
+      const lit = raw.slice(start, i);
+      out += Number.isSafeInteger(Number(lit)) ? lit : JSON.stringify(BIGINT_SENTINEL + lit);
       continue;
     }
+    out += c;
     i++;
   }
-  return null;
+  return out;
+}
+
+// stringifyPreservingBigInts is the write half. JSON.stringify throws on
+// a BigInt rather than guessing, so each one is serialized through the
+// same sentinel and then unquoted, emitting an exact integer literal.
+//
+// Without this, a task that merely reads a 64-bit id and returns the row
+// unchanged would fail at output having succeeded at input -- an
+// asymmetry that would make the input fix useless in the common case.
+function stringifyPreservingBigInts(value) {
+  const json = JSON.stringify(value, (_k, v) =>
+    typeof v === "bigint" ? BIGINT_SENTINEL + v.toString() : v,
+  );
+  if (json === undefined) return json;
+  // Unquote the sentinel strings back into bare integer literals. The
+  // pattern is anchored to the sentinel, which cannot appear in ordinary
+  // data, and the digits are the only thing between it and the closing
+  // quote.
+  return json.replace(
+    /"\s\\u0000brokoli:bigint:(-?\d+)"/g,
+    (_m, digits) => digits,
+  );
 }
 
 // writeDatasetOutput serializes rows to NDJSON in stagingDir and
@@ -234,7 +272,7 @@ async function writeDatasetOutput(stagingDir, rows) {
           `task declares a dataset output but row ${i} is ${row === null ? "null" : typeof row}; every row must be an object`,
         );
       }
-      const line = Buffer.from(JSON.stringify(row) + "\n", "utf8");
+      const line = Buffer.from(stringifyPreservingBigInts(row) + "\n", "utf8");
       fs.writeSync(handle, line);
       hash.update(line);
       size += line.length;
@@ -394,7 +432,7 @@ async function main() {
     }
     fs.writeFileSync(
       start.result_path,
-      JSON.stringify({
+      stringifyPreservingBigInts({
         contract: "brokoli.task-result/v1",
         interface_digest: inv.interface_digest,
         outputs: { result: port },

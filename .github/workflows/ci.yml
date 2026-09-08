@@ -197,18 +197,147 @@ jobs:
         # the diagnosable failure, rather than the job being killed from
         # outside with nothing to read. This raises the ceiling; it does
         # not lower the package's cost, which is tracked in #329.
-        run: go test -v -race -timeout 15m ./...
+        #
+        # ./engine/ is NOT run here: it has its own job below. It was the
+        # package this timeout kept firing on, and it was competing for
+        # one 20m budget with an npm ci, a Playwright browser install, a
+        # UI e2e run, and a second full pass for coverage. Splitting it
+        # out gives it a realistic budget without lowering anyone's
+        # coverage, and the two jobs now run concurrently.
+        run: go test -v -race -timeout 15m $(go list ./... | grep -v '/engine$')
+
+      - name: Coverage
+        run: |
+          go test -coverprofile=coverage.out $(go list ./... | grep -v '/engine$')
+          echo "=== Coverage ==="
+          go tool cover -func=coverage.out | tail -1
+
+  # The engine package on its own runner.
+  #
+  # It is by far the most expensive package (432s-900s under -race on
+  # CI, depending on runner load) and the one whose per-package timeout
+  # kept firing -- naming whichever innocent test held the baton, exactly
+  # as the comment above predicted. Sharing a 20m job with a UI build was
+  # what made a slow runner fatal.
+  #
+  # No UI build here: engine does not import the web package, so it needs
+  # nothing from ui/dist. That removes npm ci, a Playwright browser
+  # install and a UI e2e run from this job's critical path, which is most
+  # of why it now fits comfortably.
+  test-engine:
+    name: Test (engine)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # The same services and env the Test job uses, verbatim. Engine has
+    # Postgres, MySQL and ClickHouse tests, and they SKIP when their URL
+    # is unset -- so a job missing any of these would go green while
+    # testing less, which is the failure this repo has been fixing all
+    # week.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: brokoli
+          POSTGRES_PASSWORD: brokoli
+          POSTGRES_DB: brokoli_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U brokoli -d brokoli_test"
+          --health-interval 2s --health-timeout 3s --health-retries 30
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: rootpw
+          MYSQL_USER: brokoli
+          # Deliberately full of characters that mean something in a URI. The
+          # DSN carries credentials verbatim (#338), and a password like this
+          # is what proves it on every run rather than in a test that skips.
+          MYSQL_PASSWORD: br@k:li/pw#1
+          MYSQL_DATABASE: brokoli_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -prootpw"
+          --health-interval 3s --health-timeout 5s --health-retries 30
+      clickhouse:
+        # ADR-027 phase 0. Same 25.3 LTS pin as docker-compose.test.yml;
+        # the smoke test fails by name if the two ever disagree.
+        image: clickhouse/clickhouse-server:25.3-alpine
+        env:
+          CLICKHOUSE_USER: brokoli
+          CLICKHOUSE_PASSWORD: brokoli
+          CLICKHOUSE_DB: brokoli_test
+          # Lets the test user CREATE USER, which the hostile-credential
+          # round-trip test needs. Scratch server, tmpfs data.
+          CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
+          --health-interval 3s --health-timeout 5s --health-retries 30
+          --ulimit nofile=262144:262144
+
+    env:
+      BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
+      # A second Postgres variable exists for the execution-attempt migration
+      # test. Pointing it at the same server rather than leaving it unset is
+      # the difference between that test running and silently not.
+      BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
+      # The credential test builds a DSN from parts rather than parsing one,
+      # so it needs the fields separately.
+      BROKOLI_TEST_CLICKHOUSE_URL: clickhouse://brokoli:brokoli@localhost:9000/brokoli_test
+      BROKOLI_TEST_MYSQL_HOST: localhost
+      BROKOLI_TEST_MYSQL_PORT: "3306"
+      BROKOLI_TEST_MYSQL_USER: brokoli
+      BROKOLI_TEST_MYSQL_PASSWORD: br@k:li/pw#1
+      BROKOLI_TEST_MYSQL_DB: brokoli_test
+      # Root, for the one test that toggles a server global (the LOAD DATA
+      # fallback test flips local_infile off and back).
+      BROKOLI_TEST_MYSQL_ROOT_URL: mysql://root:rootpw@tcp(localhost:3306)/brokoli_test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The same setup the Test job does, minus the UI build. Each of
+      # these gates real engine tests that SKIP without it -- a first
+      # version of this job omitted them and went from "timed out" to
+      # "green while quietly testing less", which is the failure mode
+      # this repo keeps finding.
+      - name: Enable local_infile on the MySQL service
+        run: mysql --host=127.0.0.1 --port=3306 -uroot -prootpw -e "SET GLOBAL local_infile=1"
+
+      - name: Install dbt-core
+        run: pip install --quiet "dbt-core==1.8.9" "dbt-postgres==1.8.2" "dbt-clickhouse==1.8.9" "setuptools<81"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Test engine
+        run: go test -v -race -timeout 25m ./engine/
 
       # ADR-029 dual-mode leg: the pool is the default; this keeps the
       # legacy spawn path green until its removal one release later.
       - name: Code-node legacy-path leg (pool off)
         run: env BROKOLI_CODE_POOL=0 go test -timeout 10m -run 'TestCodeNode|TestLazyRows|TestPipeline_LazyRows|TestPipeline_EmitZeroRows|TestPipeline_Streamed|TestInstanceWorker|TestExpansion' ./engine/
 
-      - name: Coverage
+      # Engine's own coverage, because the Test job's coverage step no
+      # longer sees this package. Splitting the job must not quietly
+      # shrink what coverage reports.
+      - name: Coverage (engine)
         run: |
-          go test -coverprofile=coverage.out ./...
-          echo "=== Coverage ==="
-          go tool cover -func=coverage.out | tail -1
+          go test -coverprofile=coverage-engine.out ./engine/
+          echo "=== Engine coverage ==="
+          go tool cover -func=coverage-engine.out | tail -1
 
   build:
     name: Build

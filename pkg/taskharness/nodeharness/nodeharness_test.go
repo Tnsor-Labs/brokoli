@@ -340,25 +340,55 @@ func runFixtureWithInput(t *testing.T, root, module, symbol, ndjson string) (tas
 	return res, resultPath
 }
 
-// brokoli#492. JavaScript's number type cannot hold 9007199254740993, so
-// JSON.parse silently returns ...992 -- the same class of silent
-// corruption #479 fixed on the Go side, which JS cannot fix the same way
-// because it has no wider number. Refusing beats handing a task an id
-// that is quietly off by one.
-func TestOfflineEndToEnd_UnrepresentableIntegerIsRefusedNotCorrupted(t *testing.T) {
-	root, module := buildFixtureBundle(t, "export function run(rows) {\n  return rows;\n}\n")
-	res, _ := runFixtureWithInput(t, root, module, "run", "{\"id\":9007199254740993}\n")
-	if res.Failure == nil {
-		t.Fatal("a 64-bit integer JavaScript cannot represent was accepted; it would have been silently altered")
+// brokoli#492/#496. JavaScript's number type cannot hold
+// 9007199254740993, so JSON.parse silently returns ...992 -- the same
+// class of corruption #479 fixed in Go. This adapter first refused such
+// input (#494) and now carries it exactly, as a BigInt.
+//
+// Asserted on the RAW result bytes, never a decoded number: in
+// JavaScript `v === 9007199254740993` is true after the value has been
+// altered, because the comparison literal rounds identically.
+func TestOfflineEndToEnd_SixtyFourBitIntegerSurvivesExactly(t *testing.T) {
+	root, module := buildFixtureBundle(t, "export function run({ input }) {\n  return input[0].id;\n}\n")
+	res, resultPath := runFixtureWithInput(t, root, module, "run", "{\"id\":9007199254740993}\n")
+	if res.Failure != nil {
+		t.Fatalf("expected success, got %s: %s", res.Failure.Category, res.Failure.Message)
 	}
-	if res.Failure.Category != taskharness.FailureContractViolation {
-		t.Errorf("category = %q, want %q", res.Failure.Category, taskharness.FailureContractViolation)
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
 	}
-	// The message must name the actual value, from the raw text -- the
-	// parsed one is already wrong, so reporting it would misdescribe the
-	// problem.
-	if !strings.Contains(res.Failure.Message, "9007199254740993") {
-		t.Errorf("message = %q, want it to name the original literal exactly", res.Failure.Message)
+	if !strings.Contains(string(raw), "9007199254740993") {
+		t.Fatalf("the exact value did not survive: %s", raw)
+	}
+	if strings.Contains(string(raw), "9007199254740992") {
+		t.Fatalf("value altered by one -- the #479 corruption: %s", raw)
+	}
+}
+
+// The int64 boundary itself, in both directions: these are the extremes
+// a 64-bit id can actually take, and they must emit as bare integer
+// literals rather than quoted strings or floats.
+func TestOfflineEndToEnd_Int64BoundsSurvive(t *testing.T) {
+	root, module := buildFixtureBundle(t, "export function run({ input }) {\n  return input[0];\n}\n")
+	res, resultPath := runFixtureWithInput(t, root, module, "run",
+		"{\"max\":9223372036854775807,\"min\":-9223372036854775808}\n")
+	if res.Failure != nil {
+		t.Fatalf("expected success, got %s: %s", res.Failure.Category, res.Failure.Message)
+	}
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	for _, want := range []string{"9223372036854775807", "-9223372036854775808"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("%s did not survive: %s", want, raw)
+		}
+		// A bare literal, not a quoted string: a downstream reader must
+		// see a number, or the fix has only moved the corruption.
+		if strings.Contains(string(raw), "\""+want+"\"") {
+			t.Errorf("%s came back quoted as a string: %s", want, raw)
+		}
 	}
 }
 

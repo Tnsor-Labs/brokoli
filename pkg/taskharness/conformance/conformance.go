@@ -174,13 +174,11 @@ func Cases() []Case {
 					"    }\n}\n",
 			},
 			InputNDJSON: "{\"id\":9007199254740993}\n",
-			ExpectFailure: map[string]ExpectedFailure{
-				Node: {
-					Category: taskharness.FailureContractViolation,
-					Reason: "JavaScript's number type cannot represent 9007199254740993, so the " +
-						"Node harness refuses the input rather than silently altering it (brokoli#492/#494)",
-				},
-			},
+			// No exemption for Node any more. It first refused this value
+			// (#494) and now carries it as a BigInt (#496): JavaScript has
+			// no wider number, so the harness handles the literal before
+			// JSON.parse can destroy it. Removing the exemption is what
+			// makes that a verified claim rather than a changelog line.
 			Assert: func(t *testing.T, _ taskharness.Result, raw []byte) {
 				if !strings.Contains(string(raw), "9007199254740993") {
 					t.Errorf("the exact value did not survive: %s", raw)

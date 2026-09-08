@@ -1017,3 +1017,82 @@ func TestJVMIsASupportedTaskRuntime(t *testing.T) {
 	}
 	t.Fatal("jvm is not in supportedTaskRuntimes; SelectPayload would skip every jvm payload")
 }
+
+// The engine half of the 64-bit contract (#479, #492, #496): a task's
+// 64-bit output must reach the pipeline as an exact int64, not a float64
+// that happens to print the same.
+//
+// Asserted per adapter, because each reaches this point differently: the
+// python harness emits an exact int natively, the node harness emits one
+// through BigInt handling it has only just gained, and the JVM harness
+// through a long. A regression in any one of them is a wrong id in a
+// pipeline, which is why this is checked at the engine boundary rather
+// than only inside each adapter's own tests.
+func TestTaskSixtyFourBitOutputReachesThePipelineExactly(t *testing.T) {
+	const want = int64(9007199254740993)
+
+	t.Run("python", func(t *testing.T) {
+		skipIfNoPython3(t)
+		e := newTaskEngine(t)
+		digest := e.bundle(t, "def run():\n    return 9007199254740993\n")
+		assertExactID(t, e, "p-int64-py", digest, want)
+	})
+
+	t.Run("node", func(t *testing.T) {
+		skipIfNoNode(t)
+		e := newTaskEngine(t)
+		digest := e.nodeBundle(t, "export function run() {\n  return 9007199254740993n;\n}\n")
+		assertExactID(t, e, "p-int64-node", digest, want)
+	})
+
+	t.Run("jvm", func(t *testing.T) {
+		skipIfNoJDK(t)
+		e := newTaskEngine(t)
+		digest := e.jvmBundle(t, "FixtureTask",
+			"public final class FixtureTask {\n    public static Object run() { return 9007199254740993L; }\n}\n")
+		assertExactID(t, e, "p-int64-jvm", digest, want)
+	})
+}
+
+func assertExactID(t *testing.T, e *taskTestEngine, pipelineID, digest string, want int64) {
+	t.Helper()
+	run, err := e.runPipeline(t, pipelineID, digest, nil)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	got := e.firstTaskRow(t, run)["result"]
+	// Compared as int64, never via a float64 helper: 2^53+1 and 2^53 are
+	// the same float64, so a float comparison passes on the corrupted
+	// value. That is precisely how #479 stayed hidden.
+	n, ok := got.(int64)
+	if !ok {
+		t.Fatalf("result = %#v (%T), want an int64 -- a float64 cannot hold %d", got, got, want)
+	}
+	if n != want {
+		t.Fatalf("result = %d, want %d (off by %d)", n, want, want-n)
+	}
+}
+
+// A task with a DECLARED int64 output port must validate against it, not
+// merely round-trip.
+//
+// This is the case a UseNumber decode breaks if the numbers are not
+// normalized straight afterwards: taskinterface's int64 validation
+// accepts a tagged value, an int64 or a whole float64, and rejects a
+// json.Number outright -- so the exact value would reach validation and
+// be refused for being the right type in the wrong Go representation.
+func TestTaskDeclaredInt64PortAcceptsAnExactValue(t *testing.T) {
+	skipIfNoPython3(t)
+	e := newTaskEngine(t)
+	digest := e.bundle(t, "def run():\n    return 9007199254740993\n")
+	run, err := e.runPipelineWithOutputInterface(t, "p-int64-port", digest,
+		map[string]interface{}{"kind": "int64"})
+	if err != nil {
+		t.Fatalf("a declared int64 port refused an exact 64-bit value: %v", err)
+	}
+	got := e.firstTaskRow(t, run)["result"]
+	n, ok := got.(int64)
+	if !ok || n != 9007199254740993 {
+		t.Fatalf("result = %#v (%T), want int64(9007199254740993)", got, got)
+	}
+}
