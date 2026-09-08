@@ -11,6 +11,68 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.7] - 2026-09-08
+
+### Added
+
+- **A third task runtime class: the JVM** (ADR-036, #498, #499, #500) --
+  @hc12r. A `task-bundle/v2` declaring a `jvm` payload runs through the
+  same engine, dispatch path and result contract a python or node task
+  uses, with only the adapter differing. Java tasks are ordinary public
+  static methods; the fully-qualified class and method travel in the
+  manifest's existing `entrypoint.module`/`.symbol`, so no new bundle
+  fields were needed, and the classpath is derived from the bundle's own
+  file list rather than declared a second time -- which means it is
+  covered by the bundle digest for free.
+  **Requires a JDK, not only a JRE**, and Java 17 or newer. The adapter
+  compiles its harness once per (harness version, JDK) into a host cache
+  and reuses the classes, because measurement rejected the alternative:
+  launching Java source directly costs 1.07-1.16s per attempt against
+  0.07s precompiled, and task nodes get a fresh child per attempt. A
+  host without `javac`, or below the version floor, is refused **by name
+  at validation** rather than discovered mid-run.
+- **One conformance suite across all three adapters** (ADR-033 section
+  19, #502) -- @hc12r. Python, Node and JVM are now held to the same
+  seven behaviours rather than to three unrelated test suites: scalar
+  round-trip, 64-bit integer fidelity, dataset-by-reference, artifact
+  media type, collection item keys, declared-kind-is-authoritative, and
+  `user_code` on raise. Where an adapter legitimately differs the
+  difference is declared with its reason, so "this runtime cannot do
+  that" is asserted rather than left as silence.
+
+### Fixed
+
+- **A task's artifact and collection outputs work on a dispatched task
+  node** (#493) -- @hc12r. They worked locally and failed with "this
+  server has no artifact blob store to hold it" when the node was
+  dispatched to an in-process instance worker -- blaming configuration
+  for absent plumbing, since the worker was holding a perfectly usable
+  blob store at the call site and passing nothing. A claimant genuinely
+  without one still gets the same honest refusal.
+- **The Node task harness no longer silently corrupts 64-bit integers**
+  (#492, #494) -- @hc12r. `JSON.parse` turned `9007199254740993` into
+  `...992` on every input row of every Node task -- the same class of
+  defect #479 fixed on the Go side, which JavaScript cannot fix the same
+  way because it has no wider number type. The harness now detects an
+  out-of-range integer **from the raw text, before parsing**, and
+  refuses by name.
+  **Behaviour change**: a Node task that was receiving a silently wrong
+  id now fails instead. That is the intent -- an id quietly off by one
+  is worse than a refused run -- but a pipeline that appeared to work may
+  now stop. Python and JVM tasks handle such values exactly and are
+  unaffected.
+
+### Changed
+
+- **Python bytecode is no longer tracked** (#495) -- @hc12r. Five `.pyc`
+  files were committed, including two pytest caches for two different
+  pytest versions.
+- **The Python harness's 64-bit fidelity is now asserted, not assumed**
+  (#497) -- @hc12r, and a scheduler test that failed for two minutes a
+  day was fixed (#501): at 04:59 UTC both `0 5 * * *` and `*/2 * * * *`
+  next fire at 05:00:00, so a "did the tighter schedule take effect"
+  assertion written as a comparison was false while the code was right.
+
 ## [0.11.6] - 2026-09-08
 
 ### Fixed
