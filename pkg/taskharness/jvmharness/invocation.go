@@ -331,6 +331,23 @@ type Invocation struct {
 	// InterfaceDigest is stamped into the candidate task-result-v1
 	// manifest.
 	InterfaceDigest string `json:"interface_digest"`
+	// OutputKind is the port's DECLARED ADR-032 section 6 kind. The
+	// engine is authoritative here, never the returned value's runtime
+	// shape: a task declaring a dataset that returns a string is a
+	// contract violation, not an artifact. Empty means scalar.
+	OutputKind string `json:"output_kind,omitempty"`
+	// OutputMediaType labels an artifact this task writes (the first
+	// media type its output port allows). Ignored for other kinds.
+	OutputMediaType string `json:"output_media_type,omitempty"`
+	// InputPath names an NDJSON file of rows the worker staged for this
+	// attempt, when the node declares an input port. The rows reach the
+	// task under the port's own name, so a signature names its input the
+	// way the interface does.
+	InputPath string `json:"input_path,omitempty"`
+	// InputCodec is how InputPath is encoded -- always ndjson/v1 today
+	// (ADR-033 section 8's baseline), carried explicitly so a future
+	// Arrow IPC input is a value change rather than a format guess.
+	InputCodec string `json:"input_codec,omitempty"`
 }
 
 // ParseEntrypoint splits ADR-036's "fully.qualified.Class#method" form.

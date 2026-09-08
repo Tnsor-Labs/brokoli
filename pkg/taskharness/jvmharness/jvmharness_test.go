@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v6"
+
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness"
 )
 
@@ -203,6 +205,13 @@ func buildTaskClass(t *testing.T, tc *Toolchain, source string) string {
 
 func runFixture(t *testing.T, tc *Toolchain, classpath, className, methodName string, kwargs map[string]interface{}) (taskharness.Result, string) {
 	t.Helper()
+	return runFixtureFull(t, tc, classpath, className, methodName, kwargs, Invocation{})
+}
+
+// runFixtureFull is runFixture with the declared output kind, media type
+// and staged input the engine would supply.
+func runFixtureFull(t *testing.T, tc *Toolchain, classpath, className, methodName string, kwargs map[string]interface{}, extra Invocation) (taskharness.Result, string) {
+	t.Helper()
 	classDir, err := Materialize(t.TempDir(), tc)
 	if err != nil {
 		t.Fatalf("Materialize: %v", err)
@@ -217,6 +226,10 @@ func runFixture(t *testing.T, tc *Toolchain, classpath, className, methodName st
 		MethodName:      methodName,
 		Kwargs:          kwargs,
 		InterfaceDigest: digest,
+		OutputKind:      extra.OutputKind,
+		OutputMediaType: extra.OutputMediaType,
+		InputPath:       extra.InputPath,
+		InputCodec:      extra.InputCodec,
 	}); err != nil {
 		t.Fatalf("WriteInvocation: %v", err)
 	}
@@ -393,4 +406,251 @@ public final class FixtureTask {
 func runCmd(name string, args ...string) (string, error) {
 	out, err := exec.Command(name, args...).CombinedOutput() // #nosec G204 -- test fixture compilation
 	return string(out), err
+}
+
+// stageInput writes an NDJSON input file and returns its path.
+func stageInput(t *testing.T, ndjson string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "input.ndjson")
+	if err := os.WriteFile(path, []byte(ndjson), 0o600); err != nil {
+		t.Fatalf("stage input: %v", err)
+	}
+	return path
+}
+
+func readResult(t *testing.T, path string) map[string]interface{} {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatalf("result is not valid JSON: %v\n%s", err, raw)
+	}
+	return doc
+}
+
+func outputPort(t *testing.T, doc map[string]interface{}) map[string]interface{} {
+	t.Helper()
+	outs, ok := doc["outputs"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("result has no outputs object: %#v", doc)
+	}
+	port, ok := outs["result"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("result has no 'result' port: %#v", outs)
+	}
+	return port
+}
+
+// Staged rows reach the task under the port's own name, and a 64-bit id
+// survives the read -- the difference #492 records between this adapter
+// and the Node one, which cannot represent one at all.
+func TestOfflineEndToEnd_InputRowsReachTheTask(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+import java.util.*;
+public final class FixtureTask {
+    @SuppressWarnings("unchecked")
+    public static Object run(Map<String, Object> kwargs) {
+        List<Object> rows = (List<Object>) kwargs.get("input");
+        Map<String, Object> first = (Map<String, Object>) rows.get(0);
+        return first.get("id");
+    }
+}
+`)
+	res, resultPath := runFixtureFull(t, tc, cp, "FixtureTask", "run", nil, Invocation{
+		InputPath:  stageInput(t, "{\"id\":9007199254740993}\n"),
+		InputCodec: "ndjson/v1",
+	})
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+	raw, _ := os.ReadFile(resultPath)
+	if !strings.Contains(string(raw), "9007199254740993") {
+		t.Fatalf("the exact 64-bit id did not survive the input read: %s", raw)
+	}
+}
+
+func TestOfflineEndToEnd_DatasetOutput(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+import java.util.*;
+public final class FixtureTask {
+    public static Object run() {
+        List<Object> rows = new ArrayList<>();
+        Map<String, Object> r = new LinkedHashMap<>();
+        r.put("id", 7L);
+        rows.add(r);
+        return rows;
+    }
+}
+`)
+	res, resultPath := runFixtureFull(t, tc, cp, "FixtureTask", "run", nil, Invocation{OutputKind: "dataset"})
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+	port := outputPort(t, readResult(t, resultPath))
+	if port["kind"] != "dataset" {
+		t.Fatalf("kind = %v, want dataset", port["kind"])
+	}
+	if port["codec"] != "ndjson/v1" {
+		t.Errorf("codec = %v, want ndjson/v1", port["codec"])
+	}
+	// Size and checksum must describe the bytes actually written, since
+	// the worker verifies against them (ADR-033 section 7 rule 6).
+	if sum, _ := port["checksum"].(string); !strings.HasPrefix(sum, "sha256:") {
+		t.Errorf("checksum = %v, want a sha256 reference", port["checksum"])
+	}
+	if n, _ := port["size_bytes"].(float64); n <= 0 {
+		t.Errorf("size_bytes = %v, want the real byte count", port["size_bytes"])
+	}
+}
+
+func TestOfflineEndToEnd_ArtifactOutput(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+import java.util.*;
+public final class FixtureTask {
+    public static Object run() { return "hello artifact"; }
+}
+`)
+	res, resultPath := runFixtureFull(t, tc, cp, "FixtureTask", "run", nil,
+		Invocation{OutputKind: "artifact", OutputMediaType: "text/plain"})
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+	port := outputPort(t, readResult(t, resultPath))
+	if port["kind"] != "artifact" {
+		t.Fatalf("kind = %v, want artifact", port["kind"])
+	}
+	// An artifact states its media type in codec, since the manifest has
+	// no media_type field (see the engine's artifactMediaType).
+	if port["codec"] != "text/plain" {
+		t.Errorf("codec = %v, want the declared media type", port["codec"])
+	}
+	if n, _ := port["size_bytes"].(float64); int(n) != len("hello artifact") {
+		t.Errorf("size_bytes = %v, want %d", port["size_bytes"], len("hello artifact"))
+	}
+}
+
+func TestOfflineEndToEnd_CollectionOutputCarriesItemKeys(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+import java.util.*;
+public final class FixtureTask {
+    public static Object run() {
+        Map<String, Object> items = new LinkedHashMap<>();
+        items.put("alpha", 1L);
+        items.put("beta", "two");
+        return items;
+    }
+}
+`)
+	res, resultPath := runFixtureFull(t, tc, cp, "FixtureTask", "run", nil, Invocation{OutputKind: "collection"})
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+	port := outputPort(t, readResult(t, resultPath))
+	if port["kind"] != "collection" {
+		t.Fatalf("kind = %v, want collection", port["kind"])
+	}
+	items, _ := port["items"].([]interface{})
+	if len(items) != 2 {
+		t.Fatalf("items = %#v, want two", items)
+	}
+	// The key is what makes an item separately addressable (ADR-032
+	// section 6) -- required, never derived from position, since
+	// positional identity is exactly what a key replaces.
+	for _, it := range items {
+		m, _ := it.(map[string]interface{})
+		if k, _ := m["item_key"].(string); k == "" {
+			t.Errorf("item has no item_key: %#v", m)
+		}
+	}
+}
+
+// The DECLARED interface is authoritative, never the returned value's
+// runtime shape: a task declaring a dataset that returns a String is a
+// contract violation, not an artifact.
+func TestOfflineEndToEnd_DeclaredKindIsAuthoritative(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+public final class FixtureTask {
+    public static Object run() { return "not a dataset"; }
+}
+`)
+	res, _ := runFixtureFull(t, tc, cp, "FixtureTask", "run", nil, Invocation{OutputKind: "dataset"})
+	if res.Failure == nil {
+		t.Fatal("a String was accepted for a declared dataset output")
+	}
+	if res.Failure.Category != taskharness.FailureContractViolation {
+		t.Errorf("category = %q, want %q", res.Failure.Category, taskharness.FailureContractViolation)
+	}
+	if !strings.Contains(res.Failure.Message, "dataset") {
+		t.Errorf("message = %q, want it to name the declared kind", res.Failure.Message)
+	}
+}
+
+// Every frame this harness emits must validate against the protocol
+// schema. Without this the adapter could speak a dialect that happens to
+// work with today's client and breaks on the next one.
+func TestFramesValidateAgainstTheProtocolSchema(t *testing.T) {
+	tc := toolchain(t)
+	cp := buildTaskClass(t, tc, `
+public final class FixtureTask {
+    public static Object run() { return 1L; }
+}
+`)
+	classDir, err := Materialize(t.TempDir(), tc)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	attemptDir := t.TempDir()
+	invocationPath := filepath.Join(attemptDir, "invocation.json")
+	if err := WriteInvocation(invocationPath, Invocation{
+		Classpath: []string{cp}, ClassName: "FixtureTask", MethodName: "run",
+		InterfaceDigest: "sha256:" + strings.Repeat("0", 62) + "aa",
+	}); err != nil {
+		t.Fatalf("WriteInvocation: %v", err)
+	}
+	start := taskharness.NewStartFrame(invocationPath, filepath.Join(attemptDir, "result.json"), filepath.Join(attemptDir, "out"))
+	startJSON, err := json.Marshal(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Drive the harness directly so the raw frame bytes are observable,
+	// rather than through the client which decodes them away.
+	cmd := exec.Command(Command(tc.Java, classDir, 0)[0], Command(tc.Java, classDir, 0)[1:]...) // #nosec G204 -- resolved toolchain
+	cmd.Stdin = strings.NewReader(string(startJSON) + "\n")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("harness run: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected at least ready and a terminal frame, got: %q", out)
+	}
+	c := jsonschema.NewCompiler()
+	schema, err := c.Compile("../../../docs/schema/task-runtime-v1.json")
+	if err != nil {
+		t.Fatalf("compile task-runtime-v1.json: %v", err)
+	}
+	for i, line := range lines {
+		inst, err := jsonschema.UnmarshalJSON(strings.NewReader(line))
+		if err != nil {
+			t.Fatalf("frame %d is not valid JSON: %v\n%s", i, err, line)
+		}
+		if err := schema.Validate(inst); err != nil {
+			t.Errorf("frame %d does not validate against task-runtime-v1.json: %v\n%s", i, err, line)
+		}
+	}
+	if !strings.Contains(lines[0], "\"ready\"") {
+		t.Errorf("first frame is not ready: %s", lines[0])
+	}
+	if !strings.Contains(lines[len(lines)-1], "\"completed\"") {
+		t.Errorf("last frame is not completed: %s", lines[len(lines)-1])
+	}
 }
