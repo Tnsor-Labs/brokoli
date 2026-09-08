@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,8 +75,13 @@ func newBlobRig(t *testing.T, fencingGeneration int64) *blobTestRig {
 			next.ServeHTTP(w, req)
 		})
 	})
-	r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Get)
-	r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Put)
+	// Mounted under /api exactly as routes.go does. A rig that served
+	// these at the root would pass while the real server 404s -- which is
+	// precisely what the cross-check below caught.
+	r.Route("/api", func(r chi.Router) {
+		r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Get)
+		r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Put)
+	})
 	return &blobTestRig{h: h, issuer: issuer, blobs: blobs, router: r}
 }
 
@@ -109,7 +115,7 @@ func (rig *blobTestRig) do(t *testing.T, method, objectID, token, org string, bo
 	if body != nil {
 		r = bytes.NewReader(body)
 	}
-	req := httptest.NewRequest(method, "/runs/run-1/nodes/task/attempts/0/blobs/"+objectID, r)
+	req := httptest.NewRequest(method, "/api/runs/run-1/nodes/task/attempts/0/blobs/"+objectID, r)
 	if token != "" {
 		req.Header.Set(CapabilityHeader, token)
 	}
@@ -225,4 +231,78 @@ func TestBlobExpiredCapabilityIsDistinguished(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("GET with an expired capability = %d, want 401 (retryable), got body %s", w.Code, w.Body.String())
 	}
+}
+
+// The two halves against each other: the real handler on one side, the
+// real CapabilityStore a worker uses on the other.
+//
+// Each side has its own tests and each would keep passing if they
+// disagreed about the object-id field name, the header, or the URL
+// shape. A contract between two components is exactly where that kind of
+// mismatch survives, so it gets a test that spans both -- the same
+// reason the SDK is verified against a real server rather than a stub.
+func TestBlobEndpointAndCapabilityStoreAgree(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	srv := httptest.NewServer(rig.router)
+	defer srv.Close()
+
+	writeID := "sha256:" + strings.Repeat("c", 64)
+	writeTok := rig.token(t, writeCap(writeID))
+
+	worker := &artifact.CapabilityStore{
+		BaseURL:       srv.URL,
+		RunID:         "run-1",
+		NodeID:        "task",
+		Attempt:       0,
+		Capabilities:  map[string]string{writeID: writeTok},
+		WriteObjectID: writeID,
+		HTTPClient:    srv.Client(),
+	}
+	// The rig's middleware reads the tenant from a header; a real
+	// deployment reads it from the authenticated session.
+	worker.HTTPClient = &http.Client{Transport: orgInjector{base: srv.Client().Transport, org: "org-1"}}
+
+	ref, err := worker.Put(context.Background(), "ignored", bytes.NewReader([]byte("worker output")), artifact.PutOptions{MediaType: "text/plain"})
+	if err != nil {
+		t.Fatalf("worker could not write through the real endpoint: %v", err)
+	}
+	if ref.Checksum == "" {
+		t.Fatal("no checksum came back")
+	}
+
+	// Read it back with a capability for the object that was actually
+	// stored -- which is the digest the server reported, proving both
+	// sides agree on what an object id is.
+	readTok := rig.token(t, func() datacap.Capability {
+		c := readCap(ref.Checksum)
+		c.Checksum = ref.Checksum
+		return c
+	}())
+	worker.Capabilities[ref.Checksum] = readTok
+
+	rc, err := worker.Open(context.Background(), &artifact.ArtifactRef{Checksum: ref.Checksum})
+	if err != nil {
+		t.Fatalf("worker could not read back what it wrote: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, _ := io.ReadAll(rc)
+	if string(got) != "worker output" {
+		t.Errorf("round trip returned %q", got)
+	}
+}
+
+// orgInjector stands in for the auth middleware, which in a real
+// deployment sets the tenant from the authenticated session.
+type orgInjector struct {
+	base http.RoundTripper
+	org  string
+}
+
+func (o orgInjector) RoundTrip(r *http.Request) (*http.Response, error) {
+	r.Header.Set("X-Test-Org", o.org)
+	base := o.base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	return base.RoundTrip(r)
 }
