@@ -45,6 +45,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/proctree"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/jvmharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/nodeharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/pyharness"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
@@ -295,6 +296,13 @@ func computeExecutionEnvironmentDigest(payload *taskbundlev2.Payload, manifest *
 			return "", fmt.Errorf("resolve node runtime: %s", reason)
 		}
 		runtimeBin = path
+	case taskbundlev2.RuntimeJVM:
+		adapter, adapterVersion = jvmharness.Adapter, jvmharness.AdapterVersion
+		tc, err := jvmharness.Resolve()
+		if err != nil {
+			return "", fmt.Errorf("resolve jvm runtime: %w", err)
+		}
+		runtimeBin = tc.Java
 	default:
 		return "", fmt.Errorf("payload %q declares runtime %q, which this server has no adapter for (supported: %s)", payload.ID, payload.Runtime, strings.Join(supportedTaskRuntimes, ", "))
 	}
@@ -507,7 +515,7 @@ func (r *Runner) taskBlobStore() artifact.Store {
 // does not express a preference -- taskbundlev2.SelectPayload takes the
 // first payload in MANIFEST order whose runtime is in this set, so a
 // bundle author picks between equivalent payloads, not this list.
-var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.RuntimeNode}
+var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.RuntimeNode, taskbundlev2.RuntimeJVM}
 
 // prepareTaskHarness materializes the reference adapter for payload's
 // runtime class into attemptDir, writes that adapter's own invocation
@@ -569,6 +577,41 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 			return nil, fmt.Errorf("write task invocation: %w", err)
 		}
 		return nodeharness.Command(nodePath, harnessPath, limits.MemoryMB), nil
+	case taskbundlev2.RuntimeJVM:
+		// The one structural difference between adapters, and the reason
+		// ADR-036 exists: python and node materialize their harness into
+		// the ATTEMPT dir because an interpreter reads source directly,
+		// while this one compiles once into a HOST-level cache and reuses
+		// the classes. Everything after this -- the protocol exchange,
+		// resource ceilings, result reading, contract validation -- is
+		// identical to the other two.
+		tc, err := jvmharness.Resolve()
+		if err != nil {
+			return nil, fmt.Errorf("task node requires a JVM: %w", err)
+		}
+		classDir, err := jvmharness.Materialize(jvmharness.DefaultCacheDir(), tc)
+		if err != nil {
+			return nil, fmt.Errorf("materialize task harness: %w", err)
+		}
+		// Module/Symbol carry the fully-qualified class and its static
+		// method. No new manifest fields: the managed-language entrypoint
+		// shape task-bundle/v2 already defines fits the JVM exactly, and
+		// the classpath is derived from the bundle's own file list rather
+		// than declared a second time (see jvmharness.Classpath).
+		if err := jvmharness.WriteInvocation(invocationPath, jvmharness.Invocation{
+			Classpath:       jvmharness.Classpath(bundleDir, manifestFilePaths(manifest)),
+			ClassName:       payload.Entrypoint.Module,
+			MethodName:      payload.Entrypoint.Symbol,
+			Kwargs:          kwargs,
+			InterfaceDigest: manifest.InterfaceDigest,
+			OutputKind:      outputKind,
+			OutputMediaType: outputMediaType,
+			InputPath:       inputPath,
+			InputCodec:      inputCodecFor(inputPath),
+		}); err != nil {
+			return nil, fmt.Errorf("write task invocation: %w", err)
+		}
+		return jvmharness.Command(tc.Java, classDir, limits.MemoryMB), nil
 	default:
 		return nil, fmt.Errorf(
 			"task payload %q declares runtime %q, which this server has no adapter for (supported: %s)",
@@ -917,4 +960,20 @@ func workOrderBlobStore(artifacts ArtifactStore) artifact.Store {
 		return nil
 	}
 	return provider.Blobs()
+}
+
+// manifestFilePaths is the manifest's declared file list, in order.
+//
+// Only the JVM adapter needs it today (to put a bundle's jars on the
+// classpath); python and node resolve modules from the bundle root
+// alone.
+func manifestFilePaths(manifest *taskbundlev2.Manifest) []string {
+	if manifest == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(manifest.Files))
+	for _, f := range manifest.Files {
+		paths = append(paths, f.Path)
+	}
+	return paths
 }
