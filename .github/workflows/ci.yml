@@ -301,6 +301,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The same setup the Test job does, minus the UI build. Each of
+      # these gates real engine tests that SKIP without it -- a first
+      # version of this job omitted them and went from "timed out" to
+      # "green while quietly testing less", which is the failure mode
+      # this repo keeps finding.
+      - name: Enable local_infile on the MySQL service
+        run: mysql --host=127.0.0.1 --port=3306 -uroot -prootpw -e "SET GLOBAL local_infile=1"
+
+      - name: Install dbt-core
+        run: pip install --quiet "dbt-core==1.8.9" "dbt-postgres==1.8.2" "dbt-clickhouse==1.8.9" "setuptools<81"
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
@@ -318,6 +329,15 @@ jobs:
       # legacy spawn path green until its removal one release later.
       - name: Code-node legacy-path leg (pool off)
         run: env BROKOLI_CODE_POOL=0 go test -timeout 10m -run 'TestCodeNode|TestLazyRows|TestPipeline_LazyRows|TestPipeline_EmitZeroRows|TestPipeline_Streamed|TestInstanceWorker|TestExpansion' ./engine/
+
+      # Engine's own coverage, because the Test job's coverage step no
+      # longer sees this package. Splitting the job must not quietly
+      # shrink what coverage reports.
+      - name: Coverage (engine)
+        run: |
+          go test -coverprofile=coverage-engine.out ./engine/
+          echo "=== Engine coverage ==="
+          go tool cover -func=coverage-engine.out | tail -1
 
   build:
     name: Build
