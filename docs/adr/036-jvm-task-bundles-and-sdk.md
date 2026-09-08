@@ -308,3 +308,61 @@ own phases were staged:
 Phases 1–5 land in this repository. Phase 6 is a new repository and
 should not begin before phase 4 proves the runtime contract, matching the
 ordering both existing SDKs followed.
+
+## Update (2026-09-08) — phases 1-4 built, and three things this ADR got wrong
+
+Implementation reached the point this ADR said would test its central
+claim, so here is what it found.
+
+**The harness is not one file, and does not need to be.** This ADR
+describes it as "one dependency-free `.java` file". That single-file
+constraint belonged to JEP 330 source-launch — the option this ADR
+*rejected* on measurement. Compiling with `javac` lifts it, so `Json`
+lives in its own file. Dependency-free still holds, and that was always
+the part that mattered: a JSON library here would land in every JVM
+task's classpath.
+
+**The payload needs no new manifest fields.** The sketch above proposes
+`entrypoint: "com.example.Tasks#dailyRollup"` and a `classpath` array.
+Neither survived contact with the real `task-bundle/v2` manifest:
+
+- Its `entrypoint` is an object with `module`/`symbol` for managed
+  languages, and that shape fits the JVM as-is — `module` is the
+  fully-qualified class, `symbol` the static method. `ParseEntrypoint`
+  still exists for the `Class#method` display form, but nothing in the
+  manifest uses it.
+- A declared `classpath` would be a second, unverified copy of the
+  manifest's own file list, and could name a file the bundle does not
+  contain. It is derived instead — bundle root first (the direct
+  parallel to python's `sys.path` and node's module roots), then every
+  `.jar` the manifest lists. Deriving it means the classpath is covered
+  by the bundle digest for free.
+
+So phase 3 as scoped above ("schema addition") turned out to be already
+done by ADR-033's phase 0, which put `jvm` in the runtime enum.
+
+**The engine holds language-specific code in TWO places, not one.**
+Phase 4 was meant to test ADR-033's claim that "the scheduler does not
+contain Python- or Node-specific invocation code. It selects an adapter
+by runtime class and protocol version". The claim mostly held —
+`prepareTaskHarness` needed exactly one new `case` — but the first
+end-to-end run failed anyway:
+
+```
+payload "jvm-any" declares runtime "jvm", which this server has no
+adapter for (supported: python, node, jvm)
+```
+
+`computeExecutionEnvironmentDigest` has its own switch on runtime class,
+because a resolved-execution record must pin the adapter identity and
+runtime version per class (ADR-033 section 4). That is a legitimate
+second site rather than a leak — it is recording identity, not deciding
+how to invoke — but the claim should be stated as "one invocation site
+and one identity site", not "one case". A fourth runtime class will
+touch both.
+
+**What held exactly as designed:** the measurement. Nothing after adapter
+selection needed changing — the protocol exchange, resource ceilings,
+result reading and contract validation are shared verbatim with the two
+existing adapters, and the compile-once cache keeps per-attempt startup
+at the 0.07s the decision rested on.

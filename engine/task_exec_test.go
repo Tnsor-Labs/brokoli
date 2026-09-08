@@ -11,11 +11,13 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
+	"github.com/Tnsor-Labs/brokoli/pkg/taskharness/jvmharness"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -908,4 +910,110 @@ func TestTaskNodeProducesACollectionOfArtifacts(t *testing.T) {
 	if ds.Rows[0]["uri"] == ds.Rows[1]["uri"] {
 		t.Errorf("both items share a uri (%v); distinct content must not collide", ds.Rows[0]["uri"])
 	}
+}
+
+func skipIfNoJDK(t *testing.T) {
+	t.Helper()
+	if _, err := jvmharness.Resolve(); err != nil {
+		t.Skipf("no usable JDK: %v", err)
+	}
+}
+
+// jvmBundle compiles source to .class files and packages them as a
+// one-payload task-bundle/v2 with runtime "jvm".
+//
+// Compiled here rather than shipped as source because a JVM bundle
+// carries bytecode -- that is what makes it a different bundle shape
+// from python's and node's, and testing against source would test
+// something no real bundle looks like.
+func (e *taskTestEngine) jvmBundle(t *testing.T, className, source string) string {
+	t.Helper()
+	tc, err := jvmharness.Resolve()
+	if err != nil {
+		t.Skipf("no usable JDK: %v", err)
+	}
+	srcDir, outDir := t.TempDir(), t.TempDir()
+	srcPath := filepath.Join(srcDir, className+".java")
+	if err := os.WriteFile(srcPath, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(tc.Javac, "-d", outDir, srcPath).CombinedOutput(); err != nil { // #nosec G204 -- resolved toolchain, test fixture
+		t.Fatalf("compile fixture: %v\n%s", err, out)
+	}
+	classBytes, err := os.ReadFile(filepath.Join(outDir, className+".class"))
+	if err != nil {
+		t.Fatalf("read compiled class: %v", err)
+	}
+
+	placeholderDigest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	archive, err := taskbundlev2.Assemble(
+		map[string]string{className + ".class": string(classBytes)},
+		&taskbundlev2.Manifest{
+			Format:          taskbundlev2.Format,
+			Name:            "fixture-task",
+			InterfaceDigest: placeholderDigest,
+			SourceDigest:    placeholderDigest,
+			Payloads: []taskbundlev2.Payload{{
+				ID:      "jvm-any",
+				Runtime: taskbundlev2.RuntimeJVM,
+				OS:      "any",
+				Arch:    "any",
+				// Module carries the fully-qualified class and Symbol the
+				// static method: the managed-language entrypoint shape
+				// task-bundle/v2 already defines fits the JVM as-is, so
+				// no new manifest fields were needed.
+				Entrypoint:    taskbundlev2.Entrypoint{Module: className, Symbol: "run"},
+				Effects:       taskbundlev2.EffectPure,
+				PayloadDigest: placeholderDigest,
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := taskbundlev2.DigestOf(archive)
+	if created, err := e.s.PutTaskBundleV2(taskOrg, digest, archive); err != nil || !created {
+		t.Fatalf("seed task bundle v2: created=%v err=%v", created, err)
+	}
+	return digest
+}
+
+// ADR-036 phase 4: a task bundle declaring only a "jvm" payload runs end
+// to end through the real engine and a real JVM -- the same pipeline
+// shape, store, dispatch path and result contract a python or node task
+// uses, with only the adapter differing.
+//
+// This is where ADR-033's claim that the scheduler contains no
+// language-specific invocation code gets tested against a COMPILED
+// language for the first time: python and node are both interpreted and
+// dynamically typed, so if the claim were weaker than believed, adding
+// this third runtime class is where it would show. It did not --
+// prepareTaskHarness needed one new case and nothing else.
+func TestTaskNodeRunsAJVMPayloadEndToEnd(t *testing.T) {
+	skipIfNoJDK(t)
+	e := newTaskEngine(t)
+	digest := e.jvmBundle(t, "FixtureTask", `
+public final class FixtureTask {
+    public static Object run() { return 42L; }
+}
+`)
+	run, err := e.runPipeline(t, "p-task-jvm", digest, nil)
+	if err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	row := e.firstTaskRow(t, run)
+	if got := toF64(row["result"]); got != 42 {
+		t.Fatalf("task output result = %v (type %T), want 42", row["result"], row["result"])
+	}
+}
+
+// The JVM is advertised as a supported runtime class, or a bundle
+// declaring only a jvm payload is refused before it ever runs.
+func TestJVMIsASupportedTaskRuntime(t *testing.T) {
+	for _, r := range supportedTaskRuntimes {
+		if r == taskbundlev2.RuntimeJVM {
+			return
+		}
+	}
+	t.Fatal("jvm is not in supportedTaskRuntimes; SelectPayload would skip every jvm payload")
 }

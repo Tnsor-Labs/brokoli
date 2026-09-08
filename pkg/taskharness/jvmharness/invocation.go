@@ -374,3 +374,60 @@ func WriteInvocation(path string, inv Invocation) error {
 	}
 	return os.WriteFile(path, b, 0o600) // #nosec G306 -- a per-attempt descriptor the trusted worker itself writes and immediately hands to its own child process
 }
+
+// DefaultCacheDir is where compiled harness classes live between runs.
+//
+// Mirrors pkg/plugins.DefaultDir's resolution order, so an operator who
+// has already placed Brokoli's state somewhere finds this alongside it
+// rather than in a second, surprising location. Never errors: a relative
+// fallback still works, it just makes the cache process-local.
+func DefaultCacheDir() string {
+	if dir := os.Getenv("BROKOLI_JVM_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	if xdg := os.Getenv("XDG_CACHE_HOME"); xdg != "" {
+		return filepath.Join(xdg, "brokoli", "jvmharness")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".brokoli", "cache", "jvmharness")
+	}
+	return filepath.Join(os.TempDir(), "brokoli-jvmharness")
+}
+
+// Classpath derives the classpath for a task payload from its extracted
+// bundle.
+//
+// The bundle root comes first, so a bundle of plain .class files works
+// with no manifest ceremony -- the direct parallel to pyharness's
+// SysPath and nodeharness's ModuleRoots, both of which are just the
+// bundle root. Every .jar the manifest lists follows, in manifest order,
+// because a real JVM task ships jars and something has to put them on
+// the path.
+//
+// Derived rather than declared, which is a deliberate simplification of
+// what ADR-036 sketched: that ADR proposed a "classpath" field on the
+// payload, written before checking that task-bundle/v2's manifest
+// already lists every file with its digest. A declared classpath would
+// be a second, unverified copy of that list, and could name a file the
+// bundle does not contain. Deriving it means the classpath is covered by
+// the bundle digest for free.
+//
+// Entries are bundle-relative and joined against root, so nothing here
+// can escape the extracted bundle even if a manifest names "../".
+func Classpath(bundleRoot string, files []string) []string {
+	cp := []string{bundleRoot}
+	for _, f := range files {
+		if !strings.HasSuffix(strings.ToLower(f), ".jar") {
+			continue
+		}
+		clean := filepath.Clean(filepath.Join(bundleRoot, filepath.FromSlash(f)))
+		// A manifest path that climbs out of the bundle is ignored rather
+		// than trusted. taskbundlev2.Extract already refuses such paths,
+		// so this is defence in depth, not the primary check.
+		if !strings.HasPrefix(clean, filepath.Clean(bundleRoot)+string(os.PathSeparator)) {
+			continue
+		}
+		cp = append(cp, clean)
+	}
+	return cp
+}
