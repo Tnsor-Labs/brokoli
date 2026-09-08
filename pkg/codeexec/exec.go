@@ -15,10 +15,13 @@ import (
 // Script (a bare code string) or TaskBundle* (a materialized ADR-031
 // bundle — when set, Script is ignored).
 type Request struct {
-	Language        string // "python" (default) | "typescript"
-	Script          string
-	Config          map[string]interface{}
-	Params          map[string]string
+	Language string // "python" (default) | "typescript"
+	Script   string
+	Config   map[string]interface{}
+	Params   map[string]string
+	// TaskParams are the run's resolved ADR-032 declared parameters,
+	// delivered to the script as its own `parameters` binding.
+	TaskParams      map[string]interface{}
 	Timeout         time.Duration
 	Interpreter     string // resolved python; required
 	Limits          Limits
@@ -138,13 +141,14 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 		input = ExecInput{Mode: "inline", Rows: req.InlineRows, Columns: req.InputColumns}
 	}
 	msg := ExecMsg{
-		ExecID:    fmt.Sprintf("x-%d", time.Now().UnixNano()),
-		Script:    req.Script,
-		Config:    req.Config,
-		Params:    req.Params,
-		Input:     input,
-		Output:    ExecOutput{Mode: "ndjson", Path: req.OutputNDJSON},
-		TimeoutMs: req.Timeout.Milliseconds(),
+		ExecID:     fmt.Sprintf("x-%d", time.Now().UnixNano()),
+		Script:     req.Script,
+		Config:     req.Config,
+		Params:     req.Params,
+		TaskParams: req.TaskParams,
+		Input:      input,
+		Output:     ExecOutput{Mode: "ndjson", Path: req.OutputNDJSON},
+		TimeoutMs:  req.Timeout.Milliseconds(),
 	}
 	if req.TaskBundleDir != "" {
 		// A bundle is the script source; never send a script alongside

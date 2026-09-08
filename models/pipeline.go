@@ -169,6 +169,16 @@ var SupportedExecutionFeatures = []string{
 	// remote task_bundle dispatch existed either.
 	"task-runtime-v1",
 	"task-bundle-v2",
+	// A run's resolved ADR-032 section 7 declared parameters are actually
+	// DELIVERED to the task that declared them, as its own `parameters`
+	// binding (issue #487). Deliberately distinct from task-interface-v1:
+	// that name says only that the server understands the declaration,
+	// and every server advertising it up to now validated a submitted
+	// parameter, recorded it on the run row, and then ran the task with
+	// its default -- a green run and a wrong answer. An SDK gating on
+	// this name is asking whether the value it sends will be honoured,
+	// which is a different question from whether it will be accepted.
+	"task-parameters-v1",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

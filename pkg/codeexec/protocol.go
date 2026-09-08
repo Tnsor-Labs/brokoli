@@ -96,14 +96,19 @@ type ExecBundle struct {
 
 // ExecMsg is one invocation.
 type ExecMsg struct {
-	ExecID    string                 `json:"exec_id"`
-	Script    string                 `json:"script"`
-	Bundle    *ExecBundle            `json:"bundle,omitempty"`
-	Config    map[string]interface{} `json:"config"`
-	Params    map[string]string      `json:"params"`
-	Input     ExecInput              `json:"input"`
-	Output    ExecOutput             `json:"output"`
-	TimeoutMs int64                  `json:"timeout_ms"`
+	ExecID string                 `json:"exec_id"`
+	Script string                 `json:"script"`
+	Bundle *ExecBundle            `json:"bundle,omitempty"`
+	Config map[string]interface{} `json:"config"`
+	Params map[string]string      `json:"params"`
+	// TaskParams carries ADR-032 section 7 declared parameters, resolved
+	// and type-checked before the run started. Separate from Params (whose
+	// values are always strings) because these keep their declared types.
+	// omitempty so a worker built before this field simply never sees it.
+	TaskParams map[string]interface{} `json:"task_params,omitempty"`
+	Input      ExecInput              `json:"input"`
+	Output     ExecOutput             `json:"output"`
+	TimeoutMs  int64                  `json:"timeout_ms"`
 }
 
 // LogMsg carries one line of the user script's stdout/stderr.

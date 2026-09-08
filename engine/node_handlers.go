@@ -410,12 +410,12 @@ func (r *Runner) runCode(ctx context.Context, node models.Node, input *common.Da
 
 	result, stderr, err := func() (*common.DataSet, string, error) {
 		if bundle != nil {
-			return ExecuteTaskBundleNodeProgress(ctx, *bundle, input, configForScript, runParams, timeoutSec,
+			return ExecuteTaskBundleNodeProgress(ctx, *bundle, input, configForScript, runParams, r.parameters, timeoutSec,
 				func(percent int, message string) {
 					r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 				})
 		}
-		return ExecuteCodeNodeProgress(ctx, script, input, configForScript, runParams, timeoutSec,
+		return ExecuteCodeNodeProgress(ctx, script, input, configForScript, runParams, r.parameters, timeoutSec,
 			func(percent int, message string) {
 				r.log(node.ID, models.LogLevelInfo, "progress %d%%: %s", percent, message)
 			})
@@ -566,7 +566,7 @@ func (r *Runner) runPartitionTransform(node models.Node, input *common.DataSet, 
 		runParams = r.varCtx.Params
 	}
 
-	result, fnName, stderr, err := ExecutePartitionTransform(node.Config, input, runParams, kind)
+	result, fnName, stderr, err := ExecutePartitionTransform(node.Config, input, runParams, r.parameters, kind)
 	if stderr != "" {
 		for _, line := range splitLines(stderr) {
 			if line != "" {

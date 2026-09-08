@@ -39,21 +39,21 @@ const fileModeThreshold = 10000
 // ExecuteCodeNode runs a Python script with the given input data.
 // For datasets > 10K rows, uses CSV temp files instead of JSON stdin/stdout for 5-10x speed.
 // Auto-detects pyarrow/pandas for even faster transfers.
-func ExecuteCodeNode(script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
-	return ExecuteCodeNodeContext(context.Background(), script, input, nodeConfig, runParams, timeoutSec)
+func ExecuteCodeNode(script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int) (*common.DataSet, string, error) {
+	return ExecuteCodeNodeContext(context.Background(), script, input, nodeConfig, runParams, taskParams, timeoutSec)
 }
 
 // ExecuteCodeNodeContext is ExecuteCodeNode with caller-controlled cancellation.
 // The context is combined with the node's own timeout so remote workers can
 // terminate an in-flight code WorkOrder when its run is cancelled.
-func ExecuteCodeNodeContext(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, string, error) {
-	return ExecuteCodeNodeProgress(parent, script, input, nodeConfig, runParams, timeoutSec, nil)
+func ExecuteCodeNodeContext(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int) (*common.DataSet, string, error) {
+	return ExecuteCodeNodeProgress(parent, script, input, nodeConfig, runParams, taskParams, timeoutSec, nil)
 }
 
 // ExecuteCodeNodeProgress additionally consumes the script's typed
 // progress reports (ADR-029; pool path only — the legacy transport
 // emitted #PROGRESS: markers on stderr and always discarded them).
-func ExecuteCodeNodeProgress(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(percent int, message string)) (*common.DataSet, string, error) {
+func ExecuteCodeNodeProgress(parent context.Context, script string, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int, progress func(percent int, message string)) (*common.DataSet, string, error) {
 	if script == "" {
 		return nil, "", fmt.Errorf("code node requires a 'script' in config")
 	}
@@ -64,7 +64,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 		return nil, "", err
 	}
 	if codeexec.PoolEnabled() {
-		return executeCodeNodePooled(parent, script, nil, input, nodeConfig, runParams, timeoutSec, progress)
+		return executeCodeNodePooled(parent, script, nil, input, nodeConfig, runParams, taskParams, timeoutSec, progress)
 	}
 
 	// Contract v2 (ADR-029): the wrapper is the embedded, versioned
@@ -145,6 +145,10 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	// Config and params via env (always small, fast)
 	configJSON, _ := json.Marshal(nodeConfig)
 	paramsJSON, _ := json.Marshal(runParams)
+	// ADR-032 declared parameters travel in their own binding, never
+	// merged into params (models.Pipeline.Parameters is documented as
+	// "never silently merged" with the legacy string params).
+	taskParamsJSON := marshalTaskParams(taskParams)
 
 	// Python path: custom or default
 	pythonPath := "python3"
@@ -163,6 +167,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 		"BROKED_SCRIPT="+scriptFile,
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),
+		"BROKED_TASK_PARAMS="+string(taskParamsJSON),
 	)
 	cmd.Env = append(cmd.Env, limits.Env()...)
 	if useFileMode && transferMode == TransferArrow {
@@ -265,7 +270,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 // path cannot scope a worker's imports to a bundle (no resident
 // interpreter to fence), so a store-less or pool-less host refuses here
 // rather than silently degrading from bundle semantics.
-func ExecuteTaskBundleNodeProgress(parent context.Context, bundle codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
+func ExecuteTaskBundleNodeProgress(parent context.Context, bundle codeBundleSpec, input *common.DataSet, nodeConfig map[string]interface{}, runParams map[string]string, taskParams map[string]interface{}, timeoutSec int, progress func(int, string)) (*common.DataSet, string, error) {
 	if bundle.digest == "" || bundle.dir == "" || bundle.entry == "" {
 		return nil, "", fmt.Errorf("code node requires a task bundle to execute")
 	}
@@ -278,7 +283,7 @@ func ExecuteTaskBundleNodeProgress(parent context.Context, bundle codeBundleSpec
 	if !codeexec.PoolEnabled() {
 		return nil, "", fmt.Errorf("task bundle %s requires the code worker pool, which is disabled (BROKOLI_CODE_POOL=0)", bundle.digest)
 	}
-	return executeCodeNodePooled(parent, "", &bundle, input, nodeConfig, runParams, timeoutSec, progress)
+	return executeCodeNodePooled(parent, "", &bundle, input, nodeConfig, runParams, taskParams, timeoutSec, progress)
 }
 
 // taskBundleReference parses a code node's 'task_bundle' config object
@@ -415,4 +420,26 @@ func readCSVFile(path string) (*common.DataSet, error) {
 		Columns: columns,
 		Rows:    rows,
 	}, nil
+}
+
+// marshalTaskParams renders the run's resolved ADR-032 declared
+// parameters for BROKED_TASK_PARAMS.
+//
+// Always valid JSON, "{}" when there are none, so the wrapper's decode
+// never has to distinguish "absent" from "empty" -- a pipeline that
+// declares no parameters and one whose parameters all defaulted look the
+// same to a script, which is correct: both mean "nothing was supplied".
+func marshalTaskParams(taskParams map[string]interface{}) []byte {
+	if len(taskParams) == 0 {
+		return []byte("{}")
+	}
+	b, err := json.Marshal(taskParams)
+	if err != nil {
+		// Resolved parameters were validated against their declaration
+		// before the run started, so this is unreachable; falling back to
+		// empty is still better than shipping a broken env var that would
+		// fail the wrapper's json.loads for every node in the run.
+		return []byte("{}")
+	}
+	return b
 }

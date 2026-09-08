@@ -64,7 +64,7 @@ func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder)
 	} else if isBundle {
 		return nil, fmt.Errorf("execute code instance work order: task_bundle code nodes (%s) are not dispatched to remote instance workers in this version — the remote-instance path runs bare-script code nodes only", digest)
 	}
-	result, _, err := ExecuteCodeNodeContext(ctx, wo.Script, itemDS, wo.Config, wo.RunParams, wo.TimeoutSeconds)
+	result, _, err := ExecuteCodeNodeContext(ctx, wo.Script, itemDS, wo.Config, wo.RunParams, wo.TypedParams, wo.TimeoutSeconds)
 	// wo's stderr is deliberately dropped here, not logged: this function
 	// has no Runner (and so no run-scoped log sink) to attribute it to —
 	// see ExecuteInstanceJob below, which is the layer that actually knows

@@ -318,6 +318,16 @@ _params_json = os.environ.get("BROKED_PARAMS", "{}")
 config = json.loads(_config_json)
 params = json.loads(_params_json)
 
+# ADR-032 section 7 declared parameters, resolved and type-checked by the
+# server before the run started. Deliberately a SEPARATE binding from
+# `params` above, not merged into it: models.Pipeline.Parameters is
+# documented as "distinct from the legacy Params above and never silently
+# merged with it", and the two differ in kind -- `params` values are
+# always strings, these keep the type they were declared with (a float
+# stays a float). Empty when the pipeline declares none, which is every
+# pipeline that predates ADR-032.
+parameters = json.loads(os.environ.get("BROKED_TASK_PARAMS", "{}"))
+
 # Streaming output (ADR-019 Milestone 1.5): emit(row) writes straight to
 # the output file, one row at a time — a script that emits instead of
 # building a list holds no output in memory at all. Column order for
