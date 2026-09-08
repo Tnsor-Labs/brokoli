@@ -16,6 +16,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/datacap"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
@@ -73,6 +74,13 @@ type Engine struct {
 	// (or ./brokoli-artifacts); assign a different implementation the same
 	// way VarStore/ConnResolver are overridden after NewEngine.
 	ArtifactStore ArtifactStore
+
+	// DataCapIssuer mints the data-plane capabilities a remotely
+	// dispatched task presents to fetch input too large to inline
+	// (ADR-033 section 6). The server sets it from its own root secret;
+	// nil means this deployment issues none, and a dispatch that would
+	// need one is refused by name rather than silently truncated.
+	DataCapIssuer *datacap.Issuer
 	// SpillThresholdBytes is the estimated encoded size at or above which a
 	// node's output is written to ArtifactStore instead of being held in
 	// memory for the rest of the run (Tnsor-Labs/brokoli#38). Defaults to
@@ -1028,6 +1036,7 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 		runner.params = params[0]
 	}
 	runner.parameters = resolvedParams
+	runner.dataCapIssuer = e.DataCapIssuer
 
 	runner.preRunID = runID
 	e.mu.Lock()

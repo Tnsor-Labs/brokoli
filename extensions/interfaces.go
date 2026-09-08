@@ -547,6 +547,29 @@ type InstanceWorkOrder struct {
 	// RunParams carries the run's own params (${param.x} interpolation),
 	// mirroring RunJob.Params.
 	RunParams map[string]string `json:"run_params,omitempty"`
+	// InputRef names the task's input dataset by content digest when it
+	// was too large to inline, with InputCapability the read grant for
+	// it (ADR-033 section 6). Empty means the input rides in
+	// InputColumns/InputRows as before.
+	//
+	// A digest and a grant, never a URL: the reference is opaque and the
+	// claimant can do nothing with it except present the capability to
+	// the control plane, which is what "references are capabilities, not
+	// locations" means in practice.
+	InputRef        string `json:"input_ref,omitempty"`
+	InputCapability string `json:"input_capability,omitempty"`
+	// ControlPlaneURL is where the claimant presents its capabilities.
+	// Set only when a capability accompanies this order.
+	ControlPlaneURL string `json:"control_plane_url,omitempty"`
+	// CapabilityAttempt is the attempt the accompanying capabilities are
+	// bound to, and so the attempt the fetch URL must name.
+	//
+	// Carried here rather than added to this function's parameters
+	// because a capability without the attempt it was minted for cannot
+	// be presented at all -- the two travel together or neither is
+	// usable. It is also why an older claimant, which sends no
+	// capability, needs none of this.
+	CapabilityAttempt int `json:"capability_attempt,omitempty"`
 	// TypedParams carries the run's resolved ADR-032 section 7 declared
 	// parameters. RunParams cannot carry them: its values are strings, so
 	// a declared float would arrive as "0.9" -- a wrong type rather than a

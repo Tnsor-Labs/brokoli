@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/datacap"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
@@ -63,7 +64,12 @@ type Runner struct {
 	// taskinterface.ResolveParameters against Pipeline.Parameters before
 	// this run was created. Nil when the pipeline declares no typed
 	// parameters.
-	parameters    map[string]interface{}
+	parameters map[string]interface{}
+	// dataCapIssuer mints the data-plane capabilities a remotely
+	// dispatched task presents to fetch its input (ADR-033 section 6).
+	// Nil on a server that issues none, which is a named refusal at
+	// dispatch rather than a silent fallback.
+	dataCapIssuer *datacap.Issuer
 	varCtx        *VariableContext
 	preRunID      string     // pre-generated run ID (for registration before Execute)
 	trigger       string     // what created this run ("scheduled", "" = manual)
