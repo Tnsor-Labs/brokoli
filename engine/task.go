@@ -753,6 +753,28 @@ func (r *Runner) taskJobCapabilities(digest string) []string {
 // job.NodeID) at hand, exactly the values a matching local execution
 // would use (r.run.ID, node.ID).
 func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, nodeID string, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+	return ExecuteTaskWorkOrderWithArtifacts(ctx, s, nil, runID, nodeID, wo)
+}
+
+// ExecuteTaskWorkOrderWithArtifacts is ExecuteTaskWorkOrderContext with
+// the claimant's artifact store, so a task producing an artifact or
+// collection output has somewhere to put the bytes.
+//
+// Split from ExecuteTaskWorkOrderContext rather than added to its
+// signature because that function is called from outside this module
+// (the enterprise WorkPool worker), and a claimant without a blob store
+// is a legitimate configuration that should keep compiling and keep
+// getting today's honest refusal.
+//
+// artifacts may be nil, and may be an ArtifactStore that is not a
+// BlobStoreProvider; both mean "no blob store", which
+// readTaskArtifactOutput already refuses by name. What must not happen
+// -- and did until now -- is a claimant that HAS one being told the
+// server has none: engine/instance_worker.go holds an ArtifactStore at
+// the call site and passed nothing, so a task node dispatched to an
+// in-process instance worker could not emit an artifact even against a
+// SQLArtifactStore whose Blobs() was right there.
+func ExecuteTaskWorkOrderWithArtifacts(ctx context.Context, s store.Store, artifacts ArtifactStore, runID, nodeID string, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
 	if wo == nil {
 		return nil, fmt.Errorf("execute task instance work order: nil work order")
 	}
@@ -771,7 +793,7 @@ func ExecuteTaskWorkOrderContext(ctx context.Context, s store.Store, runID, node
 		}
 		input = &common.DataSet{Columns: wo.InputColumns, Rows: rows}
 	}
-	return executeTaskBundle(ctx, s, nil, wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, workOrderBlobStore(artifacts), wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // taskOutputPort is one entry of a task-result-v1 candidate's outputs,
@@ -883,4 +905,16 @@ func readTaskResult(ctx context.Context, blobs artifact.Store, runID, resultPath
 		Columns: []string{"result"},
 		Rows:    []common.DataRow{{"result": out.Value}},
 	}, nil
+}
+
+// workOrderBlobStore mirrors Runner.taskBlobStore for the claimant side:
+// the same optional-capability type assertion, so local and remote
+// execution answer "is there somewhere to put artifact bytes" the same
+// way rather than by two different rules.
+func workOrderBlobStore(artifacts ArtifactStore) artifact.Store {
+	provider, ok := artifacts.(BlobStoreProvider)
+	if !ok {
+		return nil
+	}
+	return provider.Blobs()
 }
