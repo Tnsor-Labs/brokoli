@@ -624,6 +624,17 @@ var serveCmd = &cobra.Command{
 		}
 
 		// API or all mode: start HTTP server
+		// The engine mints data-plane capabilities with the same issuer
+		// the blob endpoint verifies against (ADR-033 section 6) --
+		// necessarily the same one, or nothing it issues would verify.
+		// Both derive from the server's root secret, so this needs no
+		// configuration of its own.
+		if issuer, issErr := api.DatacapIssuer(); issErr == nil {
+			eng.DataCapIssuer = issuer
+		} else {
+			log.Printf("WARNING: data capabilities unavailable (%v); a task input too large to inline will be refused rather than staged", issErr)
+		}
+
 		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, Extensions, cryptoCfg)
 		return srv.Start()
 	},

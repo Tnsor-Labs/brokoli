@@ -694,10 +694,10 @@ func taskWorkOrderInput(node models.Node, input *common.DataSet) ([]string, []ma
 		return nil, nil, nil
 	}
 	if len(input.Rows) > maxInlineTaskInputRows {
-		return nil, nil, fmt.Errorf(
-			"task node %q has %d input rows, over the %d-row cap for remote dispatch: a dataset this size needs reference-based input (an ADR-033 follow-up), or run this pipeline without remote workers",
-			node.ID, len(input.Rows), maxInlineTaskInputRows,
-		)
+		// Not an error any more: the caller spills it to the blob store
+		// and sends a reference. Reporting "too big to inline" separately
+		// from "broken" is what lets that happen.
+		return nil, nil, errTaskInputTooLargeToInline
 	}
 	rows := make([]map[string]interface{}, 0, len(input.Rows))
 	for _, r := range input.Rows {
@@ -732,18 +732,36 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 		runParams = r.varCtx.Params
 	}
 	inputColumns, inputRows, err := taskWorkOrderInput(node, input)
-	if err != nil {
+	var inputRef, inputCapability, planeURL string
+	if errors.Is(err, errTaskInputTooLargeToInline) {
+		// Too large to ride in the order, so it goes to the blob store
+		// once and the order carries a digest plus a read capability.
+		// Every prerequisite has to be present: with no blob store there
+		// is nowhere to put it, and with no issuer no grant can be
+		// minted -- either way the honest answer is the same named
+		// refusal this replaced, not a silent fallback to a truncated
+		// input.
+		inputRef, inputCapability, planeURL, err = r.stageTaskInputByReference(node, input, attempt, execFencingGen)
+		if err != nil {
+			return nil, err
+		}
+		inputColumns = input.Columns
+	} else if err != nil {
 		return nil, err
 	}
 	workOrder := &extensions.InstanceWorkOrder{
-		NodeType:       string(models.NodeTypeTask),
-		OrgID:          r.pipe.OrgID,
-		Config:         node.Config,
-		NodeInterface:  node.Interface,
-		InputColumns:   inputColumns,
-		InputRows:      inputRows,
-		RunParams:      runParams,
-		TimeoutSeconds: timeoutSec,
+		NodeType:          string(models.NodeTypeTask),
+		OrgID:             r.pipe.OrgID,
+		Config:            node.Config,
+		NodeInterface:     node.Interface,
+		InputColumns:      inputColumns,
+		InputRows:         inputRows,
+		InputRef:          inputRef,
+		InputCapability:   inputCapability,
+		ControlPlaneURL:   planeURL,
+		CapabilityAttempt: attempt,
+		RunParams:         runParams,
+		TimeoutSeconds:    timeoutSec,
 	}
 	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, "", execFencingGen, workOrder, timeoutSec, r.taskJobCapabilities(digest))
 }
@@ -830,7 +848,17 @@ func ExecuteTaskWorkOrderWithArtifacts(ctx context.Context, s store.Store, artif
 	// run-scoped log sink) to attribute them to, matching
 	// executeCodeWorkOrder's own documented choice to drop stderr here.
 	var input *common.DataSet
-	if len(wo.InputRows) > 0 {
+	if wo.InputRef != "" {
+		// The order carries a reference instead of rows. Fetch it through
+		// the capability, which is the only thing that makes the digest
+		// usable -- a claimant holding the digest alone can do nothing
+		// with it.
+		fetched, ferr := fetchTaskInputByReference(ctx, wo, runID, nodeID)
+		if ferr != nil {
+			return nil, fmt.Errorf("execute task instance work order: %w", ferr)
+		}
+		input = fetched
+	} else if len(wo.InputRows) > 0 {
 		rows := make([]common.DataRow, 0, len(wo.InputRows))
 		for _, r := range wo.InputRows {
 			rows = append(rows, common.DataRow(r))
