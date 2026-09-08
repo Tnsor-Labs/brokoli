@@ -23,6 +23,7 @@ package engine
 // decision.
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -884,8 +885,27 @@ func readTaskResult(ctx context.Context, blobs artifact.Store, runID, resultPath
 		InterfaceDigest string                    `json:"interface_digest"`
 		Outputs         map[string]taskOutputPort `json:"outputs"`
 	}
-	if err := json.Unmarshal(raw, &candidate); err != nil {
+	// UseNumber, not a plain Unmarshal: every JSON number would otherwise
+	// become a float64, and a float64 cannot hold an integer above 2^53.
+	// That is #479 exactly -- fixed there for dataset rows, and still
+	// live on this path until #496, where all three adapters emitted
+	// 9007199254740993 correctly and the engine handed the pipeline
+	// ...992. normalizeJSONNumbers below restores int64 where the literal
+	// was integral.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&candidate); err != nil {
 		return nil, fmt.Errorf("task result is not valid JSON: %w", err)
+	}
+	// Convert the json.Numbers UseNumber left behind into int64/float64
+	// immediately, so nothing downstream has to know this path decodes
+	// differently. Skipping this is not merely untidy: taskinterface's
+	// int64 validation accepts a tagged value, an int64 or a whole
+	// float64 and would reject a json.Number outright, so a task with a
+	// declared int64 output port would fail validation instead of
+	// passing it.
+	for name, out := range candidate.Outputs {
+		candidate.Outputs[name] = normalizeTaskOutputNumbers(out)
 	}
 	if candidate.Contract != "brokoli.task-result/v1" {
 		return nil, fmt.Errorf("task result has unexpected contract %q", candidate.Contract)
@@ -976,4 +996,20 @@ func manifestFilePaths(manifest *taskbundlev2.Manifest) []string {
 		paths = append(paths, f.Path)
 	}
 	return paths
+}
+
+// normalizeTaskOutputNumbers turns the json.Numbers a UseNumber decode
+// leaves in a task-result-v1 candidate into int64 or float64, recursing
+// into a collection's items because those carry values of their own.
+//
+// Shares normalizeJSONNumbers with the dataset path deliberately: one
+// numeric contract for task output, however it was declared, is what
+// #479 and #496 were both about.
+func normalizeTaskOutputNumbers(out taskOutputPort) taskOutputPort {
+	out.Value = normalizeJSONNumbers(out.Value)
+	out.ItemKey = normalizeJSONNumbers(out.ItemKey)
+	for i, item := range out.Items {
+		out.Items[i] = normalizeTaskOutputNumbers(item)
+	}
+	return out
 }

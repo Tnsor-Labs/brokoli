@@ -654,3 +654,113 @@ public final class FixtureTask {
 		t.Errorf("last frame is not completed: %s", lines[len(lines)-1])
 	}
 }
+
+// groovyToolchain finds groovyc and the Groovy runtime jar a compiled
+// Groovy class needs at run time, or skips.
+func groovyToolchain(t *testing.T) (groovyc, runtimeJar string) {
+	t.Helper()
+	groovyc, err := exec.LookPath("groovyc")
+	if err != nil {
+		t.Skip("groovyc not on PATH")
+	}
+	for _, pattern := range []string{
+		"/usr/share/groovy/lib/groovy-*.jar",
+		"/usr/share/java/groovy*.jar",
+	} {
+		if matches, _ := filepath.Glob(pattern); len(matches) > 0 {
+			return groovyc, matches[0]
+		}
+	}
+	t.Skip("groovy runtime jar not found")
+	return "", ""
+}
+
+// The adapter loads BYTECODE, not Java source -- so every JVM language
+// is supported by construction, which is most of why supporting the JVM
+// is worth doing at all. Asserted with a real second language rather
+// than claimed: ADR-036 lists Kotlin and Scala as "should work through
+// the same adapter unchanged", and "should" is not "verified".
+//
+// The case also pins the constraint that makes multi-language bundles
+// work: a compiled Groovy class needs groovy/lang/GroovyObject at run
+// time, so its runtime jar must travel in the bundle. That is precisely
+// what Classpath's derivation from the manifest's own file list
+// delivers -- without it, every non-Java JVM language would fail with
+// NoClassDefFoundError.
+func TestOfflineEndToEnd_AGroovyTaskRunsThroughTheSameAdapter(t *testing.T) {
+	tc := toolchain(t)
+	groovyc, runtimeJar := groovyToolchain(t)
+
+	srcDir, outDir := t.TempDir(), t.TempDir()
+	src := filepath.Join(srcDir, "FixtureTask.groovy")
+	if err := os.WriteFile(src, []byte("class FixtureTask {\n    static Object run() { return 9007199254740993L }\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(groovyc, "-d", outDir, src).CombinedOutput(); err != nil { // #nosec G204 -- resolved tool, test fixture
+		t.Fatalf("groovyc: %v\n%s", err, out)
+	}
+
+	classDir, err := Materialize(t.TempDir(), tc)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+	attemptDir := t.TempDir()
+	resultPath := filepath.Join(attemptDir, "result.json")
+	invocationPath := filepath.Join(attemptDir, "invocation.json")
+	if err := WriteInvocation(invocationPath, Invocation{
+		// The compiled class AND the language runtime, exactly as
+		// Classpath would derive them from a bundle carrying both.
+		Classpath:       []string{outDir, runtimeJar},
+		ClassName:       "FixtureTask",
+		MethodName:      "run",
+		InterfaceDigest: "sha256:" + strings.Repeat("0", 62) + "aa",
+	}); err != nil {
+		t.Fatalf("WriteInvocation: %v", err)
+	}
+
+	start := taskharness.NewStartFrame(invocationPath, resultPath, filepath.Join(attemptDir, "out"))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := taskharness.Run(ctx, start, taskharness.Options{
+		Command: Command(tc.Java, classDir, 0),
+	}, taskharness.Handlers{})
+	if err != nil {
+		t.Fatalf("harness run: %v", err)
+	}
+	if res.Failure != nil {
+		t.Fatalf("a Groovy task failed: %s: %s", res.Failure.Category, res.Failure.Message)
+	}
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	// And 64-bit fidelity holds for a non-Java JVM language too.
+	if !strings.Contains(string(raw), "9007199254740993") {
+		t.Fatalf("the exact value did not survive from Groovy: %s", raw)
+	}
+}
+
+// Without the language's runtime jar on the classpath, the class cannot
+// load at all -- named clearly rather than surfacing a raw
+// NoClassDefFoundError with no hint about what is missing.
+func TestOfflineEndToEnd_AJVMLanguageWithoutItsRuntimeIsAContractViolation(t *testing.T) {
+	tc := toolchain(t)
+	groovyc, _ := groovyToolchain(t)
+
+	srcDir, outDir := t.TempDir(), t.TempDir()
+	src := filepath.Join(srcDir, "FixtureTask.groovy")
+	if err := os.WriteFile(src, []byte("class FixtureTask {\n    static Object run() { return 1L }\n}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command(groovyc, "-d", outDir, src).CombinedOutput(); err != nil { // #nosec G204 -- resolved tool, test fixture
+		t.Fatalf("groovyc: %v\n%s", err, out)
+	}
+
+	res, _ := runFixture(t, tc, outDir, "FixtureTask", "run", nil)
+	if res.Failure == nil {
+		t.Fatal("a Groovy class loaded without its runtime jar")
+	}
+	if res.Failure.Category != taskharness.FailureContractViolation {
+		t.Errorf("category = %q, want %q", res.Failure.Category, taskharness.FailureContractViolation)
+	}
+}

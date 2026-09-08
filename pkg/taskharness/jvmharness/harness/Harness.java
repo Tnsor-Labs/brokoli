@@ -170,6 +170,24 @@ public final class Harness {
                     "entrypoint class '" + className + "' was not found on the declared classpath " + urls);
                 System.exit(1);
                 return null;
+            } catch (LinkageError e) {
+                // The class exists but something it depends on does not.
+                // For a non-Java JVM language this is the common case and
+                // has one cause: the language's runtime jar is missing
+                // from the bundle (a Groovy class needs
+                // groovy/lang/GroovyObject, Kotlin needs kotlin-stdlib,
+                // Scala needs scala-library).
+                //
+                // contract_violation, not platform: the bundle is
+                // incomplete, the server is fine. Reporting this as
+                // platform would send an operator looking for a broken
+                // worker.
+                fail("contract_violation", "missing_dependency",
+                    "entrypoint class '" + className + "' could not be linked: " + e
+                        + ". A class compiled from a JVM language other than Java needs that language's "
+                        + "runtime on the classpath; add its jar to the task bundle. Classpath was " + urls);
+                System.exit(1);
+                return null;
             }
 
             Map<String, Object> kwargs = new LinkedHashMap<>();
