@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/go-chi/chi/v5"
@@ -116,6 +117,22 @@ func NewBlobHandler(s store.Store, artifacts engine.ArtifactStore) *BlobHandler 
 // attempt at a higher generation, the old worker's capability stops
 // matching (ADR-017).
 func (h *BlobHandler) authorize(w http.ResponseWriter, r *http.Request, direction datacap.Direction) (*datacap.Capability, bool) {
+	return h.authorizeObject(w, r, direction, chi.URLParam(r, "objectID"))
+}
+
+// authorizeAnyObject is authorize for the create route, where the object
+// is not named by the request at all.
+//
+// Passing datacap.AnyObject as the independently-derived object id is
+// what makes this route accept ONLY an attempt-scoped grant: a
+// capability naming a specific object fails the comparison here, exactly
+// as a wrong object id would on the named route. The two routes are not
+// interchangeable in either direction.
+func (h *BlobHandler) authorizeAnyObject(w http.ResponseWriter, r *http.Request, direction datacap.Direction) (*datacap.Capability, bool) {
+	return h.authorizeObject(w, r, direction, datacap.AnyObject)
+}
+
+func (h *BlobHandler) authorizeObject(w http.ResponseWriter, r *http.Request, direction datacap.Direction, objectID string) (*datacap.Capability, bool) {
 	token := r.Header.Get(CapabilityHeader)
 	if token == "" {
 		http.Error(w, "missing "+CapabilityHeader, http.StatusUnauthorized)
@@ -129,7 +146,6 @@ func (h *BlobHandler) authorize(w http.ResponseWriter, r *http.Request, directio
 
 	runID := chi.URLParam(r, "runID")
 	nodeID := chi.URLParam(r, "nodeID")
-	objectID := chi.URLParam(r, "objectID")
 	attempt, err := strconv.Atoi(chi.URLParam(r, "attempt"))
 	if err != nil {
 		http.Error(w, "attempt must be an integer", http.StatusBadRequest)
@@ -221,6 +237,30 @@ func (h *BlobHandler) Put(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.putBytes(w, r, cap)
+}
+
+// Create stores bytes under an attempt-scoped write grant, for a worker
+// whose object identity is not knowable in advance.
+//
+// A separate route from Put rather than a sentinel in Put's URL: the
+// object id is a path segment there, and threading datacap.AnyObject
+// through it would mean URL-escaping a wildcard and hoping every layer
+// agreed on what it meant. POST to the collection is what "create an
+// object whose name the server assigns" already means, and it keeps the
+// named-object route free of a special case.
+func (h *BlobHandler) Create(w http.ResponseWriter, r *http.Request) {
+	cap, ok := h.authorizeAnyObject(w, r, datacap.DirectionWrite)
+	if !ok {
+		return
+	}
+	h.putBytes(w, r, cap)
+}
+
+// putBytes is the shared body of Put and Create: both have an authorized
+// write capability by this point and differ only in how the object was
+// named.
+func (h *BlobHandler) putBytes(w http.ResponseWriter, r *http.Request, cap *datacap.Capability) {
 	defer func() { _ = r.Body.Close() }()
 
 	ref, err := h.blobs.Put(r.Context(), cap.Namespace, io.LimitReader(r.Body, maxBlobBytes), artifact.PutOptions{
@@ -230,6 +270,19 @@ func (h *BlobHandler) Put(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("store object: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	// A capability that pinned its content is only a binding if something
+	// checks it. Until now nothing did: Capability.Checksum documented
+	// itself as "on a write it binds the grant to content agreed in
+	// advance", and the write path stored whatever arrived. Verified
+	// after the store because the store is what computes the digest, and
+	// content-addressing means the mismatched bytes are inert -- they
+	// occupy their own name and nothing references them.
+	if cap.Checksum != "" && !strings.EqualFold(cap.Checksum, ref.Checksum) {
+		http.Error(w, "content does not match the checksum this capability pins", http.StatusForbidden)
+		return
+	}
+
 	writeJSON(w, http.StatusCreated, map[string]interface{}{
 		// object_id, not uri: this is what a subsequent read capability
 		// binds to, and it must stay a content digest rather than a

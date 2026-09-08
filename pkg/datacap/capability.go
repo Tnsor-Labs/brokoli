@@ -89,6 +89,41 @@ const tokenVersion = "bdc1"
 // superseded (nothing revokes a bearer token mid-flight).
 const MaxTTL = 6 * time.Hour
 
+// AnyObject is the ObjectID of a write grant that does not name its
+// object in advance.
+//
+// ADR-033 section 6 binds a capability to "object/checksum", and for a
+// read that is exactly right -- the control plane knows which object the
+// worker may fetch, and says so. A task's OUTPUTS cannot work that way:
+// the store is content-addressed, so an object's identity IS its content
+// hash, and that is not known until the task has already produced it.
+// Worse, the count is not known either -- a task may declare several
+// artifact ports, and a single collection port expands to one stored
+// object per item, a number the task itself decides at runtime.
+//
+// So a write grant names the namespace rather than the object. What
+// still binds it is everything else, and it is worth being explicit that
+// the remaining bindings are what carry the security argument here:
+//
+//   - tenant, run, node and attempt, so the grant reaches exactly one
+//     execution;
+//   - the fencing generation, so a superseded attempt's grant stops
+//     working the moment a retry claims the attempt (ADR-017);
+//   - direction, so this can never read anything -- which is the binding
+//     that would actually matter, and the reason AnyObject is refused on
+//     a read at issue time;
+//   - the namespace, so the bytes land in this run's own space;
+//   - expiry.
+//
+// What is given up is narrower than it first looks. Because the store is
+// content-addressed, a bearer cannot overwrite an existing object with
+// different content -- different bytes hash to a different name -- so
+// this grants creating new objects in one run's namespace, not mutating
+// or replacing anything. The residual exposure is how MANY objects an
+// already-authorized worker may create during its own attempt, which is
+// a quota question rather than an isolation one.
+const AnyObject = "*"
+
 // Capability is the set of bindings a grant carries. Every field
 // participates in the signature, so none can be edited by the bearer,
 // and every field is compared on verification.
@@ -112,6 +147,10 @@ type Capability struct {
 	// the bearer -- a store-issued identifier or a content digest, never
 	// a path or a URL, so a bearer cannot navigate from the object it
 	// was granted to one it was not.
+	//
+	// ObjectID may be AnyObject on a write, and only on a write. See that
+	// constant for why naming one object in advance is impossible for a
+	// task's outputs, and what still bounds such a grant.
 	Namespace string `json:"ns"`
 	ObjectID  string `json:"obj"`
 	// Checksum, when set, is the sha256 the bytes must hash to. On a
@@ -187,6 +226,20 @@ func (i *Issuer) Issue(cap Capability) (string, error) {
 		return "", fmt.Errorf("datacap: capability direction must be %q or %q, got %q", DirectionRead, DirectionWrite, cap.Direction)
 	case cap.NotAfter.IsZero():
 		return "", fmt.Errorf("datacap: capability requires an expiry")
+
+	// AnyObject on a READ would be a grant to read everything in the
+	// namespace -- every other attempt's outputs included. Refused here,
+	// at the only place a capability can come into existence, rather than
+	// left to a verifier to notice.
+	case cap.ObjectID == AnyObject && cap.Direction != DirectionWrite:
+		return "", fmt.Errorf("datacap: %q is a write-only object binding; a read capability must name its object", AnyObject)
+
+	// A checksum is content agreed in advance, which presupposes knowing
+	// which object is being written. Together with AnyObject that is a
+	// contradiction, and silently honouring one of the two would make the
+	// other binding a lie.
+	case cap.ObjectID == AnyObject && cap.Checksum != "":
+		return "", fmt.Errorf("datacap: a capability cannot both name %q and pin a checksum", AnyObject)
 	}
 	if ttl := cap.NotAfter.Sub(i.now()); ttl > MaxTTL {
 		return "", fmt.Errorf("datacap: capability expires in %s, over the %s maximum", ttl.Truncate(time.Second), MaxTTL)
@@ -255,7 +308,11 @@ func (i *Issuer) Verify(token string, req Request) (*Capability, error) {
 		return nil, fmt.Errorf("%w: capability grants %s, not %s", ErrMismatch, cap.Direction, req.Direction)
 	case cap.Namespace != req.Namespace:
 		return nil, fmt.Errorf("%w: capability is for another namespace", ErrMismatch)
-	case cap.ObjectID != req.ObjectID:
+	// AnyObject satisfies the object binding for a write, and cannot
+	// appear on a read: Issue refuses that combination, so a validly
+	// signed token reaching here with AnyObject is necessarily a write
+	// grant (Direction was compared two cases above).
+	case cap.ObjectID != AnyObject && cap.ObjectID != req.ObjectID:
 		return nil, fmt.Errorf("%w: capability is for another object", ErrMismatch)
 	}
 

@@ -166,6 +166,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		if bh := NewBlobHandler(s, e.ArtifactStore); bh != nil {
 			r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
 			r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
+			// POST to the collection: an attempt-scoped write grant, whose
+			// object id the server assigns by content digest.
+			r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", bh.Create)
 		}
 
 		tbh := NewTaskBundleHandler(s)
