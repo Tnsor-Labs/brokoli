@@ -32,8 +32,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // Direction is the one data flow a capability permits.
@@ -281,4 +284,27 @@ func split(token string) (version, body, mac string, ok bool) {
 		return "", "", "", false
 	}
 	return parts[0], parts[1], parts[2], true
+}
+
+// DeriveKey produces a datacap signing key from a server's root secret.
+//
+// A separate key rather than the root secret itself: that secret already
+// signs session tokens, and one key serving two purposes means a flaw in
+// either weakens both. HKDF gives a cryptographically independent key
+// from the same input, so an operator still configures exactly one
+// secret and gains nothing to get wrong.
+//
+// The info string is versioned. If the capability format ever needs a
+// key rotation independent of the root secret, bumping it rotates every
+// capability without touching sessions.
+func DeriveKey(rootSecret []byte) ([]byte, error) {
+	if len(rootSecret) < 32 {
+		return nil, fmt.Errorf("datacap: root secret must be at least 32 bytes, got %d", len(rootSecret))
+	}
+	r := hkdf.New(sha256.New, rootSecret, nil, []byte("brokoli-datacap-v1"))
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(r, key); err != nil {
+		return nil, fmt.Errorf("datacap: derive signing key: %w", err)
+	}
+	return key, nil
 }

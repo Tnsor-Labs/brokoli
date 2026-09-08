@@ -214,3 +214,25 @@ func (s *LocalDiskStore) DeleteNamespace(ctx context.Context, namespace string) 
 	}
 	return nil
 }
+
+// ResolveDigest implements DigestResolver.
+//
+// Rebuilds the same URI Put returns for that content, so a caller
+// holding only a namespace and a checksum can open a blob without ever
+// being told where it lives.
+func (s *LocalDiskStore) ResolveDigest(namespace, checksum string) (*ArtifactRef, error) {
+	if namespace == "" {
+		return nil, fmt.Errorf("artifact: namespace is required")
+	}
+	digest, ok := strings.CutPrefix(checksum, "sha256:")
+	if !ok || !isHex(digest) {
+		return nil, fmt.Errorf("artifact: %q is not a sha256:<hex> checksum", checksum)
+	}
+	return &ArtifactRef{
+		URI:       fmt.Sprintf("%s://%s/%s", LocalDiskScheme, filepath.Base(s.namespaceDir(namespace)), digest),
+		Checksum:  checksum,
+		MediaType: MediaTypeOctetStream,
+	}, nil
+}
+
+var _ DigestResolver = (*LocalDiskStore)(nil)
