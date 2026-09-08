@@ -62,3 +62,11 @@ brokoli-artifacts/
 # Node modules
 node_modules/
 .preflight/
+
+# Python bytecode. Never useful to another machine (interpreter- and
+# version-specific) and it accumulates: two pytest caches for two
+# different pytest versions were both committed. The embedded wrapper
+# names its .py files explicitly in pkg/codeexec/embed.go, so nothing
+# ships from here.
+__pycache__/
+*.pyc
