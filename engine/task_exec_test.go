@@ -1045,16 +1045,13 @@ func TestTaskSixtyFourBitOutputReachesThePipelineExactly(t *testing.T) {
 		assertExactID(t, e, "p-int64-node", digest, want)
 	})
 
-	// No jvm subtest. What this asserts is the ENGINE's decode, which is
-	// adapter-independent -- two adapters reaching it prove it as well as
-	// three. The JVM's own 64-bit fidelity is covered where it belongs,
-	// in the cross-adapter conformance suite, which runs the same value
-	// through all three harnesses.
-	//
-	// Worth stating rather than silently omitting: a JVM spawn is the
-	// most expensive thing in this package, and the engine suite runs
-	// against a 15m CI ceiling it has already exceeded once (#329). A
-	// third spawn here buys no coverage this file does not already have.
+	t.Run("jvm", func(t *testing.T) {
+		skipIfNoJDK(t)
+		e := newTaskEngine(t)
+		digest := e.jvmBundle(t, "FixtureTask",
+			"public final class FixtureTask {\n    public static Object run() { return 9007199254740993L; }\n}\n")
+		assertExactID(t, e, "p-int64-jvm", digest, want)
+	})
 }
 
 func assertExactID(t *testing.T, e *taskTestEngine, pipelineID, digest string, want int64) {
