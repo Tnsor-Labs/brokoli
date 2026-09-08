@@ -163,7 +163,7 @@ func (o *nodeOutputs) putInline(nodeID string, ds *common.DataSet) {
 func (o *nodeOutputs) spill(ds *common.DataSet) (*artifact.DatasetRef, error) {
 	format := artifact.FormatNDJSON
 	mediaType := artifact.MediaTypeNDJSON
-	encode := func(w io.Writer) error { return EncodeArrowJSON(w, ds) }
+	encode := func(w io.Writer) error { return EncodeNDJSON(w, ds) }
 	if _, ok := arrowEncodableSchema(ds); ok {
 		format = artifact.FormatArrowIPC
 		mediaType = artifact.MediaTypeArrowIPC
@@ -226,12 +226,12 @@ func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) e
 	// and reading its results then would be a data race.
 	done := make(chan produced, 1)
 	go func() {
-		// Buffered for the reason given on EncodeArrowJSON: pw is a pipe,
+		// Buffered for the reason given on EncodeNDJSON: pw is a pipe,
 		// and an unbuffered write per row costs a scheduler round-trip per
 		// row.
 		buf := bufio.NewWriterSize(pw, encodeBufferSize)
 		enc := json.NewEncoder(buf)
-		enc.SetEscapeHTML(false) // match EncodeArrowJSON byte-for-byte
+		enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
 		rows := int64(0)
 		err := produce(func(batch *common.DataSet) error {
 			for _, row := range batch.Rows {
@@ -243,7 +243,7 @@ func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) e
 			return nil
 		})
 		if err == nil && rows == 0 {
-			// Preserve EncodeArrowJSON's empty-dataset sentinel so the blob
+			// Preserve EncodeNDJSON's empty-dataset sentinel so the blob
 			// decodes identically to a batch-written empty output.
 			_, err = buf.Write([]byte("[]"))
 		}
@@ -364,7 +364,7 @@ func decodeDatasetRef(r io.Reader, ref *artifact.DatasetRef) (*common.DataSet, e
 			out.Rows = append(out.Rows, batch.Rows...)
 		}
 	case artifact.FormatNDJSON, "":
-		return DecodeArrowJSON(r, ref.Columns)
+		return DecodeNDJSON(r, ref.Columns)
 	default:
 		return nil, fmt.Errorf("dataset ref declares format %q, which this server cannot read (supported: %s, %s)",
 			ref.Format, artifact.FormatNDJSON, artifact.FormatArrowIPC)
@@ -396,7 +396,7 @@ func estimateEncodedSize(ds *common.DataSet) int64 {
 
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false) // match EncodeArrowJSON, so the estimate tracks the real encoding
+	enc.SetEscapeHTML(false) // match EncodeNDJSON, so the estimate tracks the real encoding
 	for i := 0; i < sample; i++ {
 		if err := enc.Encode(ds.Rows[i]); err != nil {
 			// A row that will not encode here will not encode when spilled

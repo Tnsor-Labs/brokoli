@@ -134,7 +134,7 @@ func (l *LocalDiskPaginationCheckpointStore) SaveCheckpoint(runID, nodeID string
 
 // appendCheckpointRecords appends records to path as NDJSON, creating the
 // file if it doesn't exist yet. A crash mid-append can leave a truncated
-// trailing line; ReadArrowJSON's decode loop already stops gracefully at
+// trailing line; ReadNDJSON's decode loop already stops gracefully at
 // the first line it can't parse rather than erroring the whole read, so
 // that failure mode is handled on the read side, not here.
 func appendCheckpointRecords(path string, records []map[string]interface{}) error {
@@ -188,7 +188,7 @@ func (l *LocalDiskPaginationCheckpointStore) LoadCheckpoint(runID, nodeID string
 		return nil, nil, fmt.Errorf("decode checkpoint position: %w", err)
 	}
 
-	ds, err := ReadArrowJSON(recordsPath)
+	ds, err := ReadNDJSON(recordsPath)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read checkpoint records: %w", err)
 	}

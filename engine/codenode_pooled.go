@@ -124,7 +124,7 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	// by file reference, small ones ride the exec frame inline.
 	if input != nil && len(input.Rows) >= fileModeThreshold {
 		inputPath := filepath.Join(tmpDir, fmt.Sprintf("brokoli_in_%d.ndjson", time.Now().UnixNano()))
-		if err := WriteArrowJSON(inputPath, input); err != nil {
+		if err := WriteNDJSON(inputPath, input); err != nil {
 			return nil, "", fmt.Errorf("stage code input: %w", err)
 		}
 		defer os.Remove(inputPath)
@@ -150,7 +150,7 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	}
 
 	if res.Path != "" {
-		ds, readErr := ReadArrowJSON(res.Path)
+		ds, readErr := ReadNDJSON(res.Path)
 		if readErr != nil {
 			return nil, stderrStr, fmt.Errorf("read code output: %w", readErr)
 		}

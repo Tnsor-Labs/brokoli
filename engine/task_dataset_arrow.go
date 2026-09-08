@@ -146,7 +146,7 @@ func arrowValue(col arrow.Array, i int) (interface{}, error) {
 	}
 }
 
-// numericValue mirrors normalizeJSONNumbers (engine/arrow_transfer.go)
+// numericValue mirrors normalizeJSONNumbers (engine/ndjson_transfer.go)
 // so every codec returns the SAME Go type for the same value.
 //
 // NDJSON decodes with UseNumber and then prefers int64 for any integer

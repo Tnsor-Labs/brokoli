@@ -97,7 +97,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 		defer os.Remove(inputNDJSON)
 		defer os.Remove(outputNDJSON)
 
-		if err := WriteArrowJSON(inputNDJSON, input); err != nil {
+		if err := WriteNDJSON(inputNDJSON, input); err != nil {
 			// Fall back to CSV
 			os.Remove(inputNDJSON)
 			inputNDJSON = ""
@@ -115,7 +115,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 				transferMode = TransferCSV
 			}
 		} else {
-			transferMode = TransferArrow
+			transferMode = TransferNDJSON
 		}
 	}
 
@@ -170,7 +170,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 		"BROKED_TASK_PARAMS="+string(taskParamsJSON),
 	)
 	cmd.Env = append(cmd.Env, limits.Env()...)
-	if useFileMode && transferMode == TransferArrow {
+	if useFileMode && transferMode == TransferNDJSON {
 		cmd.Env = append(cmd.Env,
 			"BROKED_INPUT_NDJSON="+inputNDJSON,
 			"BROKED_OUTPUT_NDJSON="+outputNDJSON,
@@ -217,15 +217,15 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	}
 
 	// Read output: try NDJSON first (fastest), then CSV, then JSON stdout
-	if useFileMode && transferMode == TransferArrow {
+	if useFileMode && transferMode == TransferNDJSON {
 		if _, statErr := os.Stat(outputNDJSON); statErr == nil {
-			ds, readErr := ReadArrowJSON(outputNDJSON)
+			ds, readErr := ReadNDJSON(outputNDJSON)
 			if readErr == nil {
 				return ds, stderrStr, nil
 			}
 		}
 	}
-	if useFileMode && (transferMode == TransferCSV || transferMode == TransferArrow) {
+	if useFileMode && (transferMode == TransferCSV || transferMode == TransferNDJSON) {
 		if outputCSV != "" {
 			if _, statErr := os.Stat(outputCSV); statErr == nil {
 				ds, readErr := readCSVFile(outputCSV)

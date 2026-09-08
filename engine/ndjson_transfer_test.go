@@ -8,7 +8,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
-func TestWriteReadArrowJSON(t *testing.T) {
+func TestWriteReadNDJSON(t *testing.T) {
 	ds := &common.DataSet{
 		Columns: []string{"id", "name", "value"},
 		Rows: []common.DataRow{
@@ -18,14 +18,14 @@ func TestWriteReadArrowJSON(t *testing.T) {
 		},
 	}
 
-	tmpFile := filepath.Join(os.TempDir(), "test_arrow.ndjson")
+	tmpFile := filepath.Join(os.TempDir(), "test_ndjson.ndjson")
 	defer os.Remove(tmpFile)
 
-	if err := WriteArrowJSON(tmpFile, ds); err != nil {
+	if err := WriteNDJSON(tmpFile, ds); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
 
-	result, err := ReadArrowJSON(tmpFile)
+	result, err := ReadNDJSON(tmpFile)
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}
@@ -38,17 +38,17 @@ func TestWriteReadArrowJSON(t *testing.T) {
 	}
 }
 
-func TestWriteReadArrowJSON_Empty(t *testing.T) {
+func TestWriteReadNDJSON_Empty(t *testing.T) {
 	ds := &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
 
-	tmpFile := filepath.Join(os.TempDir(), "test_arrow_empty.ndjson")
+	tmpFile := filepath.Join(os.TempDir(), "test_ndjson_empty.ndjson")
 	defer os.Remove(tmpFile)
 
-	if err := WriteArrowJSON(tmpFile, ds); err != nil {
+	if err := WriteNDJSON(tmpFile, ds); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
 
-	result, err := ReadArrowJSON(tmpFile)
+	result, err := ReadNDJSON(tmpFile)
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}
@@ -58,11 +58,11 @@ func TestWriteReadArrowJSON_Empty(t *testing.T) {
 	}
 }
 
-func TestWriteReadArrowJSON_Nil(t *testing.T) {
+func TestWriteReadNDJSON_Nil(t *testing.T) {
 	tmpFile := filepath.Join(os.TempDir(), "nil.ndjson")
 	defer os.Remove(tmpFile)
 
-	if err := WriteArrowJSON(tmpFile, nil); err != nil {
+	if err := WriteNDJSON(tmpFile, nil); err != nil {
 		t.Fatalf("write nil error: %v", err)
 	}
 }
@@ -114,7 +114,7 @@ func TestWriteReadColumnarBinary_Empty(t *testing.T) {
 	}
 }
 
-func TestWriteReadArrowJSON_LargeDataset(t *testing.T) {
+func TestWriteReadNDJSON_LargeDataset(t *testing.T) {
 	// Generate 10K rows
 	rows := make([]common.DataRow, 10000)
 	for i := range rows {
@@ -129,14 +129,14 @@ func TestWriteReadArrowJSON_LargeDataset(t *testing.T) {
 		Rows:    rows,
 	}
 
-	tmpFile := filepath.Join(os.TempDir(), "test_arrow_large.ndjson")
+	tmpFile := filepath.Join(os.TempDir(), "test_ndjson_large.ndjson")
 	defer os.Remove(tmpFile)
 
-	if err := WriteArrowJSON(tmpFile, ds); err != nil {
+	if err := WriteNDJSON(tmpFile, ds); err != nil {
 		t.Fatalf("write error: %v", err)
 	}
 
-	result, err := ReadArrowJSON(tmpFile)
+	result, err := ReadNDJSON(tmpFile)
 	if err != nil {
 		t.Fatalf("read error: %v", err)
 	}

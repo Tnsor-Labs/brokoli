@@ -104,12 +104,12 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		putDone <- putResult{ref, err}
 	}()
 
-	// Buffered for the same reason as EncodeArrowJSON: pw is an io.Pipe,
+	// Buffered for the same reason as EncodeNDJSON: pw is an io.Pipe,
 	// and an unbuffered write per batch costs a scheduler round-trip that
 	// the store on the other end is not waiting on.
 	encBuf := bufio.NewWriterSize(pw, encodeBufferSize)
 	enc := json.NewEncoder(encBuf)
-	enc.SetEscapeHTML(false) // match EncodeArrowJSON byte-for-byte
+	enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
 	var outCols []string
 	rowCount := int64(0)
 	wroteAny := false
@@ -175,7 +175,7 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		}
 	}
 	if streamErr == nil && !wroteAny {
-		// Preserve EncodeArrowJSON's empty-dataset sentinel so the blob
+		// Preserve EncodeNDJSON's empty-dataset sentinel so the blob
 		// decodes identically to a batch-written empty output.
 		if _, err := pw.Write([]byte("[]")); err != nil {
 			streamErr = err
@@ -377,7 +377,7 @@ func stageRefToNDJSONFile(outputs *nodeOutputs, ref *artifact.DatasetRef) (strin
 // store as a dataset reference, counting rows on the way through — again
 // disk to disk, no DataSet. columns, when non-nil, is the authoritative
 // order (the wrapper's sidecar); otherwise it is recovered from the first
-// row later, at first decode, exactly like ReadArrowJSON would have.
+// row later, at first decode, exactly like ReadNDJSON would have.
 func storeNDJSONFileAsRef(outputs *nodeOutputs, path string, columns []string) (*artifact.DatasetRef, error) {
 	f, err := os.Open(path) // #nosec G304 -- temp path produced by executeCodeNodeStreamed, never caller input.
 	if err != nil {
@@ -405,7 +405,7 @@ func storeNDJSONFileAsRef(outputs *nodeOutputs, path string, columns []string) (
 }
 
 // ndjsonRowCounter counts newline-terminated rows flowing through a
-// TeeReader — one line per row is EncodeArrowJSON's (and the Python
+// TeeReader — one line per row is EncodeNDJSON's (and the Python
 // wrapper's) invariant. A final line without a trailing newline is still
 // a row.
 type ndjsonRowCounter struct {
@@ -655,7 +655,7 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 			return nodeExecutionResult{outputRef: ref}, nil
 		}
 		// Small output: materialize, exactly as the batch path would have.
-		ds, err := ReadArrowJSON(res.outputPath)
+		ds, err := ReadNDJSON(res.outputPath)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("read script output: %w", err)
 		}
