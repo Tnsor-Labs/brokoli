@@ -104,6 +104,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-034](./034-typescript-sdk-authoring-ergonomics.md) | TypeScript SDK authoring ergonomics | Proposed |
 | [ADR-035](./035-reconciling-task-bundles-and-the-polyglot-runtime.md) | Reconciling task bundles and the code-node protocol with the polyglot task runtime | Proposed |
 | [ADR-036](./036-jvm-task-bundles-and-sdk.md) | JVM task bundles and the JVM authoring SDK | Proposed |
+| [ADR-037](./037-authoring-experience-and-editor-integration.md) | Authoring experience — move preflight to where the mistake is made | Proposed |
 
 ## How to add a new ADR
 
