@@ -154,6 +154,20 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// digest, which the handler re-hashes before persisting; uploads need
 		// pipelines.create (authoring a bundle is authoring pipeline input),
 		// fetches are auth-only like the plugin archive. Both org-scoped.
+		// Data-plane blobs (ADR-033 sections 6 and 8). Registered only
+		// when this deployment actually has a blob store: an endpoint
+		// that exists and can never succeed looks like a capability the
+		// deployment has.
+		//
+		// Authorization is the capability header, not the route
+		// permission: the caller's session says which tenant it acts
+		// for, and the capability says which single object it may touch.
+		// Both are required and neither substitutes for the other.
+		if bh := NewBlobHandler(s, e.ArtifactStore); bh != nil {
+			r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
+			r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
+		}
+
 		tbh := NewTaskBundleHandler(s)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/task-bundles/{digest}", tbh.Upload)
 		r.Get("/task-bundles/{digest}", tbh.Get)

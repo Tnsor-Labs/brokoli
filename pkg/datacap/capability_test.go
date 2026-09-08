@@ -308,3 +308,67 @@ func TestWriteCapabilityWithoutChecksum(t *testing.T) {
 		t.Errorf("a checksum-less write capability was not object-bound: %v", err)
 	}
 }
+
+func TestDeriveKeyIsDeterministicAndSeparate(t *testing.T) {
+	root := []byte("0123456789abcdef0123456789abcdef")
+
+	a, err := DeriveKey(root)
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	b, err := DeriveKey(root)
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	if string(a) != string(b) {
+		t.Fatal("DeriveKey is not deterministic; capabilities would stop verifying across restarts")
+	}
+	// The whole point: the derived key must not BE the root secret. That
+	// secret already signs session tokens, and reusing it would make a
+	// flaw in either weaken both.
+	if string(a) == string(root) {
+		t.Fatal("the derived key is the root secret itself")
+	}
+	if len(a) < 32 {
+		t.Errorf("derived key is %d bytes, too short to sign with", len(a))
+	}
+
+	// A different root gives a different key, or rotating the secret
+	// would not rotate capabilities.
+	other, err := DeriveKey([]byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatalf("DeriveKey: %v", err)
+	}
+	if string(other) == string(a) {
+		t.Fatal("two different root secrets derived the same key")
+	}
+}
+
+func TestDeriveKeyRefusesAShortRoot(t *testing.T) {
+	if _, err := DeriveKey([]byte("tooshort")); err == nil {
+		t.Fatal("DeriveKey accepted a root secret shorter than 32 bytes")
+	}
+}
+
+// A capability signed under a key derived from one root must not verify
+// under another -- the property that makes rotating the server secret
+// actually invalidate outstanding capabilities.
+func TestCapabilitiesDoNotSurviveARootSecretRotation(t *testing.T) {
+	k1, _ := DeriveKey([]byte("0123456789abcdef0123456789abcdef"))
+	k2, _ := DeriveKey([]byte("ffffffffffffffffffffffffffffffff"))
+	i1, err := NewIssuer(k1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i2, err := NewIssuer(k2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := i1.Issue(validCapability())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := i2.Verify(token, validRequest()); !errors.Is(err, ErrSignature) {
+		t.Fatalf("a capability survived a root-secret rotation: %v", err)
+	}
+}

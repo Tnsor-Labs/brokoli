@@ -54,3 +54,23 @@ type Store interface {
 	// no-op, not an error, when nothing was written.
 	DeleteNamespace(ctx context.Context, namespace string) error
 }
+
+// DigestResolver is implemented by a Store that can name a blob from its
+// namespace and content digest alone, without being handed a URI.
+//
+// Optional and discovered by type assertion, the same way
+// engine.BlobStoreProvider is, so a backend that cannot do this stays a
+// valid Store.
+//
+// It exists for ADR-033 section 6, which requires that a reference
+// handed to a remote worker be "an opaque control-plane-issued
+// capability, never a general URL, URI, or host path". A store URI is a
+// location: it carries a scheme and a layout. Letting a capability name
+// a blob by content digest keeps the location entirely server-side,
+// which is the property the ADR is actually asking for.
+type DigestResolver interface {
+	// ResolveDigest returns a reference to the blob stored under
+	// namespace with the given "sha256:<hex>" checksum. It does not
+	// promise the blob exists; Open reports that.
+	ResolveDigest(namespace, checksum string) (*ArtifactRef, error)
+}
