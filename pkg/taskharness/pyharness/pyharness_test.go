@@ -248,3 +248,75 @@ func TestOfflineEndToEnd_TaskRaisesReportsUserCodeFailure(t *testing.T) {
 		t.Errorf("Message = %q, want it to contain the raised exception", res.Failure.Message)
 	}
 }
+
+// The numeric half of the cross-adapter contract, asserted rather than
+// assumed.
+//
+// brokoli#479 lost 64-bit integers in the Go decoder; #492 found the
+// same class live in the Node harness, where JavaScript's number type
+// cannot represent 9007199254740993 at all and the harness now refuses
+// it (#494). Python's int is arbitrary precision, so this adapter is
+// exact by the language's own guarantee -- which is exactly why it was
+// never checked. This pins it, so "python is the adapter that handles
+// 64-bit ids" is a tested claim rather than a belief, and so a future
+// change to how rows are read here cannot quietly break it.
+func TestOfflineEndToEnd_SixtyFourBitIntegersSurviveInputAndOutput(t *testing.T) {
+	py := python3(t)
+	// Echoes the value straight back, so a loss on the way in and a loss
+	// on the way out are both visible in the result.
+	root, module := buildFixtureBundle(t, "def run(input):\n    return input[0]['id']\n")
+
+	harnessDir := t.TempDir()
+	harnessPath, err := Materialize(harnessDir)
+	if err != nil {
+		t.Fatalf("Materialize: %v", err)
+	}
+
+	attemptDir := t.TempDir()
+	inputPath := filepath.Join(attemptDir, "input.ndjson")
+	if err := os.WriteFile(inputPath, []byte("{\"id\":9007199254740993}\n"), 0o600); err != nil {
+		t.Fatalf("stage input: %v", err)
+	}
+	resultPath := filepath.Join(attemptDir, "result.json")
+	invocationPath := filepath.Join(attemptDir, "invocation.json")
+	digest := "sha256:" + strings.Repeat("0", 62) + "aa"
+	if err := WriteInvocation(invocationPath, Invocation{
+		SysPath:         []string{root},
+		Module:          module,
+		Symbol:          "run",
+		InterfaceDigest: digest,
+		InputPath:       inputPath,
+		InputCodec:      "ndjson/v1",
+	}); err != nil {
+		t.Fatalf("WriteInvocation: %v", err)
+	}
+
+	start := taskharness.NewStartFrame(invocationPath, resultPath, filepath.Join(attemptDir, "out"))
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	res, err := taskharness.Run(ctx, start, taskharness.Options{
+		Command: Command(py, harnessPath),
+	}, taskharness.Handlers{})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.Failure != nil {
+		t.Fatalf("expected success, got failure: %+v", res.Failure)
+	}
+
+	// Compared as TEXT, deliberately. A numeric comparison is the trap
+	// this whole class of bug hides behind: in JavaScript
+	// `v === 9007199254740993` is true after the value has been altered,
+	// because the comparison literal rounds identically. Reading the raw
+	// result bytes is the only check that cannot deceive itself.
+	raw, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if !strings.Contains(string(raw), "9007199254740993") {
+		t.Fatalf("result does not carry the exact value; got: %s", string(raw))
+	}
+	if strings.Contains(string(raw), "9007199254740992") {
+		t.Fatalf("the value was altered by one -- the #479 corruption, in the python adapter: %s", string(raw))
+	}
+}
