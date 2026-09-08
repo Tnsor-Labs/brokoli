@@ -112,8 +112,14 @@ func TestSchedulerAppliesChangedSchedule(t *testing.T) {
 	sched.syncSchedulesFromStore()
 
 	after := sched.NextRun("p1")
-	if !after.Before(before) {
-		t.Fatalf("expected the tighter schedule to move the next run earlier: before=%v after=%v", before, after)
+	// Asserted as "the new schedule is in effect", not "after < before".
+	// The relative form fails for ~2 minutes a day through no fault of
+	// the code: at 04:59 UTC both "0 5 * * *" and "*/2 * * * *" next fire
+	// at 05:00:00, so after.Before(before) is false while everything
+	// worked correctly. A */2 schedule can never be more than two minutes
+	// out, and that is the property the test is really about.
+	if d := time.Until(after); d > 2*time.Minute+5*time.Second {
+		t.Fatalf("expected the */2 schedule to be in effect (next run within ~2m), got %v away: before=%v after=%v", d, before, after)
 	}
 }
 
