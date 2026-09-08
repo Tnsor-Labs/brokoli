@@ -11,6 +11,88 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.6] - 2026-09-08
+
+### Fixed
+
+- **A run's declared parameters now actually reach the task that
+  declared them** (#487, #490) -- @hc12r. ADR-032 section 7 reads as
+  though declaring a parameter causes its value to arrive. It did not.
+  A submitted value was validated against its declaration, recorded on
+  the run row, and then read exactly once -- to persist it. Node
+  execution never consulted it, so a run triggered with `threshold=0.9`
+  validated, recorded 0.9, and executed with the task's own default:
+  **a green run and a wrong answer**, with nothing anywhere reporting a
+  problem.
+  A task now sees its own `parameters` binding alongside the existing
+  `params`. Deliberately separate rather than merged, because
+  `params` values are always strings and declared ones keep their
+  declared type -- a merge would have delivered a declared `0.9` as
+  `"0.9"`, handing the task a *wrong type* rather than a missing value.
+  Remote dispatch carries them too, additively, so an older claimant is
+  unaffected. The new **`task-parameters-v1`** capability is what lets
+  an SDK refuse a server that would accept the declaration and then
+  ignore the values; `task-interface-v1` only ever meant the server
+  accepts the IR.
+- **The license-compliance gate was inspecting zero dependencies**
+  (#484) -- @hc12r. Both CI and `preflight.sh` ran `go-licenses report
+  ./... || true` and grepped the output for GPL/AGPL/SSPL/EUPL.
+  `go-licenses` cannot load a Go 1.24+ standard library: it exits
+  fatally having printed nothing, `|| true` swallowed the status, and
+  the grep then searched an empty file. The gate had reported "no
+  forbidden licenses found" for its entire existence while checking
+  **none of the 88 dependencies**. Replaced with a tested classifier
+  that treats an empty scan and an unclassifiable license as failures,
+  and identifies a license by the one it names *first* -- MPL-2.0 names
+  GPL/LGPL/AGPL in its own body, and the BSD family never names itself.
+- **A gosec verdict from a scan that inspected nothing is now refused**
+  (#488) -- @hc12r. The baseline comparison treated zero findings as the
+  best possible outcome, so a run that scanned no code would have passed
+  while suggesting the baseline drop to 0. The file count and the
+  absence of Go build errors are now asserted before the verdict is
+  trusted.
+- **Task code no longer inherits the engine's environment** (#481) --
+  @hc12r.
+- **Port-aware edges are refused rather than silently rewired** (#482)
+  -- @hc12r. `from_port`/`to_port` were dropped and the edge routed as
+  if unported, producing a wrong pipeline rather than a refused one.
+- **64-bit integers survive task dataset decoding** (#479) -- @hc12r.
+  `9007199254740993` decoded to `...992`.
+
+### Added
+
+- **Arrow IPC datasets end to end** (#475, #477, #478) -- @hc12r.
+  Measured 6-8x faster than NDJSON on the read path. Spilled datasets
+  are written as Arrow only when the round trip is exact; a mixed-type
+  column, an all-null column, a nested value or a slice each make it
+  decline, since an optimization must never become a semantic change.
+- **`pkg/datacap`: data-plane capabilities** (#485) -- @hc12r. ADR-033
+  section 6's opaque, control-plane-issued grants, bound to tenant, run,
+  attempt, fencing generation, direction, object and expiry. The
+  foundation for remote task input and output; nothing calls it yet.
+- **A task cannot reach the engine's file descriptors** (#483) --
+  @hc12r. ADR-033 gate 6's remaining third, after secrets and state.
+
+### Changed
+
+- **A finished remote instance is noticed in ~25ms, not up to a second**
+  (#473) -- @hc12r.
+- **CI no longer re-downloads its dependencies every run** (#476) --
+  @hc12r.
+- **SQLite driver: modernc.org/sqlite 1.37.1 -> 1.53.0** (#474) --
+  @hc12r.
+- **ADR-012 and ADR-017 define `CommitAttemptResult`** (#489) --
+  @hc12r. The multi-port publication operation ADR-033 section 7
+  required before the remote task data plane can be built: one fenced
+  compare-and-swap publishing every output port's manifest and settling
+  the attempt together, all ports or none.
+- **ADR-036 proposes the JVM runtime class and SDK** (#486) -- @hc12r.
+  Measurement drove the design: JEP 330 source launch costs 1.07-1.16s
+  per attempt against 0.07s precompiled, so the adapter compiles once
+  and caches. Requires a JDK rather than only a JRE, which is recorded
+  as the decision's real cost.
+- **ADR-033's acceptance gates split by distribution** (#480) -- @hc12r.
+
 ## [0.11.5] - 2026-09-07
 
 ### Added
