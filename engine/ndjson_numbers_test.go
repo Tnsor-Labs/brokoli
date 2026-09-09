@@ -86,10 +86,10 @@ func TestNDJSONRoundTripIsIdentity(t *testing.T) {
 		},
 	}
 	var buf bytes.Buffer
-	if err := EncodeArrowJSON(&buf, in); err != nil {
+	if err := EncodeNDJSON(&buf, in); err != nil {
 		t.Fatal(err)
 	}
-	out, err := DecodeArrowJSON(bytes.NewReader(buf.Bytes()), in.Columns)
+	out, err := DecodeNDJSON(bytes.NewReader(buf.Bytes()), in.Columns)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,10 +123,10 @@ func TestNDJSONRoundTripResolvesIntegralFloatsToIntegers(t *testing.T) {
 		Columns: []string{"integral", "fractional"},
 		Rows:    []common.DataRow{{"integral": 150.0, "fractional": 1.5}},
 	}
-	if err := EncodeArrowJSON(&buf, in); err != nil {
+	if err := EncodeNDJSON(&buf, in); err != nil {
 		t.Fatal(err)
 	}
-	out, err := DecodeArrowJSON(bytes.NewReader(buf.Bytes()), in.Columns)
+	out, err := DecodeNDJSON(bytes.NewReader(buf.Bytes()), in.Columns)
 	if err != nil {
 		t.Fatal(err)
 	}

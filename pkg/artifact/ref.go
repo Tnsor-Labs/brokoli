@@ -105,7 +105,7 @@ type DatasetRef struct {
 }
 
 // FormatNDJSON is newline-delimited JSON, one object per row — the same
-// encoding engine.WriteArrowJSON already uses for durable node output, and
+// encoding engine.WriteNDJSON already uses for durable node output, and
 // the only dataset format in this milestone.
 const FormatNDJSON = "ndjson"
 

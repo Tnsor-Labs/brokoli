@@ -57,7 +57,7 @@ func TestLocalDiskArtifactStore_ReadsLegacyLayout(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(legacy), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteArrowJSON(legacy, &common.DataSet{
+	if err := WriteNDJSON(legacy, &common.DataSet{
 		Columns: []string{"id"},
 		Rows:    []common.DataRow{{"id": 1}, {"id": 2}},
 	}); err != nil {

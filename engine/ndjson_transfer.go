@@ -13,36 +13,37 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
-// ArrowTransferMode indicates the data transfer format.
-type ArrowTransferMode string
+// TransferMode indicates the data transfer format: JSON over stdin for
+// small datasets, or CSV/NDJSON files for large ones.
+type TransferMode string
 
 const (
-	TransferJSON  ArrowTransferMode = "json"
-	TransferCSV   ArrowTransferMode = "csv"
-	TransferArrow ArrowTransferMode = "arrow"
+	TransferJSON   TransferMode = "json"
+	TransferCSV    TransferMode = "csv"
+	TransferNDJSON TransferMode = "ndjson"
 )
 
-// WriteArrowJSON writes data as NDJSON (newline-delimited JSON) — 2-3x faster than regular JSON
+// WriteNDJSON writes data as NDJSON (newline-delimited JSON) — 2-3x faster than regular JSON
 // for large datasets because pyarrow/pandas can stream-parse it line by line.
-func WriteArrowJSON(path string, ds *common.DataSet) error {
+func WriteNDJSON(path string, ds *common.DataSet) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return EncodeArrowJSON(f, ds)
+	return EncodeNDJSON(f, ds)
 }
 
-// EncodeArrowJSON writes ds to w in the same NDJSON encoding WriteArrowJSON
+// EncodeNDJSON writes ds to w in the same NDJSON encoding WriteNDJSON
 // produces on disk, so a stream and a file are byte-identical.
 //
 // Split out so the artifact store can hand rows straight to a store without
 // staging them in a second file first — and so there is one definition of
 // this format rather than two that can drift. The empty-dataset encoding is
-// "[]" rather than zero bytes, which ReadArrowJSON/DecodeArrowJSON both
+// "[]" rather than zero bytes, which ReadNDJSON/DecodeNDJSON both
 // recognize; that distinguishes "this node produced no rows" from "nothing
 // was ever written here", a difference resume depends on.
-func EncodeArrowJSON(w io.Writer, ds *common.DataSet) error {
+func EncodeNDJSON(w io.Writer, ds *common.DataSet) error {
 	if ds == nil || len(ds.Rows) == 0 {
 		_, err := w.Write([]byte("[]"))
 		return err
@@ -67,13 +68,13 @@ func EncodeArrowJSON(w io.Writer, ds *common.DataSet) error {
 // encodeBufferSize is the chunk size handed to the underlying writer.
 const encodeBufferSize = 256 << 10
 
-// DecodeArrowJSON reads the NDJSON encoding EncodeArrowJSON produces.
+// DecodeNDJSON reads the NDJSON encoding EncodeNDJSON produces.
 //
 // columns, when non-empty, is used verbatim as the dataset's column order.
-// ReadArrowJSON has to recover columns by iterating the first row's map,
+// ReadNDJSON has to recover columns by iterating the first row's map,
 // which loses the original ordering; a caller that recorded the order when
 // writing can pass it here and get the dataset back as it was.
-func DecodeArrowJSON(r io.Reader, columns []string) (*common.DataSet, error) {
+func DecodeNDJSON(r io.Reader, columns []string) (*common.DataSet, error) {
 	data, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
@@ -105,8 +106,8 @@ func DecodeArrowJSON(r io.Reader, columns []string) (*common.DataSet, error) {
 	return &common.DataSet{Columns: cols, Rows: rows}, nil
 }
 
-// ReadArrowJSON reads data from compact NDJSON format.
-func ReadArrowJSON(path string) (*common.DataSet, error) {
+// ReadNDJSON reads data from compact NDJSON format.
+func ReadNDJSON(path string) (*common.DataSet, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -246,13 +247,13 @@ func ReadColumnarBinary(path string) (*common.DataSet, error) {
 // single-digit MiB.
 const streamBatchRows = 1000
 
-// NDJSONBatchReader is the incremental counterpart of DecodeArrowJSON: it
+// NDJSONBatchReader is the incremental counterpart of DecodeNDJSON: it
 // yields the same rows the same way, batchSize rows at a time, without
 // ever holding the whole dataset. This is the primitive ADR-019's
 // reference-passing dataflow is built on — a spilled/artifact blob can
 // flow through a streamable operator in bounded memory.
 //
-// Unlike DecodeArrowJSON — which silently stops at the first malformed
+// Unlike DecodeNDJSON — which silently stops at the first malformed
 // line, a tolerance acceptable when the caller immediately sees the
 // truncated result — a batch reader's consumer has already processed and
 // emitted earlier batches by the time a bad line appears, so silent
@@ -266,15 +267,15 @@ type NDJSONBatchReader struct {
 	done      bool
 }
 
-// NewNDJSONBatchReader wraps r, which must contain EncodeArrowJSON
+// NewNDJSONBatchReader wraps r, which must contain EncodeNDJSON
 // output. columns is used verbatim as every batch's column order when
-// non-empty (same contract as DecodeArrowJSON); otherwise it is recovered
+// non-empty (same contract as DecodeNDJSON); otherwise it is recovered
 // from the first row's map, losing the original order. batchSize <= 0
 // uses streamBatchRows.
 //
-// The empty-dataset sentinel "[]" (see EncodeArrowJSON's doc comment) is
+// The empty-dataset sentinel "[]" (see EncodeNDJSON's doc comment) is
 // detected here, by peeking, rather than in Next — it is the one thing
-// EncodeArrowJSON ever writes that is not a JSON object per line, and it
+// EncodeNDJSON ever writes that is not a JSON object per line, and it
 // only ever appears as the entire stream.
 func NewNDJSONBatchReader(r io.Reader, columns []string, batchSize int) *NDJSONBatchReader {
 	if batchSize <= 0 {

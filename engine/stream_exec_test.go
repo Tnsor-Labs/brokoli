@@ -15,12 +15,12 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
-// TestNDJSONBatchReader_EquivalentToDecodeArrowJSON is the foundational
+// TestNDJSONBatchReader_EquivalentToDecodeNDJSON is the foundational
 // equivalence property of ADR-019 Milestone 1: reading a stream in
-// batches must reconstruct exactly what DecodeArrowJSON reads at once —
+// batches must reconstruct exactly what DecodeNDJSON reads at once —
 // same rows, same order, same column handling — across batch-boundary
 // row counts, including the "[]" empty sentinel.
-func TestNDJSONBatchReader_EquivalentToDecodeArrowJSON(t *testing.T) {
+func TestNDJSONBatchReader_EquivalentToDecodeNDJSON(t *testing.T) {
 	for _, rowCount := range []int{0, 1, 2, 3, 4, 7, 1000, 1001, 2500} {
 		t.Run(fmt.Sprintf("%drows", rowCount), func(t *testing.T) {
 			ds := &common.DataSet{Columns: []string{"id", "name"}}
@@ -28,14 +28,14 @@ func TestNDJSONBatchReader_EquivalentToDecodeArrowJSON(t *testing.T) {
 				ds.Rows = append(ds.Rows, common.DataRow{"id": float64(i), "name": fmt.Sprintf("row-%d", i)})
 			}
 			var buf bytes.Buffer
-			if err := EncodeArrowJSON(&buf, ds); err != nil {
+			if err := EncodeNDJSON(&buf, ds); err != nil {
 				t.Fatalf("encode: %v", err)
 			}
 			encoded := buf.Bytes()
 
-			whole, err := DecodeArrowJSON(bytes.NewReader(encoded), ds.Columns)
+			whole, err := DecodeNDJSON(bytes.NewReader(encoded), ds.Columns)
 			if err != nil {
-				t.Fatalf("DecodeArrowJSON: %v", err)
+				t.Fatalf("DecodeNDJSON: %v", err)
 			}
 
 			batches := NewNDJSONBatchReader(bytes.NewReader(encoded), ds.Columns, 3)
@@ -58,7 +58,7 @@ func TestNDJSONBatchReader_EquivalentToDecodeArrowJSON(t *testing.T) {
 			}
 
 			if len(streamed) != len(whole.Rows) {
-				t.Fatalf("streamed %d rows, DecodeArrowJSON read %d", len(streamed), len(whole.Rows))
+				t.Fatalf("streamed %d rows, DecodeNDJSON read %d", len(streamed), len(whole.Rows))
 			}
 			for i := range streamed {
 				if !reflect.DeepEqual(streamed[i], whole.Rows[i]) {
@@ -70,7 +70,7 @@ func TestNDJSONBatchReader_EquivalentToDecodeArrowJSON(t *testing.T) {
 }
 
 func TestNDJSONBatchReader_MalformedInputErrsLoudly(t *testing.T) {
-	// DecodeArrowJSON silently truncates at a bad line; the batch reader
+	// DecodeNDJSON silently truncates at a bad line; the batch reader
 	// must not — earlier batches have already been consumed downstream by
 	// the time corruption appears.
 	input := "{\"a\":1}\n{\"a\":2}\nnot json at all\n"

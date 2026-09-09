@@ -37,7 +37,7 @@ import (
 // cmd/serve.go — this store activates alongside the same opt-in, since
 // remote instance dispatch is precisely the case that needs it.
 //
-// Rows hold plain text — the same NDJSON EncodeArrowJSON/DecodeArrowJSON
+// Rows hold plain text — the same NDJSON EncodeNDJSON/DecodeNDJSON
 // already produce for LocalDiskArtifactStore — not a binary column, so
 // there is no dialect-specific BYTEA/BLOB handling to maintain. Schema is
 // created lazily on first use (CREATE TABLE IF NOT EXISTS), matching
@@ -236,7 +236,7 @@ func (s *SQLArtifactStore) WriteArtifact(runID, nodeID, instanceKey string, ds *
 		return fmt.Errorf("write artifact: runID and nodeID are required")
 	}
 	var buf bytes.Buffer
-	if err := EncodeArrowJSON(&buf, ds); err != nil {
+	if err := EncodeNDJSON(&buf, ds); err != nil {
 		return fmt.Errorf("write artifact: encode: %w", err)
 	}
 	if limit := sqlArtifactMaxBytes(); limit > 0 && int64(buf.Len()) > limit {
@@ -274,7 +274,7 @@ func (s *SQLArtifactStore) WriteArtifactFenced(runID, nodeID, instanceKey string
 		return false, fmt.Errorf("write artifact: runID and nodeID are required")
 	}
 	var buf bytes.Buffer
-	if err := EncodeArrowJSON(&buf, ds); err != nil {
+	if err := EncodeNDJSON(&buf, ds); err != nil {
 		return false, fmt.Errorf("write artifact: encode: %w", err)
 	}
 	cols := []string{}
@@ -321,7 +321,7 @@ func (s *SQLArtifactStore) ReadArtifact(runID, nodeID, instanceKey string) (*com
 	if err := json.Unmarshal([]byte(colsJSON), &cols); err != nil {
 		return nil, fmt.Errorf("read artifact: decode columns: %w", err)
 	}
-	ds, err := DecodeArrowJSON(strings.NewReader(data), cols)
+	ds, err := DecodeNDJSON(strings.NewReader(data), cols)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact: decode: %w", err)
 	}

@@ -238,7 +238,7 @@ func TestEstimateEncodedSize(t *testing.T) {
 	// hardcoded number.
 	big := &common.DataSet{Rows: rowsOfSize(1000, 50)}
 	var buf strings.Builder
-	if err := EncodeArrowJSON(&buf, big); err != nil {
+	if err := EncodeNDJSON(&buf, big); err != nil {
 		t.Fatal(err)
 	}
 	actual := int64(buf.Len())

@@ -104,7 +104,7 @@ var nonResumableNodeTypes = map[models.NodeType]bool{
 // blobs together.
 //
 // The dataset encoding is still the newline-delimited JSON of
-// arrow_transfer.go's EncodeArrowJSON/DecodeArrowJSON, unchanged.
+// ndjson_transfer.go's EncodeNDJSON/DecodeNDJSON, unchanged.
 type LocalDiskArtifactStore struct {
 	baseDir string
 	blobs   artifact.Store
@@ -231,7 +231,7 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID, instanceKey string
 		// EOF on success and the encoder's error otherwise — which is what
 		// makes a failed encode surface as a failed Put rather than a
 		// silently truncated artifact.
-		pw.CloseWithError(EncodeArrowJSON(pw, ds))
+		pw.CloseWithError(EncodeNDJSON(pw, ds))
 	}()
 
 	ref, err := l.blobs.Put(context.Background(), runID, pr, artifact.PutOptions{
@@ -243,7 +243,7 @@ func (l *LocalDiskArtifactStore) WriteArtifact(runID, nodeID, instanceKey string
 	}
 
 	// Columns are recorded here because the NDJSON rows do not preserve
-	// their order — DecodeArrowJSON would otherwise have to recover them by
+	// their order — DecodeNDJSON would otherwise have to recover them by
 	// iterating a map, which returns them in an arbitrary order.
 	cols := []string{}
 	rowCount := 0
@@ -401,7 +401,7 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string)
 	}
 	defer rc.Close()
 
-	ds, err := DecodeArrowJSON(rc, ref.Columns)
+	ds, err := DecodeNDJSON(rc, ref.Columns)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact: %w", err)
 	}
@@ -419,7 +419,7 @@ func (l *LocalDiskArtifactStore) readLegacyArtifact(runID, nodeID string) (*comm
 		}
 		return nil, fmt.Errorf("stat artifact: %w", err)
 	}
-	ds, err := ReadArrowJSON(path)
+	ds, err := ReadNDJSON(path)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact: %w", err)
 	}
