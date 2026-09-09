@@ -1166,6 +1166,14 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
+	// Without this a WORKER's runner has no issuer, so a task input over
+	// the inline row cap is refused ("this server issues no data
+	// capabilities") instead of staged by reference -- in exactly the
+	// deployment where remote dispatch, and therefore that whole path,
+	// is the only thing that runs. runPipelineAsync sets it too; the two
+	// constructors must agree, which is what
+	// TestRunnerConstructorsPropagateTheSameEngineFields pins.
+	runner.dataCapIssuer = e.DataCapIssuer
 	runner.parentCtx = claimCtx
 
 	// Register the runner as active BEFORE waiting for a concurrency slot,
