@@ -13,6 +13,12 @@ reconstruct from git archaeology.
 
 ## [0.11.9] - 2026-09-10
 
+A welcome to @harlanljones, whose first contribution is in this release.
+They picked up a good first issue, found that its central claim was
+wrong, said so, and fixed the code correctly instead of following the
+instruction. That is exactly the instinct we want, and the issue is
+better for it.
+
 ### Fixed
 
 - **Remote task dispatch now actually works.** (#519, #522, #525) --
