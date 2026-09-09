@@ -749,6 +749,19 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 	} else if err != nil {
 		return nil, err
 	}
+	// A declared artifact or collection output needs somewhere to put its
+	// bytes, and a remote claimant holds no blob store -- so the order
+	// carries a write grant it can present instead.
+	var outputCapability string
+	if taskNeedsOutputBlobStore(node) {
+		var outURL string
+		outputCapability, outURL, err = r.stageTaskOutputCapability(node, attempt, execFencingGen)
+		if err != nil {
+			return nil, err
+		}
+		planeURL = outURL
+	}
+
 	workOrder := &extensions.InstanceWorkOrder{
 		NodeType:          string(models.NodeTypeTask),
 		OrgID:             r.pipe.OrgID,
@@ -758,6 +771,7 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 		InputRows:         inputRows,
 		InputRef:          inputRef,
 		InputCapability:   inputCapability,
+		OutputCapability:  outputCapability,
 		ControlPlaneURL:   planeURL,
 		CapabilityAttempt: attempt,
 		RunParams:         runParams,
@@ -865,7 +879,7 @@ func ExecuteTaskWorkOrderWithArtifacts(ctx context.Context, s store.Store, artif
 		}
 		input = &common.DataSet{Columns: wo.InputColumns, Rows: rows}
 	}
-	return executeTaskBundle(ctx, s, workOrderBlobStore(artifacts), wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, taskOutputStore(artifacts, wo, runID, nodeID), wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // taskOutputPort is one entry of a task-result-v1 candidate's outputs,

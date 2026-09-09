@@ -81,6 +81,7 @@ func newBlobRig(t *testing.T, fencingGeneration int64) *blobTestRig {
 	r.Route("/api", func(r chi.Router) {
 		r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Get)
 		r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", h.Put)
+		r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", h.Create)
 	})
 	return &blobTestRig{h: h, issuer: issuer, blobs: blobs, router: r}
 }
@@ -107,6 +108,13 @@ func writeCap(objectID string) datacap.Capability {
 	c := readCap(objectID)
 	c.Direction = datacap.DirectionWrite
 	return c
+}
+
+// anyObjectWriteCap is the attempt-scoped grant a task's outputs need:
+// it names no object, because their ids are content digests nobody can
+// know before the task runs.
+func anyObjectWriteCap() datacap.Capability {
+	return writeCap(datacap.AnyObject)
 }
 
 func (rig *blobTestRig) do(t *testing.T, method, objectID, token, org string, body []byte) *httptest.ResponseRecorder {
@@ -305,4 +313,195 @@ func (o orgInjector) RoundTrip(r *http.Request) (*http.Response, error) {
 		base = http.DefaultTransport
 	}
 	return base.RoundTrip(r)
+}
+
+// ---------------------------------------------------------------------
+// The create route: attempt-scoped writes.
+// ---------------------------------------------------------------------
+
+func (rig *blobTestRig) create(t *testing.T, token, org string, body []byte) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/runs/run-1/nodes/task/attempts/0/blobs", bytes.NewReader(body))
+	if token != "" {
+		req.Header.Set(CapabilityHeader, token)
+	}
+	if org != "" {
+		req.Header.Set("X-Test-Org", org)
+	}
+	w := httptest.NewRecorder()
+	rig.router.ServeHTTP(w, req)
+	return w
+}
+
+func TestBlobCreateAssignsTheObjectIDByContent(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	w := rig.create(t, rig.token(t, anyObjectWriteCap()), "org-1", []byte("task output"))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var got map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The id the server assigns is the content digest, which is what a
+	// later read capability binds to.
+	if got["object_id"] != got["checksum"] {
+		t.Errorf("object_id %v != checksum %v -- an id that is not the content digest is a location", got["object_id"], got["checksum"])
+	}
+	if !strings.HasPrefix(got["object_id"].(string), "sha256:") {
+		t.Errorf("object_id = %v, want a content digest", got["object_id"])
+	}
+}
+
+// The reason the grant exists: a collection port becomes one stored
+// object per item, a count decided at runtime.
+func TestBlobCreateAcceptsManyObjectsUnderOneGrant(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	token := rig.token(t, anyObjectWriteCap())
+
+	ids := map[string]bool{}
+	for _, body := range []string{"item one", "item two", "item three"} {
+		w := rig.create(t, token, "org-1", []byte(body))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("%q: status = %d, body = %s", body, w.Code, w.Body.String())
+		}
+		var got map[string]interface{}
+		_ = json.Unmarshal(w.Body.Bytes(), &got)
+		ids[got["object_id"].(string)] = true
+	}
+	if len(ids) != 3 {
+		t.Errorf("3 distinct bodies produced %d distinct ids", len(ids))
+	}
+}
+
+// The two routes are not interchangeable. A grant naming ONE object must
+// not be usable on the route that creates unnamed ones, or the object
+// binding would be trivially escapable.
+func TestBlobCreateRefusesASingleObjectGrant(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	named := rig.token(t, writeCap("sha256:"+strings.Repeat("d", 64)))
+	w := rig.create(t, named, "org-1", []byte("x"))
+	if w.Code == http.StatusCreated {
+		t.Fatal("a single-object grant created an unnamed object")
+	}
+}
+
+// And the reverse: an attempt-scoped grant is not a skeleton key for the
+// named route either.
+func TestBlobPutRefusesAnAttemptScopedGrant(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	anyTok := rig.token(t, anyObjectWriteCap())
+	w := rig.do(t, http.MethodPut, "sha256:"+strings.Repeat("e", 64), anyTok, "org-1", []byte("x"))
+	if w.Code == http.StatusCreated {
+		t.Fatal("an attempt-scoped grant wrote to a named object")
+	}
+}
+
+// ...including when the client puts the wildcard sentinel in the URL to
+// make the two ids match. Object ids here are content digests, so "*" is
+// never one, and the named route must not accept it. Without this the
+// routes are interchangeable in one direction and the test above is
+// satisfied by a comparison that happens to agree rather than by a rule.
+func TestBlobPutRefusesTheWildcardAsAnObjectID(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	anyTok := rig.token(t, anyObjectWriteCap())
+	if w := rig.do(t, http.MethodPut, datacap.AnyObject, anyTok, "org-1", []byte("x")); w.Code == http.StatusCreated {
+		t.Fatal("the named route accepted the wildcard sentinel as an object id")
+	}
+	// A read is refused there too, so the sentinel is not a way to probe.
+	if w := rig.do(t, http.MethodGet, datacap.AnyObject, anyTok, "org-1", nil); w.Code == http.StatusOK {
+		t.Fatal("the wildcard sentinel served a read")
+	}
+}
+
+func TestBlobCreateRefusesAReadGrant(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	// A read grant naming AnyObject cannot even be issued, so the realistic
+	// attack is a read grant for a real object presented at the create route.
+	readTok := rig.token(t, readCap("sha256:"+strings.Repeat("f", 64)))
+	if w := rig.create(t, readTok, "org-1", []byte("x")); w.Code == http.StatusCreated {
+		t.Fatal("a read grant created an object")
+	}
+}
+
+func TestBlobCreateRefusesAnotherTenant(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	token := rig.token(t, anyObjectWriteCap())
+	if w := rig.create(t, token, "org-2", []byte("x")); w.Code == http.StatusCreated {
+		t.Fatal("another tenant wrote using this tenant's grant")
+	}
+}
+
+// Fencing: once a retry claims the attempt at a higher generation, the
+// old worker's grant stops working with nothing having to revoke it.
+func TestBlobCreateRefusesASupersededAttempt(t *testing.T) {
+	rig := newBlobRig(t, 9) // the store says generation 9
+	stale := rig.token(t, anyObjectWriteCap())
+	if w := rig.create(t, stale, "org-1", []byte("x")); w.Code == http.StatusCreated {
+		t.Fatal("a superseded attempt wrote its output")
+	}
+}
+
+// Capability.Checksum documented itself as binding a write to content
+// agreed in advance, and until now nothing checked it. A binding nothing
+// enforces is not a binding.
+func TestBlobPutEnforcesAPinnedChecksum(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	objectID := "sha256:" + strings.Repeat("a", 64)
+
+	pinned := writeCap(objectID)
+	pinned.Checksum = "sha256:" + strings.Repeat("b", 64) // not what we send
+
+	w := rig.do(t, http.MethodPut, objectID, rig.token(t, pinned), "org-1", []byte("different content"))
+	if w.Code == http.StatusCreated {
+		t.Fatal("content that does not match the pinned checksum was stored")
+	}
+}
+
+// A worker writing through the real endpoint with a real attempt-scoped
+// grant, end to end -- the same cross-check that caught the rig serving
+// routes the real server does not.
+func TestCreateEndpointAndCapabilityStoreAgree(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	srv := httptest.NewServer(rig.router)
+	defer srv.Close()
+
+	worker := &artifact.CapabilityStore{
+		BaseURL:         srv.URL,
+		RunID:           "run-1",
+		NodeID:          "task",
+		Attempt:         0,
+		WriteCapability: rig.token(t, anyObjectWriteCap()),
+		HTTPClient:      &http.Client{Transport: orgInjector{base: srv.Client().Transport, org: "org-1"}},
+	}
+
+	// Two objects under one grant, which is the whole point.
+	var refs []string
+	for _, body := range []string{"first artifact", "second artifact"} {
+		ref, err := worker.Put(context.Background(), "ignored", bytes.NewReader([]byte(body)), artifact.PutOptions{MediaType: "application/octet-stream"})
+		if err != nil {
+			t.Fatalf("worker could not write %q through the real endpoint: %v", body, err)
+		}
+		refs = append(refs, ref.Checksum)
+	}
+	if refs[0] == refs[1] {
+		t.Fatal("two different artifacts landed under one id")
+	}
+
+	// Read one back, proving both sides agree on what an object id is.
+	readTok := rig.token(t, func() datacap.Capability {
+		c := readCap(refs[0])
+		c.Checksum = refs[0]
+		return c
+	}())
+	worker.Capabilities = map[string]string{refs[0]: readTok}
+	rc, err := worker.Open(context.Background(), &artifact.ArtifactRef{Checksum: refs[0]})
+	if err != nil {
+		t.Fatalf("could not read back what was written: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, _ := io.ReadAll(rc)
+	if string(got) != "first artifact" {
+		t.Errorf("round trip returned %q", got)
+	}
 }

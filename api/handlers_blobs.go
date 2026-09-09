@@ -117,7 +117,22 @@ func NewBlobHandler(s store.Store, artifacts engine.ArtifactStore) *BlobHandler 
 // attempt at a higher generation, the old worker's capability stops
 // matching (ADR-017).
 func (h *BlobHandler) authorize(w http.ResponseWriter, r *http.Request, direction datacap.Direction) (*datacap.Capability, bool) {
-	return h.authorizeObject(w, r, direction, chi.URLParam(r, "objectID"))
+	objectID := chi.URLParam(r, "objectID")
+	// The wildcard sentinel is never a real object id -- ids here are
+	// content digests. Refusing it in the URL is what actually makes the
+	// two routes disjoint: without this, a client could reach the named
+	// route at /blobs/* and have an attempt-scoped grant accepted there,
+	// because the guard below compares the URL's id against the token's
+	// and both would read as the wildcard.
+	//
+	// No privilege is gained by that (the result is what the create route
+	// would have done anyway, which the grant permits), but an invariant
+	// that is only almost true is the kind that gets relied on.
+	if objectID == datacap.AnyObject {
+		http.Error(w, "capability does not grant this operation", http.StatusForbidden)
+		return nil, false
+	}
+	return h.authorizeObject(w, r, direction, objectID)
 }
 
 // authorizeAnyObject is authorize for the create route, where the object
@@ -184,6 +199,19 @@ func (h *BlobHandler) authorizeObject(w http.ResponseWriter, r *http.Request, di
 			status = http.StatusUnauthorized
 		}
 		http.Error(w, err.Error(), status)
+		return nil, false
+	}
+
+	// A wildcard grant satisfies any object, so on a route that NAMES one
+	// the object binding would verify nothing. Refused here rather than
+	// in datacap, because this is a property of the route -- the wildcard
+	// is legitimate, just not where an object id is being asserted.
+	//
+	// Without this the two routes are interchangeable in one direction,
+	// which makes the named route's binding vacuous for exactly the
+	// grants most widely held.
+	if objectID != datacap.AnyObject && cap.ObjectID == datacap.AnyObject {
+		http.Error(w, "capability does not grant this operation", http.StatusForbidden)
 		return nil, false
 	}
 	return cap, true
