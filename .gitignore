@@ -70,3 +70,14 @@ node_modules/
 # ships from here.
 __pycache__/
 *.pyc
+
+# Compiled binaries. `go build -o brokoli .` is what CI and CONTRIBUTING
+# both do, so the output lands at the repo root and is easy to commit by
+# accident -- brokolisql was tracked at 12MB before this.
+/brokoli
+/brokolisql
+
+# Scratch checkout of this repo vendored into a sibling for a local
+# build against unreleased core (a `replace` target). Never part of the
+# repo, and large enough that committing it once is painful to undo.
+_core/
