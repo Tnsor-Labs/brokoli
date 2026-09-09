@@ -19,6 +19,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
+	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
@@ -532,7 +533,7 @@ var serveCmd = &cobra.Command{
 				// delivery itself, deliberately distinct from the attempt it
 				// carries (see extensions.RunJob's own doc comment).
 				if job.WorkOrder != nil {
-					if job.ID == "" || job.RunID == "" || job.NodeID == "" || job.InstanceKey == "" {
+					if !validInstanceJobIdentity(job) {
 						<-workerSlots
 						log.Printf("Worker: rejecting invalid instance job identity: job=%q run=%q node=%q instance=%q", job.ID, job.RunID, job.NodeID, job.InstanceKey)
 						if job.ID != "" {
@@ -721,6 +722,32 @@ func sqlArtifactDialect(s store.Store) (string, bool) {
 // dynamic-expansion instances remotely the moment this ships. When this
 // returns false, eng.InstanceJobQueue stays nil and every expansion
 // instance keeps executing in-process exactly as before.
+// validInstanceJobIdentity reports whether a WorkOrder-bearing job
+// carries the identity the worker needs to settle it.
+//
+// A task node has no expansion semantics, so it dispatches ONE job whose
+// identity is the whole-node attempt: (RunID, NodeID, "", Attempt). That
+// empty instance key is the same convention the execution-attempt store
+// and the data-plane blob endpoint already use for a node-level attempt,
+// not a missing field.
+//
+// The instance-key requirement was written when every WorkOrder job was
+// an expansion instance, which always has a non-empty derived key, and
+// was never revisited when task dispatch arrived. The effect was that
+// every remotely dispatched task node was rejected on arrival, the
+// dispatcher waited out its full timeout, and the run failed with
+// "timed out waiting for a worker" -- a message naming the symptom and
+// hiding the cause entirely.
+func validInstanceJobIdentity(job extensions.RunJob) bool {
+	if job.ID == "" || job.RunID == "" || job.NodeID == "" {
+		return false
+	}
+	if job.WorkOrder != nil && job.WorkOrder.NodeType == string(models.NodeTypeTask) {
+		return true
+	}
+	return job.InstanceKey != ""
+}
+
 func instanceDispatchEnabled() bool {
 	return os.Getenv("BROKOLI_INSTANCE_DISPATCH") == "1"
 }
