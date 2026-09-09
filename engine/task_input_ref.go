@@ -152,6 +152,7 @@ func fetchTaskInputByReference(ctx context.Context, wo *extensions.InstanceWorkO
 	}
 	store := &artifact.CapabilityStore{
 		BaseURL:      wo.ControlPlaneURL,
+		AuthHeader:   workerAuthHeader(),
 		RunID:        runID,
 		NodeID:       nodeID,
 		Attempt:      wo.CapabilityAttempt,
