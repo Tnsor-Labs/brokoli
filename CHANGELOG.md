@@ -11,6 +11,79 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.9] - 2026-09-10
+
+### Fixed
+
+- **Remote task dispatch now actually works.** (#519, #522, #525) --
+  @hc12r. It never did in `--mode worker`, which is the only mode a
+  distributed deployment runs. Three separate defects, each hiding the
+  next, all found by standing up a fleet with one worker pool per
+  runtime and watching a JVM task fail on a pod with no JDK:
+  - **A task work order was rejected on arrival** (#519). Its identity
+    was validated as requiring a non-empty `InstanceKey`, but a task node
+    has no expansion semantics: it dispatches one job whose identity is
+    the whole-node attempt, `(RunID, NodeID, "", Attempt)`. That empty
+    key is the same convention the execution-attempt store and the blob
+    endpoint already use. The worker rejected and acked the job, the
+    dispatcher waited out its full timeout, and the run failed with
+    "timed out waiting for a worker", a message naming the symptom and
+    hiding the cause.
+  - **A worker's runner had no capability issuer** (#522). Two functions
+    build a Runner from an Engine, and the issuer was added to one of
+    them. The worker path silently lacked it, so a task input over the
+    inline row cap was refused rather than staged by reference. The
+    engine had none either, because the wiring sat on the API-only code
+    path.
+  - **A worker presented no identity to the blob endpoint** (#525).
+    The endpoint requires both a caller identity and a capability, and
+    the client sent only the capability, so every reference-based fetch
+    was rejected with 401 before the capability was read. The credential
+    is an opaque token, never a JWT.
+
+  None of these were reachable in process, so unit tests and CI stayed
+  green throughout while the feature could not run where it was needed.
+
+- **A fixable HIGH advisory in a transitive dependency** (#524) --
+  @hc12r. `google.golang.org/grpc` moves to 1.83.2 for CVE-2026-84445,
+  reached through OpenTelemetry's OTLP exporter. Real exposure here is
+  essentially nil, since the advisory concerns gRPC-Go xDS servers and
+  Brokoli runs none, but the image scan gate fails on fixable findings
+  and the bump is a patch release.
+
+### Added
+
+- **A task's data plane reaches remote workers.** (#509, #510, #517) --
+  @hc12r. A capability-authenticated blob endpoint (ADR-033 section 6),
+  input staged by reference when a dataset is too large to ride inside a
+  work order, and artifact and collection outputs written from a remote
+  worker. A write grant names the namespace rather than the object,
+  because the store is content addressed and a task's output has no
+  identity until it exists. That relaxation is refused on a read, refused
+  alongside a pinned checksum, and confined to the route that names no
+  object.
+
+### Changed
+
+- **NDJSON helpers no longer claim to be Arrow.** (#516) --
+  @harlanljones. `WriteArrowJSON` and friends wrote NDJSON, and the
+  `TransferArrow` constant named a mode that never existed. Harmless
+  while nothing used Arrow, actively misleading once real Arrow IPC
+  landed beside them. The issue wrongly suggested the constants were
+  unused and could be deleted; they drive the file-mode switch in
+  `codenode.go`, and this change correctly renames rather than removes
+  them.
+
+- **CONTRIBUTING explains why to contribute and how to build.** (#515) --
+  @hc12r. There were no setup instructions at all, and the build order
+  trap was undocumented: the UI must be built before the binary, or the
+  embedded assets are stale.
+
+- **Build artifacts are no longer tracked.** (#523) -- @hc12r. A 12MB
+  `brokolisql` binary was committed. It is an output of this repo and
+  rebuilds from source.
+
+
 ## [0.11.8] - 2026-09-08
 
 ### Fixed
