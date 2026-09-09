@@ -379,6 +379,8 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		wireDataCapIssuer(eng)
+
 		// Worker-only mode: pull jobs from the queue and execute them
 		if RunMode == "worker" {
 			if Extensions == nil || Extensions.JobQueue == nil {
@@ -625,17 +627,6 @@ var serveCmd = &cobra.Command{
 		}
 
 		// API or all mode: start HTTP server
-		// The engine mints data-plane capabilities with the same issuer
-		// the blob endpoint verifies against (ADR-033 section 6) --
-		// necessarily the same one, or nothing it issues would verify.
-		// Both derive from the server's root secret, so this needs no
-		// configuration of its own.
-		if issuer, issErr := api.DatacapIssuer(); issErr == nil {
-			eng.DataCapIssuer = issuer
-		} else {
-			log.Printf("WARNING: data capabilities unavailable (%v); a task input too large to inline will be refused rather than staged", issErr)
-		}
-
 		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, Extensions, cryptoCfg)
 		return srv.Start()
 	},
@@ -746,6 +737,31 @@ func validInstanceJobIdentity(job extensions.RunJob) bool {
 		return true
 	}
 	return job.InstanceKey != ""
+}
+
+// wireDataCapIssuer gives the engine the capability issuer the blob
+// endpoint verifies against (ADR-033 section 6) -- necessarily the same
+// one, or nothing the engine issues would verify. Both derive from the
+// server's root secret, so this needs no configuration of its own.
+//
+// Called for EVERY run mode, before any of them branch. It used to be
+// set only on the API/all path, which meant a --mode worker process --
+// the one that actually dispatches task nodes in a distributed
+// deployment -- had no issuer at all. A task input over the inline row
+// cap was then refused with "this server issues no data capabilities"
+// rather than staged by reference, so the whole reference-based input
+// path could never engage precisely where it was needed.
+//
+// A function rather than four lines inline so the wiring can be
+// asserted: an unwired issuer produces a refusal far from its cause,
+// which is how the original gap survived a green CI.
+func wireDataCapIssuer(eng *engine.Engine) {
+	issuer, err := api.DatacapIssuer()
+	if err != nil {
+		log.Printf("WARNING: data capabilities unavailable (%v); a task input too large to inline will be refused rather than staged", err)
+		return
+	}
+	eng.DataCapIssuer = issuer
 }
 
 func instanceDispatchEnabled() bool {
