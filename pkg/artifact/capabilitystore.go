@@ -48,11 +48,24 @@ type CapabilityStore struct {
 	Capabilities map[string]string
 	// HTTPClient is optional; a netguard-policied client is used when nil.
 	HTTPClient *http.Client
-	// WriteObjectID is the digest a Put is pre-authorized to create. The
-	// control plane allocates it before dispatch, because a write
-	// capability has to name its object and the content is not known
-	// until the task produces it.
+	// WriteObjectID is the digest a Put is pre-authorized to create, for
+	// the case where the control plane knows the content in advance and
+	// pinned a checksum on the grant. Rare: it cannot serve a task's own
+	// outputs, for the reason WriteCapability exists.
 	WriteObjectID string
+	// WriteCapability is an attempt-scoped write grant: it authorizes
+	// creating objects in this attempt's namespace without naming them.
+	//
+	// This is what a task's outputs need. Their object ids are content
+	// digests, so they are not knowable before the task runs, and their
+	// COUNT is not knowable either -- a task may declare several artifact
+	// ports, and one collection port becomes one stored object per item,
+	// a number the task decides at runtime. A grant naming a single
+	// object cannot cover that.
+	//
+	// Preferred over WriteObjectID when both are set, since a task that
+	// has one of these is producing content nobody has seen yet.
+	WriteCapability string
 }
 
 func (c *CapabilityStore) client() *http.Client {
@@ -81,8 +94,14 @@ func (c *CapabilityStore) client() *http.Client {
 const controlPlaneTimeout = 5 * time.Minute
 
 func (c *CapabilityStore) objectURL(objectID string) string {
-	return fmt.Sprintf("%s/api/runs/%s/nodes/%s/attempts/%d/blobs/%s",
-		strings.TrimRight(c.BaseURL, "/"), c.RunID, c.NodeID, c.Attempt, objectID)
+	return c.objectsURL() + "/" + objectID
+}
+
+// objectsURL addresses this attempt's object collection, which is where
+// an object whose id the server assigns is created.
+func (c *CapabilityStore) objectsURL() string {
+	return fmt.Sprintf("%s/api/runs/%s/nodes/%s/attempts/%d/blobs",
+		strings.TrimRight(c.BaseURL, "/"), c.RunID, c.NodeID, c.Attempt)
 }
 
 // Open fetches the bytes a read capability names.
@@ -145,19 +164,26 @@ func (c *CapabilityStore) Open(ctx context.Context, ref *ArtifactRef) (io.ReadCl
 // a caller-supplied namespace here would let a task write outside its
 // own run.
 func (c *CapabilityStore) Put(ctx context.Context, namespace string, r io.Reader, opts PutOptions) (*ArtifactRef, error) {
-	if c.WriteObjectID == "" {
-		return nil, fmt.Errorf("artifact: this worker holds no write capability")
-	}
-	token, ok := c.Capabilities[c.WriteObjectID]
-	if !ok {
-		return nil, fmt.Errorf("artifact: no capability for object %s", c.WriteObjectID)
+	// An attempt-scoped grant creates objects the control plane has not
+	// named, so it POSTs to the collection and the server assigns the id
+	// by content digest. A pinned grant PUTs to the one object it names.
+	method, url, token := http.MethodPost, c.objectsURL(), c.WriteCapability
+	if token == "" {
+		if c.WriteObjectID == "" {
+			return nil, fmt.Errorf("artifact: this worker holds no write capability")
+		}
+		pinned, ok := c.Capabilities[c.WriteObjectID]
+		if !ok {
+			return nil, fmt.Errorf("artifact: no capability for object %s", c.WriteObjectID)
+		}
+		method, url, token = http.MethodPut, c.objectURL(c.WriteObjectID), pinned
 	}
 
 	body, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("artifact: read content: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.objectURL(c.WriteObjectID), bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}

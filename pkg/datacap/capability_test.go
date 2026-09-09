@@ -372,3 +372,119 @@ func TestCapabilitiesDoNotSurviveARootSecretRotation(t *testing.T) {
 		t.Fatalf("a capability survived a root-secret rotation: %v", err)
 	}
 }
+
+// ---------------------------------------------------------------------
+// AnyObject: the attempt-scoped write grant.
+//
+// A task's outputs cannot name their object in advance -- the store is
+// content-addressed, so identity IS the content hash, and one collection
+// port becomes one object per item, a count the task decides at runtime.
+// These tests pin what that grant does and, more importantly, what it
+// must never do.
+// ---------------------------------------------------------------------
+
+// The point of the grant: one token covers objects nobody has named.
+func TestAnyObjectWriteCoversAnUnnamedObject(t *testing.T) {
+	i := newTestIssuer(t)
+	cap := validCapability()
+	cap.Direction = DirectionWrite
+	cap.ObjectID = AnyObject
+
+	token, err := i.Issue(cap)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	// Two different objects, neither named at issue time, both allowed.
+	for _, obj := range []string{"sha256:aaa", "sha256:bbb"} {
+		req := validRequest()
+		req.Direction = DirectionWrite
+		req.ObjectID = obj
+		if _, err := i.Verify(token, req); err != nil {
+			t.Errorf("Verify for object %s: %v", obj, err)
+		}
+	}
+}
+
+// The binding that carries the security argument. AnyObject relaxes the
+// object binding and NOTHING else -- if it also relaxed the tenant, the
+// attempt, or the fencing generation, the grant would be a skeleton key.
+func TestAnyObjectStillEnforcesEveryOtherBinding(t *testing.T) {
+	i := newTestIssuer(t)
+	cap := validCapability()
+	cap.Direction = DirectionWrite
+	cap.ObjectID = AnyObject
+	token, err := i.Issue(cap)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	for name, mutate := range map[string]func(*Request){
+		"another tenant":          func(r *Request) { r.OrgID = "org-2" },
+		"another run":             func(r *Request) { r.RunID = "run-2" },
+		"another node":            func(r *Request) { r.NodeID = "node-2" },
+		"another attempt":         func(r *Request) { r.Attempt = 3 },
+		"a superseded generation": func(r *Request) { r.FencingGeneration = 8 },
+		"another namespace":       func(r *Request) { r.Namespace = "run-2" },
+		"the opposite direction":  func(r *Request) { r.Direction = DirectionRead },
+	} {
+		req := validRequest()
+		req.Direction = DirectionWrite
+		req.ObjectID = "sha256:whatever"
+		mutate(&req)
+		if _, err := i.Verify(token, req); err == nil {
+			t.Errorf("%s was accepted by an AnyObject grant", name)
+		}
+	}
+}
+
+// The one that matters most. AnyObject on a READ would grant reading
+// everything in the namespace -- every other attempt's outputs included.
+// Refused where a capability comes into existence, not left to a
+// verifier to notice.
+func TestAnyObjectIsRefusedOnARead(t *testing.T) {
+	i := newTestIssuer(t)
+	cap := validCapability()
+	cap.Direction = DirectionRead
+	cap.ObjectID = AnyObject
+
+	if _, err := i.Issue(cap); err == nil {
+		t.Fatal("a read capability was issued for every object in the namespace")
+	}
+}
+
+// A checksum is content agreed in advance, which presupposes knowing
+// which object is being written. Honouring one of the two silently would
+// make the other binding a lie.
+func TestAnyObjectAndAPinnedChecksumAreRefusedTogether(t *testing.T) {
+	i := newTestIssuer(t)
+	cap := validCapability()
+	cap.Direction = DirectionWrite
+	cap.ObjectID = AnyObject
+	cap.Checksum = "sha256:abc"
+
+	if _, err := i.Issue(cap); err == nil {
+		t.Fatal("a grant both naming every object and pinning one content was issued")
+	}
+}
+
+// A grant naming ONE object must not be silently widened by a request
+// that asks for the wildcard -- the relaxation is a property of the
+// capability, never of the request.
+func TestARequestCannotClaimAnyObject(t *testing.T) {
+	i := newTestIssuer(t)
+	cap := validCapability()
+	cap.Direction = DirectionWrite
+	cap.ObjectID = "sha256:only-this-one"
+	token, err := i.Issue(cap)
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	req := validRequest()
+	req.Direction = DirectionWrite
+	req.ObjectID = AnyObject
+	if _, err := i.Verify(token, req); err == nil {
+		t.Fatal("a single-object grant was accepted for the any-object route")
+	}
+}

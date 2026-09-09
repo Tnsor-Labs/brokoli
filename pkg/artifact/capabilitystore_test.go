@@ -30,6 +30,9 @@ type fakeControlPlane struct {
 	// corrupt makes the server return bytes that do not match the digest,
 	// standing in for truncation or substitution in transit.
 	corrupt bool
+	// postCount counts stores, so a test can prove ONE grant served
+	// several objects rather than inferring it.
+	postCount int
 }
 
 func (f *fakeControlPlane) handler() http.Handler {
@@ -53,7 +56,11 @@ func (f *fakeControlPlane) handler() http.Handler {
 				body = "tampered"
 			}
 			_, _ = io.WriteString(w, body)
-		case http.MethodPut:
+		// PUT names its object; POST is the attempt-scoped create, where
+		// the server assigns the id. Both store content-addressed, so
+		// they share a body.
+		case http.MethodPut, http.MethodPost:
+			f.postCount++
 			raw, _ := io.ReadAll(r.Body)
 			sum := sha256.Sum256(raw)
 			checksum := "sha256:" + hex.EncodeToString(sum[:])
@@ -172,9 +179,10 @@ func TestCapabilityStorePutUploadsUnderItsWriteCapability(t *testing.T) {
 	srv := httptest.NewServer(cp.handler())
 	defer srv.Close()
 
-	// The control plane allocates the output object id before dispatch,
-	// because a write capability must name its object and the content is
-	// not known until the task produces it.
+	// The pinned path: the control plane already knows the content, so
+	// the grant names one object. This does NOT serve a task's own
+	// outputs -- their ids are content digests nobody can know before the
+	// task runs. That case is the attempt-scoped grant below.
 	writeID := "sha256:" + strings.Repeat("a", 64)
 	s := newCapStore(t, srv, map[string]string{writeID: "cap-for-write"}, writeID)
 
@@ -236,5 +244,95 @@ func TestCapabilityStoreCannotDeleteANamespace(t *testing.T) {
 	s := &CapabilityStore{}
 	if err := s.DeleteNamespace(context.Background(), "run-1"); err == nil {
 		t.Fatal("a worker was able to delete a namespace")
+	}
+}
+
+// ---------------------------------------------------------------------
+// Attempt-scoped writes.
+//
+// A task's output object ids are content digests, so they cannot be
+// named before the task runs, and one collection port becomes one object
+// per item -- a count the task decides at runtime. These cover the grant
+// that makes that possible.
+// ---------------------------------------------------------------------
+
+func TestCapabilityStorePutUsesTheAttemptScopedGrant(t *testing.T) {
+	cp := &fakeControlPlane{}
+	srv := httptest.NewServer(cp.handler())
+	defer srv.Close()
+
+	s := newCapStore(t, srv, map[string]string{}, "")
+	s.WriteCapability = "cap-for-attempt"
+
+	ref, err := s.Put(context.Background(), "ignored", strings.NewReader("output bytes"), PutOptions{MediaType: "text/plain"})
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if ref.Checksum != digestOf("output bytes") {
+		t.Errorf("checksum = %q, want the hash of what was sent", ref.Checksum)
+	}
+	// POST to the collection, not PUT to a name the client invented.
+	if cp.gotMethod != http.MethodPost {
+		t.Errorf("method = %s, want POST -- the server assigns the id", cp.gotMethod)
+	}
+	if !strings.HasSuffix(cp.gotPath, "/attempts/0/blobs") {
+		t.Errorf("path = %q, want the attempt's object collection", cp.gotPath)
+	}
+	if cp.gotCap != "cap-for-attempt" {
+		t.Errorf("capability header = %q, want the attempt-scoped grant", cp.gotCap)
+	}
+}
+
+// The reason the grant exists at all: one token, many objects. A task
+// declaring a collection of artifacts writes N of them, and N is not
+// known when the grant is minted.
+func TestCapabilityStoreOneGrantServesManyObjects(t *testing.T) {
+	cp := &fakeControlPlane{}
+	srv := httptest.NewServer(cp.handler())
+	defer srv.Close()
+
+	s := newCapStore(t, srv, map[string]string{}, "")
+	s.WriteCapability = "cap-for-attempt"
+
+	seen := map[string]bool{}
+	for _, body := range []string{"item one", "item two", "item three"} {
+		ref, err := s.Put(context.Background(), "ns", strings.NewReader(body), PutOptions{})
+		if err != nil {
+			t.Fatalf("Put(%q): %v", body, err)
+		}
+		if ref.Checksum != digestOf(body) {
+			t.Errorf("Put(%q) checksum = %q, want its own digest", body, ref.Checksum)
+		}
+		seen[ref.Checksum] = true
+	}
+	if cp.postCount != 3 {
+		t.Errorf("stored %d objects, want 3", cp.postCount)
+	}
+	// Distinct content must land under distinct ids, or a collection's
+	// items would overwrite one another.
+	if len(seen) != 3 {
+		t.Errorf("got %d distinct object ids for 3 distinct bodies", len(seen))
+	}
+}
+
+// Preferred over the pinned path when both are set: a task holding an
+// attempt-scoped grant is producing content nobody has seen yet.
+func TestCapabilityStorePrefersTheAttemptScopedGrant(t *testing.T) {
+	cp := &fakeControlPlane{}
+	srv := httptest.NewServer(cp.handler())
+	defer srv.Close()
+
+	pinned := "sha256:" + strings.Repeat("c", 64)
+	s := newCapStore(t, srv, map[string]string{pinned: "cap-pinned"}, pinned)
+	s.WriteCapability = "cap-for-attempt"
+
+	if _, err := s.Put(context.Background(), "ns", strings.NewReader("x"), PutOptions{}); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if cp.gotMethod != http.MethodPost {
+		t.Errorf("method = %s, want POST", cp.gotMethod)
+	}
+	if cp.gotCap != "cap-for-attempt" {
+		t.Errorf("capability = %q, want the attempt-scoped grant to win", cp.gotCap)
 	}
 }

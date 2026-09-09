@@ -570,6 +570,21 @@ type InstanceWorkOrder struct {
 	// usable. It is also why an older claimant, which sends no
 	// capability, needs none of this.
 	CapabilityAttempt int `json:"capability_attempt,omitempty"`
+	// OutputCapability is an attempt-scoped WRITE grant, present only
+	// when the node declares an output kind whose bytes go to the blob
+	// store (artifact, or a collection containing one).
+	//
+	// It names no object, and cannot: an object's id here is its content
+	// digest, so it is unknowable until the task has produced the bytes,
+	// and a collection port becomes one stored object per item -- a count
+	// the task itself decides at runtime. So the grant is bound to this
+	// attempt and this direction instead, and the server assigns each id.
+	//
+	// Absent for a task whose outputs are all scalars or datasets: those
+	// travel in the result document and need no store at all. Handing out
+	// a write grant that nothing will use would widen the blast radius of
+	// a compromised worker for no gain.
+	OutputCapability string `json:"output_capability,omitempty"`
 	// TypedParams carries the run's resolved ADR-032 section 7 declared
 	// parameters. RunParams cannot carry them: its values are strings, so
 	// a declared float would arrive as "0.9" -- a wrong type rather than a

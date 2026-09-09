@@ -1626,3 +1626,74 @@ Splitting the list is not lowering the bar: every gate survives, with an
 owner that can clear it. What changes is that `accepted` stops meaning
 "the open-source engine has implemented multi-tenancy it deliberately
 does not implement".
+
+## Update (2026-09-09) — the write direction of the data plane, and one relaxed binding
+
+Section 6 requires every capability to be bound to "tenant, run, attempt,
+fencing generation, direction, object/checksum, allowed operation, and
+expiry". The read direction implements that literally: an input is staged
+once, and the grant names its content digest.
+
+**The write direction cannot, and this update records why the object
+binding is relaxed there rather than leaving the discrepancy implicit.**
+
+Two facts make naming the object impossible before dispatch:
+
+- The store is content-addressed, so an object's identity *is* the hash
+  of its content. A task's output has no identity until the task has
+  already produced it.
+- The count is not known either. A task may declare several artifact
+  ports, and a single collection port becomes one stored object per item
+  — a number the task itself decides at runtime. A grant naming one
+  object cannot cover a collection at all.
+
+So a write grant names the namespace instead of the object, via a
+`datacap.AnyObject` sentinel, and the server assigns each id by content
+digest. Everything else in section 6's list still binds: tenant, run,
+node, attempt, fencing generation, direction, and expiry.
+
+What that gives up is narrower than it first appears. Because the store
+is content-addressed, a bearer cannot overwrite an existing object with
+different content — different bytes hash to a different name — so this
+grants *creating* objects within one attempt's namespace, never mutating
+or replacing anything. The residual exposure is how many objects an
+already-authorised worker may create during its own attempt, which is a
+quota question rather than an isolation one.
+
+Three constraints keep the relaxation from spreading:
+
+1. **It is refused on a read.** `AnyObject` on a read grant would
+   authorise reading everything in the namespace, including every other
+   attempt's outputs. `Issue` rejects that combination outright, so no
+   such token can exist to be presented.
+2. **It cannot be combined with a pinned checksum.** A checksum is
+   content agreed in advance, which presupposes knowing which object is
+   being written. Honouring one of the two silently would make the other
+   binding a lie, so both together are refused at issue time.
+3. **It is confined to the route that names no object.** A wildcard
+   grant satisfies any object id, so on the route that *names* one the
+   object binding would verify nothing. The named route therefore
+   rejects a wildcard grant, and the create route rejects a named one.
+   The two are not interchangeable in either direction. This was found
+   by a test written to assert the property rather than by review — the
+   first implementation had the named route silently accepting
+   wildcards.
+
+Also fixed here: `Capability.Checksum` documented itself as binding a
+write "to content agreed in advance", and nothing enforced it. The write
+path stored whatever arrived. A binding nothing checks is not a binding,
+so the server now verifies stored content against a pinned checksum and
+refuses a mismatch.
+
+**Consequence for the failure taxonomy (section 14):** a task declaring
+an artifact or collection output is no longer refused by name on remote
+dispatch. The refusal remains for a claimant that genuinely has nowhere
+to write — no blob store and no grant — which is a configuration error
+reported at dispatch rather than a task error reported from the far side
+of the network.
+
+**Not addressed here:** whether a worker outside our administrative
+boundary should resolve these references against a *local* store instead
+of the control plane. Routing task bytes through the control plane is
+correct when the worker is ours and wrong when it is the customer's, and
+that is a deployment-topology decision rather than a protocol one.
