@@ -147,11 +147,18 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// for, and the capability says which single object it may touch.
 		// Both are required and neither substitutes for the other.
 		if bh := NewBlobHandler(s, e.ArtifactStore); bh != nil {
-			r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
-			r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
-			// POST to the collection: an attempt-scoped write grant, whose
-			// object id the server assigns by content digest.
-			r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", bh.Create)
+			// blobAuth, not the session middleware. A worker cannot
+			// produce a session and holds an opaque token instead, and
+			// that token is deliberately accepted HERE and nowhere else:
+			// it is handed to a machine, and in a hybrid deployment to a
+			// machine we do not operate.
+			r.With(blobAuth).Group(func(r chi.Router) {
+				r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
+				r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
+				// POST to the collection: an attempt-scoped write grant,
+				// whose object id the server assigns by content digest.
+				r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", bh.Create)
+			})
 		}
 
 		tbh := NewTaskBundleHandler(s)
