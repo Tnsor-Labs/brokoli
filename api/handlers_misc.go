@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -108,7 +110,17 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 			writeError(w, http.StatusUnauthorized, "invalid webhook token")
 			return
 		}
-		run, err := e.RunPipeline(p.ID)
+		// Optional JSON body {"params": {...}} — same shape TriggerRun
+		// already accepts so webhook callers can pass runtime params
+		// through to RunPipeline (Tnsor-Labs/brokoli#59).
+		var body struct {
+			Params map[string]string `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body: expected JSON object with optional params")
+			return
+		}
+		run, err := e.RunPipeline(p.ID, body.Params)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
