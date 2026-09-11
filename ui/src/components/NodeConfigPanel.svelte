@@ -632,6 +632,45 @@
           <option value="sql">SQL</option>
         </select>
       </div>
+      <!--
+        SQL output needs the same knobs sql_generate has, under the same
+        config keys, because both render through the one generator. A
+        script quoted for Postgres will not load into MySQL, and inserts
+        are no use against a database that has no table yet.
+      -->
+      {#if node.config["format"] === "sql"}
+        <div class="field">
+          <label>Table Name</label>
+          <input
+            value={node.config["table"] || ""}
+            on:input={(e) => updateConfig("table", e.currentTarget.value)}
+            placeholder="taken from the file name"
+          />
+        </div>
+        <div class="field">
+          <label>Dialect</label>
+          <select
+            value={node.config["dialect"] || "postgres"}
+            on:change={(e) => updateConfig("dialect", e.currentTarget.value)}
+          >
+            <option value="postgres">PostgreSQL</option>
+            <option value="mysql">MySQL</option>
+            <option value="sqlite">SQLite</option>
+            <option value="sqlserver">SQL Server</option>
+            <option value="generic">Generic</option>
+          </select>
+        </div>
+        <div class="field">
+          <label class="toggle">
+            <input
+              type="checkbox"
+              checked={!!node.config["create_table"]}
+              on:change={(e) => updateConfig("create_table", e.currentTarget.checked)}
+            />
+            <span class="toggle-label">Create Table (CREATE TABLE IF NOT EXISTS)</span>
+          </label>
+        </div>
+      {/if}
     {/if}
 
     <!-- ── Sink DB ── -->
