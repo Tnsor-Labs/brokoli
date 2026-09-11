@@ -11,6 +11,62 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.10] - 2026-09-11
+
+A security release. Upgrade if you run Brokoli with authentication
+enabled and expose it to any network you do not fully trust. Every
+released version before this one is affected.
+
+### Security
+
+- **Authentication could be skipped on most POST routes by putting
+  "/webhook" in the path** (GHSA-jxjf-p7pv-22m9) -- @hc12r. The webhook
+  trigger routes carry their own token rather than a session, so both
+  auth middlewares exempted them. The exemption asked whether the
+  request path merely *contained* `/webhook`:
+
+  ```go
+  strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST"
+  ```
+
+  `r.URL.Path` is the decoded path, while the router dispatches on
+  `RawPath` when it is set. Two shapes satisfied the test while being
+  routed somewhere else entirely: a path parameter whose value is the
+  literal word `webhook` (`POST /api/pipelines/webhook/backfill`), and a
+  percent-encoded separator that grows a `/webhook` segment the router
+  never sees (`POST /api/pipelines/p123%2Fwebhook/backfill`).
+
+  Getting past the middlewares mattered because the open-source
+  permission gate then allowed the request through as well. It read the
+  resulting absence of claims as "open mode, no users created yet",
+  which is also exactly what an unauthenticated request looks like.
+  `HasPermission` had already been corrected for that same ambiguity and
+  consults JWTAuth's explicit marker instead; its sibling in
+  `RegisterRoutes` had not. The two together let a request reach a
+  handler with no authentication, no permission check, and no
+  organisation scoping.
+
+  Be accurate about the practical reach: no route in the shipped table
+  could be driven to read or change data, because nearly every affected
+  handler resolves its target using the same path parameter that carried
+  the bypass, and that lookup then fails. The exception is close enough
+  to matter, though. `dlqResolveHandler` uses its pipeline parameter
+  only to confirm the pipeline exists and then resolves a dead-letter
+  entry named by a second parameter, so a pipeline whose id happened to
+  be `webhook` would have made that reachable unauthenticated. The
+  containment was a property of which routes exist, not of any control.
+
+  Both halves are fixed. `isWebhookTriggerRequest` matches on method and
+  path shape, alongside the capabilities and observability helpers that
+  already worked that way, and reads the same string the router will
+  dispatch on so the two cannot disagree. The permission fallback moved
+  to `fallbackPermissionMiddleware`, where it now requires an explicit
+  open-mode marker and can be driven directly by a test rather than only
+  through the whole router.
+
+  Both fixes were confirmed by watching the new tests fail against the
+  old behaviour, not merely pass against the new one.
+
 ## [0.11.9] - 2026-09-10
 
 A welcome to @harlanljones, whose first contribution is in this release.
