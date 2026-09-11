@@ -45,8 +45,26 @@
   }
 
   function updateConfig(key: string, value: unknown) {
+    updateConfigMany({ [key]: value });
+  }
+
+  // Change several config keys at once.
+  //
+  // Two updateConfig calls in one handler used to lose the first one.
+  // Each call builds its payload from `node`, which is a prop: the
+  // parent applies the dispatched value and the new prop only arrives on
+  // the next tick. So the second call spread a `node.config` that did
+  // not yet contain the first call's key, and the parent applied that
+  // second payload last.
+  //
+  // Every database connection picker did exactly this, setting conn_id
+  // and then clearing uri, so selecting a connection silently dropped
+  // the conn_id and saving failed with "'uri' or 'conn_id' is required".
+  // Anything that changes more than one key must go through here, in a
+  // single dispatch.
+  function updateConfigMany(patch: Record<string, unknown>) {
     if (!node) return;
-    dispatch("update", { ...node, config: { ...node.config, [key]: value } });
+    dispatch("update", { ...node, config: { ...node.config, ...patch } });
   }
 
   function updateName(name: string) {
@@ -363,8 +381,7 @@
           on:change={(e) => {
             const val = e.currentTarget.value;
             if (val) {
-              updateConfig("conn_id", val);
-              updateConfig("uri", "");
+              updateConfigMany({ conn_id: val, uri: "" });
             } else {
               updateConfig("conn_id", "");
             }
@@ -643,8 +660,7 @@
           on:change={(e) => {
             const val = e.currentTarget.value;
             if (val) {
-              updateConfig("conn_id", val);
-              updateConfig("uri", "");
+              updateConfigMany({ conn_id: val, uri: "" });
             } else {
               updateConfig("conn_id", "");
             }
@@ -743,8 +759,7 @@
           on:change={(e) => {
             const val = e.currentTarget.value;
             if (val) {
-              updateConfig("source_conn_id", val);
-              updateConfig("source_uri", "");
+              updateConfigMany({ source_conn_id: val, source_uri: "" });
             } else {
               updateConfig("source_conn_id", "");
             }
@@ -787,8 +802,7 @@
           on:change={(e) => {
             const val = e.currentTarget.value;
             if (val) {
-              updateConfig("dest_conn_id", val);
-              updateConfig("dest_uri", "");
+              updateConfigMany({ dest_conn_id: val, dest_uri: "" });
             } else {
               updateConfig("dest_conn_id", "");
             }
