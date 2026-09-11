@@ -71,11 +71,11 @@ func (f *faultInjectingStore) UpdateNodeRun(nr *models.NodeRun) error {
 	return f.SQLiteStore.UpdateNodeRun(nr)
 }
 
-func (f *faultInjectingStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
+func (f *faultInjectingStore) SaveNodePreview(runID, nodeID string, preview store.NodePreview) error {
 	if f.failSaveNodePreview {
 		return errInjected
 	}
-	return f.SQLiteStore.SaveNodePreview(runID, nodeID, columns, rows)
+	return f.SQLiteStore.SaveNodePreview(runID, nodeID, preview)
 }
 
 func (f *faultInjectingStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payload string) error {

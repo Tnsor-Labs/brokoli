@@ -1300,14 +1300,19 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			}
 			if outputRef != nil && !r.dryRun {
 				outputs.PutRef(node.ID, outputRef)
-				preview, perr := previewFromRef(outputs, outputRef, 50)
+				preview, previewTruncated, perr := previewFromRef(outputs, outputRef, 50)
 				if perr != nil {
 					attemptSpan.RecordError(perr)
 					attemptSpan.SetStatus(codes.Error, perr.Error())
 					attemptSpan.End()
 					return nil, fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, perr)
 				}
-				if err := r.store.SaveNodePreview(r.run.ID, node.ID, preview.Columns, preview.Rows); err != nil {
+				refPreview := store.NodePreview{Columns: preview.Columns, Rows: preview.Rows, Truncated: previewTruncated}
+				if !previewTruncated {
+					n := len(preview.Rows)
+					refPreview.TotalRows = &n
+				}
+				if err := r.store.SaveNodePreview(r.run.ID, node.ID, refPreview); err != nil {
 					attemptSpan.RecordError(err)
 					attemptSpan.SetStatus(codes.Error, err.Error())
 					attemptSpan.End()
@@ -1356,7 +1361,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 						Columns: output.Columns, Rows: previewRows,
 					}
 				} else {
-					if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
+					n := len(output.Rows)
+					if err := r.store.SaveNodePreview(r.run.ID, node.ID, store.NodePreview{
+						Columns: output.Columns, Rows: output.Rows, Truncated: n > 50, TotalRows: &n,
+					}); err != nil {
 						attemptSpan.RecordError(err)
 						attemptSpan.SetStatus(codes.Error, err.Error())
 						attemptSpan.End()
