@@ -26,6 +26,51 @@ func isPublicObservabilityRequest(r *http.Request) bool {
 	return r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/metrics")
 }
 
+// isWebhookTriggerRequest reports whether this request is for one of the
+// two routes that authenticate themselves with their own token instead
+// of a session: the per-pipeline webhook trigger, and the enterprise git
+// sync webhook.
+//
+// Matched on method and path SHAPE, like the two helpers above, and
+// never on a substring. Both auth middlewares previously asked whether
+// the path merely CONTAINED "/webhook", which any other POST could
+// satisfy while still being routed somewhere else entirely:
+//
+//	POST /api/pipelines/webhook/backfill
+//	     a path parameter whose value is the literal word "webhook"
+//
+//	POST /api/pipelines/p123%2Fwebhook/backfill
+//	     an encoded separator, which r.URL.Path decodes into a "/webhook"
+//	     segment the router never sees
+//
+// The second is why this matches against RawPath when it is set. chi
+// dispatches on RawPath if non-empty and on Path otherwise, so reading
+// the same string the router reads is what keeps the authentication
+// decision and the routing decision from disagreeing. Under RawPath the
+// encoded form stays one segment, so it fails the shape test and is
+// authenticated normally.
+func isWebhookTriggerRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	switch len(segments) {
+	case 3:
+		// api/git/webhook, mounted only when the enterprise git sync
+		// extension is enabled (see NewServer).
+		return segments[0] == "api" && segments[1] == "git" && segments[2] == "webhook"
+	case 4:
+		// api/pipelines/{id}/webhook
+		return segments[0] == "api" && segments[1] == "pipelines" && segments[3] == "webhook"
+	default:
+		return false
+	}
+}
+
 func withPublicAuthBypass(middleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		protected := middleware(next)
@@ -128,7 +173,7 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 			}
 
 			// Skip webhook triggers (own token auth)
-			if strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST" {
+			if isWebhookTriggerRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}

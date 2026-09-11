@@ -63,24 +63,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				return mw.(func(http.Handler) http.Handler)
 			}
 		}
-		// Fallback: basic role-based check for open source
-		return func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				claims := r.Context().Value("claims")
-				if claims == nil {
-					next.ServeHTTP(w, r) // open mode (no users created)
-					return
-				}
-				mc := claims.(*jwt.MapClaims)
-				role, _ := (*mc)["role"].(string)
-				// Viewers can only access read-only endpoints
-				if role == "viewer" && isWritePermission(string(perm)) {
-					writeError(w, http.StatusForbidden, "insufficient permissions")
-					return
-				}
-				next.ServeHTTP(w, r)
-			})
-		}
+		return fallbackPermissionMiddleware(perm)
 	}
 
 	// requireStrictPerm behaves exactly like requirePerm in Enterprise
@@ -439,6 +422,57 @@ func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 			"version":             buildVersion,
 			"active_runs":         active,
 			"max_concurrent_runs": maxC,
+		})
+	}
+}
+
+// fallbackPermissionMiddleware is the open-source permission gate, used
+// whenever the enterprise Team extension is not supplying real RBAC.
+//
+// It is a package-level function rather than a closure inside
+// RegisterRoutes so that it can be driven directly by a test. A gate
+// that can only be exercised by standing up the whole router is a gate
+// whose refusals nobody checks.
+func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := r.Context().Value("claims")
+			if claims == nil {
+				// No claims is ambiguous, and this used to resolve the
+				// ambiguity the wrong way. It is what an open-mode request
+				// looks like, and equally what any request looks like that
+				// reached here without being authenticated: one an auth
+				// middleware deliberately skipped, or one that arrived
+				// when no auth middleware was mounted at all.
+				//
+				// Only JWTAuth's explicit marker means open mode.
+				// HasPermission was corrected for this exact ambiguity
+				// (see its comment in permissions.go, and the
+				// openModeCtxKey doc in users.go); this is its sibling,
+				// which kept inferring the permissive reading from
+				// absence.
+				if IsOpenMode(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			mc, ok := claims.(*jwt.MapClaims)
+			if !ok || mc == nil {
+				// Something stamped a claims value of an unexpected type.
+				// The old code type-asserted without checking and would
+				// have panicked; refusing is the only safe reading.
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			role, _ := (*mc)["role"].(string)
+			// Viewers can only access read-only endpoints
+			if role == "viewer" && isWritePermission(string(perm)) {
+				writeError(w, http.StatusForbidden, "insufficient permissions")
+				return
+			}
+			next.ServeHTTP(w, r)
 		})
 	}
 }

@@ -867,8 +867,10 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip webhook triggers (they have their own token auth)
-			if strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST" {
+			// Skip webhook triggers (they have their own token auth).
+			// Shape-matched, not substring-matched: see
+			// isWebhookTriggerRequest for what a substring test let past.
+			if isWebhookTriggerRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
