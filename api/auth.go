@@ -71,11 +71,48 @@ func isWebhookTriggerRequest(r *http.Request) bool {
 	}
 }
 
+// isDataPlaneBlobRequest reports whether a request targets the
+// capability-authenticated blob endpoints.
+//
+// Those endpoints do NOT bypass authorization. They carry their own,
+// which is strictly narrower than a session: a signed capability bound
+// to one object, one attempt and one fencing generation, checked against
+// a tenant the request never supplies. What they bypass is the
+// requirement to be a SESSION, because a worker cannot produce one and
+// holds an opaque token instead (see blobAuth).
+//
+// Matched by shape rather than by prefix so this can never widen: three
+// methods, a fixed six-segment path under /api/runs, and nothing else.
+//
+// Read from RawPath when it is set, for the same reason
+// isWebhookTriggerRequest does. r.URL.Path is decoded, so a caller could
+// otherwise spell an encoded separator inside a single segment and have
+// this see the blob shape while chi, which dispatches on RawPath, sends
+// the request to a different route entirely.
+func isDataPlaneBlobRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodPut, http.MethodPost:
+	default:
+		return false
+	}
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	p := strings.Split(strings.Trim(path, "/"), "/")
+	// api runs {runID} nodes {nodeID} attempts {attempt} blobs [objectID]
+	if len(p) < 8 || len(p) > 9 {
+		return false
+	}
+	return p[0] == "api" && p[1] == "runs" && p[3] == "nodes" &&
+		p[5] == "attempts" && p[7] == "blobs"
+}
+
 func withPublicAuthBypass(middleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		protected := middleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isPublicCapabilitiesRequest(r) || isPublicObservabilityRequest(r) {
+			if isPublicCapabilitiesRequest(r) || isPublicObservabilityRequest(r) || isDataPlaneBlobRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
