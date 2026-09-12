@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -126,15 +127,20 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 		}
 		p, err := s.GetPipeline(id)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "pipeline not found")
+			// Same 404 body as the other pre-auth failures so callers cannot
+			// tell missing pipelines apart from unconfigured or bad-token ones.
+			log.Printf("webhook %s: pipeline not found", id)
+			DenyOrgAccess(w)
 			return
 		}
 		if p.WebhookToken == "" {
-			writeError(w, http.StatusForbidden, "webhook not configured for this pipeline")
+			log.Printf("webhook %s: webhook not configured", id)
+			DenyOrgAccess(w)
 			return
 		}
 		if !engine.ValidateWebhookToken(token, p.WebhookToken) {
-			writeError(w, http.StatusUnauthorized, "invalid webhook token")
+			log.Printf("webhook %s: invalid webhook token", id)
+			DenyOrgAccess(w)
 			return
 		}
 
