@@ -654,12 +654,26 @@
     // close the thing you are typing in is worse than no Escape at all.
     // Cmd+K is deliberately not handled here; GlobalSearch owns it.
     if (e.key === "Escape") {
+      // Innermost first: a popover before the panel behind it, so one
+      // press does one thing.
       if (overflowOpen) {
         overflowOpen = false;
         return;
       }
       if (scheduleOpen) {
         scheduleOpen = false;
+        return;
+      }
+      if (showCode) {
+        showCode = false;
+        return;
+      }
+      if (showHistory) {
+        showHistory = false;
+        return;
+      }
+      if (showPipelineSettings) {
+        showPipelineSettings = false;
         return;
       }
     }
@@ -1006,6 +1020,16 @@
     <!-- Unified Pipeline Settings Panel -->
     {#if showPipelineSettings && pipeline}
       <div class="settings-panel" on:input={markDirty} on:change={markDirty}>
+        <!--
+          Every panel the editor opens carries its own way out. These used
+          to be toolbar toggles, so a second click closed them; once they
+          moved into the overflow menu that second click was gone and a
+          panel could only be dismissed by leaving the page (#555).
+        -->
+        <div class="panel-bar">
+          <span class="panel-title">Pipeline settings</span>
+          <button class="btn-close" on:click={() => (showPipelineSettings = false)}>Close</button>
+        </div>
         <div class="settings-grid">
           <!-- Description -->
           <div class="setting-item full">
@@ -1252,6 +1276,11 @@
         {#if showCode}
           <div class="code-view">
             <div class="code-tabs">
+              <button
+                class="btn-close code-close"
+                on:click={() => (showCode = false)}
+                title="Close (Esc)">Close</button
+              >
               <button
                 class="code-tab"
                 class:active={codeFormat === "yaml"}
@@ -1946,6 +1975,20 @@
     color: var(--text-secondary);
     text-transform: uppercase;
     letter-spacing: 0.08em;
+  }
+  .panel-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .panel-bar .panel-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-secondary);
+  }
+  .code-close {
+    margin-left: auto;
   }
   .btn-close {
     font-size: 11px;

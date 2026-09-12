@@ -186,3 +186,42 @@ test("the palette runs an action instead of navigating", async ({ page }) => {
   // Still in the editor: an action is not a destination.
   expect(page.url()).toContain("/pipelines/test/edit");
 });
+
+// Every panel the editor can open must offer a way out. These were
+// toolbar toggles, so a second click closed them; moving them into the
+// overflow menu removed that second click and left the settings panel
+// with no exit at all (#555).
+test("every panel opened from the overflow can be closed again", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openEditor(page);
+
+  const panels = [
+    { action: "Pipeline settings", panel: ".settings-panel" },
+    { action: "Show YAML", panel: ".code-view" },
+    { action: "Version history", panel: ".version-panel" },
+  ];
+
+  for (const { action, panel } of panels) {
+    // Open from the overflow menu.
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.locator(".overflow-menu").getByText(action, { exact: true }).click();
+    await expect(page.locator(panel), `${action} did not open`).toBeVisible();
+
+    // A visible close control, not only a keyboard escape: someone who
+    // opened this with the mouse should be able to shut it with one.
+    await page.locator(panel).getByRole("button", { name: /close/i }).first().click();
+    await expect(page.locator(panel), `${action} could not be closed by its button`).toHaveCount(0);
+  }
+});
+
+test("Escape closes an open panel", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openEditor(page);
+
+  await page.getByRole("button", { name: "More actions" }).click();
+  await page.locator(".overflow-menu").getByText("Pipeline settings", { exact: true }).click();
+  await expect(page.locator(".settings-panel")).toBeVisible();
+
+  await page.keyboard.press("Escape");
+  await expect(page.locator(".settings-panel")).toHaveCount(0);
+});
