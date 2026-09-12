@@ -1,11 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,22 +84,107 @@ func TestWebhookTrigger_UsesConstantTimeTokenCompare(t *testing.T) {
 	}
 	// Same-length wrong token: this is exactly the case a `!=` vs.
 	// constant-time comparison distinguishes at the timing level, even
-	// though both correctly return 401 functionally.
+	// though both correctly reject functionally (now as 404 per #542).
 	wrongSameLen := "whk_wrongwrongtoken0123456789abcdef01234"
 	if len(wrongSameLen) != len(token) {
 		t.Fatalf("test setup: wrongSameLen must match token length (%d vs %d)", len(wrongSameLen), len(token))
 	}
-	if code, body := trigger("wh-pipe", wrongSameLen); code != http.StatusUnauthorized {
-		t.Errorf("wrong same-length token: status = %d, want 401, body: %s", code, body)
+	if code, body := trigger("wh-pipe", wrongSameLen); code != http.StatusNotFound {
+		t.Errorf("wrong same-length token: status = %d, want 404, body: %s", code, body)
 	}
-	if code, body := trigger("wh-pipe", ""); code != http.StatusUnauthorized {
-		t.Errorf("empty token against configured webhook: status = %d, want 401, body: %s", code, body)
+	if code, body := trigger("wh-pipe", ""); code != http.StatusNotFound {
+		t.Errorf("empty token against configured webhook: status = %d, want 404, body: %s", code, body)
 	}
 	// Pipeline with no webhook configured (WebhookToken == "") must never
 	// be triggerable, including via an empty provided token -- this is
 	// the case where ValidateWebhookToken("", "") == true would be
 	// dangerous if reached; the handler must reject it before comparing.
-	if code, body := trigger("wh-pipe-nohook", ""); code != http.StatusForbidden {
-		t.Errorf("no webhook configured, empty token: status = %d, want 403, body: %s", code, body)
+	if code, body := trigger("wh-pipe-nohook", ""); code != http.StatusNotFound {
+		t.Errorf("no webhook configured, empty token: status = %d, want 404, body: %s", code, body)
+	}
+}
+
+// TestWebhookTrigger_HidesExistenceOracle pins #542: missing pipeline,
+// configured-but-wrong-token, and no-webhook-configured must return the
+// same status and body so an unauthenticated caller cannot tell them apart.
+// The real reason stays in the server log only.
+func TestWebhookTrigger_HidesExistenceOracle(t *testing.T) {
+	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "webhook-oracle.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	e := engine.NewEngine(s)
+	t.Cleanup(func() { _ = e.Close(context.Background()) })
+
+	srcPath := filepath.Join(t.TempDir(), "src.csv")
+	if err := os.WriteFile(srcPath, []byte("id\n1\n"), 0o644); err != nil {
+		t.Fatalf("write source csv: %v", err)
+	}
+	srcNode := models.Node{
+		ID: "s1", Type: models.NodeTypeSourceFile, Name: "src",
+		Config: map[string]interface{}{"path": srcPath, "format": "csv"},
+	}
+
+	const token = "whk_oracle_token_0123456789abcdef01234567"
+	if err := s.CreatePipeline(&models.Pipeline{
+		ID: "wh-oracle", Name: "wh-oracle", Enabled: true,
+		WorkspaceID:  models.DefaultWorkspaceID,
+		WebhookToken: token,
+		Nodes:        []models.Node{srcNode},
+		CreatedAt:    time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create pipeline: %v", err)
+	}
+	if err := s.CreatePipeline(&models.Pipeline{
+		ID: "wh-oracle-nohook", Name: "wh-oracle-nohook", Enabled: true,
+		WorkspaceID: models.DefaultWorkspaceID,
+		Nodes:       []models.Node{srcNode},
+		CreatedAt:   time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("create pipeline: %v", err)
+	}
+
+	var logBuf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&logBuf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	trigger := func(pipelineID, providedToken string) (int, string) {
+		webhookLimiter.Lock()
+		delete(webhookLimiter.last, pipelineID)
+		webhookLimiter.Unlock()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/pipelines/"+pipelineID+"/webhook?token="+providedToken, nil)
+		req = withURLParam(req, "id", pipelineID)
+		webhookTriggerHandler(s, e)(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+
+	missingCode, missingBody := trigger("does-not-exist", "garbage")
+	nohookCode, nohookBody := trigger("wh-oracle-nohook", "garbage")
+	wrongCode, wrongBody := trigger("wh-oracle", "whk_wrong_token_xxxxxxxxxxxxxxxxxxxxxxx")
+
+	if missingCode != http.StatusNotFound || nohookCode != http.StatusNotFound || wrongCode != http.StatusNotFound {
+		t.Fatalf("statuses = missing %d, nohook %d, wrong %d; want all 404", missingCode, nohookCode, wrongCode)
+	}
+	if missingBody != nohookBody || missingBody != wrongBody {
+		t.Fatalf("bodies differ:\n missing=%q\n nohook=%q\n wrong=%q", missingBody, nohookBody, wrongBody)
+	}
+
+	if code, body := trigger("wh-oracle", token); code != http.StatusOK {
+		t.Errorf("correct token: status = %d, want 200, body: %s", code, body)
+	}
+
+	logs := logBuf.String()
+	for _, want := range []string{
+		`webhook "does-not-exist": pipeline not found`,
+		`webhook "wh-oracle-nohook": webhook not configured`,
+		`webhook "wh-oracle": invalid webhook token`,
+	} {
+		if !strings.Contains(logs, want) {
+			t.Errorf("server log missing %q; got:\n%s", want, logs)
+		}
 	}
 }
