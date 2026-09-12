@@ -72,6 +72,27 @@ func CORS(next http.Handler) http.Handler {
 }
 
 // RateLimiter is a simple token-bucket rate limiter middleware.
+// rateLimitKey is the bucket key for RateLimiter: the caller's address
+// with its ephemeral source port removed.
+//
+// r.RemoteAddr is "IP:port", and the port is different on every TCP
+// connection. Keying on it whole gave each connection its own bucket,
+// which is not a rate limit: a caller that opened a new connection per
+// request was never slowed down, and the visitors map grew per
+// connection rather than per client.
+//
+// An address with no port is used as given rather than refused. An
+// address shape we do not recognise is a formatting surprise, not an
+// attack, and failing closed here would take the whole API down over
+// one.
+func rateLimitKey(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
 func RateLimiter(requestsPerSecond int) func(http.Handler) http.Handler {
 	type visitor struct {
 		tokens    float64
@@ -102,7 +123,7 @@ func RateLimiter(requestsPerSecond int) func(http.Handler) http.Handler {
 				return
 			}
 
-			ip := r.RemoteAddr
+			ip := rateLimitKey(r)
 			mu.Lock()
 			v, exists := visitors[ip]
 			now := time.Now()
