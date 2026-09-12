@@ -53,7 +53,7 @@
     }
   }
 
-  $: windowTitle = title || (language === "sql" ? "SQL Editor" : "Python Script Editor");
+  $: windowTitle = title || (language === "sql" ? "SQL Editor" : "Script Editor");
   $: editorPlaceholder =
     placeholder || (language === "sql" ? "select * from ..." : "# Your Python script here");
 
@@ -129,7 +129,7 @@
         <div class="code-area">
           <!-- Highlighted layer (behind) -->
           <pre class="highlight-layer" bind:this={highlightEl} aria-hidden="true"><code
-              class="language-python">{@html highlighted}</code
+              class="language-{language}">{@html highlighted}</code
             ></pre>
 
           <!-- Textarea layer (on top, transparent text) -->
@@ -149,14 +149,25 @@
       </div>
       <div class="modal-footer">
         <div class="footer-ref">
-          <span class="ref-title">Available:</span>
-          <code>columns</code> <code>rows</code> <code>config</code> <code>params</code>
-          <span class="ref-sep">|</span>
-          <span class="ref-title">Output:</span>
-          <code>output_data = {`{"columns": [...], "rows": [...]}`}</code>
-          <span class="ref-sep">|</span>
-          <span class="ref-title">Logging:</span>
-          <code>print("msg", file=sys.stderr)</code>
+          {#if language === "sql"}
+            <span class="ref-title">Runs on:</span>
+            <span>the connection selected on this node</span>
+            <span class="ref-sep">|</span>
+            <span class="ref-title">Returns:</span>
+            <span>every row becomes a row of the node's output</span>
+            <span class="ref-sep">|</span>
+            <span class="ref-title">Sent as written:</span>
+            <span>no variable substitution</span>
+          {:else}
+            <span class="ref-title">Available:</span>
+            <code>columns</code> <code>rows</code> <code>config</code> <code>params</code>
+            <span class="ref-sep">|</span>
+            <span class="ref-title">Output:</span>
+            <code>output_data = {`{"columns": [...], "rows": [...]}`}</code>
+            <span class="ref-sep">|</span>
+            <span class="ref-title">Logging:</span>
+            <code>print("msg", file=sys.stderr)</code>
+          {/if}
         </div>
       </div>
     </div>
