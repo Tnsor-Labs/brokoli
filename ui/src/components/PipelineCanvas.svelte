@@ -236,6 +236,13 @@
     nearestTarget = null;
   }
 
+  // Apply a drag. NodeCard reports where it wants to be and the array is
+  // rebuilt here, rather than the card writing through a `bind:` on the
+  // each-block item: that binding was what corrupted the array on delete.
+  function moveNode(d: { id: string; x: number; y: number }) {
+    nodes = nodes.map((n) => (n.id === d.id ? { ...n, position: { x: d.x, y: d.y } } : n));
+  }
+
   function selectNode(nodeId: string) {
     selectedNodeId = nodeId;
     dispatch("selectNode", nodeId);
@@ -521,12 +528,13 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <g on:click|stopPropagation={() => selectNode(node.id)} on:keydown={() => {}}>
       <NodeCard
-        bind:node
+        {node}
         selected={selectedNodeId === node.id}
         status={nodeStatuses[node.id] || null}
         {readonly}
         on:portDragStart={onPortDragStart}
         on:portDragEnd={onPortDragEnd}
+        on:move={(e) => moveNode(e.detail)}
         on:moveStart={(e) => dispatch("nodeMoveStart", e.detail)}
         on:moveEnd={(e) => dispatch("nodeMoveEnd", e.detail)}
       />

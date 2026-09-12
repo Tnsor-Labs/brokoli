@@ -31,11 +31,19 @@
       if (!dragging) return;
       if (!moved) dispatch("moveStart", node.id);
       moved = true;
-      node.position = {
+      // Report the new position rather than writing it into the prop.
+      // This used to assign node.position and then `node = node` to push
+      // the change back through a `bind:node` on the canvas's each block.
+      // Binding to an each-block item breaks when the array shrinks: on
+      // delete, the binding wrote back against a stale index and left
+      // NodeCard holding an undefined node, which threw on node.type and
+      // aborted the whole Svelte update. The canvas ended up half
+      // rendered and the editor's state never committed.
+      dispatch("move", {
+        id: node.id,
         x: Math.max(0, e.clientX - startX),
         y: Math.max(0, e.clientY - startY),
-      };
-      node = node;
+      });
     };
     const onUp = () => {
       dragging = false;
