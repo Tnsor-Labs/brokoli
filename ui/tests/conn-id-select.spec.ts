@@ -70,7 +70,14 @@ test("selecting a connection keeps conn_id on the saved node", async ({ page }) 
 
   // Open the node's config panel.
   await page.locator(".node-card").first().click();
-  const picker = page.locator("select").first();
+
+  // Scoped to the panel, not `select.first()` on the page. That was
+  // unambiguous when this was written and stopped being so the moment
+  // the toolbar gained a timezone picker (#552), which sits earlier in
+  // the DOM: both PRs were green alone and red together, and main went
+  // red on the merge. A locator that names where it is looking cannot
+  // be captured by an unrelated control appearing above it.
+  const picker = page.locator(".config-panel select").first();
   await expect(picker).toBeVisible();
 
   await picker.selectOption("pg-main");
