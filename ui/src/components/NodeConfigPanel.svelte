@@ -1,10 +1,11 @@
 <script lang="ts">
   import type { Node, NodeType } from "../lib/types";
   import { nodeTypeConfig } from "../lib/dag";
-  import { icons, brandNodeIcon } from "../lib/icons";
+  import { brandNodeIcon } from "../lib/icons";
   import BrandIcon from "./BrandIcon.svelte";
   import TransformRuleEditor from "./TransformRuleEditor.svelte";
   import CodeEditorModal from "./CodeEditorModal.svelte";
+  import ScriptField from "./ScriptField.svelte";
   import { createEventDispatcher } from "svelte";
   import { notify } from "../lib/toast";
   import Stepper from "./Stepper.svelte";
@@ -17,25 +18,60 @@
   let testingConnection = false;
   let codeEditorVisible = false;
 
+  // The SQL editor is the code node's window with a different grammar.
+  // A query is code, and a four-line textarea is a poor place to write
+  // one: no line numbers, no highlighting, and it scrolls out of sight
+  // by the third join. sqlEditorKey names the config field being edited
+  // so migrate's two queries can share one modal.
+  let sqlEditorVisible = false;
+  let sqlEditorKey = "query";
+  let sqlEditorTitle = "SQL Editor";
+
+  function openSQLEditor(key: string, title: string) {
+    sqlEditorKey = key;
+    sqlEditorTitle = title;
+    sqlEditorVisible = true;
+  }
+
+  // Test whichever way the node is actually configured.
+  //
+  // This only ever read config.uri, so selecting a connection made the
+  // button useless: the picker clears uri when a conn_id is chosen, so
+  // the one configuration that carries working credentials was the one
+  // it refused to test, with "Enter a URI first" over a node that had
+  // everything it needed.
+  //
+  // A stored connection is tested by id rather than by building a URI
+  // here: the server holds the credentials encrypted, and the by-id
+  // endpoint decrypts them and applies driver options like sslmode.
+  // Reassembling any of that in the browser would test something other
+  // than what the pipeline will use.
   async function testConnection() {
     if (!node) return;
-    const uri = node.config["uri"] as string;
-    if (!uri) {
-      notify.warning("Enter a URI first");
+    const connID = (node.config["conn_id"] as string) || "";
+    const uri = (node.config["uri"] as string) || "";
+    if (!connID && !uri) {
+      notify.warning("Choose a connection, or enter a URI");
       return;
     }
+
     testingConnection = true;
     try {
-      const res = await fetch("/api/test-connection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ uri }),
-      });
+      const res = connID
+        ? await fetch(`/api/connections/${encodeURIComponent(connID)}/test`, {
+            method: "POST",
+            headers: authHeaders(),
+          })
+        : await fetch("/api/test-connection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ uri }),
+          });
       const data = await res.json();
       if (data.success) {
-        notify.success(`Connected (${data.driver})`);
+        notify.success(data.driver ? `Connected (${data.driver})` : "Connected");
       } else {
-        notify.error(`Connection failed: ${data.error}`);
+        notify.error(`Connection failed: ${data.error || data.message || res.status}`);
       }
     } catch {
       notify.error("Connection test failed");
@@ -204,7 +240,7 @@
     source_api: "Fetch data from an HTTP/REST API endpoint.",
     source_db: "Query data from a database using SQL.",
     transform: "Apply transformations: filter, rename, sort, aggregate, and more.",
-    code: "Run custom Python code to transform data.",
+    code: "Run a custom script to transform data.",
     join: "Combine two datasets by matching columns.",
     quality_check: "Validate data against rules before proceeding.",
     sql_generate: "Generate and execute SQL statements.",
@@ -410,17 +446,14 @@
           <div class="conn-badge">Using connection: <strong>{node.config["conn_id"]}</strong></div>
         </div>
       {/if}
+      <ScriptField
+        title="SQL Query"
+        value={(node.config["query"] as string) || ""}
+        emptyLabel="No query written yet"
+        accent={typeConfig?.color}
+        on:open={() => openSQLEditor("query", "SQL Query")}
+      />
       <div class="field">
-        <label>SQL Query</label>
-        <textarea
-          class="code-input"
-          rows="4"
-          value={node.config["query"] || ""}
-          on:input={(e) => updateConfig("query", e.currentTarget.value)}
-          placeholder="SELECT * FROM users WHERE active = true"
-        ></textarea>
-      </div>
-      <div class="field" style="padding-top: 0">
         <button class="btn-test-conn" on:click={testConnection} disabled={testingConnection}>
           {testingConnection ? "Testing..." : "Test Connection"}
         </button>
@@ -438,7 +471,7 @@
       </div>
     {/if}
 
-    <!-- ── Code (Python) ── -->
+    <!-- ── Code ── -->
     {#if node.type === "code"}
       <div class="field">
         <label>Python Path</label>
@@ -458,31 +491,13 @@
           on:change={(e) => updateConfig("timeout", e.detail)}
         />
       </div>
-      <div class="field-group">
-        <span class="group-title">Python Script</span>
-        <button class="btn-open-editor" on:click={() => (codeEditorVisible = true)}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.code.d}
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          Open Full Editor
-        </button>
-        {#if node.config["script"]}
-          <pre class="code-preview">{(node.config["script"] as string)
-              .split("\n")
-              .slice(0, 6)
-              .join("\n")}{(node.config["script"] as string).split("\n").length > 6
-              ? "\n..."
-              : ""}</pre>
-        {:else}
-          <div class="code-empty">No script defined yet</div>
-        {/if}
-      </div>
+      <ScriptField
+        title="Script"
+        value={(node.config["script"] as string) || ""}
+        emptyLabel="No script defined yet"
+        accent={typeConfig?.color}
+        on:open={() => (codeEditorVisible = true)}
+      />
       <CodeEditorModal
         script={(node.config["script"] as string) || ""}
         bind:visible={codeEditorVisible}
@@ -824,16 +839,13 @@
           <div class="conn-badge">Source: <strong>{node.config["source_conn_id"]}</strong></div>
         </div>
       {/if}
-      <div class="field">
-        <label>Source Query</label>
-        <textarea
-          class="code-input"
-          rows="3"
-          value={node.config["source_query"] || ""}
-          on:input={(e) => updateConfig("source_query", e.currentTarget.value)}
-          placeholder="SELECT * FROM users"
-        ></textarea>
-      </div>
+      <ScriptField
+        title="Source Query"
+        value={(node.config["source_query"] as string) || ""}
+        emptyLabel="No query written yet"
+        accent={typeConfig?.color}
+        on:open={() => openSQLEditor("source_query", "Source Query")}
+      />
       <div class="field">
         <label>Destination Connection</label>
         <select
@@ -1216,6 +1228,13 @@
       <p>Select a node to configure</p>
     </div>
   {/if}
+  <CodeEditorModal
+    language="sql"
+    title={sqlEditorTitle}
+    script={(node?.config[sqlEditorKey] as string) || ""}
+    bind:visible={sqlEditorVisible}
+    on:save={(e) => updateConfig(sqlEditorKey, e.detail)}
+  />
 </div>
 
 <style>
@@ -1414,50 +1433,6 @@
   }
   .field.compact input {
     width: 100%;
-  }
-
-  .btn-open-editor {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-    padding: 8px 12px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    background: rgba(234, 179, 8, 0.06);
-    border: 1px solid rgba(234, 179, 8, 0.2);
-    color: var(--node-code);
-    transition: all 150ms ease;
-    margin-bottom: 8px;
-  }
-  .btn-open-editor:hover {
-    background: rgba(234, 179, 8, 0.12);
-    border-color: rgba(234, 179, 8, 0.4);
-  }
-
-  .code-preview {
-    font-family: var(--font-mono);
-    font-size: 10px;
-    line-height: 1.5;
-    color: var(--text-dim);
-    background: var(--bg-code-line);
-    border: 1px solid var(--border-sidebar);
-    border-radius: 6px;
-    padding: 8px 10px;
-    margin: 0;
-    overflow: hidden;
-    white-space: pre;
-    max-height: 100px;
-  }
-  .code-empty {
-    font-size: 11px;
-    color: var(--text-ghost);
-    padding: 12px;
-    text-align: center;
-    background: var(--bg-code-line);
-    border: 1px dashed var(--border-sidebar);
-    border-radius: 6px;
   }
 
   .btn-test-conn {
