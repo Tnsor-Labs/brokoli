@@ -87,11 +87,21 @@ func DatacapIssuer() (*datacap.Issuer, error) {
 // but can never succeed is worse than one that does not exist: it looks
 // like a capability the deployment has.
 func NewBlobHandler(s store.Store, artifacts engine.ArtifactStore) *BlobHandler {
-	provider, ok := artifacts.(engine.BlobStoreProvider)
+	// The SHARED store, not Blobs(). This endpoint exists to serve a
+	// worker in another pod, and Blobs() is per-pod scratch in a
+	// distributed deployment, so resolving against it answered 404 for
+	// objects that had been written perfectly well somewhere else
+	// (#572, ADR-038).
+	//
+	// A deployment with no shared store gets no routes rather than
+	// routes that cannot succeed, which is the same reasoning as the
+	// paragraph above: an endpoint that exists and always fails looks
+	// like a capability the deployment has.
+	provider, ok := artifacts.(engine.SharedBlobStoreProvider)
 	if !ok {
 		return nil
 	}
-	blobs := provider.Blobs()
+	blobs := provider.SharedBlobs()
 	if blobs == nil {
 		return nil
 	}

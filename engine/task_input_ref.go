@@ -112,10 +112,16 @@ var errTaskInputTooLargeToInline = errors.New("task input is too large to inline
 // into a wrong answer, which is strictly worse than the refusal it
 // replaced.
 func (r *Runner) stageTaskInputByReference(node models.Node, input *common.DataSet, attempt int, fencingGeneration int64) (ref, capability, planeURL string, err error) {
-	blobs := r.taskBlobStore()
+	// The SHARED store, not taskBlobStore(). These bytes are read by a
+	// different pod, and the per-pod store answers writes happily and
+	// then 404s the reader three hops later, after a capability has been
+	// minted and a work order dispatched (#572, ADR-038).
+	blobs := r.taskSharedBlobStore()
 	if blobs == nil {
 		return "", "", "", fmt.Errorf(
-			"task node %q has %d input rows, over the %d-row inline cap, and this server has no artifact blob store to stage it in",
+			"task node %q has %d input rows, over the %d-row inline cap, so it must be staged where the worker "+
+				"can fetch it, and this deployment has no shared blob store configured "+
+				"(set BROKOLI_BLOB_S3_BUCKET and its credentials, or keep inputs under the cap)",
 			node.ID, len(input.Rows), maxInlineTaskInputRows)
 	}
 	issuer := r.dataCapIssuer
