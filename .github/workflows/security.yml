@@ -1,6 +1,29 @@
 name: Security
 
 on:
+  # Runs on push to main as well as on pull requests, because not every
+  # commit that reaches main arrives through one. A GitHub advisory
+  # temporary private fork merges straight to main by design, which is
+  # exactly the flow used to fix an embargoed vulnerability, and main
+  # carries no branch protection. Before this trigger existed, the whole
+  # v0.11.10 security release ran zero security gates: the fix landed as
+  # a push and the changelog PR touched only **.md, which the path
+  # filters below correctly skip (#536).
+  #
+  # A gate here cannot block anything, since the merge has already
+  # happened. What it buys is a baseline regression surfacing in minutes
+  # instead of waiting up to a week for the Sunday run, and the state of
+  # the tree at release time being a matter of record. Blocking is what
+  # branch protection is for, and that is a separate decision.
+  push:
+    branches: [main]
+    paths-ignore:
+      # Keep in sync with ci.yml and the pull_request filter below;
+      # Actions has no YAML anchors, so all three lists are maintained by
+      # hand. docs/schema/** is deliberately NOT ignored.
+      - "**.md"
+      - "docs/adr/**"
+      - "docs/rfcs/**"
   pull_request:
     branches: [main]
     paths-ignore:
@@ -9,6 +32,11 @@ on:
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+  # Manually runnable. Needed twice already: after a merge that skipped
+  # the gate, the only way to get a real verdict was to run gosec by hand
+  # on a laptop and paste the numbers into a PR. A verdict nobody else
+  # can reproduce is not much of a gate.
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * 0" # Weekly on Sunday
 
