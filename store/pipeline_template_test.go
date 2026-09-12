@@ -24,14 +24,14 @@ func TestSQLiteStore_PipelineTemplates_SeededOnFirstMigrate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(list) != 5 {
-		t.Fatalf("got %d seeded templates, want 5 (blank + 4 real starters)", len(list))
+	if len(list) != 4 {
+		t.Fatalf("got %d seeded templates, want the 4 real starters", len(list))
 	}
 	ids := make(map[string]bool, len(list))
 	for _, tmpl := range list {
 		ids[tmpl.ID] = true
 	}
-	for _, want := range []string{"blank", "hello-world", "api-fetch", "join-aggregate", "data-quality"} {
+	for _, want := range []string{"hello-world", "api-fetch", "join-aggregate", "data-quality"} {
 		if !ids[want] {
 			t.Errorf("expected seeded template %q, not found in %v", want, ids)
 		}
@@ -45,7 +45,7 @@ func TestSQLiteStore_PipelineTemplates_SeedingDoesNotOverwriteAdminChanges(t *te
 		t.Fatalf("open store: %v", err)
 	}
 
-	if err := s.DeletePipelineTemplate("blank"); err != nil {
+	if err := s.DeletePipelineTemplate("data-quality"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
 	edited, err := s.GetPipelineTemplate("hello-world")
@@ -66,8 +66,8 @@ func TestSQLiteStore_PipelineTemplates_SeedingDoesNotOverwriteAdminChanges(t *te
 	}
 	defer s2.Close()
 
-	if _, err := s2.GetPipelineTemplate("blank"); err == nil {
-		t.Error("expected the admin's deletion of 'blank' to survive a restart")
+	if _, err := s2.GetPipelineTemplate("data-quality"); err == nil {
+		t.Error("expected the admin's deletion of 'data-quality' to survive a restart")
 	}
 	helloWorld, err := s2.GetPipelineTemplate("hello-world")
 	if err != nil {
@@ -80,8 +80,8 @@ func TestSQLiteStore_PipelineTemplates_SeedingDoesNotOverwriteAdminChanges(t *te
 	if err != nil {
 		t.Fatalf("list after reopen: %v", err)
 	}
-	if len(list) != 4 {
-		t.Fatalf("got %d templates after reopen, want 4 (5 seeded - 1 deleted, re-seeding must not re-add it)", len(list))
+	if len(list) != 3 {
+		t.Fatalf("got %d templates after reopen, want 3 (4 seeded - 1 deleted, re-seeding must not re-add it)", len(list))
 	}
 }
 

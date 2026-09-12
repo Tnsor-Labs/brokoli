@@ -54,11 +54,14 @@ func requirePipelineOrg(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // PipelineSummary is a lean DTO for the pipeline list — no nodes/edges/hooks.
 type PipelineSummary struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Schedule     string   `json:"schedule"`
-	Enabled      bool     `json:"enabled"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule"`
+	Enabled     bool   `json:"enabled"`
+	// Draft is carried on the summary because the list renders from this
+	// payload, and a draft has to be visibly not runnable there (#107).
+	Draft        bool     `json:"draft,omitempty"`
 	Tags         []string `json:"tags"`
 	NodeCount    int      `json:"node_count"`
 	EdgeCount    int      `json:"edge_count"`
@@ -87,6 +90,7 @@ func toPipelineSummary(p models.Pipeline) PipelineSummary {
 		Description:  p.Description,
 		Schedule:     p.Schedule,
 		Enabled:      p.Enabled,
+		Draft:        p.Draft,
 		Tags:         tags,
 		NodeCount:    len(p.Nodes),
 		EdgeCount:    len(p.Edges),
@@ -224,9 +228,16 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if p.Source == "" {
 		p.Source = models.PipelineSourceUI
 	}
-	if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
-		writeError(w, http.StatusBadRequest, ve.Error())
-		return
+	// A draft is work in progress, so it is persisted without executable
+	// validation. That is the whole point: #106 made persistence
+	// fail-closed, which left no way to start a pipeline from scratch or
+	// leave one half-built. A draft cannot run by any route, so nothing
+	// unvalidated ever executes (#107).
+	if !p.Draft {
+		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
+			writeError(w, http.StatusBadRequest, ve.Error())
+			return
+		}
 	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
@@ -356,11 +367,26 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// exempt — the same contract as the bulk enable/disable path, which
 	// never carries a graph at all. Any change to nodes, edges, or IR
 	// version revalidates in full.
-	if !graphUnchanged(existing, &p) {
+	// Publishing is the moment a draft becomes real, so it validates in
+	// full through the same call Create makes. A pipeline that is still a
+	// draft skips validation; one that is leaving draft state does not,
+	// whether or not its graph changed in the same request.
+	publishing := existing.Draft && !p.Draft
+	if publishing || (!p.Draft && !graphUnchanged(existing, &p)) {
 		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
 			writeError(w, http.StatusBadRequest, ve.Error())
 			return
 		}
+	}
+
+	// A published pipeline cannot be turned back into a draft. Allowing
+	// it would mean a scheduled pipeline silently stops running because
+	// someone ticked a box; Enabled already exists for "stop running
+	// this", and says so on the row.
+	if !existing.Draft && p.Draft {
+		writeError(w, http.StatusBadRequest,
+			"a published pipeline cannot be returned to draft; disable it instead")
+		return
 	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {

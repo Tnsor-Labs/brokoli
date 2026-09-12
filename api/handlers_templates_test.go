@@ -58,11 +58,16 @@ func TestTemplateHandler_List_ReturnsSeededTemplatesWithNoAuth(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	if len(list) != 4 {
-		t.Fatalf("got %d templates, want 4 executable seeded templates", len(list))
+		t.Fatalf("got %d templates, want the 4 seeded ones", len(list))
 	}
+	// The handler used to drop templates with no nodes, which existed
+	// only to hide the seeded "blank" row that fail-closed validation
+	// made uncreatable. Starting from scratch is a draft now (#107), the
+	// blank row is gone from the seed, and the filter went with it: what
+	// is seeded is what is served.
 	for _, template := range list {
 		if len(template.Nodes) == 0 {
-			t.Fatalf("listed non-creatable template %q with no nodes", template.Name)
+			t.Fatalf("seeded template %q has no nodes; the seed should carry only real templates", template.Name)
 		}
 	}
 }
@@ -116,8 +121,8 @@ func TestTemplateHandler_Create_AdminSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list: %v", err)
 	}
-	if len(list) != 6 {
-		t.Fatalf("got %d templates after create, want 6 (5 seeded + 1 new)", len(list))
+	if len(list) != 5 {
+		t.Fatalf("got %d templates after create, want 5 (4 seeded + 1 new)", len(list))
 	}
 }
 
@@ -204,21 +209,21 @@ func TestTemplateHandler_Delete_AdminSucceeds(t *testing.T) {
 	s := newTemplateTestStore(t)
 	router := newTemplateTestRouter(s)
 
-	req := withRole(httptest.NewRequest(http.MethodDelete, "/templates/blank", nil), "admin")
+	req := withRole(httptest.NewRequest(http.MethodDelete, "/templates/hello-world", nil), "admin")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNoContent {
 		t.Fatalf("status = %d, want 204, body: %s", rec.Code, rec.Body.String())
 	}
-	if _, err := s.GetPipelineTemplate("blank"); err == nil {
+	if _, err := s.GetPipelineTemplate("hello-world"); err == nil {
 		t.Error("expected the template to be gone")
 	}
 }
 
 func TestTemplateHandler_Delete_NonAdminReturns403(t *testing.T) {
 	router := newTemplateTestRouter(newTemplateTestStore(t))
-	req := withRole(httptest.NewRequest(http.MethodDelete, "/templates/blank", nil), "viewer")
+	req := withRole(httptest.NewRequest(http.MethodDelete, "/templates/hello-world", nil), "viewer")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
 

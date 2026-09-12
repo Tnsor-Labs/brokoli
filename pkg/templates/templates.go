@@ -24,14 +24,6 @@ import "github.com/Tnsor-Labs/brokoli/models"
 // admin reordering) the order they render in the UI's template picker.
 var Builtin = []models.PipelineTemplate{
 	{
-		ID:          "blank",
-		Name:        "Blank",
-		Description: "Start from scratch",
-		Icon:        "plus",
-		Nodes:       []models.Node{},
-		Edges:       []models.Edge{},
-	},
-	{
 		ID:          "hello-world",
 		Name:        "Hello World",
 		Description: "Minimal: fetch, transform, save",
