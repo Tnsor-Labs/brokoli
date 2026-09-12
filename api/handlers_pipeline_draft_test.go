@@ -1,11 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
@@ -182,5 +185,34 @@ func TestPublishedPipelineCannotReturnToDraft(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), "disable it instead") {
 		t.Errorf("error = %s, which does not point at the alternative", rec.Body.String())
+	}
+}
+
+// Refusing a draft is a precondition failure, not a server fault.
+// Returning 500 would make "not finished yet" look like a bug to
+// anything watching error rates.
+func TestTriggeringADraftReturns409(t *testing.T) {
+	s := newOrgCheckStore(t)
+	eng := engine.NewEngine(s)
+	t.Cleanup(func() { _ = eng.Close(context.Background()) })
+	h := NewRunHandler(s, eng)
+
+	p := &models.Pipeline{
+		ID: "d1", Name: "d1", Enabled: true, Draft: true,
+		WorkspaceID: models.DefaultWorkspaceID,
+		Nodes:       []models.Node{{ID: "n", Type: models.NodeTypeSourceFile, Name: "S"}},
+		CreatedAt:   time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreatePipeline(p); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	rec := servePipelineHandler(t, http.MethodPost, "/pipelines/{id}/run",
+		"/pipelines/d1/run", []byte(`{}`), h.TriggerRun)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409, body: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "draft") {
+		t.Errorf("body = %s, which does not say why", rec.Body.String())
 	}
 }

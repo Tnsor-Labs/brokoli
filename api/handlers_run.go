@@ -80,6 +80,13 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	// This prevents client timeouts from creating duplicate runs.
 	runID, err := h.engine.RunPipelineAsyncWithParameters(pipelineID, req.Params, req.Parameters)
 	if err != nil {
+		// A draft is a precondition failure, not a server fault. Returning
+		// 500 would make an ordinary "not finished yet" look like a bug in
+		// the server to anything watching error rates.
+		if errors.Is(err, engine.ErrPipelineIsDraft) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, engine.ErrParameterResolution) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
