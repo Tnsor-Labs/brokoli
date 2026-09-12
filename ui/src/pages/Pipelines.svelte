@@ -506,6 +506,12 @@
         enabled: true,
         nodes: tmpl.nodes,
         edges: tmpl.edges,
+        // Stamp the creator's timezone explicitly. An empty
+        // schedule_timezone means UTC and must keep meaning UTC: if empty
+        // were reinterpreted as "the editing browser's zone", every
+        // existing scheduled pipeline would shift the moment someone
+        // opened it from another country (#552).
+        schedule_timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
       });
       newName = "";
       newDescription = "";

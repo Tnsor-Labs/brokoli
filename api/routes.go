@@ -114,6 +114,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// persisting anything (#109 M2). Auth-only, like its by-id
 		// sibling — validation reads no tenant data.
 		r.Post("/pipelines/validate", ph.ValidateDocument)
+		// What a schedule input means, before anything is saved. Read-only
+		// and gated like any other authenticated route (#552).
+		r.Post("/schedule/preview", SchedulePreview)
 		r.Get("/pipelines/{id}/versions", ph.ListVersions)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
