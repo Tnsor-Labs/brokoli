@@ -17,25 +17,45 @@
   let testingConnection = false;
   let codeEditorVisible = false;
 
+  // Test whichever way the node is actually configured.
+  //
+  // This only ever read config.uri, so selecting a connection made the
+  // button useless: the picker clears uri when a conn_id is chosen, so
+  // the one configuration that carries working credentials was the one
+  // it refused to test, with "Enter a URI first" over a node that had
+  // everything it needed.
+  //
+  // A stored connection is tested by id rather than by building a URI
+  // here: the server holds the credentials encrypted, and the by-id
+  // endpoint decrypts them and applies driver options like sslmode.
+  // Reassembling any of that in the browser would test something other
+  // than what the pipeline will use.
   async function testConnection() {
     if (!node) return;
-    const uri = node.config["uri"] as string;
-    if (!uri) {
-      notify.warning("Enter a URI first");
+    const connID = (node.config["conn_id"] as string) || "";
+    const uri = (node.config["uri"] as string) || "";
+    if (!connID && !uri) {
+      notify.warning("Choose a connection, or enter a URI");
       return;
     }
+
     testingConnection = true;
     try {
-      const res = await fetch("/api/test-connection", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders() },
-        body: JSON.stringify({ uri }),
-      });
+      const res = connID
+        ? await fetch(`/api/connections/${encodeURIComponent(connID)}/test`, {
+            method: "POST",
+            headers: authHeaders(),
+          })
+        : await fetch("/api/test-connection", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
+            body: JSON.stringify({ uri }),
+          });
       const data = await res.json();
       if (data.success) {
-        notify.success(`Connected (${data.driver})`);
+        notify.success(data.driver ? `Connected (${data.driver})` : "Connected");
       } else {
-        notify.error(`Connection failed: ${data.error}`);
+        notify.error(`Connection failed: ${data.error || data.message || res.status}`);
       }
     } catch {
       notify.error("Connection test failed");
