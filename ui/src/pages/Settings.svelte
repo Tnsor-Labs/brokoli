@@ -884,7 +884,7 @@
         <div class="info-card">
           <div class="auth-section">
             <p class="auth-desc">
-              Python Code nodes work with any <code>python3</code>. For faster processing:
+              Code nodes run on any <code>python3</code>. For faster processing:
             </p>
             <pre class="code-block">pip install pyarrow pandas</pre>
             <p class="auth-desc" style="margin-top: 8px">

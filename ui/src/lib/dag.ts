@@ -138,7 +138,9 @@ export const nodeTypeConfig: Record<string, { label: string; color: string }> = 
   source_file: { label: "File Source", color: "var(--bk-tax-source)" },
   source_api: { label: "API Source", color: "var(--bk-tax-source)" },
   source_db: { label: "Database Source", color: "var(--bk-tax-source)" },
-  code: { label: "Python Code", color: "var(--bk-tax-processing)" },
+  // "Code", not "Python Code": the runtime is an implementation detail of
+  // the node, and it is no longer the only one in the product.
+  code: { label: "Code", color: "var(--bk-tax-processing)" },
   join: { label: "Join", color: "var(--bk-tax-processing)" },
   transform: { label: "Transform", color: "var(--bk-tax-processing)" },
   quality_check: { label: "Quality Check", color: "var(--bk-tax-processing)" },
