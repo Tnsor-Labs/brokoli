@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.12] - 2026-09-12
+
+### Fixed
+
+- **A worker could not fetch a staged task input on a multi-tenant
+  deployment** (#563) -- @hc12r. A worker holds no session and belongs
+  to no user, so `WorkspaceMiddleware` had no workspace to resolve for
+  it and answered 401 "authentication required" before `blobAuth` could
+  resolve its identity. Every reference-based task input, which is every
+  input above the 10,000-row inline cap, failed that way.
+
+  The rejecting branch only runs when a workspace resolver is installed,
+  so single-tenant deployments and every in-process test were
+  unaffected, which is why v0.11.11 shipped with it. The data-plane blob
+  routes are now exempt from workspace resolution, matched on segment
+  shape rather than a path prefix so the exemption cannot be reached by
+  burying "blobs" in another route.
+
+  This is the defect #528 set out to close, surviving one layer up.
+  Enterprise needs its own half of the same path; a deployment wants
+  both.
+
 ## [0.11.11] - 2026-09-12
 
 ### Security
