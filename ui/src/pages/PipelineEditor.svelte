@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
+  import { commands, registerCommands } from "../lib/commands";
   import { api } from "../lib/api";
   import { newNodeId, nodeTypeConfig, autoLayout } from "../lib/dag";
   import { icons } from "../lib/icons";
@@ -522,6 +523,52 @@
   let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduleLoaded = false;
   let scheduleFocused = false;
+  let scheduleOpen = false;
+  let overflowOpen = false;
+
+  // One registry, two surfaces. The overflow menu and the command
+  // palette read the same list, so an action cannot exist in one and be
+  // missing from the other, and a new feature registers here rather than
+  // widening the toolbar (#555).
+  type EditorAction = { label: string; hint?: string; run: () => void; primary?: boolean };
+
+  $: secondaryActions = [
+    { label: "View runs", run: () => (window.location.hash = `#/pipelines/${params?.id}/runs`) },
+    { label: showCode ? "Hide YAML" : "Show YAML", run: toggleCode },
+    { label: "Validate nodes", run: validateNodes },
+    { label: "Version history", run: toggleHistory },
+    { label: "Pipeline settings", run: () => (showPipelineSettings = !showPipelineSettings) },
+    { label: "Duplicate pipeline", run: clonePipeline },
+  ] as EditorAction[];
+
+  // Everything the editor can do, offered through the one palette the
+  // app already has (Cmd+K, GlobalSearch). Registered here rather than
+  // built again: two overlays on the same key is what happens when you
+  // add a feature without reading for it first.
+  //
+  // Includes the actions that still have buttons, because someone
+  // searching for "save" should find it whether or not it has one today.
+  $: registerCommands([
+    { id: "save", label: "Save", hint: "Ctrl+S", run: () => void save() },
+    ...(pipeline?.draft
+      ? [{ id: "publish", label: "Publish", run: publish }]
+      : [{ id: "run", label: "Run pipeline", run: triggerRun }]),
+    { id: "preview", label: "Preview (dry run)", run: dryRun },
+    { id: "layout", label: "Auto layout", run: doAutoLayout },
+    { id: "undo", label: "Undo", hint: "Ctrl+Z", run: undo },
+    { id: "redo", label: "Redo", hint: "Ctrl+Shift+Z", run: redo },
+    { id: "schedule", label: "Set schedule", run: () => (scheduleOpen = true) },
+    ...secondaryActions.map((a, i) => ({ id: "sec" + i, label: a.label, run: a.run })),
+  ]);
+
+  onDestroy(() => commands.set([]));
+
+  // What the button says when the popover is closed. The point of moving
+  // the form out of the toolbar is to save space, not to hide the
+  // schedule, so the current state stays on screen either way.
+  $: scheduleSummary = !scheduleInput.trim()
+    ? "Manual"
+    : (schedulePreview?.valid && schedulePreview.description) || scheduleInput.trim().slice(0, 28);
 
   // Seed the box from the stored cron once the pipeline arrives, then
   // leave it alone: re-seeding on every store update would fight the
@@ -603,6 +650,20 @@
   })();
 
   function handleGlobalKeydown(e: KeyboardEvent) {
+    // Escape runs before the typing guard below: an Escape that does not
+    // close the thing you are typing in is worse than no Escape at all.
+    // Cmd+K is deliberately not handled here; GlobalSearch owns it.
+    if (e.key === "Escape") {
+      if (overflowOpen) {
+        overflowOpen = false;
+        return;
+      }
+      if (scheduleOpen) {
+        scheduleOpen = false;
+        return;
+      }
+    }
+
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
 
@@ -640,7 +701,8 @@
       duplicateNode(selectedNodeId);
       return;
     }
-    // Escape = deselect
+    // Escape with nothing open = deselect. The overlays are handled
+    // above, before the typing guard.
     if (e.key === "Escape") {
       selectedNodeId = null;
     }
@@ -665,114 +727,136 @@
           ]}
         />
         <span class="separator">|</span>
+        <!--
+          The schedule is a form, not a toolbar action. Inline it took
+          roughly 350px of a row that already could not fit what it had,
+          which is a category error rather than a crowding problem
+          (#555). The button states the current schedule, so nothing is
+          hidden; the form is one click away.
+        -->
         <div class="schedule-input">
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
-            <path d="M12 6v6l4 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-          </svg>
-          <input
-            class="schedule-field"
-            bind:value={scheduleInput}
-            on:input={queueSchedulePreview}
-            on:focus={() => (scheduleFocused = true)}
-            on:blur={() => (scheduleFocused = false)}
-            placeholder="No schedule (manual)"
-            title={'Plain language or cron. Try "every weekday at 9am", "every 15 minutes", or 0 2 * * *'}
-          />
-          <select
-            class="schedule-tz"
-            value={pipeline?.schedule_timezone || "UTC"}
-            on:change={(e) => {
-              if (pipeline) pipeline.schedule_timezone = e.currentTarget.value;
-              markDirty();
-              queueSchedulePreview();
-            }}
-            title="The zone the schedule is written in"
+          <button
+            class="btn-sm schedule-summary"
+            class:is-set={!!scheduleInput.trim()}
+            on:click={() => (scheduleOpen = !scheduleOpen)}
+            aria-expanded={scheduleOpen}
+            title="Set when this pipeline runs"
           >
-            {#each timezones as tz}
-              <option value={tz}>{tz}</option>
-            {/each}
-          </select>
-          <label
-            class="catchup-toggle"
-            title="After downtime, run every missed schedule interval (oldest first) instead of only the most recent one"
-          >
-            <input
-              type="checkbox"
-              checked={pipeline?.catchup ?? false}
-              on:change={(e) => {
-                if (pipeline) pipeline.catchup = e.currentTarget.checked;
-                markDirty();
-              }}
-            />
-            Catch up
-          </label>
-          <!--
-            The echo. Natural language without feedback is worse than cron,
-            because a misreading is invisible until something runs at the
-            wrong time or not at all. It shows what was understood, the
-            cron it compiled to, and when it will actually fire, in the
-            pipeline's own zone.
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="1.5" />
+              <path
+                d="M12 6v6l4 2"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
+            {scheduleSummary}
+          </button>
 
-            Absolutely positioned, so it never becomes a flex item in the
-            toolbar row: as a sibling it competed for width and wrapped
-            into a tall narrow column that shoved the toolbar apart. It
-            stays open while the field has focus, and whenever the input
-            was refused, because an error must not vanish when you look
-            away.
-          -->
-          {#if schedulePreview && scheduleInput.trim() && (scheduleFocused || !schedulePreview.valid)}
-            <div class="schedule-echo" class:invalid={!schedulePreview.valid}>
-              {#if schedulePreview.valid}
-                <span class="echo-desc">
-                  {schedulePreview.description || "Custom schedule"}
-                  <span class="echo-tz">{pipeline?.schedule_timezone || "UTC"}</span>
-                </span>
-                <code class="echo-cron">{schedulePreview.cron}</code>
-                {#if schedulePreview.next?.length}
-                  <span class="echo-next">
-                    Next: {schedulePreview.next.map(formatOccurrence).join(" · ")}
-                  </span>
-                {/if}
-                {#if pipeline?.catchup}
-                  <span class="echo-note">
-                    Catch-up is on, so changing this changes what a backfill covers.
-                  </span>
-                {/if}
-              {:else}
-                <span class="echo-error">{schedulePreview.error}</span>
-                {#if schedulePreview.suggestion}
-                  <span class="echo-suggestion">{schedulePreview.suggestion}</span>
-                {/if}
+          {#if scheduleOpen}
+            <div class="schedule-pop">
+              <label class="pop-label" for="schedule-when">When</label>
+              <input
+                id="schedule-when"
+                class="schedule-field"
+                bind:value={scheduleInput}
+                on:input={queueSchedulePreview}
+                on:focus={() => (scheduleFocused = true)}
+                on:blur={() => (scheduleFocused = false)}
+                placeholder="No schedule (manual)"
+                title={'Plain language or cron. Try "every weekday at 9am", "every 15 minutes", or 0 2 * * *'}
+              />
+
+              <label class="pop-label" for="schedule-zone">Timezone</label>
+              <select
+                id="schedule-zone"
+                class="schedule-tz"
+                value={pipeline?.schedule_timezone || "UTC"}
+                on:change={(e) => {
+                  if (pipeline) pipeline.schedule_timezone = e.currentTarget.value;
+                  markDirty();
+                  queueSchedulePreview();
+                }}
+              >
+                {#each timezones as tz}
+                  <option value={tz}>{tz}</option>
+                {/each}
+              </select>
+
+              <label
+                class="catchup-toggle"
+                title="After downtime, run every missed schedule interval (oldest first) instead of only the most recent one"
+              >
+                <input
+                  type="checkbox"
+                  checked={pipeline?.catchup ?? false}
+                  on:change={(e) => {
+                    if (pipeline) pipeline.catchup = e.currentTarget.checked;
+                    markDirty();
+                  }}
+                />
+                Catch up after downtime
+              </label>
+
+              <!--
+              The echo. Natural language without feedback is worse than cron,
+              because a misreading is invisible until something runs at the
+              wrong time or not at all. It shows what was understood, the
+              cron it compiled to, and when it will actually fire, in the
+              pipeline's own zone.
+
+              Absolutely positioned, so it never becomes a flex item in the
+              toolbar row: as a sibling it competed for width and wrapped
+              into a tall narrow column that shoved the toolbar apart. It
+              stays open while the field has focus, and whenever the input
+              was refused, because an error must not vanish when you look
+              away.
+            -->
+              {#if schedulePreview && scheduleInput.trim() && (scheduleFocused || !schedulePreview.valid)}
+                <div class="schedule-echo" class:invalid={!schedulePreview.valid}>
+                  {#if schedulePreview.valid}
+                    <span class="echo-desc">
+                      {schedulePreview.description || "Custom schedule"}
+                      <span class="echo-tz">{pipeline?.schedule_timezone || "UTC"}</span>
+                    </span>
+                    <code class="echo-cron">{schedulePreview.cron}</code>
+                    {#if schedulePreview.next?.length}
+                      <span class="echo-next">
+                        Next: {schedulePreview.next.map(formatOccurrence).join(" · ")}
+                      </span>
+                    {/if}
+                    {#if pipeline?.catchup}
+                      <span class="echo-note">
+                        Catch-up is on, so changing this changes what a backfill covers.
+                      </span>
+                    {/if}
+                  {:else}
+                    <span class="echo-error">{schedulePreview.error}</span>
+                    {#if schedulePreview.suggestion}
+                      <span class="echo-suggestion">{schedulePreview.suggestion}</span>
+                    {/if}
+                  {/if}
+                </div>
               {/if}
             </div>
           {/if}
         </div>
-        <button
-          class="btn-sm btn-run"
-          on:click={triggerRun}
-          disabled={pipeline?.draft}
-          title={pipeline?.draft ? "Publish this draft before running it" : "Run this pipeline"}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path d={icons.play.d} fill="currentColor" />
-          </svg>
-          Run
-        </button>
+        <!--
+          One primary action, chosen by state. A draft has Publish and a
+          published pipeline has Run; showing both was what pushed Save
+          off the right edge (#555).
+        -->
+        {#if !pipeline?.draft}
+          <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d={icons.play.d} fill="currentColor" />
+            </svg>
+            Run
+          </button>
+        {/if}
       </div>
       <div class="toolbar-right">
-        <a class="btn-sm" href="#/pipelines/{params?.id}/runs" title="View runs for this pipeline">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <path
-              d={icons.history.d}
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          <span>View Runs</span>
-        </a>
         <div class="save-state" class:unsaved={dirty}>
           <i></i><span
             >{saving ? "Saving" : dirty ? "Unsaved" : lastSavedAt ? "Saved" : "Loaded"}</span
@@ -824,9 +908,6 @@
             />
           </svg>
         </button>
-
-        <span class="toolbar-sep"></span>
-
         <button class="btn-sm" on:click={doAutoLayout}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path
@@ -839,61 +920,46 @@
           </svg>
           Layout
         </button>
-        <button class="btn-sm" on:click={toggleCode}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.code.d}
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          {showCode ? "Canvas" : "YAML"}
-        </button>
-        <button class="btn-sm" on:click={validateNodes} title="Check node configs">
-          Validate
-        </button>
-        <button class="btn-sm" on:click={clonePipeline} title="Duplicate this pipeline">
-          Clone
-        </button>
-        <button
-          class="btn-sm"
-          class:active-toggle={showHistory}
-          on:click={toggleHistory}
-          title="Version history"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.history.d}
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          History
-        </button>
-        <button
-          class="btn-sm"
-          class:active-toggle={showPipelineSettings}
-          on:click={() => (showPipelineSettings = !showPipelineSettings)}
-          title="Pipeline settings"
-        >
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path
-              d={icons.settings.d}
-              stroke="currentColor"
-              stroke-width="1.8"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            />
-          </svg>
-          Settings
-        </button>
-
-        <span class="toolbar-sep"></span>
-
+        <!--
+          Everything below the fold. A control earns a toolbar slot only
+          if it is used during most editing sessions; the rest lives here
+          and in the command palette, so a new feature does not have to
+          widen the row to be reachable (#555).
+        -->
+        <div class="overflow-wrap">
+          <button
+            class="btn-icon-sm"
+            on:click={() => (overflowOpen = !overflowOpen)}
+            aria-expanded={overflowOpen}
+            aria-label="More actions"
+            title="More actions"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+              <circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle
+                cx="19"
+                cy="12"
+                r="1.6"
+              />
+            </svg>
+          </button>
+          {#if overflowOpen}
+            <div class="overflow-menu" role="menu">
+              {#each secondaryActions as action}
+                <button
+                  class="overflow-item"
+                  role="menuitem"
+                  on:click={() => {
+                    overflowOpen = false;
+                    action.run();
+                  }}
+                >
+                  <span>{action.label}</span>
+                  {#if action.hint}<kbd>{action.hint}</kbd>{/if}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
         <button class="btn-sm btn-preview" on:click={dryRun} disabled={previewing}>
           {previewing ? "Previewing..." : "Preview"}
         </button>
@@ -1415,6 +1481,89 @@
     user-select: none;
   }
 
+  .overflow-wrap {
+    position: relative;
+    display: inline-flex;
+  }
+  .overflow-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    z-index: 70;
+    min-width: 13rem;
+    padding: 4px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
+  }
+  .overflow-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 7px 10px;
+    border: none;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 12.5px;
+    text-align: left;
+    cursor: pointer;
+  }
+  .overflow-item:hover {
+    background: var(--border-subtle);
+    color: var(--text-primary, #e4e4e7);
+  }
+  .overflow-item kbd {
+    font-family: "JetBrains Mono", monospace;
+    font-size: 10px;
+    color: var(--text-muted);
+  }
+  .schedule-summary {
+    max-width: 15rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .schedule-summary.is-set {
+    color: var(--text-primary, #e4e4e7);
+  }
+  .schedule-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 70;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 22rem;
+    padding: 12px;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-subtle);
+    border-radius: 8px;
+    box-shadow: 0 12px 32px rgb(0 0 0 / 50%);
+  }
+  .pop-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+  }
+  .schedule-pop .schedule-field,
+  .schedule-pop .schedule-tz {
+    width: 100%;
+  }
+  .schedule-pop .schedule-echo {
+    position: static;
+    width: auto;
+    max-width: none;
+    padding: 0;
+    border: none;
+    box-shadow: none;
+    background: transparent;
+  }
   .schedule-echo {
     position: absolute;
     top: calc(100% + 6px);
@@ -1521,7 +1670,12 @@
   .save-state.unsaved i {
     background: var(--warning);
   }
-  .mobile-panel-button {
+  /* Higher specificity than .btn-sm on purpose. Both are single-class
+     selectors, and .btn-sm's `display: inline-flex` is declared later in
+     this stylesheet, so it was winning: two buttons meant only for
+     phones sat in the desktop toolbar at every width, taking about
+     160px, because of nothing but source order (#555). */
+  .btn-sm.mobile-panel-button {
     display: none;
   }
 
@@ -2213,7 +2367,7 @@
       height: 100%;
       min-height: 360px;
     }
-    .mobile-panel-button {
+    .btn-sm.mobile-panel-button {
       display: inline-flex;
     }
     .btn-sm span {

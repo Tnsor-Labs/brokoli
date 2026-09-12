@@ -75,9 +75,23 @@ async function openEditor(page: Page, calls: PreviewCall[]) {
   await expect(page.locator("svg.canvas")).toBeVisible();
 }
 
+// The schedule is a form behind a button now, not an inline field
+// (#555). Opening it is part of reaching the field, so it belongs in
+// the helper rather than repeated in every test.
+async function openSchedule(page: Page) {
+  // Idempotent: the button toggles, and navigating to the same hash URL
+  // does not remount the editor, so a second call in a loop would close
+  // what the first opened.
+  if ((await page.locator(".schedule-pop").count()) === 0) {
+    await page.locator(".schedule-summary").click();
+  }
+  await expect(page.locator(".schedule-pop")).toBeVisible();
+}
+
 test("a phrase shows what it compiled to and when it will run", async ({ page }) => {
   const calls: PreviewCall[] = [];
   await openEditor(page, calls);
+  await openSchedule(page);
 
   await page.locator(".schedule-field").fill("every weekday at 9am");
 
@@ -101,6 +115,7 @@ test("a phrase shows what it compiled to and when it will run", async ({ page })
 test("a refusal explains itself and offers a way forward", async ({ page }) => {
   const calls: PreviewCall[] = [];
   await openEditor(page, calls);
+  await openSchedule(page);
 
   await page.locator(".schedule-field").fill("every 90 minutes");
 
@@ -119,6 +134,7 @@ test("a refusal explains itself and offers a way forward", async ({ page }) => {
 test("typing is debounced rather than asking on every keystroke", async ({ page }) => {
   const calls: PreviewCall[] = [];
   await openEditor(page, calls);
+  await openSchedule(page);
 
   await page.locator(".schedule-field").pressSequentially("every weekday at 9am", { delay: 15 });
   await expect(page.locator(".schedule-echo")).toBeVisible();
@@ -142,6 +158,7 @@ test("the echo does not disturb the toolbar", async ({ page }) => {
   for (const width of [1920, 1440, 1100]) {
     await page.setViewportSize({ width, height: 900 });
     await openEditor(page, calls);
+    await openSchedule(page);
 
     const toolbar = page.locator(".toolbar");
     const before = (await toolbar.boundingBox())?.height ?? 0;
