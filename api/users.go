@@ -792,6 +792,21 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// The data plane authenticates itself further down: an opaque
+			// capability naming one object, plus the worker identity
+			// blobAuth resolves. A worker holds no JWT and never will, so
+			// this middleware can only refuse it.
+			//
+			// Third of three gates in front of these routes. #528 exempted
+			// the enterprise auth middleware and #563 the workspace gate,
+			// and each fix uncovered the next one behind it, because each
+			// was tested against the middleware it changed rather than the
+			// assembled chain. TestDataPlaneReachesItsHandler covers the
+			// chain.
+			if isDataPlaneBlobRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			// A static API key already authenticated this request (see
 			// APIKeyAuth, which runs first and stamps claims on success).
