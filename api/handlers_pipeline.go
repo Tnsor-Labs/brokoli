@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -241,6 +242,16 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
+		// A pipeline_id collision is the caller asking for something that
+		// already exists, not a server fault. It used to surface as a 500
+		// with the driver's own text in it, which told a client nothing
+		// it could act on and made an ordinary re-run of a deploy script
+		// look like an outage. #212 tracks the upsert that would let a
+		// caller avoid the collision entirely.
+		if errors.Is(err, store.ErrDuplicatePipelineID) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

@@ -686,6 +686,9 @@ func (s *PostgresStore) CreatePipeline(p *models.Pipeline) error {
 		p.ID, p.IRVersion, p.Name, p.Description, nodesJSON, edgesJSON,
 		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.Catchup, parametersJSON, p.Draft,
 	)
+	if isPipelineIDConflict(err) {
+		return ErrDuplicatePipelineID
+	}
 	return err
 }
 
