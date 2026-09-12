@@ -11,6 +11,126 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.11] - 2026-09-12
+
+### Security
+
+- **A webhook no longer says which pipelines exist** (#542, #551) --
+  @team-humaki. An unauthenticated caller got 404, 403 or 401 depending
+  on whether the pipeline was missing, had no webhook configured, or had
+  one with a different token. Three answers to a question the caller was
+  not authorised to ask, so anyone could enumerate pipeline ids from
+  outside. All three are now the same 404 with the same body, and the
+  real reason goes to the server log with the id quoted, so a newline in
+  a URL cannot forge a log line.
+- **An anonymous caller can no longer consume a pipeline's webhook
+  rate-limit slot** (#534, #541) -- @hc12r. The limiter was claimed
+  before the token was checked, on the raw id from the URL, so a
+  stranger who knew only a pipeline id could hold its slot: their own
+  request was rejected, but only after stamping the limiter, and the
+  legitimate sender then got 429. A pipeline could be silently stopped
+  from outside. The slot is claimed only after the caller has proved it
+  may trigger that pipeline, and entries for ids matching no pipeline
+  are no longer recorded at all.
+- **Rate limiting counts a client, not a connection** (#539, #540) --
+  @hc12r. The bucket key was `RemoteAddr`, which includes the ephemeral
+  source port, so every new TCP connection got its own fresh budget.
+  A caller opening a connection per request was never limited, and the
+  visitor map grew per connection rather than per client.
+- **The outbound analyzer catches `http.DefaultTransport`** (#266, #531)
+  -- @AghastyGD. The last standard-library path that could issue a
+  request without passing through `pkg/netguard`. Includes an audit of
+  every `AllowLoopback: true` site, both of which are deliberate, and a
+  regression test for the capability store's exception that ADR-022 had
+  been claiming existed.
+- **A worker can authenticate to the blob endpoints, and only those**
+  (#528) -- @hc12r. An opaque device token is accepted on the data-plane
+  blob routes and nowhere else, so a remote worker can fetch a staged
+  input without holding a session.
+
+### Fixed
+
+- **Arrow decoding was corrupting 64-bit integers** (#560) -- @hc12r.
+  Every integer was converted through `float64` before being narrowed
+  back, so anything past 2^53 arrived altered and unflagged:
+  `9007199254740993` decoded as `...992`, and `MaxInt64` decoded as a
+  float64 rather than an integer at all. Both Arrow readers share that
+  code, so it reached task datasets from a harness and spilled node
+  outputs alike.
+
+  **If a task of yours handles 64-bit identifiers and either side chose
+  Arrow, its results may have been wrong.** This is the fourth
+  appearance of one defect class, after v0.11.6, v0.11.7 and v0.11.8;
+  the file's own header had claimed integers arrive "as whole float64s",
+  which stopped being true when the NDJSON path gained a decoder that
+  holds them.
+- **`sink_file` with `format: sql` wrote JSON** (#545, #546) -- @hc12r.
+  It named the file `.sql` and put JSON in it. It now generates real
+  INSERT statements with a dialect and an optional CREATE TABLE.
+- **Generated DDL declares BIGINT past int32** (#547, #548) -- @hc12r.
+  A column holding values beyond 2^31 was declared INTEGER, so the
+  script it produced would not load.
+- **Deleting a node no longer breaks the editor** (#550) -- @hc12r.
+  Removing a node left the canvas bound to a stale index, so the wrong
+  node's properties were shown and the last node could not be deleted.
+- **A database node keeps its connection** (#544) -- @hc12r. Selecting a
+  stored connection dispatched two updates in the same tick and the
+  second landed without `conn_id`, so the panel snapped back to the
+  manual URI field and the save dropped the connection.
+- **Test Connection tests the connection the node uses** (#557) --
+  @hc12r. It only ever read `config.uri`, so the one configuration
+  carrying working credentials was the one it refused to test. A stored
+  connection is now tested by id on the server, where the credentials
+  are.
+
+### Added
+
+- **Arrow engages on tables with an integer column** (#521, #560) --
+  @hc12r. The encoder accepted only string, float64 and bool, so a
+  single integer column sent the whole dataset down the NDJSON path.
+  Essentially every real table has an integer id, and the fallback is
+  silent, so the measured 6.8x decode and 4.5x encode applied to
+  datasets that mostly do not exist. Integers map to Arrow Int64 now.
+  The conservative rule is unchanged: a column mixing an integer with a
+  float still declines, as do nested values, slices and all-null
+  columns.
+- **Draft pipelines** (#107, #554) -- @hc12r. Fail-closed persistence
+  meant a pipeline had to be executable to be saved, so there was no way
+  to start one from scratch and finish it later. A draft skips
+  executable validation on save and in exchange cannot run; publishing
+  applies the full validation, and a published pipeline cannot return to
+  draft (disable it instead).
+- **Schedules in plain language** (#552, #553) -- @hc12r. "every weekday
+  at 9am" compiles to `0 9 * * 1-5`, with the cron and the next few
+  occurrences shown before saving. A closed grammar: anything it does
+  not understand is refused with a suggestion rather than guessed at,
+  and cron is still accepted directly.
+- **`S3Store` resolves a blob by digest** (#561) -- @hc12r. The blob
+  endpoint turns a capability's namespace and digest into a reference
+  through `DigestResolver`, which only the local-disk store implemented.
+  A deployment configured for object storage therefore had a working
+  store that could not serve a single capability read.
+- **An editor toolbar that scales** (#555, #556) -- @hc12r. Twenty-one
+  controls on one row broke twice in two days. The schedule moved into a
+  popover, the long tail into an overflow menu, Run and Publish became
+  one contextual action, and every editor action is reachable from the
+  command palette the app already had.
+- **A local Postgres fixture** (#549) -- @hc12r. `scripts/devdata`
+  brings up Postgres with 100k rows chosen to be awkward: embedded
+  newlines and quotes, unicode, nulls, values past 2^31 and 2^53.
+
+### Changed
+
+- **The Security workflow runs on pushes to main and on demand** (#536,
+  #543) -- @hc12r. It only ran on pull requests, so main itself was
+  never scanned.
+- **Two tests stopped depending on their surroundings** (#558, #559) --
+  @hc12r. One reached for `select.first()` on the page, which stopped
+  meaning the connection picker once the toolbar gained a timezone
+  picker, and took main red when both landed. The other required a dial
+  to a private address to fail, which is a fact about the network the
+  suite runs on rather than about the code.
+
 ## [0.11.10] - 2026-09-11
 
 A security release. Upgrade if you run Brokoli with authentication
