@@ -340,6 +340,12 @@ func NewEngine(s store.Store) *Engine {
 // ErrEngineClosed is returned by run dispatch after Close has been called.
 var ErrEngineClosed = errors.New("engine: closed")
 
+// ErrPipelineIsDraft is returned when something tries to run a pipeline
+// that is still a draft. A draft has not been through executable
+// validation, so running it is not merely discouraged, it is not
+// meaningfully possible (#107).
+var ErrPipelineIsDraft = errors.New("pipeline is a draft and cannot run until it is published")
+
 // closing reports whether Close has been called.
 func (e *Engine) closing() bool {
 	select {
@@ -645,6 +651,17 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		return nil, fmt.Errorf("get pipeline: %w", err)
 	}
 
+	// A draft skips executable validation when it is saved, so it has to
+	// be unable to run at all: otherwise the flag would advertise a
+	// safety property it does not hold (#107).
+	//
+	// The refusal lives here rather than at each caller because every
+	// RunPipeline* variant funnels through this function. A guard per
+	// caller is a guard the next caller forgets.
+	if pipe.Draft {
+		return nil, ErrPipelineIsDraft
+	}
+
 	// Validate before running
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return nil, ve
@@ -786,8 +803,11 @@ func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 		e.goBG(func() {
 			if _, err := e.RunPipeline(pid); err != nil {
 				// A refusal at shutdown is the mechanism working, not a
-				// failed fire worth a log line per dependent.
-				if errors.Is(err, ErrEngineClosed) {
+				// failed fire worth a log line per dependent. A draft
+				// dependent is the same: someone is still building it,
+				// and logging a failure on every upstream run would be
+				// noise that trains people to ignore this line.
+				if errors.Is(err, ErrEngineClosed) || errors.Is(err, ErrPipelineIsDraft) {
 					return
 				}
 				log.Printf("trigger-mode: fire failed for %s: %v", pid, err)
@@ -856,6 +876,13 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return "", fmt.Errorf("get pipeline: %w", err)
+	}
+
+	// See RunPipelineOpts: a draft skips validation on save, so it must
+	// not run. This path does its own load and its own validation rather
+	// than going through RunPipelineOpts, so it needs its own guard.
+	if pipe.Draft {
+		return "", ErrPipelineIsDraft
 	}
 
 	// Validate before running
@@ -1096,6 +1123,13 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return e.failAcceptedRun(accepted, fmt.Errorf("get pipeline: %w", err))
+	}
+	// A pipeline can be turned back into a draft only by an admin editing
+	// the row directly, but a run already sitting on the queue would
+	// otherwise execute it. Fail the run rather than run unvalidated
+	// work.
+	if pipe.Draft {
+		return e.failAcceptedRun(accepted, ErrPipelineIsDraft)
 	}
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return e.failAcceptedRun(accepted, ve)

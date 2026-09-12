@@ -96,7 +96,7 @@ func (s *Scheduler) Start() error {
 
 	registered := 0
 	for _, p := range pipelines {
-		if p.Enabled && p.Schedule != "" {
+		if p.Enabled && !p.Draft && p.Schedule != "" {
 			if err := s.Register(p.ID, p.Name, p.Schedule, p.ScheduleTimezone); err != nil {
 				log.Printf("WARNING: failed to register schedule for pipeline %s (%s): %v", p.Name, p.Schedule, err)
 			} else {
@@ -170,13 +170,15 @@ func (s *Scheduler) syncSchedulesFromStore() {
 
 	live := make(map[string]struct{}, len(pipelines))
 	for _, p := range pipelines {
-		if p.Enabled && p.Schedule != "" {
+		if p.Enabled && !p.Draft && p.Schedule != "" {
 			live[p.ID] = struct{}{}
 		}
 		// SyncPipeline is idempotent: re-registering an unchanged
 		// schedule replaces the entry with an equivalent one, and a
 		// disabled or unscheduled pipeline is unregistered.
-		s.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled, p.ScheduleTimezone)
+		// A draft is passed as disabled, so SyncPipeline unregisters it
+		// the moment a running pipeline is turned back into one.
+		s.SyncPipeline(p.ID, p.Name, p.Schedule, p.Enabled && !p.Draft, p.ScheduleTimezone)
 	}
 
 	// A pipeline deleted from the store is in neither list above, so
@@ -249,7 +251,7 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 		return
 	}
 	for _, p := range pipelines {
-		if !p.Enabled || p.Schedule == "" {
+		if !p.Enabled || p.Draft || p.Schedule == "" {
 			continue
 		}
 		// Re-check leadership on every iteration, not just once up front:
