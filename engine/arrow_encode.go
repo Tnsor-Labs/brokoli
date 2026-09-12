@@ -108,8 +108,31 @@ func EncodeArrowIPC(w io.Writer, ds *common.DataSet) error {
 		return fmt.Errorf("dataset is not exactly representable as arrow: use %s", artifactFormatNDJSONName)
 	}
 
+	wr := ipc.NewWriter(w, ipc.WithSchema(schema))
 	b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer b.Release()
+
+	// Flush the builder as one record batch and start the next.
+	//
+	// Called every arrowRecordRows rows rather than once at the end,
+	// which is what this did. A single record meant the reader's
+	// "one record batch becomes one batch of rows" contract resolved to
+	// the whole dataset, so ArrowBatchReader streamed correctly over a
+	// stream that had nothing to stream: an Arrow ref materialised on
+	// read no matter how carefully the reader was written.
+	flush := func() error {
+		rec := b.NewRecord()
+		defer rec.Release()
+		if rec.NumRows() == 0 {
+			return nil
+		}
+		if err := wr.Write(rec); err != nil {
+			return fmt.Errorf("arrow encode: %w", err)
+		}
+		return nil
+	}
+
+	pending := 0
 	for _, row := range ds.Rows {
 		for i, col := range ds.Columns {
 			v, present := row[col]
@@ -145,16 +168,28 @@ func EncodeArrowIPC(w io.Writer, ds *common.DataSet) error {
 				return fmt.Errorf("arrow encode: no builder for column %q", col)
 			}
 		}
+		pending++
+		if pending >= arrowRecordRows {
+			if err := flush(); err != nil {
+				return err
+			}
+			pending = 0
+		}
 	}
-	rec := b.NewRecord()
-	defer rec.Release()
-
-	wr := ipc.NewWriter(w, ipc.WithSchema(schema))
-	if err := wr.Write(rec); err != nil {
-		return fmt.Errorf("arrow encode: %w", err)
+	if err := flush(); err != nil {
+		return err
 	}
 	return wr.Close()
 }
+
+// arrowRecordRows is how many rows go into one Arrow record batch.
+//
+// Matched to streamBatchRows so a reader sees the same batch shape
+// whichever codec produced the blob, and so the memory a reader holds
+// for an Arrow ref is the same order as for an NDJSON one. The number
+// is a memory bound, not a tuning knob: larger batches compress and
+// decode marginally better and cost proportionally more resident rows.
+const arrowRecordRows = streamBatchRows
 
 // artifactFormatNDJSONName is the name used in the message above,
 // spelled out rather than imported to keep this file free of a

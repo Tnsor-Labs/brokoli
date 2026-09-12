@@ -7,6 +7,7 @@ package engine
 
 import (
 	"bytes"
+	"io"
 	"math"
 	"testing"
 
@@ -191,6 +192,88 @@ func TestArrowRoundTripsLargeIntegersExactly(t *testing.T) {
 	} {
 		if got := rows[i]["id"]; got != want {
 			t.Errorf("row %d id = %v (%T), want %v", i, got, got, want)
+		}
+	}
+}
+
+// The reader's memory contract is "one Arrow record batch becomes one
+// batch of rows". That was true of the reader and false of the stream:
+// the encoder wrote a single record for the whole dataset, so an Arrow
+// ref materialised on read however carefully the reader was written.
+func TestArrowWritesBoundedRecordBatches(t *testing.T) {
+	const rows = arrowRecordRows*2 + 137 // deliberately not a multiple
+	ds := &common.DataSet{Columns: []string{"id", "name"}}
+	for i := 0; i < rows; i++ {
+		ds.Rows = append(ds.Rows, common.DataRow{"id": int64(i), "name": "r"})
+	}
+
+	var buf bytes.Buffer
+	if err := EncodeArrowIPC(&buf, ds); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	r, err := NewArrowBatchReader(&buf, ds.Columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var batches, total int
+	var largest int
+	for {
+		b, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatalf("next: %v", err)
+		}
+		batches++
+		total += len(b.Rows)
+		if len(b.Rows) > largest {
+			largest = len(b.Rows)
+		}
+	}
+
+	if total != rows {
+		t.Errorf("read %d rows, want %d", total, rows)
+	}
+	if batches < 3 {
+		t.Errorf("read the dataset in %d batch(es); %d rows at %d per record should be 3",
+			batches, rows, arrowRecordRows)
+	}
+	// The point of the whole change: no single batch holds everything.
+	if largest > arrowRecordRows {
+		t.Errorf("largest batch was %d rows, over the %d-row record size", largest, arrowRecordRows)
+	}
+}
+
+// Bounding the batches must not change what comes back.
+func TestArrowBoundedBatchesRoundTripExactly(t *testing.T) {
+	const rows = arrowRecordRows + 5
+	ds := &common.DataSet{Columns: []string{"id", "score", "ok", "name"}}
+	for i := 0; i < rows; i++ {
+		ds.Rows = append(ds.Rows, common.DataRow{
+			"id":    int64(9007199254740993 + int64(i)), // past float64
+			"score": float64(i) + 0.5,
+			"ok":    i%2 == 0,
+			"name":  "row",
+		})
+	}
+
+	var buf bytes.Buffer
+	if err := EncodeArrowIPC(&buf, ds); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, _, err := decodeArrowIPCRows(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got) != rows {
+		t.Fatalf("decoded %d rows, want %d", len(got), rows)
+	}
+	for _, i := range []int{0, arrowRecordRows - 1, arrowRecordRows, rows - 1} {
+		want := int64(9007199254740993 + int64(i))
+		if got[i]["id"] != want {
+			t.Errorf("row %d id = %v (%T), want %d", i, got[i]["id"], got[i]["id"], want)
 		}
 	}
 }
