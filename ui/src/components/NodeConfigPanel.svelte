@@ -17,6 +17,21 @@
   let testingConnection = false;
   let codeEditorVisible = false;
 
+  // The SQL editor is the code node's window with a different grammar.
+  // A query is code, and a four-line textarea is a poor place to write
+  // one: no line numbers, no highlighting, and it scrolls out of sight
+  // by the third join. sqlEditorKey names the config field being edited
+  // so migrate's two queries can share one modal.
+  let sqlEditorVisible = false;
+  let sqlEditorKey = "query";
+  let sqlEditorTitle = "SQL Editor";
+
+  function openSQLEditor(key: string, title: string) {
+    sqlEditorKey = key;
+    sqlEditorTitle = title;
+    sqlEditorVisible = true;
+  }
+
   // Test whichever way the node is actually configured.
   //
   // This only ever read config.uri, so selecting a connection made the
@@ -414,8 +429,18 @@
         </div>
       {/if}
       <div class="field">
-        <label>SQL Query</label>
+        <div class="label-row">
+          <label for="sql-query">SQL Query</label>
+          <button
+            class="btn-expand"
+            on:click={() => openSQLEditor("query", "SQL Query")}
+            title="Open the SQL editor"
+          >
+            Expand
+          </button>
+        </div>
         <textarea
+          id="sql-query"
           class="code-input"
           rows="4"
           value={node.config["query"] || ""}
@@ -791,7 +816,16 @@
         </div>
       {/if}
       <div class="field">
-        <label>Source Query</label>
+        <div class="label-row">
+          <label for="migrate-source-query">Source Query</label>
+          <button
+            class="btn-expand"
+            on:click={() => openSQLEditor("source_query", "Source Query")}
+            title="Open the SQL editor"
+          >
+            Expand
+          </button>
+        </div>
         <textarea
           class="code-input"
           rows="3"
@@ -1183,6 +1217,13 @@
       <p>Select a node to configure</p>
     </div>
   {/if}
+  <CodeEditorModal
+    language="sql"
+    title={sqlEditorTitle}
+    script={(node?.config[sqlEditorKey] as string) || ""}
+    bind:visible={sqlEditorVisible}
+    on:save={(e) => updateConfig(sqlEditorKey, e.detail)}
+  />
 </div>
 
 <style>
@@ -1311,6 +1352,28 @@
     font-size: 0.875rem;
   }
 
+  .label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .btn-expand {
+    padding: 2px 8px;
+    border: 1px solid var(--border-subtle);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    transition:
+      background 150ms ease,
+      color 150ms ease;
+  }
+  .btn-expand:hover {
+    background: var(--border-subtle);
+    color: var(--text-primary);
+  }
   .code-input {
     font-family: var(--font-mono);
     font-size: 11px;
