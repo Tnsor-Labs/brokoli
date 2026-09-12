@@ -128,3 +128,43 @@ test("typing is debounced rather than asking on every keystroke", async ({ page 
   expect(calls.length, `made ${calls.length} preview requests while typing`).toBeLessThan(6);
   expect(calls.at(-1)?.input).toBe("every weekday at 9am");
 });
+
+// The echo is a popover, not a flex item in the toolbar row. As a
+// sibling it competed for horizontal space, wrapped into a tall narrow
+// column and shoved the toolbar apart: buttons wrapped onto new lines
+// and the row grew from 64px to roughly 270px.
+//
+// So the assertion is about layout, not content: showing the echo must
+// not change the toolbar's height, at any width.
+test("the echo does not disturb the toolbar", async ({ page }) => {
+  const calls: PreviewCall[] = [];
+
+  for (const width of [1920, 1440, 1100]) {
+    await page.setViewportSize({ width, height: 900 });
+    await openEditor(page, calls);
+
+    const toolbar = page.locator(".toolbar");
+    const before = (await toolbar.boundingBox())?.height ?? 0;
+    expect(before, `toolbar has no height at ${width}px`).toBeGreaterThan(0);
+
+    // A refusal is the taller of the two states, so it is the one that
+    // broke the layout.
+    await page.locator(".schedule-field").fill("every 90 minutes");
+    await expect(page.locator(".echo-error")).toBeVisible();
+    const withError = (await toolbar.boundingBox())?.height ?? 0;
+
+    await page.locator(".schedule-field").fill("every weekday at 9am");
+    await expect(page.locator(".echo-cron")).toBeVisible();
+    const withEcho = (await toolbar.boundingBox())?.height ?? 0;
+
+    expect(
+      withError,
+      `at ${width}px the refusal grew the toolbar from ${before} to ${withError}`,
+    ).toBe(before);
+    expect(withEcho, `at ${width}px the echo grew the toolbar from ${before} to ${withEcho}`).toBe(
+      before,
+    );
+
+    await page.unrouteAll();
+  }
+});

@@ -493,6 +493,7 @@
   } | null = null;
   let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
   let scheduleLoaded = false;
+  let scheduleFocused = false;
 
   // Seed the box from the stored cron once the pipeline arrives, then
   // leave it alone: re-seeding on every store update would fight the
@@ -645,6 +646,8 @@
             class="schedule-field"
             bind:value={scheduleInput}
             on:input={queueSchedulePreview}
+            on:focus={() => (scheduleFocused = true)}
+            on:blur={() => (scheduleFocused = false)}
             placeholder="No schedule (manual)"
             title={'Plain language or cron. Try "every weekday at 9am", "every 15 minutes", or 0 2 * * *'}
           />
@@ -676,40 +679,47 @@
             />
             Catch up
           </label>
+          <!--
+            The echo. Natural language without feedback is worse than cron,
+            because a misreading is invisible until something runs at the
+            wrong time or not at all. It shows what was understood, the
+            cron it compiled to, and when it will actually fire, in the
+            pipeline's own zone.
+
+            Absolutely positioned, so it never becomes a flex item in the
+            toolbar row: as a sibling it competed for width and wrapped
+            into a tall narrow column that shoved the toolbar apart. It
+            stays open while the field has focus, and whenever the input
+            was refused, because an error must not vanish when you look
+            away.
+          -->
+          {#if schedulePreview && scheduleInput.trim() && (scheduleFocused || !schedulePreview.valid)}
+            <div class="schedule-echo" class:invalid={!schedulePreview.valid}>
+              {#if schedulePreview.valid}
+                <span class="echo-desc">
+                  {schedulePreview.description || "Custom schedule"}
+                  <span class="echo-tz">{pipeline?.schedule_timezone || "UTC"}</span>
+                </span>
+                <code class="echo-cron">{schedulePreview.cron}</code>
+                {#if schedulePreview.next?.length}
+                  <span class="echo-next">
+                    Next: {schedulePreview.next.map(formatOccurrence).join(" · ")}
+                  </span>
+                {/if}
+                {#if pipeline?.catchup}
+                  <span class="echo-note">
+                    Catch-up is on, so changing this changes what a backfill covers.
+                  </span>
+                {/if}
+              {:else}
+                <span class="echo-error">{schedulePreview.error}</span>
+                {#if schedulePreview.suggestion}
+                  <span class="echo-suggestion">{schedulePreview.suggestion}</span>
+                {/if}
+              {/if}
+            </div>
+          {/if}
         </div>
-        <!--
-          The echo. Natural language without feedback is worse than cron,
-          because a misreading is invisible until something runs at the
-          wrong time or not at all. Three things are always shown: what
-          was understood, the cron it compiled to, and when it will
-          actually fire, in the pipeline's own zone.
-        -->
-        {#if schedulePreview && scheduleInput.trim()}
-          <div class="schedule-echo" class:invalid={!schedulePreview.valid}>
-            {#if schedulePreview.valid}
-              <span class="echo-desc">
-                {schedulePreview.description || "Custom schedule"}
-                <span class="echo-tz">{pipeline?.schedule_timezone || "UTC"}</span>
-              </span>
-              <code class="echo-cron">{schedulePreview.cron}</code>
-              {#if schedulePreview.next?.length}
-                <span class="echo-next">
-                  Next: {schedulePreview.next.map(formatOccurrence).join(" · ")}
-                </span>
-              {/if}
-              {#if pipeline?.catchup}
-                <span class="echo-note">
-                  Catch-up is on, so changing this changes what a backfill covers.
-                </span>
-              {/if}
-            {:else}
-              <span class="echo-error">{schedulePreview.error}</span>
-              {#if schedulePreview.suggestion}
-                <span class="echo-suggestion">{schedulePreview.suggestion}</span>
-              {/if}
-            {/if}
-          </div>
-        {/if}
         <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d={icons.play.d} fill="currentColor" />
@@ -1363,43 +1373,67 @@
   }
 
   .schedule-echo {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 60;
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.25rem 0.6rem;
-    font-size: 0.72rem;
-    color: var(--bk-text-secondary);
+    flex-direction: column;
+    gap: 3px;
+    width: max-content;
+    max-width: min(30rem, 60vw);
+    padding: 8px 10px;
+    font-size: 11px;
+    line-height: 1.45;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+    color: var(--text-muted);
+    white-space: normal;
   }
   .schedule-echo.invalid .echo-error {
     color: var(--bk-danger, #f87171);
   }
   .echo-desc {
-    color: var(--bk-text-primary);
+    color: var(--text-primary, #e4e4e7);
     font-weight: 500;
   }
   .echo-tz {
-    color: var(--bk-text-tertiary);
+    margin-left: 6px;
+    color: var(--text-muted);
     font-weight: 400;
   }
   .echo-cron {
-    font-family: var(--bk-font-mono, monospace);
-    color: var(--bk-text-tertiary);
+    font-family: "JetBrains Mono", monospace;
+    color: var(--text-muted);
   }
   .echo-next,
   .echo-note,
-  .echo-suggestion {
-    color: var(--bk-text-tertiary);
+  .echo-suggestion,
+  .echo-error {
+    color: var(--text-muted);
   }
+  .echo-error {
+    color: #f87171;
+  }
+  .echo-suggestion {
+    font-style: italic;
+  }
+  /* The zone sits in a dense toolbar, so it is capped rather than sized
+     by the longest IANA name, which is over thirty characters. */
   .schedule-tz {
+    width: 84px;
+    flex: 0 0 auto;
     background: transparent;
     border: none;
-    color: var(--bk-text-tertiary);
-    font-size: 0.72rem;
-    max-width: 11rem;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
   }
 
   .schedule-input {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 5px;
