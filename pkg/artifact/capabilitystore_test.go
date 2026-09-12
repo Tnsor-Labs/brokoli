@@ -7,10 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 func digestOf(body string) string {
@@ -335,4 +339,56 @@ func TestCapabilityStorePrefersTheAttemptScopedGrant(t *testing.T) {
 	if cp.gotCap != "cap-for-attempt" {
 		t.Errorf("capability = %q, want the attempt-scoped grant to win", cp.gotCap)
 	}
+}
+
+// The capability store contacts the Brokoli control plane, not an arbitrary
+// pipeline-authored destination. Local deployments may expose it through
+// loopback, while Kubernetes commonly exposes it through a private ClusterIP.
+func TestCapabilityStoreDefaultPolicyPermitsControlPlaneAddresses(t *testing.T) {
+	client := (&CapabilityStore{}).client()
+
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("client transport is %T, want *http.Transport", client.Transport)
+	}
+
+	t.Run("loopback", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen on loopback: %v", err)
+		}
+		defer listener.Close()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		conn, err := transport.DialContext(ctx, "tcp", listener.Addr().String())
+		if err != nil {
+			t.Fatalf("default capability-store policy rejected loopback: %v", err)
+		}
+		defer conn.Close()
+	})
+
+	t.Run("private", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+
+		conn, err := transport.DialContext(
+			ctx,
+			"tcp",
+			net.JoinHostPort("10.43.13.252", "8080"),
+		)
+		if conn != nil {
+			defer conn.Close()
+		}
+
+		// Nothing needs to be listening at this address. The connection may
+		// fail at the network layer, but the policy must permit the attempt.
+		if errors.Is(err, netguard.ErrBlockedTarget) {
+			t.Fatalf(
+				"default capability-store policy rejected a private control-plane address: %v",
+				err,
+			)
+		}
+	})
 }

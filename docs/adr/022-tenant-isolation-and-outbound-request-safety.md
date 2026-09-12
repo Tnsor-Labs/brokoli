@@ -287,9 +287,10 @@ across outbound features.
 
 A repository-local `go/analysis` analyzer now enforces the outbound HTTP
 policy in CI. It detects direct `net/http.Client` construction, including
-type aliases and `new(http.Client)`, as well as `http.DefaultClient`, `http.DefaultTransport` and the package-level `Get`, `Head`, `Post`, and `PostForm` helpers. The check
-runs across all Go packages, excluding `pkg/netguard` itself, and ignores
-test files.
+type aliases and `new(http.Client)`, as well as `http.DefaultClient`,
+`http.DefaultTransport`, and the package-level `Get`, `Head`, `Post`, and
+`PostForm` helpers. The check runs across all Go packages, excluding
+`pkg/netguard` itself, and ignores test files.
 
 Intentional exceptions require a local
 `//netguard:allow <justification>` directive immediately above the
@@ -300,7 +301,6 @@ and plugin index/archive downloads, which intentionally support private
 services and mirrors.
 
 The deferred CI enforcement for Decision B is now implemented. Decision A store-layer tenant scoping remains follow-up work.
-
 
 ## Update — 2026-09-11: M2 `AllowLoopback` audit
 
@@ -325,8 +325,7 @@ or copied `AllowLoopback` exception was found. Focused regression tests cover
 the REST fetcher's private self-reference and the capability store's loopback
 control-plane path.
 
-The outbound analyzer was also extended to reject
-`http.DefaultTransport`, closing the remaining standard-library transport
+The outbound analyzer was also extended to reject `http.DefaultTransport`, closing the remaining standard-library transport
 path that could issue a request without passing through `pkg/netguard`.
 
 The M2 audit is complete. Decision A's data-access-layer tenant scoping
