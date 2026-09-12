@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -146,6 +147,11 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 		}
 		run, err := e.RunPipeline(p.ID)
 		if err != nil {
+			// Same as the trigger route: a draft is a state, not a fault.
+			if errors.Is(err, engine.ErrPipelineIsDraft) {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}

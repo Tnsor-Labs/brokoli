@@ -35,13 +35,7 @@ func (h *TemplateHandler) List(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []models.PipelineTemplate{}
 	}
-	creatable := make([]models.PipelineTemplate, 0, len(list))
-	for _, template := range list {
-		if len(template.Nodes) > 0 {
-			creatable = append(creatable, template)
-		}
-	}
-	writeJSON(w, http.StatusOK, creatable)
+	writeJSON(w, http.StatusOK, list)
 }
 
 func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {

@@ -67,6 +67,11 @@ func (e *Engine) Backfill(pipelineID string, req BackfillRequest) (*BackfillPlan
 	if err != nil {
 		return nil, fmt.Errorf("get pipeline: %w", err)
 	}
+	// A backfill is a run per interval, so a draft is refused here for
+	// the same reason it is refused everywhere else (#107).
+	if pipe.Draft {
+		return nil, ErrPipelineIsDraft
+	}
 	if pipe.Schedule == "" {
 		return nil, fmt.Errorf(
 			"pipeline %q has no schedule, so there is no interval grid to backfill over; "+

@@ -494,18 +494,20 @@
 
   async function createFromTemplate() {
     if (!newName.trim()) return;
-    const tmpl = templates[selectedTemplate];
-    if (!tmpl) {
+    const scratch = selectedTemplate === -1;
+    const tmpl = scratch ? null : templates[selectedTemplate];
+    if (!scratch && !tmpl) {
       notify.error("Select a template before creating a pipeline");
       return;
     }
     try {
       const created = await api.pipelines.create({
         name: newName,
-        description: newDescription || tmpl.description,
+        description: newDescription || tmpl?.description || "",
         enabled: true,
-        nodes: tmpl.nodes,
-        edges: tmpl.edges,
+        nodes: tmpl?.nodes ?? [],
+        edges: tmpl?.edges ?? [],
+        draft: scratch,
         // Stamp the creator's timezone explicitly. An empty
         // schedule_timezone means UTC and must keep meaning UTC: if empty
         // were reinterpreted as "the editing browser's zone", every
@@ -519,8 +521,10 @@
       showCreateModal = false;
       await loadPipelines();
       notify.success("Pipeline created");
-      // Navigate to editor if template has nodes
-      if (tmpl.nodes.length > 0) {
+      // Open the editor for anything with something to edit, and always
+      // for a scratch draft: an empty pipeline left on the list page is
+      // the moment someone most needs the canvas.
+      if (scratch || (tmpl?.nodes.length ?? 0) > 0) {
         window.location.hash = `#/pipelines/${created.id}/edit`;
       }
     } catch (e) {
@@ -837,6 +841,17 @@
                       href="#/pipelines/{pipeline.id}"
                       aria-label="View runs for {pipeline.name}">{pipeline.name}</a
                     >
+                    <!--
+                      Marked rather than hidden. A draft belongs in the
+                      list beside everything else, because it is work
+                      someone is in the middle of; what it must not do is
+                      look runnable (#107).
+                    -->
+                    {#if pipeline.draft}
+                      <span class="draft-badge" title="Not scheduled and cannot run until published"
+                        >Draft</span
+                      >
+                    {/if}
                     <small
                       >{pipeline.description || pipeline.tags?.[0] || "Pipeline workflow"}</small
                     >
@@ -883,9 +898,13 @@
                 <td class="row-actions">
                   <button
                     class="act-btn run-action"
-                    title="Run pipeline"
+                    title={pipeline.draft
+                      ? "This pipeline is a draft. Publish it from the editor to run it."
+                      : "Run pipeline"}
                     aria-label="Run {pipeline.name}"
-                    disabled={pipeline.enabled === false || lastRun?.status === "running"}
+                    disabled={pipeline.draft ||
+                      pipeline.enabled === false ||
+                      lastRun?.status === "running"}
                     on:click|stopPropagation={() => triggerRun(pipeline.id)}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -982,6 +1001,27 @@
           <fieldset class="template-picker">
             <legend>Choose a template</legend>
             <div class="template-grid">
+              <!--
+                Starting from scratch is a draft rather than a template:
+                an empty pipeline cannot pass executable validation, and
+                a draft is exactly the state that does not have to (#107).
+              -->
+              <button
+                type="button"
+                class="template-card"
+                class:active={selectedTemplate === -1}
+                aria-pressed={selectedTemplate === -1}
+                on:click={() => (selectedTemplate = -1)}
+              >
+                <span class="modal-template-icon">+</span>
+                <span class="template-copy"
+                  ><strong>Start from scratch</strong><small
+                    >An empty draft you can finish later</small
+                  ></span
+                >
+                <span class="template-meta">draft</span>
+                {#if selectedTemplate === -1}<span class="selected-check">✓</span>{/if}
+              </button>
               {#each templates as tmpl, i}
                 <button
                   type="button"
@@ -1267,6 +1307,18 @@
     display: inline-flex;
     gap: 3px;
     margin-left: 6px;
+    vertical-align: middle;
+  }
+  .draft-badge {
+    margin-left: 6px;
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: var(--warn-glow, rgb(250 204 21 / 12%));
+    color: var(--warn-text, #facc15);
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     vertical-align: middle;
   }
   .tag {

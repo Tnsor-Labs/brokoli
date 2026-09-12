@@ -61,7 +61,7 @@ func migrationOrder() []tableSpec {
 		{"settings", "key, value", nil},
 		{"connections", "id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, created_at, updated_at, workspace_id, org_id", nil},
 		{"variables", "key, value, type, description, created_at, updated_at, workspace_id", nil},
-		{"pipelines", "id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id", nil},
+		{"pipelines", "id, name, description, nodes, edges, schedule, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, draft", nil},
 		{"runs", "id, pipeline_id, status, started_at, finished_at, org_id", []string{"pipelines"}},
 		{"node_runs", "id, run_id, node_id, status, row_count, started_at, duration_ms, error", []string{"runs"}},
 		{"logs", "run_id, node_id, level, message, timestamp", []string{"runs"}},

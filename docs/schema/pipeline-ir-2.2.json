@@ -35,6 +35,10 @@
       "type": "boolean",
       "description": "Opt into per-interval catch-up (ADR-028 phase 2): after downtime, one run per missed schedule interval, oldest first, instead of the default single catch-up run for the most recently missed tick."
     },
+    "draft": {
+      "type": "boolean",
+      "description": "Work in progress. A draft skips executable validation when it is persisted, and in exchange cannot run by any route: not the scheduler, a manual or async run, a webhook, a backfill, or dependency fan-out. Publishing clears the flag and validates in full. Present so an export and re-import of an unfinished pipeline round-trips; deploying tools have no reason to set it."
+    },
     "webhook_url": { "type": "string" },
     "params": {
       "type": ["object", "null"],

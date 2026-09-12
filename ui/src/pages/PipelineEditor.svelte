@@ -323,6 +323,34 @@
   // execute the pipeline afterwards (run, preview, node checks) must bail
   // out on false — otherwise they'd silently operate on the previously
   // saved graph while the user is looking at the unsaved one.
+  // Publishing is what turns a draft into a pipeline that can run. It is
+  // a separate action from Save on purpose: saving a draft never
+  // validates, and publishing always does, so one button cannot mean
+  // both (#107).
+  let publishing = false;
+
+  async function publish() {
+    if (!pipeline) return;
+    publishing = true;
+    error = "";
+    try {
+      pipeline.nodes = nodes;
+      pipeline.edges = edges;
+      await api.pipelines.update(pipeline.id, { ...pipeline, draft: false });
+      pipeline.draft = false;
+      dirty = false;
+      lastSavedAt = new Date();
+      notify.success("Pipeline published");
+    } catch (e: any) {
+      // The server answers with the same validation errors Create would
+      // give. Show them in the editor rather than a toast that scrolls
+      // away: they are a list of things to go and fix.
+      error = "Cannot publish yet: " + (e.message || e);
+    } finally {
+      publishing = false;
+    }
+  }
+
   async function save(): Promise<boolean> {
     if (!pipeline) return false;
     saving = true;
@@ -720,7 +748,12 @@
             </div>
           {/if}
         </div>
-        <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
+        <button
+          class="btn-sm btn-run"
+          on:click={triggerRun}
+          disabled={pipeline?.draft}
+          title={pipeline?.draft ? "Publish this draft before running it" : "Run this pipeline"}
+        >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d={icons.play.d} fill="currentColor" />
           </svg>
@@ -864,6 +897,16 @@
         <button class="btn-sm btn-preview" on:click={dryRun} disabled={previewing}>
           {previewing ? "Previewing..." : "Preview"}
         </button>
+        {#if pipeline?.draft}
+          <button
+            class="btn-sm btn-publish"
+            on:click={publish}
+            disabled={publishing}
+            title="Validate this pipeline and make it runnable"
+          >
+            {publishing ? "Publishing..." : "Publish"}
+          </button>
+        {/if}
         <button class="btn-sm btn-save" on:click={save} disabled={saving}>
           {saving ? "Saving..." : "Save"}
         </button>
@@ -1528,6 +1571,11 @@
     background: var(--border-subtle);
     color: var(--text-primary);
     border-color: var(--text-ghost);
+  }
+  .btn-sm.btn-publish {
+    background: var(--accent-glow);
+    color: var(--accent-text);
+    border-color: var(--accent-text);
   }
   .btn-sm.btn-save {
     background: var(--accent);

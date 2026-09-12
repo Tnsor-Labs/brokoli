@@ -21,7 +21,21 @@ type Pipeline struct {
 	// phase 2, #397): after downtime, one run per missed schedule
 	// interval, oldest first, instead of the default single catch-up run
 	// for the most recently missed tick.
-	Catchup    bool              `json:"catchup,omitempty"`
+	Catchup bool `json:"catchup,omitempty"`
+	// Draft marks a pipeline that is still being built. It skips
+	// executable validation on persistence, and in exchange cannot run by
+	// any route: not the scheduler, not a manual or async run, not a
+	// webhook, not a backfill, and not dependency fan-out (#107).
+	//
+	// #106 made persistence fail-closed, which is right for anything that
+	// can run, but it also meant a pipeline could not exist before it was
+	// complete. Starting one from scratch was impossible, not merely
+	// awkward.
+	//
+	// omitempty on purpose: an absent field means false means an ordinary
+	// pipeline, so every existing row, export and SDK payload keeps the
+	// meaning it already had.
+	Draft      bool              `json:"draft,omitempty"`
 	WebhookURL string            `json:"webhook_url"` // URL for event notifications
 	Params     map[string]string `json:"params"`      // default parameter values, legacy/untyped (ADR-032 section 3)
 	// Parameters is the ADR-032 typed pipeline parameter declaration

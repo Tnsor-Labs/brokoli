@@ -11,6 +11,9 @@ export interface Pipeline {
   tags?: string[];
   hooks?: Record<string, Hook>;
   schedule_timezone?: string;
+  // Still being built: skips executable validation on save and
+  // cannot run by any route until it is published (#107).
+  draft?: boolean;
   catchup?: boolean;
   sla_deadline?: string;
   sla_timezone?: string;
