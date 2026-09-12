@@ -7,6 +7,7 @@ package engine
 
 import (
 	"bytes"
+	"math"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -55,9 +56,14 @@ func TestArrowEncodableSchema_RefusesWhatItCannotRoundTrip(t *testing.T) {
 			Columns: []string{"v"},
 			Rows:    []common.DataRow{{"v": []interface{}{1, 2}}},
 		},
-		"int rather than float64": {
+		// "int rather than float64" used to be refused here. It is
+		// accepted now (#521): Arrow Int64 holds it exactly and the
+		// decoder returns int64, which is what the NDJSON path yields
+		// for a whole number too. See
+		// TestArrowEncodableSchema_AcceptsIntegerColumns.
+		"an integer mixed with a float in one column": {
 			Columns: []string{"v"},
-			Rows:    []common.DataRow{{"v": 3}},
+			Rows:    []common.DataRow{{"v": int64(1)}, {"v": float64(1.5)}},
 		},
 	}
 	for name, ds := range cases {
@@ -123,5 +129,68 @@ func TestArrowEncodeRefusesUnrepresentableDataset(t *testing.T) {
 	}
 	if err := EncodeArrowIPC(&bytes.Buffer{}, ds); err == nil {
 		t.Fatal("encoded a dataset with mixed column types")
+	}
+}
+
+// #521: an integer column disqualified the entire dataset, so Arrow
+// declined on essentially every real table, silently, and the measured
+// 6.8x decode never applied to anything with an id in it.
+func TestArrowEncodableSchema_AcceptsIntegerColumns(t *testing.T) {
+	for name, ds := range map[string]*common.DataSet{
+		"int64": {
+			Columns: []string{"id"},
+			Rows:    []common.DataRow{{"id": int64(1)}, {"id": int64(2)}},
+		},
+		"int": {
+			Columns: []string{"id"},
+			Rows:    []common.DataRow{{"id": 1}, {"id": 2}},
+		},
+		"an id beside the types that already worked": {
+			Columns: []string{"id", "name", "amount", "active"},
+			Rows: []common.DataRow{
+				{"id": int64(1), "name": "a", "amount": 1.5, "active": true},
+				{"id": int64(2), "name": "b", "amount": 2.5, "active": false},
+			},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := arrowEncodableSchema(ds); !ok {
+				t.Error("declined a dataset it can hold exactly, so this spills as NDJSON for no reason")
+			}
+		})
+	}
+}
+
+// The point of accepting integers is worthless if the round trip is not
+// exact, which is the whole reason they were excluded. These are the
+// values float64 cannot hold.
+func TestArrowRoundTripsLargeIntegersExactly(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"id", "label"},
+		Rows: []common.DataRow{
+			{"id": int64(9007199254740993), "label": "2^53+1"},
+			{"id": int64(math.MaxInt64), "label": "max"},
+			{"id": int64(math.MinInt64), "label": "min"},
+			{"id": nil, "label": "null id"},
+		},
+	}
+
+	var buf bytes.Buffer
+	if err := EncodeArrowIPC(&buf, ds); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	rows, cols, err := decodeArrowIPCRows(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(cols) != 2 {
+		t.Fatalf("columns = %v", cols)
+	}
+	for i, want := range []interface{}{
+		int64(9007199254740993), int64(math.MaxInt64), int64(math.MinInt64), nil,
+	} {
+		if got := rows[i]["id"]; got != want {
+			t.Errorf("row %d id = %v (%T), want %v", i, got, got, want)
+		}
 	}
 }
