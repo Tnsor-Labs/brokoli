@@ -767,6 +767,29 @@ var ErrResolvedExecutionRecordNotFound = errors.New("resolved execution record n
 // not as a failure.
 var ErrDuplicateScheduledRun = errors.New("a scheduled run for this pipeline and data interval already exists")
 
+// ErrDuplicatePipelineID reports that a pipeline with this pipeline_id
+// already exists. The id is derived from the name when a caller does not
+// supply one, so two creates with the same name collide here, which is a
+// precondition failure the caller can act on rather than a server fault.
+var ErrDuplicatePipelineID = errors.New("a pipeline with this pipeline_id already exists")
+
+// isPipelineIDConflict recognises the unique-index violation behind
+// ErrDuplicatePipelineID on either backend, the same way
+// isScheduledIntervalConflict does for its own index. Postgres names the
+// index; SQLite names the column. Matching these specifics keeps the
+// sentinel from swallowing another constraint's violation.
+func isPipelineIDConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "idx_pipeline_pid") {
+		return true
+	}
+	return strings.Contains(msg, "UNIQUE constraint failed") &&
+		strings.Contains(msg, "pipelines.pipeline_id")
+}
+
 // isScheduledIntervalConflict recognises the unique-index violation behind
 // ErrDuplicateScheduledRun on either backend. Postgres names the index in
 // its message; SQLite names the column pair instead -- and only this index

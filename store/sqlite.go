@@ -744,6 +744,9 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 		p.ID, p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
 		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft),
 	)
+	if isPipelineIDConflict(err) {
+		return ErrDuplicatePipelineID
+	}
 	return wrapStoreErr("CreatePipeline", p.ID, err)
 }
 
