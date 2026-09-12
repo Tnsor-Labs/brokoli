@@ -477,6 +477,103 @@
 
   $: selectedNode = nodes.find((n) => n.id === selectedNodeId) || null;
 
+  // ── Schedule ────────────────────────────────────────────────
+  // What the user typed, which may be a phrase or cron. The stored value
+  // is always cron: the scheduler, backfill, catch-up and ADR-028 data
+  // intervals all consume it, so a phrase is an input method and never
+  // persisted (#552).
+  let scheduleInput = "";
+  let schedulePreview: {
+    valid: boolean;
+    cron?: string;
+    description?: string;
+    next?: string[];
+    error?: string;
+    suggestion?: string;
+  } | null = null;
+  let scheduleTimer: ReturnType<typeof setTimeout> | null = null;
+  let scheduleLoaded = false;
+  let scheduleFocused = false;
+
+  // Seed the box from the stored cron once the pipeline arrives, then
+  // leave it alone: re-seeding on every store update would fight the
+  // user's typing.
+  $: if (pipeline && !scheduleLoaded) {
+    scheduleInput = pipeline.schedule || "";
+    scheduleLoaded = true;
+    if (scheduleInput) queueSchedulePreview();
+  }
+
+  function queueSchedulePreview() {
+    if (scheduleTimer) clearTimeout(scheduleTimer);
+    // Debounced rather than per keystroke. The parser is server-side so
+    // it cannot disagree with the scheduler, and 250ms is below the
+    // threshold where feedback stops feeling immediate.
+    scheduleTimer = setTimeout(fetchSchedulePreview, 250);
+  }
+
+  async function fetchSchedulePreview() {
+    const input = scheduleInput.trim();
+    if (!input) {
+      schedulePreview = null;
+      if (pipeline) pipeline.schedule = "";
+      markDirty();
+      return;
+    }
+    try {
+      const res = await fetch("/api/schedule/preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders() },
+        body: JSON.stringify({
+          input,
+          timezone: pipeline?.schedule_timezone || "",
+          count: 3,
+        }),
+      });
+      if (!res.ok) {
+        schedulePreview = null;
+        return;
+      }
+      schedulePreview = await res.json();
+      // Only a schedule the server accepted becomes the stored value. A
+      // refusal leaves the previous cron in place rather than saving
+      // something that will not run.
+      if (schedulePreview?.valid && schedulePreview.cron && pipeline) {
+        if (pipeline.schedule !== schedulePreview.cron) {
+          pipeline.schedule = schedulePreview.cron;
+          markDirty();
+        }
+      }
+    } catch {
+      schedulePreview = null;
+    }
+  }
+
+  function formatOccurrence(iso: string): string {
+    const d = new Date(iso);
+    return d.toLocaleString(undefined, {
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+      hour: "2-digit",
+      minute: "2-digit",
+      timeZone: pipeline?.schedule_timezone || undefined,
+    });
+  }
+
+  const timezones: string[] = (() => {
+    try {
+      // The full IANA list where the browser offers it, rather than a
+      // hardcoded subset that would quietly exclude someone.
+      const all = (Intl as any).supportedValuesOf?.("timeZone");
+      if (Array.isArray(all) && all.length)
+        return ["UTC", ...all.filter((z: string) => z !== "UTC")];
+    } catch {
+      /* fall through */
+    }
+    return ["UTC", Intl.DateTimeFormat().resolvedOptions().timeZone].filter(Boolean);
+  })();
+
   function handleGlobalKeydown(e: KeyboardEvent) {
     const tag = (e.target as HTMLElement)?.tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
@@ -547,14 +644,27 @@
           </svg>
           <input
             class="schedule-field"
-            value={pipeline?.schedule || ""}
-            on:input={(e) => {
-              if (pipeline) pipeline.schedule = e.currentTarget.value;
-              markDirty();
-            }}
+            bind:value={scheduleInput}
+            on:input={queueSchedulePreview}
+            on:focus={() => (scheduleFocused = true)}
+            on:blur={() => (scheduleFocused = false)}
             placeholder="No schedule (manual)"
-            title="Cron expression, e.g. 0 2 * * * (daily at 2am)"
+            title={'Plain language or cron. Try "every weekday at 9am", "every 15 minutes", or 0 2 * * *'}
           />
+          <select
+            class="schedule-tz"
+            value={pipeline?.schedule_timezone || "UTC"}
+            on:change={(e) => {
+              if (pipeline) pipeline.schedule_timezone = e.currentTarget.value;
+              markDirty();
+              queueSchedulePreview();
+            }}
+            title="The zone the schedule is written in"
+          >
+            {#each timezones as tz}
+              <option value={tz}>{tz}</option>
+            {/each}
+          </select>
           <label
             class="catchup-toggle"
             title="After downtime, run every missed schedule interval (oldest first) instead of only the most recent one"
@@ -569,6 +679,46 @@
             />
             Catch up
           </label>
+          <!--
+            The echo. Natural language without feedback is worse than cron,
+            because a misreading is invisible until something runs at the
+            wrong time or not at all. It shows what was understood, the
+            cron it compiled to, and when it will actually fire, in the
+            pipeline's own zone.
+
+            Absolutely positioned, so it never becomes a flex item in the
+            toolbar row: as a sibling it competed for width and wrapped
+            into a tall narrow column that shoved the toolbar apart. It
+            stays open while the field has focus, and whenever the input
+            was refused, because an error must not vanish when you look
+            away.
+          -->
+          {#if schedulePreview && scheduleInput.trim() && (scheduleFocused || !schedulePreview.valid)}
+            <div class="schedule-echo" class:invalid={!schedulePreview.valid}>
+              {#if schedulePreview.valid}
+                <span class="echo-desc">
+                  {schedulePreview.description || "Custom schedule"}
+                  <span class="echo-tz">{pipeline?.schedule_timezone || "UTC"}</span>
+                </span>
+                <code class="echo-cron">{schedulePreview.cron}</code>
+                {#if schedulePreview.next?.length}
+                  <span class="echo-next">
+                    Next: {schedulePreview.next.map(formatOccurrence).join(" · ")}
+                  </span>
+                {/if}
+                {#if pipeline?.catchup}
+                  <span class="echo-note">
+                    Catch-up is on, so changing this changes what a backfill covers.
+                  </span>
+                {/if}
+              {:else}
+                <span class="echo-error">{schedulePreview.error}</span>
+                {#if schedulePreview.suggestion}
+                  <span class="echo-suggestion">{schedulePreview.suggestion}</span>
+                {/if}
+              {/if}
+            </div>
+          {/if}
         </div>
         <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -1222,7 +1372,68 @@
     user-select: none;
   }
 
+  .schedule-echo {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 0;
+    z-index: 60;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    width: max-content;
+    max-width: min(30rem, 60vw);
+    padding: 8px 10px;
+    font-size: 11px;
+    line-height: 1.45;
+    background: var(--bg-sidebar);
+    border: 1px solid var(--border-subtle);
+    border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 45%);
+    color: var(--text-muted);
+    white-space: normal;
+  }
+  .schedule-echo.invalid .echo-error {
+    color: var(--bk-danger, #f87171);
+  }
+  .echo-desc {
+    color: var(--text-primary, #e4e4e7);
+    font-weight: 500;
+  }
+  .echo-tz {
+    margin-left: 6px;
+    color: var(--text-muted);
+    font-weight: 400;
+  }
+  .echo-cron {
+    font-family: "JetBrains Mono", monospace;
+    color: var(--text-muted);
+  }
+  .echo-next,
+  .echo-note,
+  .echo-suggestion,
+  .echo-error {
+    color: var(--text-muted);
+  }
+  .echo-error {
+    color: #f87171;
+  }
+  .echo-suggestion {
+    font-style: italic;
+  }
+  /* The zone sits in a dense toolbar, so it is capped rather than sized
+     by the longest IANA name, which is over thirty characters. */
+  .schedule-tz {
+    width: 84px;
+    flex: 0 0 auto;
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 11px;
+    text-overflow: ellipsis;
+  }
+
   .schedule-input {
+    position: relative;
     display: flex;
     align-items: center;
     gap: 5px;
