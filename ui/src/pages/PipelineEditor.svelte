@@ -860,7 +860,9 @@
         <!--
           One primary action, chosen by state. A draft has Publish and a
           published pipeline has Run; showing both was what pushed Save
-          off the right edge (#555).
+          off the right edge (#555). This replaces the always-present Run
+          that #554 disabled for drafts: a slot that cannot be used is
+          still a slot, and the toolbar had none to spare.
         -->
         {#if !pipeline?.draft}
           <button class="btn-sm btn-run" on:click={triggerRun} title="Run this pipeline">
