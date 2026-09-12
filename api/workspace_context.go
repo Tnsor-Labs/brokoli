@@ -76,6 +76,22 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 func isWorkspacePublicRoute(r *http.Request) bool {
 	path := r.URL.Path
 	return isPublicCapabilitiesRequest(r) ||
+		// The data plane carries its own authorization: an opaque
+		// capability naming one object, plus the worker identity blobAuth
+		// resolves. A worker holds no session and belongs to no user, so
+		// resolving a workspace for it is not a check that can succeed --
+		// it just answers 401 before blobAuth is ever reached.
+		//
+		// Only visible in a multi-tenant deployment. With no workspace
+		// resolver the branch below is skipped entirely, so every
+		// single-tenant test passed while every reference-based task
+		// input on a real fleet got 401.
+		//
+		// isDataPlaneBlobRequest, not a path prefix: it matches on
+		// segment shape and reads RawPath, so a caller cannot reach this
+		// exemption by burying "blobs" in some other route (the parser
+		// differential behind GHSA-jxjf-p7pv-22m9).
+		isDataPlaneBlobRequest(r) ||
 		!strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, "/api/auth/") ||
 		strings.HasPrefix(path, "/api/workers/") ||
