@@ -53,6 +53,11 @@ type SQLArtifactStore struct {
 	// for why this exists and is deliberately local disk, not the SQL
 	// database WriteArtifact/ReadArtifact use.
 	blobs artifact.Store
+
+	// sharedBlobs backs SharedBlobs()/SharedBlobStoreProvider: a store
+	// another pod can read. Nil unless the deployment configured object
+	// storage, which is the honest default (ADR-038).
+	sharedBlobs artifact.Store
 }
 
 // NewSQLArtifactStore creates (if not already present) the artifacts table
@@ -68,7 +73,13 @@ func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtif
 	if spillDir == "" {
 		spillDir = "./brokoli-artifacts"
 	}
-	s := &SQLArtifactStore{db: db, dialect: dialect, blobs: artifact.NewLocalDiskStore(spillDir)}
+	s := &SQLArtifactStore{
+		db:      db,
+		dialect: dialect,
+		blobs:   artifact.NewLocalDiskStore(spillDir),
+		// Configured separately, and absent by default: see SharedBlobs.
+		sharedBlobs: sharedBlobStoreFromEnv(),
+	}
 	if err := s.ensureSchema(); err != nil {
 		return nil, fmt.Errorf("sql artifact store: %w", err)
 	}
@@ -98,6 +109,19 @@ func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtif
 // through the database instead would add write load and row bloat to
 // solve a problem local disk already solves for free.
 func (s *SQLArtifactStore) Blobs() artifact.Store { return s.blobs }
+
+// SharedBlobs implements SharedBlobStoreProvider: the store another pod
+// can read, or nil when this deployment has not configured one.
+//
+// Nil is the honest answer for the default configuration, and it is why
+// this method exists. Blobs() above is local disk on purpose, and a
+// distributed deployment has many pods with many local disks. Handing
+// that store to a caller staging bytes for a different pod produced
+// exactly the failure it sounds like: the write succeeded, a capability
+// was minted, a work order was dispatched, and the fetch three hops
+// later returned 404 from a component that had done nothing wrong
+// (#572, ADR-038).
+func (s *SQLArtifactStore) SharedBlobs() artifact.Store { return s.sharedBlobs }
 
 func (s *SQLArtifactStore) ensureSchema() error {
 	// TEXT even for created_at rather than a dialect-specific TIMESTAMP

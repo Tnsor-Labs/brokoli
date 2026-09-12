@@ -511,6 +511,25 @@ func (r *Runner) taskBlobStore() artifact.Store {
 	return provider.Blobs()
 }
 
+// taskSharedBlobStore is the store for bytes another process will read:
+// a task input staged for a remote worker, or an output that worker
+// writes back.
+//
+// Distinct from taskBlobStore for the reason ADR-038 gives. That one is
+// local-disk scratch in a distributed deployment, and handing it to a
+// caller staging bytes for a different pod produced a 404 three hops
+// later, from a component that had done nothing wrong (#572).
+//
+// nil is a legitimate answer, and callers must refuse by name rather
+// than falling back to the per-pod store.
+func (r *Runner) taskSharedBlobStore() artifact.Store {
+	provider, ok := r.artifactStore.(SharedBlobStoreProvider)
+	if !ok {
+		return nil
+	}
+	return provider.SharedBlobs()
+}
+
 // supportedTaskRuntimes are the runtime classes this build has a
 // reference adapter for (ADR-033 section 3's required two). Order here
 // does not express a preference -- taskbundlev2.SelectPayload takes the
