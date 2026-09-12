@@ -5,6 +5,7 @@
   import { newNodeId, nodeTypeConfig, autoLayout } from "../lib/dag";
   import { icons } from "../lib/icons";
   import PipelineCanvas from "../components/PipelineCanvas.svelte";
+  import PanelClose from "../components/PanelClose.svelte";
   import NodePalette from "../components/NodePalette.svelte";
   import NodeConfigPanel from "../components/NodeConfigPanel.svelte";
   import DependencyPicker from "../components/DependencyPicker.svelte";
@@ -1028,7 +1029,7 @@
         -->
         <div class="panel-bar">
           <span class="panel-title">Pipeline settings</span>
-          <button class="btn-close" on:click={() => (showPipelineSettings = false)}>Close</button>
+          <PanelClose on:click={() => (showPipelineSettings = false)} />
         </div>
         <div class="settings-grid">
           <!-- Description -->
@@ -1277,11 +1278,6 @@
           <div class="code-view">
             <div class="code-tabs">
               <button
-                class="btn-close code-close"
-                on:click={() => (showCode = false)}
-                title="Close (Esc)">Close</button
-              >
-              <button
                 class="code-tab"
                 class:active={codeFormat === "yaml"}
                 on:click={() => setCodeFormat("yaml")}>YAML</button
@@ -1314,6 +1310,7 @@
                   />
                 </svg>
               </button>
+              <PanelClose on:click={() => (showCode = false)} />
             </div>
             <pre class="code-content {codeFormat}">{codeText}</pre>
           </div>
@@ -1342,7 +1339,7 @@
           <div class="version-panel">
             <div class="version-header">
               <span class="version-title">Version History</span>
-              <button class="btn-close" on:click={() => (showHistory = false)}>Close</button>
+              <PanelClose on:click={() => (showHistory = false)} />
             </div>
             {#if loadingVersions}
               <div class="version-loading">Loading...</div>
@@ -1402,13 +1399,12 @@
       <div class="preview-panel">
         <div class="preview-panel-header">
           <span class="preview-panel-title">Preview (first 10 rows)</span>
-          <button
-            class="btn-close"
+          <PanelClose
             on:click={() => {
               previewResults = {};
               previewNodeId = null;
-            }}>Close</button
-          >
+            }}
+          />
         </div>
         <div class="preview-tabs">
           {#each Object.entries(previewResults) as [nid, result]}
@@ -1922,6 +1918,7 @@
   }
   .code-copy {
     margin-left: auto;
+    margin-left: auto;
     padding: 4px 8px;
     color: var(--text-muted);
     border-radius: 4px;
@@ -1986,9 +1983,6 @@
     font-size: 12px;
     font-weight: 600;
     color: var(--text-secondary);
-  }
-  .code-close {
-    margin-left: auto;
   }
   .btn-close {
     font-size: 11px;

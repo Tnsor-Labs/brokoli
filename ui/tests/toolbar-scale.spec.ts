@@ -209,7 +209,12 @@ test("every panel opened from the overflow can be closed again", async ({ page }
 
     // A visible close control, not only a keyboard escape: someone who
     // opened this with the mouse should be able to shut it with one.
-    await page.locator(panel).getByRole("button", { name: /close/i }).first().click();
+    // The same control in every panel: an X in the corner, found by its
+    // accessible name rather than by visible text, because the visible
+    // text is now an icon.
+    const close = page.locator(panel).locator("button.panel-close");
+    await expect(close, `${action} has no shared close control`).toHaveCount(1);
+    await close.click();
     await expect(page.locator(panel), `${action} could not be closed by its button`).toHaveCount(0);
   }
 });
@@ -224,4 +229,31 @@ test("Escape closes an open panel", async ({ page }) => {
 
   await page.keyboard.press("Escape");
   await expect(page.locator(".settings-panel")).toHaveCount(0);
+});
+
+// One close affordance across the editor, not three. The panels had
+// drifted into two text links and, in the YAML view, one sitting to the
+// left of the format tabs where nothing else lived (#555).
+test("every panel uses the same close control", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await openEditor(page);
+
+  for (const { action, panel } of [
+    { action: "Pipeline settings", panel: ".settings-panel" },
+    { action: "Show YAML", panel: ".code-view" },
+    { action: "Version history", panel: ".version-panel" },
+  ]) {
+    await page.getByRole("button", { name: "More actions" }).click();
+    await page.locator(".overflow-menu").getByText(action, { exact: true }).click();
+
+    const close = page.locator(panel).locator("button.panel-close");
+    await expect(close).toHaveCount(1);
+    await expect(close).toHaveAccessibleName("Close");
+    // An icon, not a word: the X is what people already read as dismiss.
+    await expect(close.locator("svg")).toBeVisible();
+    await expect(close).toHaveText("");
+
+    await close.click();
+    await expect(page.locator(panel)).toHaveCount(0);
+  }
 });
