@@ -54,3 +54,12 @@ type clientAlias = http.Client
 func directTypeAliasClient() {
 	_ = clientAlias{} // want "direct construction of net/http.Client bypasses pkg/netguard"
 }
+
+func directDefaultTransportRoundTrip(req *http.Request) {
+	_, _ = http.DefaultTransport.RoundTrip(req) // want "direct use of net/http.DefaultTransport bypasses pkg/netguard"
+}
+
+func directDefaultTransportReference() {
+	transport := http.DefaultTransport // want "direct use of net/http.DefaultTransport bypasses pkg/netguard"
+	_ = transport
+}
