@@ -11,6 +11,77 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.13] - 2026-09-13
+
+A correctness release. Two of these are silent-wrong-answer defects and
+one is a permission gate that was open by default.
+
+### Security
+
+- **The open-source permission fallback was allow-by-default** (#527,
+  #566) -- @hc12r. `requirePerm`'s fallback denied exactly one case, a
+  viewer attempting a write, and every other role fell through to the
+  handler. Any role the build does not recognise passed every gated
+  route: a typo, a value from a newer build, a role an operator
+  invented, and the empty string included. It is deny-by-default now
+  over the known role vocabulary. Enterprise deployments were never
+  affected, since Team's RBAC replaces this path entirely.
+
+### Fixed
+
+- **A spilled Arrow dataset reached a code node as NDJSON** (#567) --
+  @hc12r. `stageRefToNDJSONFile` copied a referenced dataset byte for
+  byte into a file named `.ndjson` and handed it to the wrapper, with no
+  check on the ref's format. Feeding Arrow to the NDJSON decoder returns
+  **zero rows**, reported as success rather than as an error.
+
+  Newly reachable in v0.11.11, which made Arrow accept integer columns:
+  ordinary tables with an id started spilling as Arrow. **If a code node
+  of yours received an empty dataset from an upstream node on v0.11.11
+  or v0.11.12, this is why.** The function had no test; it has three
+  now.
+- **A worker could not fetch a staged task input, third layer** (#565)
+  -- @hc12r. `JWTAuth` refuses a request with no session, and a worker
+  holds none. It runs before the workspace gate v0.11.12 fixed, so that
+  fix was never reached. Three middlewares sit in front of the
+  data-plane blob routes and each was exempted separately, months apart,
+  each fix uncovering the next. A test now drives the assembled chain
+  and asserts the request arrives, rather than that one middleware
+  permits it.
+- **A duplicate `pipeline_id` is 409, not 500** (#570) -- @hc12r. It
+  answered 500 with the driver's own constraint text, which a client can
+  act on in no way, and it is what an ordinary re-run of a deploy script
+  produces since the id is derived from the name.
+
+### Changed
+
+- **Arrow writes bounded record batches** (#569) -- @hc12r. The encoder
+  built the whole dataset into one record, so the reader's "one record
+  batch becomes one batch of rows" contract resolved to the entire
+  dataset: an Arrow reference materialised on read however carefully the
+  reader was written. Rows now flush every 1000, matching the NDJSON
+  batch size.
+
+  The reference streaming path had never been benchmarked, so the
+  numbers behind every "6-8x" claim in this file were measured on a
+  different path. Measured now, reading a spilled dataset back through
+  `OpenBatches`:
+
+  | rows | codec | ns/op | allocs/op |
+  | --- | --- | --- | --- |
+  | 10,000 | ndjson | 134,760,542 | 299,776 |
+  | 10,000 | arrow | 17,965,713 | 70,353 |
+  | 100,000 | ndjson | 1,029,709,527 | 2,999,956 |
+  | 100,000 | arrow | 164,124,398 | 705,303 |
+
+  7.5x and 6.3x faster, 4.3x fewer allocations, 1.48x smaller on the
+  wire.
+- **A goroutine budget that scaled with nothing** (#568) -- @hc12r. The
+  parked-waits test asserted a fixed margin of 20 while parking 250
+  runs, and failed CI at 21 on a change that touched no engine code.
+  `runtime.NumGoroutine` is process-global, so neighbouring tests land
+  inside a fixed margin. The budget scales with the park count now.
+
 ## [0.11.12] - 2026-09-12
 
 ### Fixed
