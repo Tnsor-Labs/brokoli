@@ -477,8 +477,7 @@ func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) htt
 				return
 			}
 			role, _ := (*mc)["role"].(string)
-			// Viewers can only access read-only endpoints
-			if role == "viewer" && isWritePermission(string(perm)) {
+			if !roleAllows(role, perm) {
 				writeError(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
@@ -489,6 +488,43 @@ func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) htt
 
 // isWritePermission returns true for permissions that modify data.
 // Read-only permissions that viewers can access return false.
+// roleAllows reports whether a role may exercise a permission under the
+// open-source fallback.
+//
+// Deny-by-default, deliberately. This used to refuse exactly one case, a
+// viewer attempting a write, and let every other role value through --
+// including a role the fallback does not recognise, and including the
+// empty string. A check whose default branch is `next.ServeHTTP` is not
+// a permission gate, it is a viewer filter (#527).
+//
+// The recognised set is the workspace role vocabulary
+// (models/workspace.go) plus superadmin, which requireAdmin already
+// treats as admin's equal. Anything outside it is refused rather than
+// guessed at: a role this build has never heard of is exactly the case
+// where assuming permission is least defensible.
+//
+// Enterprise never reaches here. requirePerm delegates to Team's real
+// per-workspace RBAC whenever it is enabled, and this fallback is the
+// single-tenant answer only.
+// superadminRole is spelled the same way requireAdmin spells it; named
+// here so the two cannot drift.
+const superadminRole = "superadmin"
+
+func roleAllows(role string, perm models.Permission) bool {
+	switch role {
+	case string(models.WsRoleAdmin), superadminRole:
+		return true
+	case string(models.WsRoleEditor):
+		// Editors do everything except the host-wide operations, which
+		// route through requireStrictPerm/requireAdmin instead of here.
+		return true
+	case string(models.WsRoleViewer):
+		return !isWritePermission(string(perm))
+	default:
+		return false
+	}
+}
+
 func isWritePermission(perm string) bool {
 	readPerms := map[string]bool{
 		"pipelines.view":   true,
