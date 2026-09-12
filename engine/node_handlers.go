@@ -876,6 +876,63 @@ func sinkFileFormat(node models.Node) string {
 	}
 }
 
+// sinkFileSQLConfig reads the SQL options off a sink_file node.
+//
+// The keys are the ones sql_generate already uses -- table, dialect,
+// create_table, batch_size -- rather than a second vocabulary for the
+// same ideas. Both nodes render through GenerateSQL, so a pipeline
+// author who has configured one already knows how to configure the
+// other.
+//
+// An unset table falls back to the output file's stem, which is almost
+// always what someone writing customers.sql meant. GenerateSQL's own
+// default of "data" still applies when the stem is not a usable
+// identifier, and runSinkFile logs whichever name was used so the
+// choice is visible rather than guessed at.
+func sinkFileSQLConfig(node models.Node, path string) SQLGenConfig {
+	cfg := SQLGenConfig{
+		Dialect:     getStr(node.Config, "dialect"),
+		Table:       getStr(node.Config, "table"),
+		CreateTable: configBool(node.Config["create_table"]),
+	}
+	if bs, ok := node.Config["batch_size"].(float64); ok {
+		cfg.BatchSize = int(bs)
+	}
+	if cfg.Table == "" {
+		cfg.Table = tableNameFromPath(path)
+	}
+	return cfg
+}
+
+// tableNameFromPath turns an output path into a table name, or returns
+// "" when it cannot produce a usable identifier and the generator's own
+// default should stand.
+//
+// Deliberately conservative: letters, digits and underscores only, and
+// never leading with a digit. Anything else would hand GenerateSQL a
+// name its identifier validation rejects, turning a helpful default into
+// a confusing failure.
+func tableNameFromPath(path string) string {
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if stem == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range stem {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		case r == '-' || r == ' ' || r == '.':
+			b.WriteRune('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" || (out[0] >= '0' && out[0] <= '9') {
+		return ""
+	}
+	return out
+}
+
 func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_file node requires input data")
@@ -906,14 +963,26 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 	case "csv":
 		content, err = r.marshalCSV(input)
 	case "sql":
-		// If input has sql_output column, write it directly
+		// A sql_generate node hands its rendered script down in a single
+		// cell; write that through untouched.
 		if len(input.Rows) > 0 {
 			if sql, ok := input.Rows[0]["sql_output"].(string); ok {
 				content = []byte(sql)
 				break
 			}
 		}
-		content, err = json.MarshalIndent(input.Rows, "", "  ")
+		// Any other dataset is generated here. This used to fall through
+		// to the JSON marshaller, so asking for SQL produced JSON in a
+		// .sql file while the log below reported "sql" (#545).
+		//
+		// GenerateSQL is the same generator the sql_generate node uses,
+		// on purpose. It resolves the dialect through pkg/dbdialect, so
+		// quoting, boolean spelling, timestamp layout and the type map
+		// come from the one table ADR-024 exists to keep singular. A
+		// hand-rolled escaper here would be the third copy.
+		var sqlText string
+		sqlText, err = GenerateSQL(sinkFileSQLConfig(node, path), input)
+		content = []byte(sqlText)
 	default: // json
 		content, err = json.MarshalIndent(input.Rows, "", "  ")
 	}
@@ -931,6 +1000,22 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		r.log(node.ID, models.LogLevelInfo, "Wrote %s to %s (%.1f MB, %d rows)", format, filepath.Base(path), mb, len(input.Rows))
 	} else {
 		r.log(node.ID, models.LogLevelInfo, "Wrote %s to %s (%.0f KB, %d rows)", format, filepath.Base(path), float64(len(content))/1024, len(input.Rows))
+	}
+	if format == "sql" {
+		// Say which table and dialect the script was written for. Both
+		// have defaults, and a default nobody can see is the thing that
+		// turns "why does this not load" into an afternoon.
+		cfg := sinkFileSQLConfig(node, path)
+		table := cfg.Table
+		if table == "" {
+			table = "data" // GenerateSQL's own fallback
+		}
+		dialectName := cfg.Dialect
+		if dialectName == "" {
+			dialectName = "generic"
+		}
+		r.log(node.ID, models.LogLevelInfo, "  SQL for table %q, dialect %s, CREATE TABLE: %v",
+			table, dialectName, cfg.CreateTable)
 	}
 	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
 	if unsharedFileStorage() {
