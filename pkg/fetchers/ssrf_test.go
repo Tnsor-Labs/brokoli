@@ -55,11 +55,16 @@ func TestRESTFetcher_BlocksLoopback_WhenPolicyIsDefault(t *testing.T) {
 // one destination trustedSelfRef exists to reach.
 //
 // This dials a private, non-loopback IP directly through selfRefClient's
-// own Transport (same technique as netguard's own DialContext test) --
-// there's no listener at that address, so the dial itself will fail, but
-// what matters is *how*: it must fail with a real network error (refused/
-// timeout/unreachable), never netguard.ErrBlockedTarget, which would mean
-// the policy rejected it before ever attempting to connect.
+// own Transport (same technique as netguard's own DialContext test). The
+// subject is whether the policy permits the attempt, so
+// netguard.ErrBlockedTarget is the only failure: a refusal, a timeout or
+// an unreachable network all mean the policy let the dial through and
+// the network answered for itself.
+//
+// The dial outcome is deliberately not asserted. This test used to
+// require the dial to fail, on the assumption that nothing listens at
+// this address, which made it depend on the network the suite runs on:
+// anywhere 10.43.13.252:8080 answers, a correct policy failed the test.
 func TestRESTFetcher_SelfRefClient_PermitsClusterIP(t *testing.T) {
 	f := &RESTFetcher{}
 	f.ensureClientInitialized(nil)
@@ -67,9 +72,9 @@ func TestRESTFetcher_SelfRefClient_PermitsClusterIP(t *testing.T) {
 	transport := f.selfRefClient.Transport.(*http.Transport)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
-	_, err := transport.DialContext(ctx, "tcp", net.JoinHostPort("10.43.13.252", "8080"))
-	if err == nil {
-		t.Fatal("expected the dial to fail (nothing listening), but it should fail on the network, not the policy")
+	conn, err := transport.DialContext(ctx, "tcp", net.JoinHostPort("10.43.13.252", "8080"))
+	if conn != nil {
+		defer conn.Close()
 	}
 	if errors.Is(err, netguard.ErrBlockedTarget) {
 		t.Fatalf("selfRefClient rejected a private ClusterIP-shaped address at the policy level: %v", err)
