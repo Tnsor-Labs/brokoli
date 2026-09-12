@@ -126,3 +126,73 @@ func TestIgnoringTheHeaderDoesNotWeakenMultiTenantRefusal(t *testing.T) {
 		t.Fatalf("status = %d, want 403; a checkable id must still be refused", rec.Code)
 	}
 }
+
+// A worker fetching a staged task input holds no session and belongs to
+// no user, so there is no workspace to resolve for it. The middleware
+// used to answer 401 before blobAuth could resolve its identity, which
+// made every reference-based task input fail on a multi-tenant fleet
+// with "authentication required".
+//
+// Only reachable with a workspace resolver installed. Without one the
+// rejecting branch is skipped, which is why every single-tenant test
+// passed while a real deployment could not fetch a single blob.
+func TestWorkspaceMiddlewareLetsTheDataPlaneThrough(t *testing.T) {
+	previous := UserWorkspaceResolverFunc
+	UserWorkspaceResolverFunc = func(string) []string { return []string{"owned-workspace"} }
+	t.Cleanup(func() { UserWorkspaceResolverFunc = previous })
+
+	reached := false
+	handler := WorkspaceMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reached = true
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	const blob = "/api/runs/run-1/nodes/t_py/attempts/0/blobs/sha256:" +
+		"d7e4d755ebc3af1c5b26c9a5b9b1f143a55837cc9e44784452fe35dcf42d2032"
+	for _, m := range []string{http.MethodGet, http.MethodPut} {
+		reached = false
+		rec := httptest.NewRecorder()
+		// No claims: exactly what a worker sends.
+		handler.ServeHTTP(rec, httptest.NewRequest(m, blob, nil))
+		if rec.Code != http.StatusNoContent || !reached {
+			t.Errorf("%s blob: status = %d, reached handler = %v; want the data plane to pass through",
+				m, rec.Code, reached)
+		}
+	}
+
+	// The collection POST, whose object id the server assigns.
+	reached = false
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost,
+		"/api/runs/run-1/nodes/t_py/attempts/0/blobs", nil))
+	if rec.Code != http.StatusNoContent || !reached {
+		t.Errorf("POST blobs: status = %d, reached = %v", rec.Code, reached)
+	}
+}
+
+// The exemption is for the data plane's own shape, not for anything
+// containing the word. An ordinary API route with no identity must
+// still be refused, or this would be a hole rather than a fix.
+func TestWorkspaceExemptionDoesNotGeneralise(t *testing.T) {
+	previous := UserWorkspaceResolverFunc
+	UserWorkspaceResolverFunc = func(string) []string { return []string{"owned-workspace"} }
+	t.Cleanup(func() { UserWorkspaceResolverFunc = previous })
+
+	handler := WorkspaceMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	for _, path := range []string{
+		"/api/pipelines",
+		"/api/pipelines/blobs",                      // the word, wrong shape
+		"/api/runs/r/nodes/n/attempts/0/blobs/a/b",  // one segment too many
+		"/api/blobs/sha256:aa",                      // wrong depth
+		"/api/runs/r/nodes/n/attempts/0/notblobs/x", // near miss
+	} {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s: status = %d, want 401; only the data-plane shape is exempt", path, rec.Code)
+		}
+	}
+}
