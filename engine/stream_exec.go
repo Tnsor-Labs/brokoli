@@ -350,6 +350,58 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 // stageRefToNDJSONFile stream-copies a blob-referenced dataset into a temp
 // NDJSON file for a code node's Python subprocess — disk to disk through
 // an I/O buffer, never a Go DataSet. Caller removes the returned file.
+// writeRefAsNDJSON copies a referenced dataset to w as NDJSON, decoding
+// first when the blob is not already NDJSON.
+//
+// The copy used to be unconditional, which was correct only while every
+// spilled dataset was NDJSON. nodeOutputs.spill writes Arrow whenever
+// arrowEncodableSchema accepts the dataset, and #560 widened that to
+// integer columns -- so ordinary tables started spilling as Arrow and
+// this path handed Arrow IPC bytes to a wrapper that reads NDJSON.
+// node_output_store.go says what that costs: "feeding an Arrow blob to
+// the NDJSON decoder ... returns ZERO ROWS, which is the silent data
+// loss".
+//
+// The already-open ReadCloser is passed in rather than reopened, so the
+// NDJSON case stays a plain copy with no second GET.
+func writeRefAsNDJSON(outputs *nodeOutputs, ref *artifact.DatasetRef, rc io.Reader, w io.Writer) error {
+	if ref.Format == artifact.FormatNDJSON || ref.Format == "" {
+		if _, err := io.Copy(w, rc); err != nil {
+			return fmt.Errorf("stage input: %w", err)
+		}
+		return nil
+	}
+
+	// Batch at a time, never the whole dataset: this function exists so a
+	// dataset too large to materialise can still reach a script.
+	batches, closer, err := outputs.OpenBatches(ref)
+	if err != nil {
+		return fmt.Errorf("stage input: open %s dataset: %w", ref.Format, err)
+	}
+	defer closer.Close()
+
+	buf := bufio.NewWriterSize(w, encodeBufferSize)
+	enc := json.NewEncoder(buf)
+	for {
+		batch, err := batches.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("stage input: read %s dataset: %w", ref.Format, err)
+		}
+		for _, row := range batch.Rows {
+			if err := enc.Encode(map[string]interface{}(row)); err != nil {
+				return fmt.Errorf("stage input: encode row: %w", err)
+			}
+		}
+	}
+	if err := buf.Flush(); err != nil {
+		return fmt.Errorf("stage input: flush: %w", err)
+	}
+	return nil
+}
+
 func stageRefToNDJSONFile(outputs *nodeOutputs, ref *artifact.DatasetRef) (string, error) {
 	rc, err := outputs.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
@@ -361,10 +413,10 @@ func stageRefToNDJSONFile(outputs *nodeOutputs, ref *artifact.DatasetRef) (strin
 	if err != nil {
 		return "", fmt.Errorf("create staged input: %w", err)
 	}
-	if _, err := io.Copy(f, rc); err != nil {
+	if err := writeRefAsNDJSON(outputs, ref, rc, f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
-		return "", fmt.Errorf("stage input: %w", err)
+		return "", err
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(path)
