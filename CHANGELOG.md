@@ -11,6 +11,38 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.14] - 2026-09-13
+
+### Fixed
+
+- **A staged task input was written where the worker could not read it**
+  (#572, #574) -- @hc12r. An input above the inline row cap is staged in
+  a blob store and fetched by the claiming worker through the control
+  plane. Staging went through `SQLArtifactStore.Blobs()`, which is local
+  disk, so in a distributed deployment the bytes landed on one pod and
+  the fetch looked on another: 404, after a capability had been minted
+  and a work order dispatched, from a component that had done nothing
+  wrong.
+
+  The store's own comment recorded the assumption that had stopped
+  holding, that spill "has no cross-pod visibility requirement". True of
+  spill, false of task staging, and both were using one store.
+
+  ADR-038 separates them. Spill keeps local disk. Anything another
+  process reads goes to a store declared cross-pod, and staging now
+  refuses by name, saying what to configure, rather than succeeding and
+  failing three hops later.
+
+### Added
+
+- **`S3Store` can be configured** (#574) -- @hc12r. It has been able to
+  hold blobs since #268 and to resolve them by digest since #561, but
+  `NewS3Store` had zero non-test callers, so object storage was code
+  nothing ran. `BROKOLI_BLOB_S3_BUCKET` and its credentials now build
+  it, and it becomes the cross-pod store above. A configured bucket that
+  turns out unusable logs loudly and still yields no store, so an
+  operator's mistake cannot read as an ordinary single-node install.
+
 ## [0.11.13] - 2026-09-13
 
 A correctness release. Two of these are silent-wrong-answer defects and
