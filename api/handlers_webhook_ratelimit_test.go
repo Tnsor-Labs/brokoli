@@ -73,11 +73,11 @@ func TestWebhookRateLimitIsNotClaimedByUnauthenticatedCallers(t *testing.T) {
 	s, e := newWebhookPipeline(t, id, token)
 
 	// An attacker who knows only the pipeline id.
-	if code := postWebhook(t, s, e, id, "whk_wrongtoken0123456789abcdef012345678"); code != http.StatusUnauthorized {
-		t.Fatalf("unauthenticated attempt = %d, want 401", code)
+	if code := postWebhook(t, s, e, id, "whk_wrongtoken0123456789abcdef012345678"); code != http.StatusNotFound {
+		t.Fatalf("unauthenticated attempt = %d, want 404", code)
 	}
-	if code := postWebhook(t, s, e, id, ""); code != http.StatusUnauthorized {
-		t.Fatalf("attempt with no token = %d, want 401", code)
+	if code := postWebhook(t, s, e, id, ""); code != http.StatusNotFound {
+		t.Fatalf("attempt with no token = %d, want 404", code)
 	}
 
 	// The real sender, immediately afterwards, must still be served.

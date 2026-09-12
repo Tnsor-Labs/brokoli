@@ -179,13 +179,12 @@ func TestWebhookTrigger_HidesExistenceOracle(t *testing.T) {
 
 	logs := logBuf.String()
 	for _, want := range []string{
-		"webhook does-not-exist: pipeline not found",
-		"webhook wh-oracle-nohook: webhook not configured",
-		"webhook wh-oracle: invalid webhook token",
+		`webhook "does-not-exist": pipeline not found`,
+		`webhook "wh-oracle-nohook": webhook not configured`,
+		`webhook "wh-oracle": invalid webhook token`,
 	} {
 		if !strings.Contains(logs, want) {
 			t.Errorf("server log missing %q; got:\n%s", want, logs)
 		}
 	}
 }
-
