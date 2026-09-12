@@ -401,3 +401,35 @@ func (s *S3Store) DeleteNamespace(ctx context.Context, namespace string) error {
 		continuation = listOut.NextContinuationToken
 	}
 }
+
+// ResolveDigest implements DigestResolver.
+//
+// Rebuilds the same URI Put returns for that content, so a caller
+// holding only a namespace and a checksum can open a blob without ever
+// being told where it lives. The namespace prefix is a hash of the
+// namespace, so this reproduces the key layout without trusting the
+// caller for any part of it.
+//
+// Without this, S3Store was a valid Store that could not serve a
+// capability blob read: api/handlers_blobs.go type-asserts
+// DigestResolver and answers 500 when the assertion fails, so the data
+// plane was local-disk-only whatever the deployment configured.
+func (s *S3Store) ResolveDigest(namespace, checksum string) (*ArtifactRef, error) {
+	if namespace == "" {
+		return nil, fmt.Errorf("artifact: namespace is required")
+	}
+	digest, ok := strings.CutPrefix(checksum, "sha256:")
+	if !ok || !isHex(digest) {
+		return nil, fmt.Errorf("artifact: %q is not a sha256:<hex> checksum", checksum)
+	}
+	return &ArtifactRef{
+		URI:       fmt.Sprintf("%s://%s/%s", S3Scheme, s.namespacePrefix(namespace), digest),
+		Checksum:  checksum,
+		MediaType: MediaTypeOctetStream,
+	}, nil
+}
+
+// Asserted at compile time, the same way LocalDiskStore does it: the
+// interface is discovered by type assertion at run time, so nothing
+// else would notice this being dropped.
+var _ DigestResolver = (*S3Store)(nil)
