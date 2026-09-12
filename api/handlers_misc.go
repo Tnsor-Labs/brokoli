@@ -77,20 +77,48 @@ var webhookLimiter = struct {
 	last map[string]time.Time
 }{last: make(map[string]time.Time)}
 
+// webhookMinInterval is the shortest gap allowed between two triggers of
+// the same pipeline's webhook.
+const webhookMinInterval = 10 * time.Second
+
+// claimWebhookSlot reports whether this pipeline may trigger now, and
+// records the attempt when it may.
+//
+// Only ever called for a caller that has already proved it holds the
+// pipeline's webhook token. That ordering is the point. The check used
+// to run first, on the raw {id} from the URL and before any of the
+// checks below it, which meant an unauthenticated caller could hold a
+// real pipeline's slot indefinitely by sending one request every ten
+// seconds: the legitimate sender then received 429 forever while the
+// attacker's own 401s cost it nothing. It also meant the map took an
+// entry for any {id} anyone sent, including ids matching no pipeline,
+// and nothing ever removed one.
+//
+// Expired entries are dropped on each successful claim. That sweep is
+// O(entries), but it runs at most once per pipeline per interval and
+// the map now holds only real, authenticated pipelines, so it stays
+// proportional to recently active webhooks rather than to total
+// requests ever received.
+func claimWebhookSlot(pipelineID string, now time.Time) bool {
+	webhookLimiter.Lock()
+	defer webhookLimiter.Unlock()
+
+	if last, ok := webhookLimiter.last[pipelineID]; ok && now.Sub(last) < webhookMinInterval {
+		return false
+	}
+	for id, at := range webhookLimiter.last {
+		if now.Sub(at) >= webhookMinInterval {
+			delete(webhookLimiter.last, id)
+		}
+	}
+	webhookLimiter.last[pipelineID] = now
+	return true
+}
+
 // webhookTriggerHandler handles POST /pipelines/{id}/webhook — triggers a pipeline run via webhook token.
 func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-
-		// Rate limit: max 1 webhook trigger per pipeline per 10 seconds
-		webhookLimiter.Lock()
-		if last, ok := webhookLimiter.last[id]; ok && time.Since(last) < 10*time.Second {
-			webhookLimiter.Unlock()
-			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded — try again in 10 seconds")
-			return
-		}
-		webhookLimiter.last[id] = time.Now()
-		webhookLimiter.Unlock()
 
 		token := r.URL.Query().Get("token")
 		if token == "" {
@@ -107,6 +135,14 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 		}
 		if !engine.ValidateWebhookToken(token, p.WebhookToken) {
 			writeError(w, http.StatusUnauthorized, "invalid webhook token")
+			return
+		}
+
+		// Rate limit: max 1 webhook trigger per pipeline per 10 seconds.
+		// Claimed only now that the caller has proved it may trigger this
+		// pipeline at all (#534).
+		if !claimWebhookSlot(p.ID, time.Now()) {
+			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded, try again in 10 seconds")
 			return
 		}
 		run, err := e.RunPipeline(p.ID)

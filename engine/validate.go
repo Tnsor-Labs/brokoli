@@ -43,6 +43,16 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		ve.Add("Pipeline name is required")
 	}
 
+	// A schedule that cannot be parsed used to save cleanly and then fail
+	// silently at registration: no run, no error, nothing in the editor to
+	// say why (#552). The scheduler's own parser decides, so this can
+	// never reject something that would have worked.
+	if p.Schedule != "" {
+		if _, err := scheduleFor(p.Schedule, p.ScheduleTimezone); err != nil {
+			ve.Add(fmt.Sprintf("Invalid schedule %q: %v", p.Schedule, err))
+		}
+	}
+
 	if !models.IsIRVersionSupported(p.IRVersion) {
 		ve.Add(fmt.Sprintf("Unsupported pipeline IR version %q (supported: %s)", p.IRVersion, strings.Join(models.SupportedIRVersions, ", ")))
 	}
