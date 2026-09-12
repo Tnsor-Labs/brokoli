@@ -10,17 +10,34 @@
   let selectedIndex = 0;
   let loading = false;
   let inputEl: HTMLInputElement;
-  let searchTimer: ReturnType<typeof setTimeout>;
+  let searchTimer: ReturnType<typeof setTimeout> | undefined;
 
   interface SearchResult {
-    type: "pipeline" | "connection" | "variable" | "page";
+    type: "pipeline" | "connection" | "variable" | "page" | "action";
     id: string;
     name: string;
     description: string;
     icon: string; // bk-* BrandIcon name
     href: string;
     meta?: string;
+    /** Set for type "action": run this instead of navigating. */
+    run?: () => void;
   }
+
+  import { commands } from "../lib/commands";
+
+  // Actions the current page contributed. The palette could already find
+  // things; this is what lets it do things, so a new editor feature does
+  // not need a toolbar button to be reachable (#555).
+  $: actionResults = $commands.map((c) => ({
+    type: "action" as const,
+    id: "cmd:" + c.id,
+    name: c.label,
+    description: c.hint ? `Action  ${c.hint}` : "Action",
+    icon: "bkCommand",
+    href: "",
+    run: c.run,
+  }));
 
   // Static pages for navigation
   const pages: SearchResult[] = [
@@ -116,11 +133,18 @@
 
   function search(q: string) {
     if (!q.trim()) {
-      results = pages;
+      // Actions first when the box is empty: on a page that registered
+      // some, "what can I do here" is the more useful default than a
+      // list of places to go.
+      results = [...actionResults, ...pages];
       return;
     }
     const s = q.toLowerCase();
     const matched: SearchResult[] = [];
+
+    for (const a of actionResults) {
+      if (a.name.toLowerCase().includes(s)) matched.push(a);
+    }
 
     // Pipelines
     for (const p of pipelines) {
@@ -211,6 +235,14 @@
   }
 
   function navigate(result: SearchResult) {
+    // An action runs where it was registered; only a destination moves
+    // the URL. Treating the two the same is what made Enter on an
+    // action navigate to the dashboard.
+    if (result.type === "action" && result.run) {
+      close();
+      result.run();
+      return;
+    }
     window.location.hash = result.href.replace("#", "");
     close();
   }
@@ -237,6 +269,20 @@
       e.preventDefault();
       selectedIndex = Math.max(selectedIndex - 1, 0);
       return;
+    }
+    if (e.key === "Enter") {
+      // Act on what was typed, not on what the last debounce produced.
+      // The search is debounced by 200ms, so Enter straight after typing
+      // used to act on the previous result list: the default list starts
+      // with Dashboard, so a fast typist was silently sent to "#/". That
+      // was survivable while every result was a destination. Now that a
+      // result can run an action, acting on a stale list would run the
+      // wrong one.
+      if (searchTimer) {
+        clearTimeout(searchTimer);
+        searchTimer = undefined;
+        search(query);
+      }
     }
     if (e.key === "Enter" && results[selectedIndex]) {
       navigate(results[selectedIndex]);

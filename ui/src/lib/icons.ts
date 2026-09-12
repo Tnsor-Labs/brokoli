@@ -9,6 +9,14 @@ export interface IconDef {
 }
 
 export const icons: Record<string, IconDef> = {
+  // Close: the two strokes people already read as "dismiss". Drawn on
+  // the same 24x24 grid as everything else and inset to 6..18 so its
+  // optical weight matches the other glyphs at 14px rather than
+  // filling the box and looking heavier than its neighbours.
+  close: {
+    d: `M18 6L6 18M6 6l12 12`,
+  },
+
   // ── Node types (data orchestration specific) ───────────────────
 
   // File source: document with small arrow out from center
