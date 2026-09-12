@@ -81,3 +81,8 @@ __pycache__/
 # build against unreleased core (a `replace` target). Never part of the
 # repo, and large enough that committing it once is painful to undo.
 _core/
+
+# Exports written by the local test fixture (scripts/devdata). A 100k-row
+# run produces about 55MB across the three formats, and the whole point
+# of the fixture is that people run it repeatedly.
+scripts/devdata/out/
