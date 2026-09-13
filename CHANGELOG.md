@@ -11,6 +11,30 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.16] - 2026-09-13
+
+### Added
+
+- **The streamed codec is named in the node log** (#583) -- @hc12r.
+  v0.11.15 gave the streaming write path two codecs, chosen per stream
+  from the first batch, and nothing said which one ran. That matters
+  because the fallback is deliberate: `arrowEncodableSchema` declines any
+  dataset it cannot represent exactly and NDJSON takes over, so a
+  pipeline can quietly lose the faster path and look identical from the
+  outside.
+
+  ```
+  Streamed 300000 rows, 5 columns from stream.csv (11.3 MB)
+  by reference as arrow-ipc (never materialized)
+  ```
+
+  The streamed `source_file`, `source_db` and `transform` lines all carry
+  it. The name is the same string the ref carries and the same one
+  `BROKOLI_STREAM_CODEC` accepts, so an operator who reads it can act on
+  it; a test asserts that correspondence rather than leaving it to
+  coincidence.
+
+
 ## [0.11.15] - 2026-09-13
 
 ### Fixed
