@@ -11,6 +11,7 @@ import (
 	"math"
 	"testing"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
@@ -62,9 +63,30 @@ func TestArrowEncodableSchema_RefusesWhatItCannotRoundTrip(t *testing.T) {
 		// decoder returns int64, which is what the NDJSON path yields
 		// for a whole number too. See
 		// TestArrowEncodableSchema_AcceptsIntegerColumns.
-		"an integer mixed with a float in one column": {
+		//
+		// "an integer mixed with a float in one column" was refused here
+		// too, and is accepted now for the same kind of reason: Float64
+		// holds both and the decoder narrows the whole ones back to
+		// int64, so the round trip is exact. See
+		// TestArrowWidensAMixedNumericColumnExactly. What is still
+		// refused is an integer past 2^53, which that widening would
+		// silently round.
+		"an integer past 2^53 mixed with a float": {
 			Columns: []string{"v"},
-			Rows:    []common.DataRow{{"v": int64(1)}, {"v": float64(1.5)}},
+			Rows: []common.DataRow{
+				{"v": int64(9007199254740993)},
+				{"v": float64(1.5)},
+			},
+		},
+		"the too-large integer appearing after the float": {
+			// Order matters: the widening is decided at the float and the
+			// integer that breaks it may come later.
+			Columns: []string{"v"},
+			Rows: []common.DataRow{
+				{"v": float64(1.5)},
+				{"v": int64(1)},
+				{"v": int64(9007199254740993)},
+			},
 		},
 	}
 	for name, ds := range cases {
@@ -274,6 +296,86 @@ func TestArrowBoundedBatchesRoundTripExactly(t *testing.T) {
 		want := int64(9007199254740993 + int64(i))
 		if got[i]["id"] != want {
 			t.Errorf("row %d id = %v (%T), want %d", i, got[i]["id"], got[i]["id"], want)
+		}
+	}
+}
+
+// A column holding both int64 and float64 is what every decoded dataset
+// looks like: numericValue returns int64 for whole numbers and float64
+// otherwise, so a float column with some whole values comes back mixed
+// from both codecs. Re-encoding one used to fall back to NDJSON forever
+// after, which meant a transform reading an Arrow input could never
+// write an Arrow output.
+//
+// The property that makes widening legitimate is not "close enough", it
+// is that the values come back byte-identical to what NDJSON gives.
+func TestArrowWidensAMixedNumericColumnExactly(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"amount"},
+		Rows: []common.DataRow{
+			{"amount": int64(150)},   // whole: numericValue made it int64
+			{"amount": float64(1.5)}, // fractional: stayed float64
+			{"amount": int64(0)},
+			{"amount": float64(-2.25)},
+			{"amount": int64(9007199254740992)}, // 2^53 exactly, still exact
+			{"amount": nil},
+		},
+	}
+	if _, ok := arrowEncodableSchema(ds); !ok {
+		t.Fatal("a mixed int64/float64 column was refused; Float64 represents both exactly")
+	}
+
+	var buf bytes.Buffer
+	if err := EncodeArrowIPC(&buf, ds); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	got, err := decodeDatasetRef(bytes.NewReader(buf.Bytes()),
+		&artifact.DatasetRef{Format: artifact.FormatArrowIPC, Columns: ds.Columns})
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(got.Rows) != len(ds.Rows) {
+		t.Fatalf("got %d rows, want %d", len(got.Rows), len(ds.Rows))
+	}
+	// Identical values AND identical Go types, which is the whole point:
+	// downstream code type-switches on these.
+	for i, want := range ds.Rows {
+		if got.Rows[i]["amount"] != want["amount"] {
+			t.Errorf("row %d: got %v (%T), want %v (%T)",
+				i, got.Rows[i]["amount"], got.Rows[i]["amount"], want["amount"], want["amount"])
+		}
+	}
+}
+
+// The same dataset through NDJSON, so "exact" is measured against the
+// incumbent rather than against itself.
+func TestArrowAndNDJSONAgreeOnAMixedNumericColumn(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"amount"},
+		Rows: []common.DataRow{
+			{"amount": int64(150)}, {"amount": float64(1.5)}, {"amount": float64(4)},
+		},
+	}
+	var arrowBuf, ndjsonBuf bytes.Buffer
+	if err := EncodeArrowIPC(&arrowBuf, ds); err != nil {
+		t.Fatalf("encode arrow: %v", err)
+	}
+	if err := EncodeNDJSON(&ndjsonBuf, ds); err != nil {
+		t.Fatalf("encode ndjson: %v", err)
+	}
+	viaArrow, err := decodeDatasetRef(bytes.NewReader(arrowBuf.Bytes()),
+		&artifact.DatasetRef{Format: artifact.FormatArrowIPC, Columns: ds.Columns})
+	if err != nil {
+		t.Fatalf("decode arrow: %v", err)
+	}
+	viaNDJSON, err := DecodeNDJSON(bytes.NewReader(ndjsonBuf.Bytes()), ds.Columns)
+	if err != nil {
+		t.Fatalf("decode ndjson: %v", err)
+	}
+	for i := range ds.Rows {
+		a, n := viaArrow.Rows[i]["amount"], viaNDJSON.Rows[i]["amount"]
+		if a != n {
+			t.Errorf("row %d: arrow gave %v (%T), ndjson gave %v (%T)", i, a, a, n, n)
 		}
 	}
 }

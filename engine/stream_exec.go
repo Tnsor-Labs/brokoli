@@ -93,26 +93,48 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		err error
 	}
 	putDone := make(chan putResult, 1)
-	go func() {
-		ref, err := outputs.blobs.Put(context.Background(), outputs.namespace, pr, artifact.PutOptions{
-			MediaType: artifact.MediaTypeNDJSON,
-		})
-		if err != nil {
-			// Unblock the encoder side if Put failed mid-stream.
-			_ = pr.CloseWithError(err)
-		}
-		putDone <- putResult{ref, err}
-	}()
 
-	// Buffered for the same reason as EncodeNDJSON: pw is an io.Pipe,
-	// and an unbuffered write per batch costs a scheduler round-trip that
-	// the store on the other end is not waiting on.
-	encBuf := bufio.NewWriterSize(pw, encodeBufferSize)
-	enc := json.NewEncoder(encBuf)
-	enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
+	// Put does not start until the first output batch has chosen a codec,
+	// because the media type labelling the blob is an argument to it. Once
+	// started it drains the pipe this writes into. See
+	// arrow_stream_encode.go for why the choice cannot be deferred and
+	// what a later batch disagreeing with it costs.
+	writer := newDatasetStreamWriter(pw, streamCodecFromEnv())
+	outFormat := artifact.FormatNDJSON
+	started := false
+	startPut := func(first *common.DataSet) error {
+		started = true
+		format, mediaType, err := writer.Decide(first)
+		if err != nil {
+			return err
+		}
+		outFormat = format
+		go func() {
+			ref, perr := outputs.blobs.Put(context.Background(), outputs.namespace, pr, artifact.PutOptions{
+				MediaType: mediaType,
+			})
+			if perr != nil {
+				// Unblock the encoder side if Put failed mid-stream.
+				_ = pr.CloseWithError(perr)
+			}
+			putDone <- putResult{ref, perr}
+		}()
+		return nil
+	}
+	// write is the single path output takes, so the row-at-a-time loop
+	// and the aggregation's one final dataset cannot disagree about the
+	// codec, the row count or the empty sentinel.
+	write := func(ds *common.DataSet) error {
+		if !started {
+			if err := startPut(ds); err != nil {
+				return err
+			}
+		}
+		return writer.WriteBatch(ds)
+	}
+
 	var outCols []string
 	rowCount := int64(0)
-	wroteAny := false
 	var streamErr error
 	for {
 		batch, err := batches.Next()
@@ -137,17 +159,11 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		if outCols == nil && len(batch.Columns) > 0 {
 			outCols = batch.Columns
 		}
-		for _, row := range batch.Rows {
-			if err := enc.Encode(row); err != nil {
-				streamErr = fmt.Errorf("encode streamed output: %w", err)
-				break
-			}
-			rowCount++
-			wroteAny = true
-		}
-		if streamErr != nil {
+		if err := write(batch); err != nil {
+			streamErr = fmt.Errorf("encode streamed output: %w", err)
 			break
 		}
+		rowCount += int64(len(batch.Rows))
 	}
 	if streamErr == nil && aggState != nil {
 		final := aggState.finalize()
@@ -157,29 +173,25 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 			streamErr = err
 		} else {
 			outCols = final.Columns
-			for _, row := range final.Rows {
-				if err := enc.Encode(row); err != nil {
-					streamErr = fmt.Errorf("encode aggregated output: %w", err)
-					break
-				}
-				rowCount++
-				wroteAny = true
+			if err := write(final); err != nil {
+				streamErr = fmt.Errorf("encode aggregated output: %w", err)
+			} else {
+				rowCount += int64(len(final.Rows))
 			}
 		}
 	}
-	// Flush before the sentinel and before closing: whatever the encoder
-	// buffered is not in the pipe yet, and closing would discard it.
-	if streamErr == nil {
-		if err := encBuf.Flush(); err != nil {
+	if !started {
+		// Nothing was produced, so no batch chose a codec. Decide with
+		// nothing, which selects NDJSON and its empty-dataset sentinel,
+		// and start the Put that has to consume it.
+		if err := startPut(nil); err != nil && streamErr == nil {
 			streamErr = err
 		}
 	}
-	if streamErr == nil && !wroteAny {
-		// Preserve EncodeNDJSON's empty-dataset sentinel so the blob
-		// decodes identically to a batch-written empty output.
-		if _, err := pw.Write([]byte("[]")); err != nil {
-			streamErr = err
-		}
+	// Close flushes whatever the encoder buffered, which is not in the
+	// pipe yet, and writes the empty sentinel when nothing was produced.
+	if _, err := writer.Close(); err != nil && streamErr == nil {
+		streamErr = err
 	}
 	_ = pw.CloseWithError(streamErr)
 	put := <-putDone
@@ -205,7 +217,7 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 	}
 	return &artifact.DatasetRef{
 		ArtifactRef: *put.ref,
-		Format:      artifact.FormatNDJSON,
+		Format:      outFormat,
 		Columns:     outCols,
 		RowCount:    rowCount,
 	}, nil

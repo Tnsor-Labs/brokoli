@@ -28,9 +28,6 @@ import (
 	"io"
 
 	"github.com/apache/arrow-go/v18/arrow"
-	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/arrow-go/v18/arrow/ipc"
-	"github.com/apache/arrow-go/v18/arrow/memory"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
@@ -50,13 +47,19 @@ func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
 	fields := make([]arrow.Field, 0, len(ds.Columns))
 	for _, col := range ds.Columns {
 		var dt arrow.DataType
+		// Set by an integer too large to survive a widening to Float64.
+		// Tracked per column rather than checked at the moment of
+		// widening, because the integer that breaks it may be seen before
+		// the float that forces the decision.
+		lossyIfWidened := false
+		widened := false
 		for _, row := range ds.Rows {
 			v, present := row[col]
 			if !present || v == nil {
 				continue
 			}
 			var this arrow.DataType
-			switch v.(type) {
+			switch n := v.(type) {
 			case bool:
 				this = arrow.FixedWidthTypes.Boolean
 			case string:
@@ -64,6 +67,15 @@ func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
 			case float64:
 				this = arrow.PrimitiveTypes.Float64
 			case int64, int:
+				var i int64
+				if v64, ok := n.(int64); ok {
+					i = v64
+				} else {
+					i = int64(n.(int))
+				}
+				if !exactAsFloat64(i) {
+					lossyIfWidened = true
+				}
 				// Integers were excluded here on the grounds that mapping
 				// them back had not been decided. It has now: Arrow Int64
 				// holds every int64 exactly and the decoder returns int64
@@ -84,12 +96,39 @@ func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
 			}
 			if dt == nil {
 				dt = this
-			} else if dt.ID() != this.ID() {
-				return nil, false // mixed types in one column
+				continue
 			}
+			if dt.ID() == this.ID() {
+				continue
+			}
+			// A column holding both int64 and float64 is the one mixture
+			// that is exactly representable, and it is not exotic: it is
+			// what every decoded dataset looks like. numericValue returns
+			// int64 for any whole number and float64 otherwise, so a
+			// float column with some whole values comes back mixed from
+			// BOTH codecs, and re-encoding it was falling back to NDJSON
+			// forever after.
+			//
+			// Float64 holds them all, and the decoder narrows the whole
+			// ones back to int64 on the way out, so a row that went in as
+			// int64(3) comes back as int64(3). Only integers past 2^53
+			// break that, and those are refused by checking every one of
+			// them rather than assuming.
+			if isNumericID(dt.ID()) && isNumericID(this.ID()) {
+				dt = arrow.PrimitiveTypes.Float64
+				widened = true
+				continue
+			}
+			return nil, false // mixed types in one column
 		}
 		if dt == nil {
 			return nil, false // all-null column: no type to infer
+		}
+		// Re-checked after the whole column is scanned, not only where the
+		// widening was decided: the integer that cannot survive it may
+		// appear after the float that forces it.
+		if widened && lossyIfWidened {
+			return nil, false
 		}
 		fields = append(fields, arrow.Field{Name: col, Type: dt, Nullable: true})
 	}
@@ -108,78 +147,24 @@ func EncodeArrowIPC(w io.Writer, ds *common.DataSet) error {
 		return fmt.Errorf("dataset is not exactly representable as arrow: use %s", artifactFormatNDJSONName)
 	}
 
-	wr := ipc.NewWriter(w, ipc.WithSchema(schema))
-	b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
-	defer b.Release()
-
-	// Flush the builder as one record batch and start the next.
+	// The appender, the batching and the flush all live in
+	// arrowStreamEncoder, which the streaming producers need anyway.
+	// Keeping a second copy here is how the two would drift: this one
+	// would learn a type the streaming one did not, and a dataset would
+	// encode differently depending on which path it took.
 	//
-	// Called every arrowRecordRows rows rather than once at the end,
-	// which is what this did. A single record meant the reader's
-	// "one record batch becomes one batch of rows" contract resolved to
-	// the whole dataset, so ArrowBatchReader streamed correctly over a
-	// stream that had nothing to stream: an Arrow ref materialised on
-	// read no matter how carefully the reader was written.
-	flush := func() error {
-		rec := b.NewRecord()
-		defer rec.Release()
-		if rec.NumRows() == 0 {
-			return nil
-		}
-		if err := wr.Write(rec); err != nil {
-			return fmt.Errorf("arrow encode: %w", err)
-		}
-		return nil
-	}
-
-	pending := 0
-	for _, row := range ds.Rows {
-		for i, col := range ds.Columns {
-			v, present := row[col]
-			if !present || v == nil {
-				b.Field(i).AppendNull()
-				continue
-			}
-			switch fb := b.Field(i).(type) {
-			case *array.BooleanBuilder:
-				fb.Append(v.(bool))
-			case *array.StringBuilder:
-				fb.Append(v.(string))
-			case *array.Float64Builder:
-				fb.Append(v.(float64))
-			case *array.Int64Builder:
-				// Both spellings reach the same Arrow type. The schema
-				// pass already established the column is integral, so a
-				// value of any other kind here is a bug in that pass
-				// rather than data to coerce.
-				switch n := v.(type) {
-				case int64:
-					fb.Append(n)
-				case int:
-					fb.Append(int64(n))
-				default:
-					return fmt.Errorf("arrow encode: column %q inferred as int64 holds %T", col, v)
-				}
-			default:
-				// Unreachable: arrowEncodableSchema only ever produces
-				// the builder kinds handled above. Named rather
-				// than ignored so a future type added there without a
-				// case here fails instead of silently dropping a column.
-				return fmt.Errorf("arrow encode: no builder for column %q", col)
-			}
-		}
-		pending++
-		if pending >= arrowRecordRows {
-			if err := flush(); err != nil {
-				return err
-			}
-			pending = 0
-		}
-	}
-	if err := flush(); err != nil {
+	// Batches are flushed every arrowRecordRows rather than written as
+	// one record, which is what this did. A single record meant the
+	// reader's "one record batch becomes one batch of rows" contract
+	// resolved to the whole dataset, so ArrowBatchReader streamed
+	// correctly over a stream that had nothing to stream: an Arrow ref
+	// materialised on read no matter how carefully the reader was
+	// written.
+	enc := newArrowStreamEncoder(w, schema)
+	if err := enc.WriteBatch(ds); err != nil {
 		return err
 	}
-	return wr.Close()
+	return enc.Close()
 }
 
 // arrowRecordRows is how many rows go into one Arrow record batch.
@@ -195,3 +180,21 @@ const arrowRecordRows = streamBatchRows
 // spelled out rather than imported to keep this file free of a
 // dependency it otherwise would not need.
 const artifactFormatNDJSONName = "ndjson"
+
+// isNumericID reports whether an Arrow type is one of the two numeric
+// kinds this encoder infers, which are the only pair it will widen.
+func isNumericID(id arrow.Type) bool {
+	return id == arrow.INT64 || id == arrow.FLOAT64
+}
+
+// exactAsFloat64 reports whether an integer survives a round trip
+// through float64.
+//
+// The round trip is the criterion, not a magnitude bound. Past 2^53 the
+// representable integers thin out but do not stop: 2^54 is exact and
+// 2^53+1 is not, so a bound would refuse values that are fine and a
+// reader would have to take the number on trust. This asks the question
+// being relied on.
+func exactAsFloat64(v int64) bool {
+	return int64(float64(v)) == v
+}
