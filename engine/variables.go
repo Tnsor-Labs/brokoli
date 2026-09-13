@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"regexp"
 	"strings"
@@ -87,6 +88,25 @@ func (vc *VariableContext) resolveKey(key string) string {
 		}
 		return "${" + key + "}"
 	case "env":
+		// Deny by default. NewVariableContext copies the WHOLE server
+		// environment into vc.Env, so before this gate ${env.NAME}
+		// returned any of it -- including BROKOLI_ENCRYPTION_KEY, which
+		// decrypts every stored credential, and BROKOLI_JWT_SECRET, which
+		// mints any session. Authoring a pipeline is not supposed to be a
+		// way to read the control plane's own secrets, and it was.
+		//
+		// A refused reference stays VISIBLE as ${env.NAME} rather than
+		// resolving to empty, for the reason the interval case above
+		// gives: an empty string is the silent kind of wrong, and the
+		// visible kind gets fixed. A name that is allowed but genuinely
+		// unset still resolves to empty, which is what it always did.
+		if !pipelineEnvAllowed(name) {
+			log.Printf("[variables] refusing ${env.%s}: not in %s. "+
+				"Pipeline templating reads only environment variables an operator has "+
+				"listed there; the server's own environment holds its database URL, "+
+				"signing secret and encryption key.", name, pipelineEnvAllowEnv)
+			return "${" + key + "}"
+		}
 		if v, ok := vc.Env[name]; ok {
 			return v
 		}
@@ -149,4 +169,43 @@ func (vc *VariableContext) resolveValue(v interface{}) interface{} {
 	default:
 		return v
 	}
+}
+
+// pipelineEnvAllowEnv names the operator's allowlist for ${env.*}.
+//
+// An allowlist rather than a denylist, because a denylist has to
+// enumerate every secret anyone will ever put in the environment and is
+// wrong the first time someone adds one. This is wrong only in the
+// direction of refusing something harmless, which is visible and takes
+// one setting to fix.
+const pipelineEnvAllowEnv = "BROKOLI_PIPELINE_ENV_ALLOW"
+
+// alwaysDeniedEnv can never be read through ${env.*}, even if an operator
+// lists it in the allowlist.
+//
+// Defence in depth against a typo, not against a determined operator:
+// anyone who can set the allowlist can also set the pipeline's config
+// directly. But these four are the ones where a slip is unrecoverable --
+// the encryption key decrypts every stored credential, the signing secret
+// mints any session, and the database URL is direct access to every
+// tenant's rows.
+var alwaysDeniedEnv = map[string]bool{
+	"BROKOLI_ENCRYPTION_KEY":         true,
+	"BROKOLI_JWT_SECRET":             true,
+	"BROKOLI_DB_URL":                 true,
+	"BROKOLI_LICENSE_SIGNING_SECRET": true,
+}
+
+// pipelineEnvAllowed reports whether a pipeline may read this environment
+// variable through ${env.*}.
+func pipelineEnvAllowed(name string) bool {
+	if name == "" || alwaysDeniedEnv[strings.ToUpper(name)] {
+		return false
+	}
+	for _, allowed := range strings.Split(os.Getenv(pipelineEnvAllowEnv), ",") {
+		if allowed = strings.TrimSpace(allowed); allowed != "" && allowed == name {
+			return true
+		}
+	}
+	return false
 }

@@ -10,6 +10,10 @@ import (
 func TestResolve_EnvVar(t *testing.T) {
 	os.Setenv("BROKED_TEST_VAR", "hello")
 	defer os.Unsetenv("BROKED_TEST_VAR")
+	// ${env.*} is deny-by-default now: the server's own environment holds
+	// its database URL, signing secret and encryption key, and this
+	// resolver used to hand back any of them. An operator opts a name in.
+	t.Setenv(pipelineEnvAllowEnv, "BROKED_TEST_VAR")
 
 	vc := NewVariableContext(nil, "run-1", time.Now())
 	result := vc.Resolve("value is ${env.BROKED_TEST_VAR}")

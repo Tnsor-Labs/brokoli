@@ -151,6 +151,11 @@ func TestLineage_CrossPipelineViaSharedAsset(t *testing.T) {
 }
 
 func TestLineage_VariableResolution(t *testing.T) {
+	// Lineage resolves pipeline variables without running anything, which
+	// is exactly why ${env.*} is deny-by-default: before that, this graph
+	// would happily render a server secret into an asset id. The variable
+	// under test is opted in explicitly.
+	t.Setenv(pipelineEnvAllowEnv, "TEST_PATH")
 	// Set env var for testing
 	t.Setenv("TEST_PATH", "/resolved/data.csv")
 
