@@ -1,103 +1,125 @@
 package engine
 
 import (
-	"database/sql"
-	"path/filepath"
+	"context"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	_ "modernc.org/sqlite"
 )
 
-func capTestStore(t *testing.T) *SQLArtifactStore {
-	t.Helper()
-	dir := t.TempDir()
-	db, err := sql.Open("sqlite", filepath.Join(dir, "a.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-	s, err := NewSQLArtifactStore(db, "sqlite", filepath.Join(dir, "blobs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
+// The cap exists to stop one artifact becoming an unbounded column value.
+// WriteArtifactRef checks ref.SizeBytes, which is the BLOB's size, and
+// for a compact format that is not the number that lands in the column:
+// the blob is Arrow, the column is NDJSON, and the gap grows with how
+// compressible the data is. Measured on a fleet, 300,000 rows were a
+// 13 MB Arrow blob and a 27 MB row.
+//
+// So a ref comfortably under the cap could write a row well over it, and
+// nothing would notice.
 
-func wideDataSet(rows int) *common.DataSet {
-	pad := strings.Repeat("x", 500)
-	ds := &common.DataSet{Columns: []string{"id", "padding"}}
+// wideDataset builds rows whose NDJSON is far larger than their Arrow,
+// which is what a real table with repeated low-cardinality strings looks
+// like: Arrow dictionary-free but columnar and typed, NDJSON repeating
+// every key name on every row.
+func wideDataset(rows int) *common.DataSet {
+	cols := []string{
+		"customer_identifier", "transaction_category", "settlement_status",
+		"originating_region", "counterparty_name",
+	}
+	ds := &common.DataSet{Columns: cols}
 	for i := 0; i < rows; i++ {
-		ds.Rows = append(ds.Rows, common.DataRow{"id": float64(i), "padding": pad})
+		ds.Rows = append(ds.Rows, common.DataRow{
+			"customer_identifier":  int64(i),
+			"transaction_category": "category-alpha",
+			"settlement_status":    "settled",
+			"originating_region":   "region-north",
+			"counterparty_name":    "counterparty-with-a-long-name",
+		})
 	}
 	return ds
 }
 
-// An artifact here is a single column value, so a large one is held whole
-// in memory and sent as one statement parameter. Past the cap the store
-// declines instead of trying — which is what stopped a 100 MB write from
-// OOM-killing both the worker and a Postgres backend.
-func TestWriteArtifactDeclinesOversized(t *testing.T) {
-	s := capTestStore(t)
-	t.Setenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES", "100000") // 100 KB
+func TestSQLArtifactCapMeasuresTheBytesActuallyStored(t *testing.T) {
+	s := newSQLArtifactTestStore(t)
+	ds := wideDataset(20000)
 
-	err := s.WriteArtifact("run-1", "big_node", "", wideDataSet(1000)) // ~0.5 MB
-	if err == nil {
-		t.Fatal("expected the oversized artifact to be declined")
-	}
-	for _, want := range []string{"big_node", "resume artifact", "BROKOLI_SQL_ARTIFACT_MAX_BYTES"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error should mention %q: %v", want, err)
-		}
-	}
-
-	// Under the cap it still writes, and reads back intact.
-	small := wideDataSet(10)
-	if err := s.WriteArtifact("run-1", "small_node", "", small); err != nil {
-		t.Fatalf("a small artifact should still be written: %v", err)
-	}
-	got, err := s.ReadArtifact("run-1", "small_node", "")
+	outputs := newNodeOutputs(s.Blobs(), "run-cap", 1)
+	ref, err := outputs.spill(ds)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("spill: %v", err)
 	}
-	if len(got.Rows) != len(small.Rows) {
-		t.Fatalf("read back %d rows, want %d", len(got.Rows), len(small.Rows))
+	if ref.Format != artifact.FormatArrowIPC {
+		t.Fatalf("precondition: spill chose %q, wanted arrow", ref.Format)
+	}
+
+	// Encode it as NDJSON to learn what the column would actually hold,
+	// then set the cap between the two. This is the window the old check
+	// could not see: the blob passes, the row does not.
+	var stored int64
+	if b, err := ndjsonBytesForTextColumn(mustOpen(t, s, ref), ref, "n1"); err == nil {
+		stored = int64(len(b))
+	} else {
+		t.Fatalf("convert: %v", err)
+	}
+	if stored <= ref.SizeBytes {
+		t.Skipf("this dataset did not expand (blob %d, stored %d); nothing to guard here",
+			ref.SizeBytes, stored)
+	}
+	t.Logf("blob %d bytes, column would hold %d bytes (%.1fx)",
+		ref.SizeBytes, stored, float64(stored)/float64(ref.SizeBytes))
+
+	// A cap above the blob but below the stored bytes.
+	between := (ref.SizeBytes + stored) / 2
+	t.Setenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES", itoa(between))
+
+	err = s.WriteArtifactRef("run-cap", "n1", "", ref)
+	if err == nil {
+		t.Fatalf("a ref whose column value is %d bytes was written under a %d-byte cap",
+			stored, between)
+	}
+	if !strings.Contains(err.Error(), "n1") {
+		t.Errorf("error %q does not name the node", err.Error())
 	}
 }
 
-// The ref path must decline before opening the blob: SizeBytes already
-// says how big it is, so an oversized artifact costs nothing to refuse.
-func TestWriteArtifactRefDeclinesOversizedWithoutReading(t *testing.T) {
-	s := capTestStore(t)
-	t.Setenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES", "100000")
-
-	outputs := newNodeOutputs(s.Blobs(), "run-1", 1)
-	ref, err := outputs.PutStream(func(emit func(*common.DataSet) error) error {
-		return emit(wideDataSet(1000))
-	}, func() []string { return []string{"id", "padding"} })
+// And the cap must not reject what genuinely fits, or every ordinary
+// artifact stops being resumable.
+func TestSQLArtifactCapAcceptsWhatFits(t *testing.T) {
+	s := newSQLArtifactTestStore(t)
+	ds := wideDataset(2000)
+	outputs := newNodeOutputs(s.Blobs(), "run-fits", 1)
+	ref, err := outputs.spill(ds)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("spill: %v", err)
 	}
-	if ref.SizeBytes <= 100000 {
-		t.Fatalf("fixture too small to exercise the cap: %d bytes", ref.SizeBytes)
+	// Deliberately generous: the point is that a normal artifact passes.
+	t.Setenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES", itoa(256<<20))
+	if err := s.WriteArtifactRef("run-fits", "n1", "", ref); err != nil {
+		t.Fatalf("an artifact well under the cap was refused: %v", err)
 	}
-
-	err = s.WriteArtifactRef("run-1", "big_node", "", ref)
-	if err == nil {
-		t.Fatal("expected the oversized ref to be declined")
+	got, err := s.ReadArtifact("run-fits", "n1", "")
+	if err != nil {
+		t.Fatalf("ReadArtifact: %v", err)
 	}
-	if !strings.Contains(err.Error(), "big_node") {
-		t.Errorf("error should name the node: %v", err)
+	if len(got.Rows) != 2000 {
+		t.Errorf("read back %d rows, want 2000", len(got.Rows))
 	}
 }
 
-// Zero removes the cap, for operators who would rather take the memory
-// cost than lose resumability.
-func TestArtifactCapCanBeDisabled(t *testing.T) {
-	s := capTestStore(t)
-	t.Setenv("BROKOLI_SQL_ARTIFACT_MAX_BYTES", "0")
-	if err := s.WriteArtifact("run-1", "big_node", "", wideDataSet(1000)); err != nil {
-		t.Fatalf("cap disabled, the write should proceed: %v", err)
+func itoa(n int64) string {
+	return strconv.FormatInt(n, 10)
+}
+
+func mustOpen(t *testing.T, s *SQLArtifactStore, ref *artifact.DatasetRef) io.ReadCloser {
+	t.Helper()
+	rc, err := s.Blobs().Open(context.Background(), &ref.ArtifactRef)
+	if err != nil {
+		t.Fatalf("open blob: %v", err)
 	}
+	t.Cleanup(func() { _ = rc.Close() })
+	return rc
 }

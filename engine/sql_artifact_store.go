@@ -415,7 +415,7 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 		return fmt.Errorf("write artifact ref: open blob: %w", err)
 	}
 	defer rc.Close()
-	data, err := ndjsonBytesForTextColumn(rc, ref)
+	data, err := ndjsonBytesForTextColumn(rc, ref, nodeID)
 	if err != nil {
 		return fmt.Errorf("write artifact ref: %w", err)
 	}
@@ -449,9 +449,17 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 //
 // Converting rather than refusing, because the caller has a valid
 // artifact in hand and the storage layer's encoding is not the caller's
-// concern. It costs a decode and re-encode of an artifact already capped
-// by sqlArtifactMaxBytes, and only for the formats that need it.
-func ndjsonBytesForTextColumn(r io.Reader, ref *artifact.DatasetRef) ([]byte, error) {
+// concern. Only the formats that need it pay the decode and re-encode.
+//
+// The size cap is re-checked against the CONVERTED bytes, because those
+// are the bytes the column actually holds. WriteArtifactRef checks
+// ref.SizeBytes first, which is the blob's size, and for a compact
+// format that is not the same number: measured on a real fleet, a
+// 300,000-row Arrow blob expanded to 27 MB of NDJSON in the column, and
+// the more compressible the data the wider the gap. Checking only the
+// blob would let a ref under the cap write a row several times over it,
+// which is the one thing this cap exists to prevent.
+func ndjsonBytesForTextColumn(r io.Reader, ref *artifact.DatasetRef, nodeID string) ([]byte, error) {
 	if ref.Format == artifact.FormatNDJSON || ref.Format == "" {
 		data, err := io.ReadAll(r)
 		if err != nil {
@@ -466,6 +474,9 @@ func ndjsonBytesForTextColumn(r io.Reader, ref *artifact.DatasetRef) ([]byte, er
 	var buf bytes.Buffer
 	if err := EncodeNDJSON(&buf, ds); err != nil {
 		return nil, fmt.Errorf("re-encode %s blob as ndjson: %w", ref.Format, err)
+	}
+	if limit := sqlArtifactMaxBytes(); limit > 0 && int64(buf.Len()) > limit {
+		return nil, errArtifactTooLarge(nodeID, int64(buf.Len()), limit)
 	}
 	return buf.Bytes(), nil
 }
