@@ -24,6 +24,9 @@ func (o *oneConnStore) GetConnection(string) (*models.Connection, error) {
 // in the deployment rather than the one connection a job needs.
 func TestResolveConnectionByIDReturnsPlaintext(t *testing.T) {
 	t.Setenv("PROD_DB_PASSWORD", "s3cr3t-from-env")
+	// env:// is deny-by-default; a connection's credential variable is
+	// opted in by the operator.
+	t.Setenv(secrets.EnvRefAllowEnv, "PROD_DB_PASSWORD")
 	cr := NewConnectionResolver(
 		&oneConnStore{conn: &models.Connection{
 			ID: "c1", ConnID: "prod", Host: "db.internal",

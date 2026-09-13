@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 )
 
 var varPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
@@ -180,26 +182,14 @@ func (vc *VariableContext) resolveValue(v interface{}) interface{} {
 // one setting to fix.
 const pipelineEnvAllowEnv = "BROKOLI_PIPELINE_ENV_ALLOW"
 
-// alwaysDeniedEnv can never be read through ${env.*}, even if an operator
-// lists it in the allowlist.
-//
-// Defence in depth against a typo, not against a determined operator:
-// anyone who can set the allowlist can also set the pipeline's config
-// directly. But these four are the ones where a slip is unrecoverable --
-// the encryption key decrypts every stored credential, the signing secret
-// mints any session, and the database URL is direct access to every
-// tenant's rows.
-var alwaysDeniedEnv = map[string]bool{
-	"BROKOLI_ENCRYPTION_KEY":         true,
-	"BROKOLI_JWT_SECRET":             true,
-	"BROKOLI_DB_URL":                 true,
-	"BROKOLI_LICENSE_SIGNING_SECRET": true,
-}
-
 // pipelineEnvAllowed reports whether a pipeline may read this environment
 // variable through ${env.*}.
 func pipelineEnvAllowed(name string) bool {
-	if name == "" || alwaysDeniedEnv[strings.ToUpper(name)] {
+	// The never-readable floor lives in pkg/secrets so the three
+	// mechanisms that can reach the server's environment -- this,
+	// env:// references and a code node's inherited environment -- cannot
+	// drift apart on which names are fatal.
+	if name == "" || secrets.AlwaysDeniedEnvName(name) {
 		return false
 	}
 	for _, allowed := range strings.Split(os.Getenv(pipelineEnvAllowEnv), ",") {
