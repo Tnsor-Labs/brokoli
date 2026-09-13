@@ -222,3 +222,35 @@ func (cr *ConnectionResolver) ResolveConnection(connID string) (*models.Connecti
 	cr.resolveCredentials(conn)
 	return conn, nil
 }
+
+// ResolveConnectionByID returns a connection with its credentials already
+// resolved to plaintext.
+//
+// This exists so the control plane can resolve on a worker's behalf. A
+// worker that holds no encryption key cannot turn an `encrypted://` ref
+// into a password, and giving it the key to do so is exactly what the
+// API-only worker exists to avoid: the key decrypts every stored
+// credential in the deployment, not the one connection a job needs.
+//
+// So the resolution happens here, where the key already legitimately
+// lives, and only the result crosses the wire. The caller is responsible
+// for deciding WHICH connections a given requester may resolve; this
+// answers "what is this one", not "may you have it".
+//
+// The returned value carries plaintext in Password and Extra and is
+// never persisted in that form -- the same in-memory-only contract the
+// model's own field comments already state.
+func (cr *ConnectionResolver) ResolveConnectionByID(connID string) (*models.Connection, error) {
+	if cr == nil || cr.store == nil {
+		return nil, fmt.Errorf("resolve connection %q: no connection store", connID)
+	}
+	conn, err := cr.store.GetConnection(connID)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, fmt.Errorf("resolve connection %q: not found", connID)
+	}
+	cr.resolveCredentials(conn)
+	return conn, nil
+}
