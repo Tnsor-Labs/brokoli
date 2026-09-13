@@ -1,9 +1,9 @@
 # Brokoli Examples
 
-These examples are designed to run against a local Brokoli server with no
-external services or credentials.
+These examples run against a local Brokoli server and use the built-in sample
+data, so no external service is needed.
 
-## Hello World
+## Hello World (Python)
 
 Start the server and install the Python SDK:
 
@@ -22,6 +22,55 @@ brokoli run hello-world --server http://localhost:8080
 Then open `http://localhost:8080` and inspect the run. The pipeline reads the
 built-in employee dataset, adds a greeting column, and writes
 `/tmp/brokoli-hello-world.csv`.
+
+## Hello World (TypeScript code node)
+
+[`hello-world-typescript.mjs`](hello-world-typescript.mjs) is a dependency-free
+Node.js runner for a TypeScript code-node example. It uses Node's built-in
+`fetch` to create or update a pipeline, run it, and poll the result.
+
+The runner calls the REST API directly because the
+[Brokoli TypeScript SDK](https://github.com/Tnsor-Labs/brokoli-typescript) is
+not yet published to npm; it can migrate to the SDK once a package is available.
+
+TypeScript code nodes require **Node.js >= 20 on the machine running the
+Brokoli server**. Node is optional for Brokoli and is never downloaded by the
+installer. If the server has JWT authentication enabled, either provide a
+pre-issued bearer token or let the example log in with the local admin account:
+
+```bash
+BROKOLI_USERNAME=admin \
+BROKOLI_PASSWORD='your-admin-password' \
+node examples/hello-world-typescript.mjs
+```
+
+A fresh server may still be in first-run setup; create the admin account in
+the UI (or complete the installer's setup prompt) before running the example.
+`BROKOLI_TOKEN` is also supported for an already-issued bearer token.
+
+Run the example from the repository root (on the same machine as this local
+server):
+
+```bash
+node examples/hello-world-typescript.mjs
+```
+
+The `.mjs` runner works directly with Node 20 without a TypeScript loader or an
+npm-installed transpiler. Override the server or output location when needed:
+
+```bash
+BROKOLI_SERVER=http://localhost:8080 \
+BROKOLI_OUTPUT=/tmp/my-hello-world.csv \
+node examples/hello-world-typescript.mjs
+```
+
+The code node reads the built-in employee dataset, mutates the materialized
+`rows` array in place to add `greeting`, and assigns `output_data` with the
+updated `columns` and `rows`. That is intentional: `rows` is mutable in the
+TypeScript worker contract. `rowsStream()` is the read-only streaming
+alternative. The worker v1 executes JavaScript emitted by the authoring side,
+so this small inline script is JavaScript-compatible rather than using
+TypeScript-only syntax that would require on-worker transpilation.
 
 The run detail shows the execution plan and node evidence. The dashboard and
 Lineage view make the same run useful after the first demo: you can see what
