@@ -11,6 +11,49 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.18] - 2026-09-13
+
+### Added
+
+- **A worker that cannot reach the database can still be told what a
+  connection is** (#587, #588) -- @hc12r. Groundwork for the API-only
+  worker: a worker holding no database and no encryption key must still
+  connect to the data source its nodes name, so something has to resolve
+  that connection for it. `ConnectionResolver.ResolveConnectionByID`
+  resolves credential refs to plaintext where the encryption key already
+  legitimately lives, so only the result crosses the wire and not the key
+  that opens every other credential in the deployment.
+
+  It answers "what is this connection", not "may you have it"; the
+  authorisation is the caller's, and is deliberately not in core.
+
+- **A shared-store worker declares what it holds at startup** (#587) --
+  @hc12r. `--mode worker` connects straight to the database, and where a
+  signing secret is also set it can mint any session including an
+  administrative one. That is a reasonable trade inside one trust
+  boundary and the wrong shape anywhere else. It was also the quieter of
+  the two worker shapes, indistinguishable at a glance from one that
+  holds nothing, so the trade was being made by operators who had never
+  been told they were making it. Each secret is now named with what it
+  grants; a worker holding none says so. Values are never logged.
+
+### Fixed
+
+- **A worker that cannot resolve connections said the connection was
+  missing** (#587) -- @hc12r. `ConnectionResolver` reported every
+  `GetConnection` failure as `conn_id "x" not found` and then returned
+  the config unchanged, so the node ran with its credentials unresolved
+  and failed somewhere less obvious. That is right for a genuinely
+  missing connection, where a node may carry inline fields as a fallback,
+  and wrong for a store that cannot look connections up at all: the
+  operator was told something about their data that was really a property
+  of their deployment.
+
+  New `store.ErrUnsupported` separates "cannot perform this" from
+  "performed it and found nothing", which were indistinguishable at a
+  call site and call for opposite responses.
+
+
 ## [0.11.17] - 2026-09-13
 
 ### Fixed
