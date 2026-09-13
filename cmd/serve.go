@@ -403,7 +403,7 @@ var serveCmd = &cobra.Command{
 			// also the quieter one, indistinguishable at a glance from a
 			// worker that holds nothing, so the trade was being made by
 			// operators who had never been told they were making it.
-			announceWorkerTrustAssumptions()
+			AnnounceWorkerTrustAssumptions()
 
 			// Forward engine events to EventBus so API pods can broadcast via WebSocket
 			if Extensions.EventBus != nil {
@@ -981,8 +981,15 @@ func Execute() error {
 	return rootCmd.Execute()
 }
 
-// announceWorkerTrustAssumptions logs the credentials this worker process
+// AnnounceWorkerTrustAssumptions logs the credentials this worker process
 // holds beyond its own identity.
+//
+// Exported because there are two worker binaries and only one of them was
+// saying this. The enterprise `worker` subcommand -- the API-only shape
+// this whole line exists to distinguish -- could not print "holds no
+// control-plane secrets", which is precisely the sentence that proves a
+// deployment has moved off shared-store. A claim only the risky shape can
+// make is not much of a signal.
 //
 // Each of these grants something that outlives one job and is not scoped
 // to the work this worker was given: a database URL reads and writes every
@@ -990,7 +997,7 @@ func Execute() error {
 // an administrative one. Named individually rather than as one line,
 // because which of them is set is the difference between "inside our
 // boundary" and "should never have been deployed there".
-func announceWorkerTrustAssumptions() {
+func AnnounceWorkerTrustAssumptions() {
 	held := []struct{ env, grants string }{
 		{"BROKOLI_DB_URL", "direct read/write access to every tenant's data"},
 		{"BROKOLI_JWT_SECRET", "the ability to mint any session, including an administrative one"},

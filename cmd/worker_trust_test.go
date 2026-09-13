@@ -18,7 +18,7 @@ func captureWorkerAnnouncement(t *testing.T) string {
 	old := log.Writer()
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(old) })
-	announceWorkerTrustAssumptions()
+	AnnounceWorkerTrustAssumptions()
 	return buf.String()
 }
 
