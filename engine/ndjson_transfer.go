@@ -92,7 +92,19 @@ func DecodeNDJSON(r io.Reader, columns []string) (*common.DataSet, error) {
 	for dec.More() {
 		var row common.DataRow
 		if err := decodeRow(dec, &row); err != nil {
-			break
+			// This used to break, returning the rows decoded so far and a
+			// nil error. A truncated or corrupted blob therefore read back
+			// as a shorter dataset that reported success, which is the
+			// silent-wrong-answer shape #529 forbids: a resumed node would
+			// restore half its own output and the run would be marked
+			// successful. The streaming reader was made loud for exactly
+			// this reason (NewNDJSONBatchReader); this is the materialising
+			// half of the same fix.
+			//
+			// The ordinal is included because a truncated blob is otherwise
+			// unfindable, and because it separates "byte one is not JSON"
+			// from "row 4,000,001 was cut off mid-write".
+			return nil, fmt.Errorf("ndjson decode: row %d: %w", len(rows)+1, err)
 		}
 		rows = append(rows, row)
 	}
@@ -123,7 +135,9 @@ func ReadNDJSON(path string) (*common.DataSet, error) {
 	for dec.More() {
 		var row common.DataRow
 		if err := decodeRow(dec, &row); err != nil {
-			break
+			// Loud for the reason given in DecodeNDJSON: a partial read
+			// that reports success is worse than a failed one.
+			return nil, fmt.Errorf("read ndjson %s: row %d: %w", path, len(rows)+1, err)
 		}
 		rows = append(rows, row)
 	}
@@ -231,7 +245,11 @@ func ReadColumnarBinary(path string) (*common.DataSet, error) {
 	for dec.More() {
 		var row common.DataRow
 		if err := decodeRow(dec, &row); err != nil {
-			break
+			// Loud for the reason given in DecodeNDJSON. This format
+			// validates its magic and its schema already, so accepting a
+			// corrupt row body after checking the header was inconsistent
+			// as well as unsafe.
+			return nil, fmt.Errorf("read columnar binary: row %d: %w", len(rows)+1, err)
 		}
 		rows = append(rows, row)
 	}
