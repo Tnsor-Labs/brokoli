@@ -415,9 +415,9 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 		return fmt.Errorf("write artifact ref: open blob: %w", err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
+	data, err := ndjsonBytesForTextColumn(rc, ref)
 	if err != nil {
-		return fmt.Errorf("write artifact ref: read blob: %w", err)
+		return fmt.Errorf("write artifact ref: %w", err)
 	}
 	cols := ref.Columns
 	if cols == nil {
@@ -435,4 +435,37 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 		return fmt.Errorf("write artifact ref: %w", err)
 	}
 	return nil
+}
+
+// ndjsonBytesForTextColumn returns the blob's contents as the NDJSON text
+// the artifact column holds.
+//
+// The column is text, and ReadArtifact decodes it as NDJSON. This read
+// the blob verbatim, which was correct while NDJSON was the only format
+// a ref could name and became a bug the moment spill() started choosing
+// Arrow for uniformly typed datasets (#521): Arrow's binary IPC bytes
+// went into a text column and came back out as an empty dataset, with no
+// error, for any node whose output happened to be typed.
+//
+// Converting rather than refusing, because the caller has a valid
+// artifact in hand and the storage layer's encoding is not the caller's
+// concern. It costs a decode and re-encode of an artifact already capped
+// by sqlArtifactMaxBytes, and only for the formats that need it.
+func ndjsonBytesForTextColumn(r io.Reader, ref *artifact.DatasetRef) ([]byte, error) {
+	if ref.Format == artifact.FormatNDJSON || ref.Format == "" {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("read blob: %w", err)
+		}
+		return data, nil
+	}
+	ds, err := decodeDatasetRef(r, ref)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s blob: %w", ref.Format, err)
+	}
+	var buf bytes.Buffer
+	if err := EncodeNDJSON(&buf, ds); err != nil {
+		return nil, fmt.Errorf("re-encode %s blob as ndjson: %w", ref.Format, err)
+	}
+	return buf.Bytes(), nil
 }
