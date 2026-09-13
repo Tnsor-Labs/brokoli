@@ -282,6 +282,8 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN IF NOT EXISTS metadata TEXT NOT NULL DEFAULT '{}'`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS total_rows INTEGER`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
 
 	// Run event log — immutable append-only log of run/node-attempt lifecycle
@@ -1823,33 +1825,55 @@ func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
 
 // --- Data Preview ---
 
-func (s *PostgresStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
-	colJSON, _ := json.Marshal(columns)
+func (s *PostgresStore) SaveNodePreview(runID, nodeID string, preview NodePreview) error {
+	columns := preview.Columns
+	rows := preview.Rows
+	truncated := preview.Truncated
+	var total any
+	if preview.TotalRows != nil {
+		total = *preview.TotalRows
+	}
+	if preview.TotalRows != nil && !truncated {
+		truncated = *preview.TotalRows > 50
+	}
 	if len(rows) > 50 {
 		rows = rows[:50]
+		truncated = true
+		if preview.TotalRows == nil {
+			n := len(preview.Rows)
+			total = n
+		}
 	}
+	colJSON, _ := json.Marshal(columns)
 	rowJSON, _ := json.Marshal(rows)
 	_, err := s.db.Exec(
-		`INSERT INTO node_previews (run_id, node_id, columns, rows) VALUES ($1,$2,$3,$4)
-		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4`,
-		runID, nodeID, colJSON, rowJSON,
+		`INSERT INTO node_previews (run_id, node_id, columns, rows, truncated, total_rows) VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4, truncated=$5, total_rows=$6`,
+		runID, nodeID, colJSON, rowJSON, truncated, total,
 	)
 	return err
 }
 
-func (s *PostgresStore) GetNodePreview(runID, nodeID string) ([]string, []common.DataRow, error) {
+func (s *PostgresStore) GetNodePreview(runID, nodeID string) (NodePreview, error) {
 	var colJSON, rowJSON []byte
+	var truncated bool
+	var total sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT columns, rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
-	).Scan(&colJSON, &rowJSON)
+		`SELECT columns, rows, truncated, total_rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
+	).Scan(&colJSON, &rowJSON, &truncated, &total)
 	if err != nil {
-		return nil, nil, err
+		return NodePreview{}, err
 	}
 	var columns []string
 	var rows []common.DataRow
 	json.Unmarshal(colJSON, &columns)
 	json.Unmarshal(rowJSON, &rows)
-	return columns, rows, nil
+	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncated}
+	if total.Valid {
+		n := int(total.Int64)
+		out.TotalRows = &n
+	}
+	return out, nil
 }
 
 // --- Versioning ---

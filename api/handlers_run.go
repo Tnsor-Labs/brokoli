@@ -584,15 +584,20 @@ func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := chi.URLParam(r, "nodeId")
 
-	columns, rows, err := h.store.GetNodePreview(runID, nodeID)
+	preview, err := h.store.GetNodePreview(runID, nodeID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no preview available")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"columns": columns,
-		"rows":    rows,
-	})
+	body := map[string]interface{}{
+		"columns":   preview.Columns,
+		"rows":      preview.Rows,
+		"truncated": preview.Truncated,
+	}
+	if preview.TotalRows != nil {
+		body["total_rows"] = *preview.TotalRows
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // NodeStats returns historical execution durations per node for sparkline charts.

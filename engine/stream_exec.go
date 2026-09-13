@@ -500,11 +500,12 @@ func (c *ndjsonRowCounter) finalCount() int64 {
 
 // previewFromRef materializes only the first previewRows rows of a
 // referenced output — what SaveNodePreview actually keeps — instead of
-// the whole dataset.
-func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows int) (*common.DataSet, error) {
+// the whole dataset. truncated is true when more rows remained after
+// filling the preview cap (the true total is then unknown here).
+func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows int) (*common.DataSet, bool, error) {
 	batches, closer, err := outputs.OpenBatches(ref)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer closer.Close()
 	out := &common.DataSet{Columns: ref.Columns}
@@ -514,7 +515,7 @@ func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows 
 			break
 		}
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if len(out.Columns) == 0 {
 			out.Columns = batch.Columns
@@ -528,7 +529,16 @@ func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows 
 	if out.Columns == nil {
 		out.Columns = []string{}
 	}
-	return out, nil
+	truncated := false
+	if len(out.Rows) >= previewRows {
+		_, err := batches.Next()
+		if err == nil {
+			truncated = true
+		} else if err != io.EOF {
+			return nil, false, err
+		}
+	}
+	return out, truncated, nil
 }
 
 // streamEligible reports whether node's TYPE can take the reference-

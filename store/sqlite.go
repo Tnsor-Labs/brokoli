@@ -208,6 +208,8 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN span_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE logs ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN total_rows INTEGER`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_runs_node_pipeline ON node_runs(node_id, run_id)`)
 
 	// Run event log — immutable append-only log of run/node-attempt lifecycle
@@ -1978,43 +1980,73 @@ func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {
 
 // --- Node Previews ---
 
-func (s *SQLiteStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
+func (s *SQLiteStore) SaveNodePreview(runID, nodeID string, preview NodePreview) error {
+	columns := preview.Columns
+	rows := preview.Rows
+	truncated := preview.Truncated
+	var total any
+	if preview.TotalRows != nil {
+		total = *preview.TotalRows
+	} else {
+		total = nil
+	}
+	// When the caller passed the full output, derive truncation here.
+	if preview.TotalRows != nil && !truncated {
+		truncated = *preview.TotalRows > 50
+	}
+	if len(rows) > 50 {
+		rows = rows[:50]
+		truncated = true
+		if preview.TotalRows == nil {
+			// Caller handed more than the cap without declaring total —
+			// the pre-truncate length is the true total.
+			n := len(preview.Rows)
+			total = n
+		}
+	}
 	colJSON, err := json.Marshal(columns)
 	if err != nil {
 		return fmt.Errorf("marshal columns: %w", err)
-	}
-	// Limit to 50 rows
-	if len(rows) > 50 {
-		rows = rows[:50]
 	}
 	rowJSON, err := json.Marshal(rows)
 	if err != nil {
 		return fmt.Errorf("marshal rows: %w", err)
 	}
+	truncInt := 0
+	if truncated {
+		truncInt = 1
+	}
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO node_previews (run_id, node_id, columns, rows) VALUES (?, ?, ?, ?)`,
-		runID, nodeID, string(colJSON), string(rowJSON),
+		`INSERT OR REPLACE INTO node_previews (run_id, node_id, columns, rows, truncated, total_rows) VALUES (?, ?, ?, ?, ?, ?)`,
+		runID, nodeID, string(colJSON), string(rowJSON), truncInt, total,
 	)
 	return err
 }
 
-func (s *SQLiteStore) GetNodePreview(runID, nodeID string) ([]string, []common.DataRow, error) {
+func (s *SQLiteStore) GetNodePreview(runID, nodeID string) (NodePreview, error) {
 	row := s.db.QueryRow(
-		`SELECT columns, rows FROM node_previews WHERE run_id = ? AND node_id = ?`, runID, nodeID,
+		`SELECT columns, rows, truncated, total_rows FROM node_previews WHERE run_id = ? AND node_id = ?`, runID, nodeID,
 	)
 	var colJSON, rowJSON string
-	if err := row.Scan(&colJSON, &rowJSON); err != nil {
-		return nil, nil, err
+	var truncatedInt int
+	var total sql.NullInt64
+	if err := row.Scan(&colJSON, &rowJSON, &truncatedInt, &total); err != nil {
+		return NodePreview{}, err
 	}
 	var columns []string
 	if err := json.Unmarshal([]byte(colJSON), &columns); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal columns: %w", err)
+		return NodePreview{}, fmt.Errorf("unmarshal columns: %w", err)
 	}
 	var rows []common.DataRow
 	if err := json.Unmarshal([]byte(rowJSON), &rows); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal rows: %w", err)
+		return NodePreview{}, fmt.Errorf("unmarshal rows: %w", err)
 	}
-	return columns, rows, nil
+	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncatedInt != 0}
+	if total.Valid {
+		n := int(total.Int64)
+		out.TotalRows = &n
+	}
+	return out, nil
 }
 
 // --- Versioning ---
