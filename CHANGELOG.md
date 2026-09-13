@@ -11,6 +11,33 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.17] - 2026-09-13
+
+### Fixed
+
+- **The SQL artifact cap measured the blob, not the row it writes**
+  (#585) -- @hc12r. `WriteArtifactRef` checks `ref.SizeBytes` against
+  `BROKOLI_SQL_ARTIFACT_MAX_BYTES` before converting. Since v0.11.15 the
+  bytes that reach the column are the NDJSON conversion of that blob, and
+  for a compact format those are not the same number: the blob is Arrow,
+  the column is NDJSON, and the gap widens with how compressible the data
+  is. Measured at 2.2x on a 20,000-row dataset, a 1.73 MB blob against a
+  3.75 MB column value.
+
+  So a ref comfortably under the cap could write a row well over it,
+  which is the one thing the cap exists to prevent. Its own error text
+  explains why the limit matters -- an artifact is a single column value,
+  written as one statement parameter -- and that reasoning applies to the
+  converted bytes rather than the blob.
+
+  Found by watching a fleet degrade rather than by reading the code: nine
+  streamed runs had written 238 MB of the artifacts table, more than 577
+  task runs had. The cheap pre-check stays, because rejecting an
+  oversized blob without reading it is still right; the converted bytes
+  are now checked too, against the same limit and with the same named
+  error.
+
+
 ## [0.11.16] - 2026-09-13
 
 ### Added
