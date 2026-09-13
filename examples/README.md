@@ -25,9 +25,13 @@ built-in employee dataset, adds a greeting column, and writes
 
 ## Hello World (TypeScript code node)
 
-[`hello-world.ts`](hello-world.ts) is a dependency-free TypeScript code-node
-example. It uses Node's built-in `fetch` to create or update a pipeline, run it,
-and poll the result; no npm package or TypeScript SDK is required.
+[`hello-world-typescript.mjs`](hello-world-typescript.mjs) is a dependency-free
+Node.js runner for a TypeScript code-node example. It uses Node's built-in
+`fetch` to create or update a pipeline, run it, and poll the result.
+
+The runner calls the REST API directly because the
+[Brokoli TypeScript SDK](https://github.com/Tnsor-Labs/brokoli-typescript) is
+not yet published to npm; it can migrate to the SDK once a package is available.
 
 TypeScript code nodes require **Node.js >= 20 on the machine running the
 Brokoli server**. Node is optional for Brokoli and is never downloaded by the
@@ -37,7 +41,7 @@ pre-issued bearer token or let the example log in with the local admin account:
 ```bash
 BROKOLI_USERNAME=admin \
 BROKOLI_PASSWORD='your-admin-password' \
-node --input-type=module < examples/hello-world.ts
+node examples/hello-world-typescript.mjs
 ```
 
 A fresh server may still be in first-run setup; create the admin account in
@@ -48,17 +52,16 @@ Run the example from the repository root (on the same machine as this local
 server):
 
 ```bash
-node --input-type=module < examples/hello-world.ts
+node examples/hello-world-typescript.mjs
 ```
 
-The command uses stdin so it works with Node 20 without relying on a `.ts`
-loader or an npm-installed transpiler. Override the server or output location
-when needed:
+The `.mjs` runner works directly with Node 20 without a TypeScript loader or an
+npm-installed transpiler. Override the server or output location when needed:
 
 ```bash
 BROKOLI_SERVER=http://localhost:8080 \
 BROKOLI_OUTPUT=/tmp/my-hello-world.csv \
-node --input-type=module < examples/hello-world.ts
+node examples/hello-world-typescript.mjs
 ```
 
 The code node reads the built-in employee dataset, mutates the materialized

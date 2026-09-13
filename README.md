@@ -94,8 +94,8 @@ on the machine running the Brokoli server. Node is optional: Python nodes and
 non-code pipelines work without it, and Brokoli never downloads or bundles a
 runtime. The server resolves the existing `node` executable at startup and
 refuses a TypeScript pipeline by name when the runtime is unavailable. See the
-[TypeScript example](examples/hello-world.ts) for a dependency-free end-to-end
-run.
+[TypeScript example](examples/hello-world-typescript.mjs) for a dependency-free
+end-to-end run.
 
 The smallest working example is also in [`examples/hello-world.py`](examples/hello-world.py).
 

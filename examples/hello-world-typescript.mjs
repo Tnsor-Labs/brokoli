@@ -1,7 +1,7 @@
 /*
  * Run this dependency-free example with Node.js >= 20:
  *
- *   node --input-type=module < examples/hello-world.ts
+ *   node examples/hello-world-typescript.mjs
  *
  * The `code` value below is the actual TypeScript code-node script. The
  * runner uses only Node's built-in fetch so it can deploy and run that node
