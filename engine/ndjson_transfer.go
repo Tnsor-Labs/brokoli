@@ -399,3 +399,54 @@ func normalizeJSONNumbers(v interface{}) interface{} {
 		return v
 	}
 }
+
+// ndjsonStreamEncoder is EncodeNDJSON for a dataset that arrives batch at
+// a time, producing bytes identical to what EncodeNDJSON would have
+// written for the concatenation of those batches.
+//
+// Identical matters: a blob written by a streaming producer and one
+// written by a batch producer are read back by the same decoder, and the
+// empty-dataset sentinel below is part of that contract. Both streaming
+// producers had their own copy of this loop; this is that copy, once.
+type ndjsonStreamEncoder struct {
+	buf *bufio.Writer
+	enc *json.Encoder
+}
+
+func newNDJSONStreamEncoder(w io.Writer) *ndjsonStreamEncoder {
+	// Buffered for the reason given on EncodeNDJSON: this writes into a
+	// pipe, and an unbuffered write per row costs a scheduler round-trip
+	// per row.
+	buf := bufio.NewWriterSize(w, encodeBufferSize)
+	enc := json.NewEncoder(buf)
+	enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
+	return &ndjsonStreamEncoder{buf: buf, enc: enc}
+}
+
+// WriteBatch returns how many rows it wrote, so a caller counting rows
+// counts what reached the blob rather than what it was handed.
+func (n *ndjsonStreamEncoder) WriteBatch(ds *common.DataSet) (int64, error) {
+	if ds == nil {
+		return 0, nil
+	}
+	written := int64(0)
+	for _, row := range ds.Rows {
+		if err := n.enc.Encode(row); err != nil {
+			return written, err
+		}
+		written++
+	}
+	return written, nil
+}
+
+// Close flushes, writing EncodeNDJSON's empty-dataset sentinel first when
+// nothing was produced, so an empty streamed output decodes identically
+// to an empty batch-written one.
+func (n *ndjsonStreamEncoder) Close(empty bool) error {
+	if empty {
+		if _, err := n.buf.Write([]byte("[]")); err != nil {
+			return err
+		}
+	}
+	return n.buf.Flush()
+}
