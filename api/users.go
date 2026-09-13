@@ -870,9 +870,26 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip invite endpoints (public access for accepting invites)
+			// Invite endpoints: authentication is OPTIONAL here, not
+			// absent.
+			//
+			// Reading an invite must work for someone with no account
+			// yet, so these cannot require a token. But this skipped
+			// before parsing one, so a person who WAS signed in arrived
+			// with no claims and the accept handler could not tell who
+			// they were -- it answered 401 even with a valid session.
+			// Anyone who signs in with GitHub, Google or Keycloak has no
+			// password to fall back on, so they could never accept an
+			// invite at all, which is the whole first-run path for a
+			// team.
+			//
+			// Optional means: attach claims when a valid token is
+			// present, carry on without them when it is not. An invalid
+			// token is treated as absent rather than rejected, because
+			// the anonymous read must keep working for someone whose
+			// old session happens to have expired in another tab.
 			if strings.HasPrefix(r.URL.Path, "/api/invites/") {
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(contextWithOptionalClaims(r)))
 				return
 			}
 
@@ -1061,4 +1078,51 @@ func (c *claimsContext) Value(key any) any {
 		return c.claims
 	}
 	return c.parent.Value(key)
+}
+
+// contextWithOptionalClaims attaches authentication to a request that does
+// not require it.
+//
+// For routes that must serve both a signed-in person and an anonymous one
+// -- reading and accepting an invite is the case this exists for -- the
+// handler needs to know WHICH it is. Skipping the middleware entirely
+// answers "always anonymous", which is wrong for half the callers.
+//
+// Returns the request's own context unchanged when there is no token, or
+// when the token does not parse. A caller that needs a verified identity
+// checks for claims and decides; a caller that does not simply ignores
+// them.
+func contextWithOptionalClaims(r *http.Request) context.Context {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		if cookie, err := r.Cookie("brokoli_session"); err == nil {
+			token = cookie.Value
+		}
+	}
+	if token == "" {
+		return r.Context()
+	}
+
+	claims, parseErr := ParseToken(token)
+	if parseErr != nil && BearerTokenResolverFunc != nil {
+		if resolved, ok := BearerTokenResolverFunc(token); ok && resolved != nil {
+			claims, parseErr = resolved, nil
+		}
+	}
+	if parseErr != nil || claims == nil {
+		return r.Context()
+	}
+
+	ctx := contextWithClaims(r.Context(), claims)
+	orgID, _ := (*claims)["org_id"].(string)
+	if orgID == "" && OrgResolverFunc != nil {
+		if sub, ok := (*claims)["sub"].(string); ok {
+			orgID = OrgResolverFunc(sub)
+		}
+	}
+	if orgID != "" {
+		(*claims)["org_id"] = orgID
+		ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+	}
+	return ctx
 }
