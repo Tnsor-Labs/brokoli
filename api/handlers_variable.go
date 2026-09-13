@@ -161,12 +161,22 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if update (preserve created_at)
+	//
+	// keptCiphertext records that the value below is the stored one,
+	// which is ALREADY encrypted. Without it the encrypt step cannot tell
+	// restored ciphertext from a freshly typed secret -- neither is empty
+	// and neither is the mask -- so saving a secret without re-entering
+	// its value encrypted the ciphertext a second time. A pipeline then
+	// decrypted once and got ciphertext, and the only way to recover was
+	// to type the secret again.
+	keptCiphertext := false
 	existing, err := h.store.GetVariable(v.Key)
 	if err == nil {
 		v.CreatedAt = existing.CreatedAt
 		// If secret and value is masked, keep the existing encrypted value
 		if v.Type == models.VarTypeSecret && (v.Value == "********" || v.Value == "") {
 			v.Value = existing.Value
+			keptCiphertext = true
 		}
 	} else {
 		v.CreatedAt = now
@@ -174,7 +184,7 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	v.UpdatedAt = now
 
 	// Encrypt secret values
-	if v.Type == models.VarTypeSecret && v.Value != "" && v.Value != "********" {
+	if v.Type == models.VarTypeSecret && !keptCiphertext && v.Value != "" && v.Value != "********" {
 		enc, err := h.crypto.Encrypt(v.Value)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "encryption failed")
