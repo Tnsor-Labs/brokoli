@@ -421,3 +421,64 @@ func TestStreamTransformAggregatedOutputChoosesACodec(t *testing.T) {
 		t.Errorf("sum of groups = %v, want %v", total, want)
 	}
 }
+
+// A column widened to float64 from a mixed first batch, then handed an
+// integer too large to survive that widening in a later batch. The
+// schema pass checks every value it can see, but on a stream it only
+// sees the first batch, so this is the one case the widening cannot rule
+// out up front. It must fail rather than round the value.
+func TestPutStreamRefusesAnIntegerTooLargeForAWidenedColumn(t *testing.T) {
+	// Mixed int64/float64, so the schema pass widens "v" to float64.
+	first := &common.DataSet{
+		Columns: []string{"v"},
+		Rows:    []common.DataRow{{"v": int64(1)}, {"v": float64(1.5)}},
+	}
+	// 2^53 + 1: the smallest integer float64 cannot hold.
+	later := &common.DataSet{
+		Columns: []string{"v"},
+		Rows:    []common.DataRow{{"v": int64(9007199254740993)}},
+	}
+	o := streamOutputs(t)
+	_, err := o.PutStream(emitBatches(first, later), func() []string { return []string{"v"} })
+	if err == nil {
+		t.Fatal("an integer past 2^53 was written into a float64 column")
+	}
+	for _, want := range []string{`"v"`, "9007199254740993", streamCodecEnv} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err.Error(), want)
+		}
+	}
+}
+
+// The widening itself must still work on a stream: a first batch mixing
+// the two numeric types is the ordinary shape of a decoded dataset, and
+// it has to reach arrow rather than fall back.
+func TestPutStreamWidensAMixedNumericColumn(t *testing.T) {
+	first := &common.DataSet{
+		Columns: []string{"v"},
+		Rows:    []common.DataRow{{"v": int64(1)}, {"v": float64(1.5)}},
+	}
+	later := &common.DataSet{
+		Columns: []string{"v"},
+		Rows:    []common.DataRow{{"v": int64(4)}, {"v": float64(2.25)}},
+	}
+	o := streamOutputs(t)
+	ref, err := o.PutStream(emitBatches(first, later), func() []string { return []string{"v"} })
+	if err != nil {
+		t.Fatalf("PutStream: %v", err)
+	}
+	if ref.Format != artifact.FormatArrowIPC {
+		t.Fatalf("format = %q, want %q", ref.Format, artifact.FormatArrowIPC)
+	}
+	// Values and Go types both, since downstream code type-switches.
+	want := []interface{}{int64(1), float64(1.5), int64(4), float64(2.25)}
+	rows := readBack(t, o, ref)
+	if len(rows) != len(want) {
+		t.Fatalf("read back %d rows, want %d", len(rows), len(want))
+	}
+	for i, w := range want {
+		if rows[i]["v"] != w {
+			t.Errorf("row %d = %v (%T), want %v (%T)", i, rows[i]["v"], rows[i]["v"], w, w)
+		}
+	}
+}
