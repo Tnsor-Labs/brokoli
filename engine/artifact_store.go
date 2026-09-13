@@ -410,10 +410,14 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string)
 	if manifest.Kind != artifact.KindDataset {
 		return nil, fmt.Errorf("read artifact: run=%s node=%s holds a %s, not a dataset", runID, nodeID, manifest.Kind)
 	}
+	// Whatever format the manifest names. This refused anything but
+	// NDJSON, which was true when only NDJSON could be written and became
+	// a bug the moment spill() started choosing Arrow (#521): a run whose
+	// output happened to be uniformly typed could not be replayed from
+	// its own artifact. decodeDatasetRef is the one place that knows the
+	// formats and OpenBatches is its streaming counterpart; a second
+	// opinion here is how the two would come to disagree.
 	ref := manifest.Dataset
-	if ref.Format != artifact.FormatNDJSON {
-		return nil, fmt.Errorf("read artifact: unsupported dataset format %q", ref.Format)
-	}
 
 	rc, err := l.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
@@ -428,7 +432,7 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string)
 	}
 	defer rc.Close()
 
-	ds, err := DecodeNDJSON(rc, ref.Columns)
+	ds, err := decodeDatasetRef(rc, ref)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact: %w", err)
 	}
