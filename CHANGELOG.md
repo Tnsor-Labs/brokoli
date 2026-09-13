@@ -11,6 +11,74 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.15] - 2026-09-13
+
+### Fixed
+
+- **A truncated dataset decoded as a shorter one, and reported success**
+  (#576) -- @hc12r. `DecodeNDJSON`, `ReadNDJSON` and `ReadColumnarBinary`
+  each stopped at the first row they could not parse and returned the
+  rows so far with a nil error. A truncated or corrupted blob therefore
+  read back as a smaller dataset that looked fine: a resumed node
+  restored half its own output and the run was marked successful.
+
+  Already known, and written into a test comment rather than fixed:
+  "DecodeNDJSON silently truncates at a bad line; the batch reader must
+  not". The streaming reader was made loud for exactly this reason; the
+  materialising readers never were. Each now names the row it stopped
+  at, which separates "byte one is not JSON" from "row 4,000,001 was cut
+  off mid-write".
+
+- **An Arrow artifact read back empty** (#577) -- @hc12r. `spill()` has
+  chosen Arrow for any uniformly typed dataset since #521, and two
+  artifact stores could not read one back.
+  `SQLArtifactStore.WriteArtifactRef` copied the blob's bytes verbatim
+  into a TEXT column that `ReadArtifact` decodes as NDJSON, so binary
+  Arrow IPC went in and an empty dataset came out, with no error, for any
+  node whose output happened to be typed. That is the store every
+  distributed deployment uses. `LocalDiskArtifactStore.ReadArtifact`
+  refused any format but NDJSON outright, so such a run could not be
+  replayed from its own artifact.
+
+### Added
+
+- **The streaming write path can produce Arrow** (#578, #330) -- @hc12r.
+  `PutStream` and `streamTransformToRef` wrote NDJSON unconditionally,
+  so the largest outputs in the product, the ones that by construction
+  never fit in memory, were the only ones that never got the faster
+  codec. ADR-033 section 8 calls Arrow "the preferred optional dataset
+  transport"; on the write side nothing had implemented it.
+
+  The codec is inferred from the first batch and settled before a byte is
+  written, because the media type labelling the blob is an argument to
+  `Put` and by the time a byte exists it is too late to label it. A
+  stream whose first batch is not exactly representable is NDJSON from
+  the start, which is what it would have been anyway. A later batch that
+  disagrees fails by name, since the schema is already on the wire and
+  widening it would change the data.
+
+  Measured on #330's own pipeline, 1,000,000 rows of 81 MB CSV through
+  `source_file` to `sink_file`: **21.1s to 9.0s, 2.3x**. The NDJSON arm
+  reproduces that issue's own baseline (21.1s against its reported 22s),
+  which is what makes the two comparable. On the codec alone,
+  write-then-read is 3.58x with 3.18x fewer allocations and 1.97x smaller
+  on the wire.
+
+  `BROKOLI_STREAM_CODEC` selects it: `ndjson` restores the previous
+  behaviour byte for byte, `arrow` requires Arrow and refuses to fall
+  back, which is what lets a measurement prove which codec ran.
+
+- **A column holding both integers and floats can be Arrow** (#578) --
+  @hc12r. `arrowEncodableSchema` refused that mixture, which is what
+  every decoded dataset looks like: `numericValue` returns `int64` for a
+  whole number and `float64` otherwise, deliberately, so both codecs
+  agree. A float column with some whole values therefore came back mixed
+  and re-encoding it fell back to NDJSON forever after, so a transform
+  reading Arrow could never write Arrow. Float64 holds both and the
+  decoder narrows the whole ones back; integers a widening would round
+  are refused by checking each one rather than by a magnitude bound.
+
+
 ## [0.11.14] - 2026-09-13
 
 ### Fixed
