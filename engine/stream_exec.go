@@ -611,8 +611,8 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 			return nodeExecutionResult{}, err
 		}
 		r.log(node.ID, models.LogLevelInfo,
-			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out (never materialized)",
-			len(rules), inRows, ref.RowCount)
+			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out as %s (never materialized)",
+			len(rules), inRows, ref.RowCount, datasetRefFormatName(ref))
 		// #363: the same rules ran over the rows, so the same rules run
 		// over the types. Streaming changes where the rows are, not what
 		// the columns became.
@@ -838,8 +838,8 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 		}
 	}
 	r.log(node.ID, models.LogLevelInfo,
-		"Streamed %d rows, %d columns from %s (%s) by reference (never materialized)",
-		ref.RowCount, len(ref.Columns), filepath.Base(path), sizeStr)
+		"Streamed %d rows, %d columns from %s (%s) by reference as %s (never materialized)",
+		ref.RowCount, len(ref.Columns), filepath.Base(path), sizeStr, datasetRefFormatName(ref))
 	if sample != nil {
 		parts := make([]string, 0, len(ref.Columns))
 		for _, col := range ref.Columns {
@@ -893,8 +893,8 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	}
 
 	r.log(node.ID, models.LogLevelInfo,
-		"Streamed %d rows, %d columns from database by reference (never materialized)",
-		ref.RowCount, len(ref.Columns))
+		"Streamed %d rows, %d columns from database by reference as %s (never materialized)",
+		ref.RowCount, len(ref.Columns), datasetRefFormatName(ref))
 	// #363: the same column types the materialising path reports. A source
 	// that streams is still a source that knows what its columns are, and
 	// a sink downstream of it creating a table needs them just as much --
@@ -1060,4 +1060,22 @@ func (r *Runner) runSinkAPIStreamed(node models.Node, inputRef *artifact.Dataset
 		"API sink complete: %d rows sent in %d batches to %s (streamed by reference, never materialized)",
 		totalSent, sentBatches, cfg.url)
 	return nodeExecutionResult{}, nil
+}
+
+// datasetRefFormatName names the codec a streamed output was written in,
+// for the log line the operator actually reads.
+//
+// The choice was invisible: two codecs, decided per stream from the
+// first batch, and nothing anywhere said which one ran. That made the
+// faster path unverifiable outside a benchmark, and made a silent
+// fallback, the thing arrowEncodableSchema does by design, impossible to
+// notice on a real pipeline. A choice worth making is worth reporting.
+//
+// An empty Format means NDJSON, which is what every reader already
+// treats it as.
+func datasetRefFormatName(ref *artifact.DatasetRef) string {
+	if ref == nil || ref.Format == "" {
+		return artifact.FormatNDJSON
+	}
+	return ref.Format
 }
