@@ -53,9 +53,12 @@ tested semantics for a path the issue does not name explicitly.
 (`engine/artifact_store.go`) persists a node's completed output keyed by
 `(run_id, node_id)`, with `LocalDiskArtifactStore` as the only
 implementation: one NDJSON file per artifact, reusing
-`arrow_transfer.go`'s `WriteArrowJSON`/`ReadArrowJSON` — the closest
+`ndjson_transfer.go`'s `EncodeNDJSON`/`DecodeNDJSON` — the closest
 existing precedent for durable inter-node data transfer in this codebase
-(otherwise used only by the code-node subprocess bridge). Every successful,
+(otherwise used only by the code-node subprocess bridge). Both the file
+and the functions were named `arrow_transfer.go` and
+`WriteArrowJSON`/`ReadArrowJSON` when this was written; they never wrote
+Arrow, and #516 renamed them to say what they do. Every successful,
 non-dry-run node write an artifact unless its node type is in
 `nonResumableNodeTypes` (`notify`, `migrate`, `dbt` — side-effecting nodes
 whose returned dataset, if any, isn't meaningful to hand to a downstream
