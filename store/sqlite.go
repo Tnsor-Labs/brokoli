@@ -128,6 +128,9 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+	if err := s.scopeVariablesToWorkspace(); err != nil {
+		return fmt.Errorf("scope variables to workspace: %w", err)
+	}
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_pipeline_status ON runs(pipeline_id, status, started_at DESC)`)
 	// Backs the keyset walk in ListRunsByPipelineCursor. The status index
 	// above cannot serve it: it leads with status, while the walk filters on
@@ -2797,18 +2800,21 @@ func (s *SQLiteStore) SetVariable(v *models.Variable) error {
 	_, err := s.db.Exec(
 		`INSERT INTO variables (key, value, type, description, workspace_id, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value, type=excluded.type, description=excluded.description, updated_at=excluded.updated_at`,
+		 ON CONFLICT(workspace_id, key) DO UPDATE SET value=excluded.value, type=excluded.type, description=excluded.description, updated_at=excluded.updated_at`,
 		v.Key, v.Value, v.Type, v.Description, wsID,
 		v.CreatedAt.UTC().Format(timeFormat), v.UpdatedAt.UTC().Format(timeFormat),
 	)
 	return err
 }
 
-func (s *SQLiteStore) GetVariable(key string) (*models.Variable, error) {
+func (s *SQLiteStore) GetVariable(workspaceID, key string) (*models.Variable, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	var v models.Variable
 	var createdAt, updatedAt string
 	err := s.db.QueryRow(
-		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE key = ?`, key,
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = ? AND key = ?`, workspaceID, key,
 	).Scan(&v.Key, &v.Value, &v.Type, &v.Description, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
@@ -2863,8 +2869,11 @@ func (s *SQLiteStore) ListVariablesByWorkspace(workspaceID string) ([]models.Var
 	return vars, nil
 }
 
-func (s *SQLiteStore) DeleteVariable(key string) error {
-	result, err := s.db.Exec("DELETE FROM variables WHERE key = ?", key)
+func (s *SQLiteStore) DeleteVariable(workspaceID, key string) error {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	result, err := s.db.Exec("DELETE FROM variables WHERE workspace_id = ? AND key = ?", workspaceID, key)
 	if err != nil {
 		return err
 	}
@@ -3466,4 +3475,74 @@ func (s *SQLiteStore) ListPhysicalInstances(runID string) ([]models.PhysicalInst
 		out = append(out, in)
 	}
 	return out, nil
+}
+
+// scopeVariablesToWorkspace widens the variables table's key from (key)
+// to (workspace_id, key).
+//
+// The table was created with `key TEXT PRIMARY KEY`, so a variable name
+// was global: one workspace's save overwrote another's through
+// ON CONFLICT(key), and a read by key alone returned whichever workspace
+// had written last. Variables hold secrets.
+//
+// The widening cannot collide. Because `key` is the primary key TODAY, no
+// two existing rows can share one, so every row moves to a distinct
+// (workspace_id, key). There is deliberately no collision check here: it
+// could never fire, and a guard that cannot fail is indistinguishable
+// from one that does nothing.
+//
+// What the widening does create is the possibility of two rows sharing a
+// key, which makes any reader that still queries by key alone ambiguous.
+// That is guarded at compile time instead -- GetVariable and
+// DeleteVariable take a workspace, so a caller cannot omit it.
+//
+// SQLite cannot alter a primary key, so this rebuilds the table. Skipped
+// once the new key is in place, which is what makes it safe to run on
+// every boot.
+func (s *SQLiteStore) scopeVariablesToWorkspace() error {
+	var ddl string
+	if err := s.db.QueryRow(
+		`SELECT sql FROM sqlite_master WHERE type='table' AND name='variables'`).Scan(&ddl); err != nil {
+		return nil // no table yet; created with the right key by the migration
+	}
+	if strings.Contains(strings.ToLower(ddl), "primary key (workspace_id, key)") {
+		return nil // already widened
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.Exec(`CREATE TABLE variables_scoped (
+		key TEXT NOT NULL,
+		value TEXT NOT NULL DEFAULT '',
+		type TEXT NOT NULL DEFAULT 'string',
+		description TEXT NOT NULL DEFAULT '',
+		created_at TEXT NOT NULL,
+		updated_at TEXT NOT NULL,
+		workspace_id TEXT NOT NULL DEFAULT 'default',
+		PRIMARY KEY (workspace_id, key)
+	)`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO variables_scoped
+		(key, value, type, description, created_at, updated_at, workspace_id)
+		SELECT key, value, type, description, created_at, updated_at,
+		       COALESCE(NULLIF(workspace_id, ''), 'default')
+		FROM variables`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE variables`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE variables_scoped RENAME TO variables`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	_, _ = s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+	return nil
 }

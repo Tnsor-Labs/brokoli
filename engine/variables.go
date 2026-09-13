@@ -16,16 +16,19 @@ var varPattern = regexp.MustCompile(`\$\{([^}]+)\}`)
 // VariableStore is the interface for resolving stored variables.
 // This avoids importing the store package (which would create a cycle).
 type VariableStore interface {
-	GetVariableValue(key string) (value string, encrypted bool, err error)
+	GetVariableValue(workspaceID, key string) (value string, encrypted bool, err error)
 }
 
 // VariableContext holds the runtime context for variable resolution.
 type VariableContext struct {
-	Env       map[string]string // from os.Environ
-	Params    map[string]string // from pipeline run params
-	Vars      VariableStore     // stored variables (${var.key})
-	RunID     string
-	StartedAt time.Time
+	Env    map[string]string // from os.Environ
+	Params map[string]string // from pipeline run params
+	Vars   VariableStore     // stored variables (${var.key})
+	// WorkspaceID scopes ${var.*} to the pipeline's own workspace.
+	// Empty means the default workspace, matching the store.
+	WorkspaceID string
+	RunID       string
+	StartedAt   time.Time
 
 	// IntervalStart/End are the run's data interval (ADR-028), resolvable
 	// as ${interval.start} and ${interval.end} in RFC3339 UTC. Nil in a
@@ -127,7 +130,10 @@ func (vc *VariableContext) resolveKey(key string) string {
 	case "var":
 		// Resolve from stored variables
 		if vc.Vars != nil {
-			if val, _, err := vc.Vars.GetVariableValue(name); err == nil {
+			// Scoped to the run's workspace. Reading by key alone
+			// returned whichever workspace had written that name last,
+			// and variables hold secrets.
+			if val, _, err := vc.Vars.GetVariableValue(vc.WorkspaceID, name); err == nil {
 				return val
 			}
 		}

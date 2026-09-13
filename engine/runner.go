@@ -392,6 +392,13 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	r.varCtx.IntervalStart = r.run.DataIntervalStart
 	r.varCtx.IntervalEnd = r.run.DataIntervalEnd
 	r.varCtx.Vars = r.varStore // wire stored variables into resolver
+	// Scope ${var.*} to this pipeline's workspace. Without it the
+	// resolver read by key alone and returned whichever workspace had
+	// written that name last, which for a secret variable means one
+	// tenant's pipeline resolving another tenant's secret.
+	if r.pipe != nil {
+		r.varCtx.WorkspaceID = r.pipe.WorkspaceID
+	}
 
 	// Build the runtime graph. Edges resolve active or inactive; data
 	// emptiness never stands in for control flow.

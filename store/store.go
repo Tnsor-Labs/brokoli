@@ -503,11 +503,17 @@ type ConnectionStore interface {
 // VariableStore persists pipeline variables.
 type VariableStore interface {
 	SetVariable(v *models.Variable) error
-	GetVariable(key string) (*models.Variable, error)
+	// GetVariable and DeleteVariable take a workspace because a variable
+	// name is scoped to one. They did not, and the table's key was
+	// (key) alone, so one workspace's save overwrote another's and a read
+	// returned whichever had written last -- for values that include
+	// secrets. The workspace is a parameter rather than something a
+	// caller may omit, so the compiler catches the omission.
+	GetVariable(workspaceID, key string) (*models.Variable, error)
 	ListVariables() ([]models.Variable, error)
 	ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error)
 	ListVariablesByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Variable, int, error)
-	DeleteVariable(key string) error
+	DeleteVariable(workspaceID, key string) error
 }
 
 // WorkspaceStore persists workspaces and their memberships.

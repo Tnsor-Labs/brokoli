@@ -61,7 +61,7 @@ func TestSecretSurvivesASaveThatDoesNotRetypeIt(t *testing.T) {
 		t.Fatalf("second save: %d %s", rec.Code, rec.Body.String())
 	}
 
-	stored, err := s.GetVariable("api_token")
+	stored, err := s.GetVariable("", "api_token")
 	if err != nil {
 		t.Fatalf("GetVariable: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestSecretSurvivesASaveWithNoValueField(t *testing.T) {
 		"key": "db_password", "type": string(models.VarTypeSecret), "description": "d",
 	})
 
-	stored, _ := s.GetVariable("db_password")
+	stored, _ := s.GetVariable("", "db_password")
 	got, err := c.Decrypt(stored.Value)
 	if err != nil || got != "hunter2" {
 		t.Errorf("one decrypt gave %q (err %v), want the original secret", got, err)
@@ -104,7 +104,7 @@ func TestARetypedSecretIsStillEncrypted(t *testing.T) {
 		"key": "rotating", "value": "second", "type": string(models.VarTypeSecret),
 	})
 
-	stored, _ := s.GetVariable("rotating")
+	stored, _ := s.GetVariable("", "rotating")
 	if stored.Value == "second" {
 		t.Fatal("the new secret was stored in plaintext")
 	}

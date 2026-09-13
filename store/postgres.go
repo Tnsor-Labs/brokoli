@@ -178,6 +178,13 @@ func (s *PostgresStore) migrate() error {
 		workspace_id TEXT NOT NULL DEFAULT 'default'
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+	// Widen the variables key from (key) to (workspace_id, key). See
+	// SQLiteStore.scopeVariablesToWorkspace for why this cannot collide
+	// and why there is deliberately no collision check. Postgres can
+	// alter the constraint in place, so no table rebuild is needed.
+	s.db.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`)
+	s.db.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`)
+	s.db.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`)
 
 	// Workspaces + related tables
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
@@ -2168,16 +2175,19 @@ func (s *PostgresStore) SetVariable(v *models.Variable) error {
 	_, err := s.db.Exec(
 		`INSERT INTO variables (key, value, type, description, workspace_id, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, type=EXCLUDED.type, description=EXCLUDED.description, updated_at=EXCLUDED.updated_at`,
+		 ON CONFLICT(workspace_id, key) DO UPDATE SET value=EXCLUDED.value, type=EXCLUDED.type, description=EXCLUDED.description, updated_at=EXCLUDED.updated_at`,
 		v.Key, v.Value, v.Type, v.Description, wsID, v.CreatedAt, v.UpdatedAt,
 	)
 	return err
 }
 
-func (s *PostgresStore) GetVariable(key string) (*models.Variable, error) {
+func (s *PostgresStore) GetVariable(workspaceID, key string) (*models.Variable, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	var v models.Variable
 	err := s.db.QueryRow(
-		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE key = $1`, key,
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = $1 AND key = $2`, workspaceID, key,
 	).Scan(&v.Key, &v.Value, &v.Type, &v.Description, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -2204,8 +2214,11 @@ func (s *PostgresStore) ListVariables() ([]models.Variable, error) {
 	return vars, nil
 }
 
-func (s *PostgresStore) DeleteVariable(key string) error {
-	result, err := s.db.Exec(`DELETE FROM variables WHERE key = $1`, key)
+func (s *PostgresStore) DeleteVariable(workspaceID, key string) error {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	result, err := s.db.Exec(`DELETE FROM variables WHERE workspace_id = $1 AND key = $2`, workspaceID, key)
 	if err != nil {
 		return err
 	}

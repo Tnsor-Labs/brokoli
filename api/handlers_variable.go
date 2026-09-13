@@ -24,9 +24,25 @@ func NewVariableHandler(s store.Store, c *crypto.Config) *VariableHandler {
 
 // validateVariableAccess verifies a variable exists in the user's workspace scope.
 func (h *VariableHandler) validateVariableAccess(r *http.Request, key string) bool {
+	_, ok := h.variableWorkspace(r, key)
+	return ok
+}
+
+// variableWorkspace returns the workspace this caller may reach the key
+// in, and whether they may reach it at all.
+//
+// The access check already had to find that workspace in order to answer
+// yes or no; it just threw it away, and the store was then read by key
+// alone -- which returned whichever workspace had written that name last.
+// Returning it is what lets the read be scoped to the same workspace the
+// permission was granted for.
+//
+// An empty workspace with ok=true means single-tenant operation, where
+// the store's own "default" applies.
+func (h *VariableHandler) variableWorkspace(r *http.Request, key string) (string, bool) {
 	orgID := GetOrgIDFromRequest(r)
 	if orgID == "" {
-		return true
+		return "", true
 	}
 	var userWSIDs []string
 	if UserWorkspaceResolverFunc != nil {
@@ -37,17 +53,17 @@ func (h *VariableHandler) validateVariableAccess(r *http.Request, key string) bo
 		}
 	}
 	if len(userWSIDs) == 0 {
-		return false
+		return "", false
 	}
 	for _, wsID := range userWSIDs {
 		vars, _ := h.store.ListVariablesByWorkspace(wsID)
 		for _, v := range vars {
 			if v.Key == key {
-				return true
+				return wsID, true
 			}
 		}
 	}
-	return false
+	return "", false
 }
 
 func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -108,11 +124,12 @@ func (h *VariableHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *VariableHandler) Get(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
-	if !h.validateVariableAccess(r, key) {
+	wsID, ok := h.variableWorkspace(r, key)
+	if !ok {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return
 	}
-	v, err := h.store.GetVariable(key)
+	v, err := h.store.GetVariable(wsID, key)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return
@@ -170,7 +187,7 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	// decrypted once and got ciphertext, and the only way to recover was
 	// to type the secret again.
 	keptCiphertext := false
-	existing, err := h.store.GetVariable(v.Key)
+	existing, err := h.store.GetVariable(v.WorkspaceID, v.Key)
 	if err == nil {
 		v.CreatedAt = existing.CreatedAt
 		// If secret and value is masked, keep the existing encrypted value
@@ -209,11 +226,12 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 
 func (h *VariableHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	key := chi.URLParam(r, "key")
-	if !h.validateVariableAccess(r, key) {
+	wsID, ok := h.variableWorkspace(r, key)
+	if !ok {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return
 	}
-	if err := h.store.DeleteVariable(key); err != nil {
+	if err := h.store.DeleteVariable(wsID, key); err != nil {
 		writeError(w, http.StatusNotFound, "variable not found")
 		return
 	}
