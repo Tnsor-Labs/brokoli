@@ -387,6 +387,24 @@ var serveCmd = &cobra.Command{
 				return fmt.Errorf("worker mode requires a job queue (set BROKOLI_REDIS_URL)")
 			}
 
+			// Say what this worker holds, at the top of its log.
+			//
+			// This mode connects straight to the database, and where the
+			// deployment also sets a signing secret it can mint any
+			// session it likes. That is a reasonable trade for a worker
+			// running inside the same trust boundary as the control
+			// plane, and it is the wrong shape for one running anywhere
+			// else -- a single compromised worker then reaches every
+			// tenant's data, whatever capability model sits above it.
+			//
+			// Announced rather than enforced: this is a legitimate
+			// configuration and refusing it would break every existing
+			// deployment. But the riskier of the two worker shapes was
+			// also the quieter one, indistinguishable at a glance from a
+			// worker that holds nothing, so the trade was being made by
+			// operators who had never been told they were making it.
+			announceWorkerTrustAssumptions()
+
 			// Forward engine events to EventBus so API pods can broadcast via WebSocket
 			if Extensions.EventBus != nil {
 				go func() {
@@ -961,4 +979,37 @@ func warnIfSQLiteMultiInstanceRisk(dbURI, mode string) {
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// announceWorkerTrustAssumptions logs the credentials this worker process
+// holds beyond its own identity.
+//
+// Each of these grants something that outlives one job and is not scoped
+// to the work this worker was given: a database URL reads and writes every
+// tenant's rows directly, and a signing secret mints any session including
+// an administrative one. Named individually rather than as one line,
+// because which of them is set is the difference between "inside our
+// boundary" and "should never have been deployed there".
+func announceWorkerTrustAssumptions() {
+	held := []struct{ env, grants string }{
+		{"BROKOLI_DB_URL", "direct read/write access to every tenant's data"},
+		{"BROKOLI_JWT_SECRET", "the ability to mint any session, including an administrative one"},
+		{"BROKOLI_ENCRYPTION_KEY", "the ability to decrypt stored connection credentials"},
+	}
+	var found []struct{ env, grants string }
+	for _, h := range held {
+		if os.Getenv(h.env) != "" {
+			found = append(found, h)
+		}
+	}
+	if len(found) == 0 {
+		log.Printf("Worker: holds no control-plane secrets; all state goes through the API")
+		return
+	}
+	log.Printf("Worker: SHARED-STORE MODE. This process holds control-plane secrets:")
+	for _, h := range found {
+		log.Printf("Worker:   %s grants %s", h.env, h.grants)
+	}
+	log.Printf("Worker: this is safe only where the worker is inside the same trust boundary")
+	log.Printf("Worker: as the control plane. Do not run it anywhere you would not run the database.")
 }
