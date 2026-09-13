@@ -99,6 +99,22 @@ type RunCancelRequester interface {
 // explicit parameter (rather than overloading nodeID or attempt) so a
 // caller that has never heard of instances — every caller before ADR-017 —
 // keeps working unchanged by simply passing "".
+// ErrUnsupported reports that a store implementation cannot perform an
+// operation at all, as opposed to performing it and finding nothing.
+//
+// The distinction matters because the two are indistinguishable at a call
+// site otherwise, and they call for opposite responses. A worker running
+// against an HTTP-backed store implements the subset a worker needs and
+// refuses the rest; when one of those refusals reached
+// ConnectionResolver, the operator was told `conn_id "x" not found`, which
+// is a sentence about their data describing a property of their
+// deployment. Wrapping this lets a caller say which happened.
+//
+// An implementation that cannot perform an operation should return an
+// error wrapping this. A caller that treats "absent" as recoverable must
+// check for it before doing so.
+var ErrUnsupported = errors.New("operation not supported by this store")
+
 type ExecutionAttemptStore interface {
 	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
 	// an attempt inside an existing transaction (via WithTx), so it commits

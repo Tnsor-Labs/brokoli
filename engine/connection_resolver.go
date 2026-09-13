@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -64,7 +65,25 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 
 	conn, err := cr.store.GetConnection(connID)
 	if err != nil {
+		// "this store cannot look connections up" and "there is no such
+		// connection" are different facts and were wearing the same
+		// sentence. A worker on an HTTP-backed store refuses
+		// GetConnection outright, and the operator was told
+		// `conn_id "x" not found` -- a statement about their data
+		// describing a property of their deployment, while the node went
+		// on to run with its credentials unresolved and failed somewhere
+		// less obvious.
+		//
+		// Returning the config unchanged stays right for a genuinely
+		// missing connection, because a node may carry inline fields as a
+		// fallback and that is the backward-compatible behaviour. It is
+		// wrong for a store that can never resolve one.
 		msg, args := "conn_id %q not found: %v", []interface{}{connID, err}
+		if errors.Is(err, store.ErrUnsupported) {
+			msg = "conn_id %q cannot be resolved here: this worker has no access to stored connections, " +
+				"so the node would run without its credentials. Give the node inline connection fields, " +
+				"or run it on a worker that can reach the control plane's connection store (%v)"
+		}
 		log.Printf("[conn-resolver] WARNING: "+msg, args...)
 		if warn != nil {
 			warn(msg, args...)
