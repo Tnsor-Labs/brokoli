@@ -40,17 +40,22 @@
     }
   }
 
-  // Build full grid from today - rangeDays + 1 to today
+  // Build full grid from today - rangeDays + 1 to today.
+  //
+  // Keyed in UTC, because the server buckets runs by UTC day. This used to
+  // build local date keys and look them up in a UTC-keyed map, so for any
+  // viewer not on UTC every cell was off by one day near the boundary and
+  // the busiest day could land on the wrong square.
   function buildGrid(): { date: string; data: CalendarDay | null; isToday: boolean }[] {
     const map = new Map(days.map((d) => [d.date, d]));
     const grid: { date: string; data: CalendarDay | null; isToday: boolean }[] = [];
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const todayUTC = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
 
     for (let i = rangeDays - 1; i >= 0; i--) {
-      const d = new Date(today);
-      d.setDate(d.getDate() - i);
-      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const d = new Date(todayUTC);
+      d.setUTCDate(d.getUTCDate() - i);
+      const key = d.toISOString().slice(0, 10);
       grid.push({
         date: key,
         data: map.get(key) || null,

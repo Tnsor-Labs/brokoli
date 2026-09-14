@@ -259,8 +259,17 @@ type PipelineVersion struct {
 }
 
 // CalendarDay aggregates run statuses for a single day.
+// CalendarDay is one day of run counts.
+//
+// The day is a UTC calendar day, and the two dialects used to disagree
+// about that: SQLite grouped by the UTC date text while Postgres used
+// date(started_at) on a TIMESTAMPTZ, which converts to the session's
+// TimeZone. They also covered different windows -- SQLite from midnight
+// N days ago, Postgres a rolling N*24 hours -- so the same request
+// returned different answers depending on the backend. Both are now
+// exactly `days` UTC calendar days ending today (#611).
 type CalendarDay struct {
-	Date    string `json:"date"` // YYYY-MM-DD
+	Date    string `json:"date"` // YYYY-MM-DD, UTC
 	Total   int    `json:"total"`
 	Success int    `json:"success"`
 	Failed  int    `json:"failed"`

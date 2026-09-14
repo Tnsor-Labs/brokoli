@@ -2741,9 +2741,9 @@ func (s *SQLiteStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 		        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
 		 FROM runs
-		 WHERE started_at >= date('now', ?)
+		 WHERE started_at >= ?
 		 GROUP BY day ORDER BY day`,
-		fmt.Sprintf("-%d days", days),
+		CalendarWindowStart(days),
 	)
 	if err != nil {
 		return nil, err
@@ -2767,8 +2767,8 @@ func (s *SQLiteStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay
 		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
-	 FROM runs WHERE started_at >= date('now', ?)`
-	args := []interface{}{fmt.Sprintf("-%d days", days)}
+	 FROM runs WHERE started_at >= ?`
+	args := []interface{}{CalendarWindowStart(days)}
 	if orgID != "" {
 		query += ` AND org_id = ?`
 		args = append(args, orgID)

@@ -300,15 +300,33 @@ func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
+// defaultCalendarDays is the window when the caller does not ask for one.
+const defaultCalendarDays = 90
+
 // calendarHandler handles GET /runs/calendar — returns run calendar data.
+//
+// Days are UTC calendar days. That is a deliberate choice rather than an
+// accident of the SQL: it is stable for every viewer of a shared install,
+// whereas the dashboard's local-day buckets follow the server's zone. A
+// client rendering a grid must key it in UTC to line up (#611).
 func calendarHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		days := 90
+		days := defaultCalendarDays
 		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-		}
-		if days < 1 || days > 365 {
-			days = 90
+			// Parsed strictly. Sscanf ignored its error and ignored
+			// trailing characters, so "abc" silently became the default
+			// and "30junk" silently became 30, and an out-of-range value
+			// was silently replaced by 90. A client could not tell any of
+			// those from a request the server honoured, so it could not
+			// know which window it was drawing.
+			n, err := strconv.Atoi(strings.TrimSpace(d))
+			if err != nil || n < store.MinCalendarDays || n > store.MaxCalendarDays {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf(
+					"days must be a whole number between %d and %d",
+					store.MinCalendarDays, store.MaxCalendarDays))
+				return
+			}
+			days = n
 		}
 
 		orgID := GetOrgIDFromRequest(r)
@@ -317,10 +335,25 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if cal == nil {
-			cal = []store.CalendarDay{}
+
+		// Fill every day in the window. The query returns only days that
+		// have runs, so a quiet period was absent rather than zero and the
+		// response carried no indication of the range it covered. A client
+		// had to synthesise the missing days from the request it sent, and
+		// could not check the two agreed.
+		counts := make(map[string]store.CalendarDay, len(cal))
+		for _, d := range cal {
+			counts[d.Date] = d
 		}
-		writeJSON(w, http.StatusOK, cal)
+		filled := make([]store.CalendarDay, 0, days)
+		for _, date := range store.CalendarWindowDates(days) {
+			if d, ok := counts[date]; ok {
+				filled = append(filled, d)
+				continue
+			}
+			filled = append(filled, store.CalendarDay{Date: date})
+		}
+		writeJSON(w, http.StatusOK, filled)
 	}
 }
 

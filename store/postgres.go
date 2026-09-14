@@ -2009,15 +2009,18 @@ func (s *PostgresStore) GetDBSize() (int64, error) {
 
 func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 	rows, err := s.db.Query(
-		`SELECT date(started_at) as day,
+		// AT TIME ZONE 'UTC' rather than date(), which converts a
+		// TIMESTAMPTZ using the session's TimeZone and so bucketed by
+		// whatever the connection happened to be set to (#611).
+		`SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as day,
 		        COUNT(*) as total,
 		        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
 		 FROM runs
-		 WHERE started_at >= NOW() - INTERVAL '1 day' * $1
+		 WHERE started_at >= $1
 		 GROUP BY day ORDER BY day`,
-		days,
+		CalendarWindowStartTime(days),
 	)
 	if err != nil {
 		return nil, err
@@ -2036,14 +2039,14 @@ func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 }
 
 func (s *PostgresStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error) {
-	query := `SELECT date(started_at) as day,
+	query := `SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as day,
 		COUNT(*) as total,
 		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
-	 FROM runs WHERE started_at >= NOW() - INTERVAL '1 day' * $1`
+	 FROM runs WHERE started_at >= $1`
 	var args []interface{}
-	args = append(args, days)
+	args = append(args, CalendarWindowStartTime(days))
 	if orgID != "" {
 		query += ` AND org_id = $2`
 		args = append(args, orgID)
