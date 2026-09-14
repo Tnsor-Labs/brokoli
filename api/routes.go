@@ -405,7 +405,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Platform features (enterprise: orgs, admin, tickets, announcements)
 		if ext != nil && ext.Platform != nil && ext.Platform.Enabled() {
-			ext.Platform.RegisterRoutes(r, s, userStore, e)
+			// The crypto config rides along after the engine. An
+			// enterprise build that stores a secret of its own -- a git
+			// credential, for instance -- must encrypt it with the SAME
+			// key core uses, and the only alternative is for it to
+			// re-derive the key from the environment. Two components
+			// resolving a key independently is how they end up
+			// disagreeing, and a disagreement here surfaces as a
+			// decryption failure long after the write.
+			ext.Platform.RegisterRoutes(r, s, userStore, e, cc)
 		}
 
 		// Team features (enterprise: workspaces, roles, permissions, RBAC)

@@ -280,7 +280,15 @@ type PlatformProvider interface {
 	Enabled() bool
 
 	// RegisterRoutes adds platform-specific API routes (admin, signup, tickets, orgs).
-	// engine is *engine.Engine for fallback pipeline execution.
+	//
+	// The variadic tail carries, in order: *engine.Engine for fallback
+	// pipeline execution, then *crypto.Config. A provider must treat both
+	// as optional and tolerate a shorter tail -- an older core passes
+	// only the engine.
+	//
+	// The crypto config is there so a provider that stores a secret of
+	// its own encrypts it with the same key core uses, rather than
+	// re-deriving one from the environment and silently disagreeing.
 	RegisterRoutes(r interface{}, s interface{}, userStore interface{}, engine ...interface{})
 
 	// StartServices starts background services (trial checker, etc).
