@@ -413,6 +413,10 @@ func (s *SQLiteStore) migrate() error {
 		read_at TEXT,
 		dismissed_at TEXT)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+	// Incident ownership and per-person read state (brokoli-ee#242),
+	// through one shared function so a column cannot reach one dialect
+	// and not the other.
+	migrateAlertIncidents(s.db, "sqlite")
 
 	// Task bundles (ADR-031): tenant-scoped, content-addressed project
 	// archives. A bundle's identity IS its digest, so the primary key is

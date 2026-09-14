@@ -204,6 +204,13 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Post("/alerts/{id}/read", ah.MarkRead)
 		r.Post("/alerts/read-all", ah.MarkAllRead)
 		r.Delete("/alerts/{id}", ah.Dismiss)
+		// Incident ownership (brokoli-ee#242). Same permission as reading
+		// and dismissing: taking ownership of a failure is triage, not
+		// administration, and requiring an admin to press "I am on it"
+		// is how an incident sits unowned.
+		r.Post("/alerts/{id}/assign", ah.Assign)
+		r.Post("/alerts/{id}/acknowledge", ah.Acknowledge)
+		r.Post("/alerts/{id}/resolve", ah.Resolve)
 
 		// Dead letter queue across every pipeline in the org
 		r.Get("/dlq", ah.ListDLQ)

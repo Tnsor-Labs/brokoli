@@ -689,6 +689,19 @@ type AlertStore interface {
 	MarkAlertRead(orgID, id string) error
 	MarkAllAlertsRead(orgID string) error
 	DismissAlert(orgID, id string) error
+
+	// Incident ownership and per-person read state (brokoli-ee#242).
+	//
+	// The five above stay: they are the org-wide shape, still used where
+	// there is no caller identity, and they are what every alert written
+	// before this feature carries. These take the person asking.
+	QueryAlerts(q AlertQuery) ([]models.Alert, error)
+	CountUnreadAlertsFor(orgID, userID string) (int, error)
+	MarkAlertReadBy(orgID, alertID, userID string) error
+	MarkAllAlertsReadBy(orgID, userID string) error
+	SetAlertAssignee(orgID, alertID, userID string) error
+	AcknowledgeAlert(orgID, alertID, userID string) error
+	ResolveAlert(orgID, alertID, userID string) error
 }
 
 // TemplateStore persists global, admin-curated starter pipelines offered

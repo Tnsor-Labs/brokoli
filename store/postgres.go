@@ -470,6 +470,10 @@ func (s *PostgresStore) migrate() error {
 		read_at TIMESTAMPTZ,
 		dismissed_at TIMESTAMPTZ)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+	// Incident ownership and per-person read state (brokoli-ee#242),
+	// through one shared function so a column cannot reach one dialect
+	// and not the other.
+	migrateAlertIncidents(s.db, "postgres")
 
 	// Task bundles (ADR-031) — the tenant-scoped, content-addressed
 	// project-archive table; see store/sqlite.go for the shared doc
