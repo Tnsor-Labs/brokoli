@@ -53,7 +53,7 @@ reconstruct from git archaeology.
   consumed and produced: the upstream datasets it read, the dataset it
   wrote, row counts, observed columns, and a `sha256` digest where the
   dataset was stored. Written for every run and deleted with the run.
-  (ADR-039) -- @hc12r
+  (#633) -- @hc12r
 
   A digest is present only when the dataset went through the artifact
   store. Small datasets pass between nodes in memory and are recorded
