@@ -181,6 +181,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/pipelines/{id}/runs", rh.ListByPipeline)
 		r.Get("/pipelines/{id}/grid", rh.Grid)
 		r.Get("/pipelines/{id}/node-stats", rh.NodeStats)
+		// #241: the caller's own recent runs, across pipelines. Registered
+		// before /runs/{id} so the literal path is not read as an id.
+		r.Get("/runs", rh.ListStartedBy)
 		r.Get("/runs/{id}", rh.Get)
 		r.With(requirePerm(models.PermRunsResume)).Post("/runs/{id}/resume", rh.ResumeRun)
 		r.With(requirePerm(models.PermRunsCancel)).Post("/runs/{id}/cancel", rh.CancelRun)

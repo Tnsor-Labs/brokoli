@@ -305,6 +305,11 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN trigger_type TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN data_interval_start TEXT`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN data_interval_end TEXT`)
+	// #241: who started a run, in its own table. Created through one
+	// shared function so a change cannot reach one dialect and not the
+	// other.
+	createRunAttributionTable(s.db, "sqlite")
+
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_scheduled_interval ON runs(pipeline_id, data_interval_start) WHERE trigger_type = 'scheduled' AND data_interval_start IS NOT NULL`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_runs_resumed_from ON runs(resumed_from_run_id) WHERE resumed_from_run_id != ''`)
 

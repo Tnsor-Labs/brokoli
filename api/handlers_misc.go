@@ -152,7 +152,11 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded, try again in 10 seconds")
 			return
 		}
-		run, err := e.RunPipeline(p.ID)
+		// #241: a webhook is nobody in particular, but it is not the
+		// scheduler and it is not a person, and saying so is the point.
+		run, err := e.RunPipelineOpts(p.ID, engine.RunOptions{
+			TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindWebhook},
+		})
 		if err != nil {
 			// Same as the trigger route: a draft is a state, not a fault.
 			if errors.Is(err, engine.ErrPipelineIsDraft) {

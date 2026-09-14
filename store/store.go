@@ -640,6 +640,20 @@ type CountStore interface {
 	// set, because the UI clears any live entry missing from it.
 	ListRunIDsByStatus(status string, scope RunScope, limit int) ([]string, error)
 
+	// Who started a run (#241). Kept in its own table rather than as
+	// columns on runs: that row is read through seventeen positional
+	// SELECT lists across two dialects, and one left un-widened scans the
+	// next column into the wrong field.
+	//
+	// GetRunAttribution takes a batch, because the callers that want it
+	// are showing a page of runs. A run with no record is absent from the
+	// map: that means "not recorded", which is every run created before
+	// this existed, and is not the same as "started by nobody".
+	SetRunAttribution(runID string, a *models.RunAttribution) error
+	GetRunAttribution(runIDs []string) (map[string]models.RunAttribution, error)
+	ListRunIDsStartedBy(userID string, limit int) ([]string, error)
+	DeleteRunAttribution(runIDs []string) error
+
 	// CountRunsByStatus totals runs per status across the whole
 	// deployment, for the metrics endpoint. In-process counters cannot
 	// answer this: runs execute on workers, so the API — the stable

@@ -119,7 +119,11 @@ func (e *Engine) Backfill(pipelineID string, req BackfillRequest) (*BackfillPlan
 			}
 			start, end := iv[0], iv[1]
 			run, err := e.RunPipelineOpts(pipelineID, RunOptions{
-				Trigger:           models.RunTriggerBackfill,
+				Trigger: models.RunTriggerBackfill,
+				// #241. A backfill is its own kind: it is neither a person
+				// pressing run nor the scheduler reaching its next tick,
+				// and conflating it with either misreports both.
+				TriggeredBy:       &models.RunAttribution{Kind: models.RunTriggerKindBackfill},
 				DataIntervalStart: &start,
 				DataIntervalEnd:   &end,
 				// The date param the pre-ADR-028 backfill injected, kept

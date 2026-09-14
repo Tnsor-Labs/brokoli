@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -78,7 +79,12 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 
 	// Async: return immediately with run ID. Pipeline executes in background.
 	// This prevents client timeouts from creating duplicate runs.
-	runID, err := h.engine.RunPipelineAsyncWithParameters(pipelineID, req.Params, req.Parameters)
+	runID, err := h.engine.RunPipelineAsyncOpts(pipelineID, engine.RunOptions{
+		Params:      req.Params,
+		TypedParams: req.Parameters,
+		// #241. Who asked, taken from the token rather than the body.
+		TriggeredBy: runAttributionFromRequest(r),
+	})
 	if err != nil {
 		// A draft is a precondition failure, not a server fault. Returning
 		// 500 would make an ordinary "not finished yet" look like a bug in
@@ -163,7 +169,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		runs = populateRunErrors(runs)
+		runs = h.decorateRuns(runs)
 		writeJSON(w, http.StatusOK, PaginateSlice(runs, total, pp))
 		return
 	}
@@ -174,7 +180,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		runs = populateRunErrors(runs)
+		runs = h.decorateRuns(runs)
 		cursor := ""
 		if hasNext && len(runs) > 0 {
 			cursor = runs[len(runs)-1].ID
@@ -193,7 +199,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, populateRunErrors(runs))
+	writeJSON(w, http.StatusOK, h.decorateRuns(runs))
 }
 
 // populateRunErrors normalises a run listing for the wire: never nil, so
@@ -202,6 +208,39 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 // the same way Get already does for a single run -- a listing is not a
 // narrower audience than the single-run endpoint, so it shouldn't be a
 // wider disclosure surface.
+// decorateRuns is populateRunErrors plus who started each run (#241).
+//
+// One batched read for the page rather than one per run: attribution
+// lives in its own table, which is what keeps the seventeen positional
+// run SELECTs untouched, and the cost of that choice is this join, paid
+// only where attribution is shown.
+//
+// A failure here loses the attribution and keeps the runs. The page's
+// job is to list runs; degrading to "started by: not recorded" is worse
+// than an error only if it is silent, so it is logged.
+func (h *RunHandler) decorateRuns(runs []models.Run) []models.Run {
+	runs = populateRunErrors(runs)
+	if len(runs) == 0 {
+		return runs
+	}
+	ids := make([]string, 0, len(runs))
+	for i := range runs {
+		ids = append(ids, runs[i].ID)
+	}
+	byRun, err := h.store.GetRunAttribution(ids)
+	if err != nil {
+		log.Printf("run listing: could not read who started these runs: %v", err)
+		return runs
+	}
+	for i := range runs {
+		if a, ok := byRun[runs[i].ID]; ok {
+			attribution := a
+			runs[i].TriggeredBy = &attribution
+		}
+	}
+	return runs
+}
+
 func populateRunErrors(runs []models.Run) []models.Run {
 	if runs == nil {
 		return []models.Run{}
@@ -230,6 +269,14 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 	run.PopulateError()
 	if run.Error != "" {
 		run.Error = sanitizeRunError(run.Error)
+	}
+	if byRun, err := h.store.GetRunAttribution([]string{run.ID}); err == nil {
+		if a, ok := byRun[run.ID]; ok {
+			attribution := a
+			run.TriggeredBy = &attribution
+		}
+	} else {
+		log.Printf("run %s: could not read who started it: %v", run.ID, err)
 	}
 	writeJSON(w, http.StatusOK, run)
 }

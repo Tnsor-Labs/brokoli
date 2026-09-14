@@ -367,6 +367,10 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS trigger_type TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS data_interval_start TIMESTAMPTZ`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS data_interval_end TIMESTAMPTZ`)
+	// #241: who started a run, in its own table. Created through one
+	// shared function so a change cannot reach one dialect and not the
+	// other.
+	createRunAttributionTable(s.db, "postgres")
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_scheduled_interval ON runs(pipeline_id, data_interval_start) WHERE trigger_type = 'scheduled' AND data_interval_start IS NOT NULL`)
 	// Durable cancellation intent (see models.Run.CancelRequested and
 	// RequestRunCancel below). Set-only; terminal runs stop consulting it.

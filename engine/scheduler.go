@@ -318,7 +318,11 @@ func (s *Scheduler) catchUpMissedRuns(pipelines []models.Pipeline) {
 			// catch-up pass a quiet no-op instead of a duplicate.
 			missed := nextExpected
 			go func(pid string, sched cron.Schedule, tick time.Time) {
-				opts := RunOptions{Trigger: models.RunTriggerScheduled}
+				opts := RunOptions{
+					Trigger: models.RunTriggerScheduled,
+					// #241: nobody pressed anything; the cron tick did.
+					TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindSchedule},
+				}
 				if start, ok := prevTick(sched, tick); ok {
 					t0, t1 := start, tick
 					opts.DataIntervalStart, opts.DataIntervalEnd = &t0, &t1
@@ -446,6 +450,7 @@ func (s *Scheduler) catchUpPerInterval(p models.Pipeline, sched cron.Schedule) {
 			start, end := iv[0], iv[1]
 			_, err := s.engine.RunPipelineOpts(p.ID, RunOptions{
 				Trigger:           models.RunTriggerScheduled,
+				TriggeredBy:       &models.RunAttribution{Kind: models.RunTriggerKindSchedule},
 				DataIntervalStart: &start,
 				DataIntervalEnd:   &end,
 			})
@@ -565,7 +570,11 @@ func (s *Scheduler) Register(pipelineID, pipelineName, schedule, scheduleTimezon
 // which is correct whenever the callback runs after its tick (always, in
 // practice: timers fire at-or-after).
 func (s *Scheduler) scheduledRunOptions(pipelineID string, sched cron.Schedule) RunOptions {
-	opts := RunOptions{Trigger: models.RunTriggerScheduled}
+	opts := RunOptions{
+		Trigger: models.RunTriggerScheduled,
+		// #241: nobody pressed anything; the cron tick did.
+		TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindSchedule},
+	}
 
 	var tick time.Time
 	s.mu.Lock()

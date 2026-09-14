@@ -631,6 +631,18 @@ type RunOptions struct {
 	// the run. Both or neither; the scheduler is the only stamper today.
 	DataIntervalStart *time.Time
 	DataIntervalEnd   *time.Time
+	// TriggeredBy records what started the run and, when a person did,
+	// who (#241). Nil means not recorded, which is what every caller that
+	// has not been taught to fill it in produces -- honest, and different
+	// from claiming nobody started it.
+	//
+	// Separate from Trigger above, which cannot be widened: the partial
+	// unique index guarding scheduled dispatch keys on its values.
+	TriggeredBy *models.RunAttribution
+	// TypedParams is the ADR-032 typed run-parameter submission,
+	// validated against the pipeline's declarations. Nil for a pipeline
+	// that declares none.
+	TypedParams map[string]interface{}
 }
 
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
@@ -692,6 +704,10 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		if err := e.store.CreateRun(blocked); err != nil {
 			return nil, fmt.Errorf("create blocked run: %w", err)
 		}
+		// A blocked run is still a run somebody asked for, and it is the
+		// one most likely to prompt "who triggered this and why did it
+		// not go?".
+		recordRunAttribution(e.store, blocked.ID, opts.TriggeredBy)
 		e.appendEvent(&models.RunEvent{
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
@@ -718,6 +734,7 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 	runner.metrics = e.newRunnerMetrics()
 	runner.params = opts.Params
 	runner.trigger = opts.Trigger
+	runner.triggeredBy = opts.TriggeredBy
 	runner.intervalStart = opts.DataIntervalStart
 	runner.intervalEnd = opts.DataIntervalEnd
 
@@ -869,7 +886,29 @@ func (e *Engine) RunPipelineAsyncLocalWithCapabilities(pipelineID string, requir
 	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, nil, params...)
 }
 
+// RunPipelineAsyncOpts is RunPipelineAsyncWithParameters plus the run's
+// provenance (#241).
+//
+// A new method rather than another parameter on the existing four: the
+// comment on RunPipelineAsyncWithParameters explains why this family
+// grows by addition, and every existing caller keeps working with no
+// attribution, which is the honest result for a caller that does not
+// know who is asking.
+func (e *Engine) RunPipelineAsyncOpts(pipelineID string, opts RunOptions) (string, error) {
+	return e.runPipelineAsyncOpts(true, pipelineID, nil, opts)
+}
+
 func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredCapabilities []string, typedParams map[string]interface{}, params ...map[string]string) (string, error) {
+	opts := RunOptions{TypedParams: typedParams}
+	if len(params) > 0 && params[0] != nil {
+		opts.Params = params[0]
+	}
+	return e.runPipelineAsyncOpts(useJobQueue, pipelineID, requiredCapabilities, opts)
+}
+
+func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requiredCapabilities []string, opts RunOptions) (string, error) {
+	typedParams := opts.TypedParams
+	runParams := opts.Params
 	if e.closing() {
 		return "", ErrEngineClosed
 	}
@@ -922,12 +961,13 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			PipelineVersion: pipelineVersion,
 			OrgID:           pipe.OrgID,
 		}
-		if len(params) > 0 && params[0] != nil {
-			blocked.Params = params[0]
+		if runParams != nil {
+			blocked.Params = runParams
 		}
 		if err := e.store.CreateRun(blocked); err != nil {
 			return "", fmt.Errorf("create blocked run: %w", err)
 		}
+		recordRunAttribution(e.store, blocked.ID, opts.TriggeredBy)
 		e.appendEvent(&models.RunEvent{
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
@@ -956,8 +996,8 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			OrgID:           pipe.OrgID,
 			Parameters:      resolvedParams,
 		}
-		if len(params) > 0 && params[0] != nil {
-			accepted.Params = params[0]
+		if runParams != nil {
+			accepted.Params = runParams
 		}
 		createdEvent := &models.RunEvent{
 			RunID:     accepted.ID,
@@ -1008,6 +1048,12 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 		}); err != nil {
 			return "", err
 		}
+		// Outside the transaction on purpose. The run and its outbox
+		// record must commit together for #7's reconcilability; a
+		// provenance row is not part of that guarantee, and failing the
+		// dispatch because it could not be written would trade an outage
+		// for a reporting gap.
+		recordRunAttribution(e.store, accepted.ID, opts.TriggeredBy)
 
 		job := extensions.RunJob{
 			ID:             runID,
@@ -1017,8 +1063,8 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			EnqueuedAt:     time.Now().UTC(),
 			IdempotencyKey: runID,
 		}
-		if len(params) > 0 && params[0] != nil {
-			job.Params = params[0]
+		if runParams != nil {
+			job.Params = runParams
 		}
 		job.RequiredCapabilities = append([]string(nil), requiredCapabilities...)
 		if err := e.JobQueue.Enqueue(job); err != nil {
@@ -1059,10 +1105,13 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
-	if len(params) > 0 && params[0] != nil {
-		runner.params = params[0]
+	if runParams != nil {
+		runner.params = runParams
 	}
 	runner.parameters = resolvedParams
+	// #241: the async path creates its run inside the runner, so the
+	// provenance has to reach it the same way the trigger does.
+	runner.triggeredBy = opts.TriggeredBy
 	runner.dataCapIssuer = e.DataCapIssuer
 
 	runner.preRunID = runID

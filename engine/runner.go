@@ -71,8 +71,11 @@ type Runner struct {
 	// dispatch rather than a silent fallback.
 	dataCapIssuer *datacap.Issuer
 	varCtx        *VariableContext
-	preRunID      string     // pre-generated run ID (for registration before Execute)
-	trigger       string     // what created this run ("scheduled", "" = manual)
+	preRunID      string // pre-generated run ID (for registration before Execute)
+	trigger       string // what created this run ("scheduled", "" = manual)
+	// triggeredBy is the provenance record (#241): what started this run
+	// and, when a person did, who. Nil means not recorded.
+	triggeredBy   *models.RunAttribution
 	intervalStart *time.Time // ADR-028 data interval, stamped by the dispatcher
 	intervalEnd   *time.Time
 	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
@@ -335,6 +338,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			ResumedFromRunID:  r.resumedFromRunID,
 			OrgID:             r.orgID,
 			Trigger:           r.trigger,
+			TriggeredBy:       r.triggeredBy,
 			DataIntervalStart: r.intervalStart,
 			DataIntervalEnd:   r.intervalEnd,
 		}
@@ -342,6 +346,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		if err := r.store.CreateRun(r.run); err != nil {
 			return nil, fmt.Errorf("create run: %w", err)
 		}
+		recordRunAttribution(r.store, r.run.ID, r.triggeredBy)
 		r.appendEvent(models.RunEvent{
 			RunID:     r.run.ID,
 			EventType: models.RunEventCreated,
