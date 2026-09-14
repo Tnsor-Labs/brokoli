@@ -251,3 +251,60 @@ func TestScheduledRunsAreAttributedToTheSchedule(t *testing.T) {
 		t.Errorf("attribution = %+v, want no person on a scheduled run", a)
 	}
 }
+
+// A person can belong to more than one organization, and attribution is
+// keyed by person. So "my runs" must still be filtered to the
+// organization the request is made in, or the list leaks the existence
+// and names of pipelines in another tenant.
+func TestRunsStartedByMeStaysInTheCallersOrganization(t *testing.T) {
+	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "attr-org.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	for _, tc := range []struct{ pipelineID, orgID, runID string }{
+		{"mine", "org-a", "r-mine"},
+		{"theirs", "org-b", "r-theirs"},
+	} {
+		if err := s.CreatePipeline(&models.Pipeline{
+			ID: tc.pipelineID, Name: tc.pipelineID, Enabled: true, OrgID: tc.orgID,
+			WorkspaceID: models.DefaultWorkspaceID,
+			Nodes:       []models.Node{{ID: "s1", Type: models.NodeTypeSourceFile, Name: "src"}},
+			CreatedAt:   time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now().UTC()
+		if err := s.CreateRun(&models.Run{
+			ID: tc.runID, PipelineID: tc.pipelineID, Status: models.RunStatusSuccess,
+			StartedAt: &started, OrgID: tc.orgID,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetRunAttribution(tc.runID, &models.RunAttribution{
+			Kind: models.RunTriggerKindUser, UserID: "u1", UserName: "Alice",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	h := NewRunHandler(s, nil)
+	router := chi.NewRouter()
+	router.Get("/api/runs", h.ListStartedBy)
+
+	req := signedIn(httptest.NewRequest(http.MethodGet, "/api/runs?started_by=me", nil), "u1", "Alice")
+	req = req.WithContext(context.WithValue(req.Context(), OrgIDContextKey{}, "org-a"))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var runs []models.Run
+	if err := json.Unmarshal(rec.Body.Bytes(), &runs); err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].ID != "r-mine" {
+		t.Fatalf("runs = %+v, want only r-mine; the other organization's run must not appear", runs)
+	}
+}
