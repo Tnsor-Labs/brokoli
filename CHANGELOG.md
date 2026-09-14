@@ -47,6 +47,24 @@ reconstruct from git archaeology.
   for facts only. `confidence` was the literal `0.7` on every edge ever
   produced, which the UI rendered as "70% inferred". (00d376f) -- @hc12r
 
+### Added
+
+- `GET /api/runs/{id}/provenance` returns what each node in a run actually
+  consumed and produced: the upstream datasets it read, the dataset it
+  wrote, row counts, observed columns, and a `sha256` digest where the
+  dataset was stored. Written for every run and deleted with the run.
+  (ADR-039) -- @hc12r
+
+  A digest is present only when the dataset went through the artifact
+  store. Small datasets pass between nodes in memory and are recorded
+  with row counts and columns but no digest; treat an absent digest as
+  "not checkable", never as "unchanged".
+- `columns_opaque` and `opaque_reason` on a lineage node, so a node with
+  no column edges says why rather than looking unfinished. (00d376f)
+  -- @hc12r
+- `models.AllNodeTypes` and `models.IsKnownNodeType`, one canonical list
+  for the gates that iterate node types. (00d376f) -- @hc12r
+
 ### Fixed
 
 - **Run attribution outlived its run, permanently.** The `run_attribution`
@@ -55,14 +73,6 @@ reconstruct from git archaeology.
   and accumulated forever. It now cascades with the run, the same as every
   other per-run table. Existing rows whose run is already gone are cleared
   on the next boot. (#632) -- @hc12r
-
-### Added
-
-- `columns_opaque` and `opaque_reason` on a lineage node, so a node with
-  no column edges says why rather than looking unfinished. (00d376f)
-  -- @hc12r
-- `models.AllNodeTypes` and `models.IsKnownNodeType`, one canonical list
-  for the gates that iterate node types. (00d376f) -- @hc12r
 
 ### Upgrading
 

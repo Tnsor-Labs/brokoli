@@ -1208,6 +1208,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		if err == nil {
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
+			r.recordNodeProvenance(node, outputs, edgeStates, output, outputRef)
 			rowCount := nodeRowCount(output, outputRef, input, inputRef)
 			if pushedRowCount > 0 || len(pushedAbsorbed) > 0 {
 				// ADR-023: a segment that executed in the database has one

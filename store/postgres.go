@@ -371,6 +371,7 @@ func (s *PostgresStore) migrate() error {
 	// shared function so a change cannot reach one dialect and not the
 	// other.
 	createRunAttributionTable(s.db, "postgres")
+	createRunProvenanceTable(s.db, "postgres")
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_scheduled_interval ON runs(pipeline_id, data_interval_start) WHERE trigger_type = 'scheduled' AND data_interval_start IS NOT NULL`)
 	// Durable cancellation intent (see models.Run.CancelRequested and
 	// RequestRunCancel below). Set-only; terminal runs stop consulting it.

@@ -224,15 +224,33 @@ longer exists.
 
 ## Follow-ups
 
-- The node-type declaration interface and the coverage gate.
+Landed:
+
+- **The node-type declaration interface and the coverage gate** (00d376f).
+  Every node type declares its column mapping or declares itself opaque,
+  in a map keyed by node type; `TestEveryNodeTypeDeclaresItsColumnLineage`
+  fails on a missing key, and `models.AllNodeTypes` is checked against the
+  constants by parsing the source.
+- **Evidence levels replace `inferColumnMappings` and `Confidence`**
+  (00d376f), with the release note naming the breaking change.
+  `inferred` is in the vocabulary and produced by nothing.
+- **The per-run provenance record** and its purge. One row per (run,
+  node), removed with the run by `ON DELETE CASCADE` rather than by a
+  cleanup method somebody has to remember to call. Readable at
+  `GET /api/runs/{id}/provenance`. A digest is recorded only for datasets
+  that went through the artifact store; in-memory datasets carry row
+  counts and columns without one.
+
+Remaining:
+
+- **Producing `attested` edges** from the provenance record. The record
+  exists; nothing reads it back into the graph yet. The first exact claim
+  it supports is a single-input node whose output digest equals its input
+  digest: no column was added, dropped or rewritten, whatever the node
+  type says.
 - Column facets for lineage consumers outside the engine. #627 carries
   datasets; the column-level half needs the declarations above, and only
   `declared` and `attested` edges should ever leave this process. An
   `inferred` edge published to a shared catalogue outlives every caveat
   attached to it.
-- Replacing `inferColumnMappings` and the `Confidence` field with
-  evidence levels on `LineageColumnEdge`. This changes the shape of a
-  public response; it needs a release note naming the change, since a
-  consumer reading `confidence` as a number will find it gone.
-- The per-run provenance record and its purge hook.
 - Table-reference extraction for `source_db`.

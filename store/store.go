@@ -654,6 +654,14 @@ type CountStore interface {
 	ListRunIDsStartedBy(userID string, limit int) ([]string, error)
 	DeleteRunAttribution(runIDs []string) error
 
+	// Per-run provenance: what each node execution consumed and produced
+	// (ADR-039). Written for every run and removed with the run by the
+	// foreign key's cascade, so there is no delete method here -- one
+	// would be a second path that has to be remembered, which is exactly
+	// how run_attribution's rows came to outlive their runs.
+	SaveNodeProvenance(p *models.NodeProvenance) error
+	GetRunProvenance(runID string) ([]models.NodeProvenance, error)
+
 	// CountRunsByStatus totals runs per status across the whole
 	// deployment, for the metrics endpoint. In-process counters cannot
 	// answer this: runs execute on workers, so the API — the stable
