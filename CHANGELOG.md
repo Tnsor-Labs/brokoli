@@ -11,6 +11,54 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.22] - 2026-09-14
+
+### Added
+
+- **A person can take ownership of a failure** (#619) -- @hc12r. The
+  alert inbox had read and dismissed and nothing else, so nobody could
+  say "I am on this". Alerts now carry an assignee, an acknowledgement
+  and a resolution, with `POST /api/alerts/{id}/assign`,
+  `/acknowledge` and `/resolve`, and `state` and `assignee=me` filters
+  on the list.
+
+  Acknowledging an unowned incident also assigns it: "I am on this" and
+  "nobody owns this" cannot both be true. It does not steal an existing
+  assignment. State is derived from the timestamps rather than stored, so
+  it cannot disagree with them.
+
+### Fixed
+
+- **Alert read state was shared by the whole organization** (#619) --
+  @hc12r. `read_at` was a column on the alert, so one person marking an
+  alert read marked it read for everyone, and the unread count was the
+  organization's rather than the reader's. Read state now belongs to the
+  person.
+
+- **Three run entry points recorded nothing about who started them**
+  (#620) -- @hc12r. A dependency fan-out, a resume, and the dashboard's
+  recent-activity list were all missed by #617. The list builds its own
+  row type rather than reusing `models.Run`, so it silently had no field
+  to fill. A resume records `retry` without a name: `ResumeRun` takes
+  only a run id, and inheriting the original run's attribution would
+  credit the resume to whoever started the run that failed.
+
+### Upgrading
+
+`store.Store` gains `QueryAlerts`, `CountUnreadAlertsFor`,
+`MarkAlertReadBy`, `MarkAllAlertsReadBy`, `SetAlertAssignee`,
+`AcknowledgeAlert` and `ResolveAlert`. The five org-wide alert methods
+stay, for a deployment with no authentication at all.
+
+Read state moves to a new `alert_reads` table, created on boot by both
+dialects. The alert's own `read_at` column stays and is still the
+fallback when a person has no row of their own, so alerts marked read
+before the upgrade stay read for everyone rather than a whole backlog
+turning unread.
+
+An unrecognised `state` filter is now a 400 rather than an ignored
+parameter, and `assignee` accepts only `me`.
+
 ## [0.11.21] - 2026-09-14
 
 ### Added
