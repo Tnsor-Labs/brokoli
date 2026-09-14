@@ -64,6 +64,11 @@ reconstruct from git archaeology.
   -- @hc12r
 - `models.AllNodeTypes` and `models.IsKnownNodeType`, one canonical list
   for the gates that iterate node types. (00d376f) -- @hc12r
+- `Engine.RunPipelineAsyncLocalOpts`, the in-process run path with
+  `RunOptions`. The in-process path returns the run ID before the run row
+  exists, so attribution written against that ID straight away races the
+  run and, since #632, is refused. Pass it as `TriggeredBy` instead; the
+  runner records it after creating the run. (#634) -- @hc12r
 
 ### Fixed
 

@@ -897,6 +897,8 @@ func (e *Engine) RunPipelineAsyncWithCapabilities(pipelineID string, requiredCap
 // pipeline-level JobQueue is configured. Enterprise WorkPool orchestration
 // uses this mode so the control-plane engine can dispatch physical WorkOrders
 // to the pool instead of handing the entire pipeline to one worker.
+// It returns before the run row exists; to attribute the run, use
+// RunPipelineAsyncLocalOpts instead of writing attribution afterwards.
 func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]string) (string, error) {
 	return e.runPipelineAsync(false, pipelineID, nil, nil, params...)
 }
@@ -904,8 +906,29 @@ func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]s
 // RunPipelineAsyncLocalWithCapabilities starts a control-plane run whose
 // physical WorkOrders must be placed on workers advertising every requested
 // capability.
+// It returns before the run row exists; to attribute the run, use
+// RunPipelineAsyncLocalOpts instead of writing attribution afterwards.
 func (e *Engine) RunPipelineAsyncLocalWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
 	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, nil, params...)
+}
+
+// RunPipelineAsyncLocalOpts is the in-process path with the run's
+// provenance attached, and the only correct way to attribute a run started
+// there.
+//
+// The in-process path returns the run's ID BEFORE the run row exists: the
+// runner creates its own row inside Execute, on a goroutine started just
+// before the return. Anything keyed on the returned ID and written straight
+// away -- attribution, provenance, a tag -- races that goroutine. With
+// run_attribution's foreign key the write loses the race and is rejected;
+// before the key, it wrote an orphan row that the run later caught up with,
+// which worked by accident rather than by design.
+//
+// RunOptions.TriggeredBy reaches the runner, which records attribution
+// after its own CreateRun. That ordering is guaranteed; a caller's
+// after-the-fact write is not.
+func (e *Engine) RunPipelineAsyncLocalOpts(pipelineID string, requiredCapabilities []string, opts RunOptions) (string, error) {
+	return e.runPipelineAsyncOpts(false, pipelineID, requiredCapabilities, opts)
 }
 
 // RunPipelineAsyncOpts is RunPipelineAsyncWithParameters plus the run's
