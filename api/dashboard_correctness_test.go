@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -27,7 +28,7 @@ func seedRunsAt(t *testing.T, s store.Store, pipelineID, name string, n int, sta
 	}
 	for i := 0; i < n; i++ {
 		run := &models.Run{
-			ID:         pipelineID + "-" + string(status) + "-" + string(rune('a'+i)),
+			ID:         fmt.Sprintf("%s-%s-%04d", pipelineID, status, i),
 			PipelineID: pipelineID,
 			Status:     status,
 			StartedAt:  &started,
@@ -205,12 +206,66 @@ func TestDashboardTopFailingIsWindowed(t *testing.T) {
 	}
 }
 
-// The cap is still there (#608). The response says so, rather than leaving
-// a client to assume the counts are complete.
-func TestDashboardDeclaresItsPerPipelineCap(t *testing.T) {
+// #608: the acceptance test for removing the cap. Every count used to come
+// from a 200-run-per-pipeline read, so a pipeline that ran more often than
+// that in the window reported 200 no matter how many times it really ran.
+// A pipeline on a one-minute schedule produces 1,440 runs a day, so this is
+// what a busy install looked like, not an edge case.
+func TestDashboardCountsBeyondTheOldPerPipelineCap(t *testing.T) {
 	s := newDashboardTestStore(t)
+	const runCount = 260 // over the old 200
+	started := time.Now().UTC().Add(-time.Hour)
+	seedRunsAt(t, s, "pipe-busy", "every-minute", runCount, models.RunStatusSuccess, started, time.Second)
+
 	d := getDashboard(t, s)
-	if got := d["runs_per_pipeline_cap"]; got != float64(dashboardRunsPerPipeline) {
-		t.Errorf("runs_per_pipeline_cap = %v, want %d", got, dashboardRunsPerPipeline)
+
+	if got := d["runs_24h_total"]; got != float64(runCount) {
+		t.Errorf("runs_24h_total = %v, want %d; the old read stopped at 200", got, runCount)
+	}
+	if got := d["runs_24h_success"]; got != float64(runCount) {
+		t.Errorf("runs_24h_success = %v, want %d", got, runCount)
+	}
+	if got := d["runs_24h_finished"]; got != float64(runCount) {
+		t.Errorf("runs_24h_finished = %v, want %d", got, runCount)
+	}
+
+	rollups, _ := d["pipeline_rollups"].([]interface{})
+	if len(rollups) != 1 {
+		t.Fatalf("pipeline_rollups = %d, want 1", len(rollups))
+	}
+	if got := rollups[0].(map[string]interface{})["total"]; got != float64(runCount) {
+		t.Errorf("rollup total = %v, want %d", got, runCount)
+	}
+
+	// The trends series is counted the same way, so today holds all of them
+	// rather than the 200 a capped read could reach.
+	trends, _ := d["trends"].([]interface{})
+	todayTotal := 0.0
+	today := time.Now().Local().Format("2006-01-02")
+	for _, e := range trends {
+		m, _ := e.(map[string]interface{})
+		if m["date"] == today {
+			todayTotal = m["total"].(float64)
+		}
+	}
+	// The runs were seeded an hour ago, which is yesterday in the first hour
+	// after local midnight; sum both rather than flake once a day.
+	if todayTotal == 0 {
+		for _, e := range trends {
+			m, _ := e.(map[string]interface{})
+			todayTotal += m["total"].(float64)
+		}
+	}
+	if todayTotal != float64(runCount) {
+		t.Errorf("trends total = %v, want %d", todayTotal, runCount)
+	}
+
+	// recent_runs stays a bounded sample, and now says how bounded.
+	sample, _ := d["recent_runs"].([]interface{})
+	if len(sample) != dashboardRecentRunsSample {
+		t.Errorf("recent_runs = %d, want the %d-entry sample", len(sample), dashboardRecentRunsSample)
+	}
+	if got := d["recent_runs_sample_size"]; got != float64(dashboardRecentRunsSample) {
+		t.Errorf("recent_runs_sample_size = %v, want %d", got, dashboardRecentRunsSample)
 	}
 }

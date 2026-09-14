@@ -622,6 +622,24 @@ type CountStore interface {
 	CountVariables(workspaceID string) (int, error)
 	CountRunsByPipeline(pipelineID string) (int, error)
 
+	// AggregateRunsByPipelineStatus and AggregateRunsByDayStatus count
+	// runs in the database rather than loading them (#608). The dashboard
+	// read up to 200 runs per pipeline and counted in Go, so a pipeline
+	// that ran more often than that in the reported window silently
+	// reported 200.
+	//
+	// Both cover runs started at or after `since`. The first groups by
+	// pipeline and status, for a rolling window; the second groups by
+	// calendar day and status, for a daily series, where offsetMinutes is
+	// the day boundary's offset from UTC.
+	AggregateRunsByPipelineStatus(since time.Time, scope RunScope) ([]RunAggregate, error)
+	AggregateRunsByDayStatus(since time.Time, offsetMinutes int, scope RunScope) ([]RunAggregate, error)
+
+	// ListRunIDsByStatus returns the ids of runs in one status, newest
+	// first. The dashboard's running_run_ids must be the authoritative
+	// set, because the UI clears any live entry missing from it.
+	ListRunIDsByStatus(status string, scope RunScope, limit int) ([]string, error)
+
 	// CountRunsByStatus totals runs per status across the whole
 	// deployment, for the metrics endpoint. In-process counters cannot
 	// answer this: runs execute on workers, so the API — the stable
