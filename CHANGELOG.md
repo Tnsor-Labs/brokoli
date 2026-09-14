@@ -13,254 +13,166 @@ reconstruct from git archaeology.
 
 ## [0.11.24] - 2026-09-14
 
-Tenant scoping, and a lineage integration that emits lineage.
+> **Breaking:** `extensions.OpenLineageEmitter`'s three methods take two new
+> arguments. Out-of-tree implementations must be updated.
+>
+> **Security:** five endpoints could return or modify another organization's
+> data. Upgrade if you run more than one.
 
-### Fixed
+### Security
 
-- **A single audit entry was readable across tenants** (#625) -- @hc12r.
-  `GET /api/audit/{id}` answered for any entry among the newest 500,
-  whoever asked: no feature gate, no permission check and no tenant
-  filter, while the list endpoint beside it has all three. Audit entries
-  carry the acting user and the before and after values of a change, so
-  that was a readable trail of another tenant's activity to anybody who
-  could guess an id. A hidden entry now reports not found rather than
-  forbidden, because the two answers together confirm which ids exist
-  elsewhere.
+Each of these was reachable by any signed-in user. All are @hc12r.
 
-- **Five reads and writes were not scoped to the tenant that owns them**
-  (#628) -- @hc12r. None was a missing feature; each was a check that
-  guarded the wrong object, or a rule applied on one branch and not its
-  neighbour.
-
-  Resolving a dead-letter entry validated the organization of the
-  *pipeline in the path* and then resolved an entry named by a separate,
-  unvalidated id, so passing your own pipeline and any entry id marked
-  another tenant's failure dealt with. The dependency graph passed an
-  empty organization to a store method that reads empty as no filter,
-  returning every pipeline in the deployment. The paged connection list
-  masked two fields where the unpaged branch masked four, so one query
-  parameter decided whether stored ciphertext was disclosed. Import kept
-  a body-supplied `workspace_id`, letting a caller place a pipeline into
-  a workspace they do not work in. The bare `limit` on the alert inbox
-  and the dead-letter list reached SQL unbounded.
+- `GET /api/audit/{id}` returned **any** audit entry among the newest 500,
+  from any organization, and required no permission. Entries carry the
+  acting user and the before and after values of a change. Now
+  feature-gated, permission-checked and scoped to the caller's
+  organization. (#625)
+- `POST /api/pipelines/{id}/dlq/{dlqId}/resolve` resolved the entry named
+  in the URL without checking it belonged to the pipeline, so any
+  dead-letter entry in the deployment could be marked resolved. (#628)
+- `GET /api/pipelines/dependency-graph` returned every pipeline in the
+  deployment, across all organizations, when the caller's organization
+  could not be resolved. (#628)
+- `GET /api/connections?page=N` returned the `encrypted://` credential
+  reference that the unpaged list masks. (#628)
+- `POST /api/pipelines/import` honoured a `workspace_id` in the request
+  body, so a pipeline could be placed in a workspace the caller does not
+  belong to. (#628)
 
 ### Added
 
-- **Lineage events are emitted, with the datasets a run reads and
-  writes** (#627) -- @hc12r. The OpenLineage emitter was never called:
-  the registry field was written at startup and read by no code, so a
-  deployment that configured a catalogue endpoint received no events at
-  all. The engine now reports START before execution, so a run that
-  never finishes is still visible as one that started, and COMPLETE or
-  FAIL after -- with the datasets on the failure too, because a
-  catalogue that hears only about successes shows a broken pipeline as
-  healthy.
+- **Lineage events reach an OpenLineage catalogue.** Setting
+  `BROKOLI_OPENLINEAGE_URL` previously produced no events at all. Runs now
+  emit `START` before execution and `COMPLETE` or `FAIL` after, each
+  carrying the datasets the run reads and writes. (#627) -- @hc12r
 
-  Assets are named by the same extractors the lineage graph uses, so a
-  catalogue and the lineage page cannot disagree about what a table is
-  called.
+### Fixed
+
+- `limit` on `GET /api/alerts` and `GET /api/dlq` is capped at 1000 and
+  defaults to 100. It previously reached the database unbounded. (#628)
+  -- @hc12r
 
 ### Documentation
 
-- **ADR-039, lineage that says how it knows** (#626) -- @hc12r.
-  Proposed. Records why the graph's column edges, which are produced by
-  matching column names and stamped with a literal `0.7`, are replaced
-  by mappings derived from the IR, with evidence levels and an explicit
-  refusal to guess through a node that cannot say.
+- **ADR-039** proposes deriving column lineage from the IR instead of
+  matching column names, with explicit evidence levels. (#626) -- @hc12r
 
 ### Upgrading
 
-**Breaking.** `extensions.OpenLineageEmitter`'s three methods now take
-`inputs, outputs []LineageDataset`. Any out-of-tree implementation needs
-updating. The interface had no working consumer, so nothing in practice
-depended on the old shape.
-
-`GET /api/audit/{id}` now requires the `audit` feature and returns only
-entries from the caller's organization. An entry carrying no tenant is
-visible to nobody once tenants exist, rather than to everybody.
-
-The `limit` parameter on the alert inbox and the dead-letter list is
-capped at 1000 and defaults to 100. A value the server cannot honour
-degrades to the default rather than being refused, unlike the `state`
-and `days` filters: a substituted limit returns fewer rows, while a
-substituted filter returns rows the caller did not ask for.
+1. **If you implement `extensions.OpenLineageEmitter`**, add
+   `inputs, outputs []LineageDataset` to all three methods.
+2. **If you call `GET /api/audit/{id}`**, it now requires the `audit`
+   feature and returns only your organization's entries. Entries stored
+   without a tenant are no longer visible to anyone.
+3. **If you pass `limit` above 1000** to the alert or dead-letter lists,
+   you now receive 1000 rows.
 
 ## [0.11.23] - 2026-09-14
 
 ### Changed
 
-- **The platform provider receives the crypto config** (#622) -- @hc12r.
-  An enterprise build that stores a secret of its own must encrypt it
-  with the same key core uses; the alternative is re-deriving the key
-  from the environment, and two components resolving a key independently
-  is how they end up disagreeing, which surfaces as a decryption failure
-  long after the write on data that is by then unreadable.
-
-  It rides in the variadic tail after the engine, so no signature
-  changed. A provider must tolerate a shorter tail, since an older core
-  passes only the engine.
+- The platform provider now receives the encryption key config alongside
+  the engine, so an enterprise build stores its own secrets under the same
+  key core uses rather than deriving one from the environment. No action
+  for OSS deployments. (#622) -- @hc12r
 
 ## [0.11.22] - 2026-09-14
 
 ### Added
 
-- **A person can take ownership of a failure** (#619) -- @hc12r. The
-  alert inbox had read and dismissed and nothing else, so nobody could
-  say "I am on this". Alerts now carry an assignee, an acknowledgement
-  and a resolution, with `POST /api/alerts/{id}/assign`,
-  `/acknowledge` and `/resolve`, and `state` and `assignee=me` filters
-  on the list.
-
-  Acknowledging an unowned incident also assigns it: "I am on this" and
-  "nobody owns this" cannot both be true. It does not steal an existing
-  assignment. State is derived from the timestamps rather than stored, so
-  it cannot disagree with them.
+- **Take ownership of a failure.** Alerts carry an assignee, an
+  acknowledgement and a resolution, via `POST /api/alerts/{id}/assign`,
+  `/acknowledge` and `/resolve`, with `?state=` and `?assignee=me` filters
+  on the list. Acknowledging an unowned incident also assigns it.
+  (#619) -- @hc12r
 
 ### Fixed
 
-- **Alert read state was shared by the whole organization** (#619) --
-  @hc12r. `read_at` was a column on the alert, so one person marking an
-  alert read marked it read for everyone, and the unread count was the
-  organization's rather than the reader's. Read state now belongs to the
-  person.
-
-- **Three run entry points recorded nothing about who started them**
-  (#620) -- @hc12r. A dependency fan-out, a resume, and the dashboard's
-  recent-activity list were all missed by #617. The list builds its own
-  row type rather than reusing `models.Run`, so it silently had no field
-  to fill. A resume records `retry` without a name: `ResumeRun` takes
-  only a run id, and inheriting the original run's attribution would
-  credit the resume to whoever started the run that failed.
+- **Alert read state was shared by the whole organization.** One person
+  marking an alert read marked it read for everyone, and the unread count
+  was the organization's rather than the reader's. Read state is now per
+  person. (#619) -- @hc12r
+- Runs started by a dependency fan-out or a resume recorded nothing about
+  what started them, and the dashboard's recent-activity list omitted the
+  field entirely. (#620) -- @hc12r
 
 ### Upgrading
 
-`store.Store` gains `QueryAlerts`, `CountUnreadAlertsFor`,
-`MarkAlertReadBy`, `MarkAllAlertsReadBy`, `SetAlertAssignee`,
-`AcknowledgeAlert` and `ResolveAlert`. The five org-wide alert methods
-stay, for a deployment with no authentication at all.
-
-Read state moves to a new `alert_reads` table, created on boot by both
-dialects. The alert's own `read_at` column stays and is still the
-fallback when a person has no row of their own, so alerts marked read
-before the upgrade stay read for everyone rather than a whole backlog
-turning unread.
-
-An unrecognised `state` filter is now a 400 rather than an ignored
-parameter, and `assignee` accepts only `me`.
+- `store.Store` gains seven alert methods; the five organization-wide ones
+  remain for deployments with no authentication.
+- Read state moves to a new `alert_reads` table, created on boot.
+  **Alerts marked read before upgrading stay read for everyone**, because
+  the old column is still the fallback.
+- `?state=` now rejects an unrecognised value instead of ignoring it, and
+  `?assignee=` accepts only `me`.
 
 ## [0.11.21] - 2026-09-14
 
 ### Added
 
-- **Runs record what started them, and who** (#617) -- @hc12r. A run
-  carried only `Trigger`, which is `"scheduled"` for the scheduler and
-  empty for everything else, so manual, API, webhook and dependency runs
-  were indistinguishable and nothing anywhere recorded the person. Runs
-  now carry `triggered_by` with a closed set of kinds -- `user`,
-  `schedule`, `webhook`, `dependency`, `backfill`, `api_token`, `retry` --
-  and, when a person did it, their id and name.
-
-  `Trigger` could not be widened to answer this: the partial unique index
-  guarding scheduled dispatch keys on its values.
-
-  A token-authenticated caller is recorded as `api_token`, not as the
-  person who minted the token. The name is copied at creation rather than
-  resolved on read, because a run is a historical fact and the person may
-  later be renamed or removed.
-
-- **`GET /api/runs?started_by=me`** (#617) -- @hc12r. The caller's own
-  recent runs across pipelines. `started_by` accepts only `me`: reading
-  whose runs somebody else started is an audit question with its own
-  access rule.
+- **Runs record what started them, and who.** Every run carries
+  `triggered_by` with a kind -- `user`, `schedule`, `webhook`,
+  `dependency`, `backfill`, `api_token` or `retry` -- plus the person's id
+  and name where one was involved. Previously only scheduled runs were
+  distinguishable. (#617) -- @hc12r
+- `GET /api/runs?started_by=me` lists the caller's own recent runs across
+  pipelines. (#617) -- @hc12r
 
 ### Upgrading
 
-`store.Store` gains `SetRunAttribution`, `GetRunAttribution`,
-`ListRunIDsStartedBy` and `DeleteRunAttribution`. Any out-of-tree
-implementation needs them.
-
-Attribution lives in a new `run_attribution` table rather than on `runs`,
-created automatically on boot by both dialects. `triggered_by` is absent
-from a run's JSON when nothing was recorded, which is every run that
-predates this -- absence means "not recorded", not "started by nobody".
-
-`RunPipelineAsyncOpts` is a new engine entry point carrying the run's
-provenance. The existing `RunPipelineAsync*` methods are unchanged and
-record no attribution, which is the honest result for a caller that does
-not know who is asking.
+- `store.Store` gains four attribution methods.
+- Attribution lives in a new `run_attribution` table, created on boot.
+- `triggered_by` is **absent** for runs created before upgrading. Absent
+  means "not recorded", not "nobody started it"; clients should render the
+  two differently.
 
 ## [0.11.20] - 2026-09-14
 
-Dashboard correctness. Every headline figure on the dashboard was wrong
-in some way, and two of them were wrong in a direction that reads as
-reassurance: a perfect success rate over an empty window, and a run count
-that stopped at 200 no matter how busy a pipeline was.
+Every headline figure on the dashboard was wrong in some way. Two were
+wrong in a direction that reads as reassurance.
 
 ### Fixed
 
-- **Success rate counted runs that had not finished** (#606) -- @hc12r.
-  The denominator was every run in the window, so `pending`, `running`,
-  `waiting`, `blocked` and `cancelled` all sat in it while the numerator
-  counted only successes. A pipeline's rate fell while its own runs were
-  in flight and recovered as they finished, with nothing having failed,
-  and a cancelled run counted as though somebody had asked it to succeed.
-  An empty window returned 100, indistinguishable from a hundred passing
-  runs.
-- **A sub-second run had no duration** (#607) -- @hc12r. Both timestamps
-  were formatted without a fractional part, so a 120ms run arrived with
-  identical start and finish and every fast run read as zero. The same
-  truncation made the sort compare equal for runs starting in the same
-  second, so a pipeline's "most recent run" could name one that was not
-  the latest.
-- **Dashboard trends bucketed UTC dates into local-day keys** (#609) --
-  @hc12r. The same defect that had already been fixed forty lines above
-  for `runs_today`, with a comment describing this code exactly. East of
-  UTC the first hours of each local day landed on the previous day; west
-  of UTC late-evening runs were keyed to a tomorrow that is not in the
-  series and vanished from the chart.
-- **"Top failing pipelines" had no time window** (#610) -- @hc12r. It
-  counted every failure in the loaded window regardless of age, on a
-  panel whose neighbours are all 24-hour figures, so a pipeline dealt with
-  last month outranked one failing this morning.
-- **Every dashboard count was capped at 200 runs per pipeline** (#608) --
-  @hc12r. A pipeline on a one-minute schedule produces 1,440 runs a day
-  and reported 200. The seven-day series was worse: those same 200 rows
-  were all it had to spread across seven days, so older days emptied and
-  the chart showed a decline that was an artifact of the cap. Counting
-  now happens in the database.
-- **The run calendar answered differently on each dialect** (#611) --
-  @hc12r. SQLite grouped by the UTC date text and read from midnight N
-  days ago, which is N+1 calendar days; Postgres used `date()` on a
-  `TIMESTAMPTZ`, which converts using the session's TimeZone, over a
-  rolling N*24 hours. Neither returned the N days asked for. A `days`
-  value that could not be honoured -- out of range, unparseable, or with
-  trailing characters -- was silently replaced by 90 and returned 200.
+All @hc12r.
+
+- **Success rate counted runs that had not finished**, so a pipeline's
+  rate fell while its own runs were in flight and a cancelled run counted
+  as a failure. The denominator is now finished runs, and an empty window
+  reports `null` rather than `100`. (#606)
+- **Every dashboard count stopped at 200 runs per pipeline.** A pipeline
+  on a one-minute schedule produces 1,440 runs a day and reported 200; the
+  seven-day chart showed a decline that was an artifact of the cap.
+  Counting now happens in the database. (#608)
+- **Sub-second runs reported a duration of zero**, because timestamps were
+  truncated to whole seconds. The same truncation could make a pipeline's
+  "most recent run" name one that was not the latest. (#607)
+- **The seven-day trend chart bucketed UTC dates into local-day keys.**
+  East of UTC the first hours of each day landed on the previous one; west
+  of UTC, late-evening runs vanished from the chart. (#609)
+- **"Top failing pipelines" had no time window**, on a panel whose
+  neighbours are all 24-hour figures. (#610)
+- **The run calendar answered differently on SQLite and Postgres** and
+  silently substituted 90 days for any `days` value it could not honour.
+  (#611)
 
 ### Added
 
-- **A user can edit their own profile** (#604) -- @hc12r.
-  `PUT /api/auth/me/profile` writes display name, email and a new
-  `avatar_url`. There was no route that wrote any of them, so an account
-  created with just a username had no way to fill them in. The account
-  comes from the token, never the body.
+- `PUT /api/auth/me/profile` sets display name, email and a new avatar
+  URL. An account created with only a username previously had no way to
+  fill these in. (#604) -- @hc12r
 
 ### Upgrading
 
-`success_rate_24h` is **null** when no run finished in the window, where
-it used to be `100`. A client reading it as a number must handle null;
-that is the point, since there was no honest number to send. Three fields
-are new alongside it: `runs_24h_finished`, `top_failing_window_hours` and
-`recent_runs_sample_size`. `recent_runs` entries gain `duration_ms`, and
-their timestamps now carry fractional seconds.
-
-`GET /api/runs/calendar` returns every day in the window, including days
-with no runs, and refuses a `days` value outside 1..365 with a 400 rather
-than substituting 90. Days are UTC, which is now stated: a client
-rendering a grid must key it in UTC to line up.
-
-`store.Store` gains `AggregateRunsByPipelineStatus`,
-`AggregateRunsByDayStatus` and `ListRunIDsByStatus`. Any out-of-tree
-implementation needs them.
+1. **`success_rate_24h` can now be `null`** when nothing finished in the
+   window. Clients reading it as a number must handle null.
+2. New response fields: `runs_24h_finished`, `top_failing_window_hours`,
+   `recent_runs_sample_size`, and `duration_ms` on each recent run.
+   Recent-run timestamps now carry fractional seconds.
+3. `GET /api/runs/calendar` returns **every** day in the window, including
+   empty ones, and rejects a `days` value outside 1..365 instead of
+   substituting 90. Days are UTC.
+4. `store.Store` gains three aggregate methods.
 
 ## [0.11.19] - 2026-09-14
 
