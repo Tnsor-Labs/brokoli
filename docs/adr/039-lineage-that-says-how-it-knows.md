@@ -36,6 +36,20 @@ The question this endpoint exists to answer is "how did this field get
 here". Name matching cannot answer it, and the current output does not
 admit that.
 
+### The graph is also the only consumer
+
+Nothing outside the lineage endpoint uses any of this. The assets a
+pipeline reads and writes are computed inside `buildLineageGraph` and
+kept there, so any other consumer that wants them has to compute its own
+-- and the moment two functions each decide what "the asset behind this
+node" means, they drift, and the same table gets two names in two places.
+
+That gap has since been closed for one consumer: #627 extracts
+`PipelineAssets` from the same extractors the graph uses and reports a
+run's datasets through the lifecycle. It is mentioned here because it
+sets the precedent this ADR depends on -- one definition of an asset's
+identity, reused rather than reimplemented.
+
 ### What the engine already knows and does not use
 
 A transform node is not SQL text. It is a typed config in the IR:
@@ -211,6 +225,11 @@ longer exists.
 ## Follow-ups
 
 - The node-type declaration interface and the coverage gate.
+- Column facets for lineage consumers outside the engine. #627 carries
+  datasets; the column-level half needs the declarations above, and only
+  `declared` and `attested` edges should ever leave this process. An
+  `inferred` edge published to a shared catalogue outlives every caveat
+  attached to it.
 - Replacing `inferColumnMappings` and the `Confidence` field with
   evidence levels on `LineageColumnEdge`. This changes the shape of a
   public response; it needs a release note naming the change, since a
