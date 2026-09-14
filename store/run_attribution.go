@@ -30,21 +30,100 @@ func createRunAttributionTable(db *sql.DB, dialect string) {
 	// run_id is the primary key: one attribution per run, and a re-write
 	// replaces rather than accumulates.
 	//
-	// No foreign key to runs. Purging old runs is a plain DELETE that
-	// does not know about this table, and a constraint would either make
-	// the purge fail or silently take rows with it depending on the
-	// dialect. Orphan rows are harmless -- nothing reads an attribution
-	// except by a run id it already holds -- and are removed alongside
-	// the runs they belong to by DeleteRunAttribution.
+	// ON DELETE CASCADE, the same as every other per-run table here
+	// (node_profiles, execution_attempts and four more). Deleting a run
+	// takes its attribution with it, through every path that deletes a
+	// run rather than only the ones somebody remembered to wire.
+	//
+	// The first version of this table had no foreign key, on the stated
+	// grounds that a purge "would either make the purge fail or silently
+	// take rows with it depending on the dialect", with orphans to be
+	// cleared by DeleteRunAttribution instead. Both halves were wrong.
+	// Taking the rows with it is precisely what is wanted and what every
+	// sibling table already does, SQLite runs with foreign_keys(1) so the
+	// two dialects behave identically, and DeleteRunAttribution was
+	// called from nowhere in the product -- so the rows were not cleared
+	// by anything and outlived their runs permanently.
 	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS run_attribution (
 		run_id TEXT PRIMARY KEY,
 		kind TEXT NOT NULL,
 		user_id TEXT NOT NULL DEFAULT '',
 		user_name TEXT NOT NULL DEFAULT '',
-		token_name TEXT NOT NULL DEFAULT ''
+		token_name TEXT NOT NULL DEFAULT '',
+		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 	)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_attribution_user ON run_attribution(user_id)`)
-	_ = dialect
+	addRunAttributionForeignKey(db, dialect)
+}
+
+// addRunAttributionForeignKey retrofits the cascade onto a table created
+// before it existed.
+//
+// CREATE TABLE IF NOT EXISTS does nothing to a table that is already
+// there, so a deployment that ran any earlier version keeps the
+// constraint-free table and keeps accumulating orphans. This is the half
+// that fixes those.
+//
+// Idempotent and best effort, like the rest of this migration path: a
+// failure here leaves the old table in place and working, which is worse
+// than the fix and much better than a boot that fails.
+func addRunAttributionForeignKey(db *sql.DB, dialect string) {
+	if dialect == "postgres" {
+		// Orphans first: ADD CONSTRAINT validates existing rows and would
+		// fail on any row whose run is already gone, which on an old
+		// deployment is most of them.
+		_, _ = db.Exec(`DELETE FROM run_attribution WHERE run_id NOT IN (SELECT id FROM runs)`)
+		// IF NOT EXISTS is not available for ADD CONSTRAINT, so this is
+		// allowed to fail when the constraint is already there.
+		_, _ = db.Exec(`ALTER TABLE run_attribution
+			ADD CONSTRAINT run_attribution_run_id_fkey
+			FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE`)
+		return
+	}
+
+	// SQLite cannot add a constraint to an existing table, so the table
+	// is rebuilt. Only when it needs to be: an unconditional rebuild on
+	// every boot would rewrite the table forever.
+	var fkCount int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pragma_foreign_key_list('run_attribution')`).Scan(&fkCount); err != nil || fkCount > 0 {
+		return
+	}
+
+	// Nothing references run_attribution, so the rename below cannot
+	// redirect another table's constraint and the rebuild is safe with
+	// foreign keys left on.
+	//
+	// The WHERE clause does the orphan cleanup and the migration in one
+	// step: a row whose run is gone would violate the new constraint on
+	// insert, so it is dropped here rather than deleted in a separate
+	// pass that could be interrupted between the two.
+	tx, err := db.Begin()
+	if err != nil {
+		return
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	for _, stmt := range []string{
+		`CREATE TABLE run_attribution_new (
+			run_id TEXT PRIMARY KEY,
+			kind TEXT NOT NULL,
+			user_id TEXT NOT NULL DEFAULT '',
+			user_name TEXT NOT NULL DEFAULT '',
+			token_name TEXT NOT NULL DEFAULT '',
+			FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
+		)`,
+		`INSERT INTO run_attribution_new (run_id, kind, user_id, user_name, token_name)
+			SELECT run_id, kind, user_id, user_name, token_name FROM run_attribution
+			WHERE run_id IN (SELECT id FROM runs)`,
+		`DROP TABLE run_attribution`,
+		`ALTER TABLE run_attribution_new RENAME TO run_attribution`,
+		`CREATE INDEX IF NOT EXISTS idx_run_attribution_user ON run_attribution(user_id)`,
+	} {
+		if _, err := tx.Exec(stmt); err != nil {
+			return
+		}
+	}
+	_ = tx.Commit()
 }
 
 // setRunAttribution records what started a run, replacing any previous
@@ -130,8 +209,15 @@ func listRunIDsStartedBy(db *sql.DB, dialect, userID string, limit int) ([]strin
 	return ids, rows.Err()
 }
 
-// deleteRunAttribution removes records for runs that no longer exist,
-// called by the purge that deletes them.
+// deleteRunAttribution removes attribution for specific runs.
+//
+// NOT the cleanup path for a purge: the foreign key's ON DELETE CASCADE
+// is, and it covers every route that deletes a run rather than the ones
+// somebody remembered to call this from. It was documented as the purge's
+// cleanup and called from nowhere, which is why orphans accumulated.
+//
+// Kept for removing attribution without removing the run, which is a
+// different operation and the only one this is for.
 func deleteRunAttribution(db *sql.DB, dialect string, runIDs []string) error {
 	if len(runIDs) == 0 {
 		return nil

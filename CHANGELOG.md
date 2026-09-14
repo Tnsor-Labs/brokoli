@@ -47,6 +47,15 @@ reconstruct from git archaeology.
   for facts only. `confidence` was the literal `0.7` on every edge ever
   produced, which the UI rendered as "70% inferred". (#632) -- @hc12r
 
+### Fixed
+
+- **Run attribution outlived its run, permanently.** The `run_attribution`
+  table had no foreign key and its cleanup method was called from nowhere,
+  so every row written since the feature shipped survived the run's purge
+  and accumulated forever. It now cascades with the run, the same as every
+  other per-run table. Existing rows whose run is already gone are cleared
+  on the next boot. (#633) -- @hc12r
+
 ### Added
 
 - `columns_opaque` and `opaque_reason` on a lineage node, so a node with
