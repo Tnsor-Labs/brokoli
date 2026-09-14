@@ -11,6 +11,80 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.24] - 2026-09-14
+
+Tenant scoping, and a lineage integration that emits lineage.
+
+### Fixed
+
+- **A single audit entry was readable across tenants** (#625) -- @hc12r.
+  `GET /api/audit/{id}` answered for any entry among the newest 500,
+  whoever asked: no feature gate, no permission check and no tenant
+  filter, while the list endpoint beside it has all three. Audit entries
+  carry the acting user and the before and after values of a change, so
+  that was a readable trail of another tenant's activity to anybody who
+  could guess an id. A hidden entry now reports not found rather than
+  forbidden, because the two answers together confirm which ids exist
+  elsewhere.
+
+- **Five reads and writes were not scoped to the tenant that owns them**
+  (#628) -- @hc12r. None was a missing feature; each was a check that
+  guarded the wrong object, or a rule applied on one branch and not its
+  neighbour.
+
+  Resolving a dead-letter entry validated the organization of the
+  *pipeline in the path* and then resolved an entry named by a separate,
+  unvalidated id, so passing your own pipeline and any entry id marked
+  another tenant's failure dealt with. The dependency graph passed an
+  empty organization to a store method that reads empty as no filter,
+  returning every pipeline in the deployment. The paged connection list
+  masked two fields where the unpaged branch masked four, so one query
+  parameter decided whether stored ciphertext was disclosed. Import kept
+  a body-supplied `workspace_id`, letting a caller place a pipeline into
+  a workspace they do not work in. The bare `limit` on the alert inbox
+  and the dead-letter list reached SQL unbounded.
+
+### Added
+
+- **Lineage events are emitted, with the datasets a run reads and
+  writes** (#627) -- @hc12r. The OpenLineage emitter was never called:
+  the registry field was written at startup and read by no code, so a
+  deployment that configured a catalogue endpoint received no events at
+  all. The engine now reports START before execution, so a run that
+  never finishes is still visible as one that started, and COMPLETE or
+  FAIL after -- with the datasets on the failure too, because a
+  catalogue that hears only about successes shows a broken pipeline as
+  healthy.
+
+  Assets are named by the same extractors the lineage graph uses, so a
+  catalogue and the lineage page cannot disagree about what a table is
+  called.
+
+### Documentation
+
+- **ADR-039, lineage that says how it knows** (#626) -- @hc12r.
+  Proposed. Records why the graph's column edges, which are produced by
+  matching column names and stamped with a literal `0.7`, are replaced
+  by mappings derived from the IR, with evidence levels and an explicit
+  refusal to guess through a node that cannot say.
+
+### Upgrading
+
+**Breaking.** `extensions.OpenLineageEmitter`'s three methods now take
+`inputs, outputs []LineageDataset`. Any out-of-tree implementation needs
+updating. The interface had no working consumer, so nothing in practice
+depended on the old shape.
+
+`GET /api/audit/{id}` now requires the `audit` feature and returns only
+entries from the caller's organization. An entry carrying no tenant is
+visible to nobody once tenants exist, rather than to everybody.
+
+The `limit` parameter on the alert inbox and the dead-letter list is
+capped at 1000 and defaults to 100. A value the server cannot honour
+degrades to the default rather than being refused, unlike the `state`
+and `days` filters: a substituted limit returns fewer rows, while a
+substituted filter returns rows the caller did not ask for.
+
 ## [0.11.23] - 2026-09-14
 
 ### Changed
