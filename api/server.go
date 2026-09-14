@@ -197,6 +197,10 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			}
 			writeJSON(w, http.StatusOK, map[string]string{"status": "password reset"})
 		})
+		// #604: the calling user edits their own profile. The account
+		// comes from the token, so this route needs no authorisation
+		// beyond being authenticated.
+		r.Put("/api/auth/me/profile", UpdateProfileHandler(userStore))
 		r.Post("/api/auth/change-password", func(w http.ResponseWriter, r *http.Request) {
 			claimsRaw := r.Context().Value("claims")
 			claims, _ := claimsRaw.(*jwt.MapClaims)
