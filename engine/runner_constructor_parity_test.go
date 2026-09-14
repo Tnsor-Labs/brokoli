@@ -8,10 +8,15 @@ import (
 	"testing"
 )
 
-// Two functions build a Runner from an Engine: runPipelineAsync (the
+// Two functions build a Runner from an Engine: runPipelineAsyncOpts (the
 // in-process/API path) and ExecuteQueuedRun (the path a --mode worker
 // takes for every job it claims). Each copies a list of engine fields
 // onto the runner, and the lists have to agree.
+//
+// The first was called runPipelineAsync until #241 split the options out
+// of it. This test caught that itself, by finding no assignments where it
+// expected them and saying so rather than passing on an empty set -- if
+// the name moves again, that is the failure to expect.
 //
 // They did not. dataCapIssuer was added to runPipelineAsync and missed
 // on ExecuteQueuedRun, so a worker's runner had no capability issuer.
@@ -69,11 +74,11 @@ func TestRunnerConstructorsPropagateTheSameEngineFields(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if fn.Name.Name == "runPipelineAsync" || fn.Name.Name == "ExecuteQueuedRun" {
+		if fn.Name.Name == "runPipelineAsyncOpts" || fn.Name.Name == "ExecuteQueuedRun" {
 			bodies[fn.Name.Name] = assignedFields(fn)
 		}
 	}
-	for _, name := range []string{"runPipelineAsync", "ExecuteQueuedRun"} {
+	for _, name := range []string{"runPipelineAsyncOpts", "ExecuteQueuedRun"} {
 		if len(bodies[name]) == 0 {
 			t.Fatalf("found no `runner.X = e.Y` assignments in %s; this test is no longer looking at the right thing", name)
 		}
@@ -90,11 +95,11 @@ func TestRunnerConstructorsPropagateTheSameEngineFields(t *testing.T) {
 		return out
 	}
 
-	if got := missing("runPipelineAsync", "ExecuteQueuedRun"); len(got) > 0 {
+	if got := missing("runPipelineAsyncOpts", "ExecuteQueuedRun"); len(got) > 0 {
 		t.Errorf("ExecuteQueuedRun (the worker path) does not propagate %v.\n"+
 			"A worker's runner would silently lack these. dataCapIssuer was exactly this bug.", got)
 	}
-	if got := missing("ExecuteQueuedRun", "runPipelineAsync"); len(got) > 0 {
-		t.Errorf("runPipelineAsync does not propagate %v, which ExecuteQueuedRun does", got)
+	if got := missing("ExecuteQueuedRun", "runPipelineAsyncOpts"); len(got) > 0 {
+		t.Errorf("runPipelineAsyncOpts does not propagate %v, which ExecuteQueuedRun does", got)
 	}
 }
