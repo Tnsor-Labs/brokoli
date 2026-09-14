@@ -374,7 +374,13 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				}
 				writeJSON(w, http.StatusOK, entries)
 			})
-			r.Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
+			// Fetching one entry by id must answer the same question the
+			// list does, for the same caller. It did not: no feature gate,
+			// no permission check, and no tenant filter, so any signed-in
+			// user could read any entry among the newest 500 by knowing
+			// or guessing its id -- including the acting user and the
+			// before/after values of a change they cannot otherwise see.
+			r.With(RequireFeature("audit")).Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
 				id := chi.URLParam(r, "id")
 				entries, err := ext.Audit.Query(extensions.AuditFilter{Limit: 500})
 				if err != nil {
@@ -382,10 +388,18 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 					return
 				}
 				for _, e := range entries {
-					if e.ID == id {
-						writeJSON(w, http.StatusOK, e)
-						return
+					if e.ID != id {
+						continue
 					}
+					if !auditEntryVisibleTo(r, e) {
+						// Not found, not forbidden: the two answers
+						// together would confirm which ids exist
+						// elsewhere, which is most of what an
+						// enumeration needs.
+						break
+					}
+					writeJSON(w, http.StatusOK, e)
+					return
 				}
 				writeError(w, http.StatusNotFound, "audit entry not found")
 			})
