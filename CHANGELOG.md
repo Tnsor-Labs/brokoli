@@ -20,7 +20,7 @@ reconstruct from git archaeology.
 - **Column lineage is derived from the pipeline definition instead of
   guessed from column names** (ADR-039). Every node type now declares how
   its output columns map to its inputs, or declares that it cannot say.
-  (#632) -- @hc12r
+  (00d376f) -- @hc12r
 
   What changes in the graph:
 
@@ -45,7 +45,7 @@ reconstruct from git archaeology.
 - `evidence` replaces `confidence` on each column edge: `declared`,
   `attested`, `parsed` or `inferred`. Filter to `declared` and `attested`
   for facts only. `confidence` was the literal `0.7` on every edge ever
-  produced, which the UI rendered as "70% inferred". (#632) -- @hc12r
+  produced, which the UI rendered as "70% inferred". (00d376f) -- @hc12r
 
 ### Fixed
 
@@ -59,10 +59,10 @@ reconstruct from git archaeology.
 ### Added
 
 - `columns_opaque` and `opaque_reason` on a lineage node, so a node with
-  no column edges says why rather than looking unfinished. (#632)
+  no column edges says why rather than looking unfinished. (00d376f)
   -- @hc12r
 - `models.AllNodeTypes` and `models.IsKnownNodeType`, one canonical list
-  for the gates that iterate node types. (#632) -- @hc12r
+  for the gates that iterate node types. (00d376f) -- @hc12r
 
 ### Upgrading
 
