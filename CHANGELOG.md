@@ -11,6 +11,79 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.20] - 2026-09-14
+
+Dashboard correctness. Every headline figure on the dashboard was wrong
+in some way, and two of them were wrong in a direction that reads as
+reassurance: a perfect success rate over an empty window, and a run count
+that stopped at 200 no matter how busy a pipeline was.
+
+### Fixed
+
+- **Success rate counted runs that had not finished** (#606) -- @hc12r.
+  The denominator was every run in the window, so `pending`, `running`,
+  `waiting`, `blocked` and `cancelled` all sat in it while the numerator
+  counted only successes. A pipeline's rate fell while its own runs were
+  in flight and recovered as they finished, with nothing having failed,
+  and a cancelled run counted as though somebody had asked it to succeed.
+  An empty window returned 100, indistinguishable from a hundred passing
+  runs.
+- **A sub-second run had no duration** (#607) -- @hc12r. Both timestamps
+  were formatted without a fractional part, so a 120ms run arrived with
+  identical start and finish and every fast run read as zero. The same
+  truncation made the sort compare equal for runs starting in the same
+  second, so a pipeline's "most recent run" could name one that was not
+  the latest.
+- **Dashboard trends bucketed UTC dates into local-day keys** (#609) --
+  @hc12r. The same defect that had already been fixed forty lines above
+  for `runs_today`, with a comment describing this code exactly. East of
+  UTC the first hours of each local day landed on the previous day; west
+  of UTC late-evening runs were keyed to a tomorrow that is not in the
+  series and vanished from the chart.
+- **"Top failing pipelines" had no time window** (#610) -- @hc12r. It
+  counted every failure in the loaded window regardless of age, on a
+  panel whose neighbours are all 24-hour figures, so a pipeline dealt with
+  last month outranked one failing this morning.
+- **Every dashboard count was capped at 200 runs per pipeline** (#608) --
+  @hc12r. A pipeline on a one-minute schedule produces 1,440 runs a day
+  and reported 200. The seven-day series was worse: those same 200 rows
+  were all it had to spread across seven days, so older days emptied and
+  the chart showed a decline that was an artifact of the cap. Counting
+  now happens in the database.
+- **The run calendar answered differently on each dialect** (#611) --
+  @hc12r. SQLite grouped by the UTC date text and read from midnight N
+  days ago, which is N+1 calendar days; Postgres used `date()` on a
+  `TIMESTAMPTZ`, which converts using the session's TimeZone, over a
+  rolling N*24 hours. Neither returned the N days asked for. A `days`
+  value that could not be honoured -- out of range, unparseable, or with
+  trailing characters -- was silently replaced by 90 and returned 200.
+
+### Added
+
+- **A user can edit their own profile** (#604) -- @hc12r.
+  `PUT /api/auth/me/profile` writes display name, email and a new
+  `avatar_url`. There was no route that wrote any of them, so an account
+  created with just a username had no way to fill them in. The account
+  comes from the token, never the body.
+
+### Upgrading
+
+`success_rate_24h` is **null** when no run finished in the window, where
+it used to be `100`. A client reading it as a number must handle null;
+that is the point, since there was no honest number to send. Three fields
+are new alongside it: `runs_24h_finished`, `top_failing_window_hours` and
+`recent_runs_sample_size`. `recent_runs` entries gain `duration_ms`, and
+their timestamps now carry fractional seconds.
+
+`GET /api/runs/calendar` returns every day in the window, including days
+with no runs, and refuses a `days` value outside 1..365 with a 400 rather
+than substituting 90. Days are UTC, which is now stated: a client
+rendering a grid must key it in UTC to line up.
+
+`store.Store` gains `AggregateRunsByPipelineStatus`,
+`AggregateRunsByDayStatus` and `ListRunIDsByStatus`. Any out-of-tree
+implementation needs them.
+
 ## [0.11.19] - 2026-09-14
 
 Access-control hardening. Four of these let a pipeline author or a
