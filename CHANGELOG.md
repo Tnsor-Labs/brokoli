@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.23] - 2026-09-14
+
+### Changed
+
+- **The platform provider receives the crypto config** (#622) -- @hc12r.
+  An enterprise build that stores a secret of its own must encrypt it
+  with the same key core uses; the alternative is re-deriving the key
+  from the environment, and two components resolving a key independently
+  is how they end up disagreeing, which surfaces as a decryption failure
+  long after the write on data that is by then unreadable.
+
+  It rides in the variadic tail after the engine, so no signature
+  changed. A provider must tolerate a shorter tail, since an older core
+  passes only the engine.
+
 ## [0.11.22] - 2026-09-14
 
 ### Added
