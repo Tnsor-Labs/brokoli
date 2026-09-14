@@ -838,9 +838,13 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.OrgID = orgID
-	if p.WorkspaceID == "" {
-		p.WorkspaceID = GetWorkspaceID(r)
-	}
+	// The workspace comes from the request context, never from the body.
+	// This used to keep a body-supplied workspace_id, so an import could
+	// place a pipeline into a workspace the caller does not work in --
+	// invisible to them afterwards, and visible to people who never
+	// imported it. Create, a few hundred lines above, has always
+	// overwritten it unconditionally; this is the same rule.
+	p.WorkspaceID = GetWorkspaceID(r)
 	if err := p.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

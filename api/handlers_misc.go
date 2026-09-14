@@ -65,7 +65,20 @@ func dlqResolveHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "pipeline not found")
 			return
 		}
+		// The org check above is on the PIPELINE in the path. The entry
+		// being resolved is named by a separate id, and nothing tied the
+		// two together: a caller could pass their own pipeline, which
+		// passes the check, and any dlqId at all, including another
+		// tenant's. Resolving it marks somebody else's failure dealt
+		// with, in their inbox, without them ever seeing it.
 		dlqID := chi.URLParam(r, "dlqId")
+		if !dlqEntryBelongsToPipeline(s, pipelineID, dlqID) {
+			// Not found rather than forbidden, matching every other
+			// cross-tenant refusal here: the pair of answers would
+			// otherwise confirm which entry ids exist elsewhere.
+			writeError(w, http.StatusNotFound, "dead-letter entry not found")
+			return
+		}
 		if err := s.ResolveDLQ(dlqID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -261,6 +274,19 @@ const maxGraphNodes = 2000
 func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID := GetOrgIDFromRequest(r)
+		// An empty org means "no filter" to the store, so this returned
+		// every pipeline in the deployment -- names, ids and the
+		// dependency structure of every tenant -- to a caller whose org
+		// could not be resolved. listPipelinesForRequest already gets
+		// this right a few hundred lines away: in multi-tenant mode, a
+		// user without an org sees nothing rather than everything.
+		if orgID == "" && OrgResolverFunc != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"nodes": []map[string]interface{}{},
+				"edges": []map[string]interface{}{},
+			})
+			return
+		}
 		summaries, err := s.ListPipelineDepsByOrg(orgID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())

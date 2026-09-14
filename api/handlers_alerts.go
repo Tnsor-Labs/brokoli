@@ -2,7 +2,6 @@ package api
 
 import (
 	"net/http"
-	"strconv"
 
 	"github.com/go-chi/chi/v5"
 
@@ -28,7 +27,7 @@ func NewAlertHandler(s store.Store) *AlertHandler {
 func (h *AlertHandler) List(w http.ResponseWriter, r *http.Request) {
 	orgID := GetOrgIDFromRequest(r)
 	q := r.URL.Query()
-	limit, _ := strconv.Atoi(q.Get("limit"))
+	limit := boundedListLimit(q.Get("limit"))
 	userID := alertCallerID(r)
 
 	query := store.AlertQuery{
@@ -144,7 +143,7 @@ func (h *AlertHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
 // while triaging.
 func (h *AlertHandler) ListDLQ(w http.ResponseWriter, r *http.Request) {
 	includeResolved := r.URL.Query().Get("include_resolved") == "true"
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	limit := boundedListLimit(r.URL.Query().Get("limit"))
 
 	entries, err := h.store.ListDLQByOrg(GetOrgIDFromRequest(r), includeResolved, limit)
 	if err != nil {

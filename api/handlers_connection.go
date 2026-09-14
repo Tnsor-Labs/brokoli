@@ -92,10 +92,7 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		for i := range conns {
-			conns[i].Password = ""
-			conns[i].Extra = ""
-		}
+		maskConnections(conns)
 		writeJSON(w, http.StatusOK, store.NewPageResult(conns, total, pp))
 		return
 	}
@@ -108,13 +105,7 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	if conns == nil {
 		conns = []models.Connection{}
 	}
-	for i := range conns {
-		conns[i].Password = ""
-		conns[i].Extra = ""
-		conns[i].PasswordRef = maskRef(conns[i].PasswordRef)
-		conns[i].ExtraRef = maskRef(conns[i].ExtraRef)
-	}
-
+	maskConnections(conns)
 	writeJSON(w, http.StatusOK, conns)
 }
 
