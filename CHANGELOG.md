@@ -54,7 +54,7 @@ reconstruct from git archaeology.
   so every row written since the feature shipped survived the run's purge
   and accumulated forever. It now cascades with the run, the same as every
   other per-run table. Existing rows whose run is already gone are cleared
-  on the next boot. (#633) -- @hc12r
+  on the next boot. (#632) -- @hc12r
 
 ### Added
 
