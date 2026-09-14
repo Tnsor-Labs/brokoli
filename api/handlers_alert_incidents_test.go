@@ -250,14 +250,8 @@ func TestStateAndAssigneeFilters(t *testing.T) {
 		}
 	}
 
-	// A resolved incident is not still "acknowledged": the list of who is
-	// working on what would grow for ever.
-	alerts, _ := listAlerts(t, s, "?state=acknowledged", "org-1", "u1")
-	for _, a := range alerts {
-		if a.ResolvedAt != nil {
-			t.Errorf("alert %s is resolved and still listed as acknowledged", a.ID)
-		}
-	}
+	alerts, _ := listAlerts(t, s, "?state=open", "org-1", "u1")
+	_ = alerts
 
 	if rec := incidentDo(t, s, http.MethodGet, "/alerts?state=urgent", "org-1", "u1", ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("state=urgent: status = %d, want 400; a filter that does nothing returns everything", rec.Code)
@@ -316,5 +310,29 @@ func TestAcknowledgeAndResolveNeedAnIdentity(t *testing.T) {
 		if rec.Code != http.StatusUnauthorized {
 			t.Errorf("POST %s unauthenticated: status = %d, want 401", path, rec.Code)
 		}
+	}
+}
+
+// An incident that was acknowledged and then resolved is resolved, not
+// still acknowledged -- otherwise the list of who is working on what
+// grows for ever.
+//
+// Its own test rather than a case inside the filter test: the alert has
+// to be assigned to somebody to be acknowledged, which changes what
+// assignee=me returns there. The mutation that dropped the resolved
+// clause passed while this was folded in, because the only resolved
+// alert in that fixture had never been acknowledged.
+func TestAcknowledgedThenResolvedIsResolved(t *testing.T) {
+	s := incidentStore(t)
+	seedIncidentAlert(t, s, "both-1", "org-1")
+	incidentDo(t, s, http.MethodPost, "/alerts/both-1/acknowledge", "org-1", "u1", "")
+	incidentDo(t, s, http.MethodPost, "/alerts/both-1/resolve", "org-1", "u1", "")
+
+	if alerts, _ := listAlerts(t, s, "?state=acknowledged", "org-1", "u1"); len(alerts) != 0 {
+		t.Errorf("state=acknowledged returned %+v, want none: it was resolved", alerts)
+	}
+	alerts, _ := listAlerts(t, s, "?state=resolved", "org-1", "u1")
+	if len(alerts) != 1 || alerts[0].ID != "both-1" {
+		t.Errorf("state=resolved returned %+v, want both-1", alerts)
 	}
 }
