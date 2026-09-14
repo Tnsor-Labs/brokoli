@@ -685,9 +685,28 @@ type PIIDetector interface {
 	Scan(columns []string, rows []map[string]interface{}, sampleSize int) []PIIDetection
 }
 
+// LineageDataset is one external dataset a run read or wrote.
+//
+// Namespace is left to the emitter, which knows the deployment's
+// catalogue naming; this carries only what the engine can know.
+type LineageDataset struct {
+	// ID is the stable asset identifier, "file:/path" or "table:db.table".
+	ID string
+	// Type is "file", "table" or "api".
+	Type string
+	// Name is the display name: a filename, a table name, a URL.
+	Name string
+}
+
 // OpenLineageEmitter sends lineage events to an OpenLineage-compatible endpoint.
+//
+// Every method takes the datasets the run reads and writes. They used to
+// take only identifiers, so an implementation had nothing to put in
+// OpenLineage's inputs and outputs -- the two fields the format exists
+// for. An event without them tells a catalogue that a job ran and
+// nothing about lineage.
 type OpenLineageEmitter interface {
-	EmitRunStart(pipelineID, pipelineName, runID string) error
-	EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64) error
-	EmitRunFail(pipelineID, pipelineName, runID string, err string) error
+	EmitRunStart(pipelineID, pipelineName, runID string, inputs, outputs []LineageDataset) error
+	EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64, inputs, outputs []LineageDataset) error
+	EmitRunFail(pipelineID, pipelineName, runID string, err string, inputs, outputs []LineageDataset) error
 }

@@ -379,6 +379,14 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		// Wire the lineage emitter. It was constructed by the enterprise
+		// build and read by nothing: the registry field had no consumer in
+		// either repository, so a deployment that configured a catalogue
+		// endpoint received no events at all.
+		if Extensions != nil && Extensions.OpenLineage != nil {
+			eng.Lineage = Extensions.OpenLineage
+		}
+
 		wireDataCapIssuer(eng)
 
 		// Worker-only mode: pull jobs from the queue and execute them

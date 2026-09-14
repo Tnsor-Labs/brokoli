@@ -49,6 +49,14 @@ type Engine struct {
 	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 	JobQueue      extensions.JobQueue             // nil = run in-process (default)
 
+	// Lineage emits run lifecycle events to an OpenLineage-compatible
+	// catalogue, with the datasets the run reads and writes.
+	//
+	// Nil is normal and means no emission. The community default is a
+	// no-op, so this is called unconditionally where it is set and the
+	// cost on a deployment without a catalogue is one nil check.
+	Lineage extensions.OpenLineageEmitter
+
 	// InstanceJobQueue (ADR-017, worker protocol v2 — proposed) opts a
 	// node's dynamic-expansion instances into remote dispatch: instead of
 	// executing an item in-process, the Runner enqueues a WorkOrder-bearing
@@ -762,11 +770,20 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 			delete(e.active, runID)
 			e.mu.Unlock()
 		}()
+		// The catalogue hears about the run before it runs, so a run that
+		// never finishes is still visible as one that started. Reporting
+		// only on completion makes a hung pipeline indistinguishable from
+		// one nobody triggered.
+		startedAt := time.Now()
+		e.emitLineageStart(pipe, runID)
+
 		run, err := runner.Execute()
 		if err != nil {
 			atomic.AddInt64(&e.RunsFailed, 1)
+			e.emitLineageFail(pipe, runID, err.Error())
 		} else {
 			atomic.AddInt64(&e.RunsSucceeded, 1)
+			e.emitLineageComplete(pipe, runID, time.Since(startedAt).Milliseconds())
 		}
 		// Signal the caller first so the RunPipeline return latency does not include
 		// downstream trigger-mode fan-out. Fire dependents asynchronously — they'll
