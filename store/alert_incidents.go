@@ -289,46 +289,71 @@ func scanIncidentAlert(sc interface{ Scan(...any) error }, dialect string) (*mod
 	return &a, nil
 }
 
+// The three incident writes are spelled out as literal statements, one
+// per operation and one per dialect, rather than assembled from
+// fragments.
+//
+// There are only three, and a fixed string per case keeps the SQL
+// obviously parameterized -- the same reasoning UserStore.SetProfile
+// records for its own three cases. The assembled version read fine and
+// still had to be checked by hand to see that nothing from a caller
+// reached the statement; these cannot be read any other way.
+const (
+	sqlAssignAlert   = `UPDATE alerts SET assignee_user_id = ? WHERE id = ? AND org_id = ?`
+	sqlAssignAlertPG = `UPDATE alerts SET assignee_user_id = $1 WHERE id = $2 AND org_id = $3`
+
+	// Acknowledging also assigns, when nobody holds it. "I am on this"
+	// and "nobody owns this" cannot both be true, and making the caller
+	// press two buttons to say one thing is how an incident ends up
+	// acknowledged and unowned. An existing assignment is left alone.
+	sqlAckAlert = `UPDATE alerts SET acknowledged_at = ?, acknowledged_by = ?,
+		assignee_user_id = CASE WHEN assignee_user_id = '' THEN ? ELSE assignee_user_id END
+		WHERE id = ? AND org_id = ?`
+	sqlAckAlertPG = `UPDATE alerts SET acknowledged_at = $1, acknowledged_by = $2,
+		assignee_user_id = CASE WHEN assignee_user_id = '' THEN $3 ELSE assignee_user_id END
+		WHERE id = $4 AND org_id = $5`
+
+	sqlResolveAlert   = `UPDATE alerts SET resolved_at = ?, resolved_by = ? WHERE id = ? AND org_id = ?`
+	sqlResolveAlertPG = `UPDATE alerts SET resolved_at = $1, resolved_by = $2 WHERE id = $3 AND org_id = $4`
+)
+
 // setAlertAssignee assigns or unassigns an alert. An empty userID
 // unassigns.
 func setAlertAssignee(db *sql.DB, dialect, orgID, alertID, userID string) error {
-	return updateAlertIncident(db, dialect, orgID, alertID,
-		"assignee_user_id = "+phAt(dialect, 1), userID)
+	query := sqlAssignAlert
+	if dialect == "postgres" {
+		query = sqlAssignAlertPG
+	}
+	return execAlertUpdate(db, alertID, query, userID, alertID, orgID)
 }
 
 // acknowledgeAlert records that somebody is on it.
-//
-// Acknowledging also assigns, when nobody holds it. "I am on this" and
-// "nobody owns this" cannot both be true, and making the caller press two
-// buttons to say one thing is how an incident ends up acknowledged and
-// unowned.
 func acknowledgeAlert(db *sql.DB, dialect, orgID, alertID, userID string, at time.Time) error {
-	ph := nextPlaceholder(dialect)
-	set := "acknowledged_at = " + ph() + ", acknowledged_by = " + ph() +
-		", assignee_user_id = CASE WHEN assignee_user_id = '' THEN " + ph() + " ELSE assignee_user_id END"
-	return updateAlertIncident(db, dialect, orgID, alertID, set,
-		alertTimeArg(dialect, at), userID, userID)
+	query := sqlAckAlert
+	if dialect == "postgres" {
+		query = sqlAckAlertPG
+	}
+	return execAlertUpdate(db, alertID, query,
+		alertTimeArg(dialect, at), userID, userID, alertID, orgID)
 }
 
 // resolveAlert marks an incident dealt with.
 func resolveAlert(db *sql.DB, dialect, orgID, alertID, userID string, at time.Time) error {
-	ph := nextPlaceholder(dialect)
-	set := "resolved_at = " + ph() + ", resolved_by = " + ph()
-	return updateAlertIncident(db, dialect, orgID, alertID, set,
-		alertTimeArg(dialect, at), userID)
+	query := sqlResolveAlert
+	if dialect == "postgres" {
+		query = sqlResolveAlertPG
+	}
+	return execAlertUpdate(db, alertID, query,
+		alertTimeArg(dialect, at), userID, alertID, orgID)
 }
 
-// updateAlertIncident applies one incident change, scoped to the org.
+// execAlertUpdate runs one incident write.
 //
 // A write that matches no row means the alert does not exist or belongs
 // to another tenant. Both are reported the same way, and as an error
 // rather than a silent success: telling the caller "assigned" when
 // nothing was assigned is the failure this returns instead of.
-func updateAlertIncident(db *sql.DB, dialect, orgID, alertID, set string, args ...interface{}) error {
-	n := len(args)
-	query := fmt.Sprintf(`UPDATE alerts SET %s WHERE id = %s AND org_id = %s`,
-		set, phAt(dialect, n+1), phAt(dialect, n+2))
-	args = append(args, alertID, orgID)
+func execAlertUpdate(db *sql.DB, alertID, query string, args ...interface{}) error {
 	res, err := db.Exec(query, args...)
 	if err != nil {
 		return fmt.Errorf("update alert %s: %w", alertID, err)
@@ -339,6 +364,30 @@ func updateAlertIncident(db *sql.DB, dialect, orgID, alertID, set string, args .
 	return nil
 }
 
+const (
+	sqlAlertInOrg   = `SELECT id FROM alerts WHERE id = ? AND org_id = ?`
+	sqlAlertInOrgPG = `SELECT id FROM alerts WHERE id = $1 AND org_id = $2`
+
+	sqlMarkAlertRead = `INSERT INTO alert_reads (alert_id, user_id, read_at) VALUES (?, ?, ?)
+		ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`
+	sqlMarkAlertReadPG = `INSERT INTO alert_reads (alert_id, user_id, read_at) VALUES ($1, $2, $3)
+		ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`
+
+	sqlMarkAllAlertsRead = `INSERT INTO alert_reads (alert_id, user_id, read_at)
+		SELECT id, ?, ? FROM alerts WHERE org_id = ? AND dismissed_at IS NULL
+		ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`
+	sqlMarkAllAlertsReadPG = `INSERT INTO alert_reads (alert_id, user_id, read_at)
+		SELECT id, $1, $2 FROM alerts WHERE org_id = $3 AND dismissed_at IS NULL
+		ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`
+
+	sqlCountUnreadAlerts = `SELECT COUNT(*) FROM alerts a
+		WHERE a.org_id = ? AND a.dismissed_at IS NULL AND a.read_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = a.id AND r.user_id = ?)`
+	sqlCountUnreadAlertsPG = `SELECT COUNT(*) FROM alerts a
+		WHERE a.org_id = $1 AND a.dismissed_at IS NULL AND a.read_at IS NULL
+		AND NOT EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = a.id AND r.user_id = $2)`
+)
+
 // markAlertReadBy records that one person read one alert.
 func markAlertReadBy(db *sql.DB, dialect, orgID, alertID, userID string, at time.Time) error {
 	if userID == "" {
@@ -346,19 +395,16 @@ func markAlertReadBy(db *sql.DB, dialect, orgID, alertID, userID string, at time
 	}
 	// Scoped through the alert, so a caller cannot mark another tenant's
 	// alert read and learn that its id exists.
+	lookup := sqlAlertInOrg
+	insert := sqlMarkAlertRead
+	if dialect == "postgres" {
+		lookup, insert = sqlAlertInOrgPG, sqlMarkAlertReadPG
+	}
 	var found string
-	err := db.QueryRow(
-		`SELECT id FROM alerts WHERE id = `+phAt(dialect, 1)+` AND org_id = `+phAt(dialect, 2),
-		alertID, orgID).Scan(&found)
-	if err != nil {
+	if err := db.QueryRow(lookup, alertID, orgID).Scan(&found); err != nil {
 		return ErrAlertNotFound
 	}
-	_, err = db.Exec(
-		`INSERT INTO alert_reads (alert_id, user_id, read_at) VALUES (`+
-			phAt(dialect, 1)+`, `+phAt(dialect, 2)+`, `+phAt(dialect, 3)+`)`+
-			` ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`,
-		alertID, userID, alertTimeArg(dialect, at))
-	if err != nil {
+	if _, err := db.Exec(insert, alertID, userID, alertTimeArg(dialect, at)); err != nil {
 		return fmt.Errorf("mark alert %s read: %w", alertID, err)
 	}
 	return nil
@@ -370,13 +416,11 @@ func markAllAlertsReadBy(db *sql.DB, dialect, orgID, userID string, at time.Time
 	if userID == "" {
 		return fmt.Errorf("mark alerts read: no caller identity")
 	}
-	_, err := db.Exec(
-		`INSERT INTO alert_reads (alert_id, user_id, read_at)
-		 SELECT id, `+phAt(dialect, 1)+`, `+phAt(dialect, 2)+` FROM alerts
-		 WHERE org_id = `+phAt(dialect, 3)+` AND dismissed_at IS NULL
-		 ON CONFLICT(alert_id, user_id) DO UPDATE SET read_at = excluded.read_at`,
-		userID, alertTimeArg(dialect, at), orgID)
-	if err != nil {
+	query := sqlMarkAllAlertsRead
+	if dialect == "postgres" {
+		query = sqlMarkAllAlertsReadPG
+	}
+	if _, err := db.Exec(query, userID, alertTimeArg(dialect, at), orgID); err != nil {
 		return fmt.Errorf("mark all alerts read: %w", err)
 	}
 	return nil
@@ -384,23 +428,15 @@ func markAllAlertsReadBy(db *sql.DB, dialect, orgID, userID string, at time.Time
 
 // countUnreadAlertsFor counts what this person has not read.
 func countUnreadAlertsFor(db *sql.DB, dialect, orgID, userID string) (int, error) {
-	query := `SELECT COUNT(*) FROM alerts a WHERE a.org_id = ` + phAt(dialect, 1) +
-		` AND a.dismissed_at IS NULL AND a.read_at IS NULL` +
-		` AND NOT EXISTS (SELECT 1 FROM alert_reads r WHERE r.alert_id = a.id AND r.user_id = ` +
-		phAt(dialect, 2) + `)`
+	query := sqlCountUnreadAlerts
+	if dialect == "postgres" {
+		query = sqlCountUnreadAlertsPG
+	}
 	var n int
 	if err := db.QueryRow(query, orgID, userID).Scan(&n); err != nil {
 		return 0, fmt.Errorf("count unread alerts: %w", err)
 	}
 	return n, nil
-}
-
-// phAt renders the nth bind marker for a dialect.
-func phAt(dialect string, n int) string {
-	if dialect == "postgres" {
-		return fmt.Sprintf("$%d", n)
-	}
-	return "?"
 }
 
 // alertTimeArg renders a timestamp for whichever column type the dialect
