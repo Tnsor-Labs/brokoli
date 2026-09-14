@@ -89,6 +89,8 @@ func attributionStore(t *testing.T) store.Store {
 // is refused rather than stored as a value nothing renders.
 func TestRunAttributionRoundTrip(t *testing.T) {
 	s := attributionStore(t)
+	seedAttributionRun(t, s, "p1", "r1")
+	seedAttributionRun(t, s, "p1", "r2")
 
 	if err := s.SetRunAttribution("r1", &models.RunAttribution{
 		Kind: models.RunTriggerKindUser, UserID: "u1", UserName: "Alice",
@@ -140,6 +142,9 @@ func TestRunAttributionRoundTrip(t *testing.T) {
 
 func TestListRunIDsStartedByIsNewestFirst(t *testing.T) {
 	s := attributionStore(t)
+	for _, id := range []string{"r-001", "r-002", "r-003", "r-004"} {
+		seedAttributionRun(t, s, "p1", id)
+	}
 	// Run ids are UUIDv7, so id order is creation order; these are
 	// lexicographically ordered stand-ins for that.
 	for _, id := range []string{"r-001", "r-002", "r-003"} {
@@ -174,10 +179,17 @@ func TestListRunIDsStartedByIsNewestFirst(t *testing.T) {
 	}
 }
 
-// A purge that deletes runs must be able to take their attribution too,
-// or the table grows for ever.
+// Removing attribution without removing the run.
+//
+// This used to be described as the purge's cleanup path, which it never
+// was: nothing in the product called it, so attribution outlived its run
+// for ever. The purge is now the foreign key's ON DELETE CASCADE, covered
+// by store/run_attribution_cascade_test.go. This covers the explicit
+// delete, which is a different operation.
 func TestDeleteRunAttribution(t *testing.T) {
 	s := attributionStore(t)
+	seedAttributionRun(t, s, "p1", "r1")
+	seedAttributionRun(t, s, "p1", "r2")
 	for _, id := range []string{"r1", "r2"} {
 		if err := s.SetRunAttribution(id, &models.RunAttribution{
 			Kind: models.RunTriggerKindUser, UserID: "u1",

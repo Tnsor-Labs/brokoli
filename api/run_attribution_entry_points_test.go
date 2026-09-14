@@ -13,6 +13,7 @@ import (
 // pipeline finishing is what started it.
 func TestDependencyFanOutIsAttributed(t *testing.T) {
 	s := attributionStore(t)
+	seedAttributionRun(t, s, "p1", "r1")
 	// The kind must at least round-trip; the fan-out itself needs two
 	// pipelines and a finished upstream run, which engine tests cover.
 	if err := s.SetRunAttribution("r1", &models.RunAttribution{
