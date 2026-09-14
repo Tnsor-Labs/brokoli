@@ -11,6 +11,81 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.19] - 2026-09-14
+
+Access-control hardening. Four of these let a pipeline author or a
+workspace editor reach things they should not, and one of them is the
+control plane's own encryption key.
+
+### Fixed
+
+- **Pipeline templating could read the server's environment** (#597) --
+  @hc12r. `NewVariableContext` copied the whole of `os.Environ()` into the
+  variable context and `${env.NAME}` returned any key from it, so an
+  author could read `BROKOLI_ENCRYPTION_KEY`, `BROKOLI_JWT_SECRET` or
+  `BROKOLI_DB_URL`. Lineage resolves variables without executing
+  anything, so a value could surface from a graph request alone.
+
+  `${env.*}` is now deny-by-default against
+  `BROKOLI_PIPELINE_ENV_ALLOW`, with four names refused even when listed.
+  A refused reference stays visible rather than resolving to empty.
+
+- **A code node could read them directly** (#598) -- @hc12r.
+  `pkg/codeexec.WorkerEnv()` decides what environment author code sees,
+  and the pooled executor always used it. The one-shot and streamed
+  executors passed `os.Environ()` straight through, so whether a script
+  could read the deployment's secrets depended on which of two
+  interchangeable executors ran it -- the exposure moved with
+  `BROKOLI_CODE_POOL`, which nobody would think of as a security setting.
+
+- **An `env://` reference resolved any server variable** (#599) --
+  @hc12r. A connection whose `password_ref` was `env://BROKOLI_JWT_SECRET`
+  handed back the signing secret, and a connection is something a
+  workspace editor can create. Now deny-by-default against
+  `BROKOLI_SECRET_ENV_ALLOW`, refused by name rather than resolving to
+  empty.
+
+  The three mechanisms above are gated separately, because "what may a
+  pipeline author interpolate" is not "what may hold a connection
+  credential". They share one floor: `pkg/secrets.AlwaysDeniedEnvName`.
+
+- **Saving a secret variable without retyping it encrypted it twice**
+  (#600) -- @hc12r. The masked-value branch restored the stored
+  ciphertext, and the encrypt step could not tell that from a freshly
+  typed secret, so it encrypted it again. A pipeline decrypted once and
+  received ciphertext; nothing failed loudly, and the only recovery was
+  to type the secret in again.
+
+- **Variables were global, not per workspace** (#601) -- @hc12r. The
+  table keyed on `(key)` alone, so one workspace's save overwrote
+  another's and a read returned whichever had written last. Variables
+  hold secrets. The key is now `(workspace_id, key)`, and `GetVariable`
+  and `DeleteVariable` take a workspace so the compiler catches a caller
+  that omits it.
+
+- **The invite routes skipped authentication instead of making it
+  optional** (#602) -- @hc12r. The middleware skipped `/api/invites/`
+  before parsing any token, so a signed-in person reached the accept
+  handler with no claims and got 401 with a valid session. Anyone signing
+  in with GitHub, Google or Keycloak has no password to fall back on, so
+  for them accepting an invite was impossible.
+
+### Changed
+
+- **`AnnounceWorkerTrustAssumptions` is exported** (#596) -- @hc12r. Two
+  worker binaries, and only one could say what it holds. The API-only
+  shape -- the one the line exists to distinguish -- could not print
+  "holds no control-plane secrets".
+
+### Upgrading
+
+`${env.*}` and `env://` are now deny-by-default. A deployment relying on
+either sets `BROKOLI_PIPELINE_ENV_ALLOW` or `BROKOLI_SECRET_ENV_ALLOW`
+with the names it uses; a refused reference says which list it wanted.
+Nothing in the documentation or examples used either, so most
+deployments need no change.
+
+
 ## [0.11.18] - 2026-09-13
 
 ### Added
