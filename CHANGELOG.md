@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.25] - 2026-09-15
+
 > **Breaking:** `confidence` is gone from every entry in `column_edges` on
 > `GET /api/lineage`, replaced by `evidence`. A client that reads it as a
 > number will find it absent.
