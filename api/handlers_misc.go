@@ -425,6 +425,11 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			// read as zero (#607). A run has no duration of its own on the
 			// model; only NodeRun carries one.
 			DurationMs int64 `json:"duration_ms,omitempty"`
+			// TriggeredBy is who started the run (#241). The dashboard's
+			// recent-activity list is one of the three places the issue
+			// names, and it builds its own row type rather than reusing
+			// models.Run, so the field has to be carried here too.
+			TriggeredBy *models.RunAttribution `json:"triggered_by,omitempty"`
 
 			startedAtTime time.Time
 			hasStartedAt  bool
@@ -510,6 +515,27 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		})
 		if len(recentRuns) > dashboardRecentRunsSample {
 			recentRuns = recentRuns[:dashboardRecentRunsSample]
+		}
+
+		// Who started each of them, in one batched read for the page
+		// (#241). Losing this leaves the runs and their counts intact,
+		// so it is logged rather than fatal: the dashboard's job is to
+		// show what ran.
+		if len(recentRuns) > 0 {
+			ids := make([]string, 0, len(recentRuns))
+			for i := range recentRuns {
+				ids = append(ids, recentRuns[i].RunID)
+			}
+			if byRun, err := s.GetRunAttribution(ids); err == nil {
+				for i := range recentRuns {
+					if a, ok := byRun[recentRuns[i].RunID]; ok {
+						attribution := a
+						recentRuns[i].TriggeredBy = &attribution
+					}
+				}
+			} else {
+				log.Printf("dashboard: could not read who started these runs: %v", err)
+			}
 		}
 
 		// ── Counts, from the database ──────────────────────────

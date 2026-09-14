@@ -818,7 +818,12 @@ func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 		}
 		pid := sum.ID
 		e.goBG(func() {
-			if _, err := e.RunPipeline(pid); err != nil {
+			// #241: a dependency fan-out is its own kind. Nobody pressed
+			// anything and no schedule fired; an upstream pipeline
+			// finishing is what started this.
+			if _, err := e.RunPipelineOpts(pid, RunOptions{
+				TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindDependency},
+			}); err != nil {
 				// A refusal at shutdown is the mechanism working, not a
 				// failed fire worth a log line per dependent. A draft
 				// dependent is the same: someone is still building it,
@@ -1539,6 +1544,12 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
+	// #241: a resume is a retry of an existing run. The person who asked
+	// for it is not known here -- ResumeRun takes only a run id -- so the
+	// kind is recorded without a name rather than inheriting the original
+	// run's, which would credit the resume to whoever started the run
+	// that failed.
+	runner.triggeredBy = &models.RunAttribution{Kind: models.RunTriggerKindRetry}
 	// ADR-028: a resume processes the slice the failed run was
 	// responsible for, so the original's data interval carries over. The
 	// TRIGGER deliberately does not -- a resumed run with trigger
