@@ -11,6 +11,47 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.21] - 2026-09-14
+
+### Added
+
+- **Runs record what started them, and who** (#617) -- @hc12r. A run
+  carried only `Trigger`, which is `"scheduled"` for the scheduler and
+  empty for everything else, so manual, API, webhook and dependency runs
+  were indistinguishable and nothing anywhere recorded the person. Runs
+  now carry `triggered_by` with a closed set of kinds -- `user`,
+  `schedule`, `webhook`, `dependency`, `backfill`, `api_token`, `retry` --
+  and, when a person did it, their id and name.
+
+  `Trigger` could not be widened to answer this: the partial unique index
+  guarding scheduled dispatch keys on its values.
+
+  A token-authenticated caller is recorded as `api_token`, not as the
+  person who minted the token. The name is copied at creation rather than
+  resolved on read, because a run is a historical fact and the person may
+  later be renamed or removed.
+
+- **`GET /api/runs?started_by=me`** (#617) -- @hc12r. The caller's own
+  recent runs across pipelines. `started_by` accepts only `me`: reading
+  whose runs somebody else started is an audit question with its own
+  access rule.
+
+### Upgrading
+
+`store.Store` gains `SetRunAttribution`, `GetRunAttribution`,
+`ListRunIDsStartedBy` and `DeleteRunAttribution`. Any out-of-tree
+implementation needs them.
+
+Attribution lives in a new `run_attribution` table rather than on `runs`,
+created automatically on boot by both dialects. `triggered_by` is absent
+from a run's JSON when nothing was recorded, which is every run that
+predates this -- absence means "not recorded", not "started by nobody".
+
+`RunPipelineAsyncOpts` is a new engine entry point carrying the run's
+provenance. The existing `RunPipelineAsync*` methods are unchanged and
+record no attribution, which is the honest result for a caller that does
+not know who is asking.
+
 ## [0.11.20] - 2026-09-14
 
 Dashboard correctness. Every headline figure on the dashboard was wrong
