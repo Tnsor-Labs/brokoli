@@ -238,3 +238,40 @@ func TestListLimitsAreBounded(t *testing.T) {
 		}
 	}
 }
+
+// Import kept a body-supplied workspace_id, so a caller could place a
+// pipeline into a workspace they do not work in: invisible to them
+// afterwards, and visible to people who never imported it. Create has
+// always taken the workspace from the request context.
+func TestImportIgnoresABodySuppliedWorkspace(t *testing.T) {
+	s := scopeStore(t)
+	h := NewPipelineHandler(s, nil)
+
+	body := `{
+	  "pipeline_id":"imported","name":"imported","workspace_id":"someone-elses-workspace",
+	  "nodes":[{"id":"s1","type":"source_file","name":"src","config":{"path":"/tmp/x.csv","format":"csv"}}],
+	  "edges":[]
+	}`
+	req := scopeReq(http.MethodPost, "/pipelines/import", "", body)
+	// The caller's actual workspace, as the middleware would have set it.
+	req = req.WithContext(context.WithValue(req.Context(), workspaceKey, "mine"))
+
+	rec := httptest.NewRecorder()
+	h.Import(rec, req)
+	if rec.Code != http.StatusCreated && rec.Code != http.StatusOK {
+		t.Fatalf("import: status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+
+	var created models.Pipeline
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	stored, err := s.GetPipeline(created.ID)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if stored.WorkspaceID != "mine" {
+		t.Fatalf("workspace = %q, want the caller's own; the body named %q",
+			stored.WorkspaceID, "someone-elses-workspace")
+	}
+}
