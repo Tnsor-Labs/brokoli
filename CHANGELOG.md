@@ -58,6 +58,11 @@ reconstruct from git archaeology.
 
 ### Changed
 
+- **Building Brokoli from source needs Go 1.26** (`go.mod`'s `go`
+  directive moves from 1.25.0 to 1.26.0). `golang.org/x/crypto` v0.56.0,
+  which carries the SSH fixes below, declares `go 1.26.0`, as does every
+  later release. CI and the release builds already use Go 1.26.6.
+  (#650) -- @hc12r
 - **Changing a connection's type, host or port requires entering its
   password again**, for every connection type, and its extra settings
   too unless they are a database's driver options (`sslmode` and the
