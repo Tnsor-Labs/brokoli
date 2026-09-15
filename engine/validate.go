@@ -639,7 +639,9 @@ func ValidateNodes(nodes []models.Node) []NodeValidationResult {
 func sinkFilePaths(nodes []models.Node) map[string]bool {
 	paths := map[string]bool{}
 	for _, n := range nodes {
-		if n.Type == models.NodeTypeSinkFile {
+		// A remote sink writes a file on a server, not the path this
+		// machine's readers would open.
+		if n.Type == models.NodeTypeSinkFile && fileConnID(n) == "" {
 			if p := getStr(n.Config, "path"); p != "" {
 				paths[p] = true
 			}
@@ -659,6 +661,11 @@ func sinkFilePaths(nodes []models.Node) map[string]bool {
 // which is the last moment where changing the design is cheap.
 func validateFileStorage(n models.Node, writtenHere map[string]bool, r *NodeValidationResult) {
 	if n.Type != models.NodeTypeSourceFile || !unsharedFileStorage() {
+		return
+	}
+	// A remote file is fetched from its server by whichever worker runs
+	// the node; worker disks play no part in it.
+	if fileConnID(n) != "" {
 		return
 	}
 	path := getStr(n.Config, "path")

@@ -115,6 +115,15 @@ var driverOptionKeys = map[ConnectionType][]string{
 	},
 }
 
+// ExtraIsDriverOptions reports whether this type's Extra blob holds driver
+// parameters (sslmode and the like, per driverOptionKeys) rather than
+// credentials. Only then is it safe to keep when the connection is pointed
+// at a different server.
+func (c *Connection) ExtraIsDriverOptions() bool {
+	_, ok := driverOptionKeys[c.Type]
+	return ok
+}
+
 // driverOptions returns the driver parameters this connection carries in its
 // Extra blob, keyed and ordered so the resulting URI is deterministic. Extra
 // is expected to hold decrypted JSON by the time this runs (the connection

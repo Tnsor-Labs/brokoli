@@ -11,6 +11,70 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Deliver files to, and collect files from, SFTP servers** (ADR-040).
+  `source_file` and `sink_file` take a `conn_id` naming an `sftp`
+  connection; `path` is then a path on that server, relative to the
+  connection's base directory unless absolute. Every format the file
+  nodes handle works remotely, on the batch and the streamed path.
+  Guide: `docs/sftp-file-delivery.md`. -- @hc12r
+  - **The server's host key must match** the connection's `host_key`
+    (a `SHA256:` fingerprint, a public key line or a `known_hosts`
+    line). A mismatch or a missing key refuses to connect and names the
+    key the server presented. `insecure_skip_host_key_check` skips the
+    check and logs a warning on every connection.
+  - **Delivery is atomic.** A file is uploaded under a hidden temporary
+    name and renamed into place once complete, so a partner never picks
+    up a half-written file and a failed run leaves the previous file as
+    it was. Replacement uses `posix-rename@openssh.com`; a server without
+    it gets remove-then-rename, and the run log says so.
+  - Password or private key authentication (with passphrase), from the
+    connection's encrypted settings.
+  - SSH connections go through the same outbound network policy as HTTP
+    connectors: private and loopback servers need
+    `BROKOLI_OUTBOUND_ALLOW_CIDRS` or `BROKOLI_OUTBOUND_ALLOW_PRIVATE`.
+  - **A connection's base directory is a boundary:** with one set, no
+    path can leave it, absolute or relative; `..` is always refused.
+  - Temporary names are unguessable and created exclusively, so nothing
+    planted on a shared server can redirect a delivery.
+  - Only algorithms Go's SSH library does not classify as insecure are
+    offered; SHA-1 key exchange and DSA host keys are refused.
+  - A transfer fails after two minutes with no data moving (keepalives
+    keep a merely quiet connection up), and a node timeout or cancelled
+    run ends a transfer immediately.
+  - The editor's preview never delivers: a remote `sink_file` does not
+    connect during a dry run.
+  - A remote file is its own lineage asset, `sftp://<conn_id>/<path>`.
+  - Downloads are capped at the connection's `max_download_bytes`
+    (10 GiB by default), against both the declared size and what arrives.
+  - A `known_hosts` line marked `@revoked` or `@cert-authority` is
+    refused as a host key; a configured key line pins negotiation to
+    that key's type.
+  - The file node forms have a **Location** field for the connection.
+
+### Changed
+
+- **Changing a connection's type, host or port requires entering its
+  password again**, for every connection type, and its extra settings
+  too unless they are a database's driver options (`sslmode` and the
+  like). Stored secrets cannot be read back, and they are no longer
+  carried over to a different server, where the next test or run would
+  have sent them. The update is refused with a message saying which to
+  enter. -- @hc12r
+
+### Fixed
+
+- **Testing an `sftp` connection now signs in.** It opened a TCP
+  connection, read the SSH banner and reported success, so a wrong
+  password or an unknown server tested green. It now checks what a run
+  needs: the network policy, the host key, authentication, the SFTP
+  subsystem and the base directory. An unknown host key fails with the
+  key the server presented. -- @hc12r
+- The connections page said `sftp` and `s3` connections were usable by
+  nodes when no node read either. `sftp` now is; `s3` is marked as not
+  usable, which is true. -- @hc12r
+
 ## [0.11.27] - 2026-09-15
 
 > **Behaviour change:** the `sort` transform now orders numeric columns

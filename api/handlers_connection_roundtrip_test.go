@@ -164,7 +164,10 @@ func TestPasswordSurvivesReadModifyWrite(t *testing.T) {
 	if err := json.Unmarshal(got.Body.Bytes(), &record); err != nil {
 		t.Fatal(err)
 	}
-	record["port"] = 3307
+	// An unrelated field. Not the port: pointing a connection at another
+	// port is pointing it at another server, and the stored password is
+	// deliberately not carried over then (TestMovingAConnectionRequiresItsSecretsAgain).
+	record["schema"] = "app2"
 	if put := doJSON(t, r, "PUT", "/api/connections/prod-mysql", record); put.Code != http.StatusOK {
 		t.Fatalf("put: %d %s", put.Code, put.Body.String())
 	}
@@ -173,8 +176,8 @@ func TestPasswordSurvivesReadModifyWrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if after.Port != 3307 {
-		t.Errorf("the edit did not take: port = %d", after.Port)
+	if after.Schema != "app2" {
+		t.Errorf("the edit did not take: schema = %q", after.Schema)
 	}
 	if after.PasswordRef != before.PasswordRef {
 		t.Fatalf("read-modify-write destroyed the password:\n before %q\n after  %q",

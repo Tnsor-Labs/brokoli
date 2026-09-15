@@ -13,9 +13,11 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
@@ -242,6 +244,28 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// mask".
 	unmaskCredentials(&c)
 
+	// A stored secret belongs to the server it was entered for. Nobody can
+	// read it back through the API, but an editor could otherwise point
+	// the connection at a server they control and have the next test or
+	// run send it there. So a change of type, host or port does not carry
+	// stored secrets over: they have to be entered again. Extra settings
+	// are carried over only when they are a database's driver options
+	// (sslmode and the like); for every other type they hold credentials:
+	// an SFTP private key, HTTP auth headers, cloud keys.
+	moved := c.Type != existing.Type || c.Port != existing.Port ||
+		!strings.EqualFold(strings.TrimSpace(c.Host), strings.TrimSpace(existing.Host))
+	if moved {
+		if c.PasswordRef == "" && c.Password == "" && (existing.Password != "" || existing.PasswordRef != "") {
+			writeError(w, http.StatusBadRequest, "this change points the connection at a different server (its type, host or port changed), so the stored password is not kept: enter the password again")
+			return
+		}
+		extraIsDriverOptions := c.Type == existing.Type && existing.ExtraIsDriverOptions()
+		if !extraIsDriverOptions && c.ExtraRef == "" && c.Extra == "" && (existing.Extra != "" || existing.ExtraRef != "") {
+			writeError(w, http.StatusBadRequest, "this change points the connection at a different server (its type, host or port changed), so the stored extra settings are not kept: enter them again")
+			return
+		}
+	}
+
 	// Credential handling for updates:
 	// If a new password_ref is provided, use it (replaces any existing ref).
 	// If a bare password is provided, encrypt and store as encrypted:// ref.
@@ -458,52 +482,43 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 	}
 }
 
-// testSSH verifies SSH/SFTP connectivity by doing a TCP handshake and reading the SSH banner.
+// testSSH checks an sftp connection the way a run uses it (ADR-040): dial
+// through the outbound policy, verify the host key, authenticate, open the
+// SFTP subsystem, and confirm the base directory exists. It used to read
+// the SSH banner and stop, so a wrong password tested green. An unknown
+// host key fails with the key the server presented, returned as host_key,
+// so configuring it is one copy and paste once verified out of band.
 func testSSH(ctx context.Context, c *models.Connection) map[string]interface{} {
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-	addr := fmt.Sprintf("%s:%d", c.Host, port)
-
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	cfg, err := engine.SFTPConfig(c)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Cannot reach %s: %v", addr, err),
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		cfg.Timeout = time.Until(deadline)
+	}
+	client, err := sftpclient.Dial(ctx, cfg)
+	if err != nil {
+		result := map[string]interface{}{"success": false, "error": err.Error()}
+		var hk *sftpclient.HostKeyError
+		if errors.As(err, &hk) {
+			result["host_key"] = hk.Presented
 		}
+		return result
 	}
-	defer conn.Close()
+	defer client.Close() //nolint:errcheck
 
-	// Read SSH banner (e.g. "SSH-2.0-OpenSSH_8.9")
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 256)
-	n, err := conn.Read(buf)
-	if err != nil || n == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Connected to %s but no SSH banner received — is this an SSH server?", addr),
-		}
+	dir, err := client.CheckBaseDir()
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "host_key": client.HostKey}
 	}
-
-	banner := strings.TrimSpace(string(buf[:n]))
-	if !strings.HasPrefix(banner, "SSH-") {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Connected but got unexpected banner: %q — not an SSH server", banner),
-		}
+	checked := "host key verified"
+	if cfg.InsecureSkipHostKeyCheck {
+		checked = "host key NOT checked, because insecure_skip_host_key_check is set"
 	}
-
-	// SSH server confirmed. We can't do full auth without an SSH library,
-	// but confirming the banner + reachability is meaningful.
-	msg := fmt.Sprintf("SSH server reachable (%s)", banner)
-	if c.Login != "" {
-		msg += fmt.Sprintf(", will authenticate as '%s'", c.Login)
-	}
-	// Note: full password auth requires golang.org/x/crypto/ssh which we don't import yet
 	return map[string]interface{}{
-		"success": true,
-		"message": msg,
+		"success":  true,
+		"message":  fmt.Sprintf("Signed in as %s over SFTP (%s); base directory %s exists", cfg.User, checked, dir),
+		"host_key": client.HostKey,
 	}
 }
 
@@ -696,8 +711,12 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "Any HTTP endpoint — REST APIs, webhooks, exports",
 			"fields":      []string{"host", "port", "login", "password", "extra"}},
 		{"type": "sftp", "label": "SFTP / SSH", "category": "api", "icon": "connSftp",
-			"description": "File transfer over SSH — drop zones and exports",
-			"fields":      []string{"host", "port", "login", "password", "extra"}},
+			"description": "File delivery and pickup over SSH: source_file and sink_file read and write through it",
+			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints": map[string]string{
+				"schema": "/upload (empty: the login directory)",
+				"extra":  `{"host_key": "SHA256:...", "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----...", "passphrase": "..."}`,
+			}},
 		{"type": "generic", "label": "Generic", "category": "other", "icon": "connGeneric",
 			"description": "Any other system — bring your own settings",
 			"fields":      []string{"host", "port", "login", "password", "extra"}},

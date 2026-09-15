@@ -1817,7 +1817,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 
 	switch node.Type {
 	case models.NodeTypeSourceFile:
-		return outputExecutionResult(r.runSourceFile(node))
+		return outputExecutionResult(r.runSourceFile(ctx, node))
 	case models.NodeTypeSourceAPI:
 		return outputExecutionResult(r.runSourceAPI(node))
 	case models.NodeTypeSourceDB:
@@ -1847,7 +1847,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSQLGenerate:
 		return outputExecutionResult(r.runSQLGenerate(node, input))
 	case models.NodeTypeSinkFile:
-		return outputExecutionResult(r.runSinkFile(node, input))
+		return outputExecutionResult(r.runSinkFile(ctx, node, input))
 	case models.NodeTypeSinkDB:
 		return outputExecutionResult(r.runSinkDB(node, input, inputSchema))
 	case models.NodeTypeSinkAPI:

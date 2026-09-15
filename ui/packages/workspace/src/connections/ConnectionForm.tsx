@@ -278,7 +278,7 @@ export function ConnectionForm({
           )}
           {draft.type === 'http' && draft.host.includes('://') && <p className="ws-warning">Enter the host without a scheme; the scheme comes from the port.</p>}
           {has('schema') && (
-            <Field label={draft.type === 'bigquery' ? 'Project and dataset' : 'Database or schema'}>
+            <Field label={draft.type === 'bigquery' ? 'Project and dataset' : draft.type === 'sftp' ? 'Base directory' : 'Database or schema'}>
               <Input mono value={draft.schema} placeholder={hint('schema') ?? 'analytics'} onChange={(e) => set({ schema: e.target.value })} />
             </Field>
           )}

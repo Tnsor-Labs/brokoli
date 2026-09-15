@@ -415,6 +415,11 @@ func extractFileAsset(config map[string]interface{}, nodes map[string]LineageNod
 		return ""
 	}
 	id := "file:" + path
+	// A remote file is a different asset from a local file with the same
+	// path (ADR-040), so it is named by its connection as well.
+	if connID, _ := config["conn_id"].(string); strings.TrimSpace(connID) != "" {
+		id = remoteFileAssetID(strings.TrimSpace(connID), path)
+	}
 	// Use the filename as display name
 	name := path
 	if idx := strings.LastIndex(path, "/"); idx >= 0 {

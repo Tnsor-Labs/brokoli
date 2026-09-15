@@ -634,7 +634,7 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 	case models.NodeTypeSinkAPI:
 		return r.runSinkAPIStreamed(node, inputRef, outputs)
 	case models.NodeTypeSinkFile:
-		return r.runSinkFileStreamed(node, inputRef, outputs)
+		return r.runSinkFileStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeSinkDB:
 		return r.runSinkDBStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeCode:
@@ -811,15 +811,17 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	if path == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_file node requires 'path' config")
 	}
-	if err := validateFilePath(path); err != nil {
-		return nodeExecutionResult{}, fmt.Errorf("source_file: %w", err)
+	local, cleanup, remote, err := r.sourceFileLocal(ctx, node, path)
+	if err != nil {
+		return nodeExecutionResult{}, err
 	}
+	defer cleanup()
 
 	var columns []string
 	var sample common.DataRow
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
-			cols, _, lerr := loaders.StreamBatches(ctx, path, 0, func(b *common.DataSet) error {
+			cols, _, lerr := loaders.StreamBatches(ctx, local, 0, func(b *common.DataSet) error {
 				// One row kept for the sample log the materialising path
 				// prints. Holding a single row costs nothing and losing it
 				// would make the streamed path harder to eyeball than the
@@ -835,10 +837,13 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 		func() []string { return columns },
 	)
 	if err != nil {
+		if remote {
+			return nodeExecutionResult{}, fmt.Errorf("load %s: %w", remoteFileAssetID(fileConnID(node), path), err)
+		}
 		return nodeExecutionResult{}, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
 	}
 
-	fi, _ := os.Stat(path)
+	fi, _ := os.Stat(local)
 	sizeStr := "unknown size"
 	if fi != nil {
 		if mb := float64(fi.Size()) / 1024 / 1024; mb >= 1 {
@@ -865,7 +870,7 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	// The same warning the materialising path emits: which pod read the file
 	// and how old it was are the two facts that separate a correct read from
 	// a stale one, and streaming does not change that.
-	if unsharedFileStorage() {
+	if unsharedFileStorage() && !remote {
 		host, _ := os.Hostname()
 		age := "unknown age"
 		if fi != nil {
@@ -954,7 +959,7 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 // runSinkFileStreamed writes a referenced input straight to the file,
 // pulling batches off the blob store instead of decoding the whole thing
 // and then encoding a second full copy of it.
-func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSinkFileStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	if inputRef == nil {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file streamed path requires a referenced input (dispatch bug)")
 	}
@@ -962,31 +967,36 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 	if path == "" {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file node requires 'path' config")
 	}
-	if err := validateFilePath(path); err != nil {
-		return nodeExecutionResult{}, fmt.Errorf("sink_file: %w", err)
+	if fileConnID(node) == "" {
+		if err := validateFilePath(path); err != nil {
+			return nodeExecutionResult{}, fmt.Errorf("sink_file: %w", err)
+		}
 	}
 	format := sinkFileFormat(node)
 	if !sinkFileFormatStreams(format) {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file format %q is not streamable (dispatch bug: eligibility should have caught this)", format)
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		// #nosec G301 -- same mode runSinkFile creates it with; the two
-		// paths must not differ on where a file can be written.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nodeExecutionResult{}, fmt.Errorf("create output directory: %w", err)
-		}
-	}
-
 	batches, closer, err := outputs.OpenBatches(inputRef)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
 	}
 	defer closer.Close()
 
-	rows, written, err := writeSinkFileStreamed(path, format, inputRef.Columns, batches.Next)
+	// The same destination step the batch sink uses, so a streamed run
+	// with conn_id cannot write locally instead of delivering.
+	var rows int64
+	out, err := r.writeFileOutput(ctx, node, path, func(w io.Writer) error {
+		var encErr error
+		rows, encErr = encodeSinkFile(w, format, inputRef.Columns, batches.Next)
+		return encErr
+	})
 	if err != nil {
 		return nodeExecutionResult{}, err
 	}
+	if out.skipped {
+		return nodeExecutionResult{}, nil
+	}
+	written := out.bytes
 
 	mb := float64(written) / 1024 / 1024
 	if mb >= 1 {
@@ -996,8 +1006,8 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 		r.log(node.ID, models.LogLevelInfo,
 			"Streamed %s to %s (%.0f KB, %d rows, never materialized)", format, filepath.Base(path), float64(written)/1024, rows)
 	}
-	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
-	if unsharedFileStorage() {
+	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", out.where)
+	if unsharedFileStorage() && !out.remote {
 		host, _ := os.Hostname()
 		r.log(node.ID, models.LogLevelWarning,
 			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",

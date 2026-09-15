@@ -169,6 +169,42 @@ func (p Policy) checkHost(host string) error {
 	return nil
 }
 
+// DialContext connects to addr only if this policy allows the address it
+// resolves to, and dials that exact checked IP.
+//
+// The same check-then-dial Client uses, exported for protocols that are
+// not HTTP -- SSH for SFTP delivery is the first. One implementation for
+// both, rather than a copy for each protocol, so the DNS-rebinding
+// protection cannot hold for HTTP and quietly lapse for everything else:
+// the IP that was checked is the IP that is dialed, never the hostname
+// resolved a second time.
+func (p Policy) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	dialer := &net.Dialer{Timeout: 10 * time.Second}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.checkHost(host); err != nil {
+		return nil, err
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	var lastErr error
+	for _, ipAddr := range ips {
+		if err := p.checkIP(ipAddr.IP); err != nil {
+			lastErr = err
+			continue
+		}
+		return dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("%w: no addresses resolved for %s", ErrBlockedTarget, host)
+	}
+	return nil, lastErr
+}
+
 // Client returns an *http.Client that only ever connects to an address
 // this policy allows.
 //
@@ -189,32 +225,7 @@ func (p Policy) checkHost(host string) error {
 // belt and suspenders on top of the dial-time check, not the only thing
 // enforcing it.
 func (p Policy) Client(timeout time.Duration) *http.Client {
-	dialer := &net.Dialer{Timeout: 10 * time.Second}
-	safeDial := func(ctx context.Context, network, addr string) (net.Conn, error) {
-		host, port, err := net.SplitHostPort(addr)
-		if err != nil {
-			return nil, err
-		}
-		if err := p.checkHost(host); err != nil {
-			return nil, err
-		}
-		ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return nil, err
-		}
-		var lastErr error
-		for _, ipAddr := range ips {
-			if err := p.checkIP(ipAddr.IP); err != nil {
-				lastErr = err
-				continue
-			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(ipAddr.IP.String(), port))
-		}
-		if lastErr == nil {
-			lastErr = fmt.Errorf("%w: no addresses resolved for %s", ErrBlockedTarget, host)
-		}
-		return nil, lastErr
-	}
+	safeDial := p.DialContext
 
 	return &http.Client{
 		Timeout: timeout,

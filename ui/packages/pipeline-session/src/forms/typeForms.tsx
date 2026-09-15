@@ -24,6 +24,8 @@ import { TransformRules } from './TransformRules'
 const DB_TYPES = ['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'snowflake', 'clickhouse']
 const HTTP_TYPES = ['http']
 const DBT_TYPES = ['postgres', 'mysql', 'clickhouse']
+/** Connection types a file node reads and writes through (ADR-040). */
+const FILE_TYPES = ['sftp']
 const DIALECTS = [
   { value: 'postgres', label: 'PostgreSQL' },
   { value: 'mysql', label: 'MySQL' },
@@ -50,9 +52,23 @@ function DatabaseTarget({ ctx, uriPlaceholder = 'postgres://user:pass@host:5432/
 }
 
 function SourceFile({ ctx }: TypeFormProps) {
+  const remote = !!str(ctx.get('conn_id'))
   return (
     <Section title="File">
-      <TextField ctx={ctx} name="path" label="File path" mono required placeholder="/data/input.csv" hint="The format comes from the extension: .csv, .json, .xml, .xlsx or .xls. The path must be inside the server's data directories." />
+      <ConnectionField ctx={ctx} types={FILE_TYPES} label="Location" noneLabel="This server's data directories" hint="With an SFTP connection the file is fetched from that server." />
+      <TextField
+        ctx={ctx}
+        name="path"
+        label="File path"
+        mono
+        required
+        placeholder={remote ? 'inbound/orders.csv' : '/data/input.csv'}
+        hint={
+          remote
+            ? "A path on the SFTP server. A relative path starts in the connection's base directory. The format comes from the extension: .csv, .json, .xml, .xlsx or .xls."
+            : "The format comes from the extension: .csv, .json, .xml, .xlsx or .xls. The path must be inside the server's data directories."
+        }
+      />
       <LegacyKeyNotice ctx={ctx} name="format">
         The engine picks the reader from the file extension and ignores this setting.
       </LegacyKeyNotice>
@@ -213,9 +229,19 @@ function SinkFile({ ctx }: TypeFormProps) {
   const path = str(ctx.get('path'))
   const inferred = inferFileFormat(path)
   const effective = str(ctx.get('format')) || inferred
+  const remote = !!str(ctx.get('conn_id'))
   return (
     <Section title="File">
-      <TextField ctx={ctx} name="path" label="Output path" mono required placeholder="/output/result.csv" />
+      <ConnectionField ctx={ctx} types={FILE_TYPES} label="Location" noneLabel="This server's data directories" hint="With an SFTP connection the file is delivered to that server." />
+      <TextField
+        ctx={ctx}
+        name="path"
+        label="Output path"
+        mono
+        required
+        placeholder={remote ? 'outbound/orders.csv' : '/output/result.csv'}
+        hint={remote ? "A path on the SFTP server; a relative path starts in the connection's base directory. The file is written under a temporary name and renamed into place once complete, so a reader never sees it half-written." : undefined}
+      />
       <SelectField ctx={ctx} name="format" label="Format" options={['csv', 'json', 'sql']} defaultLabel={`from the extension (${inferred})`} />
       {path.toLowerCase().endsWith('.tsv') && <p className="ps-form-warning">.tsv files are written comma-separated.</p>}
       {effective === 'sql' && (

@@ -71,28 +71,33 @@ func (r *Runner) runCondition(node models.Node, input *common.DataSet) (*common.
 	return input, result.Passed, nil
 }
 
-func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runSourceFile(ctx context.Context, node models.Node) (*common.DataSet, error) {
 	path, _ := node.Config["path"].(string)
 	if path == "" {
 		return nil, fmt.Errorf("source_file node requires 'path' config")
 	}
 
-	if err := validateFilePath(path); err != nil {
-		return nil, fmt.Errorf("source_file: %w", err)
+	local, cleanup, remote, err := r.sourceFileLocal(ctx, node, path)
+	if err != nil {
+		return nil, err
 	}
+	defer cleanup()
 
-	loader, err := loaders.GetLoader(path)
+	loader, err := loaders.GetLoader(local)
 	if err != nil {
 		return nil, fmt.Errorf("get loader: %w", err)
 	}
 
-	ds, err := loader.Load(path)
+	ds, err := loader.Load(local)
 	if err != nil {
+		if remote {
+			return nil, fmt.Errorf("load %s: %w", remoteFileAssetID(fileConnID(node), path), err)
+		}
 		return nil, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
 	}
 
 	// Detailed source logging
-	fi, _ := os.Stat(path)
+	fi, _ := os.Stat(local)
 	var sizeStr string
 	if fi != nil {
 		mb := float64(fi.Size()) / 1024 / 1024
@@ -104,7 +109,7 @@ func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
 	}
 	ext := filepath.Ext(path)
 	r.log(node.ID, models.LogLevelInfo, "Loaded %d rows, %d columns from %s (%s, %s)", len(ds.Rows), len(ds.Columns), filepath.Base(path), ext, sizeStr)
-	if unsharedFileStorage() {
+	if unsharedFileStorage() && !remote {
 		// Which pod, and how old — the two facts an operator needs to tell
 		// a correct read from a stale one, recorded while the run is
 		// happening rather than reconstructed afterwards.
@@ -933,7 +938,7 @@ func tableNameFromPath(path string) string {
 	return out
 }
 
-func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runSinkFile(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_file node requires input data")
 	}
@@ -943,18 +948,16 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("sink_file node requires 'path' config")
 	}
 
-	if err := validateFilePath(path); err != nil {
-		return nil, fmt.Errorf("sink_file: %w", err)
+	// A local path is refused before anything is encoded; a remote one is
+	// a path on the server, which this machine's data directories do not
+	// govern (ADR-040).
+	if fileConnID(node) == "" {
+		if err := validateFilePath(path); err != nil {
+			return nil, fmt.Errorf("sink_file: %w", err)
+		}
 	}
 
 	format := sinkFileFormat(node)
-
-	// Ensure output directory exists
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create output directory: %w", err)
-		}
-	}
 
 	var content []byte
 	var err error
@@ -991,8 +994,15 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("marshal output as %s: %w", format, err)
 	}
 
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		return nil, fmt.Errorf("write %s: %w", path, err)
+	out, err := r.writeFileOutput(ctx, node, path, func(w io.Writer) error {
+		_, werr := w.Write(content)
+		return werr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.skipped {
+		return nil, nil
 	}
 
 	mb := float64(len(content)) / 1024 / 1024
@@ -1017,8 +1027,8 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		r.log(node.ID, models.LogLevelInfo, "  SQL for table %q, dialect %s, CREATE TABLE: %v",
 			table, dialectName, cfg.CreateTable)
 	}
-	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
-	if unsharedFileStorage() {
+	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", out.where)
+	if unsharedFileStorage() && !out.remote {
 		host, _ := os.Hostname()
 		r.log(node.ID, models.LogLevelWarning,
 			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
