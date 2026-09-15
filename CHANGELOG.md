@@ -16,6 +16,13 @@ reconstruct from git archaeology.
 > `100.64.0.0/10` by default. Allow it with
 > `BROKOLI_OUTBOUND_ALLOW_CIDRS=100.64.0.0/10` (or a narrower range).
 
+> **Behaviour change for deployments using `vault://` or `k8s://`
+> credential references:** they now resolve only what the operator
+> lists, in `BROKOLI_SECRET_VAULT_ALLOW` (path prefixes) and
+> `BROKOLI_SECRET_K8S_ALLOW` (`namespace/secret` names). An unlisted
+> reference fails with a message naming the setting. See
+> `docs/secret-references.md`.
+
 ### Changed
 
 - **The outbound network policy blocks more internal destinations**, for
@@ -32,12 +39,6 @@ reconstruct from git archaeology.
     `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` and under allowlisted ranges
     that merely contain them; only a CIDR naming the exact address opens
     one. (#653) -- @hc12r
-> **Behaviour change for deployments using `vault://` or `k8s://`
-> credential references:** they now resolve only what the operator
-> lists, in `BROKOLI_SECRET_VAULT_ALLOW` (path prefixes) and
-> `BROKOLI_SECRET_K8S_ALLOW` (`namespace/secret` names). An unlisted
-> reference fails with a message naming the setting. See
-> `docs/secret-references.md`.
 
 - **`vault://` and `k8s://` references are denied by default**, as
   `env://` already was. Each read with the server's own credentials,
