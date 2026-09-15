@@ -18,7 +18,7 @@ reconstruct from git archaeology.
   connection; `path` is then a path on that server, relative to the
   connection's base directory unless absolute. Every format the file
   nodes handle works remotely, on the batch and the streamed path.
-  Guide: `docs/sftp-file-delivery.md`. -- @hc12r
+  Guide: `docs/sftp-file-delivery.md`. (#650) -- @hc12r
   - **The server's host key must match** the connection's `host_key`
     (a `SHA256:` fingerprint, a public key line or a `known_hosts`
     line). A mismatch or a missing key refuses to connect and names the
@@ -61,7 +61,7 @@ reconstruct from git archaeology.
   like). Stored secrets cannot be read back, and they are no longer
   carried over to a different server, where the next test or run would
   have sent them. The update is refused with a message saying which to
-  enter. -- @hc12r
+  enter. (#650) -- @hc12r
 
 ### Fixed
 
@@ -70,10 +70,10 @@ reconstruct from git archaeology.
   password or an unknown server tested green. It now checks what a run
   needs: the network policy, the host key, authentication, the SFTP
   subsystem and the base directory. An unknown host key fails with the
-  key the server presented. -- @hc12r
+  key the server presented. (#650) -- @hc12r
 - The connections page said `sftp` and `s3` connections were usable by
   nodes when no node read either. `sftp` now is; `s3` is marked as not
-  usable, which is true. -- @hc12r
+  usable, which is true. (#650) -- @hc12r
 
 ## [0.11.27] - 2026-09-15
 
