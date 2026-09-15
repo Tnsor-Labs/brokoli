@@ -31,7 +31,7 @@ reconstruct from git archaeology.
     `fd00:ec2::254`, `100.100.100.200`) stay blocked under
     `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` and under allowlisted ranges
     that merely contain them; only a CIDR naming the exact address opens
-    one. -- @hc12r
+    one. (#653) -- @hc12r
 
 ### Added
 
