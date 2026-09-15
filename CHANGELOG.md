@@ -11,6 +11,17 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Column edges a run proved are marked `attested`** on
+  `GET /api/lineage`. An identity edge (the same column, from a node's
+  single input) is promoted from `declared` when the run its profile came
+  from stored that input and the node's output with the same digest: the
+  bytes did not change, so the column passed through untouched. Two
+  inputs, a missing digest on either side, unequal digests, or a renamed
+  or derived column all stay `declared`. The edge's `mapping_reason`
+  names the run. (#639) -- @hc12r
+
 ### Fixed
 
 - **The provenance record left out the output digest for most nodes.**

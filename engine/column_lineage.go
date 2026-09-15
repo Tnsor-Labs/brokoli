@@ -50,13 +50,14 @@ const (
 	// does not alter columns. Exact.
 	EvidenceDeclared EvidenceLevel = "declared"
 
-	// EvidenceAttested is proven by the execution record: digests, row
-	// counts, observed schema. Exact, and checkable after the fact.
+	// EvidenceAttested is proven by the execution record, and checkable
+	// after the fact.
 	//
-	// Not produced yet. The per-run provenance record it reads is the
-	// next piece of ADR-039; the level is named here because it is part
-	// of the response vocabulary a consumer filters on, and a consumer
-	// that only learns about it later has to be changed twice.
+	// Produced for one claim today: an identity edge through a node whose
+	// run stored its single input and its output with the same digest.
+	// The bytes did not change, so the column provably passed through
+	// untouched, whatever the node's type says it does. Anything short of
+	// that stays declared.
 	EvidenceAttested EvidenceLevel = "attested"
 
 	// EvidenceParsed is extracted from user-authored SQL. Table-level

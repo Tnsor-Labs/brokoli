@@ -1067,6 +1067,44 @@ func lineageHandler(s store.Store) http.HandlerFunc {
 				}
 			}
 		}
+		// ADR-039: an edge can be attested only against the execution record
+		// of the run its profile came from. One batch read covers every run
+		// the profiles came from. A store that keeps no provenance attests
+		// nothing, and every edge stays declared -- the honest default.
+		if provStore, ok := s.(interface {
+			GetNodeProvenanceForRuns([]string) (map[string][]models.NodeProvenance, error)
+		}); ok && len(profiles) > 0 {
+			seenRun := map[string]bool{}
+			var runIDs []string
+			for _, prof := range profiles {
+				if prof.RunID != "" && !seenRun[prof.RunID] {
+					seenRun[prof.RunID] = true
+					runIDs = append(runIDs, prof.RunID)
+				}
+			}
+			if byRun, err := provStore.GetNodeProvenanceForRuns(runIDs); err == nil {
+				// Keys are rebuilt from the pipelines rather than parsed back
+				// out of the map, so an id containing the separator cannot
+				// attach one node's record to another.
+				for _, p := range pipelines {
+					for _, n := range p.Nodes {
+						key := engine.ProfileKey(p.ID, n.ID)
+						prof, ok := profiles[key]
+						if !ok {
+							continue
+						}
+						for i := range byRun[prof.RunID] {
+							if byRun[prof.RunID][i].NodeID == n.ID {
+								rec := byRun[prof.RunID][i]
+								prof.Provenance = &rec
+								profiles[key] = prof
+								break
+							}
+						}
+					}
+				}
+			}
+		}
 		graph := engine.BuildLineageGraphWithProfiles(pipelines, profiles)
 		writeJSON(w, http.StatusOK, graph)
 	}

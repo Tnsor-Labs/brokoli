@@ -63,6 +63,10 @@ type LineageProfile struct {
 	Schema     *SchemaSnapshot
 	RunID      string
 	ObservedAt *time.Time
+	// Provenance is this node's execution record from the same run as the
+	// profile, when the store keeps one (ADR-039). It is what can promote a
+	// declared column edge to attested.
+	Provenance *models.NodeProvenance
 }
 
 // LineageEdge represents data flow between nodes through a pipeline.
@@ -248,6 +252,11 @@ func buildLineageGraph(pipelines []models.Pipeline, profiles map[string]LineageP
 			}
 
 			decl := ColumnLineageFor(req)
+			// The run the profile came from stored this node's single input
+			// and its output with the same digest: the bytes did not change,
+			// so an identity edge from that input is proven, not only
+			// declared.
+			attestedFrom, attestedRun := unchangedInput(profiles, p.ID, n.ID, lineageID)
 			if decl.Opaque {
 				// The node says it cannot trace columns, and the graph
 				// says so too rather than leaving a reader to wonder why
@@ -264,6 +273,10 @@ func buildLineageGraph(pipelines []models.Pipeline, profiles map[string]LineageP
 						From: src.Node, FromColumn: src.Column,
 						To: toLID, ToColumn: d.Output,
 						Evidence: d.Evidence, MappingReason: d.Rule,
+					}
+					if attestedFrom != "" && src.Node == attestedFrom && src.Column == d.Output {
+						edge.Evidence = EvidenceAttested
+						edge.MappingReason = d.Rule + "; run " + attestedRun + " stored identical bytes in and out"
 					}
 					columnEdgeSet[edge.From+"|"+edge.FromColumn+"|"+edge.To+"|"+edge.ToColumn] = edge
 				}
@@ -294,6 +307,11 @@ func buildLineageGraph(pipelines []models.Pipeline, profiles map[string]LineageP
 }
 
 func profileKey(pipelineID, nodeID string) string { return pipelineID + ":" + nodeID }
+
+// ProfileKey is the key profiles are looked up by, exported so a caller
+// assembling profiles uses this one definition rather than rebuilding or
+// parsing the format.
+func ProfileKey(pipelineID, nodeID string) string { return profileKey(pipelineID, nodeID) }
 
 func attachLineageProfile(nodes map[string]LineageNode, id, datasetID string, profile LineageProfile) {
 	node, ok := nodes[id]
@@ -348,6 +366,30 @@ func observedColumns(profiles map[string]LineageProfile, pipelineID, nodeID stri
 		out = append(out, c.Name)
 	}
 	return out
+}
+
+// unchangedInput reports the lineage ID of a node's input when the run
+// its profile came from proves the node changed nothing: exactly one
+// input, and that input and the output both stored with the same digest.
+//
+// One input only. With two, an output matching one of them says nothing
+// about what happened to the other. And a digest on both sides, never an
+// empty one on each: an absent digest means the dataset was not stored,
+// which proves nothing, and "" == "" must not read as "identical".
+func unchangedInput(profiles map[string]LineageProfile, pipelineID, nodeID string, lineageID map[string]string) (inputLID, runID string) {
+	prof, ok := profiles[profileKey(pipelineID, nodeID)]
+	if !ok || prof.Provenance == nil {
+		return "", ""
+	}
+	rec := prof.Provenance
+	if rec.Output == nil || len(rec.Inputs) != 1 {
+		return "", ""
+	}
+	in := rec.Inputs[0]
+	if in.Digest == "" || rec.Output.Digest == "" || in.Digest != rec.Output.Digest {
+		return "", ""
+	}
+	return lineageID[in.Node], rec.RunID
 }
 
 // markOpaque records on the node that it cannot trace columns, and why.

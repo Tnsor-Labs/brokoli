@@ -240,14 +240,24 @@ Landed:
   `GET /api/runs/{id}/provenance`. A digest is recorded only for datasets
   that went through the artifact store; in-memory datasets carry row
   counts and columns without one.
+- **`attested` edges.** An identity edge (the same column, from a node's
+  single input) is promoted from `declared` to `attested` when the run
+  its profile came from stored that input and the node's output with the
+  same digest: the bytes did not change, so the column provably passed
+  through untouched, whatever the node's type says. Anything short of
+  that stays declared -- two inputs, a missing digest on either side,
+  unequal digests, or an edge that is not identity -- and the edge's
+  reason names the run that proved it. The lineage handler reads every
+  profiled run's records in one query.
+
+  This rests on the recorder capturing a node's output digest after the
+  engine stores it. The first version captured it before, so most
+  processing nodes recorded no output digest; that was fixed in #637,
+  and measured then: a quality check that returns its input unchanged
+  stores byte-identical output.
 
 Remaining:
 
-- **Producing `attested` edges** from the provenance record. The record
-  exists; nothing reads it back into the graph yet. The first exact claim
-  it supports is a single-input node whose output digest equals its input
-  digest: no column was added, dropped or rewritten, whatever the node
-  type says.
 - Column facets for lineage consumers outside the engine. #627 carries
   datasets; the column-level half needs the declarations above, and only
   `declared` and `attested` edges should ever leave this process. An
