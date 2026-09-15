@@ -1,6 +1,6 @@
 module github.com/Tnsor-Labs/brokoli
 
-go 1.25.0
+go 1.26.0
 
 toolchain go1.26.6
 
@@ -30,7 +30,7 @@ require (
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp v1.45.0
 	go.opentelemetry.io/otel/sdk v1.45.0
 	go.opentelemetry.io/otel/trace v1.45.0
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 	golang.org/x/mod v0.40.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0

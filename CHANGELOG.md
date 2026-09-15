@@ -52,6 +52,9 @@ reconstruct from git archaeology.
     refused as a host key; a configured key line pins negotiation to
     that key's type.
   - The file node forms have a **Location** field for the connection.
+  - `golang.org/x/crypto` moves to v0.56.0, which fixes two denial of
+    service bugs in its SSH channel handling (GO-2026-6354,
+    GO-2026-6355) that this is the first code to reach.
 
 ### Changed
 
