@@ -46,7 +46,7 @@ reconstruct from git archaeology.
   can create and point at a server of their choosing. Vault paths
   containing `%`, `?` or a backslash are refused, so an encoded `..`
   cannot walk out of an allowed prefix. New guide:
-  `docs/secret-references.md`. -- @hc12r
+  `docs/secret-references.md`. (#654) -- @hc12r
 
 - **Building Brokoli from source needs Go 1.26** (`go.mod`'s `go`
   directive moves from 1.25.0 to 1.26.0). `golang.org/x/crypto` v0.56.0,
