@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -165,9 +166,20 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded, try again in 10 seconds")
 			return
 		}
+		// Optional JSON body {"params": {...}} — same shape TriggerRun
+		// already accepts so webhook callers can pass runtime params
+		// through to RunPipeline (Tnsor-Labs/brokoli#59).
+		var body struct {
+			Params map[string]string `json:"params"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			writeError(w, http.StatusBadRequest, "invalid request body: expected JSON object with optional params")
+			return
+		}
 		// #241: a webhook is nobody in particular, but it is not the
 		// scheduler and it is not a person, and saying so is the point.
 		run, err := e.RunPipelineOpts(p.ID, engine.RunOptions{
+			Params:      body.Params,
 			TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindWebhook},
 		})
 		if err != nil {

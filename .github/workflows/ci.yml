@@ -9,20 +9,15 @@ on:
       # contract tests, so schema changes must run them. (GitHub Actions
       # doesn't support YAML anchors; keep both lists and security.yml
       # in sync by hand.)
-      # ui/** is the React UI workspace; it has its own gate in ui.yml, so
-      # a UI-only change does not run the Go pipeline. build-ui.sh and
-      # web/dist are deliberately NOT ignored: they affect the embed.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
-      - "ui/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
-      - "ui/**"
 
 jobs:
   lint:
@@ -171,10 +166,23 @@ jobs:
       - name: Code-node JavaScript wrapper contract tests
         run: node --test pkg/codeexec/jswrapper/tests/*.test.mjs
 
+      # Chromium, Firefox and FFmpeg were re-downloaded on every run.
+      # Keyed on the lockfile: a @playwright/test bump changes the key,
+      # so a stale browser build can never be served to a newer client.
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('ui/package-lock.json') }}
+          restore-keys: playwright-${{ runner.os }}-
+
       - name: Build UI (required for go:embed)
-        # Builds only the embed artifact into web/dist. The UI is typechecked
-        # and tested in the dedicated "UI" job, not here.
-        run: bash build-ui.sh
+        working-directory: ui
+        run: |
+          npm ci
+          npx playwright install chromium firefox
+          npm run test:e2e
+          npm run build
 
       - name: Test
         # Go's default per-package timeout is 10 minutes, and the engine
@@ -356,7 +364,10 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Build UI
-        run: bash build-ui.sh
+        working-directory: ui
+        run: |
+          npm ci
+          npm run build
 
       - name: Build binary
         run: |
