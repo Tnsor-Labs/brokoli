@@ -27,6 +27,26 @@ warn() { printf '%s!! %s%s\n'  "$YELLOW" "$1" "$RESET" >&2; }
 die()  { printf '%serror:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
 step() { printf '    %s%s%s\n' "$DIM" "$1" "$RESET"; }
 
+# Node is an optional, resolved runtime for TypeScript code nodes. Report its
+# status without installing or requiring it: the single-binary install remains
+# useful for Python and declarative pipelines on hosts that have no Node.
+report_node_runtime() {
+    if ! command -v node >/dev/null 2>&1; then
+        info "Node.js not found (optional; install Node.js >= 20 only for TypeScript code nodes)"
+        return
+    fi
+
+    NODE_VERSION=$(node --version 2>/dev/null || true)
+    NODE_MAJOR=$(printf '%s\n' "$NODE_VERSION" | sed -n 's/^v\([0-9][0-9]*\).*/\1/p')
+    if [ -n "$NODE_MAJOR" ] && [ "$NODE_MAJOR" -ge 20 ]; then
+        info "Node.js $NODE_VERSION found (available for TypeScript code nodes)"
+    elif [ -n "$NODE_VERSION" ]; then
+        warn "Node.js $NODE_VERSION found; TypeScript code nodes require Node.js >= 20 (optional)"
+    else
+        warn "Node.js was found but its version could not be read; TypeScript code nodes require Node.js >= 20"
+    fi
+}
+
 # ───────────────── preflight ─────────────────
 REPO="Tnsor-Labs/brokoli"
 VERSION="${BROKOLI_VERSION:-latest}"
@@ -122,6 +142,7 @@ mv "$TMP/brokoli" "$INSTALL_DIR/brokoli" \
 
 INSTALLED_VERSION=$("$INSTALL_DIR/brokoli" --version 2>/dev/null || echo "$VERSION")
 info "Brokoli $INSTALLED_VERSION installed${PATH_HINT}"
+report_node_runtime
 
 # ───────────────── interactive first-run setup ─────────────────
 #
