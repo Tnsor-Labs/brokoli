@@ -256,6 +256,14 @@ Landed:
   and measured then: a quality check that returns its input unchanged
   stores byte-identical output.
 
+  Byte identity also needs both sides stored in one format, and the two
+  were chosen independently: a source's output by the stream writer
+  (from `BROKOLI_STREAM_CODEC` or its first batch), a node's output by
+  the spill (Arrow whenever the whole dataset allows). With the stream
+  codec on NDJSON no edge could be attested (#641). A node with a single
+  stored input now stores its output in that input's format (#643), and
+  the format is recorded beside each digest.
+
 Remaining:
 
 - Column facets for lineage consumers outside the engine. #627 carries
