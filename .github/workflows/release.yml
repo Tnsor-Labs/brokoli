@@ -32,16 +32,18 @@ jobs:
           node-version: "20"
 
       - name: Build UI (required for go:embed before tests)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
+        run: bash build-ui.sh
 
       - name: Run tests
         run: go test ./... -count=1
 
       - name: Verify UI build
-        run: test -f web/dist/index.html
+        # Guard against embedding a stale shell: web/dist must be the fresh
+        # React build, i.e. index.html referencing a hashed asset bundle.
+        run: |
+          test -f web/dist/index.html
+          test -d web/dist/assets
+          grep -q "/assets/" web/dist/index.html
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
