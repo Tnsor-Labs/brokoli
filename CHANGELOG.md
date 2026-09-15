@@ -19,6 +19,17 @@ reconstruct from git archaeology.
 > different row order. Mixed columns order numbers, then text, then empty
 > values; descending is the exact reverse.
 
+### Changed
+
+- **The embedded UI is now the React app** (#645). `build-ui.sh` builds
+  the community app into `web/dist`, the same embed target as before, so
+  the binary serves it with no change to how it is built or run. The
+  lineage page renders each column edge's `evidence` and `mapping_reason`,
+  and the reason a node's columns cannot be traced. The last Svelte
+  commit is tagged `ui-svelte-final`; restoring it is a checkout of that
+  tag. The Svelte end-to-end browser tests were dropped with it, and
+  React end-to-end tests have not been added yet. -- @hc12r
+
 ### Added
 
 - `format` on each stored dataset in `GET /api/runs/{id}/provenance`
