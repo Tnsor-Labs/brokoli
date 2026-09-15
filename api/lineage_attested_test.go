@@ -66,50 +66,75 @@ func TestTheLineageGraphAttestsWhatARunProved(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 
-	// Profiles are written asynchronously after a node succeeds, so the
-	// graph is read until it carries column edges into the quality check,
-	// rather than once.
-	qcID := "proc:p-att:qc"
-	var edges []engine.LineageColumnEdge
+	// Wait for what the assertion depends on, not for a proxy of it.
+	//
+	// The first version polled until column edges appeared and read the
+	// graph at that moment. But edges appear once the node PROFILES are
+	// written, and those are written asynchronously -- on a goroutine
+	// started before the provenance recorder runs -- while the provenance
+	// row that makes an edge attested is written synchronously a moment
+	// later. Read inside that window, the edges were declared, and the
+	// test failed five runs in ten.
+	//
+	// So: the run must be finished, which guarantees every provenance row,
+	// since those are written before a node completes; then the profiles
+	// must be stored; only then is the graph read, once.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		rec := httptest.NewRecorder()
-		lineageHandler(s)(rec, httptest.NewRequest(http.MethodGet, "/api/lineage", nil))
-		if rec.Code != http.StatusOK {
-			t.Fatalf("lineage status = %d; body=%s", rec.Code, rec.Body.String())
-		}
-		var g engine.LineageGraph
-		if err := json.Unmarshal(rec.Body.Bytes(), &g); err != nil {
-			t.Fatalf("decoding the graph: %v", err)
-		}
-		edges = edges[:0]
-		for _, e := range g.ColumnEdges {
-			if e.To == qcID {
-				edges = append(edges, e)
+		r, err := s.GetRun(run.ID)
+		if err == nil && r.Status != models.RunStatusRunning && r.Status != models.RunStatusPending {
+			if r.Status != models.RunStatusSuccess {
+				t.Fatalf("run status = %s, want success", r.Status)
 			}
-		}
-		if len(edges) >= 2 {
 			break
 		}
 		if time.Now().After(deadline) {
-			// Say where the graph falls short, not only that it does.
-			status := "unreadable"
-			if r, err := s.GetRun(run.ID); err == nil {
-				status = string(r.Status)
-			}
-			profiles, _ := s.GetLatestNodeProfilesForPipelines([]string{pipe.ID})
-			var have []string
-			for k := range profiles {
-				have = append(have, k)
-			}
-			var nodeIDs []string
-			for _, n := range g.Nodes {
-				nodeIDs = append(nodeIDs, n.ID)
-			}
-			t.Fatalf("no column edges into %s after the run: run status=%s, graph nodes=%v, "+
-				"column edges in graph=%d, profiles stored=%v", qcID, status, nodeIDs, len(g.ColumnEdges), have)
+			t.Fatalf("run %s never finished", run.ID)
 		}
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
+	}
+	for {
+		stored, _ := s.GetLatestNodeProfilesForPipelines([]string{pipe.ID})
+		_, haveSrc := stored[engine.ProfileKey(pipe.ID, "src")]
+		_, haveQC := stored[engine.ProfileKey(pipe.ID, "qc")]
+		if haveSrc && haveQC {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("profiles never stored (src=%v qc=%v)", haveSrc, haveQC)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	records, err := s.GetRunProvenance(run.ID)
+	if err != nil {
+		t.Fatalf("get provenance: %v", err)
+	}
+	var qcRecorded bool
+	for _, rec := range records {
+		qcRecorded = qcRecorded || rec.NodeID == "qc"
+	}
+	if !qcRecorded {
+		t.Fatal("the run finished but the quality check has no provenance row; it is written before the node completes")
+	}
+
+	rec := httptest.NewRecorder()
+	lineageHandler(s)(rec, httptest.NewRequest(http.MethodGet, "/api/lineage", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("lineage status = %d; body=%s", rec.Code, rec.Body.String())
+	}
+	var g engine.LineageGraph
+	if err := json.Unmarshal(rec.Body.Bytes(), &g); err != nil {
+		t.Fatalf("decoding the graph: %v", err)
+	}
+	qcID := "proc:p-att:qc"
+	var edges []engine.LineageColumnEdge
+	for _, e := range g.ColumnEdges {
+		if e.To == qcID {
+			edges = append(edges, e)
+		}
+	}
+	if len(edges) != 2 {
+		t.Fatalf("edges into the quality check = %d, want id and amount", len(edges))
 	}
 
 	for _, e := range edges {
