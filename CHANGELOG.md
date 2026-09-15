@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.28] - 2026-09-15
+
 > **Behaviour change for deployments that reach services over Tailscale
 > or another carrier-grade NAT range:** the outbound policy now blocks
 > `100.64.0.0/10` by default. Allow it with
