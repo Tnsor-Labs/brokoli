@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.26] - 2026-09-15
+
 ### Added
 
 - **Column edges a run proved are marked `attested`** on
