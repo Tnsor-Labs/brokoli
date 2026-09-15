@@ -11,6 +11,8 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.27] - 2026-09-15
+
 > **Behaviour change:** the `sort` transform now orders numeric columns
 > as numbers. It compared every value as text, so ascending `2, 10` came
 > out `10, 2`. Pipelines that sort a numeric column will produce a
