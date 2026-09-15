@@ -376,3 +376,26 @@ jobs:
 
       - name: Smoke test
         run: ./brokoli --help
+
+  ui-react:
+    # The React community UI staged under ui-react/ (migration Phase 1).
+    # Not embedded yet -- this only proves it builds and stays clean while
+    # it lives beside the Svelte ui/. No Playwright: its tests are vitest.
+    name: React UI (staged)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: ui-react/package-lock.json
+
+      - name: Gate (typecheck, tests, colours, build, boundaries)
+        working-directory: ui-react
+        run: |
+          npm ci
+          npm run check
