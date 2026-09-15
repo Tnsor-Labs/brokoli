@@ -2106,10 +2106,10 @@ func (s *PostgresStore) CreateConnection(c *models.Connection) error {
 func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error) {
 	var c models.Connection
 	err := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id
 		 FROM connections WHERE conn_id = $1`, connID,
 	).Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent)
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &c.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}

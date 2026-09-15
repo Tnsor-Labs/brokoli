@@ -246,7 +246,7 @@ func (r *Runner) generateDBTProfileForNode(node models.Node, connID string) (*db
 	if r.connResolver == nil {
 		return nil, fmt.Errorf("conn_id %q given but this engine has no connection resolver", connID)
 	}
-	conn, err := r.connResolver.ResolveConnection(connID)
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
 		return nil, err
 	}

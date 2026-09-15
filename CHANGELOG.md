@@ -73,6 +73,16 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A pipeline can only use connections from its own workspace.**
+  Connections were looked up by `conn_id` alone, and `conn_id` is unique
+  across every workspace, so a pipeline could name another workspace's
+  connection and run with its credentials. A run now resolves a
+  `conn_id` only within its pipeline's workspace, for every node type
+  that takes one; a connection from elsewhere is reported as not found,
+  in the same words as a missing one. Single-workspace installs are
+  unaffected: pipelines and connections both default to `default`.
+  -- @hc12r
+
 - **Testing an `sftp` connection now signs in.** It opened a TCP
   connection, read the SSH banner and reported success, so a wrong
   password or an unknown server tested green. It now checks what a run

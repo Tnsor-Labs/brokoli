@@ -91,7 +91,7 @@ func (r *Runner) dbtOutputTableRef(
 		return nil, fmt.Errorf("dbt reported no relation for %q, so it cannot be referenced", wanted)
 	}
 
-	conn, err := r.connResolver.ResolveConnection(connID)
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
 		return nil, err
 	}

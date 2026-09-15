@@ -2464,7 +2464,7 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 
 func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 	row := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id
 		 FROM connections WHERE conn_id = ?`, connID,
 	)
 	return scanConnection(row)
@@ -2563,7 +2563,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 	var c models.Connection
 	var createdAt, updatedAt string
 	if err := row.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &c.WorkspaceID); err != nil {
 		return nil, err
 	}
 	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)

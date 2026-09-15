@@ -756,7 +756,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
 		var warnings []string
-		node.Config, warnings = r.connResolver.ResolveWithWarnings(node.Config, node.Type)
+		node.Config, warnings = r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
 		for _, w := range warnings {
 			r.log(node.ID, models.LogLevelWarning, "%s", w)
 		}
@@ -2321,3 +2321,12 @@ const (
 	// unbounded number of database connections at once.
 	maxMaxParallelNodes = 64
 )
+
+// workspaceID is the workspace this run's pipeline belongs to, "" for a
+// runner built without a pipeline. Connections resolve only within it.
+func (r *Runner) workspaceID() string {
+	if r.pipe == nil {
+		return ""
+	}
+	return r.pipe.WorkspaceID
+}

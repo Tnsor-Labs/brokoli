@@ -42,22 +42,51 @@ func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolve
 // Oracle nor the connection, while the sentence that would have explained
 // it went to a log the author cannot see.
 func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, []string) {
+	return cr.ResolveWithWarningsIn(config, nodeType, "")
+}
+
+// ResolveWithWarningsIn is ResolveWithWarnings for a pipeline in
+// workspaceID: a conn_id naming another workspace's connection is not
+// resolved. conn_id is unique across the whole store, so without this a
+// pipeline could name any workspace's connection and run with its
+// credentials. Runs resolve through the *In methods; the unscoped ones
+// remain for callers with no pipeline, which decide access themselves.
+func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, []string) {
 	var warnings []string
-	resolved := cr.resolve(config, nodeType, func(format string, args ...interface{}) {
+	resolved := cr.resolve(config, nodeType, workspaceID, func(format string, args ...interface{}) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
 	return resolved, warnings
 }
+
+// ResolveIn is Resolve for a pipeline in workspaceID; see
+// ResolveWithWarningsIn.
+func (cr *ConnectionResolver) ResolveIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) map[string]interface{} {
+	return cr.resolve(config, nodeType, workspaceID, nil)
+}
+
+// sameWorkspace reports whether conn may serve a pipeline in workspaceID.
+// An unknown workspace on either side is not a refusal: a runner with no
+// pipeline, or a store that does not carry workspaces, has nothing to
+// compare, and refusing would break it rather than protect anything.
+func sameWorkspace(conn *models.Connection, workspaceID string) bool {
+	return workspaceID == "" || conn.WorkspaceID == "" || conn.WorkspaceID == workspaceID
+}
+
+// notInWorkspace is worded exactly like a missing connection on purpose:
+// "belongs to another workspace" would tell a pipeline author which slugs
+// exist elsewhere.
+const notInWorkspace = "conn_id %q not found in this pipeline's workspace"
 
 // Resolve checks if the config has a conn_id and replaces connection fields with resolved values.
 // Returns the config unchanged if no conn_id is present (backward compatible).
 //
 // Callers that can reach the run's log should prefer ResolveWithWarnings.
 func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) map[string]interface{} {
-	return cr.resolve(config, nodeType, nil)
+	return cr.resolve(config, nodeType, "", nil)
 }
 
-func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, warn func(string, ...interface{})) map[string]interface{} {
+func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, workspaceID string, warn func(string, ...interface{})) map[string]interface{} {
 	connID, ok := config["conn_id"].(string)
 	if !ok || connID == "" {
 		return config
@@ -87,6 +116,13 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		log.Printf("[conn-resolver] WARNING: "+msg, args...)
 		if warn != nil {
 			warn(msg, args...)
+		}
+		return config
+	}
+	if !sameWorkspace(conn, workspaceID) {
+		log.Printf("[conn-resolver] WARNING: "+notInWorkspace, connID)
+		if warn != nil {
+			warn(notInWorkspace, connID)
 		}
 		return config
 	}
@@ -212,12 +248,22 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) {
 // The returned Connection carries plaintext credentials in memory, the same
 // contract Resolve already has, and must not be persisted or logged.
 func (cr *ConnectionResolver) ResolveConnection(connID string) (*models.Connection, error) {
+	return cr.ResolveConnectionIn(connID, "")
+}
+
+// ResolveConnectionIn is ResolveConnection for a pipeline in workspaceID:
+// another workspace's connection is refused before its credentials are
+// resolved.
+func (cr *ConnectionResolver) ResolveConnectionIn(connID, workspaceID string) (*models.Connection, error) {
 	if connID == "" {
 		return nil, fmt.Errorf("no conn_id given")
 	}
 	conn, err := cr.store.GetConnection(connID)
 	if err != nil {
 		return nil, fmt.Errorf("conn_id %q not found: %w", connID, err)
+	}
+	if !sameWorkspace(conn, workspaceID) {
+		return nil, fmt.Errorf(notInWorkspace, connID)
 	}
 	cr.resolveCredentials(conn)
 	return conn, nil

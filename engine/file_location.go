@@ -108,7 +108,7 @@ func (r *Runner) openFileConnection(ctx context.Context, node models.Node) (*sft
 	if r.connResolver == nil {
 		return nil, fmt.Errorf("conn_id %q is set, but this runner has no connection store to resolve it", connID)
 	}
-	conn, err := r.connResolver.ResolveConnection(connID)
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
 		return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 	}
