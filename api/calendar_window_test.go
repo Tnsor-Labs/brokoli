@@ -78,7 +78,7 @@ func TestCalendarRefusesADaysValueItCannotHonour(t *testing.T) {
 // first, with quiet days present as zeroes rather than absent.
 func TestCalendarReturnsEveryDayInTheWindow(t *testing.T) {
 	s := newDashboardTestStore(t)
-	seedCalendarRuns(t, s, "pipe-1", "daily", 2, models.RunStatusSuccess, time.Now().UTC().Add(-2*time.Hour))
+	seedCalendarRuns(t, s, "pipe-1", "daily", 2, models.RunStatusSuccess, earlierToday())
 
 	_, cal := getCalendar(t, s, "?days=7")
 	if len(cal) != 7 {
@@ -132,4 +132,21 @@ func TestCalendarWindowIsExactlyTheDaysAsked(t *testing.T) {
 	if cal[0].Total != 3 {
 		t.Errorf("yesterday total = %d, want 3", cal[0].Total)
 	}
+}
+
+// earlierToday is a moment that is both in the past and inside today's UTC
+// day, whatever the time.
+//
+// The test used to seed "today" at two hours before now. Between midnight
+// and 02:00 UTC that is yesterday, so today's bucket was empty and the
+// test failed, which it did in CI at 00:05 UTC on 2026-09-15 on a change
+// that did not touch the calendar at all. Two hours back is kept when it
+// is still today; otherwise the midpoint between midnight and now.
+func earlierToday() time.Time {
+	now := time.Now().UTC()
+	midnight := now.Truncate(24 * time.Hour)
+	if t := now.Add(-2 * time.Hour); !t.Before(midnight) {
+		return t
+	}
+	return midnight.Add(now.Sub(midnight) / 2)
 }
