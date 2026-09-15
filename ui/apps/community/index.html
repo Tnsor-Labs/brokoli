@@ -1,16 +1,17 @@
 <!doctype html>
-<html lang="en" data-theme="dark">
+<html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#08090a" />
+    <meta name="theme-color" content="#f3f3f0" />
     <title>Brokoli</title>
     <script>
       // Apply the saved theme before first paint (same key as the previous UI).
+      // Light is the default; a user who prefers dark has it stored.
       try {
-        var t = localStorage.getItem('brokoli-theme') === 'light' ? 'light' : 'dark'
+        var t = localStorage.getItem('brokoli-theme') === 'dark' ? 'dark' : 'light'
         document.documentElement.dataset.theme = t
-        if (t === 'light') document.querySelector('meta[name="theme-color"]').setAttribute('content', '#f3f3f0')
+        if (t === 'dark') document.querySelector('meta[name="theme-color"]').setAttribute('content', '#08090a')
       } catch (e) {}
     </script>
   </head>
