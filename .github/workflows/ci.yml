@@ -9,15 +9,20 @@ on:
       # contract tests, so schema changes must run them. (GitHub Actions
       # doesn't support YAML anchors; keep both lists and security.yml
       # in sync by hand.)
+      # ui/** is the React UI workspace; it has its own gate in ui.yml, so
+      # a UI-only change does not run the Go pipeline. build-ui.sh and
+      # web/dist are deliberately NOT ignored: they affect the embed.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
 
 jobs:
   lint:
@@ -360,27 +365,3 @@ jobs:
 
       - name: Smoke test
         run: ./brokoli --help
-
-  ui:
-    # The React UI gate: typecheck, unit tests, colour tokens, community
-    # build, and the community/edition boundary check. The Go jobs only
-    # build the embed artifact (build-ui.sh); this is where the UI is
-    # actually tested. No Playwright: the tests are vitest.
-    name: UI
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: ui/package-lock.json
-
-      - name: Gate (typecheck, tests, colours, build, boundaries)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run check

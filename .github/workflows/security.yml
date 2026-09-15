@@ -20,18 +20,21 @@ on:
     paths-ignore:
       # Keep in sync with ci.yml and the pull_request filter below;
       # Actions has no YAML anchors, so all three lists are maintained by
-      # hand. docs/schema/** is deliberately NOT ignored.
+      # hand. docs/schema/** is deliberately NOT ignored. ui/** is the
+      # React UI workspace: no Go, so no security scan.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
   pull_request:
     branches: [main]
     paths-ignore:
       # Keep in sync with ci.yml: prose docs skip the pipeline;
-      # docs/schema/** deliberately still runs it.
+      # docs/schema/** deliberately still runs it. ui/** has no Go.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
   # Manually runnable. Needed twice already: after a merge that skipped
   # the gate, the only way to get a real verdict was to run gosec by hand
   # on a laptop and paste the numbers into a PR. A verdict nobody else
