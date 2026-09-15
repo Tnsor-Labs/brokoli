@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **The provenance record left out the output digest for most nodes.**
+  `GET /api/runs/{id}/provenance` recorded a node's output before the
+  engine stored it, so a node that returns rows in memory (a quality
+  check, a transform, most processing nodes) showed no digest for an
+  output that was in fact stored, while the node consuming it showed
+  the digest for the same bytes. Sources were unaffected, which is why
+  the v0.11.25 tests did not see it. -- @hc12r
+
 ## [0.11.25] - 2026-09-15
 
 > **Breaking:** `confidence` is gone from every entry in `column_edges` on

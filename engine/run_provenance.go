@@ -44,6 +44,14 @@ func (r *Runner) recordNodeProvenance(node models.Node, outputs *nodeOutputs, ed
 		return
 	}
 
+	// A node that returned rows in memory has no ref of its own; if the
+	// engine spilled them, the stored ref is in outputs, and its digest is
+	// the one the consumer of this dataset will record.
+	if outputRef == nil {
+		if ref, ok := outputs.GetRef(node.ID); ok {
+			outputRef = ref
+		}
+	}
 	record := &models.NodeProvenance{
 		RunID:      r.run.ID,
 		NodeID:     node.ID,

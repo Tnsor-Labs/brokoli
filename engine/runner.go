@@ -1208,7 +1208,6 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		if err == nil {
 			// ── Success ──
 			r.saveNodeProfile(node.ID, output, outputRef)
-			r.recordNodeProvenance(node, outputs, edgeStates, output, outputRef)
 			rowCount := nodeRowCount(output, outputRef, input, inputRef)
 			if pushedRowCount > 0 || len(pushedAbsorbed) > 0 {
 				// ADR-023: a segment that executed in the database has one
@@ -1395,6 +1394,12 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					}
 				}
 			}
+			// Provenance is recorded only now, after every form of the output
+			// has been stored. A node that returns rows in memory is spilled by
+			// outputs.Put just above; recorded any earlier, its own record
+			// carried no digest while its consumer recorded one for the same
+			// bytes.
+			r.recordNodeProvenance(node, outputs, edgeStates, output, outputRef)
 
 			// Completion log with throughput
 			durStr := fmt.Sprintf("%dms", duration)
