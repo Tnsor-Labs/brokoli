@@ -302,6 +302,31 @@ services and mirrors.
 
 The deferred CI enforcement for Decision B is now implemented. Decision A store-layer tenant scoping remains follow-up work.
 
+## Update, 2026-09-15: ranges the classifiers miss, and metadata endpoints
+
+`net.IP`'s classifiers (`IsPrivate`, `IsLinkLocalUnicast`) left several
+internal destinations reachable:
+
+- **Shared and reserved IPv4 ranges:** `0.0.0.0/8` (only `0.0.0.0`
+  itself was caught), `100.64.0.0/10` (carrier-grade NAT, which also
+  holds one cloud's metadata endpoint), `192.0.0.0/24`, and local-use
+  NAT64 `64:ff9b:1::/48`. They are now blocked like the private ranges,
+  and opened the same way (`AllowPrivate`, or an allowlisted CIDR).
+  Blocking `100.64.0.0/10` is a deliberate default: Tailscale gives
+  every device an address there, and those deployments allowlist it
+  (`BROKOLI_OUTBOUND_ALLOW_CIDRS=100.64.0.0/10`).
+- **IPv4 carried inside IPv6:** well-known NAT64 (`64:ff9b::/96`), 6to4
+  (`2002::/16`) and IPv4-compatible (`::a.b.c.d`) addresses are judged
+  as the IPv4 address they route to. `64:ff9b::a9fe:a9fe` reached
+  `169.254.169.254` on a NAT64 network while looking like a public IPv6
+  address.
+- **Metadata endpoints under `AllowPrivate`:** the decision above says the
+  metadata address is blocked "specifically", but `AllowPrivate` opened
+  all of link-local, and with it `169.254.169.254`. Metadata endpoints
+  (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`,
+  `100.100.100.200`) now stay blocked under every broad allowance; only
+  an allowlisted CIDR naming that single address opens one.
+
 ## Update — 2026-09-11: M2 `AllowLoopback` audit
 
 The audit found two production call sites that deliberately enable both

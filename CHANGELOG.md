@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+> **Behaviour change for deployments that reach services over Tailscale
+> or another carrier-grade NAT range:** the outbound policy now blocks
+> `100.64.0.0/10` by default. Allow it with
+> `BROKOLI_OUTBOUND_ALLOW_CIDRS=100.64.0.0/10` (or a narrower range).
+
+### Changed
+
+- **The outbound network policy blocks more internal destinations**, for
+  every pipeline connector, webhook and SFTP connection:
+  - `0.0.0.0/8` (only `0.0.0.0` itself was blocked), `100.64.0.0/10`,
+    `192.0.0.0/24` and local-use NAT64 `64:ff9b:1::/48`, blocked like
+    the private ranges and opened the same way;
+  - an IPv6 address that routes to an IPv4 one (NAT64 `64:ff9b::/96`,
+    6to4 `2002::/16`, IPv4-compatible `::a.b.c.d`) is judged as that
+    IPv4 address, so `64:ff9b::a9fe:a9fe` no longer reaches the cloud
+    metadata endpoint;
+  - cloud metadata endpoints (`169.254.169.254`, `169.254.170.2`,
+    `fd00:ec2::254`, `100.100.100.200`) stay blocked under
+    `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` and under allowlisted ranges
+    that merely contain them; only a CIDR naming the exact address opens
+    one. -- @hc12r
+
 ### Added
 
 - **Deliver files to, and collect files from, SFTP servers** (ADR-040).

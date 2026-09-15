@@ -156,16 +156,19 @@ denied write fails the run with the server's error.
 ## 4. Allow the server through the network policy
 
 SSH connections go through the same outbound policy as HTTP
-connections. Public addresses are allowed. Private, loopback and
-link-local addresses are refused unless the operator allows them, and
-cloud metadata endpoints are always refused.
+connections. Public addresses are allowed. Private, loopback, link-local
+and shared ranges (including `100.64.0.0/10`, where Tailscale addresses
+live) are refused unless the operator allows them. Cloud metadata
+endpoints are refused even then, unless an allowlisted CIDR names that
+exact address. An IPv6 address that routes to an IPv4 one (NAT64, 6to4)
+is judged as that IPv4 address.
 
 A partner's server on the internet needs nothing. For a server on your
 own network, set one of these on the Brokoli server and its workers:
 
 | Variable | Effect |
 | --- | --- |
-| `BROKOLI_OUTBOUND_ALLOW_CIDRS=10.20.0.0/16` | Allows the listed ranges, comma-separated. Prefer this: it allows only what you name. |
+| `BROKOLI_OUTBOUND_ALLOW_CIDRS=10.20.0.0/16` | Allows the listed ranges, comma-separated. Prefer this: it allows only what you name. For a server reached over Tailscale, `100.64.0.0/10`. |
 | `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` | Allows every private range. |
 
 A refused connection fails with

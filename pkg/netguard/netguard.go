@@ -43,8 +43,9 @@ type Policy struct {
 	AllowLoopback bool
 
 	// AllowPrivate opts into reaching RFC1918/link-local addresses
-	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16).
-	// Off by default.
+	// (10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16) and the
+	// shared/reserved ranges in sharedRanges. Off by default. It never
+	// opens a cloud metadata endpoint (metadataAddrs).
 	//
 	// The one known legitimate case for either of these two flags
 	// together is pkg/fetchers' trustedSelfRef path (a source_api node
@@ -141,7 +142,116 @@ func FromEnv() Policy {
 	return p
 }
 
+// sharedRanges are IPv4 ranges net.IP's classifiers do not call private
+// but a pipeline has no business reaching by default: "this network"
+// (0.0.0.0/8, of which only the first address is IsUnspecified),
+// carrier-grade NAT (100.64.0.0/10: Tailscale gives every device an
+// address there, and one cloud's metadata endpoint lives there too), IETF
+// protocol assignments (192.0.0.0/24), and local-use NAT64
+// (64:ff9b:1::/48, whose IPv4 embedding position varies by prefix length,
+// so it cannot be unpacked the way the well-known prefix can). Like the
+// private ranges, AllowPrivate or an allowlisted CIDR opens them.
+var sharedRanges = mustParseCIDRs("0.0.0.0/8", "100.64.0.0/10", "192.0.0.0/24", "64:ff9b:1::/48")
+
+// metadataAddrs are cloud instance-metadata endpoints: AWS, GCP, Azure and
+// most others at 169.254.169.254, AWS's IPv6 address and its ECS task
+// credentials endpoint, and Alibaba Cloud's. They answer with credentials
+// for the machine Brokoli runs on, so they stay blocked even under
+// AllowPrivate, and an allowlisted range that merely contains one does
+// not open it: only a CIDR naming that single address does.
+var metadataAddrs = []net.IP{
+	net.ParseIP("169.254.169.254"),
+	net.ParseIP("169.254.170.2"),
+	net.ParseIP("fd00:ec2::254"),
+	net.ParseIP("100.100.100.200"),
+}
+
+var (
+	nat64WellKnown = mustParseCIDRs("64:ff9b::/96")[0]
+	sixToFour      = mustParseCIDRs("2002::/16")[0]
+)
+
+func mustParseCIDRs(cidrs ...string) []*net.IPNet {
+	out := make([]*net.IPNet, 0, len(cidrs))
+	for _, c := range cidrs {
+		_, n, err := net.ParseCIDR(c)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+func inAny(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// embeddedIPv4 returns the IPv4 address an IPv6 address routes to, for the
+// forms that carry one: well-known NAT64 (64:ff9b::/96), 6to4 (2002::/16)
+// and the deprecated IPv4-compatible form (::a.b.c.d). Without this,
+// 64:ff9b::a9fe:a9fe reaches 169.254.169.254 on any network with NAT64
+// while looking like a public IPv6 address. IPv4-mapped addresses
+// (::ffff:a.b.c.d) need no help: net.IP's classifiers already see
+// through them.
+func embeddedIPv4(ip net.IP) net.IP {
+	if ip.To4() != nil {
+		return nil
+	}
+	b := ip.To16()
+	if b == nil {
+		return nil
+	}
+	switch {
+	case nat64WellKnown.Contains(b):
+		return net.IPv4(b[12], b[13], b[14], b[15])
+	case sixToFour.Contains(b):
+		return net.IPv4(b[2], b[3], b[4], b[5])
+	}
+	for _, x := range b[:12] {
+		if x != 0 {
+			return nil
+		}
+	}
+	// :: and ::1 are the unspecified and loopback addresses, not
+	// IPv4-compatible ones, and have their own rules below.
+	if b[12] == 0 && b[13] == 0 && b[14] == 0 && b[15] <= 1 {
+		return nil
+	}
+	return net.IPv4(b[12], b[13], b[14], b[15])
+}
+
+// namesExactly reports whether an allowlisted CIDR is exactly this single
+// address, the only way a metadata endpoint is opened.
+func (p Policy) namesExactly(ip net.IP) bool {
+	for _, n := range p.AllowedCIDRs {
+		if n == nil {
+			continue
+		}
+		ones, bits := n.Mask.Size()
+		if ones == bits && n.IP.Equal(ip) {
+			return true
+		}
+	}
+	return false
+}
+
 func (p Policy) checkIP(ip net.IP) error {
+	if v4 := embeddedIPv4(ip); v4 != nil {
+		if err := p.checkIP(v4); err != nil {
+			return fmt.Errorf("%w (reached through %s)", err, ip)
+		}
+	}
+	for _, m := range metadataAddrs {
+		if ip.Equal(m) && !p.namesExactly(m) {
+			return fmt.Errorf("%w: %s (cloud metadata endpoint)", ErrBlockedTarget, ip)
+		}
+	}
 	if ip.IsUnspecified() {
 		return fmt.Errorf("%w: %s (unspecified)", ErrBlockedTarget, ip)
 	}
@@ -156,6 +266,12 @@ func (p Policy) checkIP(ip net.IP) error {
 			return nil
 		}
 		return fmt.Errorf("%w: %s (private/link-local)", ErrBlockedTarget, ip)
+	}
+	if inAny(sharedRanges, ip) {
+		if p.AllowPrivate || p.allowedByCIDR(ip) {
+			return nil
+		}
+		return fmt.Errorf("%w: %s (shared/reserved range)", ErrBlockedTarget, ip)
 	}
 	return nil
 }
