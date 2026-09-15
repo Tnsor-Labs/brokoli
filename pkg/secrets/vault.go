@@ -57,6 +57,18 @@ func (v *VaultResolver) Resolve(ctx context.Context, ref string) (string, error)
 	if strings.Contains(path, "..") {
 		return "", fmt.Errorf("secrets/vault: path traversal not allowed")
 	}
+	// Percent-encoding and backslashes are refused outright: Vault could
+	// decode "%2e%2e" into ".." after the allowlist below had already
+	// matched the undecoded prefix.
+	if strings.ContainsAny(path, "%\\?") {
+		return "", fmt.Errorf("secrets/vault: the path may not contain '%%', '?' or a backslash")
+	}
+	if !VaultRefAllowed(path) {
+		return "", fmt.Errorf(
+			"secrets/vault: %q is not under a path listed in %s, so a vault:// reference may not read it. "+
+				"The server's Vault token can read more than any one connection should; "+
+				"list the path prefixes connections may use", path, VaultRefAllowEnv)
+	}
 
 	token, err := v.getToken(ctx)
 	if err != nil {

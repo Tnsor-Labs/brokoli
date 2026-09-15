@@ -32,6 +32,34 @@ reconstruct from git archaeology.
     `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` and under allowlisted ranges
     that merely contain them; only a CIDR naming the exact address opens
     one. (#653) -- @hc12r
+> **Behaviour change for deployments using `vault://` or `k8s://`
+> credential references:** they now resolve only what the operator
+> lists, in `BROKOLI_SECRET_VAULT_ALLOW` (path prefixes) and
+> `BROKOLI_SECRET_K8S_ALLOW` (`namespace/secret` names). An unlisted
+> reference fails with a message naming the setting. See
+> `docs/secret-references.md`.
+
+- **`vault://` and `k8s://` references are denied by default**, as
+  `env://` already was. Each read with the server's own credentials,
+  which reach far more than one connection should, including the
+  server's own secrets, and a connection is something a workspace editor
+  can create and point at a server of their choosing. Vault paths
+  containing `%`, `?` or a backslash are refused, so an encoded `..`
+  cannot walk out of an allowed prefix. New guide:
+  `docs/secret-references.md`. -- @hc12r
+
+- **Building Brokoli from source needs Go 1.26** (`go.mod`'s `go`
+  directive moves from 1.25.0 to 1.26.0). `golang.org/x/crypto` v0.56.0,
+  which carries the SSH fixes below, declares `go 1.26.0`, as does every
+  later release. CI and the release builds already use Go 1.26.6.
+  (#650) -- @hc12r
+- **Changing a connection's type, host or port requires entering its
+  password again**, for every connection type, and its extra settings
+  too unless they are a database's driver options (`sslmode` and the
+  like). Stored secrets cannot be read back, and they are no longer
+  carried over to a different server, where the next test or run would
+  have sent them. The update is refused with a message saying which to
+  enter. (#650) -- @hc12r
 
 ### Added
 
@@ -77,21 +105,6 @@ reconstruct from git archaeology.
   - `golang.org/x/crypto` moves to v0.56.0, which fixes two denial of
     service bugs in its SSH channel handling (GO-2026-6354,
     GO-2026-6355) that this is the first code to reach.
-
-### Changed
-
-- **Building Brokoli from source needs Go 1.26** (`go.mod`'s `go`
-  directive moves from 1.25.0 to 1.26.0). `golang.org/x/crypto` v0.56.0,
-  which carries the SSH fixes below, declares `go 1.26.0`, as does every
-  later release. CI and the release builds already use Go 1.26.6.
-  (#650) -- @hc12r
-- **Changing a connection's type, host or port requires entering its
-  password again**, for every connection type, and its extra settings
-  too unless they are a database's driver options (`sslmode` and the
-  like). Stored secrets cannot be read back, and they are no longer
-  carried over to a different server, where the next test or run would
-  have sent them. The update is refused with a message saying which to
-  enter. (#650) -- @hc12r
 
 ### Fixed
 
