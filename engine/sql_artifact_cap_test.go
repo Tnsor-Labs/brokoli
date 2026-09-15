@@ -48,7 +48,7 @@ func TestSQLArtifactCapMeasuresTheBytesActuallyStored(t *testing.T) {
 	ds := wideDataset(20000)
 
 	outputs := newNodeOutputs(s.Blobs(), "run-cap", 1)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}
@@ -92,7 +92,7 @@ func TestSQLArtifactCapAcceptsWhatFits(t *testing.T) {
 	s := newSQLArtifactTestStore(t)
 	ds := wideDataset(2000)
 	outputs := newNodeOutputs(s.Blobs(), "run-fits", 1)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}

@@ -111,7 +111,7 @@ func datasetFact(nodeID string, ds *common.DataSet, ref *artifact.DatasetRef) *m
 	switch {
 	case ref != nil:
 		return &models.DatasetFact{
-			Node: nodeID, Digest: ref.Checksum,
+			Node: nodeID, Digest: ref.Checksum, Format: ref.Format,
 			RowCount: ref.RowCount, Columns: ref.Columns,
 		}
 	case ds != nil:

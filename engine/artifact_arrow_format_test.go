@@ -21,7 +21,7 @@ func TestSQLArtifactStore_ArrowRefRoundTrips(t *testing.T) {
 		},
 	}
 	outputs := newNodeOutputs(s.Blobs(), "run-arrow", 1)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestLocalDiskArtifactStore_ArrowRefRoundTrips(t *testing.T) {
 		},
 	}
 	outputs := newNodeOutputs(s.Blobs(), "run-arrow", 1)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestSQLArtifactStore_NDJSONRefIsStoredVerbatim(t *testing.T) {
 		Rows:    []common.DataRow{{"v": "a"}, {"v": int64(2)}},
 	}
 	outputs := newNodeOutputs(s.Blobs(), "run-nd", 1)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}

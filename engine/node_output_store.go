@@ -110,6 +110,25 @@ func (o *nodeOutputs) spillEnabled() bool {
 // an optimisation could not be applied would turn a full disk into a failed
 // pipeline. The error is returned so the caller can log it.
 func (o *nodeOutputs) Put(nodeID string, ds *common.DataSet) error {
+	return o.PutPreferring(nodeID, ds, "")
+}
+
+// PutPreferring is Put with the format the dataset should be stored in if
+// it spills, when the caller has a reason to want one.
+//
+// The reason that exists today: a node's single input was stored in some
+// format, and storing the node's output in the same one keeps a node that
+// changed nothing byte-identical, which is what an attested lineage edge
+// rests on (#641). Left to itself, spill picks Arrow whenever the whole
+// dataset allows, while the stream writer that stored the input may have
+// picked NDJSON from its first batch or from BROKOLI_STREAM_CODEC -- the
+// same rows in two formats, and no digest could match.
+//
+// Only a preference for NDJSON changes anything: Arrow is already chosen
+// whenever the dataset can be represented in it, and a preference for
+// Arrow on a dataset that cannot be is ignored rather than honoured with a
+// lossy encoding.
+func (o *nodeOutputs) PutPreferring(nodeID string, ds *common.DataSet, preferred string) error {
 	if ds == nil {
 		return nil
 	}
@@ -124,7 +143,7 @@ func (o *nodeOutputs) Put(nodeID string, ds *common.DataSet) error {
 		return nil
 	}
 
-	ref, err := o.spill(ds)
+	ref, err := o.spill(ds, preferred)
 	if err != nil {
 		o.putInline(nodeID, ds)
 		return fmt.Errorf("spill node %s output (%d bytes estimated): %w", nodeID, estimate, err)
@@ -159,11 +178,11 @@ func (o *nodeOutputs) putInline(nodeID string, ds *common.DataSet) {
 // Worth the branch because the read side is where datasets are paid
 // for: a spilled dataset is written once and may be read many times,
 // and Arrow decodes 6-8x faster with a quarter of the allocations.
-func (o *nodeOutputs) spill(ds *common.DataSet) (*artifact.DatasetRef, error) {
+func (o *nodeOutputs) spill(ds *common.DataSet, preferred string) (*artifact.DatasetRef, error) {
 	format := artifact.FormatNDJSON
 	mediaType := artifact.MediaTypeNDJSON
 	encode := func(w io.Writer) error { return EncodeNDJSON(w, ds) }
-	if _, ok := arrowEncodableSchema(ds); ok {
+	if _, ok := arrowEncodableSchema(ds); ok && preferred != artifact.FormatNDJSON {
 		format = artifact.FormatArrowIPC
 		mediaType = artifact.MediaTypeArrowIPC
 		encode = func(w io.Writer) error { return EncodeArrowIPC(w, ds) }

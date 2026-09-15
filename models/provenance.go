@@ -35,6 +35,12 @@ type DatasetFact struct {
 	// "the empty dataset" or "unchanged".
 	Digest string `json:"digest,omitempty"`
 
+	// Format is how the stored bytes are encoded ("ndjson", "arrow-ipc"),
+	// recorded with the digest because the two only mean something
+	// together: the same rows stored in two formats have two digests.
+	// Empty when nothing was stored.
+	Format string `json:"format,omitempty"`
+
 	// RowCount is how many rows the execution saw. Always recorded.
 	RowCount int64 `json:"row_count"`
 

@@ -314,7 +314,7 @@ func TestStreamTransformChoosesArrowForTypedColumns(t *testing.T) {
 			"id": int64(i), "region": fmt.Sprintf("r%d", i%7), "amount": float64(i) * 1.5,
 		})
 	}
-	inputRef, err := outputs.spill(in)
+	inputRef, err := outputs.spill(in, "")
 	if err != nil {
 		t.Fatalf("spill input: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestStreamTransformEmptyResultStaysNDJSON(t *testing.T) {
 		Columns: []string{"id"},
 		Rows:    []common.DataRow{{"id": int64(1)}, {"id": int64(2)}},
 	}
-	inputRef, err := outputs.spill(in)
+	inputRef, err := outputs.spill(in, "")
 	if err != nil {
 		t.Fatalf("spill input: %v", err)
 	}
@@ -382,7 +382,7 @@ func TestStreamTransformAggregatedOutputChoosesACodec(t *testing.T) {
 			"region": fmt.Sprintf("r%d", i%3), "amount": float64(i),
 		})
 	}
-	inputRef, err := outputs.spill(in)
+	inputRef, err := outputs.spill(in, "")
 	if err != nil {
 		t.Fatalf("spill input: %v", err)
 	}

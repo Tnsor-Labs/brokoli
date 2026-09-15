@@ -1351,7 +1351,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
 					output.Rows = output.Rows[:r.dryRunMaxRows]
 				}
-				if err := outputs.Put(node.ID, output); err != nil {
+				if err := outputs.PutPreferring(node.ID, output, r.singleStoredInputFormat(node, outputs, edgeStates)); err != nil {
 					r.log(node.ID, models.LogLevelWarning, "Could not spill output, keeping it in memory: %v", err)
 				}
 

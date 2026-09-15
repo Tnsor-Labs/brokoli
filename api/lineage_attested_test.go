@@ -23,7 +23,18 @@ import (
 // draws the graph. The quality check returned its input unchanged, so its
 // run stored identical bytes in and out, and the edges through it must say
 // so, naming the run.
+//
+// Both stream codecs, because the case that motivated #641 was NDJSON: the
+// source stored NDJSON, a node's spill picked Arrow for the same rows, and
+// no edge could be attested whatever the node did.
 func TestTheLineageGraphAttestsWhatARunProved(t *testing.T) {
+	for _, codec := range []string{"", "ndjson"} {
+		t.Run("codec="+codec, func(t *testing.T) { attestsWhatARunProved(t, codec) })
+	}
+}
+
+func attestsWhatARunProved(t *testing.T, codec string) {
+	t.Setenv("BROKOLI_STREAM_CODEC", codec)
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_ARTIFACT_DIR", filepath.Join(dir, "artifacts"))
 

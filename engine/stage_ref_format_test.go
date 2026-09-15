@@ -72,7 +72,7 @@ func TestStageRefToNDJSONFileConvertsArrow(t *testing.T) {
 	outputs := newNodeOutputs(blobs, "run-stage", 1) // threshold 1: always spill
 
 	ds := datasetWithIntegerColumn(120)
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestStageRefToNDJSONFileCopiesNDJSONUnchanged(t *testing.T) {
 			{"id": int64(2), "meta": map[string]interface{}{"a": "c"}},
 		},
 	}
-	ref, err := outputs.spill(ds)
+	ref, err := outputs.spill(ds, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestStageRefToNDJSONFileHandlesEmpty(t *testing.T) {
 	blobs := artifact.NewLocalDiskStore(t.TempDir())
 	outputs := newNodeOutputs(blobs, "run-stage-empty", 1)
 
-	ref, err := outputs.spill(&common.DataSet{Columns: []string{"id"}})
+	ref, err := outputs.spill(&common.DataSet{Columns: []string{"id"}}, "")
 	if err != nil {
 		t.Fatalf("spill: %v", err)
 	}

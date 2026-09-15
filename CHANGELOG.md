@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- `format` on each stored dataset in `GET /api/runs/{id}/provenance`
+  (`ndjson` or `arrow-ipc`), recorded with the digest because the two
+  only mean something together: the same rows stored in two formats have
+  two digests. (#643) -- @hc12r
+
+### Fixed
+
+- **`attested` column edges could not appear when a node's input was
+  stored as NDJSON.** A source's output takes its format from
+  `BROKOLI_STREAM_CODEC` or its first batch, while a node's output took
+  Arrow whenever the whole dataset allowed, so a node that changed
+  nothing stored the same rows in a different format and no digest could
+  match. A node with a single stored input now stores its output in that
+  input's format. Where the upstream is NDJSON, the node's output stays
+  NDJSON rather than upgrading to Arrow. (#643) -- @hc12r
+
 ## [0.11.26] - 2026-09-15
 
 ### Added
