@@ -355,7 +355,7 @@ func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[str
 		if err != nil {
 			return nil, fmt.Errorf("extract records at %q: %w", recordsPath, err)
 		}
-		return common.ConvertToDataSet(records), nil
+		return common.ConvertToDataSetOrdered(records, common.KeyOrder(responseBody)), nil
 	default:
 		// No response-contract fields set (or response=="dataset" with no
 		// records path) — exact legacy behavior: auto-detect the shape.
@@ -364,7 +364,7 @@ func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[str
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 		}
-		return common.ConvertToDataSet(data), nil
+		return common.ConvertToDataSetOrdered(data, common.KeyOrder(responseBody)), nil
 	}
 }
 
@@ -566,11 +566,16 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 	if len(resumeRecords) > 0 {
 		allRecords = append(allRecords, resumeRecords...)
 	}
+	// Column order follows first appearance across pages; records carried
+	// over from a resumed run have no raw bytes, so their keys, if no page
+	// repeats them, sort alphabetically after the rest.
+	keyOrder := map[string]int{}
 	appendPage := func(body []byte) (stop bool, err error) {
 		records, err := extractDatasetRecords(body, fullOptions)
 		if err != nil {
 			return false, err
 		}
+		common.MergeKeyOrder(keyOrder, body)
 		allRecords = append(allRecords, records...)
 		if maxRecords > 0 && len(allRecords) >= maxRecords {
 			allRecords = allRecords[:maxRecords]
@@ -624,7 +629,7 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		return nil, resumeErr
 	}
 
-	return common.ConvertToDataSet(allRecords), nil
+	return common.ConvertToDataSetOrdered(allRecords, keyOrder), nil
 }
 
 // checkpointFunc is called after a page is successfully appended, with the

@@ -109,6 +109,13 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **JSON sources keep the file's column order**, the same on every run.
+  Columns came from ranging over a Go map, so a JSON file or API
+  response feeding a CSV sink wrote its columns in a different order
+  from one run to the next. They now follow each key's first appearance
+  in the document, across every page of a paginated API response.
+  -- @hc12r
+
 - **A pipeline can only use connections from its own workspace.**
   Connections were looked up by `conn_id` alone, and `conn_id` is unique
   across every workspace, so a pipeline could name another workspace's

@@ -215,8 +215,7 @@ func TestSourceFileFetchesOverSFTP(t *testing.T) {
 	}{
 		{"batch csv", false, "inbound/rates.csv", ordersCSV, "Loaded 3 rows, 2 columns from rates.csv"},
 		{"streamed csv", true, "inbound/rates.csv", ordersCSV, "Streamed 3 rows, 2 columns from rates.csv"},
-		// JSON's column order is not fixed, so it is written back as JSON,
-		// whose keys are sorted, and compared as rows below.
+		// JSON is written back as JSON and compared as rows below.
 		{"batch json", false, "inbound/rates.json", ordersJSON, "Loaded 3 rows, 2 columns from rates.json"},
 		// ".." inside a name is an ordinary file, not a traversal.
 		{"dots in the name", false, "inbound/q3..final.csv", ordersCSV, "Loaded 3 rows, 2 columns from q3..final.csv"},

@@ -1,9 +1,11 @@
 package common
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 )
 
@@ -12,6 +14,72 @@ type DataRow map[string]interface{}
 type DataSet struct {
 	Columns []string
 	Rows    []DataRow
+}
+
+// KeyOrder records, for every object key in a JSON document, the position
+// of its first appearance. Record keys keep their relative order even
+// when nested objects' keys are interleaved with them, which is all a
+// column order needs. A document that does not parse yields what was read
+// before the error.
+func KeyOrder(raw []byte) map[string]int {
+	order := map[string]int{}
+	merge := func(key string) {
+		if _, seen := order[key]; !seen {
+			order[key] = len(order)
+		}
+	}
+	KeyOrderInto(raw, merge)
+	return order
+}
+
+// KeyOrderInto calls add with each object key in first-appearance order;
+// MergeKeyOrder uses it to extend an order across several documents, such
+// as the pages of a paginated response.
+func KeyOrderInto(raw []byte, add func(key string)) {
+	type frame struct{ object, expectKey bool }
+	var stack []frame
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return
+		}
+		switch v := tok.(type) {
+		case json.Delim:
+			switch v {
+			case '{':
+				stack = append(stack, frame{object: true, expectKey: true})
+				continue
+			case '[':
+				stack = append(stack, frame{})
+				continue
+			default: // '}' or ']': the container is a completed value
+				if len(stack) > 0 {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].expectKey {
+				add(v)
+				stack[n-1].expectKey = false
+				continue
+			}
+		}
+		// A value just completed; inside an object, a key comes next.
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].expectKey = true
+		}
+	}
+}
+
+// MergeKeyOrder extends order with the keys of another document, keeping
+// every key's earliest position.
+func MergeKeyOrder(order map[string]int, raw []byte) {
+	KeyOrderInto(raw, func(key string) {
+		if _, seen := order[key]; !seen {
+			order[key] = len(order)
+		}
+	})
 }
 
 func ParseJSONData(jsonBytes []byte) ([]map[string]interface{}, error) {
@@ -108,8 +176,21 @@ func ExtractRecordsAtPath(jsonBytes []byte, path string) ([]map[string]interface
 	return records, nil
 }
 
+// ConvertToDataSet builds a dataset from decoded JSON objects, with the
+// columns in alphabetical order. Decoding into Go maps loses the order the
+// keys had in the document; callers that still have the raw bytes use
+// ConvertToDataSetOrdered to keep it.
 func ConvertToDataSet(data []map[string]interface{}) *DataSet {
+	return ConvertToDataSetOrdered(data, nil)
+}
 
+// ConvertToDataSetOrdered builds a dataset whose columns follow order
+// (from KeyOrder): each key's first appearance in the document. Keys the
+// order does not know come after, alphabetically. Either way the columns
+// are the same on every run: they used to come from ranging over a map,
+// so a JSON source feeding a CSV sink wrote its columns in a different
+// order from one run to the next.
+func ConvertToDataSetOrdered(data []map[string]interface{}, order map[string]int) *DataSet {
 	columnSet := make(map[string]bool)
 	for _, obj := range data {
 		for key := range obj {
@@ -121,6 +202,17 @@ func ConvertToDataSet(data []map[string]interface{}) *DataSet {
 	for col := range columnSet {
 		columns = append(columns, col)
 	}
+	sort.Slice(columns, func(i, j int) bool {
+		oi, iKnown := order[columns[i]]
+		oj, jKnown := order[columns[j]]
+		switch {
+		case iKnown && jKnown:
+			return oi < oj
+		case iKnown != jKnown:
+			return iKnown
+		}
+		return columns[i] < columns[j]
+	})
 
 	rows := make([]DataRow, 0, len(data))
 	for _, obj := range data {
