@@ -11,6 +11,12 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+> **Behaviour change:** the `sort` transform now orders numeric columns
+> as numbers. It compared every value as text, so ascending `2, 10` came
+> out `10, 2`. Pipelines that sort a numeric column will produce a
+> different row order. Mixed columns order numbers, then text, then empty
+> values; descending is the exact reverse.
+
 ### Added
 
 - `format` on each stored dataset in `GET /api/runs/{id}/provenance`
@@ -28,6 +34,13 @@ reconstruct from git archaeology.
   match. A node with a single stored input now stores its output in that
   input's format. Where the upstream is NDJSON, the node's output stays
   NDJSON rather than upgrading to Arrow. (#643) -- @hc12r
+- **The `sort` transform ordered numeric columns as text** (#642).
+  Ascending `2, 10` came out `10, 2`, and `9.5` sorted after `10.5`,
+  whether the numbers were typed or held as text, as a CSV column often
+  is. Numbers now compare exactly as numbers (integers beyond a float's
+  precision included), then text, then empty values; descending is the
+  exact reverse, which puts empty values first as Postgres does. The sort
+  is stable. (#644) -- @hc12r
 
 ## [0.11.26] - 2026-09-15
 

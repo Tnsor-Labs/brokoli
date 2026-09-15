@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -440,24 +441,109 @@ func dropColumns(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
+// sortRows orders rows by the given columns (#642).
+//
+// It used to format every value with %v and compare the strings, so a
+// numeric column sorted as text: ascending 2, 10 came out 10, 2, and 9.5
+// sorted after 10.5. The filter already compared numbers as numbers; the
+// sort had never been taught to.
+//
+// It cannot simply borrow the filter's rule, which decides each pair on
+// its own terms -- numeric when both parse, text otherwise. That is fine
+// for a yes/no predicate and wrong for a sort, because it is not a
+// consistent order: 9 < 10 as numbers, 10 < "5a" as text, "5a" < 9 as
+// text, a cycle, and a sort given one returns an arbitrary order. So every
+// value is given a class first, and the classes are ordered:
+//
+//   - numbers, compared exactly as numbers, whether typed or held as
+//     numeric text (a CSV column is often the latter). Exactly, not as
+//     float64: 9007199254740993 must still order after 9007199254740992;
+//   - then text, compared as text;
+//   - then empty values (nil).
+//
+// Descending is the exact reverse, so empty values come first there: the
+// same placement Postgres uses by default. Keys are computed once per row
+// rather than parsed again on every comparison. The sort is stable, so
+// rows with equal keys keep their order.
 func sortRows(r TransformRule, ds *common.DataSet) error {
 	if len(r.Columns) == 0 {
 		return fmt.Errorf("sort requires columns list")
 	}
-	sort.SliceStable(ds.Rows, func(i, j int) bool {
-		for _, col := range r.Columns {
-			vi := fmt.Sprintf("%v", ds.Rows[i][col])
-			vj := fmt.Sprintf("%v", ds.Rows[j][col])
-			if vi != vj {
+	keys := make([][]sortKey, len(ds.Rows))
+	for i, row := range ds.Rows {
+		k := make([]sortKey, len(r.Columns))
+		for c, col := range r.Columns {
+			k[c] = sortKeyOf(row[col])
+		}
+		keys[i] = k
+	}
+	order := make([]int, len(ds.Rows))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		ka, kb := keys[order[a]], keys[order[b]]
+		for c := range r.Columns {
+			if cmp := compareSortKeys(ka[c], kb[c]); cmp != 0 {
 				if r.Ascending {
-					return vi < vj
+					return cmp < 0
 				}
-				return vi > vj
+				return cmp > 0
 			}
 		}
 		return false
 	})
+	sorted := make([]common.DataRow, len(ds.Rows))
+	for i, j := range order {
+		sorted[i] = ds.Rows[j]
+	}
+	ds.Rows = sorted
 	return nil
+}
+
+// The classes a sort key falls into, in ascending order.
+const (
+	sortClassNumber = iota
+	sortClassText
+	sortClassNull
+)
+
+// sortKey is one value, classified once so a comparison never parses.
+type sortKey struct {
+	class int
+	num   *big.Float
+	text  string
+}
+
+// sortKeyPrecision is enough bits for every int64 to be exact, so two
+// integers too large for a float64 to tell apart still compare correctly.
+const sortKeyPrecision = 200
+
+func sortKeyOf(v interface{}) sortKey {
+	if v == nil {
+		return sortKey{class: sortClassNull}
+	}
+	s := fmt.Sprintf("%v", v)
+	if f, _, err := big.ParseFloat(s, 10, sortKeyPrecision, big.ToNearestEven); err == nil {
+		return sortKey{class: sortClassNumber, num: f}
+	}
+	return sortKey{class: sortClassText, text: s}
+}
+
+func compareSortKeys(a, b sortKey) int {
+	if a.class != b.class {
+		if a.class < b.class {
+			return -1
+		}
+		return 1
+	}
+	switch a.class {
+	case sortClassNumber:
+		return a.num.Cmp(b.num)
+	case sortClassText:
+		return strings.Compare(a.text, b.text)
+	}
+	return 0
 }
 
 func deduplicate(r TransformRule, ds *common.DataSet) error {
