@@ -1,0 +1,35 @@
+{
+  "name": "@brokoli/pipeline-session",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx"
+  },
+  "dependencies": {
+    "@brokoli/api": "*",
+    "@brokoli/auth": "*",
+    "@brokoli/ui": "*",
+    "@codemirror/lang-javascript": "^6.2.4",
+    "@codemirror/lang-python": "^6.2.1",
+    "@codemirror/lang-sql": "^6.9.1",
+    "@codemirror/lang-yaml": "^6.1.2",
+    "@codemirror/state": "^6.5.0",
+    "@uiw/react-codemirror": "^4.25.11",
+    "@xyflow/react": "^12.10.1",
+    "js-yaml": "^4.1.1",
+    "lucide-react": "^1.45.0"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router-dom": "^7.9.5"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "~5.9.3"
+  }
+}

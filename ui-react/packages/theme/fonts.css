@@ -1,0 +1,17 @@
+/*
+ * Self-hosted typefaces.
+ *
+ * The landing page loads DM Sans and IBM Plex Mono from Google Fonts. The
+ * product must not: Brokoli is routinely deployed air-gapped or behind a
+ * firewall, and a render-blocking third-party font request there means a
+ * blank screen and an IP/user-agent disclosure on every load (the reason the
+ * Svelte UI dropped its Google import, Tnsor-Labs/brokoli#82). Fontsource
+ * ships the same OFL-licensed files as package assets, so Vite bundles them
+ * next to the application and the typography stays identical offline.
+ */
+@import '@fontsource/dm-sans/latin-400.css';
+@import '@fontsource/dm-sans/latin-500.css';
+@import '@fontsource/dm-sans/latin-600.css';
+@import '@fontsource/dm-sans/latin-700.css';
+@import '@fontsource/ibm-plex-mono/latin-400.css';
+@import '@fontsource/ibm-plex-mono/latin-500.css';

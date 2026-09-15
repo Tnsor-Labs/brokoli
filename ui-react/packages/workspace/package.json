@@ -1,0 +1,25 @@
+{
+  "name": "@brokoli/workspace",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@brokoli/api": "*",
+    "@brokoli/auth": "*",
+    "@brokoli/ui": "*",
+    "lucide-react": "^1.45.0",
+    "simple-icons": "^16.31.0"
+  },
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.0.0",
+    "react": "^19.0.0",
+    "react-router-dom": "^7.9.5"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "typescript": "~5.9.3"
+  }
+}

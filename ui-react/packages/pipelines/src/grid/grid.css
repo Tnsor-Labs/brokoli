@@ -1,0 +1,115 @@
+.bk-grid-count {
+  width: auto;
+}
+.bk-grid-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-lg);
+}
+.bk-grid-wrap {
+  overflow: auto;
+  max-height: calc(100vh - 260px);
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-lg);
+  background: var(--bk-color-surface);
+}
+.bk-grid {
+  border-collapse: separate;
+  border-spacing: 0;
+}
+.bk-grid th,
+.bk-grid td {
+  padding: 3px;
+  border-bottom: 1px solid var(--bk-color-border);
+  text-align: center;
+}
+.bk-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bk-color-canvas-subtle);
+  vertical-align: bottom;
+}
+.bk-grid thead th button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 26px;
+  padding: 6px 2px;
+  border: 0;
+  border-bottom: 2px solid var(--tone);
+  background: transparent;
+  color: var(--bk-color-text-muted);
+  font: 400 var(--bk-text-2xs) / 1 var(--bk-font-mono);
+  writing-mode: vertical-rl;
+  transform: rotate(180deg);
+}
+.bk-grid thead th button:hover {
+  color: var(--bk-color-text);
+}
+.bk-grid thead th b {
+  color: var(--bk-color-accent);
+  font-weight: 500;
+}
+.bk-grid th.is-boundary,
+.bk-grid td.is-boundary {
+  border-left: 1px dashed var(--bk-color-border-strong);
+}
+.bk-grid .bk-grid-node {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  min-width: 200px;
+  padding: 6px 14px;
+  border-right: 1px solid var(--bk-color-border);
+  background: var(--bk-color-surface);
+  text-align: left;
+}
+.bk-grid thead .bk-grid-node {
+  z-index: 3;
+  background: var(--bk-color-canvas-subtle);
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+  font-weight: 500;
+}
+.bk-grid tbody .bk-grid-node {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.bk-grid tbody .bk-grid-node strong {
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-sm);
+  font-weight: 500;
+}
+.bk-grid tbody .bk-grid-node small {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+  text-transform: capitalize;
+}
+.bk-grid-cell {
+  display: block;
+  width: 18px;
+  height: 18px;
+  margin: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: var(--tone);
+}
+.bk-grid-cell.is-pulsing {
+  animation: bk-grid-pulse 1.4s ease-in-out infinite;
+}
+.bk-grid-cell.is-absent {
+  border: 1px dashed var(--bk-color-border-strong);
+  background: transparent;
+}
+@keyframes bk-grid-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}

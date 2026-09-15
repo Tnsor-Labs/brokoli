@@ -1,0 +1,210 @@
+/*
+ * Brokoli product tokens.
+ *
+ * The base values come from the landing page (brokoli-landing
+ * src/theme/tokens.css): neutral near-black canvas, warm off-white text,
+ * periwinkle accent, DM Sans and IBM Plex Mono. The product needs more
+ * than a marketing page does (status, taxonomy, dense type), so this file
+ * extends that palette. It does not replace any landing value.
+ *
+ * Legibility rule: every token whose name contains "text", and every status
+ * color, measures at least 4.5:1 (WCAG AA for body text) against canvas,
+ * surface, raised AND overlay in its theme. The Svelte UI and the first
+ * React scaffold used greys between 2.4:1 and 3.9:1 at 7-9px, which is why
+ * they were hard to read. If you add a text color, measure it against all
+ * four backgrounds first; do not eyeball it.
+ *
+ * Worst case across the four backgrounds (tokens.test.ts enforces the floor):
+ *
+ *   dark  text 14.50  secondary 9.45  muted 5.94  subtle 5.35
+ *   light text 16.46  secondary 9.43  muted 6.19  subtle 5.31
+ *
+ * Minimum type size is 12px, with one exception: uppercase mono eyebrows at
+ * 11px (--bk-text-2xs), which the landing uses and which stay legible
+ * because of their tracking and contrast. Nothing is smaller than that.
+ */
+:root {
+  /* Surfaces, darkest to lightest: depth comes from the step, not shadow. */
+  --bk-color-canvas: #08090a;
+  --bk-color-canvas-subtle: #0d0f11;
+  --bk-color-surface: #111315;
+  --bk-color-surface-raised: #15181b;
+  --bk-color-surface-overlay: #1c2024;
+  --bk-color-hover: rgba(242, 241, 237, 0.045);
+  --bk-color-pressed: rgba(242, 241, 237, 0.08);
+  --bk-color-scrim: rgba(3, 4, 5, 0.72);
+
+  --bk-color-border: rgba(232, 234, 236, 0.11);
+  --bk-color-border-strong: rgba(232, 234, 236, 0.2);
+  --bk-color-border-hover: rgba(232, 234, 236, 0.32);
+
+  --bk-color-text: #f2f1ed;
+  --bk-color-text-secondary: #c2c5c7;
+  --bk-color-text-muted: #999c9f;
+  --bk-color-text-subtle: #8f9498;
+  --bk-color-text-disabled: #5f6468; /* decorative only; never for content */
+
+  --bk-color-accent: #a9b9ee;
+  --bk-color-accent-strong: #7f90c8;
+  --bk-color-accent-soft: rgba(169, 185, 238, 0.12);
+  --bk-color-accent-border: rgba(169, 185, 238, 0.36);
+  --bk-color-focus: #a9b9ee;
+
+  /* Primary action mirrors the landing CTA: light fill, dark label. */
+  --bk-color-primary: #f2f1ed;
+  --bk-color-primary-hover: #ffffff;
+  --bk-color-on-primary: #08090a;
+
+  /* Runtime status. Each has a text-safe color and a soft fill for chips. */
+  --bk-color-success: #93c4a2;
+  --bk-color-success-soft: rgba(147, 196, 162, 0.13);
+  --bk-color-running: #8fc3db;
+  --bk-color-running-soft: rgba(143, 195, 219, 0.13);
+  --bk-color-warning: #d8b77f;
+  --bk-color-warning-soft: rgba(216, 183, 127, 0.13);
+  --bk-color-danger: #e39a9a;
+  --bk-color-danger-soft: rgba(227, 154, 154, 0.12);
+  --bk-color-queued: #a3a9ae;
+  --bk-color-queued-soft: rgba(163, 169, 174, 0.12);
+  --bk-color-cancelled: #b7a6ea;
+  --bk-color-cancelled-soft: rgba(183, 166, 234, 0.13);
+
+  /* Editor taxonomy (brand/tokens.css in core). Used for node glyphs. */
+  --bk-color-tax-source: #78a6e8;
+  --bk-color-tax-processing: #d0a56c;
+  --bk-color-tax-output: #d58caf;
+  --bk-color-tax-integration: #a49ad8;
+  --bk-color-tax-migration: #72b2b2;
+  --bk-color-tax-control: #cf8585;
+
+  /* Canvas */
+  --bk-color-canvas-dot: rgba(176, 181, 190, 0.2);
+  --bk-color-edge: #66718e;
+  --bk-color-edge-active: #a9b9ee;
+
+  /* Code */
+  --bk-color-code-bg: #0b0c0e;
+  --bk-color-code-text: #d3d7e4;
+
+  /* Typography */
+  --bk-font-sans: 'DM Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --bk-font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  --bk-text-2xs: 11px; /* uppercase mono eyebrows only */
+  --bk-text-xs: 12px;
+  --bk-text-sm: 13px;
+  --bk-text-base: 14px;
+  --bk-text-md: 15px;
+  --bk-text-lg: 18px;
+  --bk-text-xl: 22px;
+  --bk-text-2xl: 28px;
+  --bk-text-3xl: 36px;
+  --bk-leading-tight: 1.15;
+  --bk-leading-snug: 1.35;
+  --bk-leading-normal: 1.55;
+  --bk-tracking-tight: -0.035em;
+  --bk-tracking-display: -0.055em;
+  --bk-tracking-eyebrow: 0.14em;
+
+  /* Shape, spacing, layout */
+  --bk-radius-xs: 3px;
+  --bk-radius-sm: 5px;
+  --bk-radius-md: 8px;
+  --bk-radius-lg: 10px;
+  --bk-radius-pill: 999px;
+  --bk-space-1: 4px;
+  --bk-space-2: 8px;
+  --bk-space-3: 12px;
+  --bk-space-4: 16px;
+  --bk-space-5: 20px;
+  --bk-space-6: 24px;
+  --bk-space-8: 32px;
+  --bk-space-10: 40px;
+  --bk-space-12: 48px;
+  --bk-control-sm: 30px;
+  --bk-control-md: 36px;
+  --bk-control-lg: 44px;
+  --bk-sidebar-width: 232px;
+  --bk-sidebar-rail: 64px;
+  --bk-toolbar-height: 56px;
+  --bk-content-max: 1320px;
+
+  --bk-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --bk-shadow-md: 0 10px 28px rgba(0, 0, 0, 0.38);
+  --bk-shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.5);
+
+  --bk-ease: cubic-bezier(0.2, 0, 0, 1);
+  --bk-duration-fast: 120ms;
+  --bk-duration: 180ms;
+
+  --bk-z-sticky: 10;
+  --bk-z-menu: 900;
+  --bk-z-modal: 1000;
+  --bk-z-toast: 1100;
+}
+
+/*
+ * Light theme. Same roles, retuned values: the surface is the lightest layer
+ * so cards lift off a tinted canvas, and every status color is darkened until
+ * it clears 4.5:1 on all four backgrounds.
+ */
+:root[data-theme='light'] {
+  --bk-color-canvas: #f3f3f0;
+  --bk-color-canvas-subtle: #eeeeea;
+  --bk-color-surface: #ffffff;
+  --bk-color-surface-raised: #f8f8f6;
+  --bk-color-surface-overlay: #ffffff;
+  --bk-color-hover: rgba(19, 21, 23, 0.045);
+  --bk-color-pressed: rgba(19, 21, 23, 0.08);
+  --bk-color-scrim: rgba(19, 21, 23, 0.36);
+
+  --bk-color-border: rgba(19, 21, 23, 0.12);
+  --bk-color-border-strong: rgba(19, 21, 23, 0.2);
+  --bk-color-border-hover: rgba(19, 21, 23, 0.34);
+
+  --bk-color-text: #131517;
+  --bk-color-text-secondary: #3b4044;
+  --bk-color-text-muted: #555b60;
+  --bk-color-text-subtle: #5f656a;
+  --bk-color-text-disabled: #a4a8ab;
+
+  --bk-color-accent: #4459a3;
+  --bk-color-accent-strong: #34478a;
+  --bk-color-accent-soft: rgba(68, 89, 163, 0.1);
+  --bk-color-accent-border: rgba(68, 89, 163, 0.38);
+  --bk-color-focus: #4459a3;
+
+  --bk-color-primary: #131517;
+  --bk-color-primary-hover: #000000;
+  --bk-color-on-primary: #ffffff;
+
+  --bk-color-success: #2a6f44;
+  --bk-color-success-soft: rgba(42, 111, 68, 0.1);
+  --bk-color-running: #1f6f8b;
+  --bk-color-running-soft: rgba(31, 111, 139, 0.1);
+  --bk-color-warning: #845d10;
+  --bk-color-warning-soft: rgba(132, 93, 16, 0.1);
+  --bk-color-danger: #b1414a;
+  --bk-color-danger-soft: rgba(177, 65, 74, 0.09);
+  --bk-color-queued: #5d6469;
+  --bk-color-queued-soft: rgba(93, 100, 105, 0.1);
+  --bk-color-cancelled: #6a4fc0;
+  --bk-color-cancelled-soft: rgba(106, 79, 192, 0.1);
+
+  --bk-color-tax-source: #3d6fb8;
+  --bk-color-tax-processing: #946626;
+  --bk-color-tax-output: #a2517a;
+  --bk-color-tax-integration: #6456a8;
+  --bk-color-tax-migration: #2f7b7b;
+  --bk-color-tax-control: #a84848;
+
+  --bk-color-canvas-dot: rgba(19, 21, 23, 0.16);
+  --bk-color-edge: #7c86a3;
+  --bk-color-edge-active: #4459a3;
+
+  --bk-color-code-bg: #f6f6f3;
+  --bk-color-code-text: #23262d;
+
+  --bk-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.07);
+  --bk-shadow-md: 0 8px 24px rgba(16, 24, 40, 0.1);
+  --bk-shadow-lg: 0 20px 56px rgba(16, 24, 40, 0.16);
+}

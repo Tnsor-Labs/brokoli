@@ -1,0 +1,206 @@
+/* Shared canvas styling: node cards, handles, edges and React Flow chrome, all on tokens. */
+.ps-graph,
+.ps-canvas {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.ps-graph .react-flow,
+.ps-canvas .react-flow {
+  --xy-background-color: var(--bk-color-canvas);
+  --xy-background-pattern-dots-color-default: var(--bk-color-canvas-dot);
+  --xy-edge-stroke-default: var(--bk-color-edge);
+  --xy-edge-stroke-selected-default: var(--bk-color-edge-active);
+  --xy-edge-stroke-width-default: 1.5;
+  --xy-connectionline-stroke-default: var(--bk-color-accent);
+  --xy-connectionline-stroke-width-default: 1.5;
+  --xy-attribution-background-color-default: transparent;
+  --xy-controls-button-background-color-default: var(--bk-color-surface-raised);
+  --xy-controls-button-background-color-hover-default: var(--bk-color-surface-overlay);
+  --xy-controls-button-color-default: var(--bk-color-text-secondary);
+  --xy-controls-button-color-hover-default: var(--bk-color-text);
+  --xy-controls-button-border-color-default: var(--bk-color-border);
+  --xy-controls-box-shadow-default: var(--bk-shadow-sm);
+  --xy-minimap-background-color-default: var(--bk-color-surface);
+  --xy-minimap-mask-background-color-default: var(--bk-color-scrim);
+  --xy-minimap-node-background-color-default: var(--bk-color-border-strong);
+  --xy-edge-label-background-color-default: var(--bk-color-surface-overlay);
+  --xy-edge-label-color-default: var(--bk-color-text);
+  --xy-selection-background-color-default: var(--bk-color-accent-soft);
+  --xy-selection-border-default: 1px dashed var(--bk-color-accent);
+  background: var(--bk-color-canvas);
+}
+.ps-canvas .react-flow__controls,
+.ps-graph .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-md);
+}
+.ps-canvas .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-md);
+  background-color: var(--bk-color-canvas-subtle);
+}
+/*
+ * The canvas nodes are calm (a monochrome icon, a faint family wash), so the
+ * minimap follows: one muted fill, with a whisper of the family colour so
+ * groups are still faintly distinguishable, instead of the old saturated
+ * taxonomy colours that clashed with the canvas.
+ */
+.ps-canvas .react-flow__minimap-node {
+  fill: var(--bk-color-text-muted);
+  stroke: none;
+}
+.react-flow__minimap-node.ps-mini-source {
+  fill: color-mix(in srgb, var(--bk-color-tax-source) 22%, var(--bk-color-text-muted));
+}
+.react-flow__minimap-node.ps-mini-processing {
+  fill: color-mix(in srgb, var(--bk-color-tax-processing) 22%, var(--bk-color-text-muted));
+}
+.react-flow__minimap-node.ps-mini-output {
+  fill: color-mix(in srgb, var(--bk-color-tax-output) 22%, var(--bk-color-text-muted));
+}
+.react-flow__minimap-node.ps-mini-integration {
+  fill: color-mix(in srgb, var(--bk-color-tax-integration) 22%, var(--bk-color-text-muted));
+}
+.react-flow__minimap-node.ps-mini-migration {
+  fill: color-mix(in srgb, var(--bk-color-tax-migration) 22%, var(--bk-color-text-muted));
+}
+.react-flow__minimap-node.ps-mini-control {
+  fill: color-mix(in srgb, var(--bk-color-tax-control) 22%, var(--bk-color-text-muted));
+}
+.react-flow__attribution a {
+  color: var(--bk-color-text-muted);
+}
+.react-flow__edge.is-false-branch path.react-flow__edge-path {
+  stroke-dasharray: 6 5;
+}
+.react-flow__edge-text {
+  font: 500 var(--bk-text-2xs) var(--bk-font-mono);
+}
+.react-flow__edge.is-true-branch .react-flow__edge-text {
+  fill: var(--bk-color-success);
+}
+.react-flow__edge.is-false-branch .react-flow__edge-text {
+  fill: var(--bk-color-danger);
+}
+.react-flow__edge.selected path.react-flow__edge-path,
+.react-flow__edge:hover path.react-flow__edge-path {
+  stroke: var(--bk-color-edge-active);
+}
+.react-flow__edge.animated path.react-flow__edge-path {
+  stroke: var(--bk-color-running);
+}
+
+.ps-node {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  width: 224px;
+  height: 62px;
+  border: 1px solid var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-md);
+  background: var(--bk-color-surface-raised);
+  box-shadow: var(--bk-shadow-sm);
+  color: var(--bk-color-text);
+  overflow: hidden;
+  transition:
+    border-color var(--bk-duration-fast) var(--bk-ease),
+    box-shadow var(--bk-duration-fast) var(--bk-ease);
+}
+.ps-node:hover {
+  border-color: var(--bk-color-border-hover);
+}
+.ps-node.is-selected {
+  border-color: var(--bk-color-accent);
+  box-shadow:
+    0 0 0 3px var(--bk-color-accent-soft),
+    var(--bk-shadow-md);
+}
+.ps-node.has-warning {
+  border-color: var(--bk-color-warning);
+}
+.ps-node.has-error {
+  border-color: var(--bk-color-danger);
+}
+.ps-node.has-status {
+  border-color: var(--tone);
+}
+/* A calm badge cell: the icon is monochrome; a faint family wash keeps the category cue without the rainbow. */
+.ps-node-badge {
+  display: grid;
+  place-items: center;
+  width: 48px;
+  flex: none;
+  border-right: 1px solid var(--bk-color-border);
+  background: color-mix(in srgb, var(--family) 7%, transparent);
+  color: var(--bk-color-text-secondary);
+}
+.ps-node-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 0 30px 0 14px;
+}
+.ps-node-text strong {
+  overflow: hidden;
+  color: var(--bk-color-text);
+  font: 500 var(--bk-text-sm) / 1 var(--bk-font-mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-node-text small {
+  overflow: hidden;
+  color: var(--bk-color-text-muted);
+  font: 400 var(--bk-text-xs) / 1 var(--bk-font-sans);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ps-node-status {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.ps-node-status i {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tone);
+}
+.ps-node-status.is-live i {
+  animation: bk-pulse 1.6s var(--bk-ease) infinite;
+}
+.ps-node-issue {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 2px solid var(--bk-color-canvas);
+  border-radius: 50%;
+  background: var(--bk-color-warning);
+  color: var(--bk-color-canvas);
+}
+.ps-node.has-error .ps-node-issue {
+  background: var(--bk-color-danger);
+}
+.ps-handle.react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--bk-color-canvas);
+  background: var(--bk-color-edge);
+}
+.ps-handle.react-flow__handle:hover,
+.react-flow__handle.connectingto,
+.react-flow__handle.valid {
+  background: var(--bk-color-accent);
+}
+.ps-graph .ps-handle.react-flow__handle {
+  opacity: 0;
+}
