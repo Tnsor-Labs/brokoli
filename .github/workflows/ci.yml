@@ -166,23 +166,10 @@ jobs:
       - name: Code-node JavaScript wrapper contract tests
         run: node --test pkg/codeexec/jswrapper/tests/*.test.mjs
 
-      # Chromium, Firefox and FFmpeg were re-downloaded on every run.
-      # Keyed on the lockfile: a @playwright/test bump changes the key,
-      # so a stale browser build can never be served to a newer client.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('ui/package-lock.json') }}
-          restore-keys: playwright-${{ runner.os }}-
-
       - name: Build UI (required for go:embed)
-        working-directory: ui
-        run: |
-          npm ci
-          npx playwright install chromium firefox
-          npm run test:e2e
-          npm run build
+        # Builds only the embed artifact into web/dist. The UI is typechecked
+        # and tested in the dedicated "UI" job, not here.
+        run: bash build-ui.sh
 
       - name: Test
         # Go's default per-package timeout is 10 minutes, and the engine
@@ -364,10 +351,7 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Build UI
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
+        run: bash build-ui.sh
 
       - name: Build binary
         run: |
@@ -377,11 +361,12 @@ jobs:
       - name: Smoke test
         run: ./brokoli --help
 
-  ui-react:
-    # The React community UI staged under ui-react/ (migration Phase 1).
-    # Not embedded yet -- this only proves it builds and stays clean while
-    # it lives beside the Svelte ui/. No Playwright: its tests are vitest.
-    name: React UI (staged)
+  ui:
+    # The React UI gate: typecheck, unit tests, colour tokens, community
+    # build, and the community/edition boundary check. The Go jobs only
+    # build the embed artifact (build-ui.sh); this is where the UI is
+    # actually tested. No Playwright: the tests are vitest.
+    name: UI
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -392,10 +377,10 @@ jobs:
         with:
           node-version: "20"
           cache: npm
-          cache-dependency-path: ui-react/package-lock.json
+          cache-dependency-path: ui/package-lock.json
 
       - name: Gate (typecheck, tests, colours, build, boundaries)
-        working-directory: ui-react
+        working-directory: ui
         run: |
           npm ci
           npm run check
