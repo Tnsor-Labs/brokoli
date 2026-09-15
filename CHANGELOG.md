@@ -114,7 +114,7 @@ reconstruct from git archaeology.
   response feeding a CSV sink wrote its columns in a different order
   from one run to the next. They now follow each key's first appearance
   in the document, across every page of a paginated API response.
-  -- @hc12r
+  (#655) -- @hc12r
 
 - **A pipeline can only use connections from its own workspace.**
   Connections were looked up by `conn_id` alone, and `conn_id` is unique
