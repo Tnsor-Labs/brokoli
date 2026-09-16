@@ -15,7 +15,6 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
-	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "modernc.org/sqlite"
 )
 
@@ -462,10 +461,13 @@ func (s *SQLiteStore) migrate() error {
 	// Pipeline templates — global, admin-curated starter pipelines
 	// (GET /api/templates). Used to be hardcoded JS in the frontend;
 	// moved to the backend (brokoli#71) and now to the database so
-	// they're editable without a redeploy. Seeded from
-	// pkg/templates.Builtin on first migrate only — if an admin edits or
-	// deletes a seeded row, that's a real, intentional change and must
-	// not be silently reverted on every subsequent startup.
+	// they're editable without a redeploy. Every migrate offers the rows
+	// of pkg/templates.Builtin this database has not been offered
+	// before, tracked by id in a setting: an admin's edit or deletion of
+	// a seeded row is a real, intentional change and must not be
+	// silently reverted, while a template added to Builtin after this
+	// install was created still has to reach it. See
+	// seedBuiltinTemplates.
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_templates (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
@@ -576,26 +578,13 @@ func (s *SQLiteStore) widenExecutionAttemptsPrimaryKey() (retErr error) {
 	return nil
 }
 
-// seedPipelineTemplates inserts pkg/templates.Builtin's rows only when the
-// table is empty (first run against this database) — never overwrites an
-// existing row, so an admin's edit or deletion of a seeded template
-// persists across restarts instead of being silently reverted.
+// seedPipelineTemplates offers this database the pkg/templates.Builtin
+// rows it has not been offered before, never overwriting an existing
+// row, so an admin's edit or deletion of a seeded template persists
+// across restarts. See seedBuiltinTemplates for why the marker replaced
+// the old "only when the table is empty" rule.
 func (s *SQLiteStore) seedPipelineTemplates() error {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipeline_templates`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	for _, t := range templates.Builtin {
-		t.CreatedAt, t.UpdatedAt = now, now
-		if err := s.CreatePipelineTemplate(&t); err != nil {
-			return fmt.Errorf("seed template %q: %w", t.ID, err)
-		}
-	}
-	return nil
+	return seedBuiltinTemplates(s.GetSetting, s.SetSetting, s.ListPipelineTemplates, s.CreatePipelineTemplate)
 }
 
 // --- Settings ---

@@ -16,7 +16,6 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
-	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -574,24 +573,11 @@ func (s *PostgresStore) widenExecutionAttemptsPrimaryKey() (retErr error) {
 	return nil
 }
 
-// seedPipelineTemplates — see the matching SQLite method for why this
-// only ever inserts into an empty table, never overwrites.
+// seedPipelineTemplates — see the matching SQLite method, and
+// seedBuiltinTemplates for the rule both backends share: insert only the
+// built-ins this database has never been offered, never overwrite.
 func (s *PostgresStore) seedPipelineTemplates() error {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipeline_templates`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	for _, t := range templates.Builtin {
-		t.CreatedAt, t.UpdatedAt = now, now
-		if err := s.CreatePipelineTemplate(&t); err != nil {
-			return fmt.Errorf("seed template %q: %w", t.ID, err)
-		}
-	}
-	return nil
+	return seedBuiltinTemplates(s.GetSetting, s.SetSetting, s.ListPipelineTemplates, s.CreatePipelineTemplate)
 }
 
 // --- Login Attempts ---
