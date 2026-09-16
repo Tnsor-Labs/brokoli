@@ -11,6 +11,69 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.29] - 2026-09-16
+
+> **Behaviour change for multi-workspace organizations:** pipelines are
+> now scoped to a workspace, both in what a list shows and in what an id
+> can reach. An organization whose people all share one workspace sees
+> no difference. An organization that put pipelines in separate
+> workspaces will find that the pipelines page, the dashboard and its
+> counts show only the current workspace, and that a member of workspace
+> A can no longer open, export, clone, run a plan for, roll back or
+> delete a pipeline in workspace B. Reaching another workspace's
+> pipeline by id answers 404 rather than 403, so an id you cannot see
+> does not announce that it exists.
+
+### Fixed
+
+- **Every workspace showed every pipeline in the organization.** The
+  pipelines list, the pipeline summary views and the dashboard all
+  branched on organization first and then ignored the workspace
+  entirely, so creating a second workspace and switching to it showed
+  the same pipelines as the first, and the dashboard counted them all.
+  Only the community fallback had ever filtered by workspace. The three
+  paths now scope to the caller's current workspace. A session that has
+  not chosen a workspace resolves to one the caller belongs to rather
+  than filtering on `default` and showing an empty page, and a member of
+  no workspace sees nothing rather than everything. The organization
+  scoped reads stay organization wide where that is the right question:
+  a plan limit counts an organization's pipelines wherever they sit.
+  (#662) -- @hc12r
+
+- **A pipeline could be reached by id from another workspace.** Ten
+  handlers that take a pipeline id (get, update, delete, export,
+  validate, plan, list versions, rollback, clone, validate nodes)
+  checked the caller's organization and nothing else, so inside one
+  organization a member of any workspace could read and change a
+  pipeline belonging to another. Export and clone mattered most: both
+  return a whole pipeline definition. Connections and variables already
+  resolved the caller's workspaces and were never affected. The check
+  resolves the full set of workspaces the caller belongs to, rather than
+  the single workspace a request is filed under, so somebody who belongs
+  to two workspaces keeps access to their own work in both.
+  (#661) -- @hc12r
+
+- **Built-in pipeline templates never reached an existing database.**
+  Seeding ran only when `pipeline_templates` was empty, so a template
+  added to the built-in set after an install's first migrate could not
+  arrive, and no upgrade delivered it: a database seeded with two
+  starters still offered two while the product shipped four. Each
+  database now records which built-ins it has been offered, in a
+  `pipeline_templates.seeded_ids` setting, and each migrate inserts only
+  the ones missing from that record. A template an administrator deleted
+  stays deleted, and an edited one is still never overwritten. One
+  deliberate consequence: a built-in deleted before this change returns
+  once, because nothing recorded that it had ever been offered.
+  (#660) -- @hc12r
+
+### Changed
+
+- **Light is the default theme** for anyone who has not chosen one.
+  Somebody who picked dark keeps it, since that choice is stored. The
+  community shell applies light before first paint, along with the
+  `theme-color` meta, so there is no flash of the wrong theme on load.
+  The toggle and its persistence are unchanged. (#657) -- @hc12r
+
 ## [0.11.28] - 2026-09-15
 
 > **Behaviour change for deployments that reach services over Tailscale
