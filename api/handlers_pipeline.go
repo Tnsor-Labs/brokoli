@@ -122,7 +122,17 @@ func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Cursor-based pagination — no COUNT, uses UUIDv7 ordering
 	if orgID != "" {
-		pipelines, hasNext, err := h.store.ListPipelinesByOrgCursor(orgID, after, limit)
+		// Scoped to the workspace as well as the org. Listing by org alone
+		// showed every pipeline in the organization under every workspace,
+		// so switching workspaces changed nothing on this page.
+		wsID, ok := effectiveWorkspace(r)
+		if !ok {
+			writeJSON(w, http.StatusOK, store.CursorResult{
+				Items: []PipelineSummary{}, HasNext: false, Limit: limit,
+			})
+			return
+		}
+		pipelines, hasNext, err := h.store.ListPipelinesByOrgAndWorkspaceCursor(orgID, wsID, after, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

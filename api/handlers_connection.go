@@ -66,25 +66,14 @@ func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
 
 func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Org-scoped users should only see connections from their workspace,
-	// not the shared "default" workspace from other orgs
-	orgID := GetOrgIDFromRequest(r)
-	wsID := GetWorkspaceID(r)
-	if orgID != "" && wsID == "default" {
-		// User has an org but no specific workspace — check their actual workspaces
-		if UserWorkspaceResolverFunc != nil {
-			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-				if sub, ok := (*claims)["sub"].(string); ok {
-					userWS := UserWorkspaceResolverFunc(sub)
-					if len(userWS) > 0 {
-						wsID = userWS[0] // Use their first workspace
-					} else {
-						// No workspace = no connections
-						writeJSON(w, http.StatusOK, []models.Connection{})
-						return
-					}
-				}
-			}
-		}
+	// not the shared "default" workspace from other orgs. effectiveWorkspace
+	// holds that rule for every list; it was written here first and the
+	// pipeline lists now share it rather than keeping a second copy.
+	wsID, ok := effectiveWorkspace(r)
+	if !ok {
+		// No workspace = no connections
+		writeJSON(w, http.StatusOK, []models.Connection{})
+		return
 	}
 	// Paginated — use SQL LIMIT/OFFSET
 	if r.URL.Query().Get("page") != "" {

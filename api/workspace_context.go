@@ -171,6 +171,40 @@ func denyWorkspaceAccess(w http.ResponseWriter) {
 	writeError(w, http.StatusNotFound, "not found")
 }
 
+// effectiveWorkspace names the workspace a list should be scoped to, and
+// reports whether the caller can see anything at all.
+//
+// GetWorkspaceID answers "default" for a session that has not named a
+// workspace, which in a single-tenant install is the right answer and the
+// only workspace there is. In an organization it is not: the caller's
+// pipelines sit in a workspace of their own, so filtering on "default"
+// would show them an empty list while their work is one header away. The
+// resolver knows which workspaces they belong to, so the first of those
+// stands in until they choose one, matching the workspace the middleware
+// would have filed the request under.
+//
+// ok is false only when an organization member belongs to no workspace at
+// all. That is not an error and not "show everything": there is nothing
+// they may see, so the caller answers with an empty list.
+func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
+	wsID = GetWorkspaceID(r)
+	if GetOrgIDFromRequest(r) == "" || wsID != models.DefaultWorkspaceID {
+		return wsID, true
+	}
+	if UserWorkspaceResolverFunc == nil {
+		return wsID, true
+	}
+	userID := getUserIDFromRequest(r)
+	if userID == "" {
+		return wsID, true
+	}
+	owned := UserWorkspaceResolverFunc(userID)
+	if len(owned) == 0 {
+		return "", false
+	}
+	return owned[0], true
+}
+
 // GetWorkspaceID returns the workspace ID from the request context.
 func GetWorkspaceID(r *http.Request) string {
 	if ws, ok := r.Context().Value(workspaceKey).(string); ok && ws != "" {

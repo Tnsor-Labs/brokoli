@@ -391,7 +391,14 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline, error) {
 	orgID := GetOrgIDFromRequest(r)
 	if orgID != "" {
-		return s.ListPipelinesByOrg(orgID)
+		// Org AND workspace: by org alone, every view built on this read
+		// counted and displayed the whole organization's pipelines no
+		// matter which workspace the person was looking at.
+		wsID, ok := effectiveWorkspace(r)
+		if !ok {
+			return []models.Pipeline{}, nil
+		}
+		return s.ListPipelinesByOrgAndWorkspace(orgID, wsID)
 	}
 	// In multi-tenant mode (OrgResolverFunc set), users without an org see nothing
 	if OrgResolverFunc != nil {
@@ -429,7 +436,12 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		orgID := GetOrgIDFromRequest(r)
 		var pipelines []models.Pipeline
 		if orgID != "" {
-			pipelines, _ = s.ListPipelinesByOrg(orgID)
+			// Every counter below is derived from this list, so scoping it
+			// by org alone reported the whole organization's activity under
+			// each workspace.
+			if wsID, ok := effectiveWorkspace(r); ok {
+				pipelines, _ = s.ListPipelinesByOrgAndWorkspace(orgID, wsID)
+			}
 		} else if OrgResolverFunc != nil {
 			pipelines = []models.Pipeline{}
 		} else {

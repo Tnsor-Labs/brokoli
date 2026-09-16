@@ -2733,6 +2733,65 @@ func (s *PostgresStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, err
 	return pipelines, rows.Err()
 }
 
+// ListPipelinesByOrgAndWorkspace narrows ListPipelinesByOrg to one
+// workspace. Both predicates are applied: the workspace alone would match
+// a row another organization put in a workspace of the same name, and the
+// organization alone is what made every workspace show the same list.
+func (s *PostgresStore) ListPipelinesByOrgAndWorkspace(orgID, workspaceID string) ([]models.Pipeline, error) {
+	rows, err := s.db.Query(
+		`SELECT `+pipelineColumns+`
+		 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 ORDER BY created_at DESC`, orgID, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
+}
+
+// ListPipelinesByOrgAndWorkspaceCursor is ListPipelinesByOrgCursor scoped
+// to one workspace, with the same keyset walk: id is a sortable UUIDv7, so
+// paging is "id < cursor" descending, and one extra row answers has_next.
+func (s *PostgresStore) ListPipelinesByOrgAndWorkspaceCursor(orgID, workspaceID, afterID string, limit int) ([]models.Pipeline, bool, error) {
+	var rows *sql.Rows
+	var err error
+	fetchN := limit + 1 // fetch one extra to detect has_next
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT `+pipelineColumns+`
+			 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 ORDER BY id DESC LIMIT $3`, orgID, workspaceID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT `+pipelineColumns+`
+			 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND id < $3 ORDER BY id DESC LIMIT $4`, orgID, workspaceID, afterID, fetchN)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	hasNext := len(pipelines) > limit
+	if hasNext {
+		pipelines = pipelines[:limit]
+	}
+	return pipelines, hasNext, rows.Err()
+}
+
 func (s *PostgresStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error) {
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = $1`, orgID).Scan(&total)

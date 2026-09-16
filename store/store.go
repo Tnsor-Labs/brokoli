@@ -362,6 +362,13 @@ type PipelineStore interface {
 	ListPipelinesByOrg(orgID string) ([]models.Pipeline, error)
 	ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error)
 	ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error)
+	// ListPipelinesByOrgAndWorkspace and its cursor form are what the UI
+	// reads. The org-only forms above stay org-wide on purpose: a plan
+	// limit counts an organization's pipelines wherever they sit, so
+	// narrowing them would undercount a quota. What a person sees in a
+	// workspace is a different question, and these answer it.
+	ListPipelinesByOrgAndWorkspace(orgID, workspaceID string) ([]models.Pipeline, error)
+	ListPipelinesByOrgAndWorkspaceCursor(orgID, workspaceID, afterID string, limit int) ([]models.Pipeline, bool, error)
 	UpdatePipeline(p *models.Pipeline) error
 	// UpdatePipelineTx runs inside an existing transaction; for atomic cascades/decouples.
 	UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error
