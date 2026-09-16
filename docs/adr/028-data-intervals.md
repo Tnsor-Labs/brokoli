@@ -166,9 +166,18 @@ before creating fifty identical runs.
   nothing here precludes it.
 - **Interval-aware sensors/waits** — the triggerer-shaped idea; separate
   decision.
-- **`${interval.*}` date-formatting helpers** (`${interval.start_date}`
-  etc.) — added on demand; two RFC3339 values are the contract, formats
-  are sugar.
+### Taken since
+
+- **Date formatting and time shifting for the interval variables.**
+  Deferred above as sugar, and added once naming a delivered file after the
+  day it covers turned out to be the ordinary case. The shape follows this
+  ADR rather than Airflow: filters go inside the existing braces, as in
+  `${interval.start|shift:-1d|date:YYYYMMDD}`, so a filter formats one of
+  the two RFC3339 values pinned on the run and never mints a second name
+  for it. "No third alias" still holds. Shifts stop at weeks (`s`, `m`,
+  `h`, `d`, `w`) because a month is not a fixed duration, and a filter this
+  resolver cannot satisfy leaves the whole reference visible rather than
+  guessing at a timestamp.
 
 ## Alternatives considered
 

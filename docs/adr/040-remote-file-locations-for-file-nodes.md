@@ -69,7 +69,9 @@ file node without `conn_id` behaves exactly as before.
   never touches.
 
 Variables in the path resolve as they do today, so
-`/outbound/orders-${interval.start}.csv` works.
+`/outbound/orders-${interval.start}.csv` works, filters included:
+`/outbound/orders-${interval.start|shift:-1d|date:YYYYMMDD}.csv` names
+yesterday's file without an RFC3339 colon in it.
 
 ### 3. Authentication
 

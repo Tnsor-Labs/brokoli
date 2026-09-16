@@ -187,7 +187,7 @@ then a path on the server.
   "name": "Deliver to partner",
   "config": {
     "conn_id": "partner-sftp",
-    "path": "outbound/orders-${interval.start}.csv",
+    "path": "outbound/orders-${interval.start|date:YYYYMMDD}.csv",
     "format": "csv"
   }
 }
@@ -255,7 +255,15 @@ Loaded 1204 rows, 6 columns from rates.json (.json, 60 KB)
 | `../orders.csv`, `a/../../b` | refused: `a path may not contain a '..' segment` |
 
 - Variables resolve in the path as they do everywhere else, so
-  `${interval.start}` and `${var.partner_dir}` work.
+  `${interval.start}` and `${var.partner_dir}` work. A timestamp also takes
+  filters for the format and the offset a filename needs:
+  `${interval.start|date:YYYYMMDD}` delivers `orders-20240314.csv`, and
+  `${interval.start|shift:-1d|date:YYYY-MM-DD}` names the day before.
+  Unfiltered, the value is RFC3339 (`2024-03-14T00:00:00Z`), colons
+  included, which is rarely what a partner wants in a filename. The tokens
+  are `YYYY`, `YY`, `MM`, `DD`, `HH`, `mm`, `ss`; a shift is a signed count
+  and one of `s`, `m`, `h`, `d`, `w`. A filter the resolver cannot satisfy
+  leaves the reference visible in the path instead of inventing a date.
 - **Set a base directory to confine a connection.** With one set, no
   path in any pipeline can leave it, absolute or relative. Symlinks on
   the server that point outside it are the server's to control.
