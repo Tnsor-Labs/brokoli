@@ -171,6 +171,10 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, pipeline.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 	writeJSON(w, http.StatusOK, pipeline)
 }
 
@@ -329,6 +333,10 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, existing.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	// Reject UI updates for git-managed pipelines
 	if existing.Source == models.PipelineSourceGit {
@@ -427,6 +435,10 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, existing.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, existing.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -644,6 +656,10 @@ func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 			DenyOrgAccess(w)
 			return
 		}
+		if !userOwnsWorkspace(r, p.WorkspaceID) {
+			denyWorkspaceAccess(w)
+			return
+		}
 	}
 	versions, err := h.store.ListPipelineVersions(id)
 	if err != nil {
@@ -662,6 +678,10 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		if !ValidateOrgAccess(r, existing.OrgID) {
 			DenyOrgAccess(w)
+			return
+		}
+		if !userOwnsWorkspace(r, existing.WorkspaceID) {
+			denyWorkspaceAccess(w)
 			return
 		}
 	} else {
@@ -733,6 +753,10 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	ve := engine.ValidatePipeline(p, h.executors...)
 	if ve.HasErrors() {
@@ -778,6 +802,10 @@ func (h *PipelineHandler) Plan(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, p.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 	plan, err := engine.PlanPipeline(p)
@@ -882,6 +910,10 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, orig.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	// Create a deep copy with new IDs
 	clone := *orig
@@ -965,6 +997,10 @@ func (h *PipelineHandler) ValidateNodes(w http.ResponseWriter, r *http.Request) 
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	results := engine.ValidateNodes(p.Nodes)
 	if results == nil {
@@ -984,6 +1020,10 @@ func (h *PipelineHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, p.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 

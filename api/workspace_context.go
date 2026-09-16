@@ -125,6 +125,52 @@ func sanitizeWorkspaceID(id string) string {
 	return string(clean)
 }
 
+// userOwnsWorkspace reports whether the caller may reach a resource sitting
+// in resourceWorkspaceID.
+//
+// It resolves the caller's workspaces from the JWT subject, deliberately not
+// from GetWorkspaceID: that returns the ONE workspace the request is filed
+// under (the X-Workspace-ID header, or the first owned workspace when the
+// header is absent), so comparing against it would deny a member of two
+// workspaces their own resource in the second one. ConnectionHandler's
+// validateConnectionAccess and VariableHandler's variableWorkspace already
+// resolve the full set for the same reason; this keeps pipelines consistent
+// with them.
+//
+// An empty or "default" resource workspace is pre-workspace data: the column
+// is NOT NULL DEFAULT 'default' and empty values are coalesced to it, so such
+// a row predates workspace assignment rather than belonging elsewhere. It is
+// allowed here and left to the org check, mirroring ValidateOrgAccess's own
+// allowance for a resource with no org.
+func userOwnsWorkspace(r *http.Request, resourceWorkspaceID string) bool {
+	if GetOrgIDFromRequest(r) == "" {
+		return true // community edition: no tenancy to enforce
+	}
+	if UserWorkspaceResolverFunc == nil {
+		return true // single tenant: no second workspace exists
+	}
+	if resourceWorkspaceID == "" || resourceWorkspaceID == models.DefaultWorkspaceID {
+		return true // legacy row, governed by the org check
+	}
+	userID := getUserIDFromRequest(r)
+	if userID == "" {
+		return false
+	}
+	for _, ws := range UserWorkspaceResolverFunc(userID) {
+		if ws == resourceWorkspaceID {
+			return true
+		}
+	}
+	return false
+}
+
+// denyWorkspaceAccess answers a cross-workspace request. 404 rather than 403,
+// matching DenyOrgAccess: a caller must not learn that an id exists in a
+// workspace they cannot see.
+func denyWorkspaceAccess(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not found")
+}
+
 // GetWorkspaceID returns the workspace ID from the request context.
 func GetWorkspaceID(r *http.Request) string {
 	if ws, ok := r.Context().Value(workspaceKey).(string); ok && ws != "" {
