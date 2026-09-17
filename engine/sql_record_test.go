@@ -210,25 +210,27 @@ func TestRecordedSQL_OneEventPerAttempt(t *testing.T) {
 	}
 }
 
-// A generated INSERT is unbounded in principle -- sink_db renders every row
-// into SQL text when the dialect has no bulk protocol -- so the recorded
-// copy is bounded, and says so where it was cut.
+// An author-written statement can exceed the bound (a long IN list, a large
+// literal), so the recorded copy is bounded and says so where it was cut.
+//
+// This used to be proven with a sink's generated INSERT. #667 stopped
+// recording those, so the vehicle is now an author-written source query --
+// the kind of statement that is still recorded and can still be large.
 func TestRecordedSQL_TruncatesALargeStatementVisibly(t *testing.T) {
-	uri := sqlRecordSourceDB(t, 2000)
+	uri := sqlRecordSourceDB(t, 3)
+	query := "SELECT id FROM t WHERE name <> '" + strings.Repeat("x", maxRecordedSQLBytes+4096) + "'"
 
 	run, st := runSQLRecordPipeline(t, []models.Node{
 		{ID: "src", Type: models.NodeTypeSourceDB, Name: "Src",
-			Config: map[string]interface{}{"uri": uri, "query": "SELECT id, name FROM t"}},
-		{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink",
-			Config: map[string]interface{}{"uri": uri, "table": "dest", "create_table": true}},
-	}, []models.Edge{{From: "src", To: "sink"}})
+			Config: map[string]interface{}{"uri": uri, "query": query}},
+	}, nil)
 	if run.Status != models.RunStatusSuccess {
 		t.Fatalf("run status = %q, want success (error: %s)", run.Status, run.Error)
 	}
 
-	got := recordedStatements(t, st, run.ID, "sink")
+	got := recordedStatements(t, st, run.ID, "src")
 	if len(got) != 1 {
-		t.Fatalf("recorded %d statement(s) for the sink, want 1", len(got))
+		t.Fatalf("recorded %d statement(s) for the source, want 1", len(got))
 	}
 	stmt := got[0]
 	if !strings.Contains(stmt, "statement truncated") {
@@ -636,24 +638,156 @@ func TestRecordedSQL_PushdownRecordsItsComposedStatement(t *testing.T) {
 	})
 	t.Setenv("BROKOLI_DATA_PLANE", "")
 
+	// #667: every mode records the composed INSERT ... SELECT, which carries
+	// the author's query, and never the DELETE / TRUNCATE an overwrite runs
+	// first, which is engine boilerplate. Overwrite is the case that matters:
+	// before #667 it recorded two statements.
+	for _, tc := range []struct {
+		name   string
+		config map[string]interface{}
+	}{
+		{"append", map[string]interface{}{"mode": "append"}},
+		{"overwrite-delete", map[string]interface{}{"mode": "overwrite"}},
+		{"overwrite-truncate", map[string]interface{}{"mode": "overwrite", "truncate": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sinkCfg := map[string]interface{}{"uri": pg, "table": "brokoli_sqlrec_dst"}
+			for k, v := range tc.config {
+				sinkCfg[k] = v
+			}
+			run, st := runSQLRecordPipeline(t, []models.Node{
+				{ID: "src", Type: models.NodeTypeSourceDB, Name: "Src", Config: map[string]interface{}{
+					"uri": pg, "query": "SELECT id, city FROM brokoli_sqlrec_src"}},
+				{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink", Config: sinkCfg},
+			}, []models.Edge{{From: "src", To: "sink"}})
+			if run.Status != models.RunStatusSuccess {
+				t.Fatalf("run status = %q, want success (error: %s)", run.Status, run.Error)
+			}
+
+			got := recordedStatements(t, st, run.ID, "sink")
+			if len(got) != 1 {
+				t.Fatalf("recorded %d statement(s) for the pushed-down sink %q, want exactly the composed INSERT", len(got), got)
+			}
+			if !strings.Contains(got[0], "INSERT INTO") || !strings.Contains(got[0], "brokoli_pushdown") {
+				t.Errorf("recorded statement = %q, want the composed INSERT ... SELECT", got[0])
+			}
+			if !strings.Contains(got[0], "SELECT id, city FROM brokoli_sqlrec_src") {
+				t.Errorf("recorded statement = %q, want the author's query embedded in it", got[0])
+			}
+			for _, clear := range []string{"DELETE FROM", "TRUNCATE"} {
+				if strings.Contains(got[0], clear) {
+					t.Errorf("recorded %q, which includes the engine-generated clear", got[0])
+				}
+			}
+			if strings.Contains(got[0], pg) {
+				t.Error("the composed statement recorded the connection URI")
+			}
+		})
+	}
+}
+
+// #667, the issue's own scenario: a source_db feeding a sink_db records the
+// author's SELECT, and the sink's engine-generated INSERT ... VALUES is not
+// recorded -- an explicit note is, so the sink's panel is not silently empty.
+//
+// create_table forces the statement path: bulkWriterFor declines it and so
+// does pushdown, so the sink really does build and run an INSERT here. The
+// row-count check below proves the write happened rather than the test
+// passing because nothing ran.
+func TestRecordedSQL_GeneratedSinkWriteRecordsANoteNotTheStatement(t *testing.T) {
+	uri := sqlRecordSourceDB(t, 25)
+
 	run, st := runSQLRecordPipeline(t, []models.Node{
-		{ID: "src", Type: models.NodeTypeSourceDB, Name: "Src", Config: map[string]interface{}{
-			"uri": pg, "query": "SELECT id, city FROM brokoli_sqlrec_src"}},
-		{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink", Config: map[string]interface{}{
-			"uri": pg, "table": "brokoli_sqlrec_dst", "mode": "append"}},
-	}, []models.Edge{{From: "src", To: "sink"}})
+		{ID: "src", Type: models.NodeTypeSourceDB, Name: "Src",
+			Config: map[string]interface{}{"uri": uri, "query": "SELECT id, name FROM t"}},
+		{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink",
+			Config: map[string]interface{}{"uri": uri, "table": "dest", "create_table": true}},
+	}, []models.Edge{{From: "src", To: "sink"}}, forceBatch)
 	if run.Status != models.RunStatusSuccess {
 		t.Fatalf("run status = %q, want success (error: %s)", run.Status, run.Error)
 	}
 
-	got := recordedStatements(t, st, run.ID, "sink")
-	if len(got) != 1 {
-		t.Fatalf("recorded %d statement(s) for the pushed-down sink %q, want 1", len(got), got)
+	db, err := sql.Open("sqlite", uri)
+	if err != nil {
+		t.Fatalf("open data db: %v", err)
 	}
-	if !strings.Contains(got[0], "INSERT INTO") || !strings.Contains(got[0], "brokoli_pushdown") {
-		t.Errorf("recorded statement = %q, want the composed INSERT ... SELECT", got[0])
+	defer db.Close()
+	var written int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM dest`).Scan(&written); err != nil || written != 25 {
+		t.Fatalf("dest holds %d rows (err %v), want 25: the sink must really have run its generated INSERT", written, err)
 	}
-	if strings.Contains(got[0], os.Getenv("BROKOLI_TEST_POSTGRES_URL")) {
-		t.Error("the composed statement recorded the connection URI")
+
+	if src := recordedStatements(t, st, run.ID, "src"); len(src) != 1 || src[0] != "SELECT id, name FROM t" {
+		t.Errorf("source recorded %q, want exactly the author's SELECT", src)
+	}
+
+	sink := recordedStatements(t, st, run.ID, "sink")
+	if len(sink) != 1 {
+		t.Fatalf("sink recorded %d entr(ies) %q, want exactly one note", len(sink), sink)
+	}
+	if !strings.HasPrefix(sink[0], recordGeneratedWriteNote) {
+		t.Errorf("sink recorded %.120q, want the generated-write note", sink[0])
+	}
+	for _, generated := range []string{"INSERT INTO", "VALUES", "CREATE TABLE"} {
+		if strings.Contains(sink[0], generated) {
+			t.Errorf("sink recorded %.120q, which contains engine-generated SQL (%s)", sink[0], generated)
+		}
+	}
+	if !strings.Contains(sink[0], `"dest"`) {
+		t.Errorf("sink note %q does not name the table it wrote", sink[0])
+	}
+}
+
+// SQL a person wrote in a sql_generate node and forwarded to a sink IS
+// author-written, so the sink records it. This is the other execSinkSQL
+// caller, and the reason the author/generated split has to sit at the call
+// sites: both callers hand execSinkSQL a string of SQL, and only the caller
+// knows which kind it is.
+func TestRecordedSQL_SQLGenerateOutputIsRecordedAtTheSink(t *testing.T) {
+	uri := sqlRecordSourceDB(t, 4)
+
+	run, st := runSQLRecordPipeline(t, []models.Node{
+		{ID: "src", Type: models.NodeTypeSourceDB, Name: "Src",
+			Config: map[string]interface{}{"uri": uri, "query": "SELECT id, name FROM t"}},
+		{ID: "gen", Type: models.NodeTypeSQLGenerate, Name: "Gen",
+			Config: map[string]interface{}{"dialect": "sqlite", "table": "gen_dest", "create_table": true}},
+		{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink",
+			Config: map[string]interface{}{"uri": uri, "table": "gen_dest"}},
+	}, []models.Edge{{From: "src", To: "gen"}, {From: "gen", To: "sink"}}, forceBatch)
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run status = %q, want success (error: %s)", run.Status, run.Error)
+	}
+
+	sink := recordedStatements(t, st, run.ID, "sink")
+	if len(sink) != 1 {
+		t.Fatalf("sink recorded %d entr(ies) %q, want the forwarded statement", len(sink), sink)
+	}
+	if strings.HasPrefix(sink[0], "-- [brokoli]") {
+		t.Errorf("sink recorded a note %q, want the sql_generate statement itself", sink[0])
+	}
+	if !strings.Contains(sink[0], "gen_dest") {
+		t.Errorf("sink recorded %.120q, want the statement sql_generate forwarded", sink[0])
+	}
+}
+
+// The generated-write note must not be classifiable as either existing
+// note. A reader that sorts notes by prefix -- the run UI does exactly this
+// -- would otherwise label an engine-generated write as a statement withheld
+// over a short secret, or as a bulk load with no SQL at all.
+func TestRecordGeneratedWriteNote_IsDistinctFromTheOtherNotes(t *testing.T) {
+	for _, other := range []string{
+		"-- [brokoli] statement not recorded",
+		"-- [brokoli] no SQL statement",
+		"-- [brokoli] statement truncated",
+	} {
+		if strings.HasPrefix(recordGeneratedWriteNote, other) || strings.HasPrefix(other, recordGeneratedWriteNote) {
+			t.Errorf("generated-write note %q collides with the %q prefix", recordGeneratedWriteNote, other)
+		}
+	}
+	if !strings.HasPrefix(recordGeneratedWriteNote, "-- [brokoli] ") {
+		t.Errorf("generated-write note %q is not a -- [brokoli] SQL comment", recordGeneratedWriteNote)
+	}
+	if strings.HasPrefix(recordedSQLShortSecretRefusal, recordGeneratedWriteNote) {
+		t.Error("the short-secret refusal would be classified as a generated-write note")
 	}
 }

@@ -1087,7 +1087,10 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// produced ready-to-run SQL in a single sql_output row.
 	if len(input.Rows) == 1 {
 		if s, ok := input.Rows[0]["sql_output"].(string); ok && s != "" {
-			return r.execSinkSQL(node, attempt, uri, s)
+			// Author-written (#667): a person wrote this SQL in a
+			// sql_generate node and that node forwarded it here.
+			r.recordExecutedSQL(node.ID, attempt, s)
+			return r.execSinkSQL(node, uri, s)
 		}
 	}
 
@@ -1166,11 +1169,18 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}
-	return r.execSinkSQL(node, attempt, uri, sql)
+	// Engine-generated (#667): GenerateSQL rendered the input rows into
+	// INSERT ... VALUES. Nobody wrote it, so a note is recorded in its place.
+	r.recordGeneratedWrite(node.ID, attempt, cfg.Table)
+	return r.execSinkSQL(node, uri, sql)
 }
 
-func (r *Runner) execSinkSQL(node models.Node, attempt int, uri, sql string) (*common.DataSet, error) {
-	r.recordExecutedSQL(node.ID, attempt, sql)
+// execSinkSQL executes a sink's SQL and deliberately does NOT record it. Its
+// two callers are not equivalent: one forwards author-written SQL from a
+// sql_generate node, the other passes SQL the engine generated. Only the
+// caller knows which (#667); recording here would have to guess from the
+// text.
+func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
 	affected, err := ExecuteSQL(uri, sql)
 	if err != nil {
 		return nil, fmt.Errorf("execute SQL: %w", err)
