@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -563,7 +564,16 @@ func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		FromNode string `json:"from_node"`
 	}
-	json.NewDecoder(r.Body).Decode(&req) // ignore error -- body may be empty
+	// io.EOF is the empty body, which is the plain resume and is fine.
+	// Any other decode error must be refused rather than discarded: a
+	// failed decode leaves FromNode empty, which is indistinguishable
+	// from "no from_node", so a caller who asked for one node would
+	// silently get a plain resume of the whole run instead, doing more
+	// work than was asked for with nothing to notice it by.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body could not be read as JSON: "+err.Error())
+		return
+	}
 
 	var run *models.Run
 	var err error

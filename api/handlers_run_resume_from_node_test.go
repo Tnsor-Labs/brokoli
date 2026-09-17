@@ -87,6 +87,58 @@ func TestResumeHandler_FromNodeSelectsTheNodeScopedPath(t *testing.T) {
 	}
 }
 
+// TestResumeHandler_MalformedBodyIsRefused pins the difference between an
+// absent body and a broken one.
+//
+// An absent body is the plain resume and is correct. A broken one used to
+// be indistinguishable from it: a discarded decode error leaves from_node
+// empty, so a caller who asked for one node quietly got a plain resume of
+// the whole run. On a failed run that proceeds and does substantially more
+// work than was asked for, with nothing in the response to say the request
+// was misread.
+//
+// The run below is failed on purpose, so a plain resume would really
+// execute rather than being refused for some unrelated reason. That is
+// what makes the silent fallback observable here.
+func TestResumeHandler_MalformedBodyIsRefused(t *testing.T) {
+	withoutOrgResolver(t)
+	s := newDepAPIStore(t)
+	e := engine.NewEngine(s)
+	t.Cleanup(func() { _ = e.Close(context.Background()) })
+	h := NewRunHandler(s, e)
+
+	pipe := createOrgPipe(t, s, "malformed-pipe", "Malformed Pipeline", "org-a", nil)
+	pipe.Nodes = []models.Node{{ID: "src", Type: models.NodeTypeSourceFile, Name: "S",
+		Config: map[string]interface{}{"path": "in.csv", "format": "csv"}}}
+	if err := s.UpdatePipeline(pipe); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateRun(&models.Run{ID: "run-m", PipelineID: pipe.ID, Status: models.RunStatusFailed}); err != nil {
+		t.Fatal(err)
+	}
+
+	router := chi.NewRouter()
+	router.Post("/runs/{id}/resume", h.ResumeRun)
+
+	for _, body := range []string{
+		`{"from_node":`,     // truncated
+		`not json at all`,   // not JSON
+		`{"from_node": }`,   // malformed value
+		`{"from_node": 42}`, // right shape, wrong type
+	} {
+		req := reqWithOrg("POST", "/runs/run-m/resume", []byte(body), "org-a")
+		rec := httptest.NewRecorder()
+		router.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %q: status %d, want 400 rather than a silent plain resume", body, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "could not be read as JSON") {
+			t.Errorf("body %q: refusal must say the body could not be read, got: %s", body, rec.Body.String())
+		}
+	}
+}
+
 // TestResumeHandler_FromNodeStillOrgScoped confirms the new body parameter
 // did not open a way around the org check: the refusal must happen before
 // the engine is reached at all.
