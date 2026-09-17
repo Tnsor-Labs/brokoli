@@ -687,6 +687,17 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		return nil, ve
 	}
 
+	// ADR-032: resolve typed parameters on the sync path too (webhook and
+	// other RunPipelineOpts callers). Same short-circuit as runPipelineAsync:
+	// a pipeline that declares none never pays for or is affected by this.
+	var resolvedParams map[string]interface{}
+	if len(pipe.Parameters) > 0 {
+		resolvedParams, err = taskinterface.ResolveParameters(pipe.Parameters, opts.TypedParams)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrParameterResolution, err)
+		}
+	}
+
 	pipelineVersion, err := resolveRunPipelineVersion(e.store, pipe)
 	if err != nil {
 		return nil, fmt.Errorf("resolve pipeline version: %w", err)
@@ -705,6 +716,7 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 			PipelineVersion:   pipelineVersion,
 			OrgID:             pipe.OrgID,
 			Params:            opts.Params,
+			Parameters:        resolvedParams,
 			Trigger:           opts.Trigger,
 			DataIntervalStart: opts.DataIntervalStart,
 			DataIntervalEnd:   opts.DataIntervalEnd,
@@ -741,6 +753,7 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	runner.params = opts.Params
+	runner.parameters = resolvedParams
 	runner.trigger = opts.Trigger
 	runner.triggeredBy = opts.TriggeredBy
 	runner.intervalStart = opts.DataIntervalStart

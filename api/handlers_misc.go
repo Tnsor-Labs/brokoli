@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sort"
@@ -165,15 +166,48 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded, try again in 10 seconds")
 			return
 		}
+
+		// Bound the body before any decode. Webhook tokens are pasted into
+		// third-party systems by design, so size the allocation even after
+		// auth (Tnsor-Labs/brokoli#59 review).
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
+		// Optional JSON body {"parameters": {...}} — typed run params
+		// validated against the pipeline's declarations. Only decode when
+		// Content-Type is application/json so form/plain callers keep the
+		// pre-#59 behaviour of an ignored body.
+		var typedParams map[string]interface{}
+		ct := r.Header.Get("Content-Type")
+		if strings.HasPrefix(ct, "application/json") {
+			var body struct {
+				Parameters map[string]interface{} `json:"parameters"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				var maxErr *http.MaxBytesError
+				if errors.As(err, &maxErr) {
+					writeError(w, http.StatusRequestEntityTooLarge, "request body too large (max 64 KiB)")
+					return
+				}
+				writeError(w, http.StatusBadRequest, "invalid request body: expected JSON object with optional parameters")
+				return
+			}
+			typedParams = body.Parameters
+		}
+
 		// #241: a webhook is nobody in particular, but it is not the
 		// scheduler and it is not a person, and saying so is the point.
 		run, err := e.RunPipelineOpts(p.ID, engine.RunOptions{
+			TypedParams: typedParams,
 			TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindWebhook},
 		})
 		if err != nil {
 			// Same as the trigger route: a draft is a state, not a fault.
 			if errors.Is(err, engine.ErrPipelineIsDraft) {
 				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if errors.Is(err, engine.ErrParameterResolution) {
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			writeError(w, http.StatusInternalServerError, err.Error())
