@@ -1161,21 +1161,21 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				// node's work can stay in the database. It can only ever
 				// answer yes for a narrow, checked set of shapes; every
 				// other node falls through to exactly what it did before.
-				if pushed, handled, perr := r.tryPushdown(node, inputTable); handled || perr != nil {
+				if pushed, handled, perr := r.tryPushdown(node, inputTable, attempt); handled || perr != nil {
 					result, e = pushed, perr
 				} else if inputTable != nil && input == nil {
 					// The segment plan said this node could consume the
 					// reference and it could not. Read the rows rather than
 					// run the node against nothing, which would report
 					// success having written zero.
-					ds, merr := r.materializeTableRef(node.ID, inputTable)
+					ds, merr := r.materializeTableRef(node.ID, inputTable, attempt)
 					if merr != nil {
 						e = merr
 					} else {
 						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 					}
 				} else if streamable {
-					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs)
+					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs, attempt)
 				} else {
 					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
@@ -1823,7 +1823,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSourceDB:
 		// Returns a full result: a source that can report its column
 		// types hands them downstream alongside the rows (#363).
-		return r.runSourceDB(node)
+		return r.runSourceDB(node, attempt)
 	case models.NodeTypeTransform:
 		return r.runTransform(node, input, inputSchema)
 	case models.NodeTypeQualityCheck:
@@ -1849,11 +1849,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSinkFile:
 		return outputExecutionResult(r.runSinkFile(ctx, node, input))
 	case models.NodeTypeSinkDB:
-		return outputExecutionResult(r.runSinkDB(node, input, inputSchema))
+		return outputExecutionResult(r.runSinkDB(node, input, inputSchema, attempt))
 	case models.NodeTypeSinkAPI:
 		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:
-		return outputExecutionResult(r.runMigrate(node))
+		return outputExecutionResult(r.runMigrate(node, attempt))
 	case models.NodeTypeDBT:
 		// dbt can hand downstream a reference rather than rows (#353
 		// Phase 3), so it returns a full result rather than a dataset.

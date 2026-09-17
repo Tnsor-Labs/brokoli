@@ -316,7 +316,7 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return records
 }
 
-func (r *Runner) runSourceDB(node models.Node) (nodeExecutionResult, error) {
+func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -326,6 +326,7 @@ func (r *Runner) runSourceDB(node models.Node) (nodeExecutionResult, error) {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
+	r.recordExecutedSQL(node.ID, attempt, query)
 	ds, err := QueryDatabase(uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
@@ -1057,7 +1058,7 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 	return []byte(buf.String()), w.Error()
 }
 
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema) (*common.DataSet, error) {
+func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_db node requires input data")
 	}
@@ -1086,7 +1087,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// produced ready-to-run SQL in a single sql_output row.
 	if len(input.Rows) == 1 {
 		if s, ok := input.Rows[0]["sql_output"].(string); ok && s != "" {
-			return r.execSinkSQL(node, uri, s)
+			return r.execSinkSQL(node, attempt, uri, s)
 		}
 	}
 
@@ -1152,6 +1153,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// -- which carries the rows as data instead of rendering them into
 	// megabytes of SQL text for the server to parse back.
 	if w, ok := bulkWriterFor(cfg); ok {
+		r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
 		affected, err := bulkWriteRows(w, uri, cfg, input)
 		if err != nil {
 			return nil, fmt.Errorf("bulk write to %s: %w", table, err)
@@ -1164,10 +1166,11 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}
-	return r.execSinkSQL(node, uri, sql)
+	return r.execSinkSQL(node, attempt, uri, sql)
 }
 
-func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
+func (r *Runner) execSinkSQL(node models.Node, attempt int, uri, sql string) (*common.DataSet, error) {
+	r.recordExecutedSQL(node.ID, attempt, sql)
 	affected, err := ExecuteSQL(uri, sql)
 	if err != nil {
 		return nil, fmt.Errorf("execute SQL: %w", err)
@@ -1352,7 +1355,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
@@ -1404,6 +1407,7 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 
 	// Read all from source (for now — chunked read requires LIMIT/OFFSET rewriting)
 	r.log(node.ID, models.LogLevelInfo, "Reading from source...")
+	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
 	sourceDS, err := QueryDatabase(sourceURI, sourceQuery)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)

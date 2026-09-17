@@ -601,7 +601,7 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 // after streamEligible plus the input-form checks passed, so the
 // preconditions (transform: inputRef non-nil; code: inputRef or no input)
 // hold by construction.
-func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, inputSchema columnSchema, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, inputSchema columnSchema, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	switch node.Type {
 	case models.NodeTypeTransform:
 		rules, err := parseNodeTransformRules(node)
@@ -630,13 +630,13 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 	case models.NodeTypeSourceFile:
 		return r.runSourceFileStreamed(ctx, node, outputs)
 	case models.NodeTypeSourceDB:
-		return r.runSourceDBStreamed(ctx, node, outputs)
+		return r.runSourceDBStreamed(ctx, node, outputs, attempt)
 	case models.NodeTypeSinkAPI:
 		return r.runSinkAPIStreamed(node, inputRef, outputs)
 	case models.NodeTypeSinkFile:
 		return r.runSinkFileStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeSinkDB:
-		return r.runSinkDBStreamed(ctx, node, inputRef, outputs)
+		return r.runSinkDBStreamed(ctx, node, inputRef, outputs, attempt)
 	case models.NodeTypeCode:
 		return r.runCodeStreamed(ctx, node, inputRef, outputs)
 	}
@@ -884,7 +884,7 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	return nodeExecutionResult{outputRef: ref}, nil
 }
 
-func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -894,6 +894,7 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
+	r.recordExecutedSQL(node.ID, attempt, query)
 	var columns []string
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
@@ -921,7 +922,7 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 // runSinkDBStreamed writes a referenced input with the dialect's bulk
 // path, pulling batches off the blob store instead of decoding the whole
 // thing first.
-func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	uri, cfg, ok := sinkStreamConfig(node)
 	if !ok {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db node is not streamable (dispatch bug: eligibility should have caught this)")
@@ -947,6 +948,7 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 	}
 	defer closer.Close()
 
+	r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
 	affected, err := w(ctx, uri, cfg, inputRef.Columns, batches.Next)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("bulk write to %s: %w", cfg.Table, err)

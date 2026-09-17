@@ -159,10 +159,11 @@ func (r *Runner) sinkAcceptsTableRef(node models.Node, in *TableRef) bool {
 // means a node should never receive a reference it cannot use. If that is ever
 // wrong, this is what stops the failure from being a run that reports success
 // having written nothing.
-func (r *Runner) materializeTableRef(nodeID string, in *TableRef) (*common.DataSet, error) {
+func (r *Runner) materializeTableRef(nodeID string, in *TableRef, attempt int) (*common.DataSet, error) {
 	r.log(nodeID, models.LogLevelWarning,
 		"received a database reference this node cannot consume; reading its rows into the engine "+
 			"(this should not happen — the segment plan is supposed to prevent it)")
+	r.recordExecutedSQL(nodeID, attempt, in.Query)
 	ds, err := QueryDatabase(in.ConnURI, in.Query)
 	if err != nil {
 		return nil, fmt.Errorf("materialize pushed-down input: %w", err)
@@ -213,7 +214,7 @@ func (r *Runner) composeTransformOntoTableRef(node models.Node, in *TableRef) (*
 
 // runSinkDBFromTableRef writes a reference's rows straight into the sink's
 // table with one statement, and returns how many rows the server reported.
-func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef) (int64, bool, error) {
+func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef, attempt int) (int64, bool, error) {
 	if in == nil || dataPlaneInterpreted() {
 		return 0, false, nil
 	}
@@ -284,11 +285,13 @@ func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef) (int64, b
 		if truncate {
 			clear = fmt.Sprintf("TRUNCATE TABLE %s", target)
 		}
+		r.recordExecutedSQL(node.ID, attempt, clear)
 		if _, err := tx.ExecContext(r.ctx, clear); err != nil {
 			return 0, false, fmt.Errorf("clear %s: %w", table, err)
 		}
 	}
 
+	r.recordExecutedSQL(node.ID, attempt, insert)
 	res, err := tx.ExecContext(r.ctx, insert)
 	if err != nil {
 		return 0, false, fmt.Errorf("pushdown write to %s: %w", table, err)
@@ -342,7 +345,7 @@ func queryColumnOrder(ctx context.Context, uri, query string, d dbdialect.Dialec
 // false for every node and every shape the engine has not proven it can push
 // down, which is the overwhelming majority; those fall through to the
 // execution path they used before this existed.
-func (r *Runner) tryPushdown(node models.Node, inputTable *TableRef) (nodeExecutionResult, bool, error) {
+func (r *Runner) tryPushdown(node models.Node, inputTable *TableRef, attempt int) (nodeExecutionResult, bool, error) {
 	switch node.Type {
 	case models.NodeTypeSourceDB:
 		ref, ok := r.tableRefFromSourceDB(node)
@@ -366,7 +369,7 @@ func (r *Runner) tryPushdown(node models.Node, inputTable *TableRef) (nodeExecut
 		if inputTable == nil {
 			return nodeExecutionResult{}, false, nil
 		}
-		affected, ok, err := r.runSinkDBFromTableRef(node, inputTable)
+		affected, ok, err := r.runSinkDBFromTableRef(node, inputTable, attempt)
 		if err != nil {
 			return nodeExecutionResult{}, true, err
 		}
