@@ -107,10 +107,21 @@ jobs:
           path: gosec-report.json
           if-no-files-found: error
 
+      - name: Vulnerability gate self-test
+        run: bash scripts/check-vulns_test.sh
+
       - name: govulncheck (known vulnerabilities)
         run: |
+          # @latest on purpose: catching newly published advisories against
+          # pinned dependencies is the point of this step, and pinning the
+          # scanner would have hidden GO-2026-6452/6453 the day they landed.
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          # Not a bare `govulncheck ./...`: an advisory with no upstream fix
+          # would make this job permanently red, and a gate that cannot go
+          # green is one that eventually gets deleted. The script keeps the
+          # same verdict (fail on anything this repo calls) while allowing
+          # audited, self-expiring exceptions in security/vuln-allowlist.json.
+          bash scripts/check-vulns.sh
 
   license-compliance:
     name: License Compliance
