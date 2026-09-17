@@ -47,6 +47,7 @@ func newRequeueTestEngine(t *testing.T) (*Engine, *store.SQLiteStore, *idempoten
 	// No grace: these fixtures are durable traces of an already-dead
 	// process, not a live run to be confused with one.
 	eng.RecoveryTransitionGracePeriod = 0
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	queue := newIdempotentFakeQueue()
 	eng.JobQueue = queue
 	return eng, s, queue

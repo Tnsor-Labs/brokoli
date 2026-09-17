@@ -73,6 +73,46 @@ const recoveryBatchSize = 50
 // problem (Tnsor-Labs/brokoli#264, #329).
 const defaultRecoveryTransitionGracePeriod = 20 * time.Second
 
+// defaultRecoveryMinRunAge is how long Engine.RecoveryMinRunAge leaves a
+// freshly started run alone.
+//
+// Derived, not chosen for roundness. Two quantities bound it. The leader
+// re-runs this sweep every reclaimSweepInterval (20s), so a run must
+// survive at least one full interval to be sure the sweep that sees it
+// is not the one that caught it mid-start. And a run's first durable
+// event can lag its actual start: measured at about 1.5s for a run
+// executing on a remote worker that batches its event writes, against a
+// server on the other side of the internet. 30s is one sweep interval
+// plus an order of magnitude over that observed lag.
+//
+// The cost is paid by genuine crash recovery: a run whose process really
+// died is left non-terminal for up to this long (plus the sweep cadence)
+// before anyone adopts it. That is the right trade. Recovering a dead run
+// slightly later is a delay; adopting a live one runs the pipeline twice,
+// which duplicates whatever it writes and is not visible as a failure at
+// all -- the run simply succeeds, twice.
+const defaultRecoveryMinRunAge = 30 * time.Second
+
+// ExternalRunClaimFunc reports whether runID is currently held by an
+// executor the calling process cannot see.
+//
+// The contract is deliberately narrow. Returning true means "a live owner
+// exists, do not touch this run": recovery defers and tries again on the
+// next sweep. Returning false means "no live owner is known", which is
+// not the same as "definitely nobody" -- it puts the run back in the
+// hands of recovery's other checks rather than asserting it is dead.
+//
+// Core has no such executors: an OSS deployment runs work in this process
+// or through the job queue, both of which recovery can already see, so
+// the hook is nil and nothing changes. Enterprise sets it to consult its
+// work-pool job table and the owning worker's heartbeat, which is the
+// only durable record that a run dispatched to somebody else's machine is
+// still alive.
+//
+// Implementations must not block: this runs once per non-terminal run on
+// every sweep.
+type ExternalRunClaimFunc func(runID string) bool
+
 // recoveryOutcome classifies what RecoverNonTerminalRuns did with one
 // non-terminal run, for RecoverySummary's counters.
 type recoveryOutcome int
@@ -241,6 +281,34 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		return recoveryOutcomeDeferred, reclaimed, nil
 	}
 
+	// Both guards below sit BEFORE the recovery_started event on purpose.
+	// A run that is simply young, or owned elsewhere, is not being
+	// recovered; appending bookkeeping for it every sweep would write a
+	// steady drip of recovery events onto perfectly healthy runs.
+
+	// Too young to judge. run.StartedAt is the only timestamp core records
+	// for the run itself, and it is set by whoever claimed the run --
+	// including a remote worker, whose CreateRun carries it. A nil
+	// StartedAt means nobody has claimed it yet (a pending run waiting on
+	// the queue): there is no in-flight execution to protect, and
+	// deferring on a timestamp that may never arrive would leave the run
+	// non-terminal forever, so the age guard does not apply and the checks
+	// below still do.
+	if run.StartedAt != nil && e.RecoveryMinRunAge > 0 {
+		if age := time.Since(*run.StartedAt); age < e.RecoveryMinRunAge {
+			common.SLog().Info("recovery: deferring run: started too recently to tell a live execution from an orphan",
+				common.RunAttr(run.ID), "age", age, "min_age", e.RecoveryMinRunAge)
+			return recoveryOutcomeDeferred, reclaimed, nil
+		}
+	}
+
+	// Owned by an executor this process cannot see.
+	if e.externalClaimHeld(run.ID) {
+		common.SLog().Info("recovery: deferring run: an external owner holds a live claim",
+			common.RunAttr(run.ID))
+		return recoveryOutcomeDeferred, reclaimed, nil
+	}
+
 	e.appendEvent(&models.RunEvent{RunID: run.ID, EventType: models.RunEventRecoveryStarted})
 
 	if attemptStore != nil {
@@ -394,6 +462,30 @@ func (e *Engine) recoverRun(run *models.Run, attemptStore store.ExecutionAttempt
 		outcome, ferr := e.markRecoveryFailed(run, reason)
 		return outcome, reclaimed, ferr
 	}
+}
+
+// externalClaimHeld asks Engine.ExternalRunClaim whether somebody else is
+// executing this run, and survives a hook that misbehaves.
+//
+// A panicking hook is treated as a held claim, not as "unclaimed". The
+// two failure modes are not symmetric: declining to recover a run leaves
+// it non-terminal and says so in the log on every sweep, which is loud
+// and reversible, while assuming nobody owns it hands a live run to a
+// second executor and duplicates whatever it writes, silently. So a
+// broken hook costs recovery, never correctness.
+func (e *Engine) externalClaimHeld(runID string) (held bool) {
+	fn := e.ExternalRunClaim
+	if fn == nil {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			common.SLog().Warn("recovery: external claim check panicked; treating the run as claimed and deferring",
+				common.RunAttr(runID), "panic", fmt.Sprint(r))
+			held = true
+		}
+	}()
+	return fn(runID)
 }
 
 // lastGenuineActivity returns the CreatedAt of the most recent event that
