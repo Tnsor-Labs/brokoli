@@ -556,7 +556,22 @@ func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
-	run, err := h.engine.ResumeRun(runID)
+	// Optional body. With no from_node this is exactly what it has always
+	// been: resume a failed run from its first failed node. With one, the
+	// chosen node and everything downstream of it run again, and the rest
+	// of the earlier run's work is reused.
+	var req struct {
+		FromNode string `json:"from_node"`
+	}
+	json.NewDecoder(r.Body).Decode(&req) // ignore error -- body may be empty
+
+	var run *models.Run
+	var err error
+	if req.FromNode == "" {
+		run, err = h.engine.ResumeRun(runID)
+	} else {
+		run, err = h.engine.ResumeRunFromNode(runID, req.FromNode)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return

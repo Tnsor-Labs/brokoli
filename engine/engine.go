@@ -1539,6 +1539,133 @@ func (e *Engine) reusableOutcomes(pipe *models.Pipeline, oldRun *models.Run) (ma
 // snapshot, not whatever version happened to be live if oldRun itself had
 // no recorded version.
 func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
+	return e.resumeRun(runID, "")
+}
+
+// ResumeRunFromNode re-runs an earlier run from a node the operator chose,
+// re-executing that node and every node downstream of it while reusing
+// everything the earlier run already produced upstream of it.
+//
+// This is the "clear a task and it runs again, and so do its children"
+// shape, in this project's model rather than Airflow's. ADR-028 records
+// that re-doing a slice "must append a new attempt at that slice", and
+// rejects Airflow's clear-and-mutate outright because mutating history
+// contradicts the execution-attempt store's append-only choice. So this
+// appends a NEW run and leaves the run it came from exactly as it was:
+// lineage via models.Run.ResumedFromRunID, the same pointer an ordinary
+// resume sets, plus a durable models.RunEventResumedFromNode event on the
+// new run naming the node that was chosen.
+//
+// Unlike ResumeRun this accepts a run that SUCCEEDED. Re-running one
+// branch after fixing the query behind it is the ordinary reason to reach
+// for this, and refusing it would leave the operator editing the pipeline
+// and re-running the whole thing. resumeFromNodeStatusError says what is
+// refused and why.
+func (e *Engine) ResumeRunFromNode(runID, nodeID string) (*models.Run, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("resume from node: a node id is required")
+	}
+	return e.resumeRun(runID, nodeID)
+}
+
+// resumeFromNodeStatusError refuses by name the run statuses a node-scoped
+// resume cannot act on, rather than returning a bare boolean the caller
+// has to translate.
+//
+// Terminal runs are accepted: success, failed and cancelled all left a
+// settled set of node outcomes behind, which is the whole input to
+// reusableOutcomes. The rest are refused for two distinct reasons, and the
+// messages keep them distinct: a live run has outcomes still in flight, so
+// reusing them would race whatever is still writing them, while a blocked
+// or skipped run never executed a node at all and so has nothing to resume
+// from.
+func resumeFromNodeStatusError(status models.RunStatus) error {
+	switch status {
+	case models.RunStatusSuccess, models.RunStatusFailed, models.RunStatusCancelled:
+		return nil
+	case models.RunStatusRunning, models.RunStatusPending, models.RunStatusWaiting:
+		return fmt.Errorf("cannot resume from a node while the run is still %s: let it finish or cancel it first, so the outcomes this resume reuses are settled", status)
+	case models.RunStatusBlocked, models.RunStatusSkipped:
+		return fmt.Errorf("cannot resume from a node in a %s run: it never executed a node, so there is no earlier outcome to resume from", status)
+	default:
+		return fmt.Errorf("cannot resume from a node in a run with status %s", status)
+	}
+}
+
+// descendantsInclusive returns the chosen node together with every node
+// reachable from it by following edge direction.
+//
+// Edges whose endpoints are not both in the node set are skipped, the same
+// way topoWaves builds its adjacency, so a dangling edge left by an edit
+// cannot pull in a node that is not there.
+//
+// seen doubles as the visited set and the result, which is what makes this
+// terminate on a cyclic graph and what makes a diamond correct: a node
+// reachable by two paths is enqueued once, not twice. Validate refuses
+// cycles at persistence, so the visited set is defence in depth rather
+// than a case expected to arise.
+func descendantsInclusive(pipe *models.Pipeline, start string) map[string]bool {
+	known := make(map[string]bool, len(pipe.Nodes))
+	for _, n := range pipe.Nodes {
+		known[n.ID] = true
+	}
+	adj := make(map[string][]string)
+	for _, edge := range pipe.Edges {
+		if !known[edge.From] || !known[edge.To] {
+			continue
+		}
+		adj[edge.From] = append(adj[edge.From], edge.To)
+	}
+
+	seen := map[string]bool{start: true}
+	queue := []string{start}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[current] {
+			if seen[next] {
+				continue
+			}
+			seen[next] = true
+			queue = append(queue, next)
+		}
+	}
+	return seen
+}
+
+// dropReusedOutcomes removes every node in reRun from the three maps
+// reusableOutcomes produced, so those nodes execute again instead of being
+// restored from the earlier run.
+//
+// Clearing all three together is the contract, and it is worth saying why
+// it is a contract rather than three independent lines.
+//
+// Only succeeded is load-bearing against today's call graph. Both of the
+// other maps are proper subsets of it, because reusableOutcomes writes
+// them only inside the same branch that sets succeeded[nodeID], and
+// Runner.executeNode reads both only inside its skipNodes branch, which a
+// node dropped from succeeded no longer enters. An entry left behind is
+// therefore unreachable rather than dangerous, and mutation testing
+// confirms exactly that: removing either delete alone changes no
+// end-to-end behaviour.
+//
+// They are cleared regardless, and tested here directly, for two reasons.
+// A map still keyed by a node that is about to re-execute is a trap for
+// the next reader. And the safety currently rests on where one read
+// happens to sit, which is not a property this function should depend on:
+// engine/wait.go already populates the same two maps on a Runner by the
+// same route, so the invariant has more than one place to be broken from.
+func dropReusedOutcomes(reRun map[string]bool, succeeded, conditionResults map[string]bool, artifactSourceRunIDs map[string]string) {
+	for id := range reRun {
+		delete(succeeded, id)
+		delete(conditionResults, id)
+		delete(artifactSourceRunIDs, id)
+	}
+}
+
+// resumeRun is the shared body of ResumeRun and ResumeRunFromNode. An
+// empty fromNodeID is the plain resume, whose behaviour is unchanged.
+func (e *Engine) resumeRun(runID, fromNodeID string) (*models.Run, error) {
 	if e.closing() {
 		return nil, ErrEngineClosed
 	}
@@ -1546,8 +1673,12 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
-	if oldRun.Status != models.RunStatusFailed {
-		return nil, fmt.Errorf("can only resume failed runs (current: %s)", oldRun.Status)
+	if fromNodeID == "" {
+		if oldRun.Status != models.RunStatusFailed {
+			return nil, fmt.Errorf("can only resume failed runs (current: %s)", oldRun.Status)
+		}
+	} else if err := resumeFromNodeStatusError(oldRun.Status); err != nil {
+		return nil, err
 	}
 
 	pipe, err := e.resolvePipelineForRun(oldRun.PipelineID, oldRun.PipelineVersion)
@@ -1568,10 +1699,32 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		}
 	}
 
+	// The chosen node must exist in the DAG this run actually executed,
+	// not in the live pipeline, which may have been edited since.
+	var reRun map[string]bool
+	if fromNodeID != "" {
+		known := false
+		for _, n := range pipe.Nodes {
+			if n.ID == fromNodeID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("cannot resume from node %q: the pipeline version this run executed (version %d) has no such node", fromNodeID, oldRun.PipelineVersion)
+		}
+		reRun = descendantsInclusive(pipe, fromNodeID)
+	}
+
 	succeeded, conditionResults, artifactSourceRunIDs, err := e.reusableOutcomes(pipe, oldRun)
 	if err != nil {
 		return nil, err
 	}
+
+	// Drop the chosen node and its descendants from everything the resume
+	// would otherwise reuse, so they execute again.
+	//
+	dropReusedOutcomes(reRun, succeeded, conditionResults, artifactSourceRunIDs)
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
@@ -1602,6 +1755,16 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.metrics = e.newRunnerMetrics()
 
 	run, err := runner.Execute()
+	// Record the choice on the new run even when it went on to fail: the
+	// question "why did this run start here" is asked most often about a
+	// run that did not work out.
+	if run != nil && fromNodeID != "" {
+		e.appendEvent(&models.RunEvent{
+			RunID:     run.ID,
+			NodeID:    fromNodeID,
+			EventType: models.RunEventResumedFromNode,
+		})
+	}
 	return run, err
 }
 
