@@ -281,6 +281,13 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS queue_ms BIGINT NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS total_rows INTEGER`)
+	// Previews written before truncated existed were capped at
+	// NodePreviewRowLimit (50) rows. A sample exactly at that cap is
+	// almost always truncated, but DEFAULT FALSE would claim completeness.
+	// Mark them truncated with total unknown (total_rows stays NULL).
+	s.db.Exec(`UPDATE node_previews SET truncated = TRUE WHERE jsonb_array_length(rows) = 50 AND total_rows IS NULL`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS rows_per_sec REAL NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`)
@@ -1825,33 +1832,59 @@ func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
 
 // --- Data Preview ---
 
-func (s *PostgresStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
-	colJSON, _ := json.Marshal(columns)
-	if len(rows) > 50 {
-		rows = rows[:50]
+func (s *PostgresStore) SaveNodePreview(runID, nodeID string, preview NodePreview) error {
+	columns := preview.Columns
+	rows := preview.Rows
+	truncated := preview.Truncated
+	var total any
+	if preview.TotalRows != nil {
+		total = *preview.TotalRows
 	}
+	// Engine is authoritative for Truncated/TotalRows when it knows the
+	// full size (DatasetRef.RowCount or len(output.Rows)). The store
+	// re-derives below only as a safety net for callers that omit the
+	// flag or hand more rows than NodePreviewRowLimit.
+	if preview.TotalRows != nil && !truncated {
+		truncated = *preview.TotalRows > int64(NodePreviewRowLimit)
+	}
+	if len(rows) > NodePreviewRowLimit {
+		rows = rows[:NodePreviewRowLimit]
+		truncated = true
+		if preview.TotalRows == nil {
+			n := int64(len(preview.Rows))
+			total = n
+		}
+	}
+	colJSON, _ := json.Marshal(columns)
 	rowJSON, _ := json.Marshal(rows)
 	_, err := s.db.Exec(
-		`INSERT INTO node_previews (run_id, node_id, columns, rows) VALUES ($1,$2,$3,$4)
-		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4`,
-		runID, nodeID, colJSON, rowJSON,
+		`INSERT INTO node_previews (run_id, node_id, columns, rows, truncated, total_rows) VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4, truncated=$5, total_rows=$6`,
+		runID, nodeID, colJSON, rowJSON, truncated, total,
 	)
 	return err
 }
 
-func (s *PostgresStore) GetNodePreview(runID, nodeID string) ([]string, []common.DataRow, error) {
+func (s *PostgresStore) GetNodePreview(runID, nodeID string) (NodePreview, error) {
 	var colJSON, rowJSON []byte
+	var truncated bool
+	var total sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT columns, rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
-	).Scan(&colJSON, &rowJSON)
+		`SELECT columns, rows, truncated, total_rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
+	).Scan(&colJSON, &rowJSON, &truncated, &total)
 	if err != nil {
-		return nil, nil, err
+		return NodePreview{}, err
 	}
 	var columns []string
 	var rows []common.DataRow
 	json.Unmarshal(colJSON, &columns)
 	json.Unmarshal(rowJSON, &rows)
-	return columns, rows, nil
+	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncated}
+	if total.Valid {
+		n := total.Int64
+		out.TotalRows = &n
+	}
+	return out, nil
 }
 
 // --- Versioning ---

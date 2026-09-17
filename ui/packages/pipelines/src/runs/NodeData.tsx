@@ -55,28 +55,37 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
         ) : !columns.length ? (
           <EmptyState title="Empty output">The node finished without columns to show.</EmptyState>
         ) : (
-          <div className="bk-data-table">
-            <table>
-              <thead>
-                <tr>
-                  <th>#</th>
-                  {columns.map((c) => (
-                    <th key={c}>{c}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r, i) => (
-                  <tr key={i}>
-                    <td className="bk-muted">{i + 1}</td>
+          <>
+            {preview.data?.truncated && (
+              <Callout tone="warning" title="Showing a sample, not the full output">
+                {preview.data.total_rows != null
+                  ? `This sample has ${formatNumber(rows.length)} of ${formatNumber(preview.data.total_rows)} rows.`
+                  : `This sample is capped at ${formatNumber(rows.length)} rows; the full size is unknown.`}
+              </Callout>
+            )}
+            <div className="bk-data-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
                     {columns.map((c) => (
-                      <td key={c}>{cell(r[c])}</td>
+                      <th key={c}>{c}</th>
                     ))}
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody>
+                  {rows.map((r, i) => (
+                    <tr key={i}>
+                      <td className="bk-muted">{i + 1}</td>
+                      {columns.map((c) => (
+                        <td key={c}>{cell(r[c])}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </section>
 

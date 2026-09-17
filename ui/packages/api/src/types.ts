@@ -373,6 +373,10 @@ export interface BackfillPlan {
 export interface NodePreview {
   columns: string[] | null
   rows: Record<string, unknown>[] | null
+  /** True when the stored sample is not the full output. */
+  truncated?: boolean
+  /** Full output size when known; omitted/null when only the cap was hit. */
+  total_rows?: number | null
 }
 
 export interface ColumnProfile {

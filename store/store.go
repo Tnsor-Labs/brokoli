@@ -492,10 +492,27 @@ type LogStore interface {
 	GetLogs(runID string) ([]models.LogEntry, error)
 }
 
+// NodePreviewRowLimit is how many rows SaveNodePreview keeps for the
+// editor sample. Callers that derive Truncated/TotalRows from a known
+// full size use the same cap so the stored flag matches the truncated rows.
+const NodePreviewRowLimit = 50
+
+// NodePreview is the truncated sample persisted for the editor, plus
+// whether that sample is the whole output. TotalRows is nil when the
+// engine only knew it hit the preview cap and not the true size.
+// TotalRows is int64 so a large DatasetRef.RowCount cannot wrap on a
+// 32-bit build (and so the conversion is not a G115 candidate).
+type NodePreview struct {
+	Columns   []string
+	Rows      []common.DataRow
+	Truncated bool
+	TotalRows *int64 // nil when unknown
+}
+
 // PreviewStore persists per-node data previews for the editor.
 type PreviewStore interface {
-	SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error
-	GetNodePreview(runID, nodeID string) (columns []string, rows []common.DataRow, err error)
+	SaveNodePreview(runID, nodeID string, preview NodePreview) error
+	GetNodePreview(runID, nodeID string) (NodePreview, error)
 }
 
 // VersionStore persists pipeline version snapshots.

@@ -203,6 +203,13 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN ready_at TEXT`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN queue_ms INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN total_rows INTEGER`)
+	// Previews written before truncated existed were capped at
+	// NodePreviewRowLimit (50) rows. A sample exactly at that cap is
+	// almost always truncated, but DEFAULT 0 would claim completeness.
+	// Mark them truncated with total unknown (total_rows stays NULL).
+	s.db.Exec(`UPDATE node_previews SET truncated = 1 WHERE json_array_length(rows) = 50 AND total_rows IS NULL`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN rows_per_sec REAL NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN span_id TEXT NOT NULL DEFAULT ''`)
@@ -2039,43 +2046,74 @@ func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {
 
 // --- Node Previews ---
 
-func (s *SQLiteStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
+func (s *SQLiteStore) SaveNodePreview(runID, nodeID string, preview NodePreview) error {
+	columns := preview.Columns
+	rows := preview.Rows
+	truncated := preview.Truncated
+	var total any
+	if preview.TotalRows != nil {
+		total = *preview.TotalRows
+	}
+	// Engine is authoritative for Truncated/TotalRows when it knows the
+	// full size (DatasetRef.RowCount or len(output.Rows)). The store
+	// re-derives below only as a safety net for callers that omit the
+	// flag or hand more rows than NodePreviewRowLimit.
+	if preview.TotalRows != nil && !truncated {
+		truncated = *preview.TotalRows > int64(NodePreviewRowLimit)
+	}
+	if len(rows) > NodePreviewRowLimit {
+		rows = rows[:NodePreviewRowLimit]
+		truncated = true
+		if preview.TotalRows == nil {
+			// Caller handed more than the cap without declaring total —
+			// the pre-truncate length is the true total.
+			n := int64(len(preview.Rows))
+			total = n
+		}
+	}
 	colJSON, err := json.Marshal(columns)
 	if err != nil {
 		return fmt.Errorf("marshal columns: %w", err)
-	}
-	// Limit to 50 rows
-	if len(rows) > 50 {
-		rows = rows[:50]
 	}
 	rowJSON, err := json.Marshal(rows)
 	if err != nil {
 		return fmt.Errorf("marshal rows: %w", err)
 	}
+	truncInt := 0
+	if truncated {
+		truncInt = 1
+	}
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO node_previews (run_id, node_id, columns, rows) VALUES (?, ?, ?, ?)`,
-		runID, nodeID, string(colJSON), string(rowJSON),
+		`INSERT OR REPLACE INTO node_previews (run_id, node_id, columns, rows, truncated, total_rows) VALUES (?, ?, ?, ?, ?, ?)`,
+		runID, nodeID, string(colJSON), string(rowJSON), truncInt, total,
 	)
 	return err
 }
 
-func (s *SQLiteStore) GetNodePreview(runID, nodeID string) ([]string, []common.DataRow, error) {
+func (s *SQLiteStore) GetNodePreview(runID, nodeID string) (NodePreview, error) {
 	row := s.db.QueryRow(
-		`SELECT columns, rows FROM node_previews WHERE run_id = ? AND node_id = ?`, runID, nodeID,
+		`SELECT columns, rows, truncated, total_rows FROM node_previews WHERE run_id = ? AND node_id = ?`, runID, nodeID,
 	)
 	var colJSON, rowJSON string
-	if err := row.Scan(&colJSON, &rowJSON); err != nil {
-		return nil, nil, err
+	var truncatedInt int
+	var total sql.NullInt64
+	if err := row.Scan(&colJSON, &rowJSON, &truncatedInt, &total); err != nil {
+		return NodePreview{}, err
 	}
 	var columns []string
 	if err := json.Unmarshal([]byte(colJSON), &columns); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal columns: %w", err)
+		return NodePreview{}, fmt.Errorf("unmarshal columns: %w", err)
 	}
 	var rows []common.DataRow
 	if err := json.Unmarshal([]byte(rowJSON), &rows); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal rows: %w", err)
+		return NodePreview{}, fmt.Errorf("unmarshal rows: %w", err)
 	}
-	return columns, rows, nil
+	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncatedInt != 0}
+	if total.Valid {
+		n := total.Int64
+		out.TotalRows = &n
+	}
+	return out, nil
 }
 
 // --- Versioning ---

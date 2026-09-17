@@ -11,6 +11,17 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Node previews declare when the stored sample is truncated**, with
+  `truncated` and `total_rows` on the API and in both stores, and the
+  run UI shows a truncation banner (same Callout pattern as the
+  dependency map). Existing previews whose sample sits exactly at the
+  50-row cap are backfilled as truncated with unknown total.
+  **Interface change:** exported `store.PreviewStore` / `store.NodePreview`
+  gains `Truncated` and `TotalRows` (`*int64`); every out-of-tree
+  `store.Store` implementor must update in lockstep. (#659) -- @MrBeldum
+
 ## [0.11.29] - 2026-09-16
 
 > **Behaviour change for multi-workspace organizations:** pipelines are

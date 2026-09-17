@@ -510,7 +510,8 @@ func (c *ndjsonRowCounter) finalCount() int64 {
 
 // previewFromRef materializes only the first previewRows rows of a
 // referenced output — what SaveNodePreview actually keeps — instead of
-// the whole dataset.
+// the whole dataset. Callers that need Truncated/TotalRows should use
+// ref.RowCount rather than peeking past the filled preview.
 func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows int) (*common.DataSet, error) {
 	batches, closer, err := outputs.OpenBatches(ref)
 	if err != nil {

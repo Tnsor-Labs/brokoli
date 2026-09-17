@@ -66,7 +66,7 @@ func migrationOrder() []tableSpec {
 		{"node_runs", "id, run_id, node_id, status, row_count, started_at, duration_ms, error", []string{"runs"}},
 		{"logs", "run_id, node_id, level, message, timestamp", []string{"runs"}},
 		{"pipeline_versions", "pipeline_id, version, snapshot, message, created_at", []string{"pipelines"}},
-		{"node_previews", "run_id, node_id, columns, rows", []string{"runs"}},
+		{"node_previews", "run_id, node_id, columns, rows, truncated, total_rows", []string{"runs"}},
 		{"node_profiles", "run_id, node_id, profile, schema_snapshot, drift_alerts, created_at", []string{"runs"}},
 		{"api_tokens", "id, name, token_hash, workspace_id, user_id, role, expires_at, created_at, last_used_at", []string{"workspaces"}},
 		{"dead_letter_queue", "id, pipeline_id, run_id, error, node_id, node_name, payload, created_at, resolved, resolved_at", []string{"pipelines"}},

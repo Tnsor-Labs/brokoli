@@ -9,10 +9,12 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // TestNDJSONBatchReader_EquivalentToDecodeNDJSON is the foundational
@@ -341,16 +343,22 @@ output_data = {"columns": ["id", "value"], "rows": out}
 		}
 	}
 
-	// The preview kept only its 50 rows.
-	previewCols, previewRows, err := s.GetNodePreview(run.ID, "double")
+	// The preview kept only its 50 rows, flagged truncated with the true total.
+	preview, err := s.GetNodePreview(run.ID, "double")
 	if err != nil {
 		t.Fatalf("get preview: %v", err)
 	}
-	if len(previewRows) == 0 || len(previewRows) > 50 {
-		t.Fatalf("preview rows = %d, want 1..50", len(previewRows))
+	if len(preview.Rows) == 0 || len(preview.Rows) > store.NodePreviewRowLimit {
+		t.Fatalf("preview rows = %d, want 1..%d", len(preview.Rows), store.NodePreviewRowLimit)
 	}
-	if len(previewCols) == 0 {
+	if len(preview.Columns) == 0 {
 		t.Fatal("preview lost its columns")
+	}
+	if !preview.Truncated {
+		t.Fatal("preview Truncated = false, want true for 5000-row output")
+	}
+	if preview.TotalRows == nil || *preview.TotalRows != 5000 {
+		t.Fatalf("preview TotalRows = %v, want 5000", preview.TotalRows)
 	}
 }
 
@@ -795,5 +803,83 @@ func numIs(v interface{}, want float64) bool {
 		return err == nil && f == want
 	default:
 		return false
+	}
+}
+
+// TestPreviewFromRef_MidRangeTruncation pins the 51..1000 single-batch
+// regression: previewFromRef fills only NodePreviewRowLimit rows, but
+// DatasetRef.RowCount still carries the true total, so SaveNodePreview
+// must record Truncated=true with that total. The old peek-past-batch
+// logic reported these outputs as complete.
+func TestPreviewFromRef_MidRangeTruncation(t *testing.T) {
+	const totalRows = 60 // in the 51..1000 band the old peek got wrong
+
+	blobs := artifact.NewLocalDiskStore(t.TempDir())
+	outputs := newNodeOutputs(blobs, "run-midrange-preview", 1) // force spill
+
+	rows := make([]common.DataRow, totalRows)
+	for i := range rows {
+		rows[i] = common.DataRow{"id": i}
+	}
+	ds := &common.DataSet{Columns: []string{"id"}, Rows: rows}
+	if err := outputs.Put("n1", ds); err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	ref, ok := outputs.GetRef("n1")
+	if !ok || ref == nil {
+		t.Fatal("expected spilled DatasetRef")
+	}
+	if ref.RowCount != totalRows {
+		t.Fatalf("RowCount = %d, want %d", ref.RowCount, totalRows)
+	}
+
+	preview, err := previewFromRef(outputs, ref, store.NodePreviewRowLimit)
+	if err != nil {
+		t.Fatalf("previewFromRef: %v", err)
+	}
+	if len(preview.Rows) != store.NodePreviewRowLimit {
+		t.Fatalf("preview rows = %d, want %d", len(preview.Rows), store.NodePreviewRowLimit)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "preview.db")
+	s, err := store.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	now := time.Now().Truncate(time.Millisecond)
+	pipe := &models.Pipeline{
+		ID: "pipe-midrange", Name: "Midrange", Enabled: true,
+		Nodes:     []models.Node{{ID: "n1", Type: models.NodeTypeCode, Name: "n1"}},
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := s.CreatePipeline(pipe); err != nil {
+		t.Fatalf("CreatePipeline: %v", err)
+	}
+	run := &models.Run{ID: "run-midrange", PipelineID: pipe.ID, Status: models.RunStatusSuccess, StartedAt: &now}
+	if err := s.CreateRun(run); err != nil {
+		t.Fatalf("CreateRun: %v", err)
+	}
+
+	total := ref.RowCount
+	if err := s.SaveNodePreview(run.ID, "n1", store.NodePreview{
+		Columns: preview.Columns, Rows: preview.Rows,
+		Truncated: ref.RowCount > int64(store.NodePreviewRowLimit),
+		TotalRows: &total,
+	}); err != nil {
+		t.Fatalf("SaveNodePreview: %v", err)
+	}
+	got, err := s.GetNodePreview(run.ID, "n1")
+	if err != nil {
+		t.Fatalf("GetNodePreview: %v", err)
+	}
+	if !got.Truncated {
+		t.Fatal("Truncated = false, want true for 60-row ref-path output")
+	}
+	if got.TotalRows == nil || *got.TotalRows != totalRows {
+		t.Fatalf("TotalRows = %v, want %d", got.TotalRows, totalRows)
+	}
+	if len(got.Rows) != store.NodePreviewRowLimit {
+		t.Fatalf("stored rows = %d, want %d", len(got.Rows), store.NodePreviewRowLimit)
 	}
 }
