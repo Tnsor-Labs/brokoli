@@ -285,12 +285,17 @@ func (r *Runner) runSinkDBFromTableRef(node models.Node, in *TableRef, attempt i
 		if truncate {
 			clear = fmt.Sprintf("TRUNCATE TABLE %s", target)
 		}
-		r.recordExecutedSQL(node.ID, attempt, clear)
+		// Not recorded (#667): the clear is engine boilerplate derived from
+		// mode=overwrite, not SQL anyone wrote.
 		if _, err := tx.ExecContext(r.ctx, clear); err != nil {
 			return 0, false, fmt.Errorf("clear %s: %w", table, err)
 		}
 	}
 
+	// Recorded even though the engine composed it, which departs from #667's
+	// "skip sink INSERTs": it embeds the author's query verbatim as its SELECT,
+	// carries no per-row VALUES so it stays small, and is the only record of
+	// what the pushdown path actually ran.
 	r.recordExecutedSQL(node.ID, attempt, insert)
 	res, err := tx.ExecContext(r.ctx, insert)
 	if err != nil {
