@@ -194,7 +194,10 @@ export const runApi = {
   events: (id: string) => request<RunEvent[] | null>(`/runs/${enc(id)}/events`).then((d) => d ?? []),
   instances: (id: string) => request<PhysicalInstance[] | null>(`/runs/${enc(id)}/instances`).then((d) => d ?? []),
   cancel: (id: string) => request<{ status: string }>(`/runs/${enc(id)}/cancel`, { method: 'POST' }),
-  resume: (id: string) => request<Run>(`/runs/${enc(id)}/resume`, { method: 'POST' }),
+  // With no fromNode this is the plain resume (a failed run, from its first
+  // failed node). With one, that node and everything downstream of it re-run as
+  // a new appended run; the rest of the earlier run's work is reused.
+  resume: (id: string, fromNode?: string) => request<Run>(`/runs/${enc(id)}/resume`, fromNode ? { method: 'POST', json: { from_node: fromNode } } : { method: 'POST' }),
   preview: (runId: string, nodeId: string) => request<NodePreview>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/preview`),
   profile: (runId: string, nodeId: string) => request<NodeProfile>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/profile`),
   exportLogs: async (id: string) => {
