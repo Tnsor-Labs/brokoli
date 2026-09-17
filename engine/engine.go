@@ -178,7 +178,28 @@ type Engine struct {
 	// correctness property and what lets tests that touch it run in
 	// parallel (Tnsor-Labs/brokoli#264, #329).
 	RecoveryTransitionGracePeriod time.Duration
-	AttemptsReclaimed             int64
+
+	// RecoveryMinRunAge is how long a run is left alone after it starts,
+	// before recovery will consider adopting it at all.
+	//
+	// RecoveryTransitionGracePeriod above protects a run by its most
+	// recent EVENT, which is no protection during the window between a
+	// run starting and its first event becoming durable. An executor in
+	// another process (a remote pool worker, say) can be several hundred
+	// milliseconds into a node before the server sees anything at all,
+	// and recovery would read that as "never started" and hand the run to
+	// somebody else, running it twice. NewEngine sets it to
+	// defaultRecoveryMinRunAge; zero disables the guard, which is what a
+	// test asserting the "genuinely orphaned, act now" path wants.
+	RecoveryMinRunAge time.Duration
+
+	// ExternalRunClaim, when set, lets an embedder answer the one question
+	// recovery cannot answer from core's own tables: is this run owned by
+	// an executor this process cannot see? See ExternalRunClaimFunc. Nil
+	// in OSS, where the only executors are this process and the job queue,
+	// so behaviour is unchanged.
+	ExternalRunClaim  ExternalRunClaimFunc
+	AttemptsReclaimed int64
 
 	// The counters below fill the remaining metrics gaps named by
 	// Tnsor-Labs/brokoli#11: event append/replay (Tnsor-Labs/brokoli#6) and
@@ -332,6 +353,7 @@ func NewEngine(s store.Store) *Engine {
 		// because serve builds its resolver through the same constructor.
 		ConnResolver:                  NewConnectionResolver(s, nil),
 		RecoveryTransitionGracePeriod: defaultRecoveryTransitionGracePeriod,
+		RecoveryMinRunAge:             defaultRecoveryMinRunAge,
 		shutdown:                      make(chan struct{}),
 		eventCh:                       make(chan models.Event, eventBuf),
 		active:                        make(map[string]*Runner),

@@ -194,6 +194,9 @@ func TestSchedulerCatchUpMissedRunsSkipsWhenNotLeader(t *testing.T) {
 func TestSchedulerReclaimSweepReclaimsExpiredLeaseWhenLeader(t *testing.T) {
 	s := newLeaderTestStore(t).(*store.SQLiteStore)
 	eng := drainEngineOnCleanup(t, NewEngine(s))
+	// The fixture's run is stamped as starting now, but represents a
+	// process that died; the age guard would otherwise defer it.
+	eng.RecoveryMinRunAge = 0
 	seedRecoveryPipeline(t, s, "pipe-sweep-reclaim")
 	run := seedOrphanedRun(t, s, "pipe-sweep-reclaim", "run-sweep-reclaim", models.RunStatusRunning)
 	appendRecoveryEvent(t, s, &models.RunEvent{

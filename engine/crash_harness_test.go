@@ -306,6 +306,7 @@ func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID
 	// traces of a dead process, so the real-clock grace window would defer
 	// every one of them.
 	eng.RecoveryTransitionGracePeriod = 0
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	first, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("first RecoverNonTerminalRuns: %v", err)
@@ -365,6 +366,7 @@ func assertCrashRecovery(t *testing.T, dbPath string, wantStatus models.RunStatu
 	// traces of a dead process, so the real-clock grace window would defer
 	// every one of them.
 	eng.RecoveryTransitionGracePeriod = 0
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	summary, err := eng.RecoverNonTerminalRuns()
 	if err != nil {
 		t.Fatalf("RecoverNonTerminalRuns: %v", err)
