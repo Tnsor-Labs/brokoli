@@ -157,6 +157,20 @@ const (
 	// the audit trail and what bounds them: recovery counts these to stop
 	// a run cycling forever.
 	RunEventRecoveryRequeued RunEventType = "run.recovery_requeued"
+
+	// RunEventResumedFromNode records that this run was created by resuming
+	// an earlier run from a chosen node, re-executing that node and every
+	// node downstream of it. NodeID is the node the operator chose; the
+	// lineage back to the run it came from is models.Run.ResumedFromRunID,
+	// exactly as for an ordinary resume.
+	//
+	// This is the one event type that sets NodeID without an Attempt. It
+	// describes a decision about the run, not an execution of that node,
+	// and the node has its own AttemptStarted/Completed events when it
+	// actually runs. engine.ProjectRun deliberately ignores it: the event
+	// carries no state to project, and folding it in would invent a
+	// node_runs row for a node that had not executed yet.
+	RunEventResumedFromNode RunEventType = "run.resumed_from_node"
 )
 
 // RunEvent is a single immutable, append-only fact about a run or a node

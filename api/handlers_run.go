@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -556,7 +557,31 @@ func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
-	run, err := h.engine.ResumeRun(runID)
+	// Optional body. With no from_node this is exactly what it has always
+	// been: resume a failed run from its first failed node. With one, the
+	// chosen node and everything downstream of it run again, and the rest
+	// of the earlier run's work is reused.
+	var req struct {
+		FromNode string `json:"from_node"`
+	}
+	// io.EOF is the empty body, which is the plain resume and is fine.
+	// Any other decode error must be refused rather than discarded: a
+	// failed decode leaves FromNode empty, which is indistinguishable
+	// from "no from_node", so a caller who asked for one node would
+	// silently get a plain resume of the whole run instead, doing more
+	// work than was asked for with nothing to notice it by.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body could not be read as JSON: "+err.Error())
+		return
+	}
+
+	var run *models.Run
+	var err error
+	if req.FromNode == "" {
+		run, err = h.engine.ResumeRun(runID)
+	} else {
+		run, err = h.engine.ResumeRunFromNode(runID, req.FromNode)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
