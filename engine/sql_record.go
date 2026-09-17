@@ -25,6 +25,20 @@ import (
 //     statement and is never copied into one; secret-derived values that the
 //     resolver substituted INTO the statement are masked (see
 //     maskRecordedSQL).
+//
+// Scope (#667): only AUTHOR-WRITTEN SQL is recorded as a statement -- a
+// source query, the SQL a sql_generate node forwards, the Migrate source
+// query, anything a person typed, with its variables substituted. The write
+// DML a sink synthesizes is not: nobody wrote it, it is the bulk of what an
+// ordinary source-to-sink pipeline emits, and a truncated dump of generated
+// INSERT ... VALUES buries the one statement worth reading. Those paths record
+// an explicit note instead (recordGeneratedWrite, recordBulkWrite), because an
+// empty panel cannot be told apart from a broken feature.
+//
+// The author/generated split lives at the CALL SITES, never in this file. Only
+// the caller knows which kind it holds; deciding here would mean inspecting
+// the statement text, and a recorder that guesses is worse than one that is
+// told.
 
 // maxRecordedSQLBytes bounds one recorded statement.
 //
@@ -101,6 +115,29 @@ func (r *Runner) recordBulkWrite(nodeID string, attempt int, dialect, table stri
 	r.recordExecutedSQL(nodeID, attempt, fmt.Sprintf(
 		"-- [brokoli] no SQL statement: this write streamed rows into %q using %s, "+
 			"which carries rows as data rather than as SQL text", table, bulkMechanismName(dialect)))
+}
+
+// recordGeneratedWriteNote prefixes the note recordGeneratedWrite records.
+// It is deliberately distinct from recordedSQLShortSecretRefusal's
+// "statement not recorded" so a reader classifying notes by prefix cannot
+// mistake an engine-generated write for a statement withheld over a secret.
+const recordGeneratedWriteNote = "-- [brokoli] generated write not recorded: "
+
+// recordGeneratedWrite records that a sink executed SQL the ENGINE built,
+// which #667 scopes out of the recorded statements.
+//
+// The wording differs from recordBulkWrite on purpose. A bulk load genuinely
+// has no SQL statement; this path built one and sent it, so "no SQL
+// statement" would be false. What is true is that nobody wrote it: sink_db
+// renders the input rows into INSERT ... VALUES, one row per line.
+//
+// Recording the absence rather than nothing follows the same rule
+// recordBulkWrite does: an empty panel cannot be told apart from a feature
+// that broke.
+func (r *Runner) recordGeneratedWrite(nodeID string, attempt int, table string) {
+	r.recordExecutedSQL(nodeID, attempt, fmt.Sprintf(recordGeneratedWriteNote+
+		"this sink wrote into %q with SQL the engine built from its input rows, "+
+		"not SQL anyone wrote, and only author-written SQL is recorded", table))
 }
 
 // bulkMechanismName names the protocol that moved the rows, so the note
