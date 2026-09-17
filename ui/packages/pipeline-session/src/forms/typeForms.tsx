@@ -62,6 +62,7 @@ function SourceFile({ ctx }: TypeFormProps) {
         label="File path"
         mono
         required
+        templatable
         placeholder={remote ? 'inbound/orders.csv' : '/data/input.csv'}
         hint={
           remote
@@ -84,9 +85,9 @@ function SourceApi({ ctx }: TypeFormProps) {
     <>
       <Section title="Request">
         <ConnectionField ctx={ctx} types={HTTP_TYPES} noneLabel="No connection (full URL below)" hint="A connection supplies the base URL, headers and credentials." />
-        <TextField ctx={ctx} name="url" label="URL" mono required placeholder={ctx.get('conn_id') ? '/v1/orders' : 'https://api.example.com/v1/orders'} hint={ctx.get('conn_id') ? "A path starting with / is appended to the connection's base URL." : undefined} />
+        <TextField ctx={ctx} name="url" label="URL" mono required templatable placeholder={ctx.get('conn_id') ? '/v1/orders' : 'https://api.example.com/v1/orders'} hint={ctx.get('conn_id') ? "A path starting with / is appended to the connection's base URL." : undefined} />
         <SelectField ctx={ctx} name="method" label="Method" options={['GET', 'POST', 'PUT', 'PATCH', 'DELETE']} defaultLabel="GET" />
-        {['POST', 'PUT', 'PATCH'].includes(method) && <TextField ctx={ctx} name="body" label="Request body" multiline mono rows={5} placeholder='{"since": "${interval.start}"}' hint="Sent as written. Set a Content-Type header if the API needs one." />}
+        {['POST', 'PUT', 'PATCH'].includes(method) && <TextField ctx={ctx} name="body" label="Request body" multiline mono rows={5} templatable placeholder='{"since": "${interval.start}"}' hint="Sent as written. Set a Content-Type header if the API needs one." />}
         <MapField ctx={ctx} name="params" label="Query parameters" addLabel="Add a parameter" />
         <MapField ctx={ctx} name="headers" label="Headers" addLabel="Add a header" keyPlaceholder="Header-Name" />
       </Section>
@@ -239,6 +240,7 @@ function SinkFile({ ctx }: TypeFormProps) {
         label="Output path"
         mono
         required
+        templatable
         placeholder={remote ? 'outbound/orders.csv' : '/output/result.csv'}
         hint={remote ? "A path on the SFTP server; a relative path starts in the connection's base directory. The file is written under a temporary name and renamed into place once complete, so a reader never sees it half-written." : undefined}
       />
@@ -269,6 +271,7 @@ function SinkDb({ ctx, nodes, edges }: TypeFormProps) {
           label="Table"
           mono
           required={!fromSqlGenerate}
+          templatable
           placeholder="analytics.orders"
           hint={fromSqlGenerate ? 'Optional: the upstream SQL Generate node supplies the statements.' : 'schema.table is allowed.'}
         />
@@ -288,7 +291,7 @@ function SinkApi({ ctx }: TypeFormProps) {
   return (
     <Section title="Request" description="Rows are sent as JSON arrays, one request per batch. Any HTTP status of 400 or above fails the node.">
       <ConnectionField ctx={ctx} types={HTTP_TYPES} noneLabel="No connection (full URL below)" />
-      <TextField ctx={ctx} name="url" label="URL" mono required placeholder="https://api.example.com/ingest" />
+      <TextField ctx={ctx} name="url" label="URL" mono required templatable placeholder="https://api.example.com/ingest" />
       <SelectField ctx={ctx} name="method" label="Method" options={['POST', 'PUT', 'PATCH']} defaultLabel="POST" />
       <NumberField ctx={ctx} name="batch_size" label="Rows per request" defaultValue={100} min={1} />
       <MapField ctx={ctx} name="headers" label="Headers" addLabel="Add a header" keyPlaceholder="Header-Name" hint="Content-Type: application/json is always sent." />
@@ -308,7 +311,7 @@ function Migrate({ ctx }: TypeFormProps) {
       <Section title="Destination">
         <ConnectionField ctx={ctx} idKey="dest_conn_id" uriKey="dest_uri" types={DB_TYPES} label="Destination connection" noneLabel="Enter a destination URI instead" />
         {!ctx.get('dest_conn_id') && <TextField ctx={ctx} name="dest_uri" label="Destination URI" mono required />}
-        <TextField ctx={ctx} name="dest_table" label="Destination table" mono required />
+        <TextField ctx={ctx} name="dest_table" label="Destination table" mono required templatable />
         <SelectField ctx={ctx} name="dialect" label="Dialect" options={DIALECTS} defaultLabel="inferred from the destination" />
         <SelectField ctx={ctx} name="mode" label="Mode" options={WRITE_MODES} defaultLabel="append rows" />
         {mode === 'upsert' && <ListField ctx={ctx} name="key_columns" label="Key columns" required />}

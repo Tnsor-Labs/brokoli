@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { Ban, Maximize2, RotateCcw, StepForward } from 'lucide-react'
+import { Ban, Maximize2, Redo2, RotateCcw, StepForward } from 'lucide-react'
 import { ApiError, pipelineApi, runApi, type Pipeline } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import { PipelineGraph } from '@brokoli/pipeline-session'
@@ -26,11 +26,12 @@ import { FAILURE, keys, paths } from '../keys'
 import { LogView } from './LogView'
 import { NodeData } from './NodeData'
 import { Provenance } from './Provenance'
+import { Queries } from './Queries'
 import { Timeline } from './Timeline'
-import { isActive, nodeStatuses, primaryAttempts, runDuration, totalRows, triggeredByLabel } from './model'
+import { canRerunStatus, descendantClosure, isActive, nodeStatuses, primaryAttempts, runDuration, totalRows, triggeredByLabel } from './model'
 import './gantt.css'
 
-type Tab = 'timeline' | 'logs' | 'data' | 'events' | 'instances'
+type Tab = 'timeline' | 'logs' | 'data' | 'sql' | 'events' | 'instances'
 
 export function RunDetail({
   pipeline,
@@ -49,6 +50,7 @@ export function RunDetail({
   const [tab, setTab] = useState<Tab>('timeline')
   const [node, setNode] = useState<string | null>(null)
   const [confirmCancel, setConfirmCancel] = useState(false)
+  const [rerunFrom, setRerunFrom] = useState<string | null>(null)
   const [busy, setBusy] = useState<'resume' | 'rerun' | null>(null)
   const [errorOpen, setErrorOpen] = useState(false)
   const run = useQuery({ queryKey: keys.run(runId), queryFn: () => runApi.get(runId) })
@@ -56,6 +58,7 @@ export function RunDetail({
   const events = useQuery({ queryKey: keys.runEvents(runId), queryFn: () => runApi.events(runId) })
   const instances = useQuery({ queryKey: keys.runInstances(runId), queryFn: () => runApi.instances(runId) })
   const nodeNames = useMemo(() => Object.fromEntries(pipeline.nodes.map((n) => [n.id, n.name || n.id])), [pipeline.nodes])
+  const nodeIds = useMemo(() => new Set(pipeline.nodes.map((n) => n.id)), [pipeline.nodes])
 
   if (run.isPending)
     return (
@@ -87,6 +90,12 @@ export function RunDetail({
   }
   const canRun = session.can('pipelines.run') && !pipeline.draft
   const longError = (r.error?.length ?? 0) > 280
+  const sqlCount = events.data?.filter((e) => e.event_type === 'attempt.query').length
+  // "Re-run from a node" reuses runs.resume and accepts a settled run
+  // (success, failed or cancelled), never one still in flight.
+  const canRerunNode = session.can('runs.resume') && canRerunStatus(r.status)
+  const rerunClosure = rerunFrom ? descendantClosure(rerunFrom, pipeline.edges, nodeIds) : null
+  const rerunDownstream = rerunClosure ? rerunClosure.size - 1 : 0
 
   const resume = async () => {
     setBusy('resume')
@@ -113,6 +122,17 @@ export function RunDetail({
     } finally {
       setBusy(null)
     }
+  }
+  // No try/catch: ConfirmDialog awaits this, shows any error inline and keeps
+  // itself open, matching the cancel dialog below.
+  const rerunNode = async () => {
+    const from = rerunFrom
+    if (!from) return
+    const next = await runApi.resume(r.id, from)
+    toast.success(`Re-running from ${nodeNames[from] ?? from}`, `New run ${next.id.slice(0, 8)} re-runs that node and everything downstream. This run stays as it is.`)
+    refresh()
+    setRerunFrom(null)
+    onSelectRun(next.id)
   }
 
   return (
@@ -226,10 +246,22 @@ export function RunDetail({
           { id: 'timeline', label: 'Timeline' },
           { id: 'logs', label: 'Logs' },
           { id: 'data', label: 'Data', count: primaries.size || undefined },
+          { id: 'sql', label: 'SQL', count: sqlCount || undefined },
           { id: 'events', label: 'Provenance', count: events.data?.length },
           { id: 'instances', label: 'Instances', count: instances.data?.length },
         ]}
       />
+
+      {node && nodeIds.has(node) && canRerunNode && (
+        <div className="bk-run-node-action">
+          <span className="bk-muted">
+            Selected node: <strong>{nodeNames[node] ?? node}</strong>
+          </span>
+          <Button size="sm" icon={<Redo2 size={14} aria-hidden="true" />} onClick={() => setRerunFrom(node)}>
+            Re-run from here
+          </Button>
+        </div>
+      )}
 
       <div className="bk-run-tab">
         {tab === 'timeline' && (
@@ -293,6 +325,18 @@ export function RunDetail({
                 return <NodeData key={id} runId={r.id} node={nr} name={nodeNames[id] ?? id} />
               })()}
             </div>
+          ))}
+        {tab === 'sql' &&
+          (events.isPending ? (
+            <div className="bk-inline-loading">
+              <Spinner size="sm" /> Loading queries
+            </div>
+          ) : events.isError ? (
+            <Callout tone="danger" title="Queries could not be loaded">
+              {errorMessage(events.error)}
+            </Callout>
+          ) : (
+            <Queries events={events.data} nodeNames={nodeNames} />
           ))}
         {tab === 'events' &&
           (events.isPending ? (
@@ -364,6 +408,22 @@ export function RunDetail({
           }}
         >
           <p>Nodes that are running are stopped and the run is marked cancelled. Output already written by finished nodes stays where it is.</p>
+        </ConfirmDialog>
+      )}
+
+      {rerunFrom && (
+        <ConfirmDialog
+          title={`Re-run from ${nodeNames[rerunFrom] ?? rerunFrom}?`}
+          confirmLabel="Re-run"
+          cancelLabel="Keep as is"
+          onCancel={() => setRerunFrom(null)}
+          onConfirm={rerunNode}
+        >
+          <p>
+            This starts a <strong>new run</strong> that re-executes {nodeNames[rerunFrom] ?? rerunFrom}
+            {rerunDownstream > 0 ? ` and ${formatNumber(rerunDownstream)} downstream ${rerunDownstream === 1 ? 'node' : 'nodes'}` : ' (no downstream nodes)'}. Nodes upstream that already
+            succeeded are reused. This run is left exactly as it is.
+          </p>
         </ConfirmDialog>
       )}
     </section>

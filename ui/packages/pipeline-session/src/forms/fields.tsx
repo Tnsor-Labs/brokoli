@@ -4,6 +4,7 @@ import { Code2, Plus, Trash2 } from 'lucide-react'
 import { connectionApi, type Connection, type PipelineEdge, type PipelineNode } from '@brokoli/api'
 import { Button, Callout, Checkbox, Field, IconButton, Input, Select, Textarea, errorMessage } from '@brokoli/ui'
 import { CodeEditorModal, type CodeLanguage } from './CodeEditorModal'
+import { TemplatePreview } from './TemplatePreview'
 
 export type FormCtx = {
   node: PipelineNode
@@ -39,6 +40,7 @@ export function TextField({
   mono,
   multiline,
   rows = 4,
+  templatable,
 }: {
   ctx: FormCtx
   name: string
@@ -49,11 +51,13 @@ export function TextField({
   mono?: boolean
   multiline?: boolean
   rows?: number
+  /** Show a live preview and date-filter validation of the field's ${...} variables. */
+  templatable?: boolean
 }) {
   const value = str(ctx.get(name))
   const error = required && !value.trim() ? 'Required' : undefined
   const onChange = (v: string) => ctx.set({ [name]: v }, `field:${ctx.node.id}:${name}`)
-  return (
+  const field = (
     <Field label={label} hint={hint} error={error} required={required}>
       {multiline ? (
         <Textarea value={value} rows={rows} mono={mono} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
@@ -61,6 +65,13 @@ export function TextField({
         <Input value={value} mono={mono} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
       )}
     </Field>
+  )
+  if (!templatable) return field
+  return (
+    <div className="ps-templatable">
+      {field}
+      <TemplatePreview value={value} />
+    </div>
   )
 }
 
