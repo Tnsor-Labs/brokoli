@@ -883,11 +883,6 @@
   color: var(--bk-color-text-muted);
   font-style: italic;
 }
-.bk-query-hidden-note {
-  margin: 0;
-  color: var(--bk-color-text-muted);
-  font-size: var(--bk-text-2xs);
-}
 .bk-query-note {
   display: flex;
   align-items: flex-start;
