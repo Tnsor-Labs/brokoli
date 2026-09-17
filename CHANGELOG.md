@@ -11,6 +11,77 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.31] - 2026-09-17
+
+> **Behaviour change for crash recovery:** a run is now left alone for
+> its first 30 seconds before recovery will adopt it
+> (`Engine.RecoveryMinRunAge`). A run whose process genuinely died
+> therefore stays non-terminal for up to that much longer before anyone
+> takes it over. The trade is deliberate: recovering a dead run later is
+> a delay, while adopting one that is still starting runs the pipeline
+> twice and reports no failure at all.
+>
+> **Note for anyone running the workflows themselves:** the Security
+> workflow no longer calls `govulncheck ./...` directly. It runs
+> `scripts/check-vulns.sh`, which reaches the same verdict but allows
+> audited exceptions in `security/vuln-allowlist.json`. The script needs
+> `jq`, and it runs its own test suite as a separate step beforehand.
+
+### Fixed
+
+- **A run dispatched to a remote worker could be executed twice.**
+  Recovery exists to adopt runs left behind by a dead process, and it had
+  no way to tell one of those from a run that had only just started
+  somewhere it cannot see. In production a run executing on a remote pool
+  worker was requeued to an in-cluster worker 350ms after the remote
+  worker began its first node, because that worker's first event had not
+  reached the server yet, and both then ran the pipeline through to the
+  end. The run simply succeeded twice: nothing reported a failure, and a
+  pipeline writing to a database or an API would have written everything
+  twice. Recovery now leaves a run alone until it is at least
+  `Engine.RecoveryMinRunAge` old, 30 seconds by default, which is one
+  full reclaim sweep interval plus an order of magnitude over the
+  observed first-event lag. It also gained `Engine.ExternalRunClaim`, an
+  optional hook answering whether a run is held by an executor this
+  process cannot see; it is nil here, so behaviour in this repository is
+  unchanged, and a hook that panics counts as a held claim, since
+  declining to recover is loud and reversible while assuming nobody owns
+  a live run is neither. A run with no start time is not covered by the
+  age guard, because nothing has claimed it yet. (#672) -- @hc12r
+
+### Security
+
+- **excelize moved from v2.10.0 to v2.11.0**, clearing GO-2026-6453
+  (unbounded memory allocation in the streaming row reader), which is
+  reachable from `ExcelLoader.Load`. The sibling advisory GO-2026-6452
+  (panic via a negative shared-string index) has no upstream fix: its
+  record lists every released version as affected. Its named vector does
+  not reproduce on v2.11.0, where the library returns `invalid shared
+  string index -1` as an ordinary error, so it is recorded as an audited
+  exception rather than an observed crash. As defence in depth against
+  the symbols this repository does not exercise, the Excel loader now
+  runs the excelize parse calls inside a recover, so a malformed
+  spreadsheet fails its own node instead of panicking the process that
+  hosts every other run. Errors excelize returns normally are untouched,
+  and a panic in Brokoli's own code still crashes loudly. (#673) -- @hc12r
+
+### Changed
+
+- **The vulnerability gate allows audited exceptions, and expires them.**
+  `scripts/check-vulns.sh` replaces the bare `govulncheck ./...` in the
+  Security workflow. It keeps the same verdict, failing on anything this
+  repository's own code calls, but an advisory with no upstream fix can
+  be listed in `security/vuln-allowlist.json` with a reason, a mitigation
+  and a reviewer. Two properties stop that becoming a suppression: an
+  allowlisted advisory that later gains a fixed version fails the build,
+  so an exception cannot outlive the thing that justified it, and
+  everything waived is printed with its reasoning on every run. Empty,
+  unparseable or config-less scanner output fails rather than reading as
+  clean, which is the vacuity that once let a security gate here pass
+  while inspecting nothing. govulncheck stays pinned to `@latest`, since
+  catching newly published advisories against pinned dependencies is the
+  whole point. (#673) -- @hc12r
+
 ## [0.11.30] - 2026-09-17
 
 > **Behaviour change for webhook senders:** a webhook request with
