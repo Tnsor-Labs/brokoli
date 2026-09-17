@@ -2,31 +2,22 @@ import { useMemo, useState } from 'react'
 import { Check, Copy, Database, ShieldAlert } from 'lucide-react'
 import type { RunEvent } from '@brokoli/api'
 import { EmptyState, IconButton, cx, useToast } from '@brokoli/ui'
-import { classifyStatement, groupQueries, isGeneratedSqlNode, statementReason } from './queries'
+import { classifyStatement, groupQueries, statementReason } from './queries'
 import { highlightSql } from './sqlHighlight'
 
 /**
  * The exact SQL each node ran, grouped by node and attempt. Sourced from the run
- * events endpoint (`attempt.query` events) — no separate call. Shaping lives in
- * ./queries; this renders it, handling the four display states honestly.
- *
- * Statements a sink node synthesized (the engine-generated writes) are hidden —
- * the panel is for the SQL you wrote, with its variables resolved. See
- * brokoli#667; `nodeTypes` maps a node id to its type so we can tell them apart.
+ * events endpoint (`attempt.query` events) — no separate call. The recorder
+ * records author-written SQL only (brokoli#665, #669), so the panel shows every
+ * statement it receives, on whatever node ran it; shaping lives in ./queries.
  */
-export function Queries({ events, nodeNames, nodeTypes }: { events: RunEvent[]; nodeNames: Record<string, string>; nodeTypes: Record<string, string> }) {
-  const { groups, hidden } = useMemo(() => {
-    const authored = events.filter((e) => e.event_type !== 'attempt.query' || !isGeneratedSqlNode(nodeTypes[e.node_id ?? '']))
-    const hidden = events.filter((e) => e.event_type === 'attempt.query' && isGeneratedSqlNode(nodeTypes[e.node_id ?? ''])).length
-    return { groups: groupQueries(authored), hidden }
-  }, [events, nodeTypes])
+export function Queries({ events, nodeNames }: { events: RunEvent[]; nodeNames: Record<string, string> }) {
+  const groups = useMemo(() => groupQueries(events), [events])
 
   if (groups.length === 0)
     return (
       <EmptyState title="No SQL recorded">
-        {hidden > 0
-          ? 'Only engine-generated writes ran on this run. The SQL you write — a source query, a transform — appears here once a node executes one.'
-          : 'The exact statement each node runs appears here as SQL nodes execute. Some writes stream rows in bulk and have no statement to show.'}
+        The exact statement each node runs appears here as SQL nodes execute. Some writes stream rows in bulk and have no statement to show.
       </EmptyState>
     )
 
@@ -48,11 +39,6 @@ export function Queries({ events, nodeNames, nodeTypes }: { events: RunEvent[]; 
           </ol>
         </section>
       ))}
-      {hidden > 0 && (
-        <p className="bk-query-hidden-note">
-          {hidden} engine-generated write{hidden === 1 ? '' : 's'} (table creation, inserts) {hidden === 1 ? 'is' : 'are'} not shown.
-        </p>
-      )}
     </div>
   )
 }

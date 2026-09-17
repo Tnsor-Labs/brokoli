@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunEvent } from '@brokoli/api'
-import { classifyStatement, groupQueries, isGeneratedSqlNode, statementReason } from './queries'
+import { classifyStatement, groupQueries, statementReason } from './queries'
 
 const TRUNCATED = 'SELECT * FROM big\n-- [brokoli] statement truncated: 64000 of 91234 bytes recorded'
 const WITHHELD = '-- [brokoli] statement not recorded: a secret it substitutes is shorter than 8 bytes and cannot be masked'
@@ -50,15 +50,6 @@ describe('statementReason', () => {
   })
   it('returns the raw text when the shape is unexpected', () => {
     expect(statementReason('-- [brokoli] something else entirely')).toBe('-- [brokoli] something else entirely')
-  })
-})
-
-describe('isGeneratedSqlNode', () => {
-  it('flags sink nodes (engine-generated writes)', () => {
-    for (const t of ['sink_db', 'sink_file', 'sink_api']) expect(isGeneratedSqlNode(t)).toBe(true)
-  })
-  it('does not flag author-query nodes or unknown', () => {
-    for (const t of ['source_db', 'transform', 'migrate', undefined, '']) expect(isGeneratedSqlNode(t)).toBe(false)
   })
 })
 

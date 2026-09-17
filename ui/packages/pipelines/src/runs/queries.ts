@@ -5,15 +5,6 @@ import type { RunEvent } from '@brokoli/api'
 // the statement on `payload.statement`. This module holds the pure shaping so it
 // can be tested without a DOM.
 
-// A sink node's statements are synthesized by the engine (the CREATE/DELETE/
-// INSERT it builds to load rows), not written by the user, so the SQL panel
-// hides them. This is an interim heuristic for brokoli#667, where the recorder
-// itself will stop recording engine-generated writes; until then the node type
-// is the only signal the UI has.
-export function isGeneratedSqlNode(nodeType: string | undefined): boolean {
-  return (nodeType ?? '').startsWith('sink_')
-}
-
 export type StatementKind = 'sql' | 'withheld' | 'none'
 
 // A recorded statement is one of four things, and two of them are not errors:

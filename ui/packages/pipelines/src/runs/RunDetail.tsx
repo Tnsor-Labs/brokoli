@@ -27,7 +27,6 @@ import { LogView } from './LogView'
 import { NodeData } from './NodeData'
 import { Provenance } from './Provenance'
 import { Queries } from './Queries'
-import { isGeneratedSqlNode } from './queries'
 import { Timeline } from './Timeline'
 import { canRerunStatus, descendantClosure, isActive, nodeStatuses, primaryAttempts, runDuration, totalRows, triggeredByLabel } from './model'
 import './gantt.css'
@@ -60,7 +59,6 @@ export function RunDetail({
   const instances = useQuery({ queryKey: keys.runInstances(runId), queryFn: () => runApi.instances(runId) })
   const nodeNames = useMemo(() => Object.fromEntries(pipeline.nodes.map((n) => [n.id, n.name || n.id])), [pipeline.nodes])
   const nodeIds = useMemo(() => new Set(pipeline.nodes.map((n) => n.id)), [pipeline.nodes])
-  const nodeTypes = useMemo(() => Object.fromEntries(pipeline.nodes.map((n) => [n.id, n.type])), [pipeline.nodes])
 
   if (run.isPending)
     return (
@@ -92,8 +90,7 @@ export function RunDetail({
   }
   const canRun = session.can('pipelines.run') && !pipeline.draft
   const longError = (r.error?.length ?? 0) > 280
-  // Count only author-written SQL; engine-generated sink writes are hidden (brokoli#667).
-  const sqlCount = events.data?.filter((e) => e.event_type === 'attempt.query' && !isGeneratedSqlNode(nodeTypes[e.node_id ?? ''])).length
+  const sqlCount = events.data?.filter((e) => e.event_type === 'attempt.query').length
   // "Re-run from a node" reuses runs.resume and accepts a settled run
   // (success, failed or cancelled), never one still in flight.
   const canRerunNode = session.can('runs.resume') && canRerunStatus(r.status)
@@ -339,7 +336,7 @@ export function RunDetail({
               {errorMessage(events.error)}
             </Callout>
           ) : (
-            <Queries events={events.data} nodeNames={nodeNames} nodeTypes={nodeTypes} />
+            <Queries events={events.data} nodeNames={nodeNames} />
           ))}
         {tab === 'events' &&
           (events.isPending ? (
