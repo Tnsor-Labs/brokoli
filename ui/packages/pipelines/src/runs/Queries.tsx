@@ -1,21 +1,32 @@
-import { useMemo } from 'react'
-import { Database, ShieldAlert } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { Check, Copy, Database, ShieldAlert } from 'lucide-react'
 import type { RunEvent } from '@brokoli/api'
-import { EmptyState, cx } from '@brokoli/ui'
-import { classifyStatement, groupQueries, statementReason } from './queries'
+import { EmptyState, IconButton, cx, useToast } from '@brokoli/ui'
+import { classifyStatement, groupQueries, isGeneratedSqlNode, statementReason } from './queries'
+import { highlightSql } from './sqlHighlight'
 
 /**
  * The exact SQL each node ran, grouped by node and attempt. Sourced from the run
  * events endpoint (`attempt.query` events) — no separate call. Shaping lives in
  * ./queries; this renders it, handling the four display states honestly.
+ *
+ * Statements a sink node synthesized (the engine-generated writes) are hidden —
+ * the panel is for the SQL you wrote, with its variables resolved. See
+ * brokoli#667; `nodeTypes` maps a node id to its type so we can tell them apart.
  */
-export function Queries({ events, nodeNames }: { events: RunEvent[]; nodeNames: Record<string, string> }) {
-  const groups = useMemo(() => groupQueries(events), [events])
+export function Queries({ events, nodeNames, nodeTypes }: { events: RunEvent[]; nodeNames: Record<string, string>; nodeTypes: Record<string, string> }) {
+  const { groups, hidden } = useMemo(() => {
+    const authored = events.filter((e) => e.event_type !== 'attempt.query' || !isGeneratedSqlNode(nodeTypes[e.node_id ?? '']))
+    const hidden = events.filter((e) => e.event_type === 'attempt.query' && isGeneratedSqlNode(nodeTypes[e.node_id ?? ''])).length
+    return { groups: groupQueries(authored), hidden }
+  }, [events, nodeTypes])
 
   if (groups.length === 0)
     return (
       <EmptyState title="No SQL recorded">
-        The exact statement each node runs appears here as SQL nodes execute. Some writes stream rows in bulk and have no statement to show.
+        {hidden > 0
+          ? 'Only engine-generated writes ran on this run. The SQL you write — a source query, a transform — appears here once a node executes one.'
+          : 'The exact statement each node runs appears here as SQL nodes execute. Some writes stream rows in bulk and have no statement to show.'}
       </EmptyState>
     )
 
@@ -37,6 +48,11 @@ export function Queries({ events, nodeNames }: { events: RunEvent[]; nodeNames: 
           </ol>
         </section>
       ))}
+      {hidden > 0 && (
+        <p className="bk-query-hidden-note">
+          {hidden} engine-generated write{hidden === 1 ? '' : 's'} (table creation, inserts) {hidden === 1 ? 'is' : 'are'} not shown.
+        </p>
+      )}
     </div>
   )
 }
@@ -58,6 +74,7 @@ function StatementBlock({ statement, index, total }: { statement: string; index:
     )
   }
 
+  const tokens = highlightSql(statement)
   return (
     <li className={cx('bk-query-item', truncated && 'is-truncated')}>
       {total > 1 && (
@@ -65,10 +82,33 @@ function StatementBlock({ statement, index, total }: { statement: string; index:
           {index}
         </span>
       )}
-      <pre className="bk-query-sql">
-        <code>{statement}</code>
-      </pre>
-      {truncated && <span className="bk-query-tag">truncated</span>}
+      <div className="bk-query-code">
+        <pre className="bk-query-sql">
+          <code>
+            {tokens.map((t, i) => (t.cls ? <span key={i} className={`bk-sql-${t.cls}`}>{t.text}</span> : t.text))}
+          </code>
+        </pre>
+        <CopyButton statement={statement} />
+      </div>
     </li>
+  )
+}
+
+function CopyButton({ statement }: { statement: string }) {
+  const toast = useToast()
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(statement)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      toast.error('Could not copy', e)
+    }
+  }
+  return (
+    <IconButton className="bk-query-copy" size="sm" variant="ghost" label={copied ? 'Copied' : 'Copy statement'} onClick={() => void copy()}>
+      {copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}
+    </IconButton>
   )
 }

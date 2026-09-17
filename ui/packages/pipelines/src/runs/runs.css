@@ -840,17 +840,20 @@
 }
 .bk-query-index {
   flex: none;
-  margin-top: 8px;
+  margin-top: 13px;
   min-width: 16px;
   color: var(--bk-color-text-muted);
   font-size: var(--bk-text-2xs);
   text-align: right;
 }
-.bk-query-sql {
+.bk-query-code {
+  position: relative;
   flex: 1;
   min-width: 0;
+}
+.bk-query-sql {
   margin: 0;
-  padding: 12px 14px;
+  padding: 12px 44px 12px 14px;
   overflow-x: auto;
   border-radius: var(--bk-radius-sm);
   background: var(--bk-color-code-bg);
@@ -862,16 +865,28 @@
   font-family: var(--bk-font-mono);
   white-space: pre;
 }
-.bk-query-tag {
-  flex: none;
-  margin-top: 6px;
-  padding: 2px 7px;
-  border-radius: 999px;
-  color: var(--bk-color-warning);
-  background: color-mix(in srgb, var(--bk-color-warning) 15%, transparent);
-  font: 600 var(--bk-text-2xs) / 1 var(--bk-font-mono);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+.bk-query-copy {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  background: var(--bk-color-code-bg);
+}
+/* SQL syntax colours, all from theme tokens */
+.bk-sql-kw {
+  color: var(--bk-color-accent);
+  font-weight: 600;
+}
+.bk-sql-str {
+  color: var(--bk-color-success);
+}
+.bk-sql-com {
+  color: var(--bk-color-text-muted);
+  font-style: italic;
+}
+.bk-query-hidden-note {
+  margin: 0;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-2xs);
 }
 .bk-query-note {
   display: flex;
