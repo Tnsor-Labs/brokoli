@@ -56,13 +56,20 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
           <EmptyState title="Empty output">The node finished without columns to show.</EmptyState>
         ) : (
           <>
-            {preview.data?.truncated && (
-              <Callout tone="warning" title="Showing a sample, not the full output">
-                {preview.data.total_rows != null
-                  ? `This sample has ${formatNumber(rows.length)} of ${formatNumber(preview.data.total_rows)} rows.`
-                  : `This sample is capped at ${formatNumber(rows.length)} rows; the full size is unknown.`}
-              </Callout>
-            )}
+            {preview.data?.truncated &&
+              (() => {
+                // Prefer the preview's own total; fall back to the node's row
+                // count (which the header above already shows) so the two never
+                // disagree. Only when neither is known do we say so.
+                const total = preview.data.total_rows ?? (node.row_count || null)
+                return (
+                  <Callout tone="warning" title="Showing a sample, not the full output">
+                    {total != null
+                      ? `This sample has ${formatNumber(rows.length)} of ${formatNumber(total)} rows.`
+                      : `This sample is capped at ${formatNumber(rows.length)} rows; the full size is unknown.`}
+                  </Callout>
+                )
+              })()}
             <div className="bk-data-table">
               <table>
                 <thead>

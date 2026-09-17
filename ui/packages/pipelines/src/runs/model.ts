@@ -1,8 +1,42 @@
-import type { LogEntry, NodeRun, Run, RunAttribution } from '@brokoli/api'
+import type { LogEntry, NodeRun, PipelineEdge, Run, RunAttribution } from '@brokoli/api'
 import { toDate } from '@brokoli/ui'
 import { ACTIVE } from '../keys'
 
 export const isActive = (status: string | undefined | null) => ACTIVE.has((status ?? '').toLowerCase())
+
+// Run statuses a node-scoped re-run accepts: each left a settled set of node
+// outcomes behind, which is what "re-run from here" reuses upstream. Mirrors the
+// engine's gate (running/pending/waiting are in flight; blocked/skipped never
+// executed).
+const RERUNNABLE = new Set(['success', 'failed', 'cancelled'])
+export const canRerunStatus = (status: string | undefined | null) => RERUNNABLE.has((status ?? '').toLowerCase())
+
+/**
+ * The chosen node and everything transitively downstream of it — the exact set
+ * "re-run from a node" re-executes. A breadth-first walk over the pipeline edges
+ * following their direction, mirroring the engine's descendant closure: edges
+ * with an endpoint outside the node set are skipped, and the visited set both
+ * dedupes a diamond and terminates a cycle. The returned set includes the
+ * chosen node itself.
+ */
+export function descendantClosure(nodeId: string, edges: PipelineEdge[], nodeIds: Set<string>): Set<string> {
+  const adjacency = new Map<string, string[]>()
+  for (const e of edges) {
+    if (!nodeIds.has(e.from) || !nodeIds.has(e.to)) continue
+    const outgoing = adjacency.get(e.from)
+    if (outgoing) outgoing.push(e.to)
+    else adjacency.set(e.from, [e.to])
+  }
+  const seen = new Set<string>()
+  const queue: string[] = [nodeId]
+  while (queue.length) {
+    const current = queue.shift()!
+    if (seen.has(current)) continue
+    seen.add(current)
+    for (const next of adjacency.get(current) ?? []) if (!seen.has(next)) queue.push(next)
+  }
+  return seen
+}
 
 const TRIGGER_KIND_LABEL: Record<string, string> = {
   schedule: 'a schedule',
