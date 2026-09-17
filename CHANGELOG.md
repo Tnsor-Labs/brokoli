@@ -11,7 +11,118 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.30] - 2026-09-17
+
+> **Behaviour change for webhook senders:** a webhook request with
+> `Content-Type: application/json` now has its body read. A malformed
+> JSON body answers 400 and starts no run, where it used to be ignored
+> and the run started anyway. A body over 64 KiB answers 413, and
+> `parameters` that fail validation against the pipeline's declared
+> parameters answer 400. Only typed `parameters` are accepted, never the
+> untyped `params` map. Requests with any other content type still have
+> their body ignored and behave exactly as before.
+>
+> **Behaviour change for variable references containing a pipe:**
+> `|` now introduces a filter inside `${...}`. A reference such as
+> `${param.x|y}`, which used to resolve to an empty string because no
+> param key is literally named `x|y`, now stays visibly unresolved in
+> the output.
+>
+> **Interface change for out-of-tree `store.Store` implementations:**
+> `store.PreviewStore` takes and returns a `store.NodePreview`, which
+> carries `Truncated` and `TotalRows`. Every implementation outside this
+> repository has to update in lockstep.
+
+### Added
+
+- **Date filters for timestamp variables.** A file or table can be named
+  after the day it covers without a second variable:
+  `${interval.start|date:YYYYMMDD}` renders `20240314`, and
+  `${interval.start|shift:-1d|date:YYYY-MM-DD}` names the day before.
+  Filters go inside the existing braces, separated by `|` and applied
+  left to right. `date:` takes the tokens `YYYY YY MM DD HH mm ss` and
+  copies every other byte, so `MM` is the month and `mm` the minute; a
+  literal may not contain the letters `Y M D H S`, which stops a typo
+  such as `yyyy-mm-dd` from rendering a real-looking wrong date.
+  `shift:` takes a signed count of `s m h d w` and chains for compound
+  offsets; there are no months or years, since neither is a fixed
+  duration. Filters apply to `interval.start`, `interval.end` and
+  `run.started_at`, and change the format, never the clock or zone. Any
+  filter the resolver cannot satisfy leaves the whole reference visible
+  rather than guessing a timestamp, and a filtered `${interval.*}` still
+  counts as slice-scoped for backfill. ADR-028 records the formatting
+  helpers as taken. (#664) -- @hc12r
+
+- **The SQL a node ran is recorded with each attempt.** A templated query
+  used to be opaque after the fact; the statement is now stored with its
+  variables already substituted, as an `attempt.query` run event whose
+  payload field is `statement`, read through the existing
+  `GET /api/runs/{id}/events`. No schema change. What is recorded is SQL
+  someone wrote: a source's query (batch and streamed), a Migrate
+  node's source query, SQL a `sql_generate` node forwards into a sink,
+  and the query a pushed-down segment reads with. The composed
+  `INSERT ... SELECT` a pushed-down write executes is recorded too,
+  because it embeds the author's query and is the only record of what
+  that path ran. SQL the engine builds for itself is not: a sink's
+  generated `INSERT ... VALUES` records a
+  `-- [brokoli] generated write not recorded:` note in its place, bulk
+  loads (PostgreSQL COPY, MySQL LOAD DATA, ClickHouse batch append)
+  record a `-- [brokoli] no SQL statement:` note, and an overwrite's
+  `DELETE` or `TRUNCATE` is not recorded, so a sink never shows an
+  unexplained empty panel. A statement is recorded before it executes, so
+  the one that failed is kept. Values from `${secret.*}` and encrypted
+  `${var.*}` are masked as `[redacted]`; if such a value appears in the
+  statement and is shorter than 8 bytes, the whole statement is withheld
+  with a note saying why,
+  since masking something that short would shred the SQL without proving
+  the secret was gone. A connection string is never recorded. Each
+  statement is capped at 64 KiB with a visible
+  `-- [brokoli] statement truncated: N of M bytes recorded` marker. A
+  single attempt can record several statements. (#665, #669) -- @hc12r
+
+- **Re-run a run from a chosen node.**
+  `POST /api/runs/{id}/resume` accepts an optional
+  `{"from_node": "<node id>"}`: that node and everything downstream of it
+  run again, and the work the earlier run already did upstream is reused.
+  It appends a new run linked back through `resumed_from_run_id` and a
+  `run.resumed_from_node` event, and leaves the original run exactly as
+  it was, rather than clearing and mutating it. Unlike a plain resume it
+  accepts a run that succeeded as well as one that failed or was
+  cancelled, since re-running one branch after fixing its query is the
+  ordinary reason to reach for it. A run still running, pending or
+  waiting is refused because its outcomes are still being written, a
+  blocked or skipped run is refused because it never executed a node, and
+  a node absent from the pipeline version the run executed is refused by
+  name. A body that cannot be read as JSON answers 400 instead of quietly
+  falling back to a plain resume. With no body the endpoint behaves
+  exactly as before, and it uses the existing `runs.resume` permission.
+  (#666) -- @hc12r
+
+- **The run UI for all three.** Templatable fields (file paths, database
+  tables, API urls and bodies) show a live preview of `${...}` date
+  filters with the specific reason for any refusal, and warn that a
+  manual run has no interval. The run page has a SQL tab listing the
+  recorded statements grouped by node and attempt, with highlighting and
+  a copy button, showing exactly what the recorder stored. A selected
+  node offers "Re-run from here", whose confirmation names how many
+  downstream nodes will run again, gated on `runs.resume` and a settled
+  run status. The truncated-preview banner
+  now falls back to the node's produced row count when the stored total
+  is unknown, so it no longer contradicts the header above it.
+  (#668, #670) -- @hc12r
+
 ### Fixed
+
+- **Webhooks ignored their request body.** The handler checked the token
+  and the rate limit but never read the body, so parameters sent with a
+  webhook were silently dropped. A JSON body is now read, bounded to
+  64 KiB, and its `parameters` are passed to the run as typed run
+  parameters validated against the pipeline's declarations, so a webhook
+  can only set what the pipeline declares, with its type checked. The
+  body is decoded only for `application/json`, so senders posting form
+  or plain-text payloads keep working. Unknown fields in the body are
+  deliberately tolerated, since webhook senders post payloads of their
+  own. (#533) -- @MrBeldum
 
 - **Node previews declare when the stored sample is truncated**, with
   `truncated` and `total_rows` on the API and in both stores, and the
