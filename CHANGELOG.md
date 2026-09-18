@@ -11,6 +11,57 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.11.32] - 2026-09-18
+
+> **Breaking change for out-of-tree extensions:**
+> `extensions.PlatformProvider.StartServices` gained a variadic tail,
+> `StartServices(s interface{}, engine ...interface{})`, matching the
+> convention `RegisterRoutes` already documents. An implementation must
+> add the parameter to compile; it may ignore it, and a provider must
+> tolerate an empty tail because an older core passes nothing.
+
+### Fixed
+
+- **A run dispatched to a remote worker could still be executed twice,
+  in the one process most likely to do it.** v0.11.31 gave recovery a
+  way to ask an extension "is somebody else already running this?"
+  (`Engine.ExternalRunClaim`), but the only hook that carried the engine
+  to an extension was `RegisterRoutes` — and `RegisterRoutes` is reached
+  only from `api.NewServer`. `--mode scheduler` builds
+  `api.NewMinimalServer` instead, while still running the recovery
+  sweep, so the sweep ran with no claim installed. Measured in
+  production under a burst of about twenty concurrent runs: four runs
+  executed twice, leaving sixteen duplicated `node_runs` rows, with the
+  runs reporting success. `StartServices` now receives the engine,
+  because `shouldStartPlatformServices` gates exactly the two modes that
+  run recovery (`all` and `scheduler`), making it the one hook both of
+  them pass through. (#676) -- @hc12r
+- **Every pod restart ran one recovery pass with no extension hooks
+  installed.** Recovery runs in two places: a periodic leader sweep, and
+  a startup sweep in `serve` that is unconditional in every mode. The
+  startup sweep ran before platform services were started, so it swept
+  before any extension had been given the engine — and a rolling deploy
+  is exactly when runs are in flight on remote workers. Platform
+  services now start first. (#676) -- @hc12r
+- **A re-queued run that then succeeded still showed a recovery error.**
+  Recovery records why it put an interrupted run back on the queue in
+  `runs.error`, and nothing cleared it again, so a run that executed a
+  second time and succeeded kept an error describing the execution that
+  was interrupted. The runner now clears it on the success path only;
+  the `run.recovery_requeued` event still carries the message, so the
+  audit trail is unchanged, and a failed run keeps its error. (#675)
+  -- @hc12r
+
+### Known gap
+
+- `--mode api` also runs the startup recovery sweep, and platform
+  services are deliberately not started on api replicas (that would run
+  the trial checker, usage collector and SLA checker on every one of
+  them), so an api pod still boot-sweeps without extension hooks.
+  Closing it needs either a hook-only attach point separate from
+  starting services, or not sweeping outside the mode that owns
+  recovery. Tracked rather than rushed. -- @hc12r
+
 ## [0.11.31] - 2026-09-17
 
 > **Behaviour change for crash recovery:** a run is now left alone for
