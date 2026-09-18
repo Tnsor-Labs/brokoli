@@ -289,8 +289,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Platform services (enterprise: trial checker, SLA checker, etc)
-		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() && shouldStartPlatformServices(RunMode) {
-			Extensions.Platform.StartServices(s)
+		if startPlatformServices(Extensions, RunMode, s, eng) {
 			defer Extensions.Platform.StopServices()
 		}
 
@@ -714,6 +713,30 @@ func syncPortEnvForSelfReferences(port int) {
 
 func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
+}
+
+// startPlatformServices hands the platform extension the store and the
+// engine, in every run mode that runs the engine's recovery sweep. It
+// reports whether it started anything, so the caller knows whether a
+// matching StopServices is owed.
+//
+// The engine is passed here, and not only to RegisterRoutes, because this
+// is the single hook both of those modes reach. RegisterRoutes is called
+// from api.NewServer, which `--mode scheduler` never builds -- it starts
+// api.NewMinimalServer instead -- so an extension that only installed
+// engine-level hooks from RegisterRoutes had none of them in the scheduler
+// process, which is precisely the process that sweeps for runs to recover.
+// That produced a real double execution: a run already executing on a
+// remote worker was adopted and re-run in-cluster, and both finished.
+//
+// eng may be nil; the provider is required to tolerate that, as it must
+// tolerate an older core passing no engine at all.
+func startPlatformServices(ext *extensions.Registry, mode string, s store.Store, eng *engine.Engine) bool {
+	if ext == nil || ext.Platform == nil || !ext.Platform.Enabled() || !shouldStartPlatformServices(mode) {
+		return false
+	}
+	ext.Platform.StartServices(s, eng)
+	return true
 }
 
 // sqlArtifactDialect reports the SQL dialect engine.NewSQLArtifactStore

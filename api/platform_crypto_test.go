@@ -28,9 +28,9 @@ func (p *recordingPlatform) Enabled() bool { return true }
 func (p *recordingPlatform) RegisterRoutes(_, _, _ interface{}, extra ...interface{}) {
 	p.args = extra
 }
-func (p *recordingPlatform) StartServices(interface{}) {}
-func (p *recordingPlatform) StopServices()             {}
-func (p *recordingPlatform) MigrateDB(interface{})     {}
+func (p *recordingPlatform) StartServices(interface{}, ...interface{}) {}
+func (p *recordingPlatform) StopServices()                             {}
+func (p *recordingPlatform) MigrateDB(interface{})                     {}
 
 func TestPlatformProviderReceivesTheCryptoConfig(t *testing.T) {
 	s := attributionStore(t)
