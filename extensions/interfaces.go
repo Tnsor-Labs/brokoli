@@ -292,7 +292,20 @@ type PlatformProvider interface {
 	RegisterRoutes(r interface{}, s interface{}, userStore interface{}, engine ...interface{})
 
 	// StartServices starts background services (trial checker, etc).
-	StartServices(s interface{})
+	//
+	// The variadic tail carries *engine.Engine: the engine whose recovery
+	// sweep this process will run. A provider must treat it as optional
+	// and tolerate an empty tail -- an older core passes only the store.
+	//
+	// This is the only hook every mode that runs recovery passes through,
+	// and that is why the engine is here. RegisterRoutes also carries an
+	// engine, but it is reached only from api.NewServer, so `--mode
+	// scheduler` -- which builds a minimal health/metrics server and runs
+	// the sweep -- never calls it. An extension that hangs anything
+	// recovery-related off the engine and installs it only in
+	// RegisterRoutes is therefore absent from the exact process doing the
+	// recovering, and absent silently.
+	StartServices(s interface{}, engine ...interface{})
 
 	// StopServices stops background services.
 	StopServices()

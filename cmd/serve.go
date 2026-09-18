@@ -171,6 +171,20 @@ var serveCmd = &cobra.Command{
 		// downstream observes.
 		applyAdaptiveResourceDefaults(eng.SetMaxConcurrentRuns)
 
+		// Platform services (enterprise: trial checker, SLA checker, etc).
+		//
+		// Ordered before the startup recovery sweep below, and that
+		// ordering is load-bearing: this is where the platform installs
+		// its engine-level recovery hooks, and a sweep that runs first
+		// runs without them. Boot is exactly when that matters — every
+		// pod restart sweeps once, and a rolling deploy during live
+		// traffic is precisely when runs are in flight on remote workers.
+		// Nothing between here and the old call site touches
+		// Extensions.Platform, so moving it up changes nothing else.
+		if startPlatformServices(Extensions, RunMode, s, eng) {
+			defer Extensions.Platform.StopServices()
+		}
+
 		// Recover runs a prior process left in a non-terminal status
 		// (Tnsor-Labs/brokoli#9) — e.g. "running" because it was kill -9'd
 		// mid-execution. Must happen before the scheduler starts firing new
@@ -286,12 +300,6 @@ var serveCmd = &cobra.Command{
 				log.Printf("WARNING: scheduler failed to start: %v", err)
 			}
 			defer sched.Stop()
-		}
-
-		// Platform services (enterprise: trial checker, SLA checker, etc)
-		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() && shouldStartPlatformServices(RunMode) {
-			Extensions.Platform.StartServices(s)
-			defer Extensions.Platform.StopServices()
 		}
 
 		var uiFS fs.FS
@@ -714,6 +722,30 @@ func syncPortEnvForSelfReferences(port int) {
 
 func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
+}
+
+// startPlatformServices hands the platform extension the store and the
+// engine, in every run mode that runs the engine's recovery sweep. It
+// reports whether it started anything, so the caller knows whether a
+// matching StopServices is owed.
+//
+// The engine is passed here, and not only to RegisterRoutes, because this
+// is the single hook both of those modes reach. RegisterRoutes is called
+// from api.NewServer, which `--mode scheduler` never builds -- it starts
+// api.NewMinimalServer instead -- so an extension that only installed
+// engine-level hooks from RegisterRoutes had none of them in the scheduler
+// process, which is precisely the process that sweeps for runs to recover.
+// That produced a real double execution: a run already executing on a
+// remote worker was adopted and re-run in-cluster, and both finished.
+//
+// eng may be nil; the provider is required to tolerate that, as it must
+// tolerate an older core passing no engine at all.
+func startPlatformServices(ext *extensions.Registry, mode string, s store.Store, eng *engine.Engine) bool {
+	if ext == nil || ext.Platform == nil || !ext.Platform.Enabled() || !shouldStartPlatformServices(mode) {
+		return false
+	}
+	ext.Platform.StartServices(s, eng)
+	return true
 }
 
 // sqlArtifactDialect reports the SQL dialect engine.NewSQLArtifactStore

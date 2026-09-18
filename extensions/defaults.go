@@ -85,7 +85,7 @@ type noopPlatform struct{}
 
 func (n *noopPlatform) Enabled() bool                                           { return false }
 func (n *noopPlatform) RegisterRoutes(r, s, us interface{}, eng ...interface{}) {}
-func (n *noopPlatform) StartServices(s interface{})                             {}
+func (n *noopPlatform) StartServices(s interface{}, engine ...interface{})      {}
 func (n *noopPlatform) StopServices()                                           {}
 func (n *noopPlatform) MigrateDB(db interface{})                                {}
 
