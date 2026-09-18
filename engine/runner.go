@@ -667,6 +667,14 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
+	// A run put back on the queue by recovery carries that explanation in
+	// run.Error (see recovery_requeue.go). It describes the execution that
+	// was interrupted, not this one, so leaving it here makes a successful
+	// run render with a recovery error against it -- which is how a healthy
+	// re-queued run came to look broken in the run view. The audit trail is
+	// not lost: the run.recovery_requeued event keeps it, timestamped, and
+	// a run that fails still records its own error below.
+	r.run.Error = ""
 	crashAt(crashPointBeforeRunTerminalPersist, "")
 	if err := r.store.UpdateRun(r.run); err != nil {
 		return r.run, fmt.Errorf("persist successful run: %w", err)
