@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -130,5 +132,34 @@ func TestStartPlatformServicesStillStartsWithoutAnEngine(t *testing.T) {
 	}
 	if len(p.gotTail) != 1 {
 		t.Fatalf("variadic tail = %d values, want one (a nil engine is still an argument)", len(p.gotTail))
+	}
+}
+
+// The startup sweep runs once per process, in every mode, and it used to
+// run before the platform had been given the engine -- so every pod restart
+// did one full recovery pass with no claim hook installed. A rolling deploy
+// is exactly when runs are in flight on remote workers, so that boot sweep
+// was the most exposed one of all.
+//
+// The ordering lives inside serveCmd.RunE, which cannot be called from a
+// test without standing up a server. Asserting it against the source is
+// worth more than leaving an invariant this sharp guarded only by a
+// comment: reordering the two lines is a one-line change that silently
+// restores the original bug.
+func TestPlatformServicesAreStartedBeforeTheStartupRecoverySweep(t *testing.T) {
+	src, err := os.ReadFile("serve.go")
+	if err != nil {
+		t.Fatalf("read serve.go: %v", err)
+	}
+	start := bytes.Index(src, []byte("startPlatformServices(Extensions, RunMode, s, eng)"))
+	sweep := bytes.Index(src, []byte("eng.RecoverNonTerminalRuns()"))
+	if start < 0 {
+		t.Fatal("startPlatformServices call not found in serve.go")
+	}
+	if sweep < 0 {
+		t.Fatal("startup recovery sweep not found in serve.go")
+	}
+	if start > sweep {
+		t.Error("the startup recovery sweep runs before platform services are started, so it sweeps with no claim hook installed")
 	}
 }
