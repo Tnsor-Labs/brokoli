@@ -12,6 +12,9 @@
 #   BROKOLI_NO_SETUP=1   Skip the interactive admin-user / start-server prompt.
 #   BROKOLI_YES=1        Answer yes to every prompt non-interactively.
 #
+# The downloaded archive is checked against the release's checksums.txt
+# before anything is extracted. Any failure to verify stops the install.
+#
 # This script is POSIX-sh (no bashisms) and works with either curl or wget.
 #
 set -eu
@@ -26,6 +29,22 @@ info() { printf '%s==>%s %s\n' "$GREEN" "$RESET" "$1"; }
 warn() { printf '%s!! %s%s\n'  "$YELLOW" "$1" "$RESET" >&2; }
 die()  { printf '%serror:%s %s\n' "$RED" "$RESET" "$1" >&2; exit 1; }
 step() { printf '    %s%s%s\n' "$DIM" "$1" "$RESET"; }
+
+# sha256_of prints a file's SHA-256 in lower case, using whichever tool the
+# platform has: sha256sum on Linux, shasum on macOS, openssl as a fallback.
+# It returns non-zero when none of them exists.
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        _sum=$(sha256sum "$1" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        _sum=$(shasum -a 256 "$1" | awk '{print $1}')
+    elif command -v openssl >/dev/null 2>&1; then
+        _sum=$(openssl dgst -sha256 "$1" | awk '{print $NF}')
+    else
+        return 1
+    fi
+    printf '%s\n' "$_sum" | tr 'A-F' 'a-f'
+}
 
 # ───────────────── preflight ─────────────────
 REPO="Tnsor-Labs/brokoli"
@@ -110,6 +129,36 @@ else
     wget -q --show-progress "$URL" -O "$TMP/$ASSET" \
         || die "download failed: $URL"
 fi
+
+# ───────────────── verify ─────────────────
+# Every release publishes checksums.txt, one "<sha256>  <file>" line per
+# archive. The archive is checked against it before it is extracted or
+# anything is installed, and every way of failing to verify stops here:
+# no checksums file, no entry for this archive, no hash tool, or a
+# mismatch. None of them falls back to installing unverified.
+#
+# What this proves: the archive is byte-for-byte the one the release build
+# produced, so a truncated download, a corrupting proxy or an altered
+# mirror is caught. What it does not prove: that the release itself is
+# genuine. checksums.txt is published next to the archive, so anyone able
+# to replace one could replace both. That needs a signature.
+SUMS_URL="https://github.com/${REPO}/releases/download/${VERSION}/checksums.txt"
+step "Verifying checksum…"
+if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$SUMS_URL" -o "$TMP/checksums.txt" \
+        || die "could not download $SUMS_URL; refusing to install a binary that cannot be verified"
+else
+    wget -q "$SUMS_URL" -O "$TMP/checksums.txt" \
+        || die "could not download $SUMS_URL; refusing to install a binary that cannot be verified"
+fi
+EXPECTED=$(awk -v f="$ASSET" '$2 == f {print $1}' "$TMP/checksums.txt" | tr 'A-F' 'a-f')
+[ -n "$EXPECTED" ] \
+    || die "checksums.txt for $VERSION has no entry for $ASSET; refusing to install a binary that cannot be verified"
+ACTUAL=$(sha256_of "$TMP/$ASSET") \
+    || die "no SHA-256 tool found (need sha256sum, shasum or openssl); refusing to install a binary that cannot be verified"
+[ "$ACTUAL" = "$EXPECTED" ] \
+    || die "checksum mismatch for $ASSET (expected $EXPECTED, got $ACTUAL). The download is corrupt or has been altered. Nothing was installed."
+step "Checksum OK ($ACTUAL)"
 
 step "Extracting…"
 tar -xzf "$TMP/$ASSET" -C "$TMP" || die "extract failed"
