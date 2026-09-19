@@ -89,9 +89,13 @@ if [ "$VERSION" = "latest" ]; then
         RESOLVED=$(curl -fsSLI -o /dev/null -w '%{url_effective}' \
             "https://github.com/${REPO}/releases/latest")
     else
-        RESOLVED=$(wget --max-redirect=5 --spider -S \
+        # No --max-redirect: busybox wget rejects it, and both GNU and
+        # busybox wget follow redirects anyway. The Location header is
+        # indented in busybox's -S output and unindented in GNU's
+        # "[following]" line, so match the first field, not the line start.
+        RESOLVED=$(wget --spider -S \
             "https://github.com/${REPO}/releases/latest" 2>&1 \
-            | awk '/^Location:/ {print $2}' | tail -1)
+            | awk 'tolower($1) == "location:" {print $2}' | tail -1)
     fi
     VERSION=$(printf '%s\n' "$RESOLVED" | sed -E 's|.*/tag/(v[^/]+).*|\1|')
     [ -n "$VERSION" ] || die "could not resolve latest version (check network / GitHub status)"
@@ -126,7 +130,15 @@ if command -v curl >/dev/null 2>&1; then
     curl -fSL --progress-bar "$URL" -o "$TMP/$ASSET" \
         || die "download failed: $URL"
 else
-    wget -q --show-progress "$URL" -O "$TMP/$ASSET" \
+    # --show-progress exists only in GNU wget; busybox wget, the usual
+    # wget on Alpine, rejects it and the download fails. Pass it only when
+    # this wget advertises it. `wget --help` exits non-zero on busybox.
+    WGET_PROGRESS=''
+    case "$(wget --help 2>&1 || true)" in
+        *--show-progress*) WGET_PROGRESS='--show-progress' ;;
+    esac
+    # shellcheck disable=SC2086  # empty on purpose when unsupported
+    wget -q $WGET_PROGRESS "$URL" -O "$TMP/$ASSET" \
         || die "download failed: $URL"
 fi
 

@@ -48,7 +48,7 @@ build_bin() {
     done
 }
 
-BASE_TOOLS="sh uname tar gzip mktemp mkdir chmod mv rm sed awk tr cat cp"
+BASE_TOOLS="sh uname tar gzip mktemp mkdir chmod mv rm sed awk tr cat cp tail"
 HASH_TOOLS="sha256sum shasum openssl"
 
 # The stubs map a release URL to a file of the same name in $FIXTURE and
@@ -70,8 +70,29 @@ src="$FIXTURE/${url##*/}"
 [ -f "$src" ] || exit 22
 if [ -n "$out" ]; then cp "$src" "$out"; else cat "$src"; fi
 EOF
-    cat > "$dir/wget" <<'EOF'
+    # Two wget flavours, because they disagree in ways the installer has
+    # to survive. GNU wget accepts --show-progress and --max-redirect and
+    # announces a redirect with an unindented "Location: URL [following]"
+    # line. busybox wget (Alpine's, typically with no curl beside it)
+    # rejects both flags, exits non-zero on --help, and indents its
+    # headers. The installer must work with either.
+    for flavour in gnu busybox; do
+        cat > "$dir/wget-$flavour" <<EOF
 #!/bin/sh
+flavour=$flavour
+EOF
+        cat >> "$dir/wget-$flavour" <<'EOF'
+spider=0
+for a in "$@"; do
+    case "$a" in
+        --help)
+            [ "$flavour" = gnu ] && { echo "       --show-progress   display the progress bar"; exit 0; }
+            echo "BusyBox multi-call binary. Usage: wget [-cqS] [--spider] [-O FILE] URL..." >&2; exit 1 ;;
+        --show-progress|--max-redirect*)
+            [ "$flavour" = busybox ] && { echo "wget: unrecognized option '$a'" >&2; exit 1; } ;;
+        --spider) spider=1 ;;
+    esac
+done
 out="" url=""
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -80,11 +101,22 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+if [ "$spider" = 1 ]; then
+    loc="https://github.com/Tnsor-Labs/brokoli/releases/tag/$STUB_LATEST"
+    if [ "$flavour" = gnu ]; then
+        printf '  HTTP/1.1 302 Found\n  Location: %s\nLocation: %s [following]\n' "$loc" "$loc" >&2
+    else
+        printf '  HTTP/1.1 302 Found\n  Location: %s\n  HTTP/1.1 200 OK\n' "$loc" >&2
+    fi
+    exit 0
+fi
 src="$FIXTURE/${url##*/}"
 [ -f "$src" ] || exit 8
 if [ -n "$out" ] && [ "$out" != "-" ]; then cp "$src" "$out"; else cat "$src"; fi
 EOF
-    chmod +x "$dir/curl" "$dir/wget"
+    done
+    ln -sf wget-gnu "$dir/wget"
+    chmod +x "$dir/curl" "$dir/wget-gnu" "$dir/wget-busybox"
 }
 
 # A fake release: an archive holding a `brokoli` that prints its version,
@@ -104,11 +136,11 @@ make_release() {
 # run_install SHELL BIN FIXTURE runs the real installer with nothing but
 # BIN on PATH and records its exit status, output, and install dir.
 run_install() {
-    local shell=$1 bin=$2 fix=$3
+    local shell=$1 bin=$2 fix=$3 version=${4-$VERSION}
     INST="$WORK/inst.$RANDOM"
     set +e
-    OUT=$(env -i PATH="$bin" HOME="$WORK/home" FIXTURE="$fix" \
-        BROKOLI_VERSION="$VERSION" BROKOLI_INSTALL_DIR="$INST" BROKOLI_NO_SETUP=1 \
+    OUT=$(env -i PATH="$bin" HOME="$WORK/home" FIXTURE="$fix" STUB_LATEST="$VERSION" \
+        ${version:+BROKOLI_VERSION="$version"} BROKOLI_INSTALL_DIR="$INST" BROKOLI_NO_SETUP=1 \
         $shell "$INSTALLER" 2>&1)
     STATUS=$?
     set -e
@@ -149,17 +181,23 @@ for shell in $SHELLS; do
         bad "verified archive installs (exit $STATUS)"; printf '%s\n' "$OUT" | sed 's/^/        /'
     fi
 
-    # 2. The same, through wget instead of curl.
-    # busybox sh runs its built-in wget and sha256sum applets whatever PATH
-    # says, so cases 2 and 7 cannot be isolated under it. Skipped by name
-    # rather than counted as passes.
-    if [ "$label" = busybox ]; then
-        skip "verified archive installs through wget (busybox uses its own wget)"
-    else
-        run_install "$run_shell" "$WGETONLY" "$F"
-        if [ "$STATUS" -eq 0 ] && installed; then ok "verified archive installs through wget"
-        else bad "verified archive installs through wget (exit $STATUS)"; printf '%s\n' "$OUT" | sed 's/^/        /'; fi
-    fi
+    # 2. The same through wget, with no curl, resolving "latest": once as
+    # GNU wget and once as busybox wget. busybox sh runs its own built-in
+    # wget whatever PATH says, so these cannot be isolated under it and are
+    # skipped there by name.
+    for flavour in gnu busybox; do
+        if [ "$label" = busybox ]; then
+            skip "installs through $flavour wget (busybox sh uses its own wget)"; continue
+        fi
+        ln -sf "wget-$flavour" "$WGETONLY/wget"
+        run_install "$run_shell" "$WGETONLY" "$F" ""
+        if [ "$STATUS" -eq 0 ] && installed && printf '%s' "$OUT" | grep -q "Checksum OK"; then
+            ok "installs through $flavour wget, resolving the latest release"
+        else
+            bad "installs through $flavour wget, resolving the latest release (exit $STATUS)"
+            printf '%s\n' "$OUT" | sed 's/^/        /'
+        fi
+    done
 
     # 2b. macOS has shasum rather than sha256sum, and openssl is the last
     # fallback. Each is exercised with it as the only hash tool present.
