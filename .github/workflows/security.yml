@@ -110,6 +110,12 @@ jobs:
       - name: Vulnerability gate self-test
         run: bash scripts/check-vulns_test.sh
 
+      - name: Installer checksum verification tests
+        # install.sh is what users pipe into a shell; these run it offline
+        # against a fake release and assert it refuses every archive it
+        # cannot verify, and installs nothing when it does.
+        run: bash scripts/install_test.sh
+
       - name: govulncheck (known vulnerabilities)
         run: |
           # @latest on purpose: catching newly published advisories against
