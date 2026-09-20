@@ -88,6 +88,36 @@ func TestValidate_JoinCollisionPolicyRejectsNonStringValue(t *testing.T) {
 	}
 }
 
+func TestValidate_DatasetSchemaAcceptsPortableDeclaration(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "id", "type": map[string]interface{}{"kind": "int64"}},
+		},
+		"additional_columns": "closed",
+	}
+	ve := ValidatePipeline(p)
+	if ve.HasErrors() {
+		t.Fatalf("valid dataset schema rejected: %v", ve.Errors)
+	}
+}
+
+func TestValidate_DatasetSchemaRejectsMalformedDeclaration(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "id", "type": map[string]interface{}{"kind": "not-a-type"}},
+		},
+		"additional_columns": "closed",
+	}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "schema") {
+		t.Fatalf("expected dataset schema error, got %v", ve.Errors)
+	}
+}
+
 func TestValidate_EmptyName(t *testing.T) {
 	p := validPipeline()
 	p.Name = ""
