@@ -30,6 +30,64 @@ func TestValidate_ValidPipeline(t *testing.T) {
 	}
 }
 
+func TestValidate_JoinCollisionPolicyRequiresAlias(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "join-policy",
+		Nodes: []models.Node{
+			{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+			{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+			{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+				"left_key": "id", "right_key": "id", "collision_policy": "alias",
+			}},
+			{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+		},
+		Edges: []models.Edge{
+			{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"},
+		},
+	}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "right_alias") {
+		t.Fatalf("expected right_alias validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinCollisionPolicyRejectsUnknownValue(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "collision_policy": "rename",
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "collision_policy") {
+		t.Fatalf("expected collision_policy validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinCollisionPolicyRejectsNonStringValue(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "collision_policy": 42,
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "collision_policy") {
+		t.Fatalf("expected non-string collision_policy validation error, got %v", ve.Errors)
+	}
+}
+
 func TestValidate_EmptyName(t *testing.T) {
 	p := validPipeline()
 	p.Name = ""

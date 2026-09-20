@@ -490,6 +490,10 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if getStr(n.Config, "table") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'table' is required for sql_generate", n.Name))
 		}
+	case models.NodeTypeJoin:
+		for _, message := range joinCollisionPolicyErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
+		}
 	case models.NodeTypeSinkFile:
 		if getStr(n.Config, "path") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'path' is required for sink_file", n.Name))
@@ -536,6 +540,37 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			}
 		}
 	}
+}
+
+func joinCollisionPolicyErrors(config map[string]interface{}) []string {
+	var errors []string
+	collisionPolicy := ""
+	if raw, present := config["collision_policy"]; present && raw != nil {
+		var ok bool
+		collisionPolicy, ok = raw.(string)
+		if !ok {
+			errors = append(errors, "'collision_policy' must be a string")
+		}
+	}
+	if collisionPolicy != "" && collisionPolicy != string(JoinCollisionPrefix) && collisionPolicy != string(JoinCollisionError) && collisionPolicy != string(JoinCollisionAlias) {
+		errors = append(errors, fmt.Sprintf("'collision_policy' must be one of %q, %q, or %q (got %q)", JoinCollisionError, JoinCollisionPrefix, JoinCollisionAlias, collisionPolicy))
+	}
+
+	rightAlias := ""
+	if raw, present := config["right_alias"]; present && raw != nil {
+		var ok bool
+		rightAlias, ok = raw.(string)
+		if !ok {
+			errors = append(errors, "'right_alias' must be a string")
+		}
+	}
+	if collisionPolicy == string(JoinCollisionAlias) && strings.TrimSpace(rightAlias) == "" {
+		errors = append(errors, "'right_alias' is required when 'collision_policy' is 'alias'")
+	}
+	if collisionPolicy != "" && collisionPolicy != string(JoinCollisionAlias) && rightAlias != "" {
+		errors = append(errors, "'right_alias' is only valid when 'collision_policy' is 'alias'")
+	}
+	return errors
 }
 
 // codeExecutionKeyErrors validates the code node's execution-contract
@@ -737,6 +772,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "join_type") == "" {
 			r.Warnings = append(r.Warnings, "'join_type' not set, defaults to inner")
 		}
+		r.Errors = append(r.Errors, joinCollisionPolicyErrors(n.Config)...)
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			r.Errors = append(r.Errors, fmt.Sprintf("union only supports mode=\"union\" (got %q)", mode))

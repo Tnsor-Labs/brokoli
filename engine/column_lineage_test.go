@@ -419,6 +419,44 @@ func TestJoinColumnLineageMatchesTheJoin(t *testing.T) {
 	}
 }
 
+func TestJoinColumnLineageUsesAliasOutputSchema(t *testing.T) {
+	got := joinColumns(ColumnLineageRequest{
+		Node: models.Node{ID: "j", Type: models.NodeTypeJoin, Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id",
+			"collision_policy": "alias", "right_alias": "customer",
+		}},
+		Inputs: []NodeInput{
+			{Node: "L", Columns: []string{"id", "name"}},
+			{Node: "R", Columns: []string{"id", "name"}},
+		},
+	})
+	if got.Opaque {
+		t.Fatalf("the alias join came back opaque: %s", got.Reason)
+	}
+	var columns []string
+	for _, derivation := range got.Derivations {
+		columns = append(columns, derivation.Output)
+	}
+	if want := []string{"id", "name", "customer_name"}; !equalStrings(columns, want) {
+		t.Fatalf("lineage columns = %v, want %v", columns, want)
+	}
+}
+
+func TestJoinColumnLineageRejectsInvalidCollisionPolicy(t *testing.T) {
+	got := joinColumns(ColumnLineageRequest{
+		Node: models.Node{ID: "j", Type: models.NodeTypeJoin, Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "collision_policy": "rename",
+		}},
+		Inputs: []NodeInput{
+			{Node: "L", Columns: []string{"id"}},
+			{Node: "R", Columns: []string{"id"}},
+		},
+	})
+	if !got.Opaque || !strings.Contains(got.Reason, "collision_policy") {
+		t.Fatalf("expected opaque invalid-policy lineage, got %#v", got)
+	}
+}
+
 // The key column carries values matched against the other side, so it
 // derives from both inputs rather than only the left.
 func TestAJoinKeyDerivesFromBothSides(t *testing.T) {
