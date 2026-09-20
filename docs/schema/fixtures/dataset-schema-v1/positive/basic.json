@@ -1,0 +1,17 @@
+{
+  "contract": "brokoli.dataset-schema/v1",
+  "columns": [
+    {
+      "name": "id",
+      "type": {"kind": "int64"},
+      "nullable": false
+    },
+    {
+      "name": "display_name",
+      "type": {"kind": "string"},
+      "nullable": true,
+      "description": "Human-readable label"
+    }
+  ],
+  "additional_columns": "closed"
+}

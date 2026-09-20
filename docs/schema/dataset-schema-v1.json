@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/dataset-schema-v1.json",
+  "title": "Brokoli dataset schema v1",
+  "description": "Language-neutral column schema for dataset values. Column types use the BPTD descriptors defined by ADR-032.",
+  "type": "object",
+  "required": ["contract", "columns", "additional_columns"],
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "brokoli.dataset-schema/v1"
+    },
+    "columns": {
+      "type": "array",
+      "description": "Columns in stable output order. Column names must be unique; consumers must reject duplicate names even when descriptors differ.",
+      "items": {
+        "$ref": "#/$defs/column"
+      },
+      "uniqueItems": true
+    },
+    "additional_columns": {
+      "type": "string",
+      "enum": ["closed", "open", "unknown"],
+      "description": "Whether records may contain columns outside this declaration. unknown means the declaration is not authoritative for the complete output schema."
+    }
+  },
+  "$defs": {
+    "column": {
+      "type": "object",
+      "required": ["name", "type"],
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "type": {
+          "$ref": "task-interface-v1.json#/$defs/bptd_type"
+        },
+        "nullable": {
+          "type": "boolean"
+        },
+        "description": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}
