@@ -1198,6 +1198,23 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			outputTable = result.result.outputTable
 			outputSchema = result.result.outputSchema
 			pushedRowCount, pushedAbsorbed = result.result.pushedRowCount, result.result.pushedAbsorbed
+			if err == nil {
+				var outputColumns []string
+				hasOutput := false
+				switch {
+				case output != nil:
+					outputColumns = output.Columns
+					hasOutput = true
+				case outputRef != nil:
+					outputColumns = outputRef.Columns
+					hasOutput = true
+				}
+				if hasOutput {
+					if schemaErr := validateDatasetSchemaColumnsFromConfig(node.Config, outputColumns); schemaErr != nil {
+						err = fmt.Errorf("validate dataset schema: %w", schemaErr)
+					}
+				}
+			}
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
 				err = fmt.Errorf("pipeline cancelled")
