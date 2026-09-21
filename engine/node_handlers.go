@@ -170,10 +170,16 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 	// Warn rather than silently ignoring a setting that has no effect.
 	if v, ok := execCfg["max_concurrency"]; ok {
 		if !hasPagination {
+			if strictExecution(node.Config) {
+				return nil, fmt.Errorf("strict execution profile sets max_concurrency without pagination")
+			}
 			r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v has no effect without a pagination config — ignoring", v)
 		} else {
 			switch strategy, _ := paginationCfg["strategy"].(string); strategy {
 			case "cursor", "next_link", "link_header":
+				if strictExecution(node.Config) {
+					return nil, fmt.Errorf("strict execution profile sets max_concurrency=%v for sequential pagination strategy %q", v, strategy)
+				}
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not applicable to pagination strategy %q — each page's request depends on the previous page's response, so pages run sequentially regardless of this setting", v, strategy)
 			}
 		}
@@ -186,6 +192,9 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 	// unrecognized for this node type; warn instead of pretending it did
 	// something.
 	if v, ok := execCfg["retry_scope"].(string); ok && v != "" && v != "page" {
+		if strictExecution(node.Config) {
+			return nil, fmt.Errorf("strict execution profile does not recognize source_api execution.retry_scope=%q", v)
+		}
 		r.log(node.ID, models.LogLevelWarning, "source_api execution.retry_scope=%q is not a recognized value for source_api pagination (only \"page\" applies here) — ignoring", v)
 	}
 
@@ -220,6 +229,9 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 
 	if !hasCheckpointEvery || checkpointEvery <= 0 || !hasPagination || !supportsCheckpointing || r.checkpointStore == nil {
 		if hasCheckpointEvery && checkpointEvery > 0 {
+			if strictExecution(node.Config) {
+				return nil, fmt.Errorf("strict execution profile cannot apply checkpoint_every=%v: pagination, checkpoint support, and a checkpoint store are all required", execCfg["checkpoint_every"])
+			}
 			switch {
 			case !hasPagination:
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v has no effect without a pagination config — ignoring", execCfg["checkpoint_every"])

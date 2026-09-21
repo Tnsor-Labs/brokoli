@@ -92,11 +92,20 @@ func planNode(n models.Node) models.PhysicalWorkUnit {
 				u.MaxConcurrency = mc
 			}
 		}
-		u.Explain = fmt.Sprintf("fetches pages at runtime; ≤%d concurrent, each page retried independently", u.MaxConcurrency)
+		u.Explain = fmt.Sprintf("fetches pages at runtime; %s; ≤%d concurrent, each page retried independently", executionPolicyExplain(n.Config), u.MaxConcurrency)
 		return u
 	}
 
 	return u
+}
+
+func executionPolicyExplain(config map[string]interface{}) string {
+	exec, ok := mapField(config, "execution")
+	if !ok {
+		return "default timeout/retry/rate/checkpoint policy"
+	}
+	return fmt.Sprintf("timeout=%v, retries=%v, rate=%v req/s, checkpoint_every=%v",
+		config["timeout"], config["max_retries"], exec["requests_per_second"], exec["checkpoint_every"])
 }
 
 // ProjectRunInstances returns the physical instances that executed in a
