@@ -223,10 +223,12 @@ function SourceDb({ ctx }: TypeFormProps) {
   )
 }
 
-function Transform({ ctx }: TypeFormProps) {
+function Transform({ ctx, nodes, edges }: TypeFormProps) {
+  const input = edges.find((edge) => edge.to === ctx.node.id)
+  const inputSchema = input ? outputSchemaForNode(input.from, nodes, edges) : undefined
   return (
     <Section title="Rules" description="Applied in order to every row.">
-      <TransformRules ctx={ctx} />
+      <TransformRules ctx={ctx} inputSchema={inputSchema} />
     </Section>
   )
 }
