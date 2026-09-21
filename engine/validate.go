@@ -179,7 +179,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 func IsBuiltInNodeType(nodeType models.NodeType) bool {
 	switch nodeType {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
+		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
@@ -242,6 +242,10 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			count := inputDegree[n.ID]
 			if count != 2 {
 				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
+			}
+		case models.NodeTypeProject, models.NodeTypeAggregate:
+			if count := inputDegree[n.ID]; count != 1 {
+				ve.Add(fmt.Sprintf("Node %q (%s) must have exactly 1 input, got %d", n.Name, n.Type, count))
 			}
 		case models.NodeTypeUnion:
 			// Matches brokoli-sdk's own union()/collect() requirement

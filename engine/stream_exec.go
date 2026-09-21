@@ -52,6 +52,7 @@ func rowLocalTransformRules(rules []TransformRule) bool {
 		switch rule.Type {
 		case "rename_columns", "rename",
 			"add_column",
+			"project", "projection",
 			"filter_rows", "filter",
 			"apply_function", "function",
 			"replace_values", "replace",

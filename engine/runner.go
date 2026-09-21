@@ -1866,6 +1866,10 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runSourceDB(node, attempt)
 	case models.NodeTypeTransform:
 		return r.runTransform(node, input, inputSchema)
+	case models.NodeTypeProject:
+		return r.runNativeOperator(node, input, inputSchema, "project")
+	case models.NodeTypeAggregate:
+		return r.runNativeOperator(node, input, inputSchema, "aggregate")
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
 	case models.NodeTypeCode:

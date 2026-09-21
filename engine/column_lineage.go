@@ -166,6 +166,8 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 
 	// The structured transforms: the mappings are in the IR.
 	models.NodeTypeTransform: transformColumns,
+	models.NodeTypeProject:   dedicatedOperatorColumns,
+	models.NodeTypeAggregate: dedicatedOperatorColumns,
 	models.NodeTypeJoin:      joinColumns,
 	models.NodeTypeUnion:     unionColumns,
 
@@ -203,6 +205,21 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 		"a dbt node runs a separate tool whose models this engine does not read"),
 	models.NodeTypeTask: opaqueColumns(
 		"a task node runs a user-authored harness; ADR-033's output contract declares shape, not column provenance"),
+}
+
+func dedicatedOperatorColumns(req ColumnLineageRequest) ColumnLineage {
+	synthetic := req.Node
+	originalType := req.Node.Type
+	synthetic.Type = models.NodeTypeTransform
+	synthetic.Config = map[string]interface{}{"rules": []interface{}{synthetic.Config}}
+	// The original node type selects the rule shape; preserve it before
+	// replacing the type for the shared lineage walker.
+	if originalType == models.NodeTypeProject {
+		synthetic.Config["rules"] = []interface{}{map[string]interface{}{"type": "project", "expression_version": req.Node.Config["expression_version"], "projections": req.Node.Config["projections"]}}
+	} else {
+		synthetic.Config["rules"] = []interface{}{map[string]interface{}{"type": "aggregate", "group_by": req.Node.Config["group_by"], "agg_fields": req.Node.Config["agg_fields"]}}
+	}
+	return transformColumns(ColumnLineageRequest{Node: synthetic, Inputs: req.Inputs})
 }
 
 // ColumnLineageFor returns a node's declaration.
@@ -340,6 +357,16 @@ func transformColumns(req ColumnLineageRequest) ColumnLineage {
 				continue
 			}
 			add(r.Name, resolveExpressionColumns(r.Expression, origin), r.Expression)
+		case "project":
+			next := map[string][]ColumnRef{}
+			nextRule := map[string]string{}
+			var nextOrder []string
+			for _, projection := range r.Projections {
+				next[projection.Name] = resolveNativeExpressionColumns(projection.Expr, origin)
+				nextRule[projection.Name] = "native expression"
+				nextOrder = append(nextOrder, projection.Name)
+			}
+			origin, rule, order = next, nextRule, nextOrder
 		case "drop":
 			for _, c := range r.Columns {
 				drop(c)
@@ -421,6 +448,8 @@ func normaliseTransformType(t string) string {
 		return "rename"
 	case "add_column":
 		return "add_column"
+	case "project", "projection":
+		return "project"
 	case "filter_rows", "filter":
 		return "filter"
 	case "apply_function", "function":
@@ -438,6 +467,37 @@ func normaliseTransformType(t string) string {
 	default:
 		return t
 	}
+}
+
+func resolveNativeExpressionColumns(expr map[string]interface{}, origin map[string][]ColumnRef) []ColumnRef {
+	var refs []ColumnRef
+	seen := map[string]bool{}
+	var visit func(map[string]interface{})
+	visit = func(node map[string]interface{}) {
+		if node["op"] == "column" {
+			path, _ := node["path"].([]interface{})
+			if len(path) > 0 {
+				if name, ok := path[0].(string); ok && !seen[name] {
+					seen[name] = true
+					refs = append(refs, origin[name]...)
+				}
+			}
+		}
+		for _, key := range []string{"left", "right"} {
+			if child, ok := node[key].(map[string]interface{}); ok {
+				visit(child)
+			}
+		}
+		if args, ok := node["args"].([]interface{}); ok {
+			for _, raw := range args {
+				if child, ok := raw.(map[string]interface{}); ok {
+					visit(child)
+				}
+			}
+		}
+	}
+	visit(expr)
+	return refs
 }
 
 // aggFieldsOf returns the aggregation list under either of its names.

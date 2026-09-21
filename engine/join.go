@@ -143,7 +143,10 @@ func JoinDatasetsWithOptions(left, right *common.DataSet, leftKey, rightKey stri
 	// Index right dataset by key
 	rightIndex := make(map[string][]common.DataRow)
 	for _, row := range right.Rows {
-		key := fmt.Sprintf("%v", row[rightKey])
+		key, ok := joinValueKey(row[rightKey])
+		if !ok {
+			continue
+		}
 		rightIndex[key] = append(rightIndex[key], row)
 	}
 
@@ -152,7 +155,13 @@ func JoinDatasetsWithOptions(left, right *common.DataSet, leftKey, rightKey stri
 
 	// Process left rows
 	for _, leftRow := range left.Rows {
-		leftVal := fmt.Sprintf("%v", leftRow[leftKey])
+		leftVal, leftKeyPresent := joinValueKey(leftRow[leftKey])
+		if !leftKeyPresent {
+			if joinType == JoinLeft || joinType == JoinFull {
+				outRows = append(outRows, mergeUnmatchedLeft(leftRow, right.Columns, rightKey, leftKey, rightOutputNames))
+			}
+			continue
+		}
 		rightRows, found := rightIndex[leftVal]
 
 		if found {
@@ -180,7 +189,24 @@ func JoinDatasetsWithOptions(left, right *common.DataSet, leftKey, rightKey stri
 	// For right/full join, add unmatched right rows
 	if joinType == JoinRight || joinType == JoinFull {
 		for _, rightRow := range right.Rows {
-			rightVal := fmt.Sprintf("%v", rightRow[rightKey])
+			rightVal, present := joinValueKey(rightRow[rightKey])
+			if !present {
+				if joinType == JoinRight || joinType == JoinFull {
+					merged := make(common.DataRow)
+					for _, c := range left.Columns {
+						merged[c] = nil
+					}
+					for k, v := range rightRow {
+						if k == rightKey && leftKey == rightKey {
+							merged[k] = v
+						} else {
+							merged[rightOutputNames[k]] = v
+						}
+					}
+					outRows = append(outRows, merged)
+				}
+				continue
+			}
 			if !rightMatched[rightVal] {
 				merged := make(common.DataRow)
 				for _, c := range left.Columns {
@@ -199,6 +225,27 @@ func JoinDatasetsWithOptions(left, right *common.DataSet, leftKey, rightKey stri
 	}
 
 	return &common.DataSet{Columns: outCols, Rows: outRows}, nil
+}
+
+func joinValueKey(value interface{}) (string, bool) {
+	if value == nil {
+		return "", false
+	}
+	return fmt.Sprintf("%T:%#v", value, value), true
+}
+
+func mergeUnmatchedLeft(leftRow common.DataRow, rightColumns []string, rightKey, leftKey string, rightOutputNames map[string]string) common.DataRow {
+	merged := make(common.DataRow)
+	for k, v := range leftRow {
+		merged[k] = v
+	}
+	for _, c := range rightColumns {
+		if c == rightKey && leftKey == rightKey {
+			continue
+		}
+		merged[rightOutputNames[c]] = nil
+	}
+	return merged
 }
 
 func mergeRows(leftRow, rightRow common.DataRow, rightCols []string, rightKey, leftKey string, rightOutputNames map[string]string) common.DataRow {

@@ -21,6 +21,8 @@ var AllNodeTypes = []NodeType{
 	NodeTypeSourceAPI,
 	NodeTypeSourceDB,
 	NodeTypeTransform,
+	NodeTypeProject,
+	NodeTypeAggregate,
 	NodeTypeQualityCheck,
 	NodeTypeSQLGenerate,
 	NodeTypeCode,
