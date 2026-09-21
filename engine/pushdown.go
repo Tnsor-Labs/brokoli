@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -93,6 +94,12 @@ func (r *Runner) segmentPushesDown(fromNodeID string, ref *TableRef) bool {
 				return false
 			}
 			current, nodeID = composed, next.ID
+		case models.NodeTypeFilter:
+			composed, ok := r.composeNativeFilterOntoTableRef(next, current)
+			if !ok {
+				return false
+			}
+			current, nodeID = composed, next.ID
 		case models.NodeTypeSinkDB:
 			return r.sinkAcceptsTableRef(next, current)
 		default:
@@ -100,6 +107,34 @@ func (r *Runner) segmentPushesDown(fromNodeID string, ref *TableRef) bool {
 		}
 	}
 	return false
+}
+
+func (r *Runner) composeNativeFilterOntoTableRef(node models.Node, in *TableRef) (*TableRef, bool) {
+	if in == nil || dataPlaneInterpreted() || r.consumerCount(node.ID) != 1 {
+		return nil, false
+	}
+	ruleJSON, err := json.Marshal(node.Config)
+	if err != nil {
+		return nil, false
+	}
+	var rule TransformRule
+	if err := json.Unmarshal(ruleJSON, &rule); err != nil {
+		return nil, false
+	}
+	rule.Type = "filter_native"
+	d, ok := dbdialect.For(in.Dialect)
+	if !ok {
+		return nil, false
+	}
+	kinds, err := describeQueryColumns(r.ctx, in.ConnURI, in.Query, d)
+	if err != nil {
+		return nil, false
+	}
+	compiled, ok := compilePlanToSQL(transformStreamPlan{prefix: []TransformRule{rule}}, in.Query, in.Columns, in.Dialect, kinds)
+	if !ok {
+		return nil, false
+	}
+	return &TableRef{ConnURI: in.ConnURI, Query: compiled.Query, Columns: compiled.Columns, Dialect: in.Dialect, Absorbed: append(append([]string{}, in.Absorbed...), node.ID)}, true
 }
 
 // singleConsumer returns the one node reading this node's output, or false if
