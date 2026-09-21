@@ -38,7 +38,7 @@ func planTransformRules(rules []TransformRule) (transformStreamPlan, bool) {
 		switch rule.Type {
 		case "rename_columns", "rename",
 			"add_column",
-			"filter_rows", "filter",
+			"filter_rows", "filter", "filter_native",
 			"apply_function", "function",
 			"replace_values", "replace",
 			"drop_columns", "drop":

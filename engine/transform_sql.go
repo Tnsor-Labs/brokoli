@@ -141,6 +141,22 @@ func compilePrefixToSQLTyped(prefix []TransformRule, srcQuery string, srcColumns
 			}
 			wheres = append(wheres, expr)
 
+		case "filter_native":
+			if rule.ExpressionVersion != 1 || len(rule.Predicate) == 0 {
+				return prefixSQL{}, false
+			}
+			current := make(map[string]sqlColumnRef, len(cols))
+			for _, c := range cols {
+				if k, ok := kinds[c.src]; ok {
+					current[c.out] = sqlColumnRef{Ident: d.QuoteIdent(c.src), Kind: k}
+				}
+			}
+			expr, ok := compileNativePredicateToSQL(rule.Predicate, current, d)
+			if !ok {
+				return prefixSQL{}, false
+			}
+			wheres = append(wheres, expr)
+
 		default:
 			// Not proven equivalent yet.
 			return prefixSQL{}, false
