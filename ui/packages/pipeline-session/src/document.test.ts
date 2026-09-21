@@ -263,6 +263,35 @@ describe('transform output schemas', () => {
     const edges = [{ from: 'left', to: 'transform' }, { from: 'transform', to: 'join' }, { from: 'right', to: 'join' }]
     expect(outputSchemaForNode('join', nodes, edges)?.columns.map((column) => column.name)).toEqual(['user_id', 'price', 'status'])
   })
+  it('supports the engine aliases and aggregation field alias', () => {
+    const result = transformOutputSchema(schema, {
+      rules: [
+        { type: 'rename', mapping: { status: 'state' } },
+        { type: 'drop', columns: ['id'] },
+        { type: 'filter', condition: 'state = active' },
+        { type: 'aggregate', group_by: ['state'], aggregations: [{ column: 'price', function: 'sum' }] },
+      ],
+    })
+    expect(result?.columns).toEqual([{ name: 'state', type: { kind: 'string' } }, { name: 'sum_price', type: { kind: 'float64' } }])
+  })
+  it('uses engine aggregate names when aliases are omitted', () => {
+    const result = transformOutputSchema(schema, { rules: [{ type: 'aggregate', group_by: ['status'], agg_fields: [{ column: 'price', function: 'min' }, { column: 'id', function: 'count' }] }] })
+    expect(result?.columns).toEqual([{ name: 'status', type: { kind: 'string' } }, { name: 'min_price', type: { kind: 'float64' } }, { name: 'count_id', type: { kind: 'int64' } }])
+  })
+  it('invalidates collisions and malformed aggregate references instead of guessing', () => {
+    expect(transformOutputSchema(schema, { rules: [{ type: 'rename_columns', mapping: { id: 'status' } }] })).toBeUndefined()
+    expect(transformOutputSchema(schema, { rules: [{ type: 'aggregate', group_by: ['missing'], agg_fields: [] }] })).toBeUndefined()
+  })
+  it('rejects incompatible join key types and malformed declared schemas', () => {
+    expect(joinOutputSchema({ columns: [{ name: 'id', type: { kind: 'int64' } }] }, { columns: [{ name: 'id', type: { kind: 'string' } }] }, { left_key: 'id', right_key: 'id' }).error).toMatch(/incompatible/)
+    const nodes = [node('source', 'source_file', { config: { schema: { columns: [{ name: '', type: { kind: 'string' } }] } } })]
+    expect(outputSchemaForNode('source', nodes, [])).toBeUndefined()
+  })
+  it('stops resolving cycles instead of recursing forever', () => {
+    const nodes = [node('a', 'transform', { config: { rules: [] } }), node('b', 'transform', { config: { rules: [] } })]
+    const edges = [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }]
+    expect(outputSchemaForNode('a', nodes, edges)).toBeUndefined()
+  })
 })
 
 describe('click-to-add placement', () => {

@@ -150,6 +150,8 @@ function declaredSchema(node: PipelineNode | undefined): DatasetSchema | undefin
     )
   )
     return undefined
+  const names = columns.map((column) => (column as { name: string }).name)
+  if (names.some((name) => !name.trim()) || new Set(names).size !== names.length) return undefined
   return { ...(schema as DatasetSchema), columns: columns as DatasetSchemaColumn[] }
 }
 
@@ -170,6 +172,11 @@ export function joinOutputSchema(
     return { columns: undefined, error: `Left key "${leftKey}" is not in the declared columns.` }
   if (!rightNames.has(rightKey))
     return { columns: undefined, error: `Right key "${rightKey}" is not in the declared columns.` }
+  const leftType = left.columns.find((column) => column.name === leftKey)?.type?.kind
+  const rightType = right.columns.find((column) => column.name === rightKey)?.type?.kind
+  if (leftType && rightType && leftType !== rightType && leftType !== 'unknown' && rightType !== 'unknown') {
+    return { columns: undefined, error: `Join keys "${leftKey}" and "${rightKey}" have incompatible types.` }
+  }
 
   const collisions = right.columns
     .filter(
@@ -233,7 +240,8 @@ export function transformOutputSchema(input: DatasetSchema | undefined, config: 
   for (const raw of rules) {
     if (!raw || typeof raw !== 'object') return undefined
     const rule = raw as Record<string, unknown>
-    const type = typeof rule.type === 'string' ? rule.type : ''
+    const rawType = typeof rule.type === 'string' ? rule.type : ''
+    const type = ({ rename: 'rename_columns', filter: 'filter_rows', drop: 'drop_columns', function: 'apply_function', replace: 'replace_values', dedup: 'deduplicate', agg: 'aggregate' } as Record<string, string>)[rawType] ?? rawType
     if (type === 'rename_columns' && rule.mapping && typeof rule.mapping === 'object' && !Array.isArray(rule.mapping)) {
       const mapping = rule.mapping as Record<string, unknown>
       const names = new Set<string>()
@@ -257,18 +265,19 @@ export function transformOutputSchema(input: DatasetSchema | undefined, config: 
     } else if (type === 'sort' || type === 'deduplicate' || type === 'filter_rows') {
       continue
     } else if (type === 'aggregate') {
-      if (!Array.isArray(rule.group_by) || !Array.isArray(rule.agg_fields)) return undefined
+      const aggregateFields = rule.agg_fields ?? rule.aggregations
+      if (!Array.isArray(rule.group_by) || !Array.isArray(aggregateFields)) return undefined
       const source = new Map(columns.map((column) => [column.name, column]))
       const grouped: DatasetSchemaColumn[] = rule.group_by.filter((name): name is string => typeof name === 'string').map((name) => source.get(name)).filter((column) => Boolean(column)) as DatasetSchemaColumn[]
       if (grouped.length !== rule.group_by.length) return undefined
-      const aggregates = rule.agg_fields.map((entry) => {
+      const aggregates = aggregateFields.map((entry) => {
         if (!entry || typeof entry !== 'object') return undefined
         const field = entry as Record<string, unknown>
         const sourceColumn = typeof field.column === 'string' ? source.get(field.column) : undefined
-        const alias = typeof field.alias === 'string' ? field.alias.trim() : ''
         const fn = typeof field.function === 'string' ? field.function : ''
-        if (!sourceColumn || !alias || ['count', 'sum', 'avg', 'min', 'max'].indexOf(fn) < 0) return undefined
-        const outputType = fn === 'count' ? { kind: 'int64' } : fn === 'avg' ? { kind: 'float64' } : sourceColumn.type
+        const alias = typeof field.alias === 'string' && field.alias.trim() ? field.alias.trim() : `${fn}_${field.column as string}`
+        if (!sourceColumn || ['count', 'sum', 'avg', 'min', 'max'].indexOf(fn) < 0) return undefined
+        const outputType = fn === 'count' ? { kind: 'int64' } : { kind: 'float64' }
         return { name: alias, type: outputType }
       })
       const validAggregates = aggregates.filter(Boolean) as DatasetSchemaColumn[]
