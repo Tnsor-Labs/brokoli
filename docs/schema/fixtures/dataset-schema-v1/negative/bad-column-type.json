@@ -1,0 +1,8 @@
+{
+  "_violation": "column type is not a BPTD descriptor",
+  "contract": "brokoli.dataset-schema/v1",
+  "columns": [
+    {"name": "id", "type": {"kind": "not-a-type"}}
+  ],
+  "additional_columns": "closed"
+}
