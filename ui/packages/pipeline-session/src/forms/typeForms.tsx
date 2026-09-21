@@ -466,7 +466,9 @@ function SchemaColumns({ columns }: { columns: { name: string; type?: { kind?: s
   )
 }
 
-function QualityCheck({ ctx }: TypeFormProps) {
+function QualityCheck({ ctx, nodes, edges }: TypeFormProps) {
+  const input = edges.find((edge) => edge.to === ctx.node.id)
+  const inputSchema = input ? outputSchemaForNode(input.from, nodes, edges) : undefined
   return (
     <Section title="Checks">
       <SelectField
@@ -479,7 +481,7 @@ function QualityCheck({ ctx }: TypeFormProps) {
           { value: 'warn', label: 'Warn and continue' },
         ]}
       />
-      <QualityRules ctx={ctx} />
+      <QualityRules ctx={ctx} schema={inputSchema} />
     </Section>
   )
 }

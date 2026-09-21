@@ -1,6 +1,7 @@
 import { Plus, Trash2 } from 'lucide-react'
 import { Button, Field, IconButton, Input, Select } from '@brokoli/ui'
 import { str, type FormCtx } from './fields'
+import type { DatasetSchema } from '../document'
 
 type Check = { column?: string; rule: string; params?: Record<string, unknown>; on_failure?: string }
 
@@ -38,7 +39,7 @@ const RULES: { value: string; label: string; params: { key: string; label: strin
   },
 ]
 
-export function QualityRules({ ctx }: { ctx: FormCtx }) {
+export function QualityRules({ ctx, schema }: { ctx: FormCtx; schema?: DatasetSchema }) {
   const source = ctx.get('rules') ?? ctx.get('checks')
   const checks = (Array.isArray(source) ? source : []) as Check[]
   // Writes always go to `rules`; the `checks` alias is folded in on the first edit.
@@ -67,9 +68,11 @@ export function QualityRules({ ctx }: { ctx: FormCtx }) {
             </div>
             <div className="ps-rule-body">
               {!def?.noColumn && (
-                <Field label="Column">
-                  <Input mono value={str(check.column)} onChange={(e) => update(i, { column: e.target.value }, `q:${ctx.node.id}:${i}:col`)} />
-                </Field>
+                <QualityColumnField
+                  schema={schema}
+                  value={check.column}
+                  onChange={(column) => update(i, { column }, `q:${ctx.node.id}:${i}:col`)}
+                />
               )}
               {def?.params.map((p) => (
                 <Field key={p.key} label={p.label}>
@@ -117,5 +120,19 @@ export function QualityRules({ ctx }: { ctx: FormCtx }) {
         Add check
       </Button>
     </div>
+  )
+}
+
+function QualityColumnField({ schema, value, onChange }: { schema?: DatasetSchema; value: unknown; onChange: (value: string) => void }) {
+  const column = str(value)
+  const missing = schema && column && !schema.columns.some((entry) => entry.name === column)
+  const list = 'quality-columns'
+  return (
+    <>
+      <Field label="Column" error={missing ? `Unknown column: ${column}` : undefined}>
+        <Input mono value={column} list={schema ? list : undefined} onChange={(event) => onChange(event.target.value)} />
+      </Field>
+      {schema && <datalist id={list}>{schema.columns.map((entry) => <option key={entry.name} value={entry.name} />)}</datalist>}
+    </>
   )
 }
