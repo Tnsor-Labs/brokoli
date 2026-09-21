@@ -271,8 +271,8 @@ export function MapField({ ctx, name, label, hint, ...rest }: { ctx: FormCtx; na
   )
 }
 
-type SchemaRow = { id: number; name: string; kind: string; nullable: boolean; precision: string; scale: string }
-const SCHEMA_TYPES = ['int64', 'float64', 'string', 'boolean', 'bytes', 'decimal', 'date', 'timestamp', 'duration', 'json', 'unknown']
+type SchemaRow = { id: number; name: string; kind: string; nullable: boolean; precision: string; scale: string; details: string }
+const SCHEMA_TYPES = ['int64', 'float64', 'string', 'boolean', 'bytes', 'decimal', 'date', 'timestamp', 'duration', 'json', 'unknown', 'enum', 'array', 'map', 'record']
 let schemaRowSeq = 0
 
 function schemaRows(value: DatasetSchema | undefined): SchemaRow[] {
@@ -284,6 +284,7 @@ function schemaRows(value: DatasetSchema | undefined): SchemaRow[] {
     nullable: Boolean(column.type?.nullable),
     precision: typeof column.type?.precision === 'number' ? String(column.type.precision) : '',
     scale: typeof column.type?.scale === 'number' ? String(column.type.scale) : '',
+    details: column.type ? JSON.stringify(Object.fromEntries(Object.entries(column.type).filter(([key]) => !['kind', 'nullable', 'precision', 'scale'].includes(key))), null, 2) : '',
   }))
 }
 
@@ -307,19 +308,34 @@ export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schem
       ctx.set({ [name]: undefined }, `schema:${ctx.node.id}`)
       return
     }
+    const columns = nextRows.filter((row) => row.name.trim()).map((row) => {
+      let details: Record<string, unknown> = {}
+      if (row.details.trim()) {
+        try {
+          const parsed = JSON.parse(row.details)
+          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+          details = parsed as Record<string, unknown>
+        } catch {
+          return undefined
+        }
+      }
+      return {
+        name: row.name.trim(),
+        type: {
+          ...details,
+          kind: row.kind,
+          ...(row.kind === 'decimal' && row.precision ? { precision: Number(row.precision) } : {}),
+          ...(row.kind === 'decimal' && row.scale ? { scale: Number(row.scale) } : {}),
+          ...(row.nullable ? { nullable: true } : {}),
+        },
+      }
+    })
+    if (columns.some((column) => !column)) return
     ctx.set(
       {
         [name]: {
           contract: 'brokoli.dataset-schema/v1',
-          columns: nextRows.filter((row) => row.name.trim()).map((row) => ({
-            name: row.name.trim(),
-            type: {
-              kind: row.kind,
-              ...(row.kind === 'decimal' && row.precision ? { precision: Number(row.precision) } : {}),
-              ...(row.kind === 'decimal' && row.scale ? { scale: Number(row.scale) } : {}),
-              ...(row.nullable ? { nullable: true } : {}),
-            },
-          })),
+          columns,
           additional_columns: nextAdditional,
         },
       },
@@ -344,12 +360,13 @@ export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schem
             </Select>
             {row.kind === 'decimal' && <Input type="number" min={1} value={row.precision} placeholder="precision" aria-label={`Precision for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, precision: event.target.value } : entry)))} />}
             {row.kind === 'decimal' && <Input type="number" min={0} value={row.scale} placeholder="scale" aria-label={`Scale for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, scale: event.target.value } : entry)))} />}
+            {(row.details.trim() || ['enum', 'array', 'map', 'record'].includes(row.kind)) && <Textarea mono rows={2} value={row.details} placeholder={row.kind === 'enum' ? '{"values":["active","closed"]}' : '{"...":"type details"}'} aria-label={`Details for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, details: event.target.value } : entry)))} />}
             <Checkbox label="Nullable" checked={row.nullable} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, nullable: event.target.checked } : entry)))} />
             <IconButton size="sm" variant="danger" label={`Remove ${row.name || 'column'}`} onClick={() => commit(rows.filter((entry) => entry.id !== row.id))}><Trash2 size={14} aria-hidden="true" /></IconButton>
           </div>
         ))}
       </div>
-      <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden="true" />} onClick={() => setRows([...rows, { id: ++schemaRowSeq, name: '', kind: 'string', nullable: false, precision: '', scale: '' }])}>Add column</Button>
+      <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden="true" />} onClick={() => setRows([...rows, { id: ++schemaRowSeq, name: '', kind: 'string', nullable: false, precision: '', scale: '', details: '' }])}>Add column</Button>
       <Field label="Additional columns" hint="Open accepts undeclared columns; unknown keeps the declaration non-authoritative.">
         <Select value={additional} onChange={(event) => commit(rows, event.target.value)}>
           <option value="closed">Closed</option>
