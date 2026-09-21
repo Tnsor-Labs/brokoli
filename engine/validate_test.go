@@ -112,6 +112,35 @@ func TestValidate_JoinSchemaRejectsInvalidDecimalDescriptor(t *testing.T) {
 	}
 }
 
+func TestValidate_JoinSchemasRejectMissingDeclaredKey(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{
+			"path": "/left", "schema": testDatasetSchema("id"),
+		}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{
+			"path": "/right", "schema": testDatasetSchema("other_id"),
+		}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{"left_key": "id", "right_key": "id"}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "right key \"id\"") {
+		t.Fatalf("expected missing declared right key error, got %v", ve.Errors)
+	}
+}
+
+func testDatasetSchema(column string) map[string]interface{} {
+	return map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{map[string]interface{}{
+			"name": column, "type": map[string]interface{}{"kind": "int64"},
+		}},
+		"additional_columns": "closed",
+	}
+}
+
 func TestValidate_DatasetSchemaAcceptsPortableDeclaration(t *testing.T) {
 	p := validPipeline()
 	p.Nodes[0].Config["schema"] = map[string]interface{}{

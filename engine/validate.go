@@ -169,6 +169,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 	for _, n := range p.Nodes {
 		validateNodeConfig(n, ve)
 	}
+	validateDeclaredJoinSchemas(p, ve)
 
 	return ve
 }
@@ -603,6 +604,80 @@ func datasetSchemaConfigErrors(raw interface{}) []string {
 		errors = append(errors, datasetTypeErrors(column["type"], fmt.Sprintf("dataset schema column %q type", name))...)
 	}
 	return errors
+}
+
+// validateDeclaredJoinSchemas checks the part of a join contract that can be
+// proven before execution. Unknown or absent input schemas remain a runtime
+// concern; two declared schemas, however, must agree on their keys and output
+// collision policy rather than letting a fallback field lookup hide a typo.
+func validateDeclaredJoinSchemas(p *models.Pipeline, ve *ValidationError) {
+	nodes := make(map[string]models.Node, len(p.Nodes))
+	incoming := make(map[string][]models.Node)
+	for _, n := range p.Nodes {
+		nodes[n.ID] = n
+	}
+	for _, edge := range p.Edges {
+		if from, ok := nodes[edge.From]; ok {
+			incoming[edge.To] = append(incoming[edge.To], from)
+		}
+	}
+	for _, join := range p.Nodes {
+		if join.Type != models.NodeTypeJoin || len(incoming[join.ID]) != 2 {
+			continue
+		}
+		leftColumns, leftKinds, leftOK := declaredSchemaColumns(incoming[join.ID][0].Config["schema"])
+		rightColumns, rightKinds, rightOK := declaredSchemaColumns(incoming[join.ID][1].Config["schema"])
+		if !leftOK || !rightOK {
+			continue
+		}
+		leftKey, _ := join.Config["left_key"].(string)
+		rightKey, _ := join.Config["right_key"].(string)
+		if rightKey == "" {
+			rightKey = leftKey
+		}
+		if leftKinds[leftKey] != "" && rightKinds[rightKey] != "" &&
+			leftKinds[leftKey] != "unknown" && rightKinds[rightKey] != "unknown" &&
+			leftKinds[leftKey] != rightKinds[rightKey] {
+			ve.Add(fmt.Sprintf("Node %q: schema: join keys %q and %q have incompatible declared types %q and %q",
+				join.Name, leftKey, rightKey, leftKinds[leftKey], rightKinds[rightKey]))
+			continue
+		}
+		policy, _ := join.Config["collision_policy"].(string)
+		rightAlias, _ := join.Config["right_alias"].(string)
+		if _, _, err := planJoinColumns(leftColumns, rightColumns, leftKey, rightKey, JoinOptions{
+			CollisionPolicy: JoinCollisionPolicy(policy), RightAlias: rightAlias,
+		}); err != nil {
+			ve.Add(fmt.Sprintf("Node %q: schema: %v", join.Name, err))
+		}
+	}
+}
+
+func declaredSchemaColumns(raw interface{}) ([]string, map[string]string, bool) {
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, nil, false
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return nil, nil, false
+	}
+	names := make([]string, 0, len(columns))
+	kinds := make(map[string]string, len(columns))
+	for _, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			return nil, nil, false
+		}
+		name, _ := column["name"].(string)
+		typ, _ := column["type"].(map[string]interface{})
+		kind, _ := typ["kind"].(string)
+		if name == "" || kind == "" {
+			return nil, nil, false
+		}
+		names = append(names, name)
+		kinds[name] = kind
+	}
+	return names, kinds, true
 }
 
 func datasetTypeErrors(raw interface{}, path string) []string {
