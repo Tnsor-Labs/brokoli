@@ -9,6 +9,7 @@ import {
 import {
   CheckField,
   ConnectionField,
+  DatasetSchemaField,
   LegacyKeyNotice,
   ListField,
   MapField,
@@ -105,6 +106,7 @@ function SourceFile({ ctx }: TypeFormProps) {
       <LegacyKeyNotice ctx={ctx} name="format">
         The engine picks the reader from the file extension and ignores this setting.
       </LegacyKeyNotice>
+      <DatasetSchemaField ctx={ctx} />
     </Section>
   )
 }
@@ -165,6 +167,11 @@ function SourceApi({ ctx }: TypeFormProps) {
           keyPlaceholder="Header-Name"
         />
       </Section>
+      {response === 'dataset' && (
+        <Section title="Dataset schema">
+          <DatasetSchemaField ctx={ctx} />
+        </Section>
+      )}
       <Section title="Response">
         <SelectField
           ctx={ctx}
@@ -211,6 +218,7 @@ function SourceDb({ ctx }: TypeFormProps) {
     <Section title="Query">
       <DatabaseTarget ctx={ctx} />
       <ScriptField ctx={ctx} name="query" label="SQL query" language="sql" required />
+      <DatasetSchemaField ctx={ctx} />
     </Section>
   )
 }

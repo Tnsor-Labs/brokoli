@@ -5,6 +5,7 @@ import { connectionApi, type Connection, type PipelineEdge, type PipelineNode } 
 import { Button, Callout, Checkbox, Field, IconButton, Input, Select, Textarea, errorMessage } from '@brokoli/ui'
 import { CodeEditorModal, type CodeLanguage } from './CodeEditorModal'
 import { TemplatePreview } from './TemplatePreview'
+import type { DatasetSchema } from '../document'
 
 export type FormCtx = {
   node: PipelineNode
@@ -258,6 +259,97 @@ export function MapField({ ctx, name, label, hint, ...rest }: { ctx: FormCtx; na
       </div>
       <MapEditor key={ctx.node.id} value={value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined} onChange={(v) => ctx.set({ [name]: v })} {...rest} />
       {hint && <small className="bk-field-hint">{hint}</small>}
+    </div>
+  )
+}
+
+type SchemaRow = { id: number; name: string; kind: string; nullable: boolean; precision: string; scale: string }
+const SCHEMA_TYPES = ['int64', 'float64', 'string', 'boolean', 'bytes', 'decimal', 'date', 'timestamp', 'duration', 'json', 'unknown']
+let schemaRowSeq = 0
+
+function schemaRows(value: DatasetSchema | undefined): SchemaRow[] {
+  const columns = Array.isArray(value?.columns) ? value.columns : []
+  return columns.map((column) => ({
+    id: ++schemaRowSeq,
+    name: column.name,
+    kind: typeof column.type?.kind === 'string' ? column.type.kind : 'unknown',
+    nullable: Boolean(column.type?.nullable),
+    precision: typeof column.type?.precision === 'number' ? String(column.type.precision) : '',
+    scale: typeof column.type?.scale === 'number' ? String(column.type.scale) : '',
+  }))
+}
+
+/** Authoring editor for the portable dataset-schema/v1 source declaration. */
+export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schema' }: { ctx: FormCtx; name?: string; label?: string }) {
+  const stored = ctx.get(name)
+  const value = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as DatasetSchema) : undefined
+  const [rows, setRows] = useState<SchemaRow[]>(() => schemaRows(value))
+  const [additional, setAdditional] = useState(value?.additional_columns ?? 'unknown')
+  useEffect(() => {
+    setRows(schemaRows(value))
+    setAdditional(value?.additional_columns ?? 'unknown')
+    // Schema rows are local while editing; reset when the selected node changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ctx.node.id])
+
+  const commit = (nextRows: SchemaRow[], nextAdditional = additional) => {
+    setRows(nextRows)
+    setAdditional(nextAdditional)
+    if (!nextRows.length) {
+      ctx.set({ [name]: undefined }, `schema:${ctx.node.id}`)
+      return
+    }
+    ctx.set(
+      {
+        [name]: {
+          contract: 'brokoli.dataset-schema/v1',
+          columns: nextRows.filter((row) => row.name.trim()).map((row) => ({
+            name: row.name.trim(),
+            type: {
+              kind: row.kind,
+              ...(row.kind === 'decimal' && row.precision ? { precision: Number(row.precision) } : {}),
+              ...(row.kind === 'decimal' && row.scale ? { scale: Number(row.scale) } : {}),
+              ...(row.nullable ? { nullable: true } : {}),
+            },
+          })),
+          additional_columns: nextAdditional,
+        },
+      },
+      `schema:${ctx.node.id}`,
+    )
+  }
+
+  const names = rows.map((row) => row.name.trim()).filter(Boolean)
+  const duplicate = names.find((entry, index) => names.indexOf(entry) !== index)
+  return (
+    <div className="bk-field ps-schema-editor">
+      <div className="bk-field-label">
+        <label>{label}</label>
+      </div>
+      <p className="bk-field-hint">Declare columns when the source shape is known. This enables field completion and schema validation downstream.</p>
+      <div className="ps-schema-editor-rows">
+        {rows.map((row) => (
+          <div key={row.id} className="ps-schema-editor-row">
+            <Input mono value={row.name} placeholder="column" aria-label="Column name" onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, name: event.target.value } : entry)))} />
+            <Select aria-label={`Type for ${row.name || 'column'}`} value={row.kind} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, kind: event.target.value, precision: event.target.value === 'decimal' ? entry.precision : '', scale: event.target.value === 'decimal' ? entry.scale : '' } : entry)))}>
+              {SCHEMA_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            </Select>
+            {row.kind === 'decimal' && <Input type="number" min={1} value={row.precision} placeholder="precision" aria-label={`Precision for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, precision: event.target.value } : entry)))} />}
+            {row.kind === 'decimal' && <Input type="number" min={0} value={row.scale} placeholder="scale" aria-label={`Scale for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, scale: event.target.value } : entry)))} />}
+            <Checkbox label="Nullable" checked={row.nullable} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, nullable: event.target.checked } : entry)))} />
+            <IconButton size="sm" variant="danger" label={`Remove ${row.name || 'column'}`} onClick={() => commit(rows.filter((entry) => entry.id !== row.id))}><Trash2 size={14} aria-hidden="true" /></IconButton>
+          </div>
+        ))}
+      </div>
+      <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden="true" />} onClick={() => setRows([...rows, { id: ++schemaRowSeq, name: '', kind: 'string', nullable: false, precision: '', scale: '' }])}>Add column</Button>
+      <Field label="Additional columns" hint="Open accepts undeclared columns; unknown keeps the declaration non-authoritative.">
+        <Select value={additional} onChange={(event) => commit(rows, event.target.value)}>
+          <option value="closed">Closed</option>
+          <option value="open">Open</option>
+          <option value="unknown">Unknown</option>
+        </Select>
+      </Field>
+      {duplicate && <p className="ps-form-warning">"{duplicate}" appears twice; downstream field validation cannot distinguish those columns.</p>}
     </div>
   )
 }

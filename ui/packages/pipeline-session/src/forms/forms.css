@@ -125,6 +125,25 @@
   flex-direction: column;
   gap: 6px;
 }
+.ps-schema-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ps-schema-editor-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ps-schema-editor-row {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr 0.7fr 0.7fr auto auto;
+  align-items: center;
+  gap: 6px;
+}
+.ps-schema-editor-row .bk-checkbox {
+  white-space: nowrap;
+}
 .ps-map-row {
   display: grid;
   grid-template-columns: 1fr 1.2fr auto;
