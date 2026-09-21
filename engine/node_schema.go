@@ -142,6 +142,38 @@ func (s columnSchema) clone() columnSchema {
 	return out
 }
 
+// joinSchema carries the two input schemas through the join's exact output
+// column plan. Unknown columns remain present as TypeUnknown so a later sink
+// can still infer only the columns whose types were not declared.
+func joinSchema(left, right columnSchema, leftColumns, rightColumns []string, leftKey, rightKey string, options JoinOptions) (columnSchema, error) {
+	if left == nil || right == nil {
+		return nil, nil
+	}
+	outColumns, rightOutputNames, err := planJoinColumns(leftColumns, rightColumns, leftKey, rightKey, options)
+	if err != nil {
+		return nil, err
+	}
+	out := make(columnSchema, len(outColumns))
+	for _, col := range leftColumns {
+		ct, ok := left[col]
+		if !ok {
+			ct = dbdialect.ColumnType{Class: dbdialect.TypeUnknown, Nullable: true}
+		}
+		out[col] = ct
+	}
+	for _, col := range rightColumns {
+		if col == rightKey && leftKey == rightKey {
+			continue
+		}
+		ct, ok := right[col]
+		if !ok {
+			ct = dbdialect.ColumnType{Class: dbdialect.TypeUnknown, Nullable: true}
+		}
+		out[rightOutputNames[col]] = ct
+	}
+	return out, nil
+}
+
 // applyRuleToSchema returns the schema of a transform rule's output, given
 // its input's.
 //

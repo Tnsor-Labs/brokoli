@@ -487,9 +487,9 @@ func splitLines(s string) []string {
 	return lines
 }
 
-func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet, inputSchemas []columnSchema) (nodeExecutionResult, error) {
 	if len(inputs) < 2 {
-		return nil, fmt.Errorf("join node requires exactly 2 inputs, got %d", len(inputs))
+		return nodeExecutionResult{}, fmt.Errorf("join node requires exactly 2 inputs, got %d", len(inputs))
 	}
 
 	leftKey, _ := node.Config["left_key"].(string)
@@ -497,15 +497,15 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 	joinTypeStr, _ := node.Config["join_type"].(string)
 	collisionPolicy, policyIsString := node.Config["collision_policy"].(string)
 	if raw, present := node.Config["collision_policy"]; present && raw != nil && !policyIsString {
-		return nil, fmt.Errorf("join node 'collision_policy' must be a string")
+		return nodeExecutionResult{}, fmt.Errorf("join node 'collision_policy' must be a string")
 	}
 	rightAlias, aliasIsString := node.Config["right_alias"].(string)
 	if raw, present := node.Config["right_alias"]; present && raw != nil && !aliasIsString {
-		return nil, fmt.Errorf("join node 'right_alias' must be a string")
+		return nodeExecutionResult{}, fmt.Errorf("join node 'right_alias' must be a string")
 	}
 
 	if leftKey == "" {
-		return nil, fmt.Errorf("join node requires 'left_key' config")
+		return nodeExecutionResult{}, fmt.Errorf("join node requires 'left_key' config")
 	}
 	if rightKey == "" {
 		rightKey = leftKey
@@ -520,12 +520,22 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 		RightAlias:      rightAlias,
 	})
 	if err != nil {
-		return nil, err
+		return nodeExecutionResult{}, err
+	}
+	var outputSchema columnSchema
+	if len(inputSchemas) >= 2 {
+		outputSchema, err = joinSchema(inputSchemas[0], inputSchemas[1], inputs[0].Columns, inputs[1].Columns, leftKey, rightKey, JoinOptions{
+			CollisionPolicy: JoinCollisionPolicy(collisionPolicy),
+			RightAlias:      rightAlias,
+		})
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
 	}
 
 	r.log(node.ID, models.LogLevelInfo, "%s join on %s=%s: %d + %d -> %d rows",
 		jt, leftKey, rightKey, len(inputs[0].Rows), len(inputs[1].Rows), len(result.Rows))
-	return result, nil
+	return nodeExecutionResult{output: result, outputSchema: outputSchema}, nil
 }
 
 // runUnion concatenates all of a union node's upstream datasets into one.

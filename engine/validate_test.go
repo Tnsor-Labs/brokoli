@@ -88,6 +88,30 @@ func TestValidate_JoinCollisionPolicyRejectsNonStringValue(t *testing.T) {
 	}
 }
 
+func TestValidate_JoinSchemaRejectsInvalidDecimalDescriptor(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "schema": map[string]interface{}{
+				"contract": "brokoli.dataset-schema/v1",
+				"columns": []interface{}{map[string]interface{}{
+					"name": "amount",
+					"type": map[string]interface{}{"kind": "decimal", "precision": 2, "scale": 3},
+				}},
+				"additional_columns": "closed",
+			},
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "scale must not exceed precision") {
+		t.Fatalf("expected decimal schema validation error, got %v", ve.Errors)
+	}
+}
+
 func TestValidate_DatasetSchemaAcceptsPortableDeclaration(t *testing.T) {
 	p := validPipeline()
 	p.Nodes[0].Config["schema"] = map[string]interface{}{
