@@ -470,6 +470,11 @@ func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) boo
 }
 
 func validateNodeConfig(n models.Node, ve *ValidationError) {
+	if raw, present := n.Config["schema"]; present && raw != nil {
+		for _, message := range datasetSchemaConfigErrors(raw) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
+		}
+	}
 	switch n.Type {
 	case models.NodeTypeSourceFile:
 		if getStr(n.Config, "path") == "" {
@@ -540,6 +545,88 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			}
 		}
 	}
+}
+
+var datasetSchemaKinds = map[string]bool{
+	"boolean": true, "int64": true, "float64": true, "decimal": true,
+	"string": true, "bytes": true, "date": true, "timestamp": true,
+	"duration": true, "json": true, "unknown": true, "enum": true,
+	"array": true, "map": true, "record": true,
+}
+
+func datasetSchemaConfigErrors(raw interface{}) []string {
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return []string{"dataset schema must be an object"}
+	}
+	var errors []string
+	if schema["contract"] != "brokoli.dataset-schema/v1" {
+		errors = append(errors, "dataset schema contract must be 'brokoli.dataset-schema/v1'")
+	}
+	additional, ok := schema["additional_columns"].(string)
+	if !ok || (additional != "closed" && additional != "open" && additional != "unknown") {
+		errors = append(errors, "dataset schema additional_columns must be 'closed', 'open', or 'unknown'")
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return append(errors, "dataset schema columns must be an array")
+	}
+	seen := map[string]bool{}
+	for index, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			errors = append(errors, fmt.Sprintf("dataset schema column %d must be an object", index))
+			continue
+		}
+		name, ok := column["name"].(string)
+		if !ok || name == "" {
+			errors = append(errors, fmt.Sprintf("dataset schema column %d requires a non-empty name", index))
+		} else if seen[name] {
+			errors = append(errors, fmt.Sprintf("dataset schema contains duplicate column %q", name))
+		} else {
+			seen[name] = true
+		}
+		errors = append(errors, datasetTypeErrors(column["type"], fmt.Sprintf("dataset schema column %q type", name))...)
+	}
+	return errors
+}
+
+func datasetTypeErrors(raw interface{}, path string) []string {
+	typ, ok := raw.(map[string]interface{})
+	if !ok {
+		return []string{path + " must be a BPTD object"}
+	}
+	kind, ok := typ["kind"].(string)
+	if !ok || !datasetSchemaKinds[kind] {
+		return []string{fmt.Sprintf("%s has unknown BPTD kind %q", path, kind)}
+	}
+	if kind == "array" {
+		return datasetTypeErrors(typ["items"], path+".items")
+	}
+	if kind == "map" {
+		if keys, present := typ["keys"]; present && keys != "string" {
+			return []string{path + ".keys must be 'string'"}
+		}
+		return datasetTypeErrors(typ["values"], path+".values")
+	}
+	if kind == "record" {
+		fields, ok := typ["fields"].([]interface{})
+		if !ok {
+			return []string{path + ".fields must be an array"}
+		}
+		var errors []string
+		for index, rawField := range fields {
+			field, ok := rawField.(map[string]interface{})
+			if !ok {
+				errors = append(errors, fmt.Sprintf("%s.fields[%d] must be an object", path, index))
+				continue
+			}
+			fieldName, _ := field["name"].(string)
+			errors = append(errors, datasetTypeErrors(field["type"], fmt.Sprintf("%s.fields[%d] %q type", path, index, fieldName))...)
+		}
+		return errors
+	}
+	return nil
 }
 
 func joinCollisionPolicyErrors(config map[string]interface{}) []string {

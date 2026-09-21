@@ -1,0 +1,16 @@
+{
+  "contract": "brokoli.dataset-schema/v1",
+  "columns": [
+    {
+      "name": "payload",
+      "type": {
+        "kind": "record",
+        "fields": [
+          {"name": "source", "type": {"kind": "string"}, "required": true}
+        ],
+        "additional_fields": true
+      }
+    }
+  ],
+  "additional_columns": "unknown"
+}
