@@ -713,6 +713,36 @@ func (r *Runner) runTransform(node models.Node, input *common.DataSet, inputSche
 	}, nil
 }
 
+// runNativeOperator executes a dedicated relational node without passing
+// through a language runtime. The evaluator is shared with legacy transform
+// rules, but the node type makes planning and capability negotiation explicit.
+func (r *Runner) runNativeOperator(node models.Node, input *common.DataSet, inputSchema columnSchema, operator string) (nodeExecutionResult, error) {
+	if input == nil {
+		return nodeExecutionResult{}, fmt.Errorf("%s node requires input data", operator)
+	}
+	ruleJSON, err := json.Marshal(node.Config)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("marshal %s config: %w", operator, err)
+	}
+	var rule TransformRule
+	if err := json.Unmarshal(ruleJSON, &rule); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("parse %s config: %w", operator, err)
+	}
+	rule.Type = operator
+	clone := &common.DataSet{Columns: append([]string(nil), input.Columns...), Rows: make([]common.DataRow, len(input.Rows))}
+	for i, row := range input.Rows {
+		clone.Rows[i] = make(common.DataRow, len(row))
+		for key, value := range row {
+			clone.Rows[i][key] = value
+		}
+	}
+	if err := ApplyTransforms([]TransformRule{rule}, clone); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("%s operator: %w", operator, err)
+	}
+	r.log(node.ID, models.LogLevelInfo, "Native %s: %d rows, %d -> %d columns", operator, len(clone.Rows), len(input.Columns), len(clone.Columns))
+	return nodeExecutionResult{output: clone, outputSchema: applyRuleToSchema(rule, inputSchema)}, nil
+}
+
 func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("quality_check node requires input data")

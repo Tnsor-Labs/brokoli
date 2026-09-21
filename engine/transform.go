@@ -22,9 +22,17 @@ type TransformRule struct {
 	Condition  string            `json:"condition,omitempty"`
 	Ascending  bool              `json:"ascending,omitempty"`
 	// Aggregate fields
-	GroupBy      []string   `json:"group_by,omitempty"`     // columns to group by
-	AggFields    []AggField `json:"agg_fields,omitempty"`   // aggregation definitions
-	Aggregations []AggField `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
+	GroupBy           []string          `json:"group_by,omitempty"`     // columns to group by
+	AggFields         []AggField        `json:"agg_fields,omitempty"`   // aggregation definitions
+	Aggregations      []AggField        `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
+	Projections       []ProjectionField `json:"projections,omitempty"`
+	ExpressionVersion int               `json:"expression_version,omitempty"`
+}
+
+// ProjectionField is a named output expression in a native project rule.
+type ProjectionField struct {
+	Name string                 `json:"name"`
+	Expr map[string]interface{} `json:"expr"`
 }
 
 // AggField defines an aggregation operation on a column.
@@ -50,6 +58,8 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 		return renameColumns(r, ds)
 	case "add_column":
 		return addColumn(r, ds)
+	case "project", "projection":
+		return project(r, ds)
 	case "filter_rows", "filter":
 		return filterRows(r, ds)
 	case "apply_function", "function":
@@ -67,6 +77,42 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 	default:
 		return fmt.Errorf("unsupported transform type: %s", r.Type)
 	}
+}
+
+func project(r TransformRule, ds *common.DataSet) error {
+	if len(r.Projections) == 0 {
+		return fmt.Errorf("project requires projections")
+	}
+	if r.ExpressionVersion != 1 {
+		return fmt.Errorf("project requires expression_version 1")
+	}
+	out := make([]common.DataRow, 0, len(ds.Rows))
+	columns := make([]string, 0, len(r.Projections))
+	seenColumns := make(map[string]struct{}, len(r.Projections))
+	for _, projection := range r.Projections {
+		if strings.TrimSpace(projection.Name) == "" || len(projection.Expr) == 0 {
+			return fmt.Errorf("project projections require name and expr")
+		}
+		if _, exists := seenColumns[projection.Name]; exists {
+			return fmt.Errorf("project output column %q is declared more than once", projection.Name)
+		}
+		seenColumns[projection.Name] = struct{}{}
+		columns = append(columns, projection.Name)
+	}
+	for _, row := range ds.Rows {
+		outRow := make(common.DataRow, len(columns))
+		for _, projection := range r.Projections {
+			value, err := evalExpression(projection.Expr, row)
+			if err != nil {
+				return fmt.Errorf("project column %q: %w", projection.Name, err)
+			}
+			outRow[projection.Name] = value
+		}
+		out = append(out, outRow)
+	}
+	ds.Columns = columns
+	ds.Rows = out
+	return nil
 }
 
 func renameColumns(r TransformRule, ds *common.DataSet) error {
@@ -588,11 +634,11 @@ func aggregate(r TransformRule, ds *common.DataSet) error {
 	var order []string
 
 	for _, row := range ds.Rows {
-		var parts []string
+		parts := make([]interface{}, 0, len(r.GroupBy))
 		for _, col := range r.GroupBy {
-			parts = append(parts, fmt.Sprintf("%v", row[col]))
+			parts = append(parts, row[col])
 		}
-		key := strings.Join(parts, "\x00")
+		key := canonicalGroupKey(parts)
 		if _, ok := groups[key]; !ok {
 			groups[key] = &group{keyRow: row}
 			order = append(order, key)
@@ -634,10 +680,22 @@ func aggregate(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
+func canonicalGroupKey(values []interface{}) string {
+	return fmt.Sprintf("%#v", values)
+}
+
 func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 	switch strings.ToLower(fn) {
 	case "count":
 		return len(rows)
+	case "count_distinct":
+		seen := make(map[string]struct{})
+		for _, row := range rows {
+			if row[col] != nil {
+				seen[canonicalValueKey(row[col])] = struct{}{}
+			}
+		}
+		return len(seen)
 	case "sum":
 		var sum float64
 		for _, row := range rows {
@@ -686,6 +744,10 @@ func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 	default:
 		return nil
 	}
+}
+
+func canonicalValueKey(value interface{}) string {
+	return fmt.Sprintf("%T:%#v", value, value)
 }
 
 func toAggFloat(v interface{}) (float64, bool) {

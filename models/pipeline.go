@@ -242,6 +242,8 @@ const (
 	NodeTypeSourceAPI    NodeType = "source_api"
 	NodeTypeSourceDB     NodeType = "source_db"
 	NodeTypeTransform    NodeType = "transform"
+	NodeTypeProject      NodeType = "project"
+	NodeTypeAggregate    NodeType = "aggregate"
 	NodeTypeQualityCheck NodeType = "quality_check"
 	NodeTypeSQLGenerate  NodeType = "sql_generate"
 	NodeTypeCode         NodeType = "code"

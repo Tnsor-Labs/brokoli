@@ -93,6 +93,129 @@ func TestDropColumns(t *testing.T) {
 	}
 }
 
+func TestProjectNativeExpressions(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"user", "metrics"},
+		Rows: []common.DataRow{
+			{"user": "Alice", "metrics": map[string]interface{}{"visits": float64(2)}},
+			{"user": "Bob", "metrics": map[string]interface{}{"visits": float64(3)}},
+		},
+	}
+	err := ApplyTransforms([]TransformRule{{
+		Type:              "project",
+		ExpressionVersion: 1,
+		Projections: []ProjectionField{
+			{Name: "name", Expr: map[string]interface{}{"op": "column", "path": []interface{}{"user"}}},
+			{Name: "score", Expr: map[string]interface{}{
+				"op":    "multiply",
+				"left":  map[string]interface{}{"op": "column", "path": []interface{}{"metrics", "visits"}},
+				"right": map[string]interface{}{"op": "literal", "value": float64(10)},
+			}},
+		},
+	}}, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := ds.Columns; len(got) != 2 || got[0] != "name" || got[1] != "score" {
+		t.Fatalf("unexpected project columns: %v", got)
+	}
+	if ds.Rows[1]["score"] != float64(30) || ds.Rows[0]["name"] != "Alice" {
+		t.Fatalf("unexpected project output: %#v", ds.Rows)
+	}
+}
+
+func TestAggregateCountDistinct(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"team", "user"},
+		Rows:    []common.DataRow{{"team": "a", "user": "u1"}, {"team": "a", "user": "u1"}, {"team": "a", "user": "u2"}},
+	}
+	if err := ApplyTransforms([]TransformRule{{Type: "aggregate", GroupBy: []string{"team"}, AggFields: []AggField{{Column: "user", Function: "count_distinct", Alias: "users"}}}}, ds); err != nil {
+		t.Fatal(err)
+	}
+	if got := ds.Rows[0]["users"]; got != 2 {
+		t.Fatalf("expected two distinct users, got %#v", got)
+	}
+}
+
+func TestAggregateKeysAndDistinctValuesAreTypedAndCollisionSafe(t *testing.T) {
+	ds := &common.DataSet{
+		Columns: []string{"group", "value"},
+		Rows: []common.DataRow{
+			{"group": "a\x00b", "value": int64(1)},
+			{"group": "a", "value": "\x00b"},
+		},
+	}
+	if err := ApplyTransforms([]TransformRule{{Type: "aggregate", GroupBy: []string{"group"}, AggFields: []AggField{{Column: "value", Function: "count_distinct", Alias: "distinct_values"}}}}, ds); err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Rows) != 2 {
+		t.Fatalf("group keys containing delimiters must remain distinct, got %#v", ds.Rows)
+	}
+
+	ds = &common.DataSet{Columns: []string{"group", "value"}, Rows: []common.DataRow{
+		{"group": "a", "value": int64(1)},
+		{"group": "a", "value": "1"},
+	}}
+	if err := ApplyTransforms([]TransformRule{{Type: "aggregate", GroupBy: []string{"group"}, AggFields: []AggField{{Column: "value", Function: "count_distinct", Alias: "distinct_values"}}}}, ds); err != nil {
+		t.Fatal(err)
+	}
+	if ds.Rows[0]["distinct_values"] != 2 {
+		t.Fatalf("typed distinct values must remain distinct, got %#v", ds.Rows[0])
+	}
+}
+
+func TestProjectRejectsMalformedAndAmbiguousDefinitions(t *testing.T) {
+	tests := []TransformRule{
+		{Type: "project", ExpressionVersion: 0, Projections: []ProjectionField{{Name: "x", Expr: map[string]interface{}{"op": "literal", "value": 1}}}},
+		{Type: "project", ExpressionVersion: 1, Projections: []ProjectionField{{Name: "x", Expr: map[string]interface{}{"op": "literal", "value": 1}}, {Name: "x", Expr: map[string]interface{}{"op": "literal", "value": 2}}}},
+		{Type: "project", ExpressionVersion: 1, Projections: []ProjectionField{{Name: "x", Expr: map[string]interface{}{"op": "unknown"}}}},
+	}
+	for i, rule := range tests {
+		ds := &common.DataSet{Columns: []string{"a"}, Rows: []common.DataRow{{"a": 1}}}
+		if err := ApplyTransforms([]TransformRule{rule}, ds); err == nil {
+			t.Errorf("case %d: malformed project unexpectedly succeeded", i)
+		}
+	}
+}
+
+func TestProjectNullAndNestedEdgeCases(t *testing.T) {
+	ds := &common.DataSet{Columns: []string{"payload"}, Rows: []common.DataRow{{"payload": nil}, {"payload": map[string]interface{}{"value": float64(4)}}}}
+	err := ApplyTransforms([]TransformRule{{Type: "project", ExpressionVersion: 1, Projections: []ProjectionField{
+		{Name: "value", Expr: map[string]interface{}{"op": "coalesce", "args": []interface{}{
+			map[string]interface{}{"op": "column", "path": []interface{}{"payload", "value"}},
+			map[string]interface{}{"op": "literal", "value": float64(0)},
+		}}},
+	}}}, ds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ds.Rows[0]["value"] != float64(0) || ds.Rows[1]["value"] != float64(4) {
+		t.Fatalf("unexpected null/nested output: %#v", ds.Rows)
+	}
+}
+
+func BenchmarkProjectNative(b *testing.B) {
+	ds := &common.DataSet{Columns: []string{"amount"}, Rows: make([]common.DataRow, 1000)}
+	for i := range ds.Rows {
+		ds.Rows[i] = common.DataRow{"amount": float64(i)}
+	}
+	expr := map[string]interface{}{
+		"op":    "multiply",
+		"left":  map[string]interface{}{"op": "column", "path": []interface{}{"amount"}},
+		"right": map[string]interface{}{"op": "literal", "value": float64(2)},
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copyDS := &common.DataSet{Columns: append([]string(nil), ds.Columns...), Rows: make([]common.DataRow, len(ds.Rows))}
+		for j, row := range ds.Rows {
+			copyDS.Rows[j] = common.DataRow{"amount": row["amount"]}
+		}
+		if err := ApplyTransforms([]TransformRule{{Type: "project", Projections: []ProjectionField{{Name: "double", Expr: expr}}}}, copyDS); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
 func TestApplyFunction(t *testing.T) {
 	ds := sampleDS()
 	err := ApplyTransforms([]TransformRule{

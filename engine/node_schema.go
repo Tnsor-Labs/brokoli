@@ -140,6 +140,15 @@ func applyRuleToSchema(rule TransformRule, in columnSchema) columnSchema {
 		delete(out, rule.Name)
 		return out
 
+	case "project", "projection":
+		out := make(columnSchema, len(rule.Projections))
+		for _, projection := range rule.Projections {
+			// Expression result types are intentionally unknown until the
+			// portable type contract is extended beyond this first slice.
+			out[projection.Name] = dbdialect.ColumnType{}
+		}
+		return out
+
 	case "apply_function", "function":
 		// Every function today (lower, upper, trim, title) writes a
 		// string back, so text would be accurate right now. Unknown is
@@ -198,6 +207,8 @@ func aggregateSchema(rule TransformRule, in columnSchema) columnSchema {
 		}
 		switch strings.ToLower(af.Function) {
 		case "count":
+			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
+		case "count_distinct":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
 		case "sum", "avg", "min", "max":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}

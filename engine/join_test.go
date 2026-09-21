@@ -79,6 +79,45 @@ func TestJoin_Full(t *testing.T) {
 	}
 }
 
+func TestJoin_NullKeysDoNotMatch(t *testing.T) {
+	left := &common.DataSet{Columns: []string{"id", "left"}, Rows: []common.DataRow{{"id": nil, "left": "l"}}}
+	right := &common.DataSet{Columns: []string{"id", "right"}, Rows: []common.DataRow{{"id": nil, "right": "r"}}}
+	result, err := JoinDatasets(left, right, "id", "id", JoinInner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 0 {
+		t.Fatalf("null join keys must not match, got %#v", result.Rows)
+	}
+}
+
+func TestJoinTypedKeysDoNotCollide(t *testing.T) {
+	left := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": int64(1)}}}
+	right := &common.DataSet{Columns: []string{"id"}, Rows: []common.DataRow{{"id": "1"}}}
+	result, err := JoinDatasets(left, right, "id", "id", JoinInner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Rows) != 0 {
+		t.Fatalf("typed join keys must not collide, got %#v", result.Rows)
+	}
+}
+
+func TestJoinPrefixAvoidsGeneratedNameCollision(t *testing.T) {
+	left := &common.DataSet{Columns: []string{"id", "value", "right_value"}, Rows: []common.DataRow{{"id": "1", "value": "left", "right_value": "existing"}}}
+	right := &common.DataSet{Columns: []string{"id", "value"}, Rows: []common.DataRow{{"id": "1", "value": "right"}}}
+	result, err := JoinDatasetsWithOptions(left, right, "id", "id", JoinInner, JoinOptions{CollisionPolicy: JoinCollisionPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(result.Columns, []string{"id", "value", "right_value", "right_right_value"}) {
+		t.Fatalf("unexpected collision-safe columns: %v", result.Columns)
+	}
+	if result.Rows[0]["right_right_value"] != "right" {
+		t.Fatalf("right value was not retained under generated alias: %#v", result.Rows[0])
+	}
+}
+
 func TestJoin_DifferentKeys(t *testing.T) {
 	left := &common.DataSet{
 		Columns: []string{"id", "value"},

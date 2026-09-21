@@ -360,6 +360,7 @@ func TestTransformAliasesMatchTheExecutor(t *testing.T) {
 	handled := map[string]bool{
 		"rename": true, "add_column": true, "filter": true, "function": true,
 		"replace": true, "drop": true, "sort": true, "dedup": true, "aggregate": true,
+		"project": true,
 	}
 	for _, name := range names {
 		if !handled[normaliseTransformType(name)] {
