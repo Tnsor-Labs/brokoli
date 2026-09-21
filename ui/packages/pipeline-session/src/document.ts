@@ -209,6 +209,78 @@ export function joinOutputSchema(
   return { columns }
 }
 
+function transformExpressionType(expression: string, schema: DatasetSchema): DatasetSchemaColumn['type'] {
+  const value = expression.trim()
+  const direct = schema.columns.find((column) => column.name === value)?.type
+  if (direct) return direct
+  if (/^(true|false)$/i.test(value)) return { kind: 'boolean' }
+  if (/^-?\d+$/.test(value)) return { kind: 'int64' }
+  if (/^-?(?:\d+\.\d*|\d*\.\d+)$/.test(value)) return { kind: 'float64' }
+  if (/^(['"]).*\1$/.test(value)) return { kind: 'string' }
+  const names = value.match(/[A-Za-z_][A-Za-z0-9_.]*/g) ?? []
+  const types = names.map((name) => schema.columns.find((column) => column.name === name)?.type)
+  if (value.includes('/') || types.some((type) => type?.kind === 'float64')) return { kind: 'float64' }
+  if (types.length && types.every((type) => type?.kind === 'int64')) return { kind: 'int64' }
+  if (types.length && types.every((type) => type?.kind === 'decimal') && !value.includes('/')) return types[0]
+  return { kind: 'unknown' }
+}
+
+/** Derives the conservative output of the editor's transform rules. */
+export function transformOutputSchema(input: DatasetSchema | undefined, config: Record<string, unknown>) {
+  if (!input) return undefined
+  const rules = Array.isArray(config.rules) ? config.rules : []
+  let columns: DatasetSchemaColumn[] = input.columns.map((column) => ({ ...column, type: column.type ? { ...column.type } : undefined }))
+  for (const raw of rules) {
+    if (!raw || typeof raw !== 'object') return undefined
+    const rule = raw as Record<string, unknown>
+    const type = typeof rule.type === 'string' ? rule.type : ''
+    if (type === 'rename_columns' && rule.mapping && typeof rule.mapping === 'object' && !Array.isArray(rule.mapping)) {
+      const mapping = rule.mapping as Record<string, unknown>
+      const names = new Set<string>()
+      columns = columns.map((column) => {
+        const name = typeof mapping[column.name] === 'string' && mapping[column.name] ? mapping[column.name] as string : column.name
+        if (names.has(name)) return { ...column, name: '' }
+        names.add(name)
+        return { ...column, name }
+      })
+      if (columns.some((column) => !column.name)) return undefined
+    } else if (type === 'drop_columns' && Array.isArray(rule.columns)) {
+      const drop = new Set(rule.columns.filter((column): column is string => typeof column === 'string'))
+      if ([...drop].some((name) => !columns.some((column) => column.name === name))) return undefined
+      columns = columns.filter((column) => !drop.has(column.name))
+    } else if (type === 'add_column') {
+      const name = typeof rule.name === 'string' ? rule.name.trim() : ''
+      if (!name || columns.some((column) => column.name === name)) return undefined
+      columns.push({ name, type: transformExpressionType(typeof rule.expression === 'string' ? rule.expression : '', { ...input, columns }) })
+    } else if (type === 'apply_function' || type === 'replace_values') {
+      if (typeof rule.column !== 'string' || !columns.some((column) => column.name === rule.column)) return undefined
+    } else if (type === 'sort' || type === 'deduplicate' || type === 'filter_rows') {
+      continue
+    } else if (type === 'aggregate') {
+      if (!Array.isArray(rule.group_by) || !Array.isArray(rule.agg_fields)) return undefined
+      const source = new Map(columns.map((column) => [column.name, column]))
+      const grouped: DatasetSchemaColumn[] = rule.group_by.filter((name): name is string => typeof name === 'string').map((name) => source.get(name)).filter((column) => Boolean(column)) as DatasetSchemaColumn[]
+      if (grouped.length !== rule.group_by.length) return undefined
+      const aggregates = rule.agg_fields.map((entry) => {
+        if (!entry || typeof entry !== 'object') return undefined
+        const field = entry as Record<string, unknown>
+        const sourceColumn = typeof field.column === 'string' ? source.get(field.column) : undefined
+        const alias = typeof field.alias === 'string' ? field.alias.trim() : ''
+        const fn = typeof field.function === 'string' ? field.function : ''
+        if (!sourceColumn || !alias || ['count', 'sum', 'avg', 'min', 'max'].indexOf(fn) < 0) return undefined
+        const outputType = fn === 'count' ? { kind: 'int64' } : fn === 'avg' ? { kind: 'float64' } : sourceColumn.type
+        return { name: alias, type: outputType }
+      })
+      const validAggregates = aggregates.filter(Boolean) as DatasetSchemaColumn[]
+      if (validAggregates.length !== aggregates.length || new Set([...grouped, ...validAggregates].map((column) => column.name)).size !== grouped.length + validAggregates.length) return undefined
+      columns = [...grouped, ...validAggregates]
+    } else if (type) {
+      return undefined
+    }
+  }
+  return { contract: input.contract, columns, additional_columns: input.additional_columns }
+}
+
 /** Resolves declared schemas through the subset of nodes the editor can describe. */
 export function outputSchemaForNode(
   nodeId: string,
@@ -221,8 +293,12 @@ export function outputSchemaForNode(
   if (!node) return undefined
   const own = declaredSchema(node)
   if (own) return own
-  if (node.type !== 'join') return undefined
+  if (node.type !== 'join' && node.type !== 'transform') return undefined
   const inputs = edges.filter((edge) => edge.to === nodeId)
+  if (node.type === 'transform') {
+    if (inputs.length !== 1) return undefined
+    return transformOutputSchema(outputSchemaForNode(inputs[0].from, nodes, edges, new Set(seen).add(nodeId)), node.config ?? {})
+  }
   if (inputs.length !== 2) return undefined
   const nextSeen = new Set(seen).add(nodeId)
   const left = outputSchemaForNode(inputs[0].from, nodes, edges, nextSeen)
