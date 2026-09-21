@@ -81,6 +81,49 @@ func runSourceToSink(
 	return run
 }
 
+func runCodeToSink(t *testing.T, srcURI, destTable string) *models.Run {
+	t.Helper()
+	dir := t.TempDir()
+	st, err := store.NewSQLiteStore(filepath.Join(dir, "s.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	eng := drainEngineOnCleanup(t, NewEngine(st))
+
+	p := &models.Pipeline{
+		ID: "code-sink-" + destTable, Name: destTable, Enabled: true,
+		Nodes: []models.Node{
+			{ID: "code", Type: models.NodeTypeCode, Name: "Code",
+				Capabilities: []string{models.CapabilitySource, models.CapabilityDatasetOutput},
+				Config: map[string]interface{}{
+					"script": `output_data = {"columns": ["amount"], "rows": [{"amount": "12345678901.2345"}]}`,
+					"output_schema": map[string]interface{}{
+						"contract": "brokoli.dataset-schema/v1",
+						"columns": []interface{}{map[string]interface{}{
+							"name": "amount",
+							"type": map[string]interface{}{"kind": "decimal", "precision": 20, "scale": 4},
+						}},
+						"additional_columns": "closed",
+					},
+				},
+			},
+			{ID: "sink", Type: models.NodeTypeSinkDB, Name: "Sink",
+				Config: map[string]interface{}{"uri": srcURI, "table": destTable, "create_table": true, "mode": "append"}},
+		},
+		Edges:     []models.Edge{{From: "code", To: "sink"}},
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := st.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	run, err := eng.RunPipeline(p.ID)
+	if err != nil {
+		return &models.Run{Status: models.RunStatusFailed, Error: err.Error()}
+	}
+	return run
+}
+
 // pgColumnType reports a Postgres column's declared type, rendered the way
 // the catalog spells it including precision and scale.
 func pgColumnType(t *testing.T, uri, table, column string) string {
@@ -163,6 +206,28 @@ func TestSinkCreateTableCarriesTheSourcesTypes(t *testing.T) {
 	if nullable != "YES" {
 		t.Errorf("id is_nullable = %q, want YES: a driver that cannot report nullability "+
 			"must not have one invented for it", nullable)
+	}
+}
+
+func TestSinkCreateTableCarriesDecimalFromCodeOutputSchema(t *testing.T) {
+	pg, _ := bothBackends(t)
+	db := openFor(t, pg)
+	db.Exec("DROP TABLE IF EXISTS sink_code_decimal_dst")
+	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS sink_code_decimal_dst") })
+
+	run := runCodeToSink(t, pg, "sink_code_decimal_dst")
+	if run.Status != models.RunStatusSuccess {
+		t.Fatalf("run failed: %s", run.Error)
+	}
+	if got := pgColumnType(t, pg, "sink_code_decimal_dst", "amount"); got != "numeric(20,4)" {
+		t.Fatalf("amount was created as %s, want numeric(20,4)", got)
+	}
+	var got string
+	if err := db.QueryRow("SELECT amount::text FROM sink_code_decimal_dst").Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "12345678901.2345" {
+		t.Errorf("amount = %q, want exact decimal value", got)
 	}
 }
 
