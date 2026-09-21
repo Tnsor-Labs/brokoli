@@ -489,6 +489,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if getStr(n.Config, "url") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'url' is required for source_api", n.Name))
 		}
+		for _, message := range executionProfileErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
+		}
 	case models.NodeTypeSourceDB:
 		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'uri' or 'conn_id' is required for source_db", n.Name))

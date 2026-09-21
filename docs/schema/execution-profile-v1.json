@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://brokoli.dev/schema/execution-profile-v1.json",
+  "title": "Brokoli Source API Execution Profile Marker",
+  "description": "Portable marker carried in source_api.config.execution.profile. The surrounding execution block and node-level timeout/retry fields must contain the expanded effective values.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["name", "version", "strict"],
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "const": 1 },
+    "strict": { "type": "boolean" }
+  }
+}
