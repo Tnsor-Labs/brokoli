@@ -1881,7 +1881,15 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// see engine/expansion.go's top-of-file doc comment for the full
 		// architectural resolution.
 		if nodeHasExpansion(node) {
-			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
+			output, err := r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+			if err != nil {
+				return nodeExecutionResult{}, err
+			}
+			schema, err := declaredOutputSchema(node.Config)
+			if err != nil {
+				return nodeExecutionResult{}, err
+			}
+			return nodeExecutionResult{output: output, outputSchema: schema}, nil
 		}
 		output, err := r.runCode(ctx, node, input)
 		if err != nil {
