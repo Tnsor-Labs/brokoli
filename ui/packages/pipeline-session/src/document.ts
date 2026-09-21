@@ -126,7 +126,10 @@ export function nodeWarnings(node: PipelineNode, edges: PipelineEdge[]): string[
   return out
 }
 
-export type DatasetSchemaColumn = { name: string; type?: { kind?: string } }
+export type DatasetSchemaColumn = {
+  name: string
+  type?: { kind?: string; nullable?: boolean; precision?: number; scale?: number }
+}
 export type DatasetSchema = {
   contract?: string
   columns: DatasetSchemaColumn[]
