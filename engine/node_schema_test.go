@@ -58,6 +58,31 @@ func TestDeclaredOutputSchemaPreservesDecimalPrecision(t *testing.T) {
 	}
 }
 
+func TestJoinSchemaCarriesTypesThroughCollisionPlanning(t *testing.T) {
+	left := columnSchema{
+		"id":   {Class: dbdialect.TypeInt, Bits: 64, Nullable: false},
+		"name": {Class: dbdialect.TypeText, Nullable: true},
+	}
+	right := columnSchema{
+		"id":     {Class: dbdialect.TypeInt, Bits: 64, Nullable: false},
+		"name":   {Class: dbdialect.TypeText, Nullable: true},
+		"amount": {Class: dbdialect.TypeDecimal, Precision: 20, Scale: 4, Nullable: true},
+	}
+
+	got, err := joinSchema(left, right,
+		[]string{"id", "name"}, []string{"id", "name", "amount"},
+		"id", "id", JoinOptions{CollisionPolicy: JoinCollisionPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["right_name"].Class != dbdialect.TypeText {
+		t.Errorf("right_name = %v, want text", got["right_name"])
+	}
+	if got["right_amount"].Class != dbdialect.TypeDecimal || got["right_amount"].Precision != 20 || got["right_amount"].Scale != 4 {
+		t.Errorf("right_amount = %v, want decimal(20,4)", got["right_amount"])
+	}
+}
+
 func TestDropAndRenameFollowTheColumns(t *testing.T) {
 	dropped := applyRuleToSchema(
 		TransformRule{Type: "drop_columns", Columns: []string{"city", "is_admin"}}, srcSchema())

@@ -503,6 +503,11 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		for _, message := range joinCollisionPolicyErrors(n.Config) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
 		}
+		if raw, present := n.Config["schema"]; present {
+			for _, message := range datasetSchemaConfigErrors(raw) {
+				ve.Add(fmt.Sprintf("Node %q: schema: %s", n.Name, message))
+			}
+		}
 	case models.NodeTypeSinkFile:
 		if getStr(n.Config, "path") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'path' is required for sink_file", n.Name))

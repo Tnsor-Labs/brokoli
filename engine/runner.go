@@ -796,6 +796,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	var pushedRowCount int64
 	var pushedAbsorbed []string
 	var allInputs []*common.DataSet
+	var allInputSchemas []columnSchema
 	// edgeInputsByFrom indexes the same upstream outputs by upstream node
 	// ID, alongside input/allInputs above — needed by dynamic-expansion
 	// nodes (#31) to resolve expansion.over[param], which names upstream
@@ -853,6 +854,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					inputSchema = outputs.Schema(edge.From)
 				}
 				allInputs = append(allInputs, ds)
+				allInputSchemas = append(allInputSchemas, outputs.Schema(edge.From))
 				edgeInputsByFrom[edge.From] = ds
 			}
 		}
@@ -1180,12 +1182,12 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					if merr != nil {
 						e = merr
 					} else {
-						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
+						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, []columnSchema{inputSchema}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 					}
 				} else if streamable {
 					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs, attempt)
 				} else {
-					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
+					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, allInputSchemas, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
 			}
 			resultCh <- nodeResult{result, e}
@@ -1802,7 +1804,7 @@ func (r *Runner) checkNodeTypeGate(node models.Node) error {
 // its own remote dispatch (ADR-033) rather than claiming a second,
 // competing one at the same key: a task node's one instance IS the
 // whole node, unlike an expansion item's own distinct "idx:N" key.
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, allInputSchemas []columnSchema, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1905,7 +1907,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// dispatch -- see engine/task.go's own doc comment.
 		return outputExecutionResult(r.runTask(ctx, node, input, attempt, execFencingGen))
 	case models.NodeTypeJoin:
-		return outputExecutionResult(r.runJoin(node, allInputs))
+		return r.runJoin(node, allInputs, allInputSchemas)
 	case models.NodeTypeSQLGenerate:
 		return outputExecutionResult(r.runSQLGenerate(node, input))
 	case models.NodeTypeSinkFile:
