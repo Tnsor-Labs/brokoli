@@ -38,7 +38,11 @@ export function newNodeId(existing: Iterable<string>) {
   }
 }
 
-export function createNode(type: string, position: { x: number; y: number }, existingIds: Iterable<string>): PipelineNode {
+export function createNode(
+  type: string,
+  position: { x: number; y: number },
+  existingIds: Iterable<string>,
+): PipelineNode {
   return { id: newNodeId(existingIds), type, name: catalogEntry(type).label, config: {}, position }
 }
 
@@ -82,7 +86,12 @@ function reaches(edges: PipelineEdge[], from: string, target: string) {
 }
 
 /** Why a connection is not allowed, or null when it is. */
-export function connectionProblem(nodes: PipelineNode[], edges: PipelineEdge[], from: string, to: string): string | null {
+export function connectionProblem(
+  nodes: PipelineNode[],
+  edges: PipelineEdge[],
+  from: string,
+  to: string,
+): string | null {
   if (from === to) return 'A node cannot connect to itself.'
   const source = nodes.find((n) => n.id === from)
   const target = nodes.find((n) => n.id === to)
@@ -94,7 +103,9 @@ export function connectionProblem(nodes: PipelineNode[], edges: PipelineEdge[], 
   if (!tp.input) return `${target.name} does not take input.`
   const incoming = edges.filter((e) => e.to === to).length
   if (tp.maxInputs >= 0 && incoming >= tp.maxInputs)
-    return tp.maxInputs === 1 ? `${target.name} already has its input.` : `${target.name} takes at most ${tp.maxInputs} inputs.`
+    return tp.maxInputs === 1
+      ? `${target.name} already has its input.`
+      : `${target.name} takes at most ${tp.maxInputs} inputs.`
   if (reaches(edges, to, from)) return 'That connection would create a loop.'
   return null
 }
@@ -103,13 +114,118 @@ export function connectionProblem(nodes: PipelineNode[], edges: PipelineEdge[], 
 export function nodeWarnings(node: PipelineNode, edges: PipelineEdge[]): string[] {
   const incoming = edges.filter((e) => e.to === node.id).length
   const out: string[] = []
-  if (node.type === 'join' && incoming !== 2) out.push(`A join needs exactly 2 inputs; it has ${incoming}.`)
+  if (node.type === 'join' && incoming !== 2)
+    out.push(`A join needs exactly 2 inputs; it has ${incoming}.`)
   if (node.type === 'condition') {
     const expr = typeof node.config.expression === 'string' ? node.config.expression : ''
-    if (expr && !isConditionSupported(expr)) out.push('The condition expression is not in the supported grammar.')
-    if (edges.some((e) => e.from === node.id && e.condition === undefined)) out.push('Every branch out of an If / Else needs to be marked true or false.')
+    if (expr && !isConditionSupported(expr))
+      out.push('The condition expression is not in the supported grammar.')
+    if (edges.some((e) => e.from === node.id && e.condition === undefined))
+      out.push('Every branch out of an If / Else needs to be marked true or false.')
   }
   return out
+}
+
+export type DatasetSchemaColumn = { name: string; type?: { kind?: string } }
+export type DatasetSchema = {
+  contract?: string
+  columns: DatasetSchemaColumn[]
+  additional_columns?: string
+}
+
+function declaredSchema(node: PipelineNode | undefined): DatasetSchema | undefined {
+  const schema = node?.config?.schema
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) return undefined
+  const columns = (schema as { columns?: unknown }).columns
+  if (
+    !Array.isArray(columns) ||
+    !columns.every(
+      (column) =>
+        column &&
+        typeof column === 'object' &&
+        typeof (column as { name?: unknown }).name === 'string',
+    )
+  )
+    return undefined
+  return { ...(schema as DatasetSchema), columns: columns as DatasetSchemaColumn[] }
+}
+
+/** Derives the declared output of a join for editor previews only. */
+export function joinOutputSchema(
+  left: DatasetSchema | undefined,
+  right: DatasetSchema | undefined,
+  config: Record<string, unknown>,
+) {
+  if (!left || !right) return { columns: undefined, error: undefined }
+  const leftKey = typeof config.left_key === 'string' ? config.left_key : ''
+  const rightKey =
+    typeof config.right_key === 'string' && config.right_key ? config.right_key : leftKey
+  if (!leftKey || !rightKey) return { columns: undefined, error: undefined }
+  const leftNames = new Set(left.columns.map((column) => column.name))
+  const rightNames = new Set(right.columns.map((column) => column.name))
+  if (!leftNames.has(leftKey))
+    return { columns: undefined, error: `Left key "${leftKey}" is not in the declared columns.` }
+  if (!rightNames.has(rightKey))
+    return { columns: undefined, error: `Right key "${rightKey}" is not in the declared columns.` }
+
+  const collisions = right.columns
+    .filter(
+      (column) => leftNames.has(column.name) && !(column.name === rightKey && leftKey === rightKey),
+    )
+    .map((column) => column.name)
+  const policy =
+    typeof config.collision_policy === 'string' && config.collision_policy
+      ? config.collision_policy
+      : 'prefix'
+  if (policy === 'error' && collisions.length)
+    return {
+      columns: undefined,
+      error: `Collision policy "error" rejects: ${collisions.join(', ')}.`,
+    }
+  if (!['error', 'prefix', 'alias'].includes(policy))
+    return { columns: undefined, error: `Unknown collision policy "${policy}".` }
+  const alias = typeof config.right_alias === 'string' ? config.right_alias.trim() : ''
+  if (policy === 'alias' && !alias)
+    return { columns: undefined, error: 'Alias collision policy requires a right-side alias.' }
+
+  const columns = [...left.columns]
+  const used = new Set(columns.map((column) => column.name))
+  for (const column of right.columns) {
+    if (column.name === rightKey && leftKey === rightKey) continue
+    let name = column.name
+    if (policy === 'alias') name = `${alias}_${name}`
+    else if (policy === 'prefix' && collisions.length) {
+      name = `right_${name}`
+      while (used.has(name)) name = `right_${name}`
+    }
+    if (used.has(name))
+      return { columns: undefined, error: `Join output cannot represent "${name}" uniquely.` }
+    used.add(name)
+    columns.push({ ...column, name })
+  }
+  return { columns }
+}
+
+/** Resolves declared schemas through the subset of nodes the editor can describe. */
+export function outputSchemaForNode(
+  nodeId: string,
+  nodes: PipelineNode[],
+  edges: PipelineEdge[],
+  seen = new Set<string>(),
+): DatasetSchema | undefined {
+  if (seen.has(nodeId)) return undefined
+  const node = nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return undefined
+  const own = declaredSchema(node)
+  if (own) return own
+  if (node.type !== 'join') return undefined
+  const inputs = edges.filter((edge) => edge.to === nodeId)
+  if (inputs.length !== 2) return undefined
+  const nextSeen = new Set(seen).add(nodeId)
+  const left = outputSchemaForNode(inputs[0].from, nodes, edges, nextSeen)
+  const right = outputSchemaForNode(inputs[1].from, nodes, edges, nextSeen)
+  const result = joinOutputSchema(left, right, node.config ?? {})
+  return result.columns ? { columns: result.columns } : undefined
 }
 
 /*
@@ -118,16 +234,24 @@ export function nodeWarnings(node: PipelineNode, edges: PipelineEdge[]): string[
  * refuses with an explanation instead of silently downgrading the pipeline
  * (which the Svelte editor did, dropping 2.2 semantics).
  */
-export function irVersionFor(pipeline: Pick<Pipeline, 'ir_version'>, edges: PipelineEdge[]): { version?: string; error?: string } {
+export function irVersionFor(
+  pipeline: Pick<Pipeline, 'ir_version'>,
+  edges: PipelineEdge[],
+): { version?: string; error?: string } {
   const conditional = edges.some((e) => e.condition !== undefined)
   if (!conditional) return { version: pipeline.ir_version }
-  if (!pipeline.ir_version || pipeline.ir_version === '2.0' || pipeline.ir_version === '2.1') return { version: '2.1' }
+  if (!pipeline.ir_version || pipeline.ir_version === '2.0' || pipeline.ir_version === '2.1')
+    return { version: '2.1' }
   return {
     error: `This pipeline uses IR ${pipeline.ir_version}, which does not support If / Else branches. Remove the branch labels or recreate the branch in an IR 2.1 pipeline.`,
   }
 }
 
-export function buildSavePayload(pipeline: Pipeline, nodes: PipelineNode[], edges: PipelineEdge[]): Pipeline {
+export function buildSavePayload(
+  pipeline: Pipeline,
+  nodes: PipelineNode[],
+  edges: PipelineEdge[],
+): Pipeline {
   const ir = irVersionFor(pipeline, edges)
   if (ir.error) throw new Error(ir.error)
   const payload: Pipeline = { ...pipeline, nodes, edges }
@@ -201,11 +325,18 @@ export function autoLayout(nodes: PipelineNode[], edges: PipelineEdge[]): Pipeli
 export function nextFreePosition(nodes: PipelineNode[], anchor?: { x: number; y: number }) {
   const start = anchor ?? { x: 80, y: 80 }
   const overlaps = (p: { x: number; y: number }) =>
-    nodes.some((n) => Math.abs(n.position.x - p.x) < NODE_WIDTH + 20 && Math.abs(n.position.y - p.y) < NODE_HEIGHT + 20)
+    nodes.some(
+      (n) =>
+        Math.abs(n.position.x - p.x) < NODE_WIDTH + 20 &&
+        Math.abs(n.position.y - p.y) < NODE_HEIGHT + 20,
+    )
   const stepX = NODE_WIDTH + 90
   const stepY = NODE_HEIGHT + 46
   for (let i = 0; i < 200; i++) {
-    const p = { x: Math.round(start.x + Math.floor(i / 5) * stepX), y: Math.round(start.y + (i % 5) * stepY) }
+    const p = {
+      x: Math.round(start.x + Math.floor(i / 5) * stepX),
+      y: Math.round(start.y + (i % 5) * stepY),
+    }
     if (!overlaps(p)) return p
   }
   return { x: Math.round(start.x), y: Math.round(start.y) }

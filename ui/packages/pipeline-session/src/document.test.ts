@@ -15,6 +15,8 @@ import {
   NODE_WIDTH,
   patchConfig,
   sanitizeTags,
+  joinOutputSchema,
+  outputSchemaForNode,
 } from './document'
 
 const node = (id: string, type: string, extra: Partial<PipelineNode> = {}): PipelineNode => ({
@@ -39,9 +41,17 @@ const pipeline = (extra: Partial<Pipeline> = {}): Pipeline => ({
 
 describe('save payload', () => {
   it('keeps fields the editor does not model, on the pipeline, nodes and edges', () => {
-    const task = node('t', 'task', { interface: { inputs: { input: { kind: 'dataset' } } }, capabilities: ['compute'] })
+    const task = node('t', 'task', {
+      interface: { inputs: { input: { kind: 'dataset' } } },
+      capabilities: ['compute'],
+    })
     const edge: PipelineEdge = { from: 's', to: 't', from_port: 'out', to_port: 'input' }
-    const base = pipeline({ parameters: { limit: { type: 'int' } }, extensions: { 'x.acme': { a: 1 } }, draft: true, hooks: { on_failure: {} } })
+    const base = pipeline({
+      parameters: { limit: { type: 'int' } },
+      extensions: { 'x.acme': { a: 1 } },
+      draft: true,
+      hooks: { on_failure: {} },
+    })
     const payload = buildSavePayload(base, [node('s', 'source_file'), task], [edge])
     expect(payload.parameters).toEqual({ limit: { type: 'int' } })
     expect(payload.extensions).toEqual({ 'x.acme': { a: 1 } })
@@ -55,7 +65,8 @@ describe('save payload', () => {
   it('adds no keys the server does not know', () => {
     const payload = buildSavePayload(pipeline(), [node('a', 'source_file')], [])
     const allowedNode = ['id', 'type', 'name', 'config', 'position', 'capabilities', 'interface']
-    for (const n of payload.nodes) expect(Object.keys(n).every((k) => allowedNode.includes(k))).toBe(true)
+    for (const n of payload.nodes)
+      expect(Object.keys(n).every((k) => allowedNode.includes(k))).toBe(true)
     expect(Object.keys(payload).sort()).toEqual(Object.keys(pipeline()).sort())
   })
 
@@ -70,7 +81,9 @@ describe('save payload', () => {
 describe('IR version', () => {
   const branch: PipelineEdge[] = [{ from: 'c', to: 'x', condition: true }]
   it('leaves the version alone without conditional edges', () => {
-    expect(irVersionFor({ ir_version: '2.2' }, [{ from: 'a', to: 'b' }])).toEqual({ version: '2.2' })
+    expect(irVersionFor({ ir_version: '2.2' }, [{ from: 'a', to: 'b' }])).toEqual({
+      version: '2.2',
+    })
     expect(irVersionFor({}, [])).toEqual({ version: undefined })
   })
   it('upgrades unset and 2.0 to 2.1 for branches', () => {
@@ -88,7 +101,14 @@ describe('IR version', () => {
 })
 
 describe('connections', () => {
-  const nodes = [node('src', 'source_db'), node('t1', 'transform'), node('t2', 'transform'), node('j', 'join'), node('sink', 'sink_db'), node('m', 'migrate')]
+  const nodes = [
+    node('src', 'source_db'),
+    node('t1', 'transform'),
+    node('t2', 'transform'),
+    node('j', 'join'),
+    node('sink', 'sink_db'),
+    node('m', 'migrate'),
+  ]
   it('allows a valid connection', () => {
     expect(connectionProblem(nodes, [], 'src', 't1')).toBeNull()
   })
@@ -100,7 +120,9 @@ describe('connections', () => {
     expect(connectionProblem(nodes, [], 'm', 't1')).toMatch(/no output/)
   })
   it('enforces input limits, including the join maximum of two', () => {
-    expect(connectionProblem(nodes, [{ from: 'src', to: 't1' }], 't2', 't1')).toMatch(/already has its input/)
+    expect(connectionProblem(nodes, [{ from: 'src', to: 't1' }], 't2', 't1')).toMatch(
+      /already has its input/,
+    )
     const two = [
       { from: 'src', to: 'j' },
       { from: 't1', to: 'j' },
@@ -108,7 +130,9 @@ describe('connections', () => {
     expect(connectionProblem(nodes, two, 't2', 'j')).toMatch(/at most 2/)
   })
   it('refuses cycles', () => {
-    expect(connectionProblem(nodes, [{ from: 't1', to: 't2' }], 't2', 't1')).toMatch(/already has|loop/)
+    expect(connectionProblem(nodes, [{ from: 't1', to: 't2' }], 't2', 't1')).toMatch(
+      /already has|loop/,
+    )
     const unlimited = [node('u', 'union'), node('v', 'union')]
     expect(connectionProblem(unlimited, [{ from: 'u', to: 'v' }], 'v', 'u')).toMatch(/loop/)
   })
@@ -130,14 +154,22 @@ describe('node helpers', () => {
     expect(taken.size).toBe(500)
   })
   it('duplicates keep interface and capabilities', () => {
-    const copy = duplicateNode(node('a', 'task', { interface: { x: 1 }, capabilities: ['source'] }), ['a'])
+    const copy = duplicateNode(
+      node('a', 'task', { interface: { x: 1 }, capabilities: ['source'] }),
+      ['a'],
+    )
     expect(copy.id).not.toBe('a')
     expect(copy.interface).toEqual({ x: 1 })
     expect(copy.capabilities).toEqual(['source'])
     expect(copy.name).toBe('a (copy)')
   })
   it('removes keys set to empty or undefined, keeps numbers and false', () => {
-    expect(patchConfig({ python_path: '/usr/bin/python', a: 1 }, { python_path: '', b: false, c: 0, a: undefined })).toEqual({ b: false, c: 0 })
+    expect(
+      patchConfig(
+        { python_path: '/usr/bin/python', a: 1 },
+        { python_path: '', b: false, c: 0, a: undefined },
+      ),
+    ).toEqual({ b: false, c: 0 })
   })
   it('dedupes and trims tags', () => {
     expect(sanitizeTags([' a', 'a', '', 'b '])).toEqual(['a', 'b'])
@@ -145,17 +177,77 @@ describe('node helpers', () => {
 })
 
 describe('condition grammar', () => {
-  it.each(['always_true', 'row_count > 0', 'row_count>=10', 'column_exists("id")', 'null_pct("email") < 5.5', 'max("amount") <= .5'])(
-    'accepts %s',
-    (e) => expect(isConditionSupported(e)).toBe(true),
-  )
-  it.each(['row_count > 1.5', 'rows > 0', "column_exists('id')", 'min(amount) > 1', ''])('rejects %s', (e) =>
-    expect(isConditionSupported(e)).toBe(false),
+  it.each([
+    'always_true',
+    'row_count > 0',
+    'row_count>=10',
+    'column_exists("id")',
+    'null_pct("email") < 5.5',
+    'max("amount") <= .5',
+  ])('accepts %s', (e) => expect(isConditionSupported(e)).toBe(true))
+  it.each(['row_count > 1.5', 'rows > 0', "column_exists('id')", 'min(amount) > 1', ''])(
+    'rejects %s',
+    (e) => expect(isConditionSupported(e)).toBe(false),
   )
   it('warns about unsupported expressions and unlabelled branches', () => {
     const c = node('c', 'condition', { config: { expression: 'rows > 1' } })
     expect(nodeWarnings(c, [{ from: 'c', to: 'x' }])).toHaveLength(2)
     expect(nodeWarnings(node('j', 'join'), [{ from: 'a', to: 'j' }])[0]).toMatch(/exactly 2/)
+  })
+})
+
+describe('declared join schemas', () => {
+  const schema = (names: string[]) => ({
+    columns: names.map((name) => ({ name, type: { kind: 'string' } })),
+    additional_columns: 'closed',
+  })
+  it('previews prefix, alias, and shared join-key output names', () => {
+    const result = joinOutputSchema(schema(['id', 'name']), schema(['id', 'name', 'region']), {
+      left_key: 'id',
+      right_key: 'id',
+      collision_policy: 'prefix',
+    })
+    expect(result.columns?.map((column) => column.name)).toEqual([
+      'id',
+      'name',
+      'right_name',
+      'right_region',
+    ])
+    expect(
+      joinOutputSchema(schema(['id']), schema(['id', 'name']), {
+        left_key: 'id',
+        collision_policy: 'alias',
+        right_alias: 'customer',
+      }).columns?.map((column) => column.name),
+    ).toEqual(['id', 'customer_name'])
+  })
+  it('reports missing keys and rejected collisions', () => {
+    expect(
+      joinOutputSchema(schema(['id', 'name']), schema(['id', 'name']), {
+        left_key: 'id',
+        right_key: 'id',
+        collision_policy: 'error',
+      }).error,
+    ).toMatch(/Collision|rejects|columns/i)
+    expect(
+      joinOutputSchema(schema(['id']), schema(['user_id']), {
+        left_key: 'missing',
+        right_key: 'user_id',
+      }).error,
+    ).toMatch(/Left key/)
+  })
+  it('resolves a declared join output through upstream nodes', () => {
+    const nodes = [
+      node('left', 'source_file', { config: { schema: schema(['id']) } }),
+      node('right', 'source_file', { config: { schema: schema(['id', 'value']) } }),
+      node('join', 'join', { config: { left_key: 'id', right_key: 'id' } }),
+    ]
+    expect(
+      outputSchemaForNode('join', nodes, [
+        { from: 'left', to: 'join' },
+        { from: 'right', to: 'join' },
+      ])?.columns.map((column) => column.name),
+    ).toEqual(['id', 'value'])
   })
 })
 
@@ -166,7 +258,8 @@ describe('click-to-add placement', () => {
   it('never stacks a new node on an existing one', () => {
     const anchor = { x: 300, y: 200 }
     const placed: PipelineNode[] = []
-    for (let i = 0; i < 3; i++) placed.push(node(`n${i}`, 'transform', { position: nextFreePosition(placed, anchor) }))
+    for (let i = 0; i < 3; i++)
+      placed.push(node(`n${i}`, 'transform', { position: nextFreePosition(placed, anchor) }))
     for (let a = 0; a < placed.length; a++)
       for (let b = a + 1; b < placed.length; b++) {
         const dx = Math.abs(placed[a].position.x - placed[b].position.x)
@@ -178,7 +271,12 @@ describe('click-to-add placement', () => {
 
 describe('auto layout', () => {
   it('places each node right of its furthest predecessor', () => {
-    const nodes = [node('a', 'source_file'), node('b', 'transform'), node('c', 'join'), node('d', 'source_db')]
+    const nodes = [
+      node('a', 'source_file'),
+      node('b', 'transform'),
+      node('c', 'join'),
+      node('d', 'source_db'),
+    ]
     const edges = [
       { from: 'a', to: 'b' },
       { from: 'b', to: 'c' },
@@ -190,7 +288,10 @@ describe('auto layout', () => {
     expect(x.c).toBeGreaterThan(x.b)
   })
   it('leaves nodes in a cycle where they are', () => {
-    const nodes = [node('a', 'transform', { position: { x: 5, y: 7 } }), node('b', 'transform', { position: { x: 9, y: 9 } })]
+    const nodes = [
+      node('a', 'transform', { position: { x: 5, y: 7 } }),
+      node('b', 'transform', { position: { x: 9, y: 9 } }),
+    ]
     const out = autoLayout(nodes, [
       { from: 'a', to: 'b' },
       { from: 'b', to: 'a' },
