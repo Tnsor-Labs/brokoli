@@ -17,6 +17,7 @@ import {
   sanitizeTags,
   joinOutputSchema,
   outputSchemaForNode,
+  transformOutputSchema,
 } from './document'
 
 const node = (id: string, type: string, extra: Partial<PipelineNode> = {}): PipelineNode => ({
@@ -248,6 +249,19 @@ describe('declared join schemas', () => {
         { from: 'right', to: 'join' },
       ])?.columns.map((column) => column.name),
     ).toEqual(['id', 'value'])
+  })
+})
+
+describe('transform output schemas', () => {
+  const schema = { columns: [{ name: 'id', type: { kind: 'int64' } }, { name: 'price', type: { kind: 'decimal', precision: 12, scale: 2 } }, { name: 'status', type: { kind: 'string' } }], additional_columns: 'closed' }
+  it('carries schema through rename, drop, and add-column rules', () => {
+    const result = transformOutputSchema(schema, { rules: [{ type: 'rename_columns', mapping: { status: 'state' } }, { type: 'drop_columns', columns: ['id'] }, { type: 'add_column', name: 'total', expression: 'price * price' }] })
+    expect(result?.columns).toEqual([{ name: 'price', type: { kind: 'decimal', precision: 12, scale: 2 } }, { name: 'state', type: { kind: 'string' } }, { name: 'total', type: { kind: 'decimal', precision: 12, scale: 2 } }])
+  })
+  it('propagates a transform schema into a downstream join', () => {
+    const nodes = [node('left', 'source_file', { config: { schema } }), node('transform', 'transform', { config: { rules: [{ type: 'rename_columns', mapping: { id: 'user_id' } }] } }), node('right', 'source_file', { config: { schema: { columns: [{ name: 'user_id', type: { kind: 'int64' } }], additional_columns: 'closed' } } }), node('join', 'join', { config: { left_key: 'user_id', right_key: 'user_id' } })]
+    const edges = [{ from: 'left', to: 'transform' }, { from: 'transform', to: 'join' }, { from: 'right', to: 'join' }]
+    expect(outputSchemaForNode('join', nodes, edges)?.columns.map((column) => column.name)).toEqual(['user_id', 'price', 'status'])
   })
 })
 
