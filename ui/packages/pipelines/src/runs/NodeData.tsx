@@ -5,12 +5,24 @@ import { keys } from '../keys'
 
 function cell(value: unknown) {
   if (value === null || value === undefined) return <span className="bk-null">null</span>
-  if (typeof value === 'object') return <span className="bk-mono">{JSON.stringify(value).slice(0, 200)}</span>
+  if (typeof value === 'object')
+    return <span className="bk-mono">{JSON.stringify(value).slice(0, 200)}</span>
   const text = String(value)
   return text.length > 160 ? `${text.slice(0, 160)}...` : text
 }
 
 const notFound = (e: unknown) => e instanceof ApiError && e.status === 404
+
+export function schemaErrorDetails(error: string) {
+  const missing = error.match(/(?:column|join key)\s+["']([^"']+)["']\s+not found/i)?.[1]
+  if (!missing) return undefined
+  const availableText = error.match(/available columns?:\s*\[([^\]]*)\]/i)?.[1]
+  const available = availableText
+    ?.split(',')
+    .map((column) => column.trim().replace(/^['"]|['"]$/g, ''))
+    .filter(Boolean)
+  return { missing, available: available?.length ? available : undefined }
+}
 
 /*
  * Stored output sample and data profile for one node of a run. A missing
@@ -33,14 +45,32 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
   const p = profile.data?.profile
   const schema = profile.data?.schema
   const drift = profile.data?.drift ?? []
+  const schemaError = node.error ? schemaErrorDetails(node.error) : undefined
 
   return (
     <div className="bk-node-data">
+      {node.error && (
+        <Callout tone="danger" title={schemaError ? 'Schema error' : 'Node error'}>
+          <p>{node.error}</p>
+          {schemaError && (
+            <p>
+              Missing <code>{schemaError.missing}</code>.
+              {schemaError.available && (
+                <>
+                  {' '}
+                  Available columns: <code>{schemaError.available.join(', ')}</code>.
+                </>
+              )}
+            </p>
+          )}
+        </Callout>
+      )}
       <section>
         <header className="bk-section-head">
           <h3>Output sample</h3>
           <span className="bk-muted">
-            {name} produced {formatNumber(node.row_count)} rows{rows.length ? `; ${rows.length} are stored as a sample` : ''}.
+            {name} produced {formatNumber(node.row_count)} rows
+            {rows.length ? `; ${rows.length} are stored as a sample` : ''}.
           </span>
         </header>
         {preview.isPending ? (
@@ -49,7 +79,9 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
           </div>
         ) : preview.isError ? (
           notFound(preview.error) ? (
-            <EmptyState title="No stored sample">This node did not store an output sample for this run.</EmptyState>
+            <EmptyState title="No stored sample">
+              This node did not store an output sample for this run.
+            </EmptyState>
           ) : (
             <Callout tone="danger">{errorMessage(preview.error)}</Callout>
           )
@@ -107,7 +139,11 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
             <Spinner size="sm" /> Loading schema
           </div>
         ) : profile.isError ? (
-          notFound(profile.error) ? <p className="bk-muted">No runtime schema was recorded for this node.</p> : <Callout tone="danger">{errorMessage(profile.error)}</Callout>
+          notFound(profile.error) ? (
+            <p className="bk-muted">No runtime schema was recorded for this node.</p>
+          ) : (
+            <Callout tone="danger">{errorMessage(profile.error)}</Callout>
+          )
         ) : schema?.columns?.length ? (
           <div className="bk-data-table">
             <table>
@@ -122,8 +158,12 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
                 {schema.columns.map((column) => (
                   <tr key={column.name}>
                     <td>{column.name}</td>
-                    <td><Badge>{column.type}</Badge></td>
-                    <td className="is-num">{typeof column.null_pct === 'number' ? column.null_pct.toFixed(1) : ''}</td>
+                    <td>
+                      <Badge>{column.type}</Badge>
+                    </td>
+                    <td className="is-num">
+                      {typeof column.null_pct === 'number' ? column.null_pct.toFixed(1) : ''}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -139,7 +179,8 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
           <h3>Profile</h3>
           {p && (
             <span className="bk-muted">
-              {formatNumber(p.row_count)} rows, {p.column_count} columns, profiled in {p.profiling_ms}ms
+              {formatNumber(p.row_count)} rows, {p.column_count} columns, profiled in{' '}
+              {p.profiling_ms}ms
             </span>
           )}
         </header>
@@ -158,7 +199,11 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
             {drift.length > 0 && (
               <div className="bk-drift">
                 {drift.map((d, i) => (
-                  <Callout key={i} tone={d.severity === 'critical' ? 'danger' : 'warning'} title={`${d.type.replaceAll('_', ' ')}: ${d.column}`}>
+                  <Callout
+                    key={i}
+                    tone={d.severity === 'critical' ? 'danger' : 'warning'}
+                    title={`${d.type.replaceAll('_', ' ')}: ${d.column}`}
+                  >
                     {d.previous || 'none'} to {d.current || 'none'}
                   </Callout>
                 ))}
@@ -185,11 +230,17 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
                         <td>
                           <Badge>{c.type}</Badge>
                         </td>
-                        <td className={cx('is-num', c.null_pct > 20 && 'is-warning')}>{c.null_pct.toFixed(1)}</td>
+                        <td className={cx('is-num', c.null_pct > 20 && 'is-warning')}>
+                          {c.null_pct.toFixed(1)}
+                        </td>
                         <td className="is-num">{c.unique_pct.toFixed(1)}</td>
                         <td>{c.min_val ?? <span className="bk-null">none</span>}</td>
                         <td>{c.max_val ?? <span className="bk-null">none</span>}</td>
-                        <td className="is-num">{c.is_numeric && typeof c.mean_val === 'number' ? c.mean_val.toFixed(2) : ''}</td>
+                        <td className="is-num">
+                          {c.is_numeric && typeof c.mean_val === 'number'
+                            ? c.mean_val.toFixed(2)
+                            : ''}
+                        </td>
                       </tr>
                     ))}
                   </tbody>
