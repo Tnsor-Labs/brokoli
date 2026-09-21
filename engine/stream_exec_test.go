@@ -615,6 +615,11 @@ func TestStreamAggregation_EquivalentToBatch(t *testing.T) {
 				{Column: "amount", Function: "sum"},
 			}},
 		}},
+		{"count-distinct", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region"}, AggFields: []AggField{
+				{Column: "kind", Function: "count_distinct", Alias: "kinds"},
+			}},
+		}},
 		{"prefix-then-agg", []TransformRule{
 			{Type: "filter_rows", Condition: "id >= 500"},
 			{Type: "add_column", Name: "half", Expression: "amount / 2"},
