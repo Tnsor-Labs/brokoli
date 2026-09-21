@@ -31,6 +31,7 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
   const columns = preview.data?.columns ?? []
   const rows = preview.data?.rows ?? []
   const p = profile.data?.profile
+  const schema = profile.data?.schema
   const drift = profile.data?.drift ?? []
 
   return (
@@ -93,6 +94,43 @@ export function NodeData({ runId, node, name }: { runId: string; node: NodeRun; 
               </table>
             </div>
           </>
+        )}
+      </section>
+
+      <section>
+        <header className="bk-section-head">
+          <h3>Runtime schema</h3>
+          <span className="bk-muted">Captured from this node's output during the run.</span>
+        </header>
+        {profile.isPending ? (
+          <div className="bk-inline-loading">
+            <Spinner size="sm" /> Loading schema
+          </div>
+        ) : profile.isError ? (
+          notFound(profile.error) ? <p className="bk-muted">No runtime schema was recorded for this node.</p> : <Callout tone="danger">{errorMessage(profile.error)}</Callout>
+        ) : schema?.columns?.length ? (
+          <div className="bk-data-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Column</th>
+                  <th>Type</th>
+                  <th className="is-num">Null %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schema.columns.map((column) => (
+                  <tr key={column.name}>
+                    <td>{column.name}</td>
+                    <td><Badge>{column.type}</Badge></td>
+                    <td className="is-num">{typeof column.null_pct === 'number' ? column.null_pct.toFixed(1) : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="bk-muted">No runtime schema was recorded for this node.</p>
         )}
       </section>
 

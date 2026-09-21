@@ -403,7 +403,7 @@ export interface DriftAlert {
 
 export interface NodeProfile {
   profile: { row_count: number; column_count: number; columns: ColumnProfile[] | null; profiling_ms: number } | null
-  schema?: unknown
+  schema?: { columns: { name: string; type: string; null_pct?: number }[] } | null
   drift: DriftAlert[] | null
 }
 
