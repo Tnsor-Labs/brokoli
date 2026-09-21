@@ -302,6 +302,18 @@ export function outputSchemaForNode(
   if (!node) return undefined
   const own = declaredSchema(node)
   if (own) return own
+  if (['dataset_map', 'dataset_filter', 'condition', 'wait'].includes(node.type)) {
+    const input = edges.find((edge) => edge.to === nodeId)
+    return input ? outputSchemaForNode(input.from, nodes, edges, new Set(seen).add(nodeId)) : undefined
+  }
+  if (node.type === 'union') {
+    const inputs = edges.filter((edge) => edge.to === nodeId)
+    const schemas = inputs.map((edge) => outputSchemaForNode(edge.from, nodes, edges, new Set(seen).add(nodeId)))
+    if (schemas.length < 2 || schemas.some((schema) => !schema)) return undefined
+    const first = schemas[0]!
+    if (schemas.some((schema) => schema!.columns.length !== first.columns.length || schema!.columns.some((column, index) => column.name !== first.columns[index].name || column.type?.kind !== first.columns[index].type?.kind))) return undefined
+    return first
+  }
   if (node.type !== 'join' && node.type !== 'transform') return undefined
   const inputs = edges.filter((edge) => edge.to === nodeId)
   if (node.type === 'transform') {

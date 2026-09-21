@@ -292,6 +292,17 @@ describe('transform output schemas', () => {
     const edges = [{ from: 'a', to: 'b' }, { from: 'b', to: 'a' }]
     expect(outputSchemaForNode('a', nodes, edges)).toBeUndefined()
   })
+  it('passes schemas through partition nodes and compatible unions', () => {
+    const schema = { columns: [{ name: 'id', type: { kind: 'int64' } }], additional_columns: 'closed' }
+    const nodes = [node('a', 'source_file', { config: { schema } }), node('b', 'source_file', { config: { schema } }), node('map', 'dataset_map'), node('union', 'union')]
+    const edges = [{ from: 'a', to: 'map' }, { from: 'map', to: 'union' }, { from: 'b', to: 'union' }]
+    expect(outputSchemaForNode('map', nodes, edges)?.columns.map((column) => column.name)).toEqual(['id'])
+    expect(outputSchemaForNode('union', nodes, edges)?.columns.map((column) => column.name)).toEqual(['id'])
+  })
+  it('refuses to guess an incompatible union schema', () => {
+    const nodes = [node('a', 'source_file', { config: { schema: { columns: [{ name: 'id', type: { kind: 'int64' } }], additional_columns: 'closed' } } }), node('b', 'source_file', { config: { schema: { columns: [{ name: 'id', type: { kind: 'string' } }], additional_columns: 'closed' } } }), node('union', 'union')]
+    expect(outputSchemaForNode('union', nodes, [{ from: 'a', to: 'union' }, { from: 'b', to: 'union' }])).toBeUndefined()
+  })
 })
 
 describe('click-to-add placement', () => {
