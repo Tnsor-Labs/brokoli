@@ -83,6 +83,22 @@ func TestJoinSchemaCarriesTypesThroughCollisionPlanning(t *testing.T) {
 	}
 }
 
+func TestProjectSchemaInfersFieldExpressionTypes(t *testing.T) {
+	out := applyRuleToSchema(TransformRule{
+		Type: "project",
+		Projections: []ProjectionField{
+			{Name: "amount", Expr: map[string]interface{}{"op": "column", "path": []interface{}{"amount"}}},
+			{Name: "label", Expr: map[string]interface{}{"op": "concat", "left": map[string]interface{}{"op": "column", "path": []interface{}{"city"}}, "right": map[string]interface{}{"op": "literal", "value": "!"}}},
+		},
+	}, srcSchema())
+	if got := out["amount"]; got.Class != dbdialect.TypeDecimal || got.Precision != 12 || got.Scale != 2 {
+		t.Errorf("amount = %v, want decimal(12,2)", got)
+	}
+	if got := out["label"]; got.Class != dbdialect.TypeText {
+		t.Errorf("label = %v, want text", got)
+	}
+}
+
 func TestDropAndRenameFollowTheColumns(t *testing.T) {
 	dropped := applyRuleToSchema(
 		TransformRule{Type: "drop_columns", Columns: []string{"city", "is_admin"}}, srcSchema())
