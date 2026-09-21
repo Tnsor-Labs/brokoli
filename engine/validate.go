@@ -635,7 +635,62 @@ func datasetTypeErrors(raw interface{}, path string) []string {
 		}
 		return errors
 	}
+	if kind == "decimal" {
+		return decimalTypeErrors(typ, path)
+	}
 	return nil
+}
+
+func decimalTypeErrors(typ map[string]interface{}, path string) []string {
+	var errors []string
+	precision, precisionOK := schemaInteger(typ["precision"])
+	scale, scaleOK := schemaInteger(typ["scale"])
+
+	if _, present := typ["precision"]; present {
+		if !precisionOK || precision <= 0 {
+			errors = append(errors, path+".precision must be a positive integer")
+		}
+	}
+	if _, present := typ["scale"]; present {
+		if !scaleOK || scale < 0 {
+			errors = append(errors, path+".scale must be a non-negative integer")
+		}
+	}
+	if precisionOK && scaleOK && scale > precision {
+		errors = append(errors, path+".scale must not exceed precision")
+	}
+	return errors
+}
+
+func schemaInteger(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), uint64(v) <= uint64(^uint(0)>>1)
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), uint64(v) <= uint64(^uint(0)>>1)
+	case uint64:
+		return int(v), v <= uint64(^uint(0)>>1)
+	case float64:
+		return int(v), v == float64(int(v))
+	case float32:
+		return int(v), v == float32(int(v))
+	default:
+		return 0, false
+	}
 }
 
 func joinCollisionPolicyErrors(config map[string]interface{}) []string {

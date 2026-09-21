@@ -103,6 +103,43 @@ func TestValidate_DatasetSchemaAcceptsPortableDeclaration(t *testing.T) {
 	}
 }
 
+func TestValidate_DatasetSchemaAcceptsDecimalPrecisionAndScale(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "amount", "type": map[string]interface{}{
+				"kind": "decimal", "precision": float64(20), "scale": float64(4),
+			}},
+		},
+		"additional_columns": "closed",
+	}
+	if ve := ValidatePipeline(p); ve.HasErrors() {
+		t.Fatalf("valid decimal schema rejected: %v", ve.Errors)
+	}
+}
+
+func TestValidate_DatasetSchemaRejectsInvalidDecimalPrecisionAndScale(t *testing.T) {
+	for name, typ := range map[string]map[string]interface{}{
+		"non-integer precision":   {"kind": "decimal", "precision": 12.5, "scale": 2},
+		"non-positive precision":  {"kind": "decimal", "precision": 0, "scale": 0},
+		"negative scale":          {"kind": "decimal", "precision": 12, "scale": -1},
+		"scale exceeds precision": {"kind": "decimal", "precision": 2, "scale": 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := validPipeline()
+			p.Nodes[0].Config["schema"] = map[string]interface{}{
+				"contract":           "brokoli.dataset-schema/v1",
+				"columns":            []interface{}{map[string]interface{}{"name": "amount", "type": typ}},
+				"additional_columns": "closed",
+			}
+			if ve := ValidatePipeline(p); !ve.HasErrors() {
+				t.Fatal("invalid decimal schema was accepted")
+			}
+		})
+	}
+}
+
 func TestValidate_DatasetSchemaRejectsMalformedDeclaration(t *testing.T) {
 	p := validPipeline()
 	p.Nodes[0].Config["schema"] = map[string]interface{}{

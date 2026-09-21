@@ -410,6 +410,14 @@
         "kind": {
           "const": "decimal"
         },
+        "precision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "scale": {
+          "type": "integer",
+          "minimum": 0
+        },
         "nullable": true,
         "description": true,
         "extensions": true,
