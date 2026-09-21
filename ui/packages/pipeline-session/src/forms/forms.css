@@ -97,6 +97,29 @@
   font-size: var(--bk-text-xs);
   line-height: var(--bk-leading-snug);
 }
+.ps-schema-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  font-size: var(--bk-text-xs);
+}
+.ps-schema-columns > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 8px;
+  border-radius: var(--bk-radius-sm);
+  background: var(--bk-color-canvas-subtle);
+}
+.ps-schema-columns dt,
+.ps-schema-columns dd {
+  margin: 0;
+}
+.ps-schema-columns dd {
+  color: var(--bk-color-text-muted);
+  font-family: var(--bk-font-mono);
+}
 .ps-map {
   display: flex;
   flex-direction: column;
