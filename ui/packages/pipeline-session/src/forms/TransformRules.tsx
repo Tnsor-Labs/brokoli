@@ -327,6 +327,9 @@ function RuleBody({
           { column?: string; function?: string; alias?: string }[] | undefined) ?? []
       const setFields = (next: typeof fields) =>
         update({ agg_fields: next, aggregations: undefined })
+      const missing = schema
+        ? fields.map((field) => str(field.column)).filter((column) => column && !knownColumns(schema).includes(column))
+        : []
       return (
         <>
           <ColumnsInput
@@ -357,6 +360,7 @@ function RuleBody({
                 <Input
                   mono
                   aria-label="Column"
+                  aria-invalid={missing.includes(f.column ?? '') || undefined}
                   placeholder="column"
                   list={schema ? 'aggregate-columns' : undefined}
                   value={f.column ?? ''}
@@ -391,6 +395,12 @@ function RuleBody({
                   <option key={column} value={column} />
                 ))}
               </datalist>
+            )}
+            {missing.length > 0 && (
+              <p className="ps-form-warning">
+                Unknown aggregate column{missing.length > 1 ? 's' : ''}:{' '}
+                {[...new Set(missing)].join(', ')}
+              </p>
             )}
             <Button
               size="sm"
