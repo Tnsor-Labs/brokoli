@@ -37,6 +37,36 @@ func evalExpression(expr map[string]interface{}, row common.DataRow) (interface{
 		return value, nil
 	case "literal":
 		return expr["value"], nil
+	case "case_when":
+		branches, ok := expr["branches"].([]interface{})
+		if !ok || len(branches) == 0 {
+			return nil, fmt.Errorf("case_when requires branches")
+		}
+		for _, raw := range branches {
+			branch, ok := raw.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("case_when branch must be object")
+			}
+			when, ok := branch["when"].(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("case_when branch requires when")
+			}
+			match, err := evalPredicate(when, row)
+			if err != nil {
+				return nil, err
+			}
+			if match {
+				thenExpr, ok := branch["then"].(map[string]interface{})
+				if !ok {
+					return nil, fmt.Errorf("case_when branch requires then")
+				}
+				return evalExpression(thenExpr, row)
+			}
+		}
+		if otherwise, ok := expr["else"].(map[string]interface{}); ok {
+			return evalExpression(otherwise, row)
+		}
+		return nil, nil
 	case "coalesce":
 		args, ok := expr["args"].([]interface{})
 		if !ok || len(args) == 0 {
@@ -87,6 +117,89 @@ func evalExpression(expr map[string]interface{}, row common.DataRow) (interface{
 		}
 	}
 	return nil, fmt.Errorf("unsupported expression op %q", op)
+}
+
+func evalPredicate(expr map[string]interface{}, row common.DataRow) (bool, error) {
+	op, ok := expr["op"].(string)
+	if !ok || op == "" {
+		return false, fmt.Errorf("predicate requires string op")
+	}
+	if op == "and" || op == "or" {
+		args, ok := expr["args"].([]interface{})
+		if !ok || len(args) == 0 {
+			return false, fmt.Errorf("%s requires args", op)
+		}
+		result := op == "and"
+		for _, raw := range args {
+			child, ok := raw.(map[string]interface{})
+			if !ok {
+				return false, fmt.Errorf("predicate args must be objects")
+			}
+			value, err := evalPredicate(child, row)
+			if err != nil {
+				return false, err
+			}
+			if op == "and" {
+				result = result && value
+			} else {
+				result = result || value
+			}
+		}
+		return result, nil
+	}
+	if op == "not" || op == "is_null" {
+		child, ok := expr["arg"].(map[string]interface{})
+		if !ok {
+			return false, fmt.Errorf("%s requires arg", op)
+		}
+		if op == "is_null" {
+			value, err := evalExpression(child, row)
+			return value == nil, err
+		}
+		predicate, err := evalPredicate(child, row)
+		return !predicate, err
+	}
+	left, right, err := binaryOperands(expr, row)
+	if err != nil {
+		return false, err
+	}
+	if left == nil || right == nil {
+		return false, nil
+	}
+	if lf, lok := expressionFloat(left); lok {
+		if rf, rok := expressionFloat(right); rok {
+			switch op {
+			case "eq":
+				return lf == rf, nil
+			case "neq":
+				return lf != rf, nil
+			case "lt":
+				return lf < rf, nil
+			case "lte":
+				return lf <= rf, nil
+			case "gt":
+				return lf > rf, nil
+			case "gte":
+				return lf >= rf, nil
+			}
+		}
+	}
+	ls, rs := fmt.Sprintf("%v", left), fmt.Sprintf("%v", right)
+	switch op {
+	case "eq":
+		return ls == rs, nil
+	case "neq":
+		return ls != rs, nil
+	case "lt":
+		return ls < rs, nil
+	case "lte":
+		return ls <= rs, nil
+	case "gt":
+		return ls > rs, nil
+	case "gte":
+		return ls >= rs, nil
+	}
+	return false, fmt.Errorf("unsupported predicate op %q", op)
 }
 
 func binaryOperands(expr map[string]interface{}, row common.DataRow) (interface{}, interface{}, error) {

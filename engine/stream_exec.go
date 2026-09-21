@@ -728,7 +728,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 			if err != nil {
 				return nodeExecutionResult{}, err
 			}
-			return nodeExecutionResult{outputRef: ref}, nil
+			schema, schemaErr := declaredOutputSchema(node.Config)
+			if schemaErr != nil {
+				return nodeExecutionResult{}, schemaErr
+			}
+			return nodeExecutionResult{outputRef: ref, outputSchema: schema}, nil
 		}
 		// Small output: materialize, exactly as the batch path would have.
 		ds, err := ReadNDJSON(res.outputPath)
@@ -738,7 +742,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 		if len(res.columns) > 0 {
 			ds.Columns = res.columns
 		}
-		return nodeExecutionResult{output: ds}, nil
+		schema, schemaErr := declaredOutputSchema(node.Config)
+		if schemaErr != nil {
+			return nodeExecutionResult{}, schemaErr
+		}
+		return nodeExecutionResult{output: ds, outputSchema: schema}, nil
 	}
 
 	// No NDJSON file: the wrapper printed JSON on stdout (empty result, or
@@ -752,7 +760,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 	for i, row := range out.Rows {
 		ds.Rows[i] = common.DataRow(row)
 	}
-	return nodeExecutionResult{output: ds}, nil
+	schema, schemaErr := declaredOutputSchema(node.Config)
+	if schemaErr != nil {
+		return nodeExecutionResult{}, schemaErr
+	}
+	return nodeExecutionResult{output: ds, outputSchema: schema}, nil
 }
 
 // sinkStreamConfig builds the same SQLGenConfig runSinkDB builds, and
