@@ -244,6 +244,7 @@ const (
 	NodeTypeTransform    NodeType = "transform"
 	NodeTypeProject      NodeType = "project"
 	NodeTypeAggregate    NodeType = "aggregate"
+	NodeTypeFilter       NodeType = "filter"
 	NodeTypeQualityCheck NodeType = "quality_check"
 	NodeTypeSQLGenerate  NodeType = "sql_generate"
 	NodeTypeCode         NodeType = "code"

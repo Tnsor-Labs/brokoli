@@ -168,6 +168,7 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 	models.NodeTypeTransform: transformColumns,
 	models.NodeTypeProject:   dedicatedOperatorColumns,
 	models.NodeTypeAggregate: dedicatedOperatorColumns,
+	models.NodeTypeFilter:    dedicatedOperatorColumns,
 	models.NodeTypeJoin:      joinColumns,
 	models.NodeTypeUnion:     unionColumns,
 
@@ -450,7 +451,7 @@ func normaliseTransformType(t string) string {
 		return "add_column"
 	case "project", "projection":
 		return "project"
-	case "filter_rows", "filter":
+	case "filter_rows", "filter", "filter_native":
 		return "filter"
 	case "apply_function", "function":
 		return "function"

@@ -22,11 +22,12 @@ type TransformRule struct {
 	Condition  string            `json:"condition,omitempty"`
 	Ascending  bool              `json:"ascending,omitempty"`
 	// Aggregate fields
-	GroupBy           []string          `json:"group_by,omitempty"`     // columns to group by
-	AggFields         []AggField        `json:"agg_fields,omitempty"`   // aggregation definitions
-	Aggregations      []AggField        `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
-	Projections       []ProjectionField `json:"projections,omitempty"`
-	ExpressionVersion int               `json:"expression_version,omitempty"`
+	GroupBy           []string               `json:"group_by,omitempty"`     // columns to group by
+	AggFields         []AggField             `json:"agg_fields,omitempty"`   // aggregation definitions
+	Aggregations      []AggField             `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
+	Projections       []ProjectionField      `json:"projections,omitempty"`
+	ExpressionVersion int                    `json:"expression_version,omitempty"`
+	Predicate         map[string]interface{} `json:"predicate,omitempty"`
 }
 
 // ProjectionField is a named output expression in a native project rule.
@@ -74,9 +75,29 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 		return deduplicate(r, ds)
 	case "aggregate", "agg":
 		return aggregate(r, ds)
+	case "filter_native":
+		return filterNative(r, ds)
 	default:
 		return fmt.Errorf("unsupported transform type: %s", r.Type)
 	}
+}
+
+func filterNative(r TransformRule, ds *common.DataSet) error {
+	if r.ExpressionVersion != 1 || len(r.Predicate) == 0 {
+		return fmt.Errorf("filter requires expression_version 1 and predicate")
+	}
+	kept := make([]common.DataRow, 0, len(ds.Rows))
+	for _, row := range ds.Rows {
+		match, err := evalPredicate(r.Predicate, row)
+		if err != nil {
+			return fmt.Errorf("filter predicate: %w", err)
+		}
+		if match {
+			kept = append(kept, row)
+		}
+	}
+	ds.Rows = kept
+	return nil
 }
 
 func project(r TransformRule, ds *common.DataSet) error {

@@ -179,7 +179,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 func IsBuiltInNodeType(nodeType models.NodeType) bool {
 	switch nodeType {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
+		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
@@ -243,7 +243,7 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			if count != 2 {
 				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
 			}
-		case models.NodeTypeProject, models.NodeTypeAggregate:
+		case models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter:
 			if count := inputDegree[n.ID]; count != 1 {
 				ve.Add(fmt.Sprintf("Node %q (%s) must have exactly 1 input, got %d", n.Name, n.Type, count))
 			}
@@ -539,6 +539,11 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeCode:
 		for _, msg := range codeExecutionKeyErrors(n.Config) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
+		if raw, present := n.Config["output_schema"]; present {
+			for _, msg := range datasetSchemaConfigErrors(raw) {
+				ve.Add(fmt.Sprintf("Node %q: output_schema: %s", n.Name, msg))
+			}
 		}
 		if nodeHasExpansion(n) {
 			// parseExpansionConfig's errors already name the node

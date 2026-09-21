@@ -1870,6 +1870,8 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runNativeOperator(node, input, inputSchema, "project")
 	case models.NodeTypeAggregate:
 		return r.runNativeOperator(node, input, inputSchema, "aggregate")
+	case models.NodeTypeFilter:
+		return r.runNativeOperator(node, input, inputSchema, "filter")
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
 	case models.NodeTypeCode:
@@ -1881,7 +1883,15 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		if nodeHasExpansion(node) {
 			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
 		}
-		return outputExecutionResult(r.runCode(ctx, node, input))
+		output, err := r.runCode(ctx, node, input)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		schema, err := declaredOutputSchema(node.Config)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		return nodeExecutionResult{output: output, outputSchema: schema}, nil
 	case models.NodeTypeTask:
 		// ADR-033 rollout phase 2c: local or remote task-runtime/v1
 		// dispatch -- see engine/task.go's own doc comment.

@@ -729,6 +729,9 @@ func (r *Runner) runNativeOperator(node models.Node, input *common.DataSet, inpu
 		return nodeExecutionResult{}, fmt.Errorf("parse %s config: %w", operator, err)
 	}
 	rule.Type = operator
+	if operator == "filter" {
+		rule.Type = "filter_native"
+	}
 	clone := &common.DataSet{Columns: append([]string(nil), input.Columns...), Rows: make([]common.DataRow, len(input.Rows))}
 	for i, row := range input.Rows {
 		clone.Rows[i] = make(common.DataRow, len(row))

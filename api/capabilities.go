@@ -22,6 +22,7 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 	models.NodeTypeTransform:     {models.CapabilityCompute},
 	models.NodeTypeProject:       {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeAggregate:     {models.CapabilityCompute, models.CapabilityDatasetOutput},
+	models.NodeTypeFilter:        {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeQualityCheck:  {models.CapabilityCompute},
 	models.NodeTypeSQLGenerate:   {models.CapabilityCompute},
 	models.NodeTypeCode:          {models.CapabilityCompute},

@@ -1,11 +1,60 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
+
+// declaredOutputSchema converts the validated BPTD output contract into the
+// engine's compact runtime type map. Unknown/container types stay unknown but
+// the declared column names remain available to downstream nodes.
+func declaredOutputSchema(config map[string]interface{}) (columnSchema, error) {
+	raw, ok := config["output_schema"]
+	if !ok {
+		return nil, nil
+	}
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("output_schema must be an object")
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("output_schema columns must be an array")
+	}
+	out := make(columnSchema, len(columns))
+	for _, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := column["name"].(string)
+		typ, _ := column["type"].(map[string]interface{})
+		kind, _ := typ["kind"].(string)
+		if name == "" {
+			continue
+		}
+		ct := dbdialect.ColumnType{Nullable: true}
+		switch kind {
+		case "boolean":
+			ct.Class = dbdialect.TypeBool
+		case "int64":
+			ct.Class, ct.Bits = dbdialect.TypeInt, 64
+		case "float64", "decimal":
+			ct.Class, ct.Bits = dbdialect.TypeFloat, 64
+		case "string", "date", "timestamp", "duration", "enum":
+			ct.Class = dbdialect.TypeText
+		case "bytes":
+			ct.Class = dbdialect.TypeBytes
+		default:
+			ct.Class = dbdialect.TypeUnknown
+		}
+		out[name] = ct
+	}
+	return out, nil
+}
 
 // Carrying a column's real type across the node boundary, so a sink_db with
 // create_table stops guessing it from a sample of values (#363).
@@ -148,6 +197,8 @@ func applyRuleToSchema(rule TransformRule, in columnSchema) columnSchema {
 			out[projection.Name] = dbdialect.ColumnType{}
 		}
 		return out
+	case "filter_native":
+		return in.clone()
 
 	case "apply_function", "function":
 		// Every function today (lower, upper, trim, title) writes a

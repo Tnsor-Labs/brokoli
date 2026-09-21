@@ -23,6 +23,7 @@ var AllNodeTypes = []NodeType{
 	NodeTypeTransform,
 	NodeTypeProject,
 	NodeTypeAggregate,
+	NodeTypeFilter,
 	NodeTypeQualityCheck,
 	NodeTypeSQLGenerate,
 	NodeTypeCode,
