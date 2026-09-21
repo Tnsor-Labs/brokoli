@@ -491,12 +491,10 @@ func resolveExpressionColumns(expr string, origin map[string][]ColumnRef) []Colu
 
 // joinColumns declares the join's output from its keys.
 //
-// JoinDatasets builds the output as: every left column, then every right
-// column, prefixed with "right_" if any name collides with the left side
-// (excluding the right key), and the right key omitted entirely when both
-// keys have the same name. This mirrors that exactly; the two are held
-// together by TestJoinColumnLineageMatchesTheJoin, which runs a real
-// join and compares.
+// JoinDatasets builds the output according to its explicit collision policy.
+// This declarer delegates output naming to the same planner used by execution;
+// TestJoinColumnLineageMatchesTheJoin also compares the resulting schema to a
+// real join for the legacy policy.
 func joinColumns(req ColumnLineageRequest) ColumnLineage {
 	if len(req.Inputs) < 2 {
 		return ColumnLineage{
@@ -515,15 +513,16 @@ func joinColumns(req ColumnLineageRequest) ColumnLineage {
 		rightKey = leftKey
 	}
 
-	leftCols := map[string]bool{}
-	for _, c := range left.Columns {
-		leftCols[c] = true
-	}
-	prefix := ""
-	for _, c := range right.Columns {
-		if leftCols[c] && c != rightKey {
-			prefix = "right_"
-			break
+	policy, _ := req.Node.Config["collision_policy"].(string)
+	rightAlias, _ := req.Node.Config["right_alias"].(string)
+	_, rightOutputNames, err := planJoinColumns(left.Columns, right.Columns, leftKey, rightKey, JoinOptions{
+		CollisionPolicy: JoinCollisionPolicy(policy),
+		RightAlias:      rightAlias,
+	})
+	if err != nil {
+		return ColumnLineage{
+			Opaque: true,
+			Reason: fmt.Sprintf("the join output schema could not be planned: %v", err),
 		}
 	}
 
@@ -546,7 +545,7 @@ func joinColumns(req ColumnLineageRequest) ColumnLineage {
 			continue // JoinDatasets drops the duplicate key column
 		}
 		out = append(out, ColumnDerivation{
-			Output: prefix + c, From: []ColumnRef{{Node: right.Node, Column: c}},
+			Output: rightOutputNames[c], From: []ColumnRef{{Node: right.Node, Column: c}},
 			Evidence: EvidenceDeclared,
 			Rule:     "passed through from the right input",
 		})

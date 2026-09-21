@@ -495,6 +495,14 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 	leftKey, _ := node.Config["left_key"].(string)
 	rightKey, _ := node.Config["right_key"].(string)
 	joinTypeStr, _ := node.Config["join_type"].(string)
+	collisionPolicy, policyIsString := node.Config["collision_policy"].(string)
+	if raw, present := node.Config["collision_policy"]; present && raw != nil && !policyIsString {
+		return nil, fmt.Errorf("join node 'collision_policy' must be a string")
+	}
+	rightAlias, aliasIsString := node.Config["right_alias"].(string)
+	if raw, present := node.Config["right_alias"]; present && raw != nil && !aliasIsString {
+		return nil, fmt.Errorf("join node 'right_alias' must be a string")
+	}
 
 	if leftKey == "" {
 		return nil, fmt.Errorf("join node requires 'left_key' config")
@@ -502,9 +510,15 @@ func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.Da
 	if rightKey == "" {
 		rightKey = leftKey
 	}
+	if collisionPolicy == "" {
+		collisionPolicy = string(JoinCollisionPrefix)
+	}
 
 	jt := ParseJoinType(joinTypeStr)
-	result, err := JoinDatasets(inputs[0], inputs[1], leftKey, rightKey, jt)
+	result, err := JoinDatasetsWithOptions(inputs[0], inputs[1], leftKey, rightKey, jt, JoinOptions{
+		CollisionPolicy: JoinCollisionPolicy(collisionPolicy),
+		RightAlias:      rightAlias,
+	})
 	if err != nil {
 		return nil, err
 	}

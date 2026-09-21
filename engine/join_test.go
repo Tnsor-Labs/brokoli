@@ -1,6 +1,8 @@
 package engine
 
 import (
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -106,5 +108,97 @@ func TestJoin_EmptyKey(t *testing.T) {
 	_, err := JoinDatasets(ordersDS(), customersDS(), "", "id", JoinInner)
 	if err == nil {
 		t.Error("expected error for empty key")
+	}
+}
+
+func TestJoin_CollisionPolicyErrorNamesColumns(t *testing.T) {
+	left := &common.DataSet{
+		Columns: []string{"id", "name"},
+		Rows:    []common.DataRow{{"id": "1", "name": "left"}},
+	}
+	right := &common.DataSet{
+		Columns: []string{"id", "name"},
+		Rows:    []common.DataRow{{"id": "1", "name": "right"}},
+	}
+
+	_, err := JoinDatasetsWithOptions(left, right, "id", "id", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionError,
+	})
+	if err == nil {
+		t.Fatal("expected colliding columns to fail")
+	}
+	if !strings.Contains(err.Error(), "name") {
+		t.Fatalf("error %q does not name the colliding column", err)
+	}
+}
+
+func TestJoin_CollisionPolicyAliasUsesStableRightNames(t *testing.T) {
+	left := &common.DataSet{
+		Columns: []string{"id", "name"},
+		Rows:    []common.DataRow{{"id": "1", "name": "left"}},
+	}
+	right := &common.DataSet{
+		Columns: []string{"id", "name"},
+		Rows:    []common.DataRow{{"id": "1", "name": "right"}},
+	}
+
+	result, err := JoinDatasetsWithOptions(left, right, "id", "id", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionAlias,
+		RightAlias:      "customer",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.Columns, []string{"id", "name", "customer_name"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns = %v, want %v", got, want)
+	}
+	if got, want := result.Rows[0]["customer_name"], "right"; got != want {
+		t.Fatalf("customer_name = %v, want %v", got, want)
+	}
+}
+
+func TestJoin_PrefixPolicyAvoidsRecursiveOutputCollisions(t *testing.T) {
+	left := &common.DataSet{
+		Columns: []string{"id", "right_id", "user_key"},
+		Rows:    []common.DataRow{{"id": "1", "right_id": "existing", "user_key": "u1"}},
+	}
+	right := &common.DataSet{
+		Columns: []string{"user_key", "id", "value"},
+		Rows:    []common.DataRow{{"user_key": "u1", "id": "1", "value": "right"}},
+	}
+
+	result, err := JoinDatasetsWithOptions(left, right, "user_key", "user_key", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionPrefix,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := result.Columns, []string{"id", "right_id", "user_key", "right_right_id", "right_value"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns = %v, want %v", got, want)
+	}
+}
+
+func TestJoin_AliasRequiresAnAlias(t *testing.T) {
+	_, err := JoinDatasetsWithOptions(ordersDS(), customersDS(), "customer_id", "customer_id", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionAlias,
+	})
+	if err == nil || !strings.Contains(err.Error(), "right_alias") {
+		t.Fatalf("expected right_alias error, got %v", err)
+	}
+}
+
+func TestJoin_KeysMustExistInInputSchemas(t *testing.T) {
+	_, err := JoinDatasetsWithOptions(ordersDS(), customersDS(), "missing", "customer_id", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionPrefix,
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected missing left key error, got %v", err)
+	}
+
+	_, err = JoinDatasetsWithOptions(ordersDS(), customersDS(), "customer_id", "missing", JoinInner, JoinOptions{
+		CollisionPolicy: JoinCollisionPrefix,
+	})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("expected missing right key error, got %v", err)
 	}
 }
