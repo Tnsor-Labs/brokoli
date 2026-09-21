@@ -40,6 +40,24 @@ func TestRowLevelRulesKeepEveryType(t *testing.T) {
 	}
 }
 
+func TestDeclaredOutputSchemaPreservesDecimalPrecision(t *testing.T) {
+	schema, err := declaredOutputSchema(map[string]interface{}{
+		"output_schema": map[string]interface{}{
+			"columns": []interface{}{map[string]interface{}{
+				"name": "amount",
+				"type": map[string]interface{}{"kind": "decimal", "precision": float64(18), "scale": float64(6)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("declaredOutputSchema() error = %v", err)
+	}
+	got := schema["amount"]
+	if got.Class != dbdialect.TypeDecimal || got.Precision != 18 || got.Scale != 6 {
+		t.Fatalf("amount = %v, want decimal(18,6)", got)
+	}
+}
+
 func TestDropAndRenameFollowTheColumns(t *testing.T) {
 	dropped := applyRuleToSchema(
 		TransformRule{Type: "drop_columns", Columns: []string{"city", "is_admin"}}, srcSchema())

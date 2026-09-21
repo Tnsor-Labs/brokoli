@@ -42,8 +42,12 @@ func declaredOutputSchema(config map[string]interface{}) (columnSchema, error) {
 			ct.Class = dbdialect.TypeBool
 		case "int64":
 			ct.Class, ct.Bits = dbdialect.TypeInt, 64
-		case "float64", "decimal":
+		case "float64":
 			ct.Class, ct.Bits = dbdialect.TypeFloat, 64
+		case "decimal":
+			ct.Class = dbdialect.TypeDecimal
+			ct.Precision = declaredSchemaInt(typ, "precision")
+			ct.Scale = declaredSchemaInt(typ, "scale")
 		case "string", "date", "timestamp", "duration", "enum":
 			ct.Class = dbdialect.TypeText
 		case "bytes":
@@ -54,6 +58,19 @@ func declaredOutputSchema(config map[string]interface{}) (columnSchema, error) {
 		out[name] = ct
 	}
 	return out, nil
+}
+
+func declaredSchemaInt(typ map[string]interface{}, key string) int {
+	switch value := typ[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
 }
 
 // Carrying a column's real type across the node boundary, so a sink_db with
