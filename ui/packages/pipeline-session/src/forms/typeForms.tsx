@@ -585,6 +585,8 @@ function SinkDb({ ctx, nodes, edges }: TypeFormProps) {
   const fromSqlGenerate = edges.some(
     (e) => e.to === ctx.node.id && nodes.find((n) => n.id === e.from)?.type === 'sql_generate',
   )
+  const input = edges.find((edge) => edge.to === ctx.node.id)
+  const inputSchema = input ? outputSchemaForNode(input.from, nodes, edges) : undefined
   const mode = str(ctx.get('mode')) || 'append'
   return (
     <>
@@ -620,6 +622,7 @@ function SinkDb({ ctx, nodes, edges }: TypeFormProps) {
             label="Key columns"
             required
             placeholder="id"
+            schema={inputSchema}
             hint="Rows with the same key are updated instead of inserted. ClickHouse does not support upsert."
           />
         )}

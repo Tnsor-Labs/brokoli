@@ -178,24 +178,32 @@ export function CheckField({ ctx, name, label, description }: { ctx: FormCtx; na
 }
 
 /** Comma-separated list stored as string[]. */
-export function ListField({ ctx, name, label, placeholder, hint, required }: { ctx: FormCtx; name: string; label: string; placeholder?: string; hint?: ReactNode; required?: boolean }) {
+export function ListField({ ctx, name, label, placeholder, hint, required, schema }: { ctx: FormCtx; name: string; label: string; placeholder?: string; hint?: ReactNode; required?: boolean; schema?: DatasetSchema }) {
   const stored = ctx.get(name)
   const joined = Array.isArray(stored) ? stored.join(', ') : str(stored)
   const [text, setText] = useState(joined)
   useEffect(() => setText((t) => (split(t).join(', ') === joined ? t : joined)), [joined])
+  const values = split(text)
+  const known = new Set(schema?.columns.map((column) => column.name))
+  const missing = schema ? values.filter((value) => !known.has(value)) : []
+  const listId = `${ctx.node.id}-${name}-columns`
   return (
-    <Field label={label} hint={hint ?? 'Separate names with commas.'} required={required} error={required && !split(text).length ? 'Required' : undefined}>
-      <Input
-        value={text}
-        mono
-        placeholder={placeholder}
-        onChange={(e) => {
-          setText(e.target.value)
-          const list = split(e.target.value)
-          ctx.set({ [name]: list.length ? list : undefined }, `field:${ctx.node.id}:${name}`)
-        }}
-      />
-    </Field>
+    <>
+      <Field label={label} hint={missing.length ? undefined : hint ?? 'Separate names with commas.'} required={required} error={required && !values.length ? 'Required' : missing.length ? `Unknown column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}` : undefined}>
+        <Input
+          value={text}
+          mono
+          placeholder={placeholder}
+          list={schema ? listId : undefined}
+          onChange={(e) => {
+            setText(e.target.value)
+            const next = split(e.target.value)
+            ctx.set({ [name]: next.length ? next : undefined }, `field:${ctx.node.id}:${name}`)
+          }}
+        />
+      </Field>
+      {schema && <datalist id={listId}>{schema.columns.map((column) => <option key={column.name} value={column.name} />)}</datalist>}
+    </>
   )
 }
 
