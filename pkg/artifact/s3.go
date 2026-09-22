@@ -50,6 +50,8 @@ type S3StoreConfig struct {
 	// Ignored when CredentialsProvider is set.
 	AccessKeyID     string
 	SecretAccessKey string
+	// SessionToken is optional and is used with temporary access-key credentials.
+	SessionToken string
 
 	// CredentialsProvider, when set, takes precedence over AccessKeyID/
 	// SecretAccessKey and the default credential chain alike. This is a
@@ -102,6 +104,9 @@ func NewS3Store(ctx context.Context, cfg S3StoreConfig) (*S3Store, error) {
 	if cfg.Bucket == "" {
 		return nil, fmt.Errorf("artifact: s3 bucket is required")
 	}
+	if cfg.SessionToken != "" && (cfg.AccessKeyID == "" || cfg.SecretAccessKey == "") {
+		return nil, fmt.Errorf("artifact: s3 session token requires access key and secret access key")
+	}
 
 	var loadOpts []func(*awsconfig.LoadOptions) error
 	if cfg.Region != "" {
@@ -112,7 +117,7 @@ func NewS3Store(ctx context.Context, cfg S3StoreConfig) (*S3Store, error) {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(cfg.CredentialsProvider))
 	case cfg.AccessKeyID != "":
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken),
 		))
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)

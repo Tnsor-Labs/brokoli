@@ -35,6 +35,7 @@ func sharedBlobStoreFromEnv() artifact.Store {
 		Endpoint:        os.Getenv("BROKOLI_BLOB_S3_ENDPOINT"),
 		AccessKeyID:     os.Getenv("BROKOLI_BLOB_S3_ACCESS_KEY_ID"),
 		SecretAccessKey: os.Getenv("BROKOLI_BLOB_S3_SECRET_ACCESS_KEY"),
+		SessionToken:    os.Getenv("BROKOLI_BLOB_S3_SESSION_TOKEN"),
 	}
 	if v, err := strconv.ParseBool(os.Getenv("BROKOLI_BLOB_S3_PATH_STYLE")); err == nil {
 		cfg.UsePathStyle = v

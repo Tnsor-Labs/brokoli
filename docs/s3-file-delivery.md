@@ -37,12 +37,14 @@ are a JSON object:
 | `region` | yes | The AWS region used for request signing. |
 | `access_key` | no | Access key for static credentials. Omit both credential keys to use the worker's AWS credential chain. |
 | `secret_key` | no | Secret key paired with `access_key`. |
+| `session_token` | no | Temporary-session token paired with `access_key` and `secret_key`, such as an AWS STS token. |
 | `endpoint` | no | Custom S3-compatible endpoint, such as MinIO. Omit for AWS S3. |
 | `use_path_style` | no | Use `endpoint/bucket/key` addressing. Usually `true` for S3-compatible services. |
 | `max_download_bytes` | no | Maximum source download size in bytes. Defaults to 10 GiB. |
 
-`access_key` and `secret_key` must be provided together. Credentials are
-resolved per connection and are not written to logs. The connection test uses
+`access_key` and `secret_key` must be provided together. `session_token`, when
+present, also requires both static credential fields. Credentials are resolved
+per connection and are not written to logs. The connection test uses
 the same authenticated AWS SDK client as file execution and checks the bucket
 with `HeadBucket`.
 
@@ -162,3 +164,27 @@ multi-tenant deployment.
   lifecycle behavior are part of this OSS connector.
 - Managed Strata storage and tenant-isolated artifact lifecycle remain
   Enterprise responsibilities.
+
+## Provider compatibility checks
+
+The engine includes a provider-neutral integration smoke test. It runs only
+when configured with a pre-created test bucket, so it can safely target hosted
+providers as well as local MinIO:
+
+```sh
+BROKOLI_TEST_S3_PROVIDER=minio \
+BROKOLI_TEST_S3_ENDPOINT=http://127.0.0.1:9000 \
+BROKOLI_TEST_S3_BUCKET=brokoli-compat \
+BROKOLI_TEST_S3_ACCESS_KEY=brokoli-test \
+BROKOLI_TEST_S3_SECRET_KEY=brokoli-test-secret \
+BROKOLI_TEST_S3_PATH_STYLE=true \
+BROKOLI_OUTBOUND_ALLOW_LOOPBACK=true \
+go test ./engine -run TestS3FileProviderCompatibility -v
+```
+
+Set `BROKOLI_TEST_S3_PROVIDER` to `aws`, `r2`, `wasabi`, `b2`, `ceph`, or
+another provider label. `BROKOLI_TEST_S3_REGION` and
+`BROKOLI_TEST_S3_SESSION_TOKEN` are available for provider-specific regions
+and temporary credentials. The check performs `HeadBucket`, upload,
+`HeadObject`, and download through the same client used by file nodes. The
+MinIO integration test separately exercises a large multipart upload.
