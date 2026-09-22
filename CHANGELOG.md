@@ -11,6 +11,147 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-22
+
+> **Behaviour change:** a database node handed a Snowflake connection is
+> now refused by name. Snowflake has no driver in this build; previously
+> the connection built a URI that reached a driver which could not serve
+> it, and the failure named neither the connection nor the real reason.
+> The connection type itself still exists and still stores credentials.
+
+> **Behaviour change:** `count_distinct` in the bounded-memory streaming
+> aggregate path now matches batch execution, including null handling.
+> A pipeline that aggregated a large dataset through the streaming path
+> may report a different, and correct, distinct count than it did before.
+
+### Added
+
+- **Dataset schemas are a first-class contract** (#691, #694 to #699,
+  #701, #703 to #720) -- @hc12r. A pipeline can declare what a dataset
+  looks like, in a portable descriptor (`brokoli.dataset-schema/v1`,
+  published at `docs/schema/dataset-schema-v1.json` with positive and
+  negative conformance fixtures) built on the ADR-032 BPTD types:
+  ordered columns, scalar and decimal types with precision and scale,
+  nullability, enum, array, map and record descriptors, and a
+  `additional_columns` policy of `closed` or open.
+
+  The declaration is enforced at runtime, for materialized and streamed
+  datasets alike. A node whose output is missing a declared column now
+  fails naming the columns that are missing; under a `closed` schema,
+  undeclared columns and a changed column order fail too. This is the
+  point of the feature: before it, a source that quietly stopped
+  returning a column produced a narrower dataset and a green run.
+
+  Declared schemas propagate. Joins carry column types through the
+  collision planner, transforms carry renamed, dropped, added and
+  aggregated fields, code-node `output_schema` survives dynamic
+  expansion, and dataset map, dataset filter, condition and wait nodes
+  pass schemas through. A union of incompatible inputs is refused rather
+  than guessed. Decimal declarations map to the engine's exact decimal
+  type, so precision and scale survive into sink table creation.
+
+  The editor gained a schema editor on file, API and database sources,
+  column completion and missing-column validation in transforms, quality
+  checks, aggregates and database sink upsert keys, join collision
+  controls with a preview of the declared output columns, runtime schema
+  snapshots (columns, types, null percentages) on a node run, and failed
+  node runs that name the missing column or join key and list what was
+  available.
+
+- **Explicit join collision policy** (#691, #694, #706, #707) --
+  @hc12r. When both sides of a join carry the same column name, the
+  policy is now stated rather than implied: `prefix` (the default, and
+  what the engine did before), `error`, or `alias` with stable
+  right-side aliases and recursive prefix avoidance. One output-schema
+  planner now serves both execution and column lineage, so what the
+  editor previews and what the run produces come from the same code.
+  When both upstream schemas are declared, join keys are validated for
+  presence and type compatibility, so a typo fails instead of being
+  hidden by the runtime's unknown-column fallback.
+
+- **Native filter, project and aggregate operators** (#692, #700 to
+  #702, #708, #722) -- @hc12r. Language-neutral relational operators
+  with a versioned predicate and `case_when` evaluator, carried through
+  both SDKs. Filters push down into SQL only where the predicate is
+  provably equivalent, and unsafe shapes are refused rather than
+  approximated. Expression output types are inferred from declared
+  input types, including decimals, and stay unknown when a result is
+  mixed or unsupported.
+
+- **API execution profiles** (#693, #721) -- @hc12r. A `source_api`
+  node can carry a versioned execution-profile marker
+  (`docs/schema/execution-profile-v1.json`) beside a fully expanded
+  policy: timeout, retries and backoff, requests per second, maximum
+  concurrency, retry scope and checkpoint interval. Core deliberately
+  does not prescribe profile names, so an organization can define its
+  own as long as it emits the same shape with every value explicit; a
+  profile that leaves any of them implicit is rejected, because a
+  profile is only portable when it carries the whole policy. A `strict`
+  profile also refuses concurrency against a sequential pagination
+  strategy (`cursor`, `next_link`, `link_header`), which cannot honour
+  it. Planner explanations show the effective policy.
+
+- **SQL Server connector** (#681, #688, #724) -- @hc12r. The pure-Go
+  `go-mssqldb` driver is compiled in and registered, connection tests go
+  through `DetectDriver` and an authenticated ping rather than a port
+  probe, and SQL Server is usable by database nodes again. Cross
+  compilation stays clean (`CGO_ENABLED=0` for linux/amd64 and
+  windows/arm64), and CI runs an environment-gated smoke test against a
+  real server.
+
+- **Customer-owned S3 for file nodes** (#538, #688, #725, #726) --
+  @hc12r. `source_file` and `sink_file` can read and write through an S3
+  connection, with endpoint options for S3-compatible providers and
+  optional `session_token` temporary credentials, which the shared
+  artifact store accepts as well. Documented in `docs/s3-file-delivery.md`
+  with Python and TypeScript examples, and covered by MinIO integration
+  tests that run through the real runner in CI.
+
+- **The installer verifies what it downloaded** (#689) -- @hc12r.
+  `install.sh` checks the archive against the release's `checksums.txt`
+  and refuses on a mismatch, a missing entry, a missing checksums file,
+  or no SHA-256 tool available. Before this it installed whatever it
+  received.
+
+### Changed
+
+- **The connection catalogue no longer claims coverage it does not
+  have** (#680, #723) -- @hc12r. `IsDatabase` is now separate from
+  `BuildsURI`, because a transport such as HTTP, SFTP or S3 has a URI
+  without being something a database node can use. Redshift and
+  ClickHouse connection tests run through their real drivers instead of
+  checking that a port accepts a TCP connection, unsupported database
+  types are refused by name, and Snowflake is out of the node-usable
+  catalogue until it has a driver. Tracked in #688.
+
+- **ADR-016 no longer claims plugin upgrade in place shipped** (#679)
+  -- @hc12r. It was never built; #511 tracks it.
+
+### Fixed
+
+- **`count_distinct` disagreed with itself between execution paths**
+  (#692, #722) -- @hc12r. The bounded-memory streaming aggregate counted
+  distinct values differently from batch execution, including how it
+  treated nulls and canonical value identity. Same pipeline, same data,
+  different answer depending on which path the dataset took.
+
+- **Decimal precision was lost on the way to a sink** (#704, #705) --
+  @hc12r. A decimal declared with precision and scale reached the
+  engine's generic numeric type, so a created table did not carry the
+  exact type that was asked for.
+
+- **Schemas did not survive code-node expansion** (#703) -- @hc12r. A
+  declared `output_schema` was dropped when a code node expanded
+  dynamically, so downstream nodes saw an undeclared dataset.
+
+- **`install.sh` could not install anything on Alpine** (#690) --
+  @hc12r. busybox `wget`, which is the `wget` on Alpine, rejects
+  `--max-redirect` and `--show-progress`; both are gone, and the
+  `Location:` header is matched by field rather than line start.
+  `scripts/install_test.sh` now runs the real installer offline under
+  dash, bash and busybox against a fake release with stubbed `curl` and
+  `wget`, 25 checks, wired into the Security workflow.
+
 ## [0.11.32] - 2026-09-18
 
 > **Breaking change for out-of-tree extensions:**
