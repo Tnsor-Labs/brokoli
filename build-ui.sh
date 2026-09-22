@@ -26,4 +26,16 @@ npm run build            # builds @brokoli/community to ui/apps/community/dist
 rm -rf "$DIST"
 mkdir -p "$DIST"
 cp -r "$ROOT/ui/apps/community/dist/." "$DIST/"
+
+# An index.html on its own is not a UI: the bundle has to carry the assets
+# that page asks for. This is the check the committed placeholder would
+# have failed for as long as it existed.
+bash "$ROOT/scripts/check-ui-bundle.sh" "$DIST" || exit 1
+
+# web/dist is otherwise gitignored, and .gitkeep is the one tracked file
+# in it, there so //go:embed all:dist compiles in a checkout that has not
+# built the UI. The rm -rf above takes it with the rest, so put it back:
+# without this, every build leaves the tree dirty with a deleted file.
+touch "$DIST/.gitkeep"
+
 echo "✓ web/dist populated from the React community UI"

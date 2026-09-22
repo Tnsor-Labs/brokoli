@@ -306,10 +306,17 @@ var serveCmd = &cobra.Command{
 		if UIOverride != nil {
 			uiFS = UIOverride
 			log.Println("Serving enterprise UI")
-		} else if distFS, err := fs.Sub(web.Dist, "dist"); err == nil {
-			if _, err := fs.Stat(distFS, "index.html"); err == nil {
-				uiFS = distFS
+		} else if bundled, built := web.Built(); bundled != nil {
+			// Built() distinguishes a real bundle from the placeholder.
+			// The check here used to be "does dist/index.html exist",
+			// which was always true: a built index.html was committed
+			// while its assets were gitignored, so this logged "Serving
+			// embedded UI" and served a blank screen.
+			uiFS = bundled
+			if built {
 				log.Println("Serving embedded UI")
+			} else {
+				log.Println("WARNING: this binary has no web UI bundle (build-ui.sh was not run before it was compiled); serving a placeholder page. The API is unaffected.")
 			}
 		}
 

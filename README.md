@@ -94,9 +94,13 @@ The smallest working example is also in [`examples/hello-world.py`](examples/hel
 ### From Source
 
 ```bash
-cd ui && npm install && npm run build && cd ..
+bash build-ui.sh                        # builds the React UI onto web/dist
 go build -o brokoli . && ./brokoli serve
 ```
+
+`build-ui.sh` is the step that places the built UI on the embed target.
+Building in `ui/` alone leaves it in `ui/apps/community/dist`, and the
+binary then starts with no UI and says so on its first page.
 
 ---
 

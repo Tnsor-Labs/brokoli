@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#08090a" />
+    <title>Brokoli: UI not built</title>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #08090a;
+        color: #e8e8e6;
+        font: 15px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      main { max-width: 34rem; padding: 2rem; }
+      h1 { font-size: 1.125rem; font-weight: 600; margin: 0 0 1rem; }
+      p { margin: 0 0 1rem; color: #a5a5a0; }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9375rem;
+        background: #141517;
+        border: 1px solid #26272b;
+        border-radius: 4px;
+        padding: 0.125rem 0.375rem;
+        color: #e8e8e6;
+      }
+      pre {
+        background: #141517;
+        border: 1px solid #26272b;
+        border-radius: 6px;
+        padding: 0.875rem 1rem;
+        overflow-x: auto;
+        color: #e8e8e6;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>This binary was built without the web UI.</h1>
+      <p>
+        The server is running normally and the API, the CLI and the SDKs all
+        work against it. Only the web interface is missing:
+        <code>web/dist</code> held no built bundle when this binary was
+        compiled, so there was nothing to embed.
+      </p>
+      <p>Build the UI onto the embed target, then compile again:</p>
+      <pre>bash build-ui.sh
+go build -o brokoli .</pre>
+      <p>
+        Released binaries and container images always carry the UI; the
+        release build refuses to publish one that does not. A binary built
+        with <code>go install</code>, or from a clone where
+        <code>build-ui.sh</code> has not run, shows this page.
+      </p>
+    </main>
+  </body>
+</html>
