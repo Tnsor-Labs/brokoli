@@ -223,17 +223,26 @@ func (c *Connection) hostPort(defaultPort int) string {
 	return c.Host
 }
 
-// BuildsURI reports whether this connection type has a URI representation the
-// engine can hand to a driver. Types in the connection catalog that have no
-// engine driver (BigQuery, Databricks, Oracle, and the object stores) return
-// false: callers must not fabricate a URI for them, because a bare hostname
-// reaches the Postgres driver as a malformed DSN and the failure names neither
-// the connection nor the real reason.
+// BuildsURI reports whether this connection type has a URI representation.
+// This includes transports such as HTTP, SFTP, and S3; it does not claim that
+// the URI can be handed to a database driver.
 func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
 		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse,
 		ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsDatabase reports whether this connection type has a database driver in
+// this build. Keep this separate from BuildsURI: API and file transports also
+// have URI representations, but database nodes must refuse them by name.
+func (c *Connection) IsDatabase() bool {
+	switch c.Type {
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse:
 		return true
 	default:
 		return false

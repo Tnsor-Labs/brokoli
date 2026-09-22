@@ -147,7 +147,7 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		// the node's own uri untouched makes the failure say so; fabricating one
 		// from the bare hostname used to hand the Postgres driver a malformed
 		// DSN, losing the port, database, and credentials on the way.
-		if !conn.BuildsURI() {
+		if !conn.IsDatabase() {
 			msg := "conn_id %q is type %q, which has no database driver in this build; the node's own uri is used unchanged, and the run will fail against it if there is none"
 			args := []interface{}{connID, conn.Type}
 			log.Printf("[conn-resolver] WARNING: "+msg, args...)

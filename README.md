@@ -112,7 +112,7 @@ go build -o brokoli . && ./brokoli serve
 
 **Explainable operations.** Live run status and log streaming over WebSocket, physical execution plans, run evidence, artifacts, profiling, a run calendar heatmap, and cross-pipeline lineage.
 
-**Secrets and connections.** AES-256-GCM encryption at rest, 7 connection types (Postgres, MySQL, SQLite, HTTP, SFTP, S3, Generic), typed variables with `${var.key}` resolution in any config field.
+**Secrets and connections.** AES-256-GCM encryption at rest, 7 connection types (Postgres, MySQL, SQLite, HTTP, SFTP, S3 for connection testing only, Generic), typed variables with `${var.key}` resolution in any config field.
 
 **Authentication.** httpOnly cookie sessions, JWT auth, API key support, role-based access (admin/editor/viewer).
 
