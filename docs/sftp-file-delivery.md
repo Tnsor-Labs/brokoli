@@ -11,6 +11,9 @@ format a file node reads or writes locally works over SFTP too. The
 design is recorded in
 [ADR-040](adr/040-remote-file-locations-for-file-nodes.md).
 
+For customer-owned S3 buckets, see [Reading and writing files in
+customer-owned S3](s3-file-delivery.md).
+
 - [1. Create the connection](#1-create-the-connection)
 - [2. Get the server's host key](#2-get-the-servers-host-key)
 - [3. Test the connection](#3-test-the-connection)

@@ -235,3 +235,11 @@ func (c *s3FileClient) upload(ctx context.Context, key string, write func(io.Wri
 	}
 	return counted.n, nil
 }
+
+func s3StagedFilename(key string) string {
+	extension := filepath.Ext(key)
+	if extension == "" || len(extension) > 16 || strings.ContainsAny(extension, `/\\`) {
+		return "download"
+	}
+	return "download" + extension
+}
