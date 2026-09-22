@@ -33,7 +33,12 @@ go.work.sum
 
 # Build output
 ui/dist/
-web/dist/assets/
+# build-ui.sh writes the whole of web/dist; none of it is committed.
+# .gitkeep is tracked only so //go:embed all:dist compiles in a checkout
+# that has not built the UI. A committed index.html here shipped in the
+# module with its assets ignored, so any source build served a blank page.
+web/dist/*
+!web/dist/.gitkeep
 
 .todo
 
