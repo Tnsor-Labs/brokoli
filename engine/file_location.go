@@ -272,7 +272,7 @@ func (r *Runner) sourceFileLocal(ctx context.Context, node models.Node, path str
 			return "", nil, true, fmt.Errorf("source_file: %w", err)
 		}
 		cleanup = func() { _ = os.RemoveAll(dir) }
-		local = filepath.Join(dir, "download")
+		local = filepath.Join(dir, s3StagedFilename(path))
 		n, err := client.download(ctx, path, local)
 		if err != nil {
 			cleanup()

@@ -212,7 +212,7 @@ existing connection resolution, which reaches the control plane.
 - Pipelines can deliver files to, and collect files from, SFTP servers
   in every format the file nodes support.
 - The connection test means what it says.
-- The seam in section 7 is where the next remote store (S3) plugs in.
+- The seam in section 7 is where S3 plugs in as the next remote file location.
 
 ### Negative
 
@@ -225,7 +225,7 @@ existing connection resolution, which reaches the control plane.
 
 ### Deferred
 
-- S3 and other remote stores through the same seam.
+- Other remote stores through the same seam.
 - Picking up files by pattern or wildcard, and acting on files after
   pickup (moving or deleting them).
 - FTPS.
