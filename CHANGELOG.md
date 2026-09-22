@@ -11,6 +11,47 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-22
+
+### Fixed
+
+- **A binary built from source served a blank page and reported
+  success** (#728) -- @hc12r. `web/dist/index.html` was a real built page
+  committed to the repository, while `.gitignore` excluded
+  `web/dist/assets/`. Both arrived on 2026-04-07 in one commit that set
+  out to solve a real problem, `//go:embed` needing a file to match so
+  module consumers could compile; committing a built page answered it,
+  and shipped a broken one. The published module therefore carried a page
+  asking the browser for two asset files that were not in it, and any
+  binary compiled without running `build-ui.sh` embedded that page,
+  logged `Serving embedded UI`, and served a shell whose script and
+  stylesheet 404. Nothing said the UI was missing.
+
+  This reached three real paths. `go install
+  github.com/Tnsor-Labs/brokoli@latest` produced such a binary, because
+  the module contains the committed `index.html` and none of the assets.
+  The README's own "From Source" steps did too: `cd ui && npm run build`
+  writes `ui/apps/community/dist`, and only `build-ui.sh` places the
+  result on the embed target, so following the documented instructions
+  gave a blank page. And a contributor building locally hit the same
+  thing, which is the opposite of what CONTRIBUTING promises about
+  running the whole product on a laptop.
+
+  Release tarballs and container images were never affected: the release
+  workflow builds the UI first and refuses to publish without it.
+
+  Now nothing under `web/dist` is committed. `web/dist/.gitkeep` is
+  tracked only so `//go:embed all:dist` compiles in a checkout that has
+  not built the UI, and `build-ui.sh` restores it after it wipes the
+  directory, so a build leaves the tree clean. A binary with no bundle
+  serves `web/unbuilt/index.html`, a self-contained page that says the
+  UI was not built into it and gives the command, and the server logs a
+  warning instead of announcing success. `scripts/check-ui-bundle.sh`
+  verifies that a built bundle carries every asset its `index.html`
+  references, and refuses a page that references nothing at all;
+  `build-ui.sh` and the release workflow both call it. The README now
+  documents `build-ui.sh` as the source build step.
+
 ## [0.12.0] - 2026-09-22
 
 > **Behaviour change:** a database node handed a Snowflake connection is
