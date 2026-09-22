@@ -28,6 +28,7 @@ type S3FileConfig struct {
 	Region           string
 	AccessKeyID      string
 	SecretAccessKey  string
+	SessionToken     string
 	Endpoint         string
 	UsePathStyle     bool
 	MaxDownloadBytes int64
@@ -52,6 +53,7 @@ func S3FileConfigFromExtra(extra string) (S3FileConfig, error) {
 		Region:           str("region"),
 		AccessKeyID:      str("access_key"),
 		SecretAccessKey:  str("secret_key"),
+		SessionToken:     str("session_token"),
 		Endpoint:         str("endpoint"),
 		MaxDownloadBytes: defaultS3DownloadLimit,
 	}
@@ -66,6 +68,9 @@ func S3FileConfigFromExtra(extra string) (S3FileConfig, error) {
 	}
 	if (cfg.AccessKeyID == "") != (cfg.SecretAccessKey == "") {
 		return S3FileConfig{}, fmt.Errorf("S3 access_key and secret_key must be provided together")
+	}
+	if cfg.SessionToken != "" && cfg.AccessKeyID == "" {
+		return S3FileConfig{}, fmt.Errorf("S3 session_token requires access_key and secret_key")
 	}
 	if value, ok := raw["use_path_style"]; ok {
 		switch v := value.(type) {
@@ -143,7 +148,7 @@ func newS3FileClient(ctx context.Context, conn *models.Connection) (*s3FileClien
 	}
 	if cfg.AccessKeyID != "" {
 		loadOpts = append(loadOpts, awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
+			credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, cfg.SessionToken),
 		))
 	}
 	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)

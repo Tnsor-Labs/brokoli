@@ -69,6 +69,7 @@ func TestS3StoreStaticPairStillWorks(t *testing.T) {
 		Region:          "us-east-1",
 		AccessKeyID:     "from-static",
 		SecretAccessKey: "s",
+		SessionToken:    "temporary-token",
 	})
 	if err != nil {
 		t.Fatalf("new store: %v", err)
@@ -79,5 +80,8 @@ func TestS3StoreStaticPairStillWorks(t *testing.T) {
 	}
 	if creds.AccessKeyID != "from-static" {
 		t.Fatalf("expected the static pair, got %q", creds.AccessKeyID)
+	}
+	if creds.SessionToken != "temporary-token" {
+		t.Fatalf("expected the temporary session token, got %q", creds.SessionToken)
 	}
 }

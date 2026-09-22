@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -27,11 +28,12 @@ func TestS3FileRoundTripMinIO(t *testing.T) {
 
 	accessKey := getenvDefault("BROKOLI_TEST_S3_ACCESS_KEY", "brokoli-test")
 	secretKey := getenvDefault("BROKOLI_TEST_S3_SECRET_KEY", "brokoli-test-secret")
+	sessionToken := os.Getenv("BROKOLI_TEST_S3_SESSION_TOKEN")
 	bucket := "brokoli-test-" + shortHash(t.Name())
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	conn := &models.Connection{Extra: fmt.Sprintf(`{"bucket":%q,"region":"us-east-1","access_key":%q,"secret_key":%q,"endpoint":%q,"use_path_style":true}`, bucket, accessKey, secretKey, endpoint)}
+	conn := &models.Connection{Extra: fmt.Sprintf(`{"bucket":%q,"region":"us-east-1","access_key":%q,"secret_key":%q,"session_token":%q,"endpoint":%q,"use_path_style":true}`, bucket, accessKey, secretKey, sessionToken, endpoint)}
 	client, err := newS3FileClient(ctx, conn)
 	if err != nil {
 		t.Fatalf("create S3 client: %v", err)
@@ -67,6 +69,74 @@ func TestS3FileRoundTripMinIO(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Fatalf("downloaded content hash = %s, want %s", hashBytes(got), hashBytes(content))
+	}
+}
+
+// TestS3FileProviderCompatibility runs the same real S3 API smoke test against
+// any provider configured by the environment. It intentionally does not create
+// or delete a bucket, so it is safe for shared AWS and hosted-provider buckets.
+// Set BROKOLI_TEST_S3_PROVIDER to a label such as aws, r2, wasabi, b2, ceph, or
+// minio to enable it, and provide a pre-created test bucket.
+func TestS3FileProviderCompatibility(t *testing.T) {
+	provider := os.Getenv("BROKOLI_TEST_S3_PROVIDER")
+	if provider == "" {
+		t.Skip("set BROKOLI_TEST_S3_PROVIDER to run provider compatibility checks")
+	}
+	endpoint := os.Getenv("BROKOLI_TEST_S3_ENDPOINT")
+	if endpoint == "" && provider != "aws" {
+		t.Fatal("BROKOLI_TEST_S3_ENDPOINT is required when provider compatibility checks are enabled")
+	}
+	bucket := os.Getenv("BROKOLI_TEST_S3_BUCKET")
+	if bucket == "" {
+		t.Fatal("BROKOLI_TEST_S3_BUCKET is required when provider compatibility checks are enabled")
+	}
+	pathStyle, err := strconv.ParseBool(getenvDefault("BROKOLI_TEST_S3_PATH_STYLE", "false"))
+	if err != nil {
+		t.Fatalf("BROKOLI_TEST_S3_PATH_STYLE: %v", err)
+	}
+	config := map[string]interface{}{
+		"bucket":         bucket,
+		"region":         getenvDefault("BROKOLI_TEST_S3_REGION", "us-east-1"),
+		"access_key":     getenvDefault("BROKOLI_TEST_S3_ACCESS_KEY", ""),
+		"secret_key":     getenvDefault("BROKOLI_TEST_S3_SECRET_KEY", ""),
+		"endpoint":       endpoint,
+		"use_path_style": pathStyle,
+	}
+	if token := os.Getenv("BROKOLI_TEST_S3_SESSION_TOKEN"); token != "" {
+		config["session_token"] = token
+	}
+	extra, err := json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	client, err := newS3FileClient(ctx, &models.Connection{Extra: string(extra)})
+	if err != nil {
+		t.Fatalf("%s: create S3 client: %v", provider, err)
+	}
+	if err := client.checkBucket(ctx); err != nil {
+		t.Fatalf("%s: check bucket: %v", provider, err)
+	}
+
+	key := "integration/provider-compatibility-" + shortHash(t.Name()) + ".txt"
+	want := []byte("provider compatibility check\n")
+	if _, err := client.upload(ctx, key, func(w io.Writer) error {
+		_, err := w.Write(want)
+		return err
+	}); err != nil {
+		t.Fatalf("%s: upload: %v", provider, err)
+	}
+	destination := filepath.Join(t.TempDir(), "provider.txt")
+	if _, err := client.download(ctx, key, destination); err != nil {
+		t.Fatalf("%s: download: %v", provider, err)
+	}
+	got, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s: downloaded content = %q, want %q", provider, got, want)
 	}
 }
 
