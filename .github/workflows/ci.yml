@@ -354,6 +354,35 @@ jobs:
           echo "=== Engine coverage ==="
           go tool cover -func=coverage-engine.out | tail -1
 
+  test-s3-minio:
+    name: Test (S3 / MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BROKOLI_TEST_S3_ENDPOINT: http://127.0.0.1:55536
+      BROKOLI_TEST_S3_ACCESS_KEY: brokoli-test
+      BROKOLI_TEST_S3_SECRET_KEY: brokoli-test-secret
+      # The Compose MinIO service is intentionally bound to loopback. The
+      # production default remains closed; this is an explicit CI-only opt-in.
+      BROKOLI_OUTBOUND_ALLOW_LOOPBACK: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MinIO
+        run: docker compose -f docker-compose.test.yml up -d --wait minio
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Test S3 file round trip
+        run: go test -v -count=1 ./engine -run '^TestS3FileRoundTripMinIO$'
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f docker-compose.test.yml down --volumes
+
   build:
     name: Build
     runs-on: ubuntu-latest

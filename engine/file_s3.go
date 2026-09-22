@@ -184,10 +184,10 @@ func (c *s3FileClient) download(ctx context.Context, key, destination string) (i
 	}
 	defer object.Body.Close() //nolint:errcheck
 
-	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return 0, fmt.Errorf("create S3 download directory: %w", err)
 	}
-	f, err := os.Create(destination)
+	f, err := os.Create(destination) // #nosec G304 -- destination is a fixed filename inside a process-created scratch directory.
 	if err != nil {
 		return 0, fmt.Errorf("create S3 download: %w", err)
 	}
@@ -234,11 +234,4 @@ func (c *s3FileClient) upload(ctx context.Context, key string, write func(io.Wri
 		return 0, fmt.Errorf("upload S3 object %q: %w", key, uploadErr)
 	}
 	return counted.n, nil
-}
-
-func s3FileExtension(key string) string {
-	if i := strings.LastIndexByte(key, '.'); i >= 0 {
-		return key[i:]
-	}
-	return ""
 }
