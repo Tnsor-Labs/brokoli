@@ -3,6 +3,7 @@ package engine
 import (
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -30,6 +31,33 @@ func TestConnectionResolver_EmptyConnID(t *testing.T) {
 	result := cr.Resolve(config, models.NodeTypeSourceDB)
 	if result["uri"] != "postgres://localhost/mydb" {
 		t.Error("expected config unchanged when conn_id is empty")
+	}
+}
+
+func TestConnectionResolver_DatabaseNodeRefusesTransportConnection(t *testing.T) {
+	dir := t.TempDir()
+	s, err := store.NewSQLiteStore(filepath.Join(dir, "conn-resolver.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.CreateConnection(&models.Connection{
+		ID: "conn-1", ConnID: "partner-files", Type: models.ConnTypeSFTP,
+		Host: "sftp.example.com", Port: 22, Login: "svc",
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cr := NewConnectionResolver(s, nil)
+	config := map[string]interface{}{"conn_id": "partner-files", "uri": "postgres://inline/db"}
+	resolved, warnings := cr.ResolveWithWarnings(config, models.NodeTypeSourceDB)
+	if resolved["uri"] != config["uri"] {
+		t.Fatalf("transport connection replaced database URI: %v", resolved["uri"])
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], `type "sftp"`) {
+		t.Fatalf("warnings = %v, want named refusal", warnings)
 	}
 }
 

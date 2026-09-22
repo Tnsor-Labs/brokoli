@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -357,13 +358,19 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 
 	switch c.Type {
 	case models.ConnTypePostgres:
-		result := testDBReal(ctx, "pgx", c.BuildURI())
+		result := testDBConnection(ctx, c.BuildURI())
+		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeRedshift:
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeMySQL:
-		result := testDBReal(ctx, "mysql", c.BuildURI())
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeSQLite:
-		result := testDBReal(ctx, "sqlite", c.Host)
+		result := testDBConnection(ctx, c.Host)
+		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeClickHouse:
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeHTTP:
 		result := testHTTPAuth(ctx, c, extra)
@@ -374,10 +381,32 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	case models.ConnTypeS3:
 		result := testS3(ctx, extra)
 		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
+		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
+		result := unsupportedDatabaseTest(c.Type)
+		writeJSON(w, http.StatusOK, result)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
 		result := testGeneric(ctx, c, extra)
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
+	driver, dsn, err := engine.DetectDriver(uri)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+	return testDBReal(ctx, driver, dsn)
+}
+
+func unsupportedDatabaseTest(kind models.ConnectionType) map[string]interface{} {
+	return map[string]interface{}{
+		"success": false,
+		"error":   fmt.Sprintf("%s has no driver in this build", kind),
 	}
 }
 

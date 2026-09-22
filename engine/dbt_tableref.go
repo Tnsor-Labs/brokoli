@@ -95,7 +95,7 @@ func (r *Runner) dbtOutputTableRef(
 	if err != nil {
 		return nil, err
 	}
-	if !conn.BuildsURI() {
+	if !conn.IsDatabase() {
 		return nil, fmt.Errorf(
 			"connection %q is type %q, which has no database driver in this build, so a downstream node "+
 				"could not read the relation dbt built", connID, conn.Type)
