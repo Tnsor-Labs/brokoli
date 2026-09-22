@@ -706,7 +706,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "Enterprise relational database for mission-critical workloads. No driver in this build: the connection test says so by name",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
 		{"type": "mssql", "label": "SQL Server", "category": "database", "icon": "connMssql",
-			"description": "Microsoft's enterprise relational database. No driver in this build: the connection test says so by name",
+			"description": "Microsoft's enterprise relational database with authenticated read and write support",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
 		{"type": "sqlite", "label": "SQLite", "category": "database", "icon": "connSqlite",
 			"description": "Zero-configuration embedded database in a single file",

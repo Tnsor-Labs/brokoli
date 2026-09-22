@@ -105,8 +105,19 @@ jobs:
           --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
           --health-interval 3s --health-timeout 5s --health-retries 30
           --ulimit nofile=262144:262144
-
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Brokoli!12345
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "bash -c '</dev/tcp/127.0.0.1/1433'"
+          --health-interval 5s --health-timeout 3s --health-retries 30
     env:
+      BROKOLI_TEST_SQLSERVER_URL: sqlserver://sa:Brokoli%2112345@localhost:1433?database=master&encrypt=disable
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
       BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
       # A second Postgres variable exists for the execution-attempt migration
@@ -227,6 +238,17 @@ jobs:
     # testing less, which is the failure this repo has been fixing all
     # week.
     services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Brokoli!12345
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "bash -c '</dev/tcp/127.0.0.1/1433'"
+          --health-interval 5s --health-timeout 3s --health-retries 30
       postgres:
         image: postgres:16-alpine
         env:
@@ -272,6 +294,7 @@ jobs:
           --ulimit nofile=262144:262144
 
     env:
+      BROKOLI_TEST_SQLSERVER_URL: sqlserver://sa:Brokoli%2112345@localhost:1433?database=master&encrypt=disable
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
       BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
       # A second Postgres variable exists for the execution-attempt migration

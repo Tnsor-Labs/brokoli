@@ -130,7 +130,7 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 // neither the connection nor the reason.
 func TestBuildsURICoversTheCatalog(t *testing.T) {
 	withURI := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse,
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
 		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 	withoutURI := []ConnectionType{
@@ -165,7 +165,7 @@ func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
 		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse,
 	}
 	withoutDriver := []ConnectionType{
-		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
+		ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
 		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 
