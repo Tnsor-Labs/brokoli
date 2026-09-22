@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Database, Globe, HardDrive, Plug, PlugZap } from 'lucide-react'
 import { connectionApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
-import { Badge, Button, Callout, Field, Input, Modal, SearchInput, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
+import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
 import { CATEGORY_LABEL, DEFAULT_PORT, DRIVER_OPTIONS, USABLE_BY_NODES, externalSecret, formFields, groupTypes } from './catalog'
 
 import { VendorIcon } from './VendorIcon'
@@ -20,12 +20,25 @@ type Draft = {
   login: string
   password: string
   extra: string
+  s3_endpoint: string
+  s3_use_path_style: boolean
   max_concurrent: string
 }
 
 const CONN_ID = /^[a-z0-9_-]+$/
 
 function draftFrom(c?: Connection, type = ''): Draft {
+  let s3Endpoint = ''
+  let s3UsePathStyle = false
+  if (c?.type === 's3' && c.extra) {
+    try {
+      const extra = JSON.parse(c.extra) as Record<string, unknown>
+      if (typeof extra.endpoint === 'string') s3Endpoint = extra.endpoint
+      if (extra.use_path_style === true) s3UsePathStyle = true
+    } catch {
+      // The server validates extra JSON; leave the structured fields empty if a legacy value cannot be parsed.
+    }
+  }
   return {
     conn_id: c?.conn_id ?? '',
     type: c?.type ?? type,
@@ -36,6 +49,8 @@ function draftFrom(c?: Connection, type = ''): Draft {
     login: c?.login ?? '',
     password: '',
     extra: '',
+    s3_endpoint: s3Endpoint,
+    s3_use_path_style: s3UsePathStyle,
     max_concurrent: c?.max_concurrent ? String(c.max_concurrent) : '',
   }
 }
@@ -129,7 +144,21 @@ export function ConnectionForm({
       max_concurrent: draft.max_concurrent ? Number(draft.max_concurrent) : 0,
     }
     if (draft.password && !passwordSecret) body.password = draft.password
-    if (draft.extra.trim() && !extraSecret) body.extra = draft.extra.trim()
+    if (draft.type === 's3' && !extraSecret) {
+      let extra: Record<string, unknown> = {}
+      if (draft.extra.trim()) {
+        try {
+          extra = JSON.parse(draft.extra) as Record<string, unknown>
+        } catch {
+          // The form is already invalid for malformed JSON.
+        }
+      }
+      if (draft.s3_endpoint.trim()) extra.endpoint = draft.s3_endpoint.trim()
+      else delete extra.endpoint
+      if (draft.s3_use_path_style) extra.use_path_style = true
+      else delete extra.use_path_style
+      body.extra = JSON.stringify(extra)
+    } else if (draft.extra.trim() && !extraSecret) body.extra = draft.extra.trim()
     // Echo stored refs: the server keeps an encrypted secret when its masked ref comes back, and an external ref stays authoritative.
     if (saved?.password_ref) body.password_ref = saved.password_ref
     if (saved?.extra_ref) body.extra_ref = saved.extra_ref
@@ -316,6 +345,19 @@ export function ConnectionForm({
                 <Textarea mono rows={4} value={draft.extra} placeholder={hint('extra') ?? (DRIVER_OPTIONS[draft.type] ? `{"${DRIVER_OPTIONS[draft.type][0]}": "..."}` : '{}')} onChange={(e) => set({ extra: e.target.value })} />
               </Field>
             ))}
+          {draft.type === 's3' && !extraSecret && (
+            <>
+              <Field label="S3 endpoint" hint="Leave empty for AWS S3. Set this for MinIO or another S3-compatible service.">
+                <Input mono value={draft.s3_endpoint} placeholder="https://objects.example.com" onChange={(e) => set({ s3_endpoint: e.target.value })} />
+              </Field>
+              <Checkbox
+                label="Use path-style addressing"
+                description="Required by many S3-compatible services, including local MinIO."
+                checked={draft.s3_use_path_style}
+                onChange={(e) => set({ s3_use_path_style: e.target.checked })}
+              />
+            </>
+          )}
           <Field label="Maximum concurrent nodes" error={problems.max_concurrent} hint="How many nodes may use this connection at once, per server. Empty or 0 means no limit; nodes over the limit wait.">
             <Input inputMode="numeric" value={draft.max_concurrent} placeholder="No limit" onChange={(e) => set({ max_concurrent: e.target.value.trim() })} />
           </Field>

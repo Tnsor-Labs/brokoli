@@ -16,8 +16,8 @@ export const DEFAULT_PORT: Record<string, string> = {
   http: '443 (80 means plain http)',
 }
 
-/** Types some node can actually use: database URIs, http for API nodes, sftp for file nodes (ADR-040). No node reads s3. */
-export const USABLE_BY_NODES = new Set(['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'clickhouse', 'http', 'sftp'])
+/** Types some node can actually use: database URIs, http for API nodes, and sftp/s3 for file nodes. */
+export const USABLE_BY_NODES = new Set(['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'clickhouse', 'http', 'sftp', 's3'])
 
 /** Driver options BuildURI reads from `extra` (models/connection.go allowlist). */
 export const DRIVER_OPTIONS: Record<string, string[]> = {
