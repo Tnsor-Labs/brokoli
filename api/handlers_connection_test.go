@@ -8,7 +8,6 @@ import (
 
 func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
 	for _, kind := range []models.ConnectionType{
-		models.ConnTypeMSSQL,
 		models.ConnTypeSnowflake,
 		models.ConnTypeOracle,
 		models.ConnTypeBigQuery,

@@ -55,6 +55,8 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 		{"redshift://u:p@h:5439/d", "pgx"},
 		{"mysql://u:p@tcp(h:3306)/d", "mysql"},
 		{"sqlite:///data/app.db", "sqlite"},
+		{"sqlserver://u:p@h:1433?database=d", "sqlserver"},
+		{"mssql://u:p@h:1433?database=d", "sqlserver"},
 	}
 	for _, tc := range supported {
 		got, _, err := DetectDriver(tc.uri)
@@ -69,8 +71,6 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 
 	for _, uri := range []string{
 		"snowflake://u:p@acct/db",
-		"sqlserver://u:p@h:1433?database=d",
-		"mssql://u:p@h:1433?database=d",
 	} {
 		_, _, err := DetectDriver(uri)
 		if err == nil {

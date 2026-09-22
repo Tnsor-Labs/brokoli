@@ -242,7 +242,7 @@ func (c *Connection) BuildsURI() bool {
 // have URI representations, but database nodes must refuse them by name.
 func (c *Connection) IsDatabase() bool {
 	switch c.Type {
-	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse:
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse:
 		return true
 	default:
 		return false

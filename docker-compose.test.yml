@@ -11,6 +11,7 @@
 #   export BROKOLI_TEST_MYSQL_URL='mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test'
 #   export BROKOLI_TEST_MYSQL_ROOT_URL='mysql://root:rootpw@tcp(localhost:55533)/brokoli_test'
 #   export BROKOLI_TEST_CLICKHOUSE_URL='clickhouse://brokoli:brokoli@localhost:55534/brokoli_test'
+#   export BROKOLI_TEST_SQLSERVER_URL='sqlserver://sa:Brokoli%2112345@localhost:55535?database=master&encrypt=disable'
 #   go test ./...
 #
 # Ports are in an unusual range so this does not collide with a database
@@ -90,4 +91,20 @@ services:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8123/ping"]
       interval: 3s
       timeout: 5s
+      retries: 30
+
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_SA_PASSWORD: "Brokoli!12345"
+      MSSQL_PID: Developer
+    ports:
+      - "55535:1433"
+    tmpfs:
+      - /var/opt/mssql
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/1433'"]
+      interval: 5s
+      timeout: 3s
       retries: 30
