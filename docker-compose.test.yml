@@ -12,6 +12,10 @@
 #   export BROKOLI_TEST_MYSQL_ROOT_URL='mysql://root:rootpw@tcp(localhost:55533)/brokoli_test'
 #   export BROKOLI_TEST_CLICKHOUSE_URL='clickhouse://brokoli:brokoli@localhost:55534/brokoli_test'
 #   export BROKOLI_TEST_SQLSERVER_URL='sqlserver://sa:Brokoli%2112345@localhost:55535?database=master&encrypt=disable'
+#   export BROKOLI_TEST_S3_ENDPOINT='http://localhost:55536'
+#   export BROKOLI_TEST_S3_ACCESS_KEY='brokoli-test'
+#   export BROKOLI_TEST_S3_SECRET_KEY='brokoli-test-secret'
+#   export BROKOLI_OUTBOUND_ALLOW_LOOPBACK='true' # MinIO is bound to localhost
 #   go test ./...
 #
 # Ports are in an unusual range so this does not collide with a database
@@ -107,4 +111,21 @@ services:
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/1433'"]
       interval: 5s
       timeout: 3s
+      retries: 30
+
+  minio:
+    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
+    environment:
+      MINIO_ROOT_USER: brokoli-test
+      MINIO_ROOT_PASSWORD: brokoli-test-secret
+    command: server /data --console-address ":9001"
+    ports:
+      - "55536:9000"
+      - "55537:9001"
+    tmpfs:
+      - /data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready"]
+      interval: 2s
+      timeout: 5s
       retries: 30

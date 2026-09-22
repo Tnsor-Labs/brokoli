@@ -540,61 +540,16 @@ func testSSH(ctx context.Context, c *models.Connection) map[string]interface{} {
 	}
 }
 
-// testS3 validates S3 credentials by checking the extra config.
+// testS3 validates S3 credentials against the configured bucket.
 func testS3(ctx context.Context, extra map[string]interface{}) map[string]interface{} {
 	if extra == nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No extra config — set bucket, region, access_key, secret_key",
-		}
+		return map[string]interface{}{"success": false, "error": "No extra config — set bucket and region"}
 	}
-
-	missing := []string{}
-	for _, field := range []string{"bucket", "region", "access_key", "secret_key"} {
-		if v, ok := extra[field].(string); !ok || v == "" {
-			missing = append(missing, field)
-		}
-	}
-	if len(missing) > 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Missing required S3 fields: %s", strings.Join(missing, ", ")),
-		}
-	}
-
-	// Try an HTTP HEAD to the S3 endpoint to verify the bucket exists and is reachable
-	bucket := extra["bucket"].(string)
-	region := extra["region"].(string)
-	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
-
-	req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-	client := netguard.Outbound().Client(5 * time.Second)
-	resp, err := client.Do(req)
+	err := engine.TestS3Connection(ctx, extra)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Cannot reach S3 bucket: %v", err),
-		}
+		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
-	defer resp.Body.Close()
-
-	// 200/301/307 = bucket exists, 403 = bucket exists but no public access (expected with private buckets)
-	if resp.StatusCode == 200 || resp.StatusCode == 301 || resp.StatusCode == 307 || resp.StatusCode == 403 {
-		return map[string]interface{}{
-			"success": true,
-			"message": fmt.Sprintf("S3 bucket '%s' in %s is reachable (HTTP %d). Full auth requires AWS SDK at runtime.", bucket, region, resp.StatusCode),
-		}
-	}
-	if resp.StatusCode == 404 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("S3 bucket '%s' not found in region %s", bucket, region),
-		}
-	}
-	return map[string]interface{}{
-		"success": false,
-		"error":   fmt.Sprintf("Unexpected S3 response: HTTP %d", resp.StatusCode),
-	}
+	return map[string]interface{}{"success": true, "message": "Authenticated successfully against the S3 bucket"}
 }
 
 // testGeneric tries the best test for a generic connection.

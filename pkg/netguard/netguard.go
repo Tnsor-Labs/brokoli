@@ -115,6 +115,9 @@ func Outbound() Policy {
 //	    Permit every RFC1918 and link-local address. Blunt, and unsafe
 //	    on a multi-tenant instance where a pipeline author is not
 //	    necessarily trusted with the cluster's internal network.
+//	BROKOLI_OUTBOUND_ALLOW_LOOPBACK=true
+//	    Permit loopback explicitly. Intended for local integration services;
+//	    it is separate from private-network access and remains off by default.
 //
 // An unparseable CIDR is skipped with a warning rather than silently
 // widening or narrowing what the operator asked for.
@@ -123,6 +126,11 @@ func FromEnv() Policy {
 	if v := os.Getenv("BROKOLI_OUTBOUND_ALLOW_PRIVATE"); v != "" {
 		if b, err := strconv.ParseBool(v); err == nil {
 			p.AllowPrivate = b
+		}
+	}
+	if v := os.Getenv("BROKOLI_OUTBOUND_ALLOW_LOOPBACK"); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			p.AllowLoopback = b
 		}
 	}
 	if v := os.Getenv("BROKOLI_OUTBOUND_ALLOW_CIDRS"); v != "" {

@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
@@ -143,7 +142,7 @@ func streamJSONArray(w io.Writer, next func() (*common.DataSet, error)) (int64, 
 // countingWriter tracks bytes written so the sink can report a size
 // without having the content in hand.
 type countingWriter struct {
-	w *bufio.Writer
+	w io.Writer
 	n int64
 }
 

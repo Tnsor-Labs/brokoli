@@ -38,8 +38,12 @@ func fileConnID(node models.Node) string {
 // remoteFileAssetID is a remote file's identity in lineage and logs. The
 // connection's id rather than its host, so drawing a graph never needs
 // credentials, and distinct from a local file with the same path.
+func remoteFileAssetURI(scheme, connID, path string) string {
+	return scheme + "://" + connID + "/" + path
+}
+
 func remoteFileAssetID(connID, path string) string {
-	return "sftp://" + connID + "/" + path
+	return remoteFileAssetURI("sftp", connID, path)
 }
 
 // SFTPConfig builds a client configuration from a resolved sftp
@@ -105,15 +109,12 @@ func SFTPConfig(conn *models.Connection) (sftpclient.Config, error) {
 // connection and ends a transfer in progress.
 func (r *Runner) openFileConnection(ctx context.Context, node models.Node) (*sftpclient.Client, error) {
 	connID := fileConnID(node)
-	if r.connResolver == nil {
-		return nil, fmt.Errorf("conn_id %q is set, but this runner has no connection store to resolve it", connID)
-	}
-	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
+	conn, err := r.resolveFileConnection(node)
 	if err != nil {
-		return nil, fmt.Errorf("conn_id %q: %w", connID, err)
+		return nil, err
 	}
 	if conn.Type != models.ConnTypeSFTP {
-		return nil, fmt.Errorf("conn_id %q is a %s connection; a file node reads and writes through an sftp connection", connID, conn.Type)
+		return nil, fmt.Errorf("conn_id %q is a %s connection; this path requires an sftp connection", connID, conn.Type)
 	}
 	cfg, err := SFTPConfig(conn)
 	if err != nil {
@@ -128,6 +129,18 @@ func (r *Runner) openFileConnection(ctx context.Context, node models.Node) (*sft
 		return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 	}
 	return client, nil
+}
+
+func (r *Runner) resolveFileConnection(node models.Node) (*models.Connection, error) {
+	connID := fileConnID(node)
+	if r.connResolver == nil {
+		return nil, fmt.Errorf("conn_id %q is set, but this runner has no connection store to resolve it", connID)
+	}
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
+	if err != nil {
+		return nil, fmt.Errorf("conn_id %q: %w", connID, err)
+	}
+	return conn, nil
 }
 
 // fileWrite says where a sink_file's output went.
@@ -170,8 +183,10 @@ func (r *Runner) writeFileOutput(ctx context.Context, node models.Node, path str
 	if err := write(counted); err != nil {
 		return fileWrite{}, err
 	}
-	if err := counted.w.Flush(); err != nil {
-		return fileWrite{}, fmt.Errorf("write %s: %w", path, err)
+	if flushable, ok := counted.w.(interface{ Flush() error }); ok {
+		if err := flushable.Flush(); err != nil {
+			return fileWrite{}, fmt.Errorf("write %s: %w", path, err)
+		}
 	}
 	if err := f.Close(); err != nil {
 		return fileWrite{}, fmt.Errorf("write %s: %w", path, err)
@@ -180,13 +195,31 @@ func (r *Runner) writeFileOutput(ctx context.Context, node models.Node, path str
 }
 
 func (r *Runner) deliverRemote(ctx context.Context, node models.Node, connID, path string, write func(io.Writer) error) (fileWrite, error) {
-	asset := remoteFileAssetID(connID, path)
+	asset := remoteFileAssetURI("sftp", connID, path)
 	if r.dryRun {
 		// A preview must never hand a partner a truncated file.
 		r.log(node.ID, models.LogLevelInfo, "Dry run: nothing delivered; a run would write %s", asset)
 		return fileWrite{where: asset, remote: true, skipped: true}, nil
 	}
 
+	conn, err := r.resolveFileConnection(node)
+	if err != nil {
+		return fileWrite{}, fmt.Errorf("sink_file: %w", err)
+	}
+	if conn.Type == models.ConnTypeS3 {
+		client, err := newS3FileClient(ctx, conn)
+		if err != nil {
+			return fileWrite{}, fmt.Errorf("sink_file: conn_id %q: %w", connID, err)
+		}
+		bytes, err := client.upload(ctx, path, write)
+		if err != nil {
+			return fileWrite{}, fmt.Errorf("sink_file: deliver %s: %w", remoteFileAssetURI("s3", connID, path), err)
+		}
+		return fileWrite{bytes: bytes, where: connID + ":" + path, remote: true}, nil
+	}
+	if conn.Type != models.ConnTypeSFTP {
+		return fileWrite{}, fmt.Errorf("sink_file: conn_id %q is a %s connection; file nodes support sftp and s3", connID, conn.Type)
+	}
 	client, err := r.openFileConnection(ctx, node)
 	if err != nil {
 		return fileWrite{}, fmt.Errorf("sink_file: %w", err)
@@ -225,6 +258,32 @@ func (r *Runner) sourceFileLocal(ctx context.Context, node models.Node, path str
 		return path, func() {}, false, nil
 	}
 
+	conn, err := r.resolveFileConnection(node)
+	if err != nil {
+		return "", nil, true, fmt.Errorf("source_file: %w", err)
+	}
+	if conn.Type == models.ConnTypeS3 {
+		client, err := newS3FileClient(ctx, conn)
+		if err != nil {
+			return "", nil, true, fmt.Errorf("source_file: conn_id %q: %w", connID, err)
+		}
+		dir, err := downloadScratchDir()
+		if err != nil {
+			return "", nil, true, fmt.Errorf("source_file: %w", err)
+		}
+		cleanup = func() { _ = os.RemoveAll(dir) }
+		local = filepath.Join(dir, "download"+s3FileExtension(path))
+		n, err := client.download(ctx, path, local)
+		if err != nil {
+			cleanup()
+			return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetURI("s3", connID, path), err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Fetched %s from %s (%s)", remoteFileAssetURI("s3", connID, path), connID, humanBytes(n))
+		return local, cleanup, true, nil
+	}
+	if conn.Type != models.ConnTypeSFTP {
+		return "", nil, true, fmt.Errorf("source_file: conn_id %q is a %s connection; file nodes support sftp and s3", connID, conn.Type)
+	}
 	client, err := r.openFileConnection(ctx, node)
 	if err != nil {
 		return "", nil, true, fmt.Errorf("source_file: %w", err)
@@ -243,7 +302,7 @@ func (r *Runner) sourceFileLocal(ctx context.Context, node models.Node, path str
 	remotePath, n, err := client.Download(path, local)
 	if err != nil {
 		cleanup()
-		return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetID(connID, path), err)
+		return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetURI("sftp", connID, path), err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Fetched %s from %s (%s)", remotePath, connID, humanBytes(n))
 	return local, cleanup, true, nil
