@@ -272,21 +272,43 @@ if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}"
   fi
 fi
 
-# -timeout 15m, not Go's 10m default: the engine package measured 581s
-# under -race on a loaded machine (Tnsor-Labs/brokoli#329), so the default
-# panics under load and blames whichever test held the baton. Matches
-# .github/workflows/ci.yml.
-stage "go test -race ./... (the long pole)"
+# -timeout 15m, not Go's 10m default: a package measured 581s under -race
+# on a loaded machine (Tnsor-Labs/brokoli#329), so the default panics
+# under load and blames whichever test held the baton.
+#
+# The engine package is excluded here and run below with its own budget,
+# because that is what .github/workflows/ci.yml does: CI runs
+# `$(go list ./... | grep -v '/engine$')` at 15m and gives engine a
+# separate job at -timeout 25m. This script ran everything at 15m while
+# its comment claimed CI parity, so preflight failed on a package CI was
+# giving 10 more minutes -- measured at 1037s (17m17s) on an idle
+# machine, which is over the old ceiling before any load at all. The
+# panic then named whichever test held the baton, which is the exact
+# misdiagnosis the 15m ceiling was introduced to stop.
+stage "go test -race ./... minus engine"
 # Full output to a log, not just a tail: piping straight into `tail`
 # throws away the "--- FAIL" lines and the failing package name, which
 # left a failure showing as a bare "FAIL" with nothing to act on.
-if ! go test -race -timeout 15m ./... > "$LOGDIR/tests.log" 2>&1; then
+if ! go test -race -timeout 15m $(go list ./... | grep -v '/engine$') > "$LOGDIR/tests.log" 2>&1; then
   grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests.log" | head -20
   fail tests "$LOGDIR/tests.log"
   exit 1
 fi
 tail -3 "$LOGDIR/tests.log"
 pass tests
+
+# ---- 5a1. the engine package, on CI's budget ----
+# Matches the dedicated "Test (engine)" job: -timeout 25m inside a 30m
+# job limit. It is the most expensive package in the repo and the only
+# one that has ever needed this.
+stage "go test -race ./engine/ (the long pole)"
+if ! go test -race -timeout 25m ./engine/ > "$LOGDIR/tests-engine.log" 2>&1; then
+  grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests-engine.log" | head -20
+  fail tests-engine "$LOGDIR/tests-engine.log"
+  exit 1
+fi
+tail -3 "$LOGDIR/tests-engine.log"
+pass tests-engine
 
 # ---- 5a2. code-node legacy-path leg (ADR-029 dual mode) ----
 # The pool is the default; the legacy spawn path stays green until its
