@@ -3,6 +3,7 @@ package engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,8 +14,13 @@ import (
 // Recovery records why it put a run back on the queue in run.Error, so an
 // operator looking at the pending run can see what happened to it. That
 // explanation describes the execution that was interrupted. Once the run
-// executes again and succeeds, it is no longer true of the run, and leaving
+// reaches a terminal state it is no longer true of the run, and leaving
 // it there made a green run render with a recovery error against it.
+//
+// The same applies when the second execution FAILS. The run then has its
+// own reason, and showing recovery's instead answers a question nobody
+// asked -- it reports the interruption that has since been handled rather
+// than the failure that just happened.
 //
 // The audit trail is not what was wrong, so it must survive: the
 // run.recovery_requeued event keeps the message, timestamped.
@@ -114,7 +120,15 @@ func TestRequeuedRunClearsTheRecoveryErrorWhenItSucceeds(t *testing.T) {
 // execution). What a failed re-queued run's row holds is recovery's own
 // message, and the failure reason lives on the terminal event. Both are
 // asserted below; neither may go missing.
-func TestRequeuedRunKeepsAnErrorWhenItFails(t *testing.T) {
+// A re-queued run that then fails reports ITS OWN failure, not the
+// recovery note it was carrying while pending.
+//
+// This test previously asserted the opposite. That was not a designed
+// behaviour: no terminal path ever wrote run.Error, so the stale recovery
+// message survived by default and the assertion pinned the residue. Its
+// own closing check said the reason must be "somewhere", with the
+// terminal event as the place -- which is the workaround, not the intent.
+func TestRequeuedRunThatFailsReportsItsOwnFailure(t *testing.T) {
 	eng, s, _ := newRequeueTestEngine(t)
 	dir := t.TempDir()
 	pipe := seedExecutableRequeuePipeline(t, s, dir, "p-requeue-failure")
@@ -150,8 +164,15 @@ func TestRequeuedRunKeepsAnErrorWhenItFails(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Error != recoveryMsg {
-		t.Errorf("failed run's error = %q, want recovery's explanation kept (%q)", stored.Error, recoveryMsg)
+	if stored.Error == recoveryMsg {
+		t.Errorf("failed run still reports recovery's explanation (%q) instead of why it just failed",
+			stored.Error)
+	}
+	if stored.Error == "" {
+		t.Error("failed run has no error at all")
+	}
+	if !strings.Contains(stored.Error, "source") {
+		t.Errorf("failed run's error = %q, want the node failure that actually ended it", stored.Error)
 	}
 
 	events, err := s.ListEventsByRun(run.ID)
@@ -165,6 +186,22 @@ func TestRequeuedRunKeepsAnErrorWhenItFails(t *testing.T) {
 		}
 	}
 	if terminalErr == "" {
-		t.Error("a failed run must say why it failed somewhere; the terminal event is where the reason lives")
+		t.Error("the terminal event must carry the failure reason too")
+	}
+	if terminalErr != stored.Error {
+		t.Errorf("terminal event error %q disagrees with the run's %q", terminalErr, stored.Error)
+	}
+
+	// Recovery's explanation is not lost, it has moved to where an audit
+	// trail belongs: its own timestamped event.
+	var requeueErr string
+	for _, ev := range events {
+		if ev.EventType == models.RunEventRecoveryRequeued {
+			requeueErr = ev.Payload.Error
+		}
+	}
+	if requeueErr != recoveryMsg {
+		t.Errorf("recovery's explanation was not preserved in run.recovery_requeued: got %q, want %q",
+			requeueErr, recoveryMsg)
 	}
 }

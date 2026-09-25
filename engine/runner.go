@@ -648,6 +648,13 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		}
 		r.run.Status = models.RunStatusFailed
 		r.run.FinishedAt = &finishTime
+		// The reason belongs on the run, not only in the event beside it.
+		// Without this the run persists as failed with an empty error and
+		// the only copy of the message is in run_events and the logs, so
+		// the run view has nothing to show. It is also what ProjectRun
+		// rebuilds from the terminal payload, and the row written here and
+		// the row rebuilt from events must not disagree.
+		r.run.Error = runErr.Error()
 		if err := r.store.UpdateRun(r.run); err != nil {
 			return r.run, fmt.Errorf("persist failed run: %w", err)
 		}
@@ -657,7 +664,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			Payload: models.RunEventPayload{
 				Status:     models.RunStatusFailed,
 				FinishedAt: r.run.FinishedAt,
-				Error:      runErr.Error(),
+				Error:      r.run.Error,
 			},
 		})
 		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
@@ -2074,6 +2081,10 @@ func (r *Runner) finalizeCancelled() error {
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusCancelled
 	r.run.FinishedAt = &finishTime
+	// A cancellation is a terminal outcome with a reason, and it is the
+	// projection's value for this run too (RunEventCancelled sets
+	// run.Error from this payload).
+	r.run.Error = "cancelled"
 	if err := r.store.UpdateRun(r.run); err != nil {
 		return fmt.Errorf("persist cancelled run: %w", err)
 	}
@@ -2083,7 +2094,7 @@ func (r *Runner) finalizeCancelled() error {
 		Payload: models.RunEventPayload{
 			Status:     models.RunStatusCancelled,
 			FinishedAt: r.run.FinishedAt,
-			Error:      "cancelled",
+			Error:      r.run.Error,
 		},
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
@@ -2109,6 +2120,9 @@ func (r *Runner) failRun(err error) error {
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusFailed
 	r.run.FinishedAt = &finishTime
+	// Same reason as the wave-loop exit above: the run carries why, so a
+	// reader of the run does not have to go to the event log for it.
+	r.run.Error = err.Error()
 	if persistErr := r.store.UpdateRun(r.run); persistErr != nil {
 		return fmt.Errorf("run failed: %v; persist failed run: %w", err, persistErr)
 	}
@@ -2118,7 +2132,7 @@ func (r *Runner) failRun(err error) error {
 		Payload: models.RunEventPayload{
 			Status:     models.RunStatusFailed,
 			FinishedAt: r.run.FinishedAt,
-			Error:      err.Error(),
+			Error:      r.run.Error,
 		},
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
