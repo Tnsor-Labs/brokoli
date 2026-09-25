@@ -1,0 +1,11 @@
+{
+  "identities": [
+    {
+      "name": "brokoli-test",
+      "credentials": [
+        { "accessKey": "brokoli-test", "secretKey": "brokoli-test-secret" }
+      ],
+      "actions": ["Admin", "Read", "Write", "List", "Tagging"]
+    }
+  ]
+}

@@ -1797,6 +1797,39 @@ func (r *Runner) checkNodeTypeGate(node models.Node) error {
 	return nil
 }
 
+// externalExecutorSinkTypes are the node types whose built-in handlers
+// return no dataset: each writes outward and hands the runner (nil, nil).
+// migrate is deliberately absent, since runMigrate returns a summary
+// dataset that downstream nodes can read.
+var externalExecutorSinkTypes = map[models.NodeType]bool{
+	models.NodeTypeSinkFile: true,
+	models.NodeTypeSinkDB:   true,
+	models.NodeTypeSinkAPI:  true,
+	models.NodeTypeNotify:   true,
+}
+
+// externalExecutorMustReturnData reports whether an external executor
+// handling this node has to hand back a dataset.
+//
+// A sink legitimately returns nothing. Everything else the engine would
+// have produced rows for must come back with rows, because the
+// alternative is a node that reports success while the next node reads
+// an empty dataset, which is the shape of a wrong answer rather than a
+// failure.
+//
+// A node carrying an explicit sink capability is exempt regardless of its
+// type, matching nodeCannotWriteExternally in recovery_requeue.go: a
+// declared capability is a stronger statement of intent than the type
+// name, and an SDK can tag a `code` node as a sink.
+func externalExecutorMustReturnData(n models.Node) bool {
+	for _, c := range n.Capabilities {
+		if c == models.CapabilitySink {
+			return false
+		}
+	}
+	return !externalExecutorSinkTypes[n.Type]
+}
+
 // execFencingGen is the fencing generation the caller already claimed
 // this node's own whole-node execution attempt (run, node.ID, "",
 // attempt) under, before calling here -- 0 and unused by every case
@@ -1846,9 +1879,28 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 				}
 			}
 			if result.OutputData != nil {
-				if ds, ok := result.OutputData.(*common.DataSet); ok {
-					return nodeExecutionResult{output: ds}, nil
+				ds, ok := result.OutputData.(*common.DataSet)
+				if !ok {
+					// Wrong type is always a bug in the executor, and it
+					// used to fall through to the empty success below,
+					// so the node reported success and the next node
+					// read nothing.
+					return nodeExecutionResult{}, fmt.Errorf(
+						"%s executor returned output of type %T for node %q; expected *common.DataSet",
+						exec.Name(), result.OutputData, node.ID)
 				}
+				return nodeExecutionResult{output: ds}, nil
+			}
+			if externalExecutorMustReturnData(node) {
+				// The executor claimed the node, ran without error, and
+				// handed back nothing. That used to be success with an
+				// empty dataset, so a pipeline continued on data that was
+				// never produced. Found the hard way: an executor that
+				// could not execute anything at all was indistinguishable
+				// from one whose node legitimately produced no rows.
+				return nodeExecutionResult{}, fmt.Errorf(
+					"%s executor returned no data for node %q (%s), which must produce a dataset; the executor accepted the node but produced nothing",
+					exec.Name(), node.ID, node.Type)
 			}
 			return nodeExecutionResult{}, nil
 		}

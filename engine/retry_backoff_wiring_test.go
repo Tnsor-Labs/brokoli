@@ -24,6 +24,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -46,7 +47,7 @@ func (e *countingFlakyExecutor) Execute(ctx extensions.ExecutionContext) (*exten
 	if callNum <= e.failFirstN {
 		return nil, fmt.Errorf("simulated failure on call %d", callNum)
 	}
-	return &extensions.ExecutionResult{}, nil
+	return &extensions.ExecutionResult{OutputData: &common.DataSet{Columns: []string{"ok"}, Rows: []common.DataRow{{"ok": true}}}}, nil
 }
 
 // runFlakyRetryPipeline runs source_file -> a flaky node configured with the
