@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -20,7 +21,7 @@ func (e *validationExecutor) CanHandle(nodeType string) bool {
 	return nodeType == e.nodeType
 }
 func (e *validationExecutor) Execute(extensions.ExecutionContext) (*extensions.ExecutionResult, error) {
-	return &extensions.ExecutionResult{}, nil
+	return &extensions.ExecutionResult{OutputData: &common.DataSet{Columns: []string{"ok"}, Rows: []common.DataRow{{"ok": true}}}}, nil
 }
 
 type declaringOnlyExecutor struct{}
@@ -28,7 +29,7 @@ type declaringOnlyExecutor struct{}
 func (*declaringOnlyExecutor) Name() string          { return "declarer" }
 func (*declaringOnlyExecutor) CanHandle(string) bool { return false }
 func (*declaringOnlyExecutor) Execute(extensions.ExecutionContext) (*extensions.ExecutionResult, error) {
-	return &extensions.ExecutionResult{}, nil
+	return &extensions.ExecutionResult{OutputData: &common.DataSet{Columns: []string{"ok"}, Rows: []common.DataRow{{"ok": true}}}}, nil
 }
 func (*declaringOnlyExecutor) DeclaredCapabilities(string) ([]string, bool) {
 	return []string{models.CapabilitySource}, true

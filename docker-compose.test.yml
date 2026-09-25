@@ -113,19 +113,45 @@ services:
       timeout: 3s
       retries: 30
 
+  # S3-compatible object store for the file-node and artifact-store tests.
+  #
+  # This was MinIO until 2026-09-25, when MinIO withdrew public access to
+  # its container images: the pinned tag, every other tag, Docker Hub,
+  # quay.io, ghcr.io and public.ecr.aws all answer "unauthorized" or
+  # "repository does not exist" to an anonymous pull. Nothing in this repo
+  # changed; the dependency did, and CI began failing in 8 seconds at the
+  # pull, before a single test ran.
+  #
+  # SeaweedFS rather than an S3 mock deliberately: it is a real object
+  # store and it ENFORCES the credentials below (an unauthenticated
+  # request gets 403). A mock that ignores auth would let these tests pass
+  # while the credential path went unexercised, which is the kind of
+  # quietly hollow gate this repo keeps finding and removing.
+  #
+  # The service keeps the name, port and credentials the old one had, so
+  # the workflow, the env vars and the tests are untouched.
   minio:
-    image: quay.io/minio/minio:RELEASE.2025-02-28T09-55-16Z
-    environment:
-      MINIO_ROOT_USER: brokoli-test
-      MINIO_ROOT_PASSWORD: brokoli-test-secret
-    command: server /data --console-address ":9001"
+    image: chrislusf/seaweedfs:3.80
+    command: server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data
+    volumes:
+      - ./testdata/seaweedfs-s3.json:/etc/seaweedfs/s3.json:ro
     ports:
-      - "55536:9000"
-      - "55537:9001"
+      - "55536:8333"
     tmpfs:
       - /data
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9000/minio/health/ready"]
-      interval: 2s
+      # 403 is the correct answer from an S3 endpoint to an unauthenticated
+      # GET, and it is the first moment the API is actually serving, so it
+      # is the readiness signal. `curl -f` would treat it as failure.
+      # wget, not curl: this image is minimal and has no curl, which the
+      # first version of this healthcheck discovered the slow way.
+      test:
+        - CMD-SHELL
+        - 'wget -q -S -O /dev/null http://127.0.0.1:8333/ 2>&1 | grep -qE "HTTP/1.1 (200|403)"'
+      # The master, volume and S3 components converge in about 35s on a
+      # cold runner, so the window is wider than MinIO's single process
+      # needed.
+      interval: 3s
       timeout: 5s
-      retries: 30
+      retries: 40
+      start_period: 10s
