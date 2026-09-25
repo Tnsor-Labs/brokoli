@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -232,7 +233,7 @@ func (g *gateExecutor) Execute(ctx extensions.ExecutionContext) (*extensions.Exe
 	close(g.startedCh)
 	select {
 	case <-g.proceed:
-		return &extensions.ExecutionResult{}, nil
+		return &extensions.ExecutionResult{OutputData: &common.DataSet{Columns: []string{"ok"}, Rows: []common.DataRow{{"ok": true}}}}, nil
 	case <-time.After(10 * time.Second):
 		return nil, errors.New("gate executor safety timeout")
 	}
@@ -251,7 +252,7 @@ func (x *tallyExecutor) Execute(extensions.ExecutionContext) (*extensions.Execut
 	x.mu.Lock()
 	x.calls++
 	x.mu.Unlock()
-	return &extensions.ExecutionResult{}, nil
+	return &extensions.ExecutionResult{OutputData: &common.DataSet{Columns: []string{"ok"}, Rows: []common.DataRow{{"ok": true}}}}, nil
 }
 
 func (x *tallyExecutor) count() int {
