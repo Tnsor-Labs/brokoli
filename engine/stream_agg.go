@@ -38,7 +38,7 @@ func planTransformRules(rules []TransformRule) (transformStreamPlan, bool) {
 		switch rule.Type {
 		case "rename_columns", "rename",
 			"add_column",
-			"filter_rows", "filter",
+			"filter_rows", "filter", "filter_native",
 			"apply_function", "function",
 			"replace_values", "replace",
 			"drop_columns", "drop":
@@ -58,7 +58,7 @@ func planTransformRules(rules []TransformRule) (transformStreamPlan, bool) {
 // aggAccumulator holds one aggregation function's running state for one
 // group. Every branch replicates computeAgg (transform.go) exactly,
 // including its edges: count counts ALL rows in the group regardless of
-// the column's value; sum/avg/min/max fold only values toAggFloat
+// the column's value; count_distinct skips nulls; sum/avg/min/max fold only values toAggFloat
 // accepts; min/max over zero accepted values return 0.0 (computeAgg's
 // `first` flag never clears, leaving the zero value).
 type aggAccumulator struct {
@@ -69,10 +69,17 @@ type aggAccumulator struct {
 	min      float64
 	max      float64
 	sawAny   bool
+	distinct map[string]struct{}
 }
 
 func (a *aggAccumulator) add(v interface{}) {
 	a.count++
+	if v != nil {
+		if a.distinct == nil {
+			a.distinct = make(map[string]struct{})
+		}
+		a.distinct[canonicalValueKey(v)] = struct{}{}
+	}
 	if f, ok := toAggFloat(v); ok {
 		a.sum += f
 		a.avgSum += f
@@ -91,6 +98,8 @@ func (a *aggAccumulator) result(fn string) interface{} {
 	switch strings.ToLower(fn) {
 	case "count":
 		return a.count
+	case "count_distinct":
+		return len(a.distinct)
 	case "sum":
 		return a.sum
 	case "avg":

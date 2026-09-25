@@ -1,14 +1,45 @@
 name: Security
 
 on:
+  # Runs on push to main as well as on pull requests, because not every
+  # commit that reaches main arrives through one. A GitHub advisory
+  # temporary private fork merges straight to main by design, which is
+  # exactly the flow used to fix an embargoed vulnerability, and main
+  # carries no branch protection. Before this trigger existed, the whole
+  # v0.11.10 security release ran zero security gates: the fix landed as
+  # a push and the changelog PR touched only **.md, which the path
+  # filters below correctly skip (#536).
+  #
+  # A gate here cannot block anything, since the merge has already
+  # happened. What it buys is a baseline regression surfacing in minutes
+  # instead of waiting up to a week for the Sunday run, and the state of
+  # the tree at release time being a matter of record. Blocking is what
+  # branch protection is for, and that is a separate decision.
+  push:
+    branches: [main]
+    paths-ignore:
+      # Keep in sync with ci.yml and the pull_request filter below;
+      # Actions has no YAML anchors, so all three lists are maintained by
+      # hand. docs/schema/** is deliberately NOT ignored. ui/** is the
+      # React UI workspace: no Go, so no security scan.
+      - "**.md"
+      - "docs/adr/**"
+      - "docs/rfcs/**"
+      - "ui/**"
   pull_request:
     branches: [main]
     paths-ignore:
       # Keep in sync with ci.yml: prose docs skip the pipeline;
-      # docs/schema/** deliberately still runs it.
+      # docs/schema/** deliberately still runs it. ui/** has no Go.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
+  # Manually runnable. Needed twice already: after a merge that skipped
+  # the gate, the only way to get a real verdict was to run gosec by hand
+  # on a laptop and paste the numbers into a PR. A verdict nobody else
+  # can reproduce is not much of a gate.
+  workflow_dispatch:
   schedule:
     - cron: "0 0 * * 0" # Weekly on Sunday
 
@@ -76,10 +107,27 @@ jobs:
           path: gosec-report.json
           if-no-files-found: error
 
+      - name: Vulnerability gate self-test
+        run: bash scripts/check-vulns_test.sh
+
+      - name: Installer checksum verification tests
+        # install.sh is what users pipe into a shell; these run it offline
+        # against a fake release and assert it refuses every archive it
+        # cannot verify, and installs nothing when it does.
+        run: bash scripts/install_test.sh
+
       - name: govulncheck (known vulnerabilities)
         run: |
+          # @latest on purpose: catching newly published advisories against
+          # pinned dependencies is the point of this step, and pinning the
+          # scanner would have hidden GO-2026-6452/6453 the day they landed.
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          govulncheck ./...
+          # Not a bare `govulncheck ./...`: an advisory with no upstream fix
+          # would make this job permanently red, and a gate that cannot go
+          # green is one that eventually gets deleted. The script keeps the
+          # same verdict (fail on anything this repo calls) while allowing
+          # audited, self-expiring exceptions in security/vuln-allowlist.json.
+          bash scripts/check-vulns.sh
 
   license-compliance:
     name: License Compliance

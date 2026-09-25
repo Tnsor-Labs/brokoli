@@ -163,7 +163,17 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	limits := codeexec.Resolve(nodeConfig)
 
 	cmd := exec.CommandContext(ctx, pythonPath, wrapperFile)
-	cmd.Env = append(os.Environ(),
+	// codeexec.WorkerEnv(), not os.Environ(): a code node runs
+	// pipeline-author code, and the server's own environment holds its
+	// database URL, signing secret and encryption key. The pooled
+	// executor (pkg/codeexec/worker.go) has always filtered; this path
+	// and the streamed one did not, so which of two interchangeable
+	// executors happened to run a script decided whether that script
+	// could read the deployment's secrets.
+	//
+	// BROKOLI_CODE_PASS_ENV opts names back in, the same knob the
+	// pooled path already documents.
+	cmd.Env = append(codeexec.WorkerEnv(),
 		"BROKED_SCRIPT="+scriptFile,
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),

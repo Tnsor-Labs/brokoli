@@ -153,11 +153,38 @@ type BlobStoreProvider interface {
 	Blobs() artifact.Store
 }
 
+// SharedBlobStoreProvider is implemented by an ArtifactStore whose blob
+// store another process can read.
+//
+// Separate from BlobStoreProvider because the two answer different
+// questions, and conflating them cost a live fleet a 404 (#572).
+// Blobs() is scratch space: written and read by the same run, in the
+// same process, and local disk is exactly right for it. This one is for
+// bytes a different pod will fetch, which is what a staged task input
+// is by construction.
+//
+// Optional and discovered by type assertion, like its sibling. A
+// deployment with no cross-pod store returns nil, and callers that need
+// one refuse by name rather than writing somewhere the reader cannot
+// look (ADR-038).
+type SharedBlobStoreProvider interface {
+	SharedBlobs() artifact.Store
+}
+
 // Blobs implements BlobStoreProvider, exposing the content-addressed store
 // beneath this one so callers that need to hold bytes by reference — a
 // source_api node fetching an artifact, for instance — can share the same
 // per-run storage and the same lifetime, including DeleteRunArtifacts.
 func (l *LocalDiskArtifactStore) Blobs() artifact.Store { return l.blobs }
+
+// SharedBlobs implements SharedBlobStoreProvider.
+//
+// Local disk qualifies here precisely because this store is the
+// single-node answer: one process writes and the same process reads, so
+// "another process can fetch it" is trivially satisfied. A distributed
+// deployment does not use this store (see SQLArtifactStore), which is
+// where the distinction earns its keep.
+func (l *LocalDiskArtifactStore) SharedBlobs() artifact.Store { return l.blobs }
 
 // instanceArtifactKey combines nodeID and instanceKey into the single
 // string manifestPath/artifactPath hash — deliberately producing the exact
@@ -383,10 +410,14 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string)
 	if manifest.Kind != artifact.KindDataset {
 		return nil, fmt.Errorf("read artifact: run=%s node=%s holds a %s, not a dataset", runID, nodeID, manifest.Kind)
 	}
+	// Whatever format the manifest names. This refused anything but
+	// NDJSON, which was true when only NDJSON could be written and became
+	// a bug the moment spill() started choosing Arrow (#521): a run whose
+	// output happened to be uniformly typed could not be replayed from
+	// its own artifact. decodeDatasetRef is the one place that knows the
+	// formats and OpenBatches is its streaming counterpart; a second
+	// opinion here is how the two would come to disagree.
 	ref := manifest.Dataset
-	if ref.Format != artifact.FormatNDJSON {
-		return nil, fmt.Errorf("read artifact: unsupported dataset format %q", ref.Format)
-	}
 
 	rc, err := l.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
@@ -401,7 +432,7 @@ func (l *LocalDiskArtifactStore) ReadArtifact(runID, nodeID, instanceKey string)
 	}
 	defer rc.Close()
 
-	ds, err := DecodeNDJSON(rc, ref.Columns)
+	ds, err := decodeDatasetRef(rc, ref)
 	if err != nil {
 		return nil, fmt.Errorf("read artifact: %w", err)
 	}

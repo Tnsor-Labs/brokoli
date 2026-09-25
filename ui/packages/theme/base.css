@@ -1,0 +1,116 @@
+@import './fonts.css';
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+html {
+  background: var(--bk-color-canvas);
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+  color: var(--bk-color-text);
+  background: var(--bk-color-canvas);
+  font: 400 var(--bk-text-base) / var(--bk-leading-normal) var(--bk-font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1,
+h2,
+h3,
+h4,
+p {
+  margin: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+code,
+pre,
+kbd {
+  font-family: var(--bk-font-mono);
+}
+
+::selection {
+  color: var(--bk-color-canvas);
+  background: var(--bk-color-accent);
+}
+
+::placeholder {
+  color: var(--bk-color-text-subtle);
+  opacity: 1;
+}
+
+/*
+ * One focus treatment for every interactive element. Keyboard focus is never
+ * suppressed; pointer focus is, because a ring on every click is noise.
+ */
+:focus-visible {
+  outline: 2px solid var(--bk-color-focus);
+  outline-offset: 2px;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 3px solid transparent;
+  border-radius: 99px;
+  background: var(--bk-color-border-strong) padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--bk-color-text-subtle) padding-box;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

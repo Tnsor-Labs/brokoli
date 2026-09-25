@@ -287,10 +287,10 @@ across outbound features.
 
 A repository-local `go/analysis` analyzer now enforces the outbound HTTP
 policy in CI. It detects direct `net/http.Client` construction, including
-type aliases and `new(http.Client)`, as well as `http.DefaultClient` and
-the package-level `Get`, `Head`, `Post`, and `PostForm` helpers. The check
-runs across all Go packages, excluding `pkg/netguard` itself, and ignores
-test files.
+type aliases and `new(http.Client)`, as well as `http.DefaultClient`,
+`http.DefaultTransport`, and the package-level `Get`, `Head`, `Post`, and
+`PostForm` helpers. The check runs across all Go packages, excluding
+`pkg/netguard` itself, and ignores test files.
 
 Intentional exceptions require a local
 `//netguard:allow <justification>` directive immediately above the
@@ -300,6 +300,58 @@ user's configured Brokoli server, the operator-configured Vault endpoint,
 and plugin index/archive downloads, which intentionally support private
 services and mirrors.
 
-The deferred CI enforcement for Decision B is now implemented. The
-`AllowLoopback: true` audit and Decision A store-layer tenant scoping
-remain follow-up work.
+The deferred CI enforcement for Decision B is now implemented. Decision A store-layer tenant scoping remains follow-up work.
+
+## Update, 2026-09-15: ranges the classifiers miss, and metadata endpoints
+
+`net.IP`'s classifiers (`IsPrivate`, `IsLinkLocalUnicast`) left several
+internal destinations reachable:
+
+- **Shared and reserved IPv4 ranges:** `0.0.0.0/8` (only `0.0.0.0`
+  itself was caught), `100.64.0.0/10` (carrier-grade NAT, which also
+  holds one cloud's metadata endpoint), `192.0.0.0/24`, and local-use
+  NAT64 `64:ff9b:1::/48`. They are now blocked like the private ranges,
+  and opened the same way (`AllowPrivate`, or an allowlisted CIDR).
+  Blocking `100.64.0.0/10` is a deliberate default: Tailscale gives
+  every device an address there, and those deployments allowlist it
+  (`BROKOLI_OUTBOUND_ALLOW_CIDRS=100.64.0.0/10`).
+- **IPv4 carried inside IPv6:** well-known NAT64 (`64:ff9b::/96`), 6to4
+  (`2002::/16`) and IPv4-compatible (`::a.b.c.d`) addresses are judged
+  as the IPv4 address they route to. `64:ff9b::a9fe:a9fe` reached
+  `169.254.169.254` on a NAT64 network while looking like a public IPv6
+  address.
+- **Metadata endpoints under `AllowPrivate`:** the decision above says the
+  metadata address is blocked "specifically", but `AllowPrivate` opened
+  all of link-local, and with it `169.254.169.254`. Metadata endpoints
+  (`169.254.169.254`, `169.254.170.2`, `fd00:ec2::254`,
+  `100.100.100.200`) now stay blocked under every broad allowance; only
+  an allowlisted CIDR naming that single address opens one.
+
+## Update — 2026-09-11: M2 `AllowLoopback` audit
+
+The audit found two production call sites that deliberately enable both
+`AllowLoopback` and `AllowPrivate`.
+
+`pkg/fetchers.RESTFetcher` uses its permissive `selfRefClient` only when a
+`source_api` URL was originally relative and was resolved against Brokoli's
+operator-configured server URL. Absolute pipeline-authored URLs continue to
+use `netguard.Outbound()` and remain subject to the configured outbound
+policy.
+
+`pkg/artifact.CapabilityStore` uses the same permissions when a remote worker
+contacts the Brokoli control plane named in its server-issued work order.
+Local and single-host deployments may use loopback, while Kubernetes
+deployments commonly expose the control plane through a private ClusterIP.
+That destination is deployment-controlled rather than an arbitrary URL
+supplied by a pipeline author.
+
+Both exceptions are therefore intentional and remain in place. No inherited
+or copied `AllowLoopback` exception was found. Focused regression tests cover
+the REST fetcher's private self-reference and the capability store's loopback
+control-plane path.
+
+The outbound analyzer was also extended to reject `http.DefaultTransport`, closing the remaining standard-library transport
+path that could issue a request without passing through `pkg/netguard`.
+
+The M2 audit is complete. Decision A's data-access-layer tenant scoping
+remains the outstanding structural work from this ADR.

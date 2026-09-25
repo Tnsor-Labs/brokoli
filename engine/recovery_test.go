@@ -48,6 +48,7 @@ func newRecoveryTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	// old package-level override did this globally; per-engine it cannot
 	// leak into anything else.
 	eng.RecoveryTransitionGracePeriod = 0
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	return eng, s
 }
 
@@ -409,6 +410,7 @@ func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 	// hold regardless of machine load, where the production default would
 	// also work but would tie the assertion to a 20s wall clock.
 	eng.RecoveryTransitionGracePeriod = time.Hour
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	seedRecoveryPipeline(t, s, "pipe-recent-transition")
 	run := seedOrphanedRun(t, s, "pipe-recent-transition", "run-recent-transition", models.RunStatusRunning)
 
@@ -455,6 +457,7 @@ func TestRecoverNonTerminalRunsDefersRecentNodeTransition(t *testing.T) {
 func TestRecoverNonTerminalRunsDefersLocalActiveRunner(t *testing.T) {
 	eng, s := newRecoveryTestEngine(t)
 	eng.RecoveryTransitionGracePeriod = 0
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 	seedRecoveryPipeline(t, s, "pipe-local-active")
 	run := seedOrphanedRun(t, s, "pipe-local-active", "run-local-active", models.RunStatusRunning)
 
@@ -501,6 +504,7 @@ func TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers(t *testing.T) 
 	// version used 30ms and a real sleep, which lost the race under load and
 	// failed on its own pass-1 assertion (Tnsor-Labs/brokoli#264).
 	eng.RecoveryTransitionGracePeriod = time.Hour
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 
 	seedRecoveryPipeline(t, s, "pipe-repeated-defer")
 	run := seedOrphanedRun(t, s, "pipe-repeated-defer", "run-repeated-defer", models.RunStatusRunning)
@@ -542,6 +546,7 @@ func TestRecoverNonTerminalRunsEventuallyFailsAfterRepeatedDefers(t *testing.T) 
 	// and offers no way to seed a backdated event.
 	backdateGenuineActivity(t, s, run.ID, time.Now().UTC().Add(-time.Minute))
 	eng.RecoveryTransitionGracePeriod = 10 * time.Second
+	eng.RecoveryMinRunAge = 0 // fixtures stamp StartedAt as now; these traces are of an already-dead process
 
 	summary2, err := eng.RecoverNonTerminalRuns()
 	if err != nil {

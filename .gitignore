@@ -33,7 +33,12 @@ go.work.sum
 
 # Build output
 ui/dist/
-web/dist/assets/
+# build-ui.sh writes the whole of web/dist; none of it is committed.
+# .gitkeep is tracked only so //go:embed all:dist compiles in a checkout
+# that has not built the UI. A committed index.html here shipped in the
+# module with its assets ignored, so any source build served a blank page.
+web/dist/*
+!web/dist/.gitkeep
 
 .todo
 
@@ -70,3 +75,19 @@ node_modules/
 # ships from here.
 __pycache__/
 *.pyc
+
+# Compiled binaries. `go build -o brokoli .` is what CI and CONTRIBUTING
+# both do, so the output lands at the repo root and is easy to commit by
+# accident -- brokolisql was tracked at 12MB before this.
+/brokoli
+/brokolisql
+
+# Scratch checkout of this repo vendored into a sibling for a local
+# build against unreleased core (a `replace` target). Never part of the
+# repo, and large enough that committing it once is painful to undo.
+_core/
+
+# Exports written by the local test fixture (scripts/devdata). A 100k-row
+# run produces about 55MB across the three formats, and the whole point
+# of the fixture is that people run it repeatedly.
+scripts/devdata/out/

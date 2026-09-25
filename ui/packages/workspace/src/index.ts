@@ -1,0 +1,1 @@
+export { workspaceRoutes } from './routes'

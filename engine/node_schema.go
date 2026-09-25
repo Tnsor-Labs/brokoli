@@ -1,11 +1,77 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 )
+
+// declaredOutputSchema converts the validated BPTD output contract into the
+// engine's compact runtime type map. Unknown/container types stay unknown but
+// the declared column names remain available to downstream nodes.
+func declaredOutputSchema(config map[string]interface{}) (columnSchema, error) {
+	raw, ok := config["output_schema"]
+	if !ok {
+		return nil, nil
+	}
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("output_schema must be an object")
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("output_schema columns must be an array")
+	}
+	out := make(columnSchema, len(columns))
+	for _, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := column["name"].(string)
+		typ, _ := column["type"].(map[string]interface{})
+		kind, _ := typ["kind"].(string)
+		if name == "" {
+			continue
+		}
+		ct := dbdialect.ColumnType{Nullable: true}
+		switch kind {
+		case "boolean":
+			ct.Class = dbdialect.TypeBool
+		case "int64":
+			ct.Class, ct.Bits = dbdialect.TypeInt, 64
+		case "float64":
+			ct.Class, ct.Bits = dbdialect.TypeFloat, 64
+		case "decimal":
+			ct.Class = dbdialect.TypeDecimal
+			ct.Precision = declaredSchemaInt(typ, "precision")
+			ct.Scale = declaredSchemaInt(typ, "scale")
+		case "string", "date", "timestamp", "duration", "enum":
+			ct.Class = dbdialect.TypeText
+		case "bytes":
+			ct.Class = dbdialect.TypeBytes
+		default:
+			ct.Class = dbdialect.TypeUnknown
+		}
+		out[name] = ct
+	}
+	return out, nil
+}
+
+func declaredSchemaInt(typ map[string]interface{}, key string) int {
+	switch value := typ[key].(type) {
+	case int:
+		return value
+	case int64:
+		return int(value)
+	case float64:
+		return int(value)
+	default:
+		return 0
+	}
+}
 
 // Carrying a column's real type across the node boundary, so a sink_db with
 // create_table stops guessing it from a sample of values (#363).
@@ -76,6 +142,38 @@ func (s columnSchema) clone() columnSchema {
 	return out
 }
 
+// joinSchema carries the two input schemas through the join's exact output
+// column plan. Unknown columns remain present as TypeUnknown so a later sink
+// can still infer only the columns whose types were not declared.
+func joinSchema(left, right columnSchema, leftColumns, rightColumns []string, leftKey, rightKey string, options JoinOptions) (columnSchema, error) {
+	if left == nil || right == nil {
+		return nil, nil
+	}
+	outColumns, rightOutputNames, err := planJoinColumns(leftColumns, rightColumns, leftKey, rightKey, options)
+	if err != nil {
+		return nil, err
+	}
+	out := make(columnSchema, len(outColumns))
+	for _, col := range leftColumns {
+		ct, ok := left[col]
+		if !ok {
+			ct = dbdialect.ColumnType{Class: dbdialect.TypeUnknown, Nullable: true}
+		}
+		out[col] = ct
+	}
+	for _, col := range rightColumns {
+		if col == rightKey && leftKey == rightKey {
+			continue
+		}
+		ct, ok := right[col]
+		if !ok {
+			ct = dbdialect.ColumnType{Class: dbdialect.TypeUnknown, Nullable: true}
+		}
+		out[rightOutputNames[col]] = ct
+	}
+	return out, nil
+}
+
 // applyRuleToSchema returns the schema of a transform rule's output, given
 // its input's.
 //
@@ -140,6 +238,15 @@ func applyRuleToSchema(rule TransformRule, in columnSchema) columnSchema {
 		delete(out, rule.Name)
 		return out
 
+	case "project", "projection":
+		out := make(columnSchema, len(rule.Projections))
+		for _, projection := range rule.Projections {
+			out[projection.Name] = expressionColumnType(projection.Expr, in)
+		}
+		return out
+	case "filter_native":
+		return in.clone()
+
 	case "apply_function", "function":
 		// Every function today (lower, upper, trim, title) writes a
 		// string back, so text would be accurate right now. Unknown is
@@ -165,6 +272,87 @@ func applyRuleToSchema(rule TransformRule, in columnSchema) columnSchema {
 		// Not a rule this function knows. Anything could have happened.
 		return nil
 	}
+}
+
+func expressionColumnType(expr map[string]interface{}, in columnSchema) dbdialect.ColumnType {
+	unknown := dbdialect.ColumnType{Class: dbdialect.TypeUnknown, Nullable: true}
+	op, _ := expr["op"].(string)
+	switch op {
+	case "column":
+		path, _ := expr["path"].([]interface{})
+		if len(path) == 1 {
+			name, _ := path[0].(string)
+			if ct, ok := in[name]; ok {
+				return ct
+			}
+		}
+		return unknown
+	case "literal":
+		switch expr["value"].(type) {
+		case bool:
+			return dbdialect.ColumnType{Class: dbdialect.TypeBool, Nullable: true}
+		case int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64:
+			return dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: true}
+		case float32, float64:
+			return dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}
+		case string:
+			return dbdialect.ColumnType{Class: dbdialect.TypeText, Nullable: true}
+		default:
+			return unknown
+		}
+	case "concat":
+		return dbdialect.ColumnType{Class: dbdialect.TypeText, Nullable: true}
+	case "eq", "neq", "lt", "lte", "gt", "gte", "and", "or", "not", "is_null":
+		return dbdialect.ColumnType{Class: dbdialect.TypeBool, Nullable: true}
+	case "add", "subtract", "multiply", "divide":
+		left := expressionColumnType(expressionChild(expr, "left"), in)
+		right := expressionColumnType(expressionChild(expr, "right"), in)
+		if left.Class == dbdialect.TypeDecimal && right.Class == dbdialect.TypeDecimal && op != "divide" {
+			return left
+		}
+		if left.Class == dbdialect.TypeFloat || right.Class == dbdialect.TypeFloat || op == "divide" {
+			return dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}
+		}
+		if left.Class == dbdialect.TypeInt && right.Class == dbdialect.TypeInt {
+			return dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: true}
+		}
+		return unknown
+	case "coalesce":
+		args, _ := expr["args"].([]interface{})
+		for _, raw := range args {
+			if child, ok := raw.(map[string]interface{}); ok {
+				ct := expressionColumnType(child, in)
+				if ct.Class != dbdialect.TypeUnknown {
+					return ct
+				}
+			}
+		}
+	case "case_when":
+		branches, _ := expr["branches"].([]interface{})
+		var result dbdialect.ColumnType
+		for _, raw := range branches {
+			branch, _ := raw.(map[string]interface{})
+			ct := expressionColumnType(expressionChild(branch, "then"), in)
+			if ct.Class == dbdialect.TypeUnknown {
+				return unknown
+			}
+			if result.Class == dbdialect.TypeUnknown || result.Class == 0 {
+				result = ct
+			} else if result.Class != ct.Class {
+				return unknown
+			}
+		}
+		elseType := expressionColumnType(expressionChild(expr, "else"), in)
+		if result.Class != 0 && result.Class == elseType.Class {
+			return result
+		}
+	}
+	return unknown
+}
+
+func expressionChild(expr map[string]interface{}, key string) map[string]interface{} {
+	child, _ := expr[key].(map[string]interface{})
+	return child
 }
 
 // aggregateSchema is the aggregate rule's effect, which is the only one that
@@ -198,6 +386,8 @@ func aggregateSchema(rule TransformRule, in columnSchema) columnSchema {
 		}
 		switch strings.ToLower(af.Function) {
 		case "count":
+			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
+		case "count_distinct":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
 		case "sum", "avg", "min", "max":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}

@@ -1,0 +1,276 @@
+.bk-login {
+  display: grid;
+  grid-template-columns: minmax(420px, 46%) 1fr;
+  min-height: 100%;
+  background: var(--bk-color-canvas);
+}
+.bk-login-single {
+  grid-template-columns: 1fr;
+}
+.bk-login-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  padding: 28px clamp(24px, 5vw, 64px);
+}
+.bk-login-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.bk-login-card {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  width: 100%;
+  max-width: 400px;
+  margin: auto;
+  padding: 48px 0;
+}
+.bk-login-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.bk-login-heading h1 {
+  font-size: var(--bk-text-3xl);
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: var(--bk-tracking-display);
+}
+.bk-login-heading p {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-md);
+  line-height: var(--bk-leading-normal);
+}
+.bk-login-loading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-sm);
+}
+.bk-login-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.bk-login-provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: var(--bk-control-lg);
+  border: 1px solid var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-md);
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-base);
+  font-weight: 500;
+  transition:
+    border-color var(--bk-duration-fast) var(--bk-ease),
+    background var(--bk-duration-fast) var(--bk-ease);
+}
+.bk-login-provider:hover {
+  border-color: var(--bk-color-border-hover);
+  background: var(--bk-color-hover);
+}
+.bk-login-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.bk-login-divider::before,
+.bk-login-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--bk-color-border);
+}
+.bk-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.bk-login-input {
+  height: var(--bk-control-lg);
+  font-size: var(--bk-text-base);
+}
+.bk-login-reveal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: var(--bk-radius-xs);
+  background: transparent;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.bk-login-reveal:hover {
+  color: var(--bk-color-text);
+}
+.bk-login-policy {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 12px;
+  margin: -4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.bk-login-policy li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.bk-login-policy li.is-met {
+  color: var(--bk-color-success);
+}
+.bk-login-submit {
+  width: 100%;
+  margin-top: 6px;
+}
+.bk-login-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bk-color-text-muted);
+  font: 400 var(--bk-text-xs) / 1 var(--bk-font-mono);
+}
+.bk-login-foot i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--bk-color-success);
+}
+.bk-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* Right-hand composition, after the landing hero and feature panels. */
+.bk-login-aside {
+  position: relative;
+  overflow: hidden;
+  border-left: 1px solid var(--bk-color-border);
+  background: linear-gradient(180deg, var(--bk-color-canvas-subtle), var(--bk-color-canvas) 80%);
+}
+.bk-login-grid {
+  position: absolute;
+  inset: 0;
+  opacity: 0.5;
+  background-image:
+    linear-gradient(var(--bk-color-border) 1px, transparent 1px),
+    linear-gradient(90deg, var(--bk-color-border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  mask-image: radial-gradient(ellipse at 50% 45%, black, transparent 75%);
+}
+.bk-login-aside-inner {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 56px;
+  height: 100%;
+  padding: 64px clamp(32px, 6vw, 96px);
+}
+.bk-login-display {
+  font-size: clamp(40px, 4.4vw, 68px);
+  font-weight: 500;
+  line-height: 0.96;
+  letter-spacing: -0.06em;
+}
+.bk-login-display span {
+  display: block;
+  color: var(--bk-color-text-muted);
+}
+.bk-login-diagram {
+  position: relative;
+  width: min(520px, 100%);
+  height: 220px;
+}
+.bk-login-links {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.bk-login-links path {
+  fill: none;
+  stroke: var(--bk-color-edge);
+  stroke-width: 1.3;
+  stroke-dasharray: 4 5;
+  vector-effect: non-scaling-stroke;
+}
+.bk-login-node {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  width: 176px;
+  height: 56px;
+  border: 1px solid var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-md);
+  background: var(--bk-color-surface-raised);
+}
+.bk-login-node.is-active {
+  border-color: var(--bk-color-accent-border);
+}
+.bk-login-node b {
+  display: grid;
+  place-items: center;
+  align-self: stretch;
+  width: 42px;
+  border-right: 1px solid var(--bk-color-border);
+  color: var(--bk-color-accent);
+  font: 500 var(--bk-text-2xs) / 1 var(--bk-font-mono);
+}
+.bk-login-node span {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-left: 10px;
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-xs);
+  font-weight: 500;
+}
+.bk-login-node small {
+  color: var(--bk-color-text-muted);
+  font: 400 var(--bk-text-2xs) / 1 var(--bk-font-mono);
+}
+.bk-login-proof {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 24px;
+  color: var(--bk-color-text-muted);
+  font: 400 var(--bk-text-2xs) / 1 var(--bk-font-mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.bk-login-proof span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.bk-login-proof span::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--bk-color-accent);
+}
+
+@media (max-width: 960px) {
+  .bk-login {
+    grid-template-columns: 1fr;
+  }
+  .bk-login-aside {
+    display: none;
+  }
+}

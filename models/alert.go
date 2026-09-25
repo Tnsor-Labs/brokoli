@@ -25,9 +25,35 @@ type Alert struct {
 	PipelineName string `json:"pipeline_name,omitempty"`
 	RunID        string `json:"run_id,omitempty"`
 
-	CreatedAt   time.Time  `json:"created_at"`
+	CreatedAt time.Time `json:"created_at"`
+	// ReadAt is per person, not per organization (brokoli-ee#242). It
+	// used to be a column on the alert, so one person marking an alert
+	// read marked it read for everyone.
 	ReadAt      *time.Time `json:"read_at,omitempty"`
 	DismissedAt *time.Time `json:"dismissed_at,omitempty"`
+
+	// Incident ownership (brokoli-ee#242). Unlike ReadAt these are
+	// properties of the failure rather than of the reader: exactly one
+	// person owns an incident at a time and the whole organization sees
+	// the same answer.
+	AssigneeUserID string     `json:"assignee_user_id,omitempty"`
+	AcknowledgedAt *time.Time `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy string     `json:"acknowledged_by,omitempty"`
+	ResolvedAt     *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy     string     `json:"resolved_by,omitempty"`
+}
+
+// AlertState reports where an alert sits in the incident lifecycle.
+// Derived rather than stored, so it cannot disagree with the timestamps.
+func (a *Alert) AlertState() string {
+	switch {
+	case a.ResolvedAt != nil:
+		return "resolved"
+	case a.AcknowledgedAt != nil:
+		return "acknowledged"
+	default:
+		return "open"
+	}
 }
 
 // Alert kinds. Deliberately an open set rather than a closed enum — new

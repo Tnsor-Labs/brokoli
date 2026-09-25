@@ -49,6 +49,14 @@ type Engine struct {
 	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
 	JobQueue      extensions.JobQueue             // nil = run in-process (default)
 
+	// Lineage emits run lifecycle events to an OpenLineage-compatible
+	// catalogue, with the datasets the run reads and writes.
+	//
+	// Nil is normal and means no emission. The community default is a
+	// no-op, so this is called unconditionally where it is set and the
+	// cost on a deployment without a catalogue is one nil check.
+	Lineage extensions.OpenLineageEmitter
+
 	// InstanceJobQueue (ADR-017, worker protocol v2 — proposed) opts a
 	// node's dynamic-expansion instances into remote dispatch: instead of
 	// executing an item in-process, the Runner enqueues a WorkOrder-bearing
@@ -170,7 +178,28 @@ type Engine struct {
 	// correctness property and what lets tests that touch it run in
 	// parallel (Tnsor-Labs/brokoli#264, #329).
 	RecoveryTransitionGracePeriod time.Duration
-	AttemptsReclaimed             int64
+
+	// RecoveryMinRunAge is how long a run is left alone after it starts,
+	// before recovery will consider adopting it at all.
+	//
+	// RecoveryTransitionGracePeriod above protects a run by its most
+	// recent EVENT, which is no protection during the window between a
+	// run starting and its first event becoming durable. An executor in
+	// another process (a remote pool worker, say) can be several hundred
+	// milliseconds into a node before the server sees anything at all,
+	// and recovery would read that as "never started" and hand the run to
+	// somebody else, running it twice. NewEngine sets it to
+	// defaultRecoveryMinRunAge; zero disables the guard, which is what a
+	// test asserting the "genuinely orphaned, act now" path wants.
+	RecoveryMinRunAge time.Duration
+
+	// ExternalRunClaim, when set, lets an embedder answer the one question
+	// recovery cannot answer from core's own tables: is this run owned by
+	// an executor this process cannot see? See ExternalRunClaimFunc. Nil
+	// in OSS, where the only executors are this process and the job queue,
+	// so behaviour is unchanged.
+	ExternalRunClaim  ExternalRunClaimFunc
+	AttemptsReclaimed int64
 
 	// The counters below fill the remaining metrics gaps named by
 	// Tnsor-Labs/brokoli#11: event append/replay (Tnsor-Labs/brokoli#6) and
@@ -324,6 +353,7 @@ func NewEngine(s store.Store) *Engine {
 		// because serve builds its resolver through the same constructor.
 		ConnResolver:                  NewConnectionResolver(s, nil),
 		RecoveryTransitionGracePeriod: defaultRecoveryTransitionGracePeriod,
+		RecoveryMinRunAge:             defaultRecoveryMinRunAge,
 		shutdown:                      make(chan struct{}),
 		eventCh:                       make(chan models.Event, eventBuf),
 		active:                        make(map[string]*Runner),
@@ -339,6 +369,12 @@ func NewEngine(s store.Store) *Engine {
 
 // ErrEngineClosed is returned by run dispatch after Close has been called.
 var ErrEngineClosed = errors.New("engine: closed")
+
+// ErrPipelineIsDraft is returned when something tries to run a pipeline
+// that is still a draft. A draft has not been through executable
+// validation, so running it is not merely discouraged, it is not
+// meaningfully possible (#107).
+var ErrPipelineIsDraft = errors.New("pipeline is a draft and cannot run until it is published")
 
 // closing reports whether Close has been called.
 func (e *Engine) closing() bool {
@@ -625,6 +661,18 @@ type RunOptions struct {
 	// the run. Both or neither; the scheduler is the only stamper today.
 	DataIntervalStart *time.Time
 	DataIntervalEnd   *time.Time
+	// TriggeredBy records what started the run and, when a person did,
+	// who (#241). Nil means not recorded, which is what every caller that
+	// has not been taught to fill it in produces -- honest, and different
+	// from claiming nobody started it.
+	//
+	// Separate from Trigger above, which cannot be widened: the partial
+	// unique index guarding scheduled dispatch keys on its values.
+	TriggeredBy *models.RunAttribution
+	// TypedParams is the ADR-032 typed run-parameter submission,
+	// validated against the pipeline's declarations. Nil for a pipeline
+	// that declares none.
+	TypedParams map[string]interface{}
 }
 
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
@@ -645,9 +693,31 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		return nil, fmt.Errorf("get pipeline: %w", err)
 	}
 
+	// A draft skips executable validation when it is saved, so it has to
+	// be unable to run at all: otherwise the flag would advertise a
+	// safety property it does not hold (#107).
+	//
+	// The refusal lives here rather than at each caller because every
+	// RunPipeline* variant funnels through this function. A guard per
+	// caller is a guard the next caller forgets.
+	if pipe.Draft {
+		return nil, ErrPipelineIsDraft
+	}
+
 	// Validate before running
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return nil, ve
+	}
+
+	// ADR-032: resolve typed parameters on the sync path too (webhook and
+	// other RunPipelineOpts callers). Same short-circuit as runPipelineAsync:
+	// a pipeline that declares none never pays for or is affected by this.
+	var resolvedParams map[string]interface{}
+	if len(pipe.Parameters) > 0 {
+		resolvedParams, err = taskinterface.ResolveParameters(pipe.Parameters, opts.TypedParams)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %v", ErrParameterResolution, err)
+		}
 	}
 
 	pipelineVersion, err := resolveRunPipelineVersion(e.store, pipe)
@@ -668,6 +738,7 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 			PipelineVersion:   pipelineVersion,
 			OrgID:             pipe.OrgID,
 			Params:            opts.Params,
+			Parameters:        resolvedParams,
 			Trigger:           opts.Trigger,
 			DataIntervalStart: opts.DataIntervalStart,
 			DataIntervalEnd:   opts.DataIntervalEnd,
@@ -675,6 +746,10 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		if err := e.store.CreateRun(blocked); err != nil {
 			return nil, fmt.Errorf("create blocked run: %w", err)
 		}
+		// A blocked run is still a run somebody asked for, and it is the
+		// one most likely to prompt "who triggered this and why did it
+		// not go?".
+		recordRunAttribution(e.store, blocked.ID, opts.TriggeredBy)
 		e.appendEvent(&models.RunEvent{
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
@@ -700,7 +775,9 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
 	runner.params = opts.Params
+	runner.parameters = resolvedParams
 	runner.trigger = opts.Trigger
+	runner.triggeredBy = opts.TriggeredBy
 	runner.intervalStart = opts.DataIntervalStart
 	runner.intervalEnd = opts.DataIntervalEnd
 
@@ -728,11 +805,20 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 			delete(e.active, runID)
 			e.mu.Unlock()
 		}()
+		// The catalogue hears about the run before it runs, so a run that
+		// never finishes is still visible as one that started. Reporting
+		// only on completion makes a hung pipeline indistinguishable from
+		// one nobody triggered.
+		startedAt := time.Now()
+		e.emitLineageStart(pipe, runID)
+
 		run, err := runner.Execute()
 		if err != nil {
 			atomic.AddInt64(&e.RunsFailed, 1)
+			e.emitLineageFail(pipe, runID, err.Error())
 		} else {
 			atomic.AddInt64(&e.RunsSucceeded, 1)
+			e.emitLineageComplete(pipe, runID, time.Since(startedAt).Milliseconds())
 		}
 		// Signal the caller first so the RunPipeline return latency does not include
 		// downstream trigger-mode fan-out. Fire dependents asynchronously — they'll
@@ -784,10 +870,18 @@ func (e *Engine) fireTriggerModeDependents(finished *models.Run) {
 		}
 		pid := sum.ID
 		e.goBG(func() {
-			if _, err := e.RunPipeline(pid); err != nil {
+			// #241: a dependency fan-out is its own kind. Nobody pressed
+			// anything and no schedule fired; an upstream pipeline
+			// finishing is what started this.
+			if _, err := e.RunPipelineOpts(pid, RunOptions{
+				TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindDependency},
+			}); err != nil {
 				// A refusal at shutdown is the mechanism working, not a
-				// failed fire worth a log line per dependent.
-				if errors.Is(err, ErrEngineClosed) {
+				// failed fire worth a log line per dependent. A draft
+				// dependent is the same: someone is still building it,
+				// and logging a failure on every upstream run would be
+				// noise that trains people to ignore this line.
+				if errors.Is(err, ErrEngineClosed) || errors.Is(err, ErrPipelineIsDraft) {
 					return
 				}
 				log.Printf("trigger-mode: fire failed for %s: %v", pid, err)
@@ -838,6 +932,8 @@ func (e *Engine) RunPipelineAsyncWithCapabilities(pipelineID string, requiredCap
 // pipeline-level JobQueue is configured. Enterprise WorkPool orchestration
 // uses this mode so the control-plane engine can dispatch physical WorkOrders
 // to the pool instead of handing the entire pipeline to one worker.
+// It returns before the run row exists; to attribute the run, use
+// RunPipelineAsyncLocalOpts instead of writing attribution afterwards.
 func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]string) (string, error) {
 	return e.runPipelineAsync(false, pipelineID, nil, nil, params...)
 }
@@ -845,17 +941,67 @@ func (e *Engine) RunPipelineAsyncLocal(pipelineID string, params ...map[string]s
 // RunPipelineAsyncLocalWithCapabilities starts a control-plane run whose
 // physical WorkOrders must be placed on workers advertising every requested
 // capability.
+// It returns before the run row exists; to attribute the run, use
+// RunPipelineAsyncLocalOpts instead of writing attribution afterwards.
 func (e *Engine) RunPipelineAsyncLocalWithCapabilities(pipelineID string, requiredCapabilities []string, params ...map[string]string) (string, error) {
 	return e.runPipelineAsync(false, pipelineID, requiredCapabilities, nil, params...)
 }
 
+// RunPipelineAsyncLocalOpts is the in-process path with the run's
+// provenance attached, and the only correct way to attribute a run started
+// there.
+//
+// The in-process path returns the run's ID BEFORE the run row exists: the
+// runner creates its own row inside Execute, on a goroutine started just
+// before the return. Anything keyed on the returned ID and written straight
+// away -- attribution, provenance, a tag -- races that goroutine. With
+// run_attribution's foreign key the write loses the race and is rejected;
+// before the key, it wrote an orphan row that the run later caught up with,
+// which worked by accident rather than by design.
+//
+// RunOptions.TriggeredBy reaches the runner, which records attribution
+// after its own CreateRun. That ordering is guaranteed; a caller's
+// after-the-fact write is not.
+func (e *Engine) RunPipelineAsyncLocalOpts(pipelineID string, requiredCapabilities []string, opts RunOptions) (string, error) {
+	return e.runPipelineAsyncOpts(false, pipelineID, requiredCapabilities, opts)
+}
+
+// RunPipelineAsyncOpts is RunPipelineAsyncWithParameters plus the run's
+// provenance (#241).
+//
+// A new method rather than another parameter on the existing four: the
+// comment on RunPipelineAsyncWithParameters explains why this family
+// grows by addition, and every existing caller keeps working with no
+// attribution, which is the honest result for a caller that does not
+// know who is asking.
+func (e *Engine) RunPipelineAsyncOpts(pipelineID string, opts RunOptions) (string, error) {
+	return e.runPipelineAsyncOpts(true, pipelineID, nil, opts)
+}
+
 func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredCapabilities []string, typedParams map[string]interface{}, params ...map[string]string) (string, error) {
+	opts := RunOptions{TypedParams: typedParams}
+	if len(params) > 0 && params[0] != nil {
+		opts.Params = params[0]
+	}
+	return e.runPipelineAsyncOpts(useJobQueue, pipelineID, requiredCapabilities, opts)
+}
+
+func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requiredCapabilities []string, opts RunOptions) (string, error) {
+	typedParams := opts.TypedParams
+	runParams := opts.Params
 	if e.closing() {
 		return "", ErrEngineClosed
 	}
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return "", fmt.Errorf("get pipeline: %w", err)
+	}
+
+	// See RunPipelineOpts: a draft skips validation on save, so it must
+	// not run. This path does its own load and its own validation rather
+	// than going through RunPipelineOpts, so it needs its own guard.
+	if pipe.Draft {
+		return "", ErrPipelineIsDraft
 	}
 
 	// Validate before running
@@ -895,12 +1041,13 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			PipelineVersion: pipelineVersion,
 			OrgID:           pipe.OrgID,
 		}
-		if len(params) > 0 && params[0] != nil {
-			blocked.Params = params[0]
+		if runParams != nil {
+			blocked.Params = runParams
 		}
 		if err := e.store.CreateRun(blocked); err != nil {
 			return "", fmt.Errorf("create blocked run: %w", err)
 		}
+		recordRunAttribution(e.store, blocked.ID, opts.TriggeredBy)
 		e.appendEvent(&models.RunEvent{
 			RunID:     blocked.ID,
 			EventType: models.RunEventCreated,
@@ -929,8 +1076,8 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			OrgID:           pipe.OrgID,
 			Parameters:      resolvedParams,
 		}
-		if len(params) > 0 && params[0] != nil {
-			accepted.Params = params[0]
+		if runParams != nil {
+			accepted.Params = runParams
 		}
 		createdEvent := &models.RunEvent{
 			RunID:     accepted.ID,
@@ -981,6 +1128,12 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 		}); err != nil {
 			return "", err
 		}
+		// Outside the transaction on purpose. The run and its outbox
+		// record must commit together for #7's reconcilability; a
+		// provenance row is not part of that guarantee, and failing the
+		// dispatch because it could not be written would trade an outage
+		// for a reporting gap.
+		recordRunAttribution(e.store, accepted.ID, opts.TriggeredBy)
 
 		job := extensions.RunJob{
 			ID:             runID,
@@ -990,8 +1143,8 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 			EnqueuedAt:     time.Now().UTC(),
 			IdempotencyKey: runID,
 		}
-		if len(params) > 0 && params[0] != nil {
-			job.Params = params[0]
+		if runParams != nil {
+			job.Params = runParams
 		}
 		job.RequiredCapabilities = append([]string(nil), requiredCapabilities...)
 		if err := e.JobQueue.Enqueue(job); err != nil {
@@ -1032,10 +1185,13 @@ func (e *Engine) runPipelineAsync(useJobQueue bool, pipelineID string, requiredC
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
-	if len(params) > 0 && params[0] != nil {
-		runner.params = params[0]
+	if runParams != nil {
+		runner.params = runParams
 	}
 	runner.parameters = resolvedParams
+	// #241: the async path creates its run inside the runner, so the
+	// provenance has to reach it the same way the trigger does.
+	runner.triggeredBy = opts.TriggeredBy
 	runner.dataCapIssuer = e.DataCapIssuer
 
 	runner.preRunID = runID
@@ -1096,6 +1252,13 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	pipe, err := e.store.GetPipeline(pipelineID)
 	if err != nil {
 		return e.failAcceptedRun(accepted, fmt.Errorf("get pipeline: %w", err))
+	}
+	// A pipeline can be turned back into a draft only by an admin editing
+	// the row directly, but a run already sitting on the queue would
+	// otherwise execute it. Fail the run rather than run unvalidated
+	// work.
+	if pipe.Draft {
+		return e.failAcceptedRun(accepted, ErrPipelineIsDraft)
 	}
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return e.failAcceptedRun(accepted, ve)
@@ -1166,6 +1329,14 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.metrics = e.newRunnerMetrics()
+	// Without this a WORKER's runner has no issuer, so a task input over
+	// the inline row cap is refused ("this server issues no data
+	// capabilities") instead of staged by reference -- in exactly the
+	// deployment where remote dispatch, and therefore that whole path,
+	// is the only thing that runs. runPipelineAsync sets it too; the two
+	// constructors must agree, which is what
+	// TestRunnerConstructorsPropagateTheSameEngineFields pins.
+	runner.dataCapIssuer = e.DataCapIssuer
 	runner.parentCtx = claimCtx
 
 	// Register the runner as active BEFORE waiting for a concurrency slot,
@@ -1403,6 +1574,133 @@ func (e *Engine) reusableOutcomes(pipe *models.Pipeline, oldRun *models.Run) (ma
 // snapshot, not whatever version happened to be live if oldRun itself had
 // no recorded version.
 func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
+	return e.resumeRun(runID, "")
+}
+
+// ResumeRunFromNode re-runs an earlier run from a node the operator chose,
+// re-executing that node and every node downstream of it while reusing
+// everything the earlier run already produced upstream of it.
+//
+// This is the "clear a task and it runs again, and so do its children"
+// shape, in this project's model rather than Airflow's. ADR-028 records
+// that re-doing a slice "must append a new attempt at that slice", and
+// rejects Airflow's clear-and-mutate outright because mutating history
+// contradicts the execution-attempt store's append-only choice. So this
+// appends a NEW run and leaves the run it came from exactly as it was:
+// lineage via models.Run.ResumedFromRunID, the same pointer an ordinary
+// resume sets, plus a durable models.RunEventResumedFromNode event on the
+// new run naming the node that was chosen.
+//
+// Unlike ResumeRun this accepts a run that SUCCEEDED. Re-running one
+// branch after fixing the query behind it is the ordinary reason to reach
+// for this, and refusing it would leave the operator editing the pipeline
+// and re-running the whole thing. resumeFromNodeStatusError says what is
+// refused and why.
+func (e *Engine) ResumeRunFromNode(runID, nodeID string) (*models.Run, error) {
+	if nodeID == "" {
+		return nil, fmt.Errorf("resume from node: a node id is required")
+	}
+	return e.resumeRun(runID, nodeID)
+}
+
+// resumeFromNodeStatusError refuses by name the run statuses a node-scoped
+// resume cannot act on, rather than returning a bare boolean the caller
+// has to translate.
+//
+// Terminal runs are accepted: success, failed and cancelled all left a
+// settled set of node outcomes behind, which is the whole input to
+// reusableOutcomes. The rest are refused for two distinct reasons, and the
+// messages keep them distinct: a live run has outcomes still in flight, so
+// reusing them would race whatever is still writing them, while a blocked
+// or skipped run never executed a node at all and so has nothing to resume
+// from.
+func resumeFromNodeStatusError(status models.RunStatus) error {
+	switch status {
+	case models.RunStatusSuccess, models.RunStatusFailed, models.RunStatusCancelled:
+		return nil
+	case models.RunStatusRunning, models.RunStatusPending, models.RunStatusWaiting:
+		return fmt.Errorf("cannot resume from a node while the run is still %s: let it finish or cancel it first, so the outcomes this resume reuses are settled", status)
+	case models.RunStatusBlocked, models.RunStatusSkipped:
+		return fmt.Errorf("cannot resume from a node in a %s run: it never executed a node, so there is no earlier outcome to resume from", status)
+	default:
+		return fmt.Errorf("cannot resume from a node in a run with status %s", status)
+	}
+}
+
+// descendantsInclusive returns the chosen node together with every node
+// reachable from it by following edge direction.
+//
+// Edges whose endpoints are not both in the node set are skipped, the same
+// way topoWaves builds its adjacency, so a dangling edge left by an edit
+// cannot pull in a node that is not there.
+//
+// seen doubles as the visited set and the result, which is what makes this
+// terminate on a cyclic graph and what makes a diamond correct: a node
+// reachable by two paths is enqueued once, not twice. Validate refuses
+// cycles at persistence, so the visited set is defence in depth rather
+// than a case expected to arise.
+func descendantsInclusive(pipe *models.Pipeline, start string) map[string]bool {
+	known := make(map[string]bool, len(pipe.Nodes))
+	for _, n := range pipe.Nodes {
+		known[n.ID] = true
+	}
+	adj := make(map[string][]string)
+	for _, edge := range pipe.Edges {
+		if !known[edge.From] || !known[edge.To] {
+			continue
+		}
+		adj[edge.From] = append(adj[edge.From], edge.To)
+	}
+
+	seen := map[string]bool{start: true}
+	queue := []string{start}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		for _, next := range adj[current] {
+			if seen[next] {
+				continue
+			}
+			seen[next] = true
+			queue = append(queue, next)
+		}
+	}
+	return seen
+}
+
+// dropReusedOutcomes removes every node in reRun from the three maps
+// reusableOutcomes produced, so those nodes execute again instead of being
+// restored from the earlier run.
+//
+// Clearing all three together is the contract, and it is worth saying why
+// it is a contract rather than three independent lines.
+//
+// Only succeeded is load-bearing against today's call graph. Both of the
+// other maps are proper subsets of it, because reusableOutcomes writes
+// them only inside the same branch that sets succeeded[nodeID], and
+// Runner.executeNode reads both only inside its skipNodes branch, which a
+// node dropped from succeeded no longer enters. An entry left behind is
+// therefore unreachable rather than dangerous, and mutation testing
+// confirms exactly that: removing either delete alone changes no
+// end-to-end behaviour.
+//
+// They are cleared regardless, and tested here directly, for two reasons.
+// A map still keyed by a node that is about to re-execute is a trap for
+// the next reader. And the safety currently rests on where one read
+// happens to sit, which is not a property this function should depend on:
+// engine/wait.go already populates the same two maps on a Runner by the
+// same route, so the invariant has more than one place to be broken from.
+func dropReusedOutcomes(reRun map[string]bool, succeeded, conditionResults map[string]bool, artifactSourceRunIDs map[string]string) {
+	for id := range reRun {
+		delete(succeeded, id)
+		delete(conditionResults, id)
+		delete(artifactSourceRunIDs, id)
+	}
+}
+
+// resumeRun is the shared body of ResumeRun and ResumeRunFromNode. An
+// empty fromNodeID is the plain resume, whose behaviour is unchanged.
+func (e *Engine) resumeRun(runID, fromNodeID string) (*models.Run, error) {
 	if e.closing() {
 		return nil, ErrEngineClosed
 	}
@@ -1410,8 +1708,12 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	if err != nil {
 		return nil, fmt.Errorf("get run: %w", err)
 	}
-	if oldRun.Status != models.RunStatusFailed {
-		return nil, fmt.Errorf("can only resume failed runs (current: %s)", oldRun.Status)
+	if fromNodeID == "" {
+		if oldRun.Status != models.RunStatusFailed {
+			return nil, fmt.Errorf("can only resume failed runs (current: %s)", oldRun.Status)
+		}
+	} else if err := resumeFromNodeStatusError(oldRun.Status); err != nil {
+		return nil, err
 	}
 
 	pipe, err := e.resolvePipelineForRun(oldRun.PipelineID, oldRun.PipelineVersion)
@@ -1432,10 +1734,32 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 		}
 	}
 
+	// The chosen node must exist in the DAG this run actually executed,
+	// not in the live pipeline, which may have been edited since.
+	var reRun map[string]bool
+	if fromNodeID != "" {
+		known := false
+		for _, n := range pipe.Nodes {
+			if n.ID == fromNodeID {
+				known = true
+				break
+			}
+		}
+		if !known {
+			return nil, fmt.Errorf("cannot resume from node %q: the pipeline version this run executed (version %d) has no such node", fromNodeID, oldRun.PipelineVersion)
+		}
+		reRun = descendantsInclusive(pipe, fromNodeID)
+	}
+
 	succeeded, conditionResults, artifactSourceRunIDs, err := e.reusableOutcomes(pipe, oldRun)
 	if err != nil {
 		return nil, err
 	}
+
+	// Drop the chosen node and its descendants from everything the resume
+	// would otherwise reuse, so they execute again.
+	//
+	dropReusedOutcomes(reRun, succeeded, conditionResults, artifactSourceRunIDs)
 
 	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
 	runner.orgID = pipe.OrgID
@@ -1448,6 +1772,12 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.streamThreshold = e.StreamThresholdBytes
 	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
+	// #241: a resume is a retry of an existing run. The person who asked
+	// for it is not known here -- ResumeRun takes only a run id -- so the
+	// kind is recorded without a name rather than inheriting the original
+	// run's, which would credit the resume to whoever started the run
+	// that failed.
+	runner.triggeredBy = &models.RunAttribution{Kind: models.RunTriggerKindRetry}
 	// ADR-028: a resume processes the slice the failed run was
 	// responsible for, so the original's data interval carries over. The
 	// TRIGGER deliberately does not -- a resumed run with trigger
@@ -1460,6 +1790,16 @@ func (e *Engine) ResumeRun(runID string) (*models.Run, error) {
 	runner.metrics = e.newRunnerMetrics()
 
 	run, err := runner.Execute()
+	// Record the choice on the new run even when it went on to fail: the
+	// question "why did this run start here" is asked most often about a
+	// run that did not work out.
+	if run != nil && fromNodeID != "" {
+		e.appendEvent(&models.RunEvent{
+			RunID:     run.ID,
+			NodeID:    fromNodeID,
+			EventType: models.RunEventResumedFromNode,
+		})
+	}
 	return run, err
 }
 

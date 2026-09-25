@@ -63,24 +63,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				return mw.(func(http.Handler) http.Handler)
 			}
 		}
-		// Fallback: basic role-based check for open source
-		return func(next http.Handler) http.Handler {
-			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				claims := r.Context().Value("claims")
-				if claims == nil {
-					next.ServeHTTP(w, r) // open mode (no users created)
-					return
-				}
-				mc := claims.(*jwt.MapClaims)
-				role, _ := (*mc)["role"].(string)
-				// Viewers can only access read-only endpoints
-				if role == "viewer" && isWritePermission(string(perm)) {
-					writeError(w, http.StatusForbidden, "insufficient permissions")
-					return
-				}
-				next.ServeHTTP(w, r)
-			})
-		}
+		return fallbackPermissionMiddleware(perm)
 	}
 
 	// requireStrictPerm behaves exactly like requirePerm in Enterprise
@@ -131,6 +114,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// persisting anything (#109 M2). Auth-only, like its by-id
 		// sibling — validation reads no tenant data.
 		r.Post("/pipelines/validate", ph.ValidateDocument)
+		// What a schedule input means, before anything is saved. Read-only
+		// and gated like any other authenticated route (#552).
+		r.Post("/schedule/preview", SchedulePreview)
 		r.Get("/pipelines/{id}/versions", ph.ListVersions)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
@@ -164,11 +150,18 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// for, and the capability says which single object it may touch.
 		// Both are required and neither substitutes for the other.
 		if bh := NewBlobHandler(s, e.ArtifactStore); bh != nil {
-			r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
-			r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
-			// POST to the collection: an attempt-scoped write grant, whose
-			// object id the server assigns by content digest.
-			r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", bh.Create)
+			// blobAuth, not the session middleware. A worker cannot
+			// produce a session and holds an opaque token instead, and
+			// that token is deliberately accepted HERE and nowhere else:
+			// it is handed to a machine, and in a hybrid deployment to a
+			// machine we do not operate.
+			r.With(blobAuth).Group(func(r chi.Router) {
+				r.Get("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Get)
+				r.Put("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs/{objectID}", bh.Put)
+				// POST to the collection: an attempt-scoped write grant,
+				// whose object id the server assigns by content digest.
+				r.Post("/runs/{runID}/nodes/{nodeID}/attempts/{attempt}/blobs", bh.Create)
+			})
 		}
 
 		tbh := NewTaskBundleHandler(s)
@@ -188,12 +181,17 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/pipelines/{id}/runs", rh.ListByPipeline)
 		r.Get("/pipelines/{id}/grid", rh.Grid)
 		r.Get("/pipelines/{id}/node-stats", rh.NodeStats)
+		// #241: the caller's own recent runs, across pipelines. Registered
+		// before /runs/{id} so the literal path is not read as an id.
+		r.Get("/runs", rh.ListStartedBy)
 		r.Get("/runs/{id}", rh.Get)
 		r.With(requirePerm(models.PermRunsResume)).Post("/runs/{id}/resume", rh.ResumeRun)
 		r.With(requirePerm(models.PermRunsCancel)).Post("/runs/{id}/cancel", rh.CancelRun)
 		r.Get("/runs/{id}/logs", rh.GetLogs)
 		// Physical plan as persisted for this run (#90 M2, ADR-015).
 		r.Get("/runs/{id}/plan", rh.GetPlan)
+		// What the run actually consumed and produced (ADR-039).
+		r.Get("/runs/{id}/provenance", rh.GetProvenance)
 		// Physical instances that executed in this run (#90 M2, ADR-015).
 		r.Get("/runs/{id}/instances", rh.GetInstances)
 		r.Get("/runs/{id}/logs/export", rh.ExportLogs)
@@ -208,6 +206,13 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Post("/alerts/{id}/read", ah.MarkRead)
 		r.Post("/alerts/read-all", ah.MarkAllRead)
 		r.Delete("/alerts/{id}", ah.Dismiss)
+		// Incident ownership (brokoli-ee#242). Same permission as reading
+		// and dismissing: taking ownership of a failure is triage, not
+		// administration, and requiring an admin to press "I am on it"
+		// is how an incident sits unowned.
+		r.Post("/alerts/{id}/assign", ah.Assign)
+		r.Post("/alerts/{id}/acknowledge", ah.Acknowledge)
+		r.Post("/alerts/{id}/resolve", ah.Resolve)
 
 		// Dead letter queue across every pipeline in the org
 		r.Get("/dlq", ah.ListDLQ)
@@ -371,7 +376,13 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				}
 				writeJSON(w, http.StatusOK, entries)
 			})
-			r.Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
+			// Fetching one entry by id must answer the same question the
+			// list does, for the same caller. It did not: no feature gate,
+			// no permission check, and no tenant filter, so any signed-in
+			// user could read any entry among the newest 500 by knowing
+			// or guessing its id -- including the acting user and the
+			// before/after values of a change they cannot otherwise see.
+			r.With(RequireFeature("audit")).Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
 				id := chi.URLParam(r, "id")
 				entries, err := ext.Audit.Query(extensions.AuditFilter{Limit: 500})
 				if err != nil {
@@ -379,10 +390,18 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 					return
 				}
 				for _, e := range entries {
-					if e.ID == id {
-						writeJSON(w, http.StatusOK, e)
-						return
+					if e.ID != id {
+						continue
 					}
+					if !auditEntryVisibleTo(r, e) {
+						// Not found, not forbidden: the two answers
+						// together would confirm which ids exist
+						// elsewhere, which is most of what an
+						// enumeration needs.
+						break
+					}
+					writeJSON(w, http.StatusOK, e)
+					return
 				}
 				writeError(w, http.StatusNotFound, "audit entry not found")
 			})
@@ -402,7 +421,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Platform features (enterprise: orgs, admin, tickets, announcements)
 		if ext != nil && ext.Platform != nil && ext.Platform.Enabled() {
-			ext.Platform.RegisterRoutes(r, s, userStore, e)
+			// The crypto config rides along after the engine. An
+			// enterprise build that stores a secret of its own -- a git
+			// credential, for instance -- must encrypt it with the SAME
+			// key core uses, and the only alternative is for it to
+			// re-derive the key from the environment. Two components
+			// resolving a key independently is how they end up
+			// disagreeing, and a disagreement here surfaces as a
+			// decryption failure long after the write.
+			ext.Platform.RegisterRoutes(r, s, userStore, e, cc)
 		}
 
 		// Team features (enterprise: workspaces, roles, permissions, RBAC)
@@ -443,8 +470,95 @@ func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 	}
 }
 
+// fallbackPermissionMiddleware is the open-source permission gate, used
+// whenever the enterprise Team extension is not supplying real RBAC.
+//
+// It is a package-level function rather than a closure inside
+// RegisterRoutes so that it can be driven directly by a test. A gate
+// that can only be exercised by standing up the whole router is a gate
+// whose refusals nobody checks.
+func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			claims := r.Context().Value("claims")
+			if claims == nil {
+				// No claims is ambiguous, and this used to resolve the
+				// ambiguity the wrong way. It is what an open-mode request
+				// looks like, and equally what any request looks like that
+				// reached here without being authenticated: one an auth
+				// middleware deliberately skipped, or one that arrived
+				// when no auth middleware was mounted at all.
+				//
+				// Only JWTAuth's explicit marker means open mode.
+				// HasPermission was corrected for this exact ambiguity
+				// (see its comment in permissions.go, and the
+				// openModeCtxKey doc in users.go); this is its sibling,
+				// which kept inferring the permissive reading from
+				// absence.
+				if IsOpenMode(r) {
+					next.ServeHTTP(w, r)
+					return
+				}
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			mc, ok := claims.(*jwt.MapClaims)
+			if !ok || mc == nil {
+				// Something stamped a claims value of an unexpected type.
+				// The old code type-asserted without checking and would
+				// have panicked; refusing is the only safe reading.
+				writeError(w, http.StatusUnauthorized, "authentication required")
+				return
+			}
+			role, _ := (*mc)["role"].(string)
+			if !roleAllows(role, perm) {
+				writeError(w, http.StatusForbidden, "insufficient permissions")
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
 // isWritePermission returns true for permissions that modify data.
 // Read-only permissions that viewers can access return false.
+// roleAllows reports whether a role may exercise a permission under the
+// open-source fallback.
+//
+// Deny-by-default, deliberately. This used to refuse exactly one case, a
+// viewer attempting a write, and let every other role value through --
+// including a role the fallback does not recognise, and including the
+// empty string. A check whose default branch is `next.ServeHTTP` is not
+// a permission gate, it is a viewer filter (#527).
+//
+// The recognised set is the workspace role vocabulary
+// (models/workspace.go) plus superadmin, which requireAdmin already
+// treats as admin's equal. Anything outside it is refused rather than
+// guessed at: a role this build has never heard of is exactly the case
+// where assuming permission is least defensible.
+//
+// Enterprise never reaches here. requirePerm delegates to Team's real
+// per-workspace RBAC whenever it is enabled, and this fallback is the
+// single-tenant answer only.
+// superadminRole is spelled the same way requireAdmin spells it; named
+// here so the two cannot drift.
+const superadminRole = "superadmin"
+
+func roleAllows(role string, perm models.Permission) bool {
+	switch role {
+	case string(models.WsRoleAdmin), superadminRole:
+		return true
+	case string(models.WsRoleEditor):
+		// Editors do everything except the host-wide operations, which
+		// route through requireStrictPerm/requireAdmin instead of here.
+		return true
+	case string(models.WsRoleViewer):
+		return !isWritePermission(string(perm))
+	default:
+		return false
+	}
+}
+
 func isWritePermission(perm string) bool {
 	readPerms := map[string]bool{
 		"pipelines.view":   true,

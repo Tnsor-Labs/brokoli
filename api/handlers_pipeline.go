@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -54,11 +55,14 @@ func requirePipelineOrg(w http.ResponseWriter, r *http.Request) (string, bool) {
 
 // PipelineSummary is a lean DTO for the pipeline list — no nodes/edges/hooks.
 type PipelineSummary struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	Description  string   `json:"description"`
-	Schedule     string   `json:"schedule"`
-	Enabled      bool     `json:"enabled"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Schedule    string `json:"schedule"`
+	Enabled     bool   `json:"enabled"`
+	// Draft is carried on the summary because the list renders from this
+	// payload, and a draft has to be visibly not runnable there (#107).
+	Draft        bool     `json:"draft,omitempty"`
 	Tags         []string `json:"tags"`
 	NodeCount    int      `json:"node_count"`
 	EdgeCount    int      `json:"edge_count"`
@@ -87,6 +91,7 @@ func toPipelineSummary(p models.Pipeline) PipelineSummary {
 		Description:  p.Description,
 		Schedule:     p.Schedule,
 		Enabled:      p.Enabled,
+		Draft:        p.Draft,
 		Tags:         tags,
 		NodeCount:    len(p.Nodes),
 		EdgeCount:    len(p.Edges),
@@ -117,7 +122,17 @@ func (h *PipelineHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	// Cursor-based pagination — no COUNT, uses UUIDv7 ordering
 	if orgID != "" {
-		pipelines, hasNext, err := h.store.ListPipelinesByOrgCursor(orgID, after, limit)
+		// Scoped to the workspace as well as the org. Listing by org alone
+		// showed every pipeline in the organization under every workspace,
+		// so switching workspaces changed nothing on this page.
+		wsID, ok := effectiveWorkspace(r)
+		if !ok {
+			writeJSON(w, http.StatusOK, store.CursorResult{
+				Items: []PipelineSummary{}, HasNext: false, Limit: limit,
+			})
+			return
+		}
+		pipelines, hasNext, err := h.store.ListPipelinesByOrgAndWorkspaceCursor(orgID, wsID, after, limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -164,6 +179,10 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, pipeline.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, pipeline.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, pipeline)
@@ -224,12 +243,29 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if p.Source == "" {
 		p.Source = models.PipelineSourceUI
 	}
-	if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
-		writeError(w, http.StatusBadRequest, ve.Error())
-		return
+	// A draft is work in progress, so it is persisted without executable
+	// validation. That is the whole point: #106 made persistence
+	// fail-closed, which left no way to start a pipeline from scratch or
+	// leave one half-built. A draft cannot run by any route, so nothing
+	// unvalidated ever executes (#107).
+	if !p.Draft {
+		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
+			writeError(w, http.StatusBadRequest, ve.Error())
+			return
+		}
 	}
 
 	if err := h.store.CreatePipeline(&p); err != nil {
+		// A pipeline_id collision is the caller asking for something that
+		// already exists, not a server fault. It used to surface as a 500
+		// with the driver's own text in it, which told a client nothing
+		// it could act on and made an ordinary re-run of a deploy script
+		// look like an outage. #212 tracks the upsert that would let a
+		// caller avoid the collision entirely.
+		if errors.Is(err, store.ErrDuplicatePipelineID) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -307,6 +343,10 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, existing.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	// Reject UI updates for git-managed pipelines
 	if existing.Source == models.PipelineSourceGit {
@@ -356,11 +396,26 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// exempt — the same contract as the bulk enable/disable path, which
 	// never carries a graph at all. Any change to nodes, edges, or IR
 	// version revalidates in full.
-	if !graphUnchanged(existing, &p) {
+	// Publishing is the moment a draft becomes real, so it validates in
+	// full through the same call Create makes. A pipeline that is still a
+	// draft skips validation; one that is leaving draft state does not,
+	// whether or not its graph changed in the same request.
+	publishing := existing.Draft && !p.Draft
+	if publishing || (!p.Draft && !graphUnchanged(existing, &p)) {
 		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
 			writeError(w, http.StatusBadRequest, ve.Error())
 			return
 		}
+	}
+
+	// A published pipeline cannot be turned back into a draft. Allowing
+	// it would mean a scheduled pipeline silently stops running because
+	// someone ticked a box; Enabled already exists for "stop running
+	// this", and says so on the row.
+	if !existing.Draft && p.Draft {
+		writeError(w, http.StatusBadRequest,
+			"a published pipeline cannot be returned to draft; disable it instead")
+		return
 	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
@@ -390,6 +445,10 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, existing.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, existing.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -607,6 +666,10 @@ func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 			DenyOrgAccess(w)
 			return
 		}
+		if !userOwnsWorkspace(r, p.WorkspaceID) {
+			denyWorkspaceAccess(w)
+			return
+		}
 	}
 	versions, err := h.store.ListPipelineVersions(id)
 	if err != nil {
@@ -625,6 +688,10 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		if !ValidateOrgAccess(r, existing.OrgID) {
 			DenyOrgAccess(w)
+			return
+		}
+		if !userOwnsWorkspace(r, existing.WorkspaceID) {
+			denyWorkspaceAccess(w)
 			return
 		}
 	} else {
@@ -696,6 +763,10 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	ve := engine.ValidatePipeline(p, h.executors...)
 	if ve.HasErrors() {
@@ -741,6 +812,10 @@ func (h *PipelineHandler) Plan(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, p.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 	plan, err := engine.PlanPipeline(p)
@@ -801,9 +876,13 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.OrgID = orgID
-	if p.WorkspaceID == "" {
-		p.WorkspaceID = GetWorkspaceID(r)
-	}
+	// The workspace comes from the request context, never from the body.
+	// This used to keep a body-supplied workspace_id, so an import could
+	// place a pipeline into a workspace the caller does not work in --
+	// invisible to them afterwards, and visible to people who never
+	// imported it. Create, a few hundred lines above, has always
+	// overwritten it unconditionally; this is the same rule.
+	p.WorkspaceID = GetWorkspaceID(r)
 	if err := p.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -839,6 +918,10 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	// Validate org access
 	if !ValidateOrgAccess(r, orig.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, orig.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -924,6 +1007,10 @@ func (h *PipelineHandler) ValidateNodes(w http.ResponseWriter, r *http.Request) 
 		DenyOrgAccess(w)
 		return
 	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
+	}
 
 	results := engine.ValidateNodes(p.Nodes)
 	if results == nil {
@@ -943,6 +1030,10 @@ func (h *PipelineHandler) Export(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ValidateOrgAccess(r, p.OrgID) {
 		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
 		return
 	}
 

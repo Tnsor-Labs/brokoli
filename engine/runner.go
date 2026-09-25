@@ -71,8 +71,11 @@ type Runner struct {
 	// dispatch rather than a silent fallback.
 	dataCapIssuer *datacap.Issuer
 	varCtx        *VariableContext
-	preRunID      string     // pre-generated run ID (for registration before Execute)
-	trigger       string     // what created this run ("scheduled", "" = manual)
+	preRunID      string // pre-generated run ID (for registration before Execute)
+	trigger       string // what created this run ("scheduled", "" = manual)
+	// triggeredBy is the provenance record (#241): what started this run
+	// and, when a person did, who. Nil means not recorded.
+	triggeredBy   *models.RunAttribution
 	intervalStart *time.Time // ADR-028 data interval, stamped by the dispatcher
 	intervalEnd   *time.Time
 	acceptedRun   *models.Run                     // queued run already persisted and atomically claimed
@@ -335,6 +338,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 			ResumedFromRunID:  r.resumedFromRunID,
 			OrgID:             r.orgID,
 			Trigger:           r.trigger,
+			TriggeredBy:       r.triggeredBy,
 			DataIntervalStart: r.intervalStart,
 			DataIntervalEnd:   r.intervalEnd,
 		}
@@ -342,6 +346,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		if err := r.store.CreateRun(r.run); err != nil {
 			return nil, fmt.Errorf("create run: %w", err)
 		}
+		recordRunAttribution(r.store, r.run.ID, r.triggeredBy)
 		r.appendEvent(models.RunEvent{
 			RunID:     r.run.ID,
 			EventType: models.RunEventCreated,
@@ -392,6 +397,13 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	r.varCtx.IntervalStart = r.run.DataIntervalStart
 	r.varCtx.IntervalEnd = r.run.DataIntervalEnd
 	r.varCtx.Vars = r.varStore // wire stored variables into resolver
+	// Scope ${var.*} to this pipeline's workspace. Without it the
+	// resolver read by key alone and returned whichever workspace had
+	// written that name last, which for a secret variable means one
+	// tenant's pipeline resolving another tenant's secret.
+	if r.pipe != nil {
+		r.varCtx.WorkspaceID = r.pipe.WorkspaceID
+	}
 
 	// Build the runtime graph. Edges resolve active or inactive; data
 	// emptiness never stands in for control flow.
@@ -655,6 +667,14 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
+	// A run put back on the queue by recovery carries that explanation in
+	// run.Error (see recovery_requeue.go). It describes the execution that
+	// was interrupted, not this one, so leaving it here makes a successful
+	// run render with a recovery error against it -- which is how a healthy
+	// re-queued run came to look broken in the run view. The audit trail is
+	// not lost: the run.recovery_requeued event keeps it, timestamped, and
+	// a run that fails still records its own error below.
+	r.run.Error = ""
 	crashAt(crashPointBeforeRunTerminalPersist, "")
 	if err := r.store.UpdateRun(r.run); err != nil {
 		return r.run, fmt.Errorf("persist successful run: %w", err)
@@ -744,7 +764,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
 		var warnings []string
-		node.Config, warnings = r.connResolver.ResolveWithWarnings(node.Config, node.Type)
+		node.Config, warnings = r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
 		for _, w := range warnings {
 			r.log(node.ID, models.LogLevelWarning, "%s", w)
 		}
@@ -776,6 +796,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	var pushedRowCount int64
 	var pushedAbsorbed []string
 	var allInputs []*common.DataSet
+	var allInputSchemas []columnSchema
 	// edgeInputsByFrom indexes the same upstream outputs by upstream node
 	// ID, alongside input/allInputs above — needed by dynamic-expansion
 	// nodes (#31) to resolve expansion.over[param], which names upstream
@@ -833,6 +854,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					inputSchema = outputs.Schema(edge.From)
 				}
 				allInputs = append(allInputs, ds)
+				allInputSchemas = append(allInputSchemas, outputs.Schema(edge.From))
 				edgeInputsByFrom[edge.From] = ds
 			}
 		}
@@ -1149,23 +1171,23 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				// node's work can stay in the database. It can only ever
 				// answer yes for a narrow, checked set of shapes; every
 				// other node falls through to exactly what it did before.
-				if pushed, handled, perr := r.tryPushdown(node, inputTable); handled || perr != nil {
+				if pushed, handled, perr := r.tryPushdown(node, inputTable, attempt); handled || perr != nil {
 					result, e = pushed, perr
 				} else if inputTable != nil && input == nil {
 					// The segment plan said this node could consume the
 					// reference and it could not. Read the rows rather than
 					// run the node against nothing, which would report
 					// success having written zero.
-					ds, merr := r.materializeTableRef(node.ID, inputTable)
+					ds, merr := r.materializeTableRef(node.ID, inputTable, attempt)
 					if merr != nil {
 						e = merr
 					} else {
-						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
+						result, e = r.runNodeLogic(node, ds, inputSchema, []*common.DataSet{ds}, []columnSchema{inputSchema}, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 					}
 				} else if streamable {
-					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs)
+					result, e = r.runNodeStreamed(attemptCtx, node, inputRef, inputSchema, outputs, attempt)
 				} else {
-					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
+					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, allInputSchemas, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
 			}
 			resultCh <- nodeResult{result, e}
@@ -1178,6 +1200,23 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			outputTable = result.result.outputTable
 			outputSchema = result.result.outputSchema
 			pushedRowCount, pushedAbsorbed = result.result.pushedRowCount, result.result.pushedAbsorbed
+			if err == nil {
+				var outputColumns []string
+				hasOutput := false
+				switch {
+				case output != nil:
+					outputColumns = output.Columns
+					hasOutput = true
+				case outputRef != nil:
+					outputColumns = outputRef.Columns
+					hasOutput = true
+				}
+				if hasOutput {
+					if schemaErr := validateDatasetSchemaColumnsFromConfig(node.Config, outputColumns); schemaErr != nil {
+						err = fmt.Errorf("validate dataset schema: %w", schemaErr)
+					}
+				}
+			}
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
 				err = fmt.Errorf("pipeline cancelled")
@@ -1300,14 +1339,26 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			}
 			if outputRef != nil && !r.dryRun {
 				outputs.PutRef(node.ID, outputRef)
-				preview, perr := previewFromRef(outputs, outputRef, 50)
+				preview, perr := previewFromRef(outputs, outputRef, store.NodePreviewRowLimit)
 				if perr != nil {
 					attemptSpan.RecordError(perr)
 					attemptSpan.SetStatus(codes.Error, perr.Error())
 					attemptSpan.End()
 					return nil, fmt.Errorf("persist node preview for %s (attempt %d): %w", node.Name, attempt, perr)
 				}
-				if err := r.store.SaveNodePreview(r.run.ID, node.ID, preview.Columns, preview.Rows); err != nil {
+				// DatasetRef.RowCount is populated on every ref-producing
+				// path, so truncation and total_rows come from the ref —
+				// no peek past the filled preview batch (which missed the
+				// 51..1000 single-batch case). Engine is authoritative here;
+				// SaveNodePreview only re-derives as a safety net.
+				total := outputRef.RowCount
+				refPreview := store.NodePreview{
+					Columns:   preview.Columns,
+					Rows:      preview.Rows,
+					Truncated: outputRef.RowCount > int64(store.NodePreviewRowLimit),
+					TotalRows: &total,
+				}
+				if err := r.store.SaveNodePreview(r.run.ID, node.ID, refPreview); err != nil {
 					attemptSpan.RecordError(err)
 					attemptSpan.SetStatus(codes.Error, err.Error())
 					attemptSpan.End()
@@ -1339,7 +1390,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				if r.dryRun && r.dryRunMaxRows > 0 && len(output.Rows) > r.dryRunMaxRows {
 					output.Rows = output.Rows[:r.dryRunMaxRows]
 				}
-				if err := outputs.Put(node.ID, output); err != nil {
+				if err := outputs.PutPreferring(node.ID, output, r.singleStoredInputFormat(node, outputs, edgeStates)); err != nil {
 					r.log(node.ID, models.LogLevelWarning, "Could not spill output, keeping it in memory: %v", err)
 				}
 
@@ -1356,7 +1407,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 						Columns: output.Columns, Rows: previewRows,
 					}
 				} else {
-					if err := r.store.SaveNodePreview(r.run.ID, node.ID, output.Columns, output.Rows); err != nil {
+					n := int64(len(output.Rows))
+					if err := r.store.SaveNodePreview(r.run.ID, node.ID, store.NodePreview{
+						Columns: output.Columns, Rows: output.Rows, Truncated: n > int64(store.NodePreviewRowLimit), TotalRows: &n,
+					}); err != nil {
 						attemptSpan.RecordError(err)
 						attemptSpan.SetStatus(codes.Error, err.Error())
 						attemptSpan.End()
@@ -1382,6 +1436,12 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					}
 				}
 			}
+			// Provenance is recorded only now, after every form of the output
+			// has been stored. A node that returns rows in memory is spilled by
+			// outputs.Put just above; recorded any earlier, its own record
+			// carried no digest while its consumer recorded one for the same
+			// bytes.
+			r.recordNodeProvenance(node, outputs, edgeStates, output, outputRef)
 
 			// Completion log with throughput
 			durStr := fmt.Sprintf("%dms", duration)
@@ -1744,7 +1804,7 @@ func (r *Runner) checkNodeTypeGate(node models.Node) error {
 // its own remote dispatch (ADR-033) rather than claiming a second,
 // competing one at the same key: a task node's one instance IS the
 // whole node, unlike an expansion item's own distinct "idx:N" key.
-func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
+func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, allInputSchemas []columnSchema, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1799,15 +1859,21 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 
 	switch node.Type {
 	case models.NodeTypeSourceFile:
-		return outputExecutionResult(r.runSourceFile(node))
+		return outputExecutionResult(r.runSourceFile(ctx, node))
 	case models.NodeTypeSourceAPI:
 		return outputExecutionResult(r.runSourceAPI(node))
 	case models.NodeTypeSourceDB:
 		// Returns a full result: a source that can report its column
 		// types hands them downstream alongside the rows (#363).
-		return r.runSourceDB(node)
+		return r.runSourceDB(node, attempt)
 	case models.NodeTypeTransform:
 		return r.runTransform(node, input, inputSchema)
+	case models.NodeTypeProject:
+		return r.runNativeOperator(node, input, inputSchema, "project")
+	case models.NodeTypeAggregate:
+		return r.runNativeOperator(node, input, inputSchema, "aggregate")
+	case models.NodeTypeFilter:
+		return r.runNativeOperator(node, input, inputSchema, "filter")
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
 	case models.NodeTypeCode:
@@ -1817,25 +1883,41 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// see engine/expansion.go's top-of-file doc comment for the full
 		// architectural resolution.
 		if nodeHasExpansion(node) {
-			return outputExecutionResult(r.runCodeExpansion(node, edgeInputsByFrom, attempt))
+			output, err := r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+			if err != nil {
+				return nodeExecutionResult{}, err
+			}
+			schema, err := declaredOutputSchema(node.Config)
+			if err != nil {
+				return nodeExecutionResult{}, err
+			}
+			return nodeExecutionResult{output: output, outputSchema: schema}, nil
 		}
-		return outputExecutionResult(r.runCode(ctx, node, input))
+		output, err := r.runCode(ctx, node, input)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		schema, err := declaredOutputSchema(node.Config)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		return nodeExecutionResult{output: output, outputSchema: schema}, nil
 	case models.NodeTypeTask:
 		// ADR-033 rollout phase 2c: local or remote task-runtime/v1
 		// dispatch -- see engine/task.go's own doc comment.
 		return outputExecutionResult(r.runTask(ctx, node, input, attempt, execFencingGen))
 	case models.NodeTypeJoin:
-		return outputExecutionResult(r.runJoin(node, allInputs))
+		return r.runJoin(node, allInputs, allInputSchemas)
 	case models.NodeTypeSQLGenerate:
 		return outputExecutionResult(r.runSQLGenerate(node, input))
 	case models.NodeTypeSinkFile:
-		return outputExecutionResult(r.runSinkFile(node, input))
+		return outputExecutionResult(r.runSinkFile(ctx, node, input))
 	case models.NodeTypeSinkDB:
-		return outputExecutionResult(r.runSinkDB(node, input, inputSchema))
+		return outputExecutionResult(r.runSinkDB(node, input, inputSchema, attempt))
 	case models.NodeTypeSinkAPI:
 		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:
-		return outputExecutionResult(r.runMigrate(node))
+		return outputExecutionResult(r.runMigrate(node, attempt))
 	case models.NodeTypeDBT:
 		// dbt can hand downstream a reference rather than rows (#353
 		// Phase 3), so it returns a full result rather than a dataset.
@@ -2303,3 +2385,12 @@ const (
 	// unbounded number of database connections at once.
 	maxMaxParallelNodes = 64
 )
+
+// workspaceID is the workspace this run's pipeline belongs to, "" for a
+// runner built without a pipeline. Connections resolve only within it.
+func (r *Runner) workspaceID() string {
+	if r.pipe == nil {
+		return ""
+	}
+	return r.pipe.WorkspaceID
+}

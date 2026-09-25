@@ -162,6 +162,7 @@ func workOrderOutputStore(wo *extensions.InstanceWorkOrder, runID, nodeID string
 	}
 	return &artifact.CapabilityStore{
 		BaseURL:         wo.ControlPlaneURL,
+		AuthHeader:      workerAuthHeader(),
 		RunID:           runID,
 		NodeID:          nodeID,
 		Attempt:         wo.CapabilityAttempt,

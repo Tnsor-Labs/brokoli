@@ -76,6 +76,22 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 func isWorkspacePublicRoute(r *http.Request) bool {
 	path := r.URL.Path
 	return isPublicCapabilitiesRequest(r) ||
+		// The data plane carries its own authorization: an opaque
+		// capability naming one object, plus the worker identity blobAuth
+		// resolves. A worker holds no session and belongs to no user, so
+		// resolving a workspace for it is not a check that can succeed --
+		// it just answers 401 before blobAuth is ever reached.
+		//
+		// Only visible in a multi-tenant deployment. With no workspace
+		// resolver the branch below is skipped entirely, so every
+		// single-tenant test passed while every reference-based task
+		// input on a real fleet got 401.
+		//
+		// isDataPlaneBlobRequest, not a path prefix: it matches on
+		// segment shape and reads RawPath, so a caller cannot reach this
+		// exemption by burying "blobs" in some other route (the parser
+		// differential behind GHSA-jxjf-p7pv-22m9).
+		isDataPlaneBlobRequest(r) ||
 		!strings.HasPrefix(path, "/api/") ||
 		strings.HasPrefix(path, "/api/auth/") ||
 		strings.HasPrefix(path, "/api/workers/") ||
@@ -107,6 +123,86 @@ func sanitizeWorkspaceID(id string) string {
 		return models.DefaultWorkspaceID
 	}
 	return string(clean)
+}
+
+// userOwnsWorkspace reports whether the caller may reach a resource sitting
+// in resourceWorkspaceID.
+//
+// It resolves the caller's workspaces from the JWT subject, deliberately not
+// from GetWorkspaceID: that returns the ONE workspace the request is filed
+// under (the X-Workspace-ID header, or the first owned workspace when the
+// header is absent), so comparing against it would deny a member of two
+// workspaces their own resource in the second one. ConnectionHandler's
+// validateConnectionAccess and VariableHandler's variableWorkspace already
+// resolve the full set for the same reason; this keeps pipelines consistent
+// with them.
+//
+// An empty or "default" resource workspace is pre-workspace data: the column
+// is NOT NULL DEFAULT 'default' and empty values are coalesced to it, so such
+// a row predates workspace assignment rather than belonging elsewhere. It is
+// allowed here and left to the org check, mirroring ValidateOrgAccess's own
+// allowance for a resource with no org.
+func userOwnsWorkspace(r *http.Request, resourceWorkspaceID string) bool {
+	if GetOrgIDFromRequest(r) == "" {
+		return true // community edition: no tenancy to enforce
+	}
+	if UserWorkspaceResolverFunc == nil {
+		return true // single tenant: no second workspace exists
+	}
+	if resourceWorkspaceID == "" || resourceWorkspaceID == models.DefaultWorkspaceID {
+		return true // legacy row, governed by the org check
+	}
+	userID := getUserIDFromRequest(r)
+	if userID == "" {
+		return false
+	}
+	for _, ws := range UserWorkspaceResolverFunc(userID) {
+		if ws == resourceWorkspaceID {
+			return true
+		}
+	}
+	return false
+}
+
+// denyWorkspaceAccess answers a cross-workspace request. 404 rather than 403,
+// matching DenyOrgAccess: a caller must not learn that an id exists in a
+// workspace they cannot see.
+func denyWorkspaceAccess(w http.ResponseWriter) {
+	writeError(w, http.StatusNotFound, "not found")
+}
+
+// effectiveWorkspace names the workspace a list should be scoped to, and
+// reports whether the caller can see anything at all.
+//
+// GetWorkspaceID answers "default" for a session that has not named a
+// workspace, which in a single-tenant install is the right answer and the
+// only workspace there is. In an organization it is not: the caller's
+// pipelines sit in a workspace of their own, so filtering on "default"
+// would show them an empty list while their work is one header away. The
+// resolver knows which workspaces they belong to, so the first of those
+// stands in until they choose one, matching the workspace the middleware
+// would have filed the request under.
+//
+// ok is false only when an organization member belongs to no workspace at
+// all. That is not an error and not "show everything": there is nothing
+// they may see, so the caller answers with an empty list.
+func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
+	wsID = GetWorkspaceID(r)
+	if GetOrgIDFromRequest(r) == "" || wsID != models.DefaultWorkspaceID {
+		return wsID, true
+	}
+	if UserWorkspaceResolverFunc == nil {
+		return wsID, true
+	}
+	userID := getUserIDFromRequest(r)
+	if userID == "" {
+		return wsID, true
+	}
+	owned := UserWorkspaceResolverFunc(userID)
+	if len(owned) == 0 {
+		return "", false
+	}
+	return owned[0], true
 }
 
 // GetWorkspaceID returns the workspace ID from the request context.

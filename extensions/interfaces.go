@@ -280,11 +280,32 @@ type PlatformProvider interface {
 	Enabled() bool
 
 	// RegisterRoutes adds platform-specific API routes (admin, signup, tickets, orgs).
-	// engine is *engine.Engine for fallback pipeline execution.
+	//
+	// The variadic tail carries, in order: *engine.Engine for fallback
+	// pipeline execution, then *crypto.Config. A provider must treat both
+	// as optional and tolerate a shorter tail -- an older core passes
+	// only the engine.
+	//
+	// The crypto config is there so a provider that stores a secret of
+	// its own encrypts it with the same key core uses, rather than
+	// re-deriving one from the environment and silently disagreeing.
 	RegisterRoutes(r interface{}, s interface{}, userStore interface{}, engine ...interface{})
 
 	// StartServices starts background services (trial checker, etc).
-	StartServices(s interface{})
+	//
+	// The variadic tail carries *engine.Engine: the engine whose recovery
+	// sweep this process will run. A provider must treat it as optional
+	// and tolerate an empty tail -- an older core passes only the store.
+	//
+	// This is the only hook every mode that runs recovery passes through,
+	// and that is why the engine is here. RegisterRoutes also carries an
+	// engine, but it is reached only from api.NewServer, so `--mode
+	// scheduler` -- which builds a minimal health/metrics server and runs
+	// the sweep -- never calls it. An extension that hangs anything
+	// recovery-related off the engine and installs it only in
+	// RegisterRoutes is therefore absent from the exact process doing the
+	// recovering, and absent silently.
+	StartServices(s interface{}, engine ...interface{})
 
 	// StopServices stops background services.
 	StopServices()
@@ -677,9 +698,28 @@ type PIIDetector interface {
 	Scan(columns []string, rows []map[string]interface{}, sampleSize int) []PIIDetection
 }
 
+// LineageDataset is one external dataset a run read or wrote.
+//
+// Namespace is left to the emitter, which knows the deployment's
+// catalogue naming; this carries only what the engine can know.
+type LineageDataset struct {
+	// ID is the stable asset identifier, "file:/path" or "table:db.table".
+	ID string
+	// Type is "file", "table" or "api".
+	Type string
+	// Name is the display name: a filename, a table name, a URL.
+	Name string
+}
+
 // OpenLineageEmitter sends lineage events to an OpenLineage-compatible endpoint.
+//
+// Every method takes the datasets the run reads and writes. They used to
+// take only identifiers, so an implementation had nothing to put in
+// OpenLineage's inputs and outputs -- the two fields the format exists
+// for. An event without them tells a catalogue that a job ran and
+// nothing about lineage.
 type OpenLineageEmitter interface {
-	EmitRunStart(pipelineID, pipelineName, runID string) error
-	EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64) error
-	EmitRunFail(pipelineID, pipelineName, runID string, err string) error
+	EmitRunStart(pipelineID, pipelineName, runID string, inputs, outputs []LineageDataset) error
+	EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64, inputs, outputs []LineageDataset) error
+	EmitRunFail(pipelineID, pipelineName, runID string, err string, inputs, outputs []LineageDataset) error
 }

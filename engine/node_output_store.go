@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -111,6 +110,25 @@ func (o *nodeOutputs) spillEnabled() bool {
 // an optimisation could not be applied would turn a full disk into a failed
 // pipeline. The error is returned so the caller can log it.
 func (o *nodeOutputs) Put(nodeID string, ds *common.DataSet) error {
+	return o.PutPreferring(nodeID, ds, "")
+}
+
+// PutPreferring is Put with the format the dataset should be stored in if
+// it spills, when the caller has a reason to want one.
+//
+// The reason that exists today: a node's single input was stored in some
+// format, and storing the node's output in the same one keeps a node that
+// changed nothing byte-identical, which is what an attested lineage edge
+// rests on (#641). Left to itself, spill picks Arrow whenever the whole
+// dataset allows, while the stream writer that stored the input may have
+// picked NDJSON from its first batch or from BROKOLI_STREAM_CODEC -- the
+// same rows in two formats, and no digest could match.
+//
+// Only a preference for NDJSON changes anything: Arrow is already chosen
+// whenever the dataset can be represented in it, and a preference for
+// Arrow on a dataset that cannot be is ignored rather than honoured with a
+// lossy encoding.
+func (o *nodeOutputs) PutPreferring(nodeID string, ds *common.DataSet, preferred string) error {
 	if ds == nil {
 		return nil
 	}
@@ -125,7 +143,7 @@ func (o *nodeOutputs) Put(nodeID string, ds *common.DataSet) error {
 		return nil
 	}
 
-	ref, err := o.spill(ds)
+	ref, err := o.spill(ds, preferred)
 	if err != nil {
 		o.putInline(nodeID, ds)
 		return fmt.Errorf("spill node %s output (%d bytes estimated): %w", nodeID, estimate, err)
@@ -160,11 +178,11 @@ func (o *nodeOutputs) putInline(nodeID string, ds *common.DataSet) {
 // Worth the branch because the read side is where datasets are paid
 // for: a spilled dataset is written once and may be read many times,
 // and Arrow decodes 6-8x faster with a quarter of the allocations.
-func (o *nodeOutputs) spill(ds *common.DataSet) (*artifact.DatasetRef, error) {
+func (o *nodeOutputs) spill(ds *common.DataSet, preferred string) (*artifact.DatasetRef, error) {
 	format := artifact.FormatNDJSON
 	mediaType := artifact.MediaTypeNDJSON
 	encode := func(w io.Writer) error { return EncodeNDJSON(w, ds) }
-	if _, ok := arrowEncodableSchema(ds); ok {
+	if _, ok := arrowEncodableSchema(ds); ok && preferred != artifact.FormatNDJSON {
 		format = artifact.FormatArrowIPC
 		mediaType = artifact.MediaTypeArrowIPC
 		encode = func(w io.Writer) error { return EncodeArrowIPC(w, ds) }
@@ -211,6 +229,13 @@ func (o *nodeOutputs) spill(ds *common.DataSet) (*artifact.DatasetRef, error) {
 // downstream consumer reports as the node's row count. columns is called
 // after production finishes, because a source does not learn its column
 // list until the query has begun returning rows.
+//
+// Arrow or NDJSON, decided from the first batch the same way spill decides
+// from the whole dataset. This wrote NDJSON unconditionally, which meant
+// the largest outputs in the product were the only ones that never got the
+// faster codec. See arrow_stream_encode.go for why the decision has to
+// happen before the first byte and what happens if a later batch disagrees
+// with it.
 func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) error, columns func() []string) (*artifact.DatasetRef, error) {
 	if !o.spillEnabled() {
 		return nil, fmt.Errorf("stream output: spilling is not enabled")
@@ -225,37 +250,65 @@ func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) e
 	// on the error path Put can return before the goroutine has finished,
 	// and reading its results then would be a data race.
 	done := make(chan produced, 1)
+
+	// The codec is chosen from the first batch and has to be known here,
+	// before Put, because the media type labelling the blob is an
+	// argument to it. The producer therefore reports its decision on a
+	// second channel before writing a byte. Buffered so the producer
+	// never blocks on it, and sent exactly once on every path including
+	// a producer that fails before its first batch, so the receive below
+	// cannot hang.
+	writer := newDatasetStreamWriter(pw, streamCodecFromEnv())
+	type decision struct {
+		format    string
+		mediaType string
+		err       error
+	}
+	decided := make(chan decision, 1)
+
 	go func() {
-		// Buffered for the reason given on EncodeNDJSON: pw is a pipe,
-		// and an unbuffered write per row costs a scheduler round-trip per
-		// row.
-		buf := bufio.NewWriterSize(pw, encodeBufferSize)
-		enc := json.NewEncoder(buf)
-		enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
-		rows := int64(0)
-		err := produce(func(batch *common.DataSet) error {
-			for _, row := range batch.Rows {
-				if encErr := enc.Encode(row); encErr != nil {
-					return encErr
-				}
-				rows++
-			}
-			return nil
-		})
-		if err == nil && rows == 0 {
-			// Preserve EncodeNDJSON's empty-dataset sentinel so the blob
-			// decodes identically to a batch-written empty output.
-			_, err = buf.Write([]byte("[]"))
+		decide := func(first *common.DataSet) error {
+			format, mediaType, derr := writer.Decide(first)
+			decided <- decision{format: format, mediaType: mediaType, err: derr}
+			return derr
 		}
+		sentFirst := false
+		err := produce(func(batch *common.DataSet) error {
+			if !sentFirst {
+				sentFirst = true
+				if derr := decide(batch); derr != nil {
+					return derr
+				}
+			}
+			return writer.WriteBatch(batch)
+		})
+		if !sentFirst {
+			// No batch ever arrived, so nothing chose a codec. An empty
+			// output is NDJSON's "[]" sentinel, which is what every other
+			// empty output in the product is.
+			if derr := decide(nil); derr != nil && err == nil {
+				err = derr
+			}
+		}
+		rows, closeErr := writer.Close()
 		if err == nil {
-			err = buf.Flush()
+			err = closeErr
 		}
 		_ = pw.CloseWithError(err)
 		done <- produced{rows: rows, err: err}
 	}()
 
+	choice := <-decided
+	if choice.err != nil {
+		// Unblock the producer, which is either already returning this
+		// same error or about to block writing into a pipe nobody reads.
+		_ = pr.CloseWithError(choice.err)
+		<-done
+		return nil, choice.err
+	}
+
 	ref, putErr := o.blobs.Put(context.Background(), o.namespace, pr, artifact.PutOptions{
-		MediaType: artifact.MediaTypeNDJSON,
+		MediaType: choice.mediaType,
 	})
 	if putErr != nil {
 		// Unblock the producer so the wait below cannot hang.
@@ -282,7 +335,7 @@ func (o *nodeOutputs) PutStream(produce func(emit func(*common.DataSet) error) e
 	}
 	return &artifact.DatasetRef{
 		ArtifactRef: *ref,
-		Format:      artifact.FormatNDJSON,
+		Format:      choice.format,
 		Columns:     cols,
 		RowCount:    res.rows,
 	}, nil

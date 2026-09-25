@@ -91,11 +91,11 @@ func (r *Runner) dbtOutputTableRef(
 		return nil, fmt.Errorf("dbt reported no relation for %q, so it cannot be referenced", wanted)
 	}
 
-	conn, err := r.connResolver.ResolveConnection(connID)
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
 		return nil, err
 	}
-	if !conn.BuildsURI() {
+	if !conn.IsDatabase() {
 		return nil, fmt.Errorf(
 			"connection %q is type %q, which has no database driver in this build, so a downstream node "+
 				"could not read the relation dbt built", connID, conn.Type)

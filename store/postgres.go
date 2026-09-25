@@ -16,7 +16,6 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundlev2"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
-	"github.com/Tnsor-Labs/brokoli/pkg/templates"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -85,6 +84,7 @@ func (s *PostgresStore) migrate() error {
 	// Pipeline schema additions (safe to re-run — errors ignored for existing columns)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS schedule_timezone TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS catchup BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS draft BOOLEAN NOT NULL DEFAULT FALSE`)
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS parked_waits (
 		run_id TEXT PRIMARY KEY,
 		pipeline_id TEXT NOT NULL,
@@ -177,6 +177,13 @@ func (s *PostgresStore) migrate() error {
 		workspace_id TEXT NOT NULL DEFAULT 'default'
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
+	// Widen the variables key from (key) to (workspace_id, key). See
+	// SQLiteStore.scopeVariablesToWorkspace for why this cannot collide
+	// and why there is deliberately no collision check. Postgres can
+	// alter the constraint in place, so no table rebuild is needed.
+	s.db.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`)
+	s.db.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`)
+	s.db.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`)
 
 	// Workspaces + related tables
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
@@ -274,6 +281,13 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS attempt INTEGER NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS ready_at TIMESTAMPTZ`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS queue_ms BIGINT NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS truncated BOOLEAN NOT NULL DEFAULT FALSE`)
+	s.db.Exec(`ALTER TABLE node_previews ADD COLUMN IF NOT EXISTS total_rows INTEGER`)
+	// Previews written before truncated existed were capped at
+	// NodePreviewRowLimit (50) rows. A sample exactly at that cap is
+	// almost always truncated, but DEFAULT FALSE would claim completeness.
+	// Mark them truncated with total unknown (total_rows stays NULL).
+	s.db.Exec(`UPDATE node_previews SET truncated = TRUE WHERE jsonb_array_length(rows) = 50 AND total_rows IS NULL`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS rows_per_sec REAL NOT NULL DEFAULT 0`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS trace_id TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE node_runs ADD COLUMN IF NOT EXISTS span_id TEXT NOT NULL DEFAULT ''`)
@@ -359,6 +373,11 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS trigger_type TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS data_interval_start TIMESTAMPTZ`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS data_interval_end TIMESTAMPTZ`)
+	// #241: who started a run, in its own table. Created through one
+	// shared function so a change cannot reach one dialect and not the
+	// other.
+	createRunAttributionTable(s.db, "postgres")
+	createRunProvenanceTable(s.db, "postgres")
 	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_runs_scheduled_interval ON runs(pipeline_id, data_interval_start) WHERE trigger_type = 'scheduled' AND data_interval_start IS NOT NULL`)
 	// Durable cancellation intent (see models.Run.CancelRequested and
 	// RequestRunCancel below). Set-only; terminal runs stop consulting it.
@@ -458,6 +477,10 @@ func (s *PostgresStore) migrate() error {
 		read_at TIMESTAMPTZ,
 		dismissed_at TIMESTAMPTZ)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_alerts_org ON alerts(org_id, created_at DESC)`)
+	// Incident ownership and per-person read state (brokoli-ee#242),
+	// through one shared function so a column cannot reach one dialect
+	// and not the other.
+	migrateAlertIncidents(s.db, "postgres")
 
 	// Task bundles (ADR-031) — the tenant-scoped, content-addressed
 	// project-archive table; see store/sqlite.go for the shared doc
@@ -557,24 +580,11 @@ func (s *PostgresStore) widenExecutionAttemptsPrimaryKey() (retErr error) {
 	return nil
 }
 
-// seedPipelineTemplates — see the matching SQLite method for why this
-// only ever inserts into an empty table, never overwrites.
+// seedPipelineTemplates — see the matching SQLite method, and
+// seedBuiltinTemplates for the rule both backends share: insert only the
+// built-ins this database has never been offered, never overwrite.
 func (s *PostgresStore) seedPipelineTemplates() error {
-	var count int
-	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipeline_templates`).Scan(&count); err != nil {
-		return err
-	}
-	if count > 0 {
-		return nil
-	}
-	now := time.Now().UTC()
-	for _, t := range templates.Builtin {
-		t.CreatedAt, t.UpdatedAt = now, now
-		if err := s.CreatePipelineTemplate(&t); err != nil {
-			return fmt.Errorf("seed template %q: %w", t.ID, err)
-		}
-	}
-	return nil
+	return seedBuiltinTemplates(s.GetSetting, s.SetSetting, s.ListPipelineTemplates, s.CreatePipelineTemplate)
 }
 
 // --- Login Attempts ---
@@ -680,58 +690,30 @@ func (s *PostgresStore) CreatePipeline(p *models.Pipeline) error {
 		parametersJSON = []byte("{}")
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters, draft)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
 		p.ID, p.IRVersion, p.Name, p.Description, nodesJSON, edgesJSON,
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.Catchup, parametersJSON,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.CreatedAt.UTC(), p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.Catchup, parametersJSON, p.Draft,
 	)
+	if isPipelineIDConflict(err) {
+		return ErrDuplicatePipelineID
+	}
 	return err
 }
 
 func (s *PostgresStore) GetPipeline(id string) (*models.Pipeline, error) {
-	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON []byte
-	err := s.db.QueryRow(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
-		 FROM pipelines WHERE id = $1`, id,
-	).Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &p.Catchup, &parametersJSON)
-	if err != nil {
-		return nil, err
-	}
-	json.Unmarshal(nodesJSON, &p.Nodes)
-	json.Unmarshal(edgesJSON, &p.Edges)
-	json.Unmarshal(paramsJSON, &p.Params)
-	json.Unmarshal(tagsJSON, &p.Tags)
-	json.Unmarshal(depsJSON, &p.DependsOn)
-	json.Unmarshal(depRulesJSON, &p.DependencyRules)
-	if len(hooksJSON) > 0 && string(hooksJSON) != "null" && string(hooksJSON) != "{}" {
-		if err := json.Unmarshal(hooksJSON, &p.Hooks); err != nil {
-			return nil, fmt.Errorf("unmarshal hooks: %w", err)
-		}
-	}
-	if len(extensionsJSON) > 0 && string(extensionsJSON) != "null" && string(extensionsJSON) != "{}" {
-		if err := json.Unmarshal(extensionsJSON, &p.Extensions); err != nil {
-			return nil, fmt.Errorf("unmarshal extensions: %w", err)
-		}
-	}
-	if len(parametersJSON) > 0 && string(parametersJSON) != "null" && string(parametersJSON) != "{}" {
-		if err := json.Unmarshal(parametersJSON, &p.Parameters); err != nil {
-			return nil, fmt.Errorf("unmarshal parameters: %w", err)
-		}
-	}
-	if p.Tags == nil {
-		p.Tags = []string{}
-	}
-	if p.DependencyRules == nil {
-		p.DependencyRules = []models.DependencyRule{}
-	}
-	return &p, nil
+	// scanPipelineRow rather than a Scan of its own: this function used to
+	// carry a second copy of the destination list, and adding a column to
+	// the table meant remembering to widen both. Adding `draft` did not,
+	// and the mismatch only showed up against Postgres in CI.
+	return s.scanPipelineRow(s.db.QueryRow(
+		`SELECT `+pipelineColumns+` FROM pipelines WHERE id = $1`, id,
+	))
 }
 
 func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+		`SELECT ` + pipelineColumns + `
 		 FROM pipelines ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
@@ -750,11 +732,25 @@ func (s *PostgresStore) ListPipelines() ([]models.Pipeline, error) {
 }
 
 // scanPipelineRow scans a pipeline row from any scanner (Row or Rows).
+// pipelineColumns is the select list every pipeline read uses, in the
+// order scanPipelineRow scans them.
+//
+// It lives next to that function on purpose. The list was written out at
+// each of the eight call sites, so a new column had to be added to all
+// of them and to the scan, in the same order; `draft` reached most of
+// them and the mismatch surfaced as "expected 28 destination arguments
+// in Scan, not 27" from one query in CI. One list, one scan, one place
+// to change.
+const pipelineColumns = `id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, ` +
+	`webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, ` +
+	`enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, ` +
+	`catchup, parameters, draft`
+
 func (s *PostgresStore) scanPipelineRow(sc interface{ Scan(...interface{}) error }) (*models.Pipeline, error) {
 	var p models.Pipeline
 	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON []byte
 	if err := sc.Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &p.Catchup, &parametersJSON); err != nil {
+		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &p.Catchup, &parametersJSON, &p.Draft); err != nil {
 		return nil, err
 	}
 	json.Unmarshal(nodesJSON, &p.Nodes)
@@ -811,9 +807,9 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 	}
 	result, err := s.db.Exec(
 		`UPDATE pipelines SET ir_version=$1, name=$2, description=$3, nodes=$4, edges=$5, schedule=$6, schedule_timezone=$7,
-		 webhook_url=$8, params=$9, tags=$10, sla_deadline=$11, sla_timezone=$12, depends_on=$13, dependency_rules=$14, webhook_token=$15, enabled=$16, updated_at=$17, pipeline_id=$18, source=$19, workspace_id=$20, org_id=$21, hooks=$22, extensions=$23, catchup=$25, parameters=$26 WHERE id=$24`,
+		 webhook_url=$8, params=$9, tags=$10, sla_deadline=$11, sla_timezone=$12, depends_on=$13, dependency_rules=$14, webhook_token=$15, enabled=$16, updated_at=$17, pipeline_id=$18, source=$19, workspace_id=$20, org_id=$21, hooks=$22, extensions=$23, catchup=$25, parameters=$26, draft=$27 WHERE id=$24`,
 		p.IRVersion, p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule, p.ScheduleTimezone,
-		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.ID, p.Catchup, parametersJSON,
+		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.ID, p.Catchup, parametersJSON, p.Draft,
 	)
 	if err != nil {
 		return err
@@ -826,44 +822,9 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 }
 
 func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
-	var p models.Pipeline
-	var nodesJSON, edgesJSON, paramsJSON, tagsJSON, depsJSON, depRulesJSON, hooksJSON, extensionsJSON, parametersJSON []byte
-	err := s.db.QueryRow(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
-		 FROM pipelines WHERE pipeline_id = $1`, pipelineID,
-	).Scan(&p.ID, &p.IRVersion, &p.Name, &p.Description, &nodesJSON, &edgesJSON,
-		&p.Schedule, &p.ScheduleTimezone, &p.WebhookURL, &paramsJSON, &tagsJSON, &p.SLADeadline, &p.SLATimezone, &depsJSON, &depRulesJSON, &p.WebhookToken, &p.Enabled, &p.CreatedAt, &p.UpdatedAt, &p.PipelineID, &p.Source, &p.WorkspaceID, &p.OrgID, &hooksJSON, &extensionsJSON, &p.Catchup, &parametersJSON)
-	if err != nil {
-		return nil, err
-	}
-	json.Unmarshal(nodesJSON, &p.Nodes)
-	json.Unmarshal(edgesJSON, &p.Edges)
-	json.Unmarshal(paramsJSON, &p.Params)
-	json.Unmarshal(tagsJSON, &p.Tags)
-	json.Unmarshal(depsJSON, &p.DependsOn)
-	json.Unmarshal(depRulesJSON, &p.DependencyRules)
-	if len(hooksJSON) > 0 && string(hooksJSON) != "null" && string(hooksJSON) != "{}" {
-		if err := json.Unmarshal(hooksJSON, &p.Hooks); err != nil {
-			return nil, fmt.Errorf("unmarshal hooks: %w", err)
-		}
-	}
-	if len(extensionsJSON) > 0 && string(extensionsJSON) != "null" && string(extensionsJSON) != "{}" {
-		if err := json.Unmarshal(extensionsJSON, &p.Extensions); err != nil {
-			return nil, fmt.Errorf("unmarshal extensions: %w", err)
-		}
-	}
-	if len(parametersJSON) > 0 && string(parametersJSON) != "null" && string(parametersJSON) != "{}" {
-		if err := json.Unmarshal(parametersJSON, &p.Parameters); err != nil {
-			return nil, fmt.Errorf("unmarshal parameters: %w", err)
-		}
-	}
-	if p.Tags == nil {
-		p.Tags = []string{}
-	}
-	if p.DependencyRules == nil {
-		p.DependencyRules = []models.DependencyRule{}
-	}
-	return &p, nil
+	return s.scanPipelineRow(s.db.QueryRow(
+		`SELECT `+pipelineColumns+` FROM pipelines WHERE pipeline_id = $1`, pipelineID,
+	))
 }
 
 // ListPipelineDepsByOrg returns only the dep columns, avoiding expensive JSONB blob loads.
@@ -1014,9 +975,9 @@ func (s *PostgresStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
 	}
 	result, err := tx.Exec(
 		`UPDATE pipelines SET ir_version=$1, name=$2, description=$3, nodes=$4, edges=$5, schedule=$6, schedule_timezone=$7,
-		 webhook_url=$8, params=$9, tags=$10, sla_deadline=$11, sla_timezone=$12, depends_on=$13, dependency_rules=$14, webhook_token=$15, enabled=$16, updated_at=$17, pipeline_id=$18, source=$19, workspace_id=$20, org_id=$21, hooks=$22, extensions=$23, catchup=$25, parameters=$26 WHERE id=$24`,
+		 webhook_url=$8, params=$9, tags=$10, sla_deadline=$11, sla_timezone=$12, depends_on=$13, dependency_rules=$14, webhook_token=$15, enabled=$16, updated_at=$17, pipeline_id=$18, source=$19, workspace_id=$20, org_id=$21, hooks=$22, extensions=$23, catchup=$25, parameters=$26, draft=$27 WHERE id=$24`,
 		p.IRVersion, p.Name, p.Description, nodesJSON, edgesJSON, p.Schedule, p.ScheduleTimezone,
-		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.ID, p.Catchup, parametersJSON,
+		p.WebhookURL, paramsJSON, tagsJSON, p.SLADeadline, p.SLATimezone, depsJSON, depRulesJSON, p.WebhookToken, p.Enabled, p.UpdatedAt.UTC(), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, hooksJSON, extensionsJSON, p.ID, p.Catchup, parametersJSON, p.Draft,
 	)
 	if err != nil {
 		return err
@@ -1871,33 +1832,59 @@ func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
 
 // --- Data Preview ---
 
-func (s *PostgresStore) SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error {
-	colJSON, _ := json.Marshal(columns)
-	if len(rows) > 50 {
-		rows = rows[:50]
+func (s *PostgresStore) SaveNodePreview(runID, nodeID string, preview NodePreview) error {
+	columns := preview.Columns
+	rows := preview.Rows
+	truncated := preview.Truncated
+	var total any
+	if preview.TotalRows != nil {
+		total = *preview.TotalRows
 	}
+	// Engine is authoritative for Truncated/TotalRows when it knows the
+	// full size (DatasetRef.RowCount or len(output.Rows)). The store
+	// re-derives below only as a safety net for callers that omit the
+	// flag or hand more rows than NodePreviewRowLimit.
+	if preview.TotalRows != nil && !truncated {
+		truncated = *preview.TotalRows > int64(NodePreviewRowLimit)
+	}
+	if len(rows) > NodePreviewRowLimit {
+		rows = rows[:NodePreviewRowLimit]
+		truncated = true
+		if preview.TotalRows == nil {
+			n := int64(len(preview.Rows))
+			total = n
+		}
+	}
+	colJSON, _ := json.Marshal(columns)
 	rowJSON, _ := json.Marshal(rows)
 	_, err := s.db.Exec(
-		`INSERT INTO node_previews (run_id, node_id, columns, rows) VALUES ($1,$2,$3,$4)
-		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4`,
-		runID, nodeID, colJSON, rowJSON,
+		`INSERT INTO node_previews (run_id, node_id, columns, rows, truncated, total_rows) VALUES ($1,$2,$3,$4,$5,$6)
+		 ON CONFLICT (run_id, node_id) DO UPDATE SET columns=$3, rows=$4, truncated=$5, total_rows=$6`,
+		runID, nodeID, colJSON, rowJSON, truncated, total,
 	)
 	return err
 }
 
-func (s *PostgresStore) GetNodePreview(runID, nodeID string) ([]string, []common.DataRow, error) {
+func (s *PostgresStore) GetNodePreview(runID, nodeID string) (NodePreview, error) {
 	var colJSON, rowJSON []byte
+	var truncated bool
+	var total sql.NullInt64
 	err := s.db.QueryRow(
-		`SELECT columns, rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
-	).Scan(&colJSON, &rowJSON)
+		`SELECT columns, rows, truncated, total_rows FROM node_previews WHERE run_id = $1 AND node_id = $2`, runID, nodeID,
+	).Scan(&colJSON, &rowJSON, &truncated, &total)
 	if err != nil {
-		return nil, nil, err
+		return NodePreview{}, err
 	}
 	var columns []string
 	var rows []common.DataRow
 	json.Unmarshal(colJSON, &columns)
 	json.Unmarshal(rowJSON, &rows)
-	return columns, rows, nil
+	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncated}
+	if total.Valid {
+		n := total.Int64
+		out.TotalRows = &n
+	}
+	return out, nil
 }
 
 // --- Versioning ---
@@ -2050,15 +2037,18 @@ func (s *PostgresStore) GetDBSize() (int64, error) {
 
 func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 	rows, err := s.db.Query(
-		`SELECT date(started_at) as day,
+		// AT TIME ZONE 'UTC' rather than date(), which converts a
+		// TIMESTAMPTZ using the session's TimeZone and so bucketed by
+		// whatever the connection happened to be set to (#611).
+		`SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as day,
 		        COUNT(*) as total,
 		        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		        SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		        SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
 		 FROM runs
-		 WHERE started_at >= NOW() - INTERVAL '1 day' * $1
+		 WHERE started_at >= $1
 		 GROUP BY day ORDER BY day`,
-		days,
+		CalendarWindowStartTime(days),
 	)
 	if err != nil {
 		return nil, err
@@ -2077,14 +2067,14 @@ func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 }
 
 func (s *PostgresStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay, error) {
-	query := `SELECT date(started_at) as day,
+	query := `SELECT to_char(started_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') as day,
 		COUNT(*) as total,
 		SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) as success,
 		SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed,
 		SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END) as running
-	 FROM runs WHERE started_at >= NOW() - INTERVAL '1 day' * $1`
+	 FROM runs WHERE started_at >= $1`
 	var args []interface{}
-	args = append(args, days)
+	args = append(args, CalendarWindowStartTime(days))
 	if orgID != "" {
 		query += ` AND org_id = $2`
 		args = append(args, orgID)
@@ -2135,10 +2125,10 @@ func (s *PostgresStore) CreateConnection(c *models.Connection) error {
 func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error) {
 	var c models.Connection
 	err := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id
 		 FROM connections WHERE conn_id = $1`, connID,
 	).Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent)
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &c.WorkspaceID)
 	if err != nil {
 		return nil, err
 	}
@@ -2216,16 +2206,19 @@ func (s *PostgresStore) SetVariable(v *models.Variable) error {
 	_, err := s.db.Exec(
 		`INSERT INTO variables (key, value, type, description, workspace_id, created_at, updated_at)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7)
-		 ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value, type=EXCLUDED.type, description=EXCLUDED.description, updated_at=EXCLUDED.updated_at`,
+		 ON CONFLICT(workspace_id, key) DO UPDATE SET value=EXCLUDED.value, type=EXCLUDED.type, description=EXCLUDED.description, updated_at=EXCLUDED.updated_at`,
 		v.Key, v.Value, v.Type, v.Description, wsID, v.CreatedAt, v.UpdatedAt,
 	)
 	return err
 }
 
-func (s *PostgresStore) GetVariable(key string) (*models.Variable, error) {
+func (s *PostgresStore) GetVariable(workspaceID, key string) (*models.Variable, error) {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
 	var v models.Variable
 	err := s.db.QueryRow(
-		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE key = $1`, key,
+		`SELECT key, value, type, description, created_at, updated_at FROM variables WHERE workspace_id = $1 AND key = $2`, workspaceID, key,
 	).Scan(&v.Key, &v.Value, &v.Type, &v.Description, &v.CreatedAt, &v.UpdatedAt)
 	if err != nil {
 		return nil, err
@@ -2252,8 +2245,11 @@ func (s *PostgresStore) ListVariables() ([]models.Variable, error) {
 	return vars, nil
 }
 
-func (s *PostgresStore) DeleteVariable(key string) error {
-	result, err := s.db.Exec(`DELETE FROM variables WHERE key = $1`, key)
+func (s *PostgresStore) DeleteVariable(workspaceID, key string) error {
+	if workspaceID == "" {
+		workspaceID = "default"
+	}
+	result, err := s.db.Exec(`DELETE FROM variables WHERE workspace_id = $1 AND key = $2`, workspaceID, key)
 	if err != nil {
 		return err
 	}
@@ -2732,7 +2728,7 @@ func (s *PostgresStore) DeleteAPIToken(id string) error {
 
 func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+		`SELECT `+pipelineColumns+`
 		 FROM pipelines WHERE workspace_id = $1 ORDER BY created_at DESC`, workspaceID,
 	)
 	if err != nil {
@@ -2752,7 +2748,7 @@ func (s *PostgresStore) ListPipelinesByWorkspace(workspaceID string) ([]models.P
 
 func (s *PostgresStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, error) {
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+		`SELECT `+pipelineColumns+`
 		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC`, orgID,
 	)
 	if err != nil {
@@ -2770,11 +2766,70 @@ func (s *PostgresStore) ListPipelinesByOrg(orgID string) ([]models.Pipeline, err
 	return pipelines, rows.Err()
 }
 
+// ListPipelinesByOrgAndWorkspace narrows ListPipelinesByOrg to one
+// workspace. Both predicates are applied: the workspace alone would match
+// a row another organization put in a workspace of the same name, and the
+// organization alone is what made every workspace show the same list.
+func (s *PostgresStore) ListPipelinesByOrgAndWorkspace(orgID, workspaceID string) ([]models.Pipeline, error) {
+	rows, err := s.db.Query(
+		`SELECT `+pipelineColumns+`
+		 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 ORDER BY created_at DESC`, orgID, workspaceID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	return pipelines, rows.Err()
+}
+
+// ListPipelinesByOrgAndWorkspaceCursor is ListPipelinesByOrgCursor scoped
+// to one workspace, with the same keyset walk: id is a sortable UUIDv7, so
+// paging is "id < cursor" descending, and one extra row answers has_next.
+func (s *PostgresStore) ListPipelinesByOrgAndWorkspaceCursor(orgID, workspaceID, afterID string, limit int) ([]models.Pipeline, bool, error) {
+	var rows *sql.Rows
+	var err error
+	fetchN := limit + 1 // fetch one extra to detect has_next
+	if afterID == "" {
+		rows, err = s.db.Query(
+			`SELECT `+pipelineColumns+`
+			 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 ORDER BY id DESC LIMIT $3`, orgID, workspaceID, fetchN)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT `+pipelineColumns+`
+			 FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND id < $3 ORDER BY id DESC LIMIT $4`, orgID, workspaceID, afterID, fetchN)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	var pipelines []models.Pipeline
+	for rows.Next() {
+		p, err := s.scanPipelineRow(rows)
+		if err != nil {
+			return nil, false, err
+		}
+		pipelines = append(pipelines, *p)
+	}
+	hasNext := len(pipelines) > limit
+	if hasNext {
+		pipelines = pipelines[:limit]
+	}
+	return pipelines, hasNext, rows.Err()
+}
+
 func (s *PostgresStore) ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error) {
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = $1`, orgID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+		`SELECT `+pipelineColumns+`
 		 FROM pipelines WHERE org_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3`, orgID, limit, offset,
 	)
 	if err != nil {
@@ -2798,11 +2853,11 @@ func (s *PostgresStore) ListPipelinesByOrgCursor(orgID string, afterID string, l
 	fetchN := limit + 1 // fetch one extra to detect has_next
 	if afterID == "" {
 		rows, err = s.db.Query(
-			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+			`SELECT `+pipelineColumns+`
 			 FROM pipelines WHERE org_id = $1 ORDER BY id DESC LIMIT $2`, orgID, fetchN)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters
+			`SELECT `+pipelineColumns+`
 			 FROM pipelines WHERE org_id = $1 AND id < $2 ORDER BY id DESC LIMIT $3`, orgID, afterID, fetchN)
 	}
 	if err != nil {

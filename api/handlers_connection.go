@@ -12,10 +12,13 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/Tnsor-Labs/brokoli/crypto"
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
@@ -64,25 +67,14 @@ func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
 
 func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Org-scoped users should only see connections from their workspace,
-	// not the shared "default" workspace from other orgs
-	orgID := GetOrgIDFromRequest(r)
-	wsID := GetWorkspaceID(r)
-	if orgID != "" && wsID == "default" {
-		// User has an org but no specific workspace — check their actual workspaces
-		if UserWorkspaceResolverFunc != nil {
-			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-				if sub, ok := (*claims)["sub"].(string); ok {
-					userWS := UserWorkspaceResolverFunc(sub)
-					if len(userWS) > 0 {
-						wsID = userWS[0] // Use their first workspace
-					} else {
-						// No workspace = no connections
-						writeJSON(w, http.StatusOK, []models.Connection{})
-						return
-					}
-				}
-			}
-		}
+	// not the shared "default" workspace from other orgs. effectiveWorkspace
+	// holds that rule for every list; it was written here first and the
+	// pipeline lists now share it rather than keeping a second copy.
+	wsID, ok := effectiveWorkspace(r)
+	if !ok {
+		// No workspace = no connections
+		writeJSON(w, http.StatusOK, []models.Connection{})
+		return
 	}
 	// Paginated — use SQL LIMIT/OFFSET
 	if r.URL.Query().Get("page") != "" {
@@ -92,10 +84,7 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		for i := range conns {
-			conns[i].Password = ""
-			conns[i].Extra = ""
-		}
+		maskConnections(conns)
 		writeJSON(w, http.StatusOK, store.NewPageResult(conns, total, pp))
 		return
 	}
@@ -108,13 +97,7 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 	if conns == nil {
 		conns = []models.Connection{}
 	}
-	for i := range conns {
-		conns[i].Password = ""
-		conns[i].Extra = ""
-		conns[i].PasswordRef = maskRef(conns[i].PasswordRef)
-		conns[i].ExtraRef = maskRef(conns[i].ExtraRef)
-	}
-
+	maskConnections(conns)
 	writeJSON(w, http.StatusOK, conns)
 }
 
@@ -251,6 +234,28 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// mask".
 	unmaskCredentials(&c)
 
+	// A stored secret belongs to the server it was entered for. Nobody can
+	// read it back through the API, but an editor could otherwise point
+	// the connection at a server they control and have the next test or
+	// run send it there. So a change of type, host or port does not carry
+	// stored secrets over: they have to be entered again. Extra settings
+	// are carried over only when they are a database's driver options
+	// (sslmode and the like); for every other type they hold credentials:
+	// an SFTP private key, HTTP auth headers, cloud keys.
+	moved := c.Type != existing.Type || c.Port != existing.Port ||
+		!strings.EqualFold(strings.TrimSpace(c.Host), strings.TrimSpace(existing.Host))
+	if moved {
+		if c.PasswordRef == "" && c.Password == "" && (existing.Password != "" || existing.PasswordRef != "") {
+			writeError(w, http.StatusBadRequest, "this change points the connection at a different server (its type, host or port changed), so the stored password is not kept: enter the password again")
+			return
+		}
+		extraIsDriverOptions := c.Type == existing.Type && existing.ExtraIsDriverOptions()
+		if !extraIsDriverOptions && c.ExtraRef == "" && c.Extra == "" && (existing.Extra != "" || existing.ExtraRef != "") {
+			writeError(w, http.StatusBadRequest, "this change points the connection at a different server (its type, host or port changed), so the stored extra settings are not kept: enter them again")
+			return
+		}
+	}
+
 	// Credential handling for updates:
 	// If a new password_ref is provided, use it (replaces any existing ref).
 	// If a bare password is provided, encrypt and store as encrypted:// ref.
@@ -353,13 +358,19 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 
 	switch c.Type {
 	case models.ConnTypePostgres:
-		result := testDBReal(ctx, "pgx", c.BuildURI())
+		result := testDBConnection(ctx, c.BuildURI())
+		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeRedshift:
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeMySQL:
-		result := testDBReal(ctx, "mysql", c.BuildURI())
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeSQLite:
-		result := testDBReal(ctx, "sqlite", c.Host)
+		result := testDBConnection(ctx, c.Host)
+		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeClickHouse:
+		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeHTTP:
 		result := testHTTPAuth(ctx, c, extra)
@@ -370,10 +381,32 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	case models.ConnTypeS3:
 		result := testS3(ctx, extra)
 		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
+		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
+		result := unsupportedDatabaseTest(c.Type)
+		writeJSON(w, http.StatusOK, result)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
 		result := testGeneric(ctx, c, extra)
 		writeJSON(w, http.StatusOK, result)
+	}
+}
+
+func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
+	driver, dsn, err := engine.DetectDriver(uri)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"error":   err.Error(),
+		}
+	}
+	return testDBReal(ctx, driver, dsn)
+}
+
+func unsupportedDatabaseTest(kind models.ConnectionType) map[string]interface{} {
+	return map[string]interface{}{
+		"success": false,
+		"error":   fmt.Sprintf("%s has no driver in this build", kind),
 	}
 }
 
@@ -467,110 +500,56 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 	}
 }
 
-// testSSH verifies SSH/SFTP connectivity by doing a TCP handshake and reading the SSH banner.
+// testSSH checks an sftp connection the way a run uses it (ADR-040): dial
+// through the outbound policy, verify the host key, authenticate, open the
+// SFTP subsystem, and confirm the base directory exists. It used to read
+// the SSH banner and stop, so a wrong password tested green. An unknown
+// host key fails with the key the server presented, returned as host_key,
+// so configuring it is one copy and paste once verified out of band.
 func testSSH(ctx context.Context, c *models.Connection) map[string]interface{} {
-	port := c.Port
-	if port == 0 {
-		port = 22
-	}
-	addr := fmt.Sprintf("%s:%d", c.Host, port)
-
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	cfg, err := engine.SFTPConfig(c)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Cannot reach %s: %v", addr, err),
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		cfg.Timeout = time.Until(deadline)
+	}
+	client, err := sftpclient.Dial(ctx, cfg)
+	if err != nil {
+		result := map[string]interface{}{"success": false, "error": err.Error()}
+		var hk *sftpclient.HostKeyError
+		if errors.As(err, &hk) {
+			result["host_key"] = hk.Presented
 		}
+		return result
 	}
-	defer conn.Close()
+	defer client.Close() //nolint:errcheck
 
-	// Read SSH banner (e.g. "SSH-2.0-OpenSSH_8.9")
-	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	buf := make([]byte, 256)
-	n, err := conn.Read(buf)
-	if err != nil || n == 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Connected to %s but no SSH banner received — is this an SSH server?", addr),
-		}
+	dir, err := client.CheckBaseDir()
+	if err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error(), "host_key": client.HostKey}
 	}
-
-	banner := strings.TrimSpace(string(buf[:n]))
-	if !strings.HasPrefix(banner, "SSH-") {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Connected but got unexpected banner: %q — not an SSH server", banner),
-		}
+	checked := "host key verified"
+	if cfg.InsecureSkipHostKeyCheck {
+		checked = "host key NOT checked, because insecure_skip_host_key_check is set"
 	}
-
-	// SSH server confirmed. We can't do full auth without an SSH library,
-	// but confirming the banner + reachability is meaningful.
-	msg := fmt.Sprintf("SSH server reachable (%s)", banner)
-	if c.Login != "" {
-		msg += fmt.Sprintf(", will authenticate as '%s'", c.Login)
-	}
-	// Note: full password auth requires golang.org/x/crypto/ssh which we don't import yet
 	return map[string]interface{}{
-		"success": true,
-		"message": msg,
+		"success":  true,
+		"message":  fmt.Sprintf("Signed in as %s over SFTP (%s); base directory %s exists", cfg.User, checked, dir),
+		"host_key": client.HostKey,
 	}
 }
 
-// testS3 validates S3 credentials by checking the extra config.
+// testS3 validates S3 credentials against the configured bucket.
 func testS3(ctx context.Context, extra map[string]interface{}) map[string]interface{} {
 	if extra == nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   "No extra config — set bucket, region, access_key, secret_key",
-		}
+		return map[string]interface{}{"success": false, "error": "No extra config — set bucket and region"}
 	}
-
-	missing := []string{}
-	for _, field := range []string{"bucket", "region", "access_key", "secret_key"} {
-		if v, ok := extra[field].(string); !ok || v == "" {
-			missing = append(missing, field)
-		}
-	}
-	if len(missing) > 0 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Missing required S3 fields: %s", strings.Join(missing, ", ")),
-		}
-	}
-
-	// Try an HTTP HEAD to the S3 endpoint to verify the bucket exists and is reachable
-	bucket := extra["bucket"].(string)
-	region := extra["region"].(string)
-	url := fmt.Sprintf("https://%s.s3.%s.amazonaws.com", bucket, region)
-
-	req, _ := http.NewRequestWithContext(ctx, "HEAD", url, nil)
-	client := netguard.Outbound().Client(5 * time.Second)
-	resp, err := client.Do(req)
+	err := engine.TestS3Connection(ctx, extra)
 	if err != nil {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("Cannot reach S3 bucket: %v", err),
-		}
+		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
-	defer resp.Body.Close()
-
-	// 200/301/307 = bucket exists, 403 = bucket exists but no public access (expected with private buckets)
-	if resp.StatusCode == 200 || resp.StatusCode == 301 || resp.StatusCode == 307 || resp.StatusCode == 403 {
-		return map[string]interface{}{
-			"success": true,
-			"message": fmt.Sprintf("S3 bucket '%s' in %s is reachable (HTTP %d). Full auth requires AWS SDK at runtime.", bucket, region, resp.StatusCode),
-		}
-	}
-	if resp.StatusCode == 404 {
-		return map[string]interface{}{
-			"success": false,
-			"error":   fmt.Sprintf("S3 bucket '%s' not found in region %s", bucket, region),
-		}
-	}
-	return map[string]interface{}{
-		"success": false,
-		"error":   fmt.Sprintf("Unexpected S3 response: HTTP %d", resp.StatusCode),
-	}
+	return map[string]interface{}{"success": true, "message": "Authenticated successfully against the S3 bucket"}
 }
 
 // testGeneric tries the best test for a generic connection.
@@ -682,7 +661,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "Enterprise relational database for mission-critical workloads. No driver in this build: the connection test says so by name",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
 		{"type": "mssql", "label": "SQL Server", "category": "database", "icon": "connMssql",
-			"description": "Microsoft's enterprise relational database. No driver in this build: the connection test says so by name",
+			"description": "Microsoft's enterprise relational database with authenticated read and write support",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
 		{"type": "sqlite", "label": "SQLite", "category": "database", "icon": "connSqlite",
 			"description": "Zero-configuration embedded database in a single file",
@@ -705,8 +684,12 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "Any HTTP endpoint — REST APIs, webhooks, exports",
 			"fields":      []string{"host", "port", "login", "password", "extra"}},
 		{"type": "sftp", "label": "SFTP / SSH", "category": "api", "icon": "connSftp",
-			"description": "File transfer over SSH — drop zones and exports",
-			"fields":      []string{"host", "port", "login", "password", "extra"}},
+			"description": "File delivery and pickup over SSH: source_file and sink_file read and write through it",
+			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints": map[string]string{
+				"schema": "/upload (empty: the login directory)",
+				"extra":  `{"host_key": "SHA256:...", "private_key": "-----BEGIN OPENSSH PRIVATE KEY-----...", "passphrase": "..."}`,
+			}},
 		{"type": "generic", "label": "Generic", "category": "other", "icon": "connGeneric",
 			"description": "Any other system — bring your own settings",
 			"fields":      []string{"host", "port", "login", "password", "extra"}},

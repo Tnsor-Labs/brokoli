@@ -52,6 +52,7 @@ func rowLocalTransformRules(rules []TransformRule) bool {
 		switch rule.Type {
 		case "rename_columns", "rename",
 			"add_column",
+			"project", "projection",
 			"filter_rows", "filter",
 			"apply_function", "function",
 			"replace_values", "replace",
@@ -93,26 +94,48 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		err error
 	}
 	putDone := make(chan putResult, 1)
-	go func() {
-		ref, err := outputs.blobs.Put(context.Background(), outputs.namespace, pr, artifact.PutOptions{
-			MediaType: artifact.MediaTypeNDJSON,
-		})
-		if err != nil {
-			// Unblock the encoder side if Put failed mid-stream.
-			_ = pr.CloseWithError(err)
-		}
-		putDone <- putResult{ref, err}
-	}()
 
-	// Buffered for the same reason as EncodeNDJSON: pw is an io.Pipe,
-	// and an unbuffered write per batch costs a scheduler round-trip that
-	// the store on the other end is not waiting on.
-	encBuf := bufio.NewWriterSize(pw, encodeBufferSize)
-	enc := json.NewEncoder(encBuf)
-	enc.SetEscapeHTML(false) // match EncodeNDJSON byte-for-byte
+	// Put does not start until the first output batch has chosen a codec,
+	// because the media type labelling the blob is an argument to it. Once
+	// started it drains the pipe this writes into. See
+	// arrow_stream_encode.go for why the choice cannot be deferred and
+	// what a later batch disagreeing with it costs.
+	writer := newDatasetStreamWriter(pw, streamCodecFromEnv())
+	outFormat := artifact.FormatNDJSON
+	started := false
+	startPut := func(first *common.DataSet) error {
+		started = true
+		format, mediaType, err := writer.Decide(first)
+		if err != nil {
+			return err
+		}
+		outFormat = format
+		go func() {
+			ref, perr := outputs.blobs.Put(context.Background(), outputs.namespace, pr, artifact.PutOptions{
+				MediaType: mediaType,
+			})
+			if perr != nil {
+				// Unblock the encoder side if Put failed mid-stream.
+				_ = pr.CloseWithError(perr)
+			}
+			putDone <- putResult{ref, perr}
+		}()
+		return nil
+	}
+	// write is the single path output takes, so the row-at-a-time loop
+	// and the aggregation's one final dataset cannot disagree about the
+	// codec, the row count or the empty sentinel.
+	write := func(ds *common.DataSet) error {
+		if !started {
+			if err := startPut(ds); err != nil {
+				return err
+			}
+		}
+		return writer.WriteBatch(ds)
+	}
+
 	var outCols []string
 	rowCount := int64(0)
-	wroteAny := false
 	var streamErr error
 	for {
 		batch, err := batches.Next()
@@ -137,17 +160,11 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		if outCols == nil && len(batch.Columns) > 0 {
 			outCols = batch.Columns
 		}
-		for _, row := range batch.Rows {
-			if err := enc.Encode(row); err != nil {
-				streamErr = fmt.Errorf("encode streamed output: %w", err)
-				break
-			}
-			rowCount++
-			wroteAny = true
-		}
-		if streamErr != nil {
+		if err := write(batch); err != nil {
+			streamErr = fmt.Errorf("encode streamed output: %w", err)
 			break
 		}
+		rowCount += int64(len(batch.Rows))
 	}
 	if streamErr == nil && aggState != nil {
 		final := aggState.finalize()
@@ -157,29 +174,25 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 			streamErr = err
 		} else {
 			outCols = final.Columns
-			for _, row := range final.Rows {
-				if err := enc.Encode(row); err != nil {
-					streamErr = fmt.Errorf("encode aggregated output: %w", err)
-					break
-				}
-				rowCount++
-				wroteAny = true
+			if err := write(final); err != nil {
+				streamErr = fmt.Errorf("encode aggregated output: %w", err)
+			} else {
+				rowCount += int64(len(final.Rows))
 			}
 		}
 	}
-	// Flush before the sentinel and before closing: whatever the encoder
-	// buffered is not in the pipe yet, and closing would discard it.
-	if streamErr == nil {
-		if err := encBuf.Flush(); err != nil {
+	if !started {
+		// Nothing was produced, so no batch chose a codec. Decide with
+		// nothing, which selects NDJSON and its empty-dataset sentinel,
+		// and start the Put that has to consume it.
+		if err := startPut(nil); err != nil && streamErr == nil {
 			streamErr = err
 		}
 	}
-	if streamErr == nil && !wroteAny {
-		// Preserve EncodeNDJSON's empty-dataset sentinel so the blob
-		// decodes identically to a batch-written empty output.
-		if _, err := pw.Write([]byte("[]")); err != nil {
-			streamErr = err
-		}
+	// Close flushes whatever the encoder buffered, which is not in the
+	// pipe yet, and writes the empty sentinel when nothing was produced.
+	if _, err := writer.Close(); err != nil && streamErr == nil {
+		streamErr = err
 	}
 	_ = pw.CloseWithError(streamErr)
 	put := <-putDone
@@ -205,7 +218,7 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 	}
 	return &artifact.DatasetRef{
 		ArtifactRef: *put.ref,
-		Format:      artifact.FormatNDJSON,
+		Format:      outFormat,
 		Columns:     outCols,
 		RowCount:    rowCount,
 	}, nil
@@ -279,7 +292,17 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 	limits := codeexec.Resolve(nodeConfig)
 
 	cmd := exec.CommandContext(ctx, pythonPath, wrapperFile) // #nosec G204 -- identical to ExecuteCodeNode's baseline-accepted launch: a code node exists to run pipeline-author code, and an author-set python_path grants nothing the script itself doesn't already have.
-	cmd.Env = append(os.Environ(),
+	// codeexec.WorkerEnv(), not os.Environ(): a code node runs
+	// pipeline-author code, and the server's own environment holds its
+	// database URL, signing secret and encryption key. The pooled
+	// executor (pkg/codeexec/worker.go) has always filtered; this path
+	// and the streamed one did not, so which of two interchangeable
+	// executors happened to run a script decided whether that script
+	// could read the deployment's secrets.
+	//
+	// BROKOLI_CODE_PASS_ENV opts names back in, the same knob the
+	// pooled path already documents.
+	cmd.Env = append(codeexec.WorkerEnv(),
 		"BROKED_SCRIPT="+scriptFile,
 		"BROKED_CONFIG="+string(configJSON),
 		"BROKED_PARAMS="+string(paramsJSON),
@@ -350,6 +373,58 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 // stageRefToNDJSONFile stream-copies a blob-referenced dataset into a temp
 // NDJSON file for a code node's Python subprocess — disk to disk through
 // an I/O buffer, never a Go DataSet. Caller removes the returned file.
+// writeRefAsNDJSON copies a referenced dataset to w as NDJSON, decoding
+// first when the blob is not already NDJSON.
+//
+// The copy used to be unconditional, which was correct only while every
+// spilled dataset was NDJSON. nodeOutputs.spill writes Arrow whenever
+// arrowEncodableSchema accepts the dataset, and #560 widened that to
+// integer columns -- so ordinary tables started spilling as Arrow and
+// this path handed Arrow IPC bytes to a wrapper that reads NDJSON.
+// node_output_store.go says what that costs: "feeding an Arrow blob to
+// the NDJSON decoder ... returns ZERO ROWS, which is the silent data
+// loss".
+//
+// The already-open ReadCloser is passed in rather than reopened, so the
+// NDJSON case stays a plain copy with no second GET.
+func writeRefAsNDJSON(outputs *nodeOutputs, ref *artifact.DatasetRef, rc io.Reader, w io.Writer) error {
+	if ref.Format == artifact.FormatNDJSON || ref.Format == "" {
+		if _, err := io.Copy(w, rc); err != nil {
+			return fmt.Errorf("stage input: %w", err)
+		}
+		return nil
+	}
+
+	// Batch at a time, never the whole dataset: this function exists so a
+	// dataset too large to materialise can still reach a script.
+	batches, closer, err := outputs.OpenBatches(ref)
+	if err != nil {
+		return fmt.Errorf("stage input: open %s dataset: %w", ref.Format, err)
+	}
+	defer closer.Close()
+
+	buf := bufio.NewWriterSize(w, encodeBufferSize)
+	enc := json.NewEncoder(buf)
+	for {
+		batch, err := batches.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("stage input: read %s dataset: %w", ref.Format, err)
+		}
+		for _, row := range batch.Rows {
+			if err := enc.Encode(map[string]interface{}(row)); err != nil {
+				return fmt.Errorf("stage input: encode row: %w", err)
+			}
+		}
+	}
+	if err := buf.Flush(); err != nil {
+		return fmt.Errorf("stage input: flush: %w", err)
+	}
+	return nil
+}
+
 func stageRefToNDJSONFile(outputs *nodeOutputs, ref *artifact.DatasetRef) (string, error) {
 	rc, err := outputs.blobs.Open(context.Background(), &ref.ArtifactRef)
 	if err != nil {
@@ -361,10 +436,10 @@ func stageRefToNDJSONFile(outputs *nodeOutputs, ref *artifact.DatasetRef) (strin
 	if err != nil {
 		return "", fmt.Errorf("create staged input: %w", err)
 	}
-	if _, err := io.Copy(f, rc); err != nil {
+	if err := writeRefAsNDJSON(outputs, ref, rc, f); err != nil {
 		_ = f.Close()
 		_ = os.Remove(path)
-		return "", fmt.Errorf("stage input: %w", err)
+		return "", err
 	}
 	if err := f.Close(); err != nil {
 		_ = os.Remove(path)
@@ -436,7 +511,8 @@ func (c *ndjsonRowCounter) finalCount() int64 {
 
 // previewFromRef materializes only the first previewRows rows of a
 // referenced output — what SaveNodePreview actually keeps — instead of
-// the whole dataset.
+// the whole dataset. Callers that need Truncated/TotalRows should use
+// ref.RowCount rather than peeking past the filled preview.
 func previewFromRef(outputs *nodeOutputs, ref *artifact.DatasetRef, previewRows int) (*common.DataSet, error) {
 	batches, closer, err := outputs.OpenBatches(ref)
 	if err != nil {
@@ -527,7 +603,7 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 // after streamEligible plus the input-form checks passed, so the
 // preconditions (transform: inputRef non-nil; code: inputRef or no input)
 // hold by construction.
-func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, inputSchema columnSchema, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, inputSchema columnSchema, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	switch node.Type {
 	case models.NodeTypeTransform:
 		rules, err := parseNodeTransformRules(node)
@@ -547,8 +623,8 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 			return nodeExecutionResult{}, err
 		}
 		r.log(node.ID, models.LogLevelInfo,
-			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out (never materialized)",
-			len(rules), inRows, ref.RowCount)
+			"Streamed %d rule(s) over %d row(s) by reference: %d row(s) out as %s (never materialized)",
+			len(rules), inRows, ref.RowCount, datasetRefFormatName(ref))
 		// #363: the same rules ran over the rows, so the same rules run
 		// over the types. Streaming changes where the rows are, not what
 		// the columns became.
@@ -556,13 +632,13 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 	case models.NodeTypeSourceFile:
 		return r.runSourceFileStreamed(ctx, node, outputs)
 	case models.NodeTypeSourceDB:
-		return r.runSourceDBStreamed(ctx, node, outputs)
+		return r.runSourceDBStreamed(ctx, node, outputs, attempt)
 	case models.NodeTypeSinkAPI:
 		return r.runSinkAPIStreamed(node, inputRef, outputs)
 	case models.NodeTypeSinkFile:
-		return r.runSinkFileStreamed(node, inputRef, outputs)
+		return r.runSinkFileStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeSinkDB:
-		return r.runSinkDBStreamed(ctx, node, inputRef, outputs)
+		return r.runSinkDBStreamed(ctx, node, inputRef, outputs, attempt)
 	case models.NodeTypeCode:
 		return r.runCodeStreamed(ctx, node, inputRef, outputs)
 	}
@@ -652,7 +728,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 			if err != nil {
 				return nodeExecutionResult{}, err
 			}
-			return nodeExecutionResult{outputRef: ref}, nil
+			schema, schemaErr := declaredOutputSchema(node.Config)
+			if schemaErr != nil {
+				return nodeExecutionResult{}, schemaErr
+			}
+			return nodeExecutionResult{outputRef: ref, outputSchema: schema}, nil
 		}
 		// Small output: materialize, exactly as the batch path would have.
 		ds, err := ReadNDJSON(res.outputPath)
@@ -662,7 +742,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 		if len(res.columns) > 0 {
 			ds.Columns = res.columns
 		}
-		return nodeExecutionResult{output: ds}, nil
+		schema, schemaErr := declaredOutputSchema(node.Config)
+		if schemaErr != nil {
+			return nodeExecutionResult{}, schemaErr
+		}
+		return nodeExecutionResult{output: ds, outputSchema: schema}, nil
 	}
 
 	// No NDJSON file: the wrapper printed JSON on stdout (empty result, or
@@ -676,7 +760,11 @@ func (r *Runner) runCodeStreamed(ctx context.Context, node models.Node, inputRef
 	for i, row := range out.Rows {
 		ds.Rows[i] = common.DataRow(row)
 	}
-	return nodeExecutionResult{output: ds}, nil
+	schema, schemaErr := declaredOutputSchema(node.Config)
+	if schemaErr != nil {
+		return nodeExecutionResult{}, schemaErr
+	}
+	return nodeExecutionResult{output: ds, outputSchema: schema}, nil
 }
 
 // sinkStreamConfig builds the same SQLGenConfig runSinkDB builds, and
@@ -737,15 +825,17 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	if path == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_file node requires 'path' config")
 	}
-	if err := validateFilePath(path); err != nil {
-		return nodeExecutionResult{}, fmt.Errorf("source_file: %w", err)
+	local, cleanup, remote, err := r.sourceFileLocal(ctx, node, path)
+	if err != nil {
+		return nodeExecutionResult{}, err
 	}
+	defer cleanup()
 
 	var columns []string
 	var sample common.DataRow
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
-			cols, _, lerr := loaders.StreamBatches(ctx, path, 0, func(b *common.DataSet) error {
+			cols, _, lerr := loaders.StreamBatches(ctx, local, 0, func(b *common.DataSet) error {
 				// One row kept for the sample log the materialising path
 				// prints. Holding a single row costs nothing and losing it
 				// would make the streamed path harder to eyeball than the
@@ -761,10 +851,13 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 		func() []string { return columns },
 	)
 	if err != nil {
+		if remote {
+			return nodeExecutionResult{}, fmt.Errorf("load %s: %w", remoteFileAssetID(fileConnID(node), path), err)
+		}
 		return nodeExecutionResult{}, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
 	}
 
-	fi, _ := os.Stat(path)
+	fi, _ := os.Stat(local)
 	sizeStr := "unknown size"
 	if fi != nil {
 		if mb := float64(fi.Size()) / 1024 / 1024; mb >= 1 {
@@ -774,8 +867,8 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 		}
 	}
 	r.log(node.ID, models.LogLevelInfo,
-		"Streamed %d rows, %d columns from %s (%s) by reference (never materialized)",
-		ref.RowCount, len(ref.Columns), filepath.Base(path), sizeStr)
+		"Streamed %d rows, %d columns from %s (%s) by reference as %s (never materialized)",
+		ref.RowCount, len(ref.Columns), filepath.Base(path), sizeStr, datasetRefFormatName(ref))
 	if sample != nil {
 		parts := make([]string, 0, len(ref.Columns))
 		for _, col := range ref.Columns {
@@ -791,7 +884,7 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	// The same warning the materialising path emits: which pod read the file
 	// and how old it was are the two facts that separate a correct read from
 	// a stale one, and streaming does not change that.
-	if unsharedFileStorage() {
+	if unsharedFileStorage() && !remote {
 		host, _ := os.Hostname()
 		age := "unknown age"
 		if fi != nil {
@@ -805,7 +898,7 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 	return nodeExecutionResult{outputRef: ref}, nil
 }
 
-func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -815,6 +908,7 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
+	r.recordExecutedSQL(node.ID, attempt, query)
 	var columns []string
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
@@ -829,8 +923,8 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	}
 
 	r.log(node.ID, models.LogLevelInfo,
-		"Streamed %d rows, %d columns from database by reference (never materialized)",
-		ref.RowCount, len(ref.Columns))
+		"Streamed %d rows, %d columns from database by reference as %s (never materialized)",
+		ref.RowCount, len(ref.Columns), datasetRefFormatName(ref))
 	// #363: the same column types the materialising path reports. A source
 	// that streams is still a source that knows what its columns are, and
 	// a sink downstream of it creating a table needs them just as much --
@@ -842,7 +936,7 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 // runSinkDBStreamed writes a referenced input with the dialect's bulk
 // path, pulling batches off the blob store instead of decoding the whole
 // thing first.
-func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
 	uri, cfg, ok := sinkStreamConfig(node)
 	if !ok {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db node is not streamable (dispatch bug: eligibility should have caught this)")
@@ -868,6 +962,7 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 	}
 	defer closer.Close()
 
+	r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
 	affected, err := w(ctx, uri, cfg, inputRef.Columns, batches.Next)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("bulk write to %s: %w", cfg.Table, err)
@@ -880,7 +975,7 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 // runSinkFileStreamed writes a referenced input straight to the file,
 // pulling batches off the blob store instead of decoding the whole thing
 // and then encoding a second full copy of it.
-func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSinkFileStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	if inputRef == nil {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file streamed path requires a referenced input (dispatch bug)")
 	}
@@ -888,31 +983,36 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 	if path == "" {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file node requires 'path' config")
 	}
-	if err := validateFilePath(path); err != nil {
-		return nodeExecutionResult{}, fmt.Errorf("sink_file: %w", err)
+	if fileConnID(node) == "" {
+		if err := validateFilePath(path); err != nil {
+			return nodeExecutionResult{}, fmt.Errorf("sink_file: %w", err)
+		}
 	}
 	format := sinkFileFormat(node)
 	if !sinkFileFormatStreams(format) {
 		return nodeExecutionResult{}, fmt.Errorf("sink_file format %q is not streamable (dispatch bug: eligibility should have caught this)", format)
 	}
-	if dir := filepath.Dir(path); dir != "" {
-		// #nosec G301 -- same mode runSinkFile creates it with; the two
-		// paths must not differ on where a file can be written.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nodeExecutionResult{}, fmt.Errorf("create output directory: %w", err)
-		}
-	}
-
 	batches, closer, err := outputs.OpenBatches(inputRef)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
 	}
 	defer closer.Close()
 
-	rows, written, err := writeSinkFileStreamed(path, format, inputRef.Columns, batches.Next)
+	// The same destination step the batch sink uses, so a streamed run
+	// with conn_id cannot write locally instead of delivering.
+	var rows int64
+	out, err := r.writeFileOutput(ctx, node, path, func(w io.Writer) error {
+		var encErr error
+		rows, encErr = encodeSinkFile(w, format, inputRef.Columns, batches.Next)
+		return encErr
+	})
 	if err != nil {
 		return nodeExecutionResult{}, err
 	}
+	if out.skipped {
+		return nodeExecutionResult{}, nil
+	}
+	written := out.bytes
 
 	mb := float64(written) / 1024 / 1024
 	if mb >= 1 {
@@ -922,8 +1022,8 @@ func (r *Runner) runSinkFileStreamed(node models.Node, inputRef *artifact.Datase
 		r.log(node.ID, models.LogLevelInfo,
 			"Streamed %s to %s (%.0f KB, %d rows, never materialized)", format, filepath.Base(path), float64(written)/1024, rows)
 	}
-	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
-	if unsharedFileStorage() {
+	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", out.where)
+	if unsharedFileStorage() && !out.remote {
 		host, _ := os.Hostname()
 		r.log(node.ID, models.LogLevelWarning,
 			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
@@ -996,4 +1096,22 @@ func (r *Runner) runSinkAPIStreamed(node models.Node, inputRef *artifact.Dataset
 		"API sink complete: %d rows sent in %d batches to %s (streamed by reference, never materialized)",
 		totalSent, sentBatches, cfg.url)
 	return nodeExecutionResult{}, nil
+}
+
+// datasetRefFormatName names the codec a streamed output was written in,
+// for the log line the operator actually reads.
+//
+// The choice was invisible: two codecs, decided per stream from the
+// first batch, and nothing anywhere said which one ran. That made the
+// faster path unverifiable outside a benchmark, and made a silent
+// fallback, the thing arrowEncodableSchema does by design, impossible to
+// notice on a real pipeline. A choice worth making is worth reporting.
+//
+// An empty Format means NDJSON, which is what every reader already
+// treats it as.
+func datasetRefFormatName(ref *artifact.DatasetRef) string {
+	if ref == nil || ref.Format == "" {
+		return artifact.FormatNDJSON
+	}
+	return ref.Format
 }

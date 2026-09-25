@@ -9,15 +9,20 @@ on:
       # contract tests, so schema changes must run them. (GitHub Actions
       # doesn't support YAML anchors; keep both lists and security.yml
       # in sync by hand.)
+      # ui/** is the React UI workspace; it has its own gate in ui.yml, so
+      # a UI-only change does not run the Go pipeline. build-ui.sh and
+      # web/dist are deliberately NOT ignored: they affect the embed.
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
   pull_request:
     branches: [main]
     paths-ignore:
       - "**.md"
       - "docs/adr/**"
       - "docs/rfcs/**"
+      - "ui/**"
 
 jobs:
   lint:
@@ -100,8 +105,19 @@ jobs:
           --health-cmd "wget -qO- http://127.0.0.1:8123/ping"
           --health-interval 3s --health-timeout 5s --health-retries 30
           --ulimit nofile=262144:262144
-
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Brokoli!12345
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "bash -c '</dev/tcp/127.0.0.1/1433'"
+          --health-interval 5s --health-timeout 3s --health-retries 30
     env:
+      BROKOLI_TEST_SQLSERVER_URL: sqlserver://sa:Brokoli%2112345@localhost:1433?database=master&encrypt=disable
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
       BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
       # A second Postgres variable exists for the execution-attempt migration
@@ -166,23 +182,10 @@ jobs:
       - name: Code-node JavaScript wrapper contract tests
         run: node --test pkg/codeexec/jswrapper/tests/*.test.mjs
 
-      # Chromium, Firefox and FFmpeg were re-downloaded on every run.
-      # Keyed on the lockfile: a @playwright/test bump changes the key,
-      # so a stale browser build can never be served to a newer client.
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('ui/package-lock.json') }}
-          restore-keys: playwright-${{ runner.os }}-
-
       - name: Build UI (required for go:embed)
-        working-directory: ui
-        run: |
-          npm ci
-          npx playwright install chromium firefox
-          npm run test:e2e
-          npm run build
+        # Builds only the embed artifact into web/dist. The UI is typechecked
+        # and tested in the dedicated "UI" job, not here.
+        run: bash build-ui.sh
 
       - name: Test
         # Go's default per-package timeout is 10 minutes, and the engine
@@ -235,6 +238,17 @@ jobs:
     # testing less, which is the failure this repo has been fixing all
     # week.
     services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Brokoli!12345
+          MSSQL_PID: Developer
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "bash -c '</dev/tcp/127.0.0.1/1433'"
+          --health-interval 5s --health-timeout 3s --health-retries 30
       postgres:
         image: postgres:16-alpine
         env:
@@ -280,6 +294,7 @@ jobs:
           --ulimit nofile=262144:262144
 
     env:
+      BROKOLI_TEST_SQLSERVER_URL: sqlserver://sa:Brokoli%2112345@localhost:1433?database=master&encrypt=disable
       BROKOLI_TEST_POSTGRES_URL: postgres://brokoli:brokoli@localhost:5432/brokoli_test?sslmode=disable
       BROKOLI_TEST_MYSQL_URL: mysql://brokoli:br@k:li/pw#1@tcp(localhost:3306)/brokoli_test
       # A second Postgres variable exists for the execution-attempt migration
@@ -339,6 +354,35 @@ jobs:
           echo "=== Engine coverage ==="
           go tool cover -func=coverage-engine.out | tail -1
 
+  test-s3-minio:
+    name: Test (S3 / MinIO)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BROKOLI_TEST_S3_ENDPOINT: http://127.0.0.1:55536
+      BROKOLI_TEST_S3_ACCESS_KEY: brokoli-test
+      BROKOLI_TEST_S3_SECRET_KEY: brokoli-test-secret
+      # The Compose MinIO service is intentionally bound to loopback. The
+      # production default remains closed; this is an explicit CI-only opt-in.
+      BROKOLI_OUTBOUND_ALLOW_LOOPBACK: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start MinIO
+        run: docker compose -f docker-compose.test.yml up -d --wait minio
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Test S3 file round trip
+        run: go test -v -count=1 ./engine -run '^TestS3File(RoundTripMinIO|NodesRoundTripThroughRunner)$'
+
+      - name: Stop MinIO
+        if: always()
+        run: docker compose -f docker-compose.test.yml down --volumes
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -364,10 +408,7 @@ jobs:
           cache-dependency-path: ui/package-lock.json
 
       - name: Build UI
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
+        run: bash build-ui.sh
 
       - name: Build binary
         run: |

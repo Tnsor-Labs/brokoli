@@ -53,10 +53,14 @@ type User struct {
 	// and without somewhere to put them the provider-prefixed username
 	// (e.g. "google_someone@example.com") ends up greeting the user.
 	// Identity still keys on Username — these are presentation only.
-	DisplayName string    `json:"display_name,omitempty"`
-	Email       string    `json:"email,omitempty"`
-	Role        Role      `json:"role"`
-	CreatedAt   time.Time `json:"created_at"`
+	DisplayName string `json:"display_name,omitempty"`
+	Email       string `json:"email,omitempty"`
+	// AvatarURL is an absolute http(s) URL to a picture for the account.
+	// Presentation only, like the two fields above, and stored rather
+	// than uploaded: the server hosts no image store.
+	AvatarURL string    `json:"avatar_url,omitempty"`
+	Role      Role      `json:"role"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // DisplayLabel returns the best human label for a user: the display
@@ -153,6 +157,7 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 	// normal case, not a failure.
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
 	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
+	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`)
 
 	us := &UserStore{db: db, dialect: detectUserStoreDialect(db)}
 
@@ -225,11 +230,11 @@ func (us *UserStore) IsSuperAdmin(userID string) bool {
 func (us *UserStore) GetUserByID(id string) (*User, error) {
 	var u User
 	var createdAt string
-	err := us.db.QueryRow(us.q(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = ?`), id).
-		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt)
+	err := us.db.QueryRow(us.q(`SELECT id, username, display_name, email, avatar_url, role, created_at FROM users WHERE id = ?`), id).
+		Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &u.Role, &createdAt)
 	if err != nil {
-		err = us.db.QueryRow(`SELECT id, username, display_name, email, role, created_at FROM users WHERE id = $1`, id).
-			Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt)
+		err = us.db.QueryRow(`SELECT id, username, display_name, email, avatar_url, role, created_at FROM users WHERE id = $1`, id).
+			Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &u.Role, &createdAt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("user not found")
@@ -279,13 +284,13 @@ func (us *UserStore) Authenticate(username, password string) (*User, error) {
 	var hash, createdAt string
 
 	err := us.db.QueryRow(
-		us.q(`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = ?`), username,
-	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &hash, &u.Role, &createdAt)
+		us.q(`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = ?`), username,
+	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &hash, &u.Role, &createdAt)
 	if err != nil {
 		// Try Postgres
 		err = us.db.QueryRow(
-			`SELECT id, username, display_name, email, password_hash, role, created_at FROM users WHERE username = $1`, username,
-		).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &hash, &u.Role, &createdAt)
+			`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = $1`, username,
+		).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &hash, &u.Role, &createdAt)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("invalid credentials")
@@ -405,7 +410,7 @@ func (us *UserStore) SetProfile(userID, displayName, email string) error {
 }
 
 func (us *UserStore) ListUsers() ([]User, error) {
-	rows, err := us.db.Query(`SELECT id, username, display_name, email, role, created_at FROM users ORDER BY created_at`)
+	rows, err := us.db.Query(`SELECT id, username, display_name, email, avatar_url, role, created_at FROM users ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +420,7 @@ func (us *UserStore) ListUsers() ([]User, error) {
 	for rows.Next() {
 		var u User
 		var createdAt string
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &u.Role, &createdAt); err != nil {
 			return nil, err
 		}
 		u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -427,7 +432,7 @@ func (us *UserStore) ListUsers() ([]User, error) {
 // ListUsersByOrg returns users that belong to a specific org via org_members join.
 func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 	rows, err := us.db.Query(
-		`SELECT u.id, u.username, u.display_name, u.email, u.role, u.created_at
+		`SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.role, u.created_at
 		 FROM users u
 		 INNER JOIN org_members om ON u.id = om.user_id
 		 WHERE om.org_id = $1
@@ -440,7 +445,7 @@ func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 	for rows.Next() {
 		var u User
 		var createdAt string
-		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.Role, &createdAt); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &u.Role, &createdAt); err != nil {
 			return nil, err
 		}
 		u.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
@@ -792,6 +797,21 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
+			// The data plane authenticates itself further down: an opaque
+			// capability naming one object, plus the worker identity
+			// blobAuth resolves. A worker holds no JWT and never will, so
+			// this middleware can only refuse it.
+			//
+			// Third of three gates in front of these routes. #528 exempted
+			// the enterprise auth middleware and #563 the workspace gate,
+			// and each fix uncovered the next one behind it, because each
+			// was tested against the middleware it changed rather than the
+			// assembled chain. TestDataPlaneReachesItsHandler covers the
+			// chain.
+			if isDataPlaneBlobRequest(r) {
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			// A static API key already authenticated this request (see
 			// APIKeyAuth, which runs first and stamps claims on success).
@@ -855,9 +875,26 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip invite endpoints (public access for accepting invites)
+			// Invite endpoints: authentication is OPTIONAL here, not
+			// absent.
+			//
+			// Reading an invite must work for someone with no account
+			// yet, so these cannot require a token. But this skipped
+			// before parsing one, so a person who WAS signed in arrived
+			// with no claims and the accept handler could not tell who
+			// they were -- it answered 401 even with a valid session.
+			// Anyone who signs in with GitHub, Google or Keycloak has no
+			// password to fall back on, so they could never accept an
+			// invite at all, which is the whole first-run path for a
+			// team.
+			//
+			// Optional means: attach claims when a valid token is
+			// present, carry on without them when it is not. An invalid
+			// token is treated as absent rather than rejected, because
+			// the anonymous read must keep working for someone whose
+			// old session happens to have expired in another tab.
 			if strings.HasPrefix(r.URL.Path, "/api/invites/") {
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(contextWithOptionalClaims(r)))
 				return
 			}
 
@@ -867,8 +904,10 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				return
 			}
 
-			// Skip webhook triggers (they have their own token auth)
-			if strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST" {
+			// Skip webhook triggers (they have their own token auth).
+			// Shape-matched, not substring-matched: see
+			// isWebhookTriggerRequest for what a substring test let past.
+			if isWebhookTriggerRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -1044,4 +1083,51 @@ func (c *claimsContext) Value(key any) any {
 		return c.claims
 	}
 	return c.parent.Value(key)
+}
+
+// contextWithOptionalClaims attaches authentication to a request that does
+// not require it.
+//
+// For routes that must serve both a signed-in person and an anonymous one
+// -- reading and accepting an invite is the case this exists for -- the
+// handler needs to know WHICH it is. Skipping the middleware entirely
+// answers "always anonymous", which is wrong for half the callers.
+//
+// Returns the request's own context unchanged when there is no token, or
+// when the token does not parse. A caller that needs a verified identity
+// checks for claims and decides; a caller that does not simply ignores
+// them.
+func contextWithOptionalClaims(r *http.Request) context.Context {
+	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if token == "" {
+		if cookie, err := r.Cookie("brokoli_session"); err == nil {
+			token = cookie.Value
+		}
+	}
+	if token == "" {
+		return r.Context()
+	}
+
+	claims, parseErr := ParseToken(token)
+	if parseErr != nil && BearerTokenResolverFunc != nil {
+		if resolved, ok := BearerTokenResolverFunc(token); ok && resolved != nil {
+			claims, parseErr = resolved, nil
+		}
+	}
+	if parseErr != nil || claims == nil {
+		return r.Context()
+	}
+
+	ctx := contextWithClaims(r.Context(), claims)
+	orgID, _ := (*claims)["org_id"].(string)
+	if orgID == "" && OrgResolverFunc != nil {
+		if sub, ok := (*claims)["sub"].(string); ok {
+			orgID = OrgResolverFunc(sub)
+		}
+	}
+	if orgID != "" {
+		(*claims)["org_id"] = orgID
+		ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+	}
+	return ctx
 }

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -41,22 +42,51 @@ func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolve
 // Oracle nor the connection, while the sentence that would have explained
 // it went to a log the author cannot see.
 func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, []string) {
+	return cr.ResolveWithWarningsIn(config, nodeType, "")
+}
+
+// ResolveWithWarningsIn is ResolveWithWarnings for a pipeline in
+// workspaceID: a conn_id naming another workspace's connection is not
+// resolved. conn_id is unique across the whole store, so without this a
+// pipeline could name any workspace's connection and run with its
+// credentials. Runs resolve through the *In methods; the unscoped ones
+// remain for callers with no pipeline, which decide access themselves.
+func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, []string) {
 	var warnings []string
-	resolved := cr.resolve(config, nodeType, func(format string, args ...interface{}) {
+	resolved := cr.resolve(config, nodeType, workspaceID, func(format string, args ...interface{}) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
 	return resolved, warnings
 }
+
+// ResolveIn is Resolve for a pipeline in workspaceID; see
+// ResolveWithWarningsIn.
+func (cr *ConnectionResolver) ResolveIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) map[string]interface{} {
+	return cr.resolve(config, nodeType, workspaceID, nil)
+}
+
+// sameWorkspace reports whether conn may serve a pipeline in workspaceID.
+// An unknown workspace on either side is not a refusal: a runner with no
+// pipeline, or a store that does not carry workspaces, has nothing to
+// compare, and refusing would break it rather than protect anything.
+func sameWorkspace(conn *models.Connection, workspaceID string) bool {
+	return workspaceID == "" || conn.WorkspaceID == "" || conn.WorkspaceID == workspaceID
+}
+
+// notInWorkspace is worded exactly like a missing connection on purpose:
+// "belongs to another workspace" would tell a pipeline author which slugs
+// exist elsewhere.
+const notInWorkspace = "conn_id %q not found in this pipeline's workspace"
 
 // Resolve checks if the config has a conn_id and replaces connection fields with resolved values.
 // Returns the config unchanged if no conn_id is present (backward compatible).
 //
 // Callers that can reach the run's log should prefer ResolveWithWarnings.
 func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) map[string]interface{} {
-	return cr.resolve(config, nodeType, nil)
+	return cr.resolve(config, nodeType, "", nil)
 }
 
-func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, warn func(string, ...interface{})) map[string]interface{} {
+func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, workspaceID string, warn func(string, ...interface{})) map[string]interface{} {
 	connID, ok := config["conn_id"].(string)
 	if !ok || connID == "" {
 		return config
@@ -64,10 +94,35 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 
 	conn, err := cr.store.GetConnection(connID)
 	if err != nil {
+		// "this store cannot look connections up" and "there is no such
+		// connection" are different facts and were wearing the same
+		// sentence. A worker on an HTTP-backed store refuses
+		// GetConnection outright, and the operator was told
+		// `conn_id "x" not found` -- a statement about their data
+		// describing a property of their deployment, while the node went
+		// on to run with its credentials unresolved and failed somewhere
+		// less obvious.
+		//
+		// Returning the config unchanged stays right for a genuinely
+		// missing connection, because a node may carry inline fields as a
+		// fallback and that is the backward-compatible behaviour. It is
+		// wrong for a store that can never resolve one.
 		msg, args := "conn_id %q not found: %v", []interface{}{connID, err}
+		if errors.Is(err, store.ErrUnsupported) {
+			msg = "conn_id %q cannot be resolved here: this worker has no access to stored connections, " +
+				"so the node would run without its credentials. Give the node inline connection fields, " +
+				"or run it on a worker that can reach the control plane's connection store (%v)"
+		}
 		log.Printf("[conn-resolver] WARNING: "+msg, args...)
 		if warn != nil {
 			warn(msg, args...)
+		}
+		return config
+	}
+	if !sameWorkspace(conn, workspaceID) {
+		log.Printf("[conn-resolver] WARNING: "+notInWorkspace, connID)
+		if warn != nil {
+			warn(notInWorkspace, connID)
 		}
 		return config
 	}
@@ -92,7 +147,7 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		// the node's own uri untouched makes the failure say so; fabricating one
 		// from the bare hostname used to hand the Postgres driver a malformed
 		// DSN, losing the port, database, and credentials on the way.
-		if !conn.BuildsURI() {
+		if !conn.IsDatabase() {
 			msg := "conn_id %q is type %q, which has no database driver in this build; the node's own uri is used unchanged, and the run will fail against it if there is none"
 			args := []interface{}{connID, conn.Type}
 			log.Printf("[conn-resolver] WARNING: "+msg, args...)
@@ -193,12 +248,54 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) {
 // The returned Connection carries plaintext credentials in memory, the same
 // contract Resolve already has, and must not be persisted or logged.
 func (cr *ConnectionResolver) ResolveConnection(connID string) (*models.Connection, error) {
+	return cr.ResolveConnectionIn(connID, "")
+}
+
+// ResolveConnectionIn is ResolveConnection for a pipeline in workspaceID:
+// another workspace's connection is refused before its credentials are
+// resolved.
+func (cr *ConnectionResolver) ResolveConnectionIn(connID, workspaceID string) (*models.Connection, error) {
 	if connID == "" {
 		return nil, fmt.Errorf("no conn_id given")
 	}
 	conn, err := cr.store.GetConnection(connID)
 	if err != nil {
 		return nil, fmt.Errorf("conn_id %q not found: %w", connID, err)
+	}
+	if !sameWorkspace(conn, workspaceID) {
+		return nil, fmt.Errorf(notInWorkspace, connID)
+	}
+	cr.resolveCredentials(conn)
+	return conn, nil
+}
+
+// ResolveConnectionByID returns a connection with its credentials already
+// resolved to plaintext.
+//
+// This exists so the control plane can resolve on a worker's behalf. A
+// worker that holds no encryption key cannot turn an `encrypted://` ref
+// into a password, and giving it the key to do so is exactly what the
+// API-only worker exists to avoid: the key decrypts every stored
+// credential in the deployment, not the one connection a job needs.
+//
+// So the resolution happens here, where the key already legitimately
+// lives, and only the result crosses the wire. The caller is responsible
+// for deciding WHICH connections a given requester may resolve; this
+// answers "what is this one", not "may you have it".
+//
+// The returned value carries plaintext in Password and Extra and is
+// never persisted in that form -- the same in-memory-only contract the
+// model's own field comments already state.
+func (cr *ConnectionResolver) ResolveConnectionByID(connID string) (*models.Connection, error) {
+	if cr == nil || cr.store == nil {
+		return nil, fmt.Errorf("resolve connection %q: no connection store", connID)
+	}
+	conn, err := cr.store.GetConnection(connID)
+	if err != nil {
+		return nil, err
+	}
+	if conn == nil {
+		return nil, fmt.Errorf("resolve connection %q: not found", connID)
 	}
 	cr.resolveCredentials(conn)
 	return conn, nil

@@ -1,0 +1,7 @@
+{
+  "_violation": "unknown root property",
+  "contract": "brokoli.dataset-schema/v1",
+  "columns": [],
+  "additional_columns": "closed",
+  "fields": []
+}

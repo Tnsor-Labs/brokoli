@@ -11,6 +11,1550 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-22
+
+### Fixed
+
+- **A binary built from source served a blank page and reported
+  success** (#728) -- @hc12r. `web/dist/index.html` was a real built page
+  committed to the repository, while `.gitignore` excluded
+  `web/dist/assets/`. Both arrived on 2026-04-07 in one commit that set
+  out to solve a real problem, `//go:embed` needing a file to match so
+  module consumers could compile; committing a built page answered it,
+  and shipped a broken one. The published module therefore carried a page
+  asking the browser for two asset files that were not in it, and any
+  binary compiled without running `build-ui.sh` embedded that page,
+  logged `Serving embedded UI`, and served a shell whose script and
+  stylesheet 404. Nothing said the UI was missing.
+
+  This reached three real paths. `go install
+  github.com/Tnsor-Labs/brokoli@latest` produced such a binary, because
+  the module contains the committed `index.html` and none of the assets.
+  The README's own "From Source" steps did too: `cd ui && npm run build`
+  writes `ui/apps/community/dist`, and only `build-ui.sh` places the
+  result on the embed target, so following the documented instructions
+  gave a blank page. And a contributor building locally hit the same
+  thing, which is the opposite of what CONTRIBUTING promises about
+  running the whole product on a laptop.
+
+  Release tarballs and container images were never affected: the release
+  workflow builds the UI first and refuses to publish without it.
+
+  Now nothing under `web/dist` is committed. `web/dist/.gitkeep` is
+  tracked only so `//go:embed all:dist` compiles in a checkout that has
+  not built the UI, and `build-ui.sh` restores it after it wipes the
+  directory, so a build leaves the tree clean. A binary with no bundle
+  serves `web/unbuilt/index.html`, a self-contained page that says the
+  UI was not built into it and gives the command, and the server logs a
+  warning instead of announcing success. `scripts/check-ui-bundle.sh`
+  verifies that a built bundle carries every asset its `index.html`
+  references, and refuses a page that references nothing at all;
+  `build-ui.sh` and the release workflow both call it. The README now
+  documents `build-ui.sh` as the source build step.
+
+## [0.12.0] - 2026-09-22
+
+> **Behaviour change:** a database node handed a Snowflake connection is
+> now refused by name. Snowflake has no driver in this build; previously
+> the connection built a URI that reached a driver which could not serve
+> it, and the failure named neither the connection nor the real reason.
+> The connection type itself still exists and still stores credentials.
+
+> **Behaviour change:** `count_distinct` in the bounded-memory streaming
+> aggregate path now matches batch execution, including null handling.
+> A pipeline that aggregated a large dataset through the streaming path
+> may report a different, and correct, distinct count than it did before.
+
+### Added
+
+- **Dataset schemas are a first-class contract** (#691, #694 to #699,
+  #701, #703 to #720) -- @hc12r. A pipeline can declare what a dataset
+  looks like, in a portable descriptor (`brokoli.dataset-schema/v1`,
+  published at `docs/schema/dataset-schema-v1.json` with positive and
+  negative conformance fixtures) built on the ADR-032 BPTD types:
+  ordered columns, scalar and decimal types with precision and scale,
+  nullability, enum, array, map and record descriptors, and a
+  `additional_columns` policy of `closed` or open.
+
+  The declaration is enforced at runtime, for materialized and streamed
+  datasets alike. A node whose output is missing a declared column now
+  fails naming the columns that are missing; under a `closed` schema,
+  undeclared columns and a changed column order fail too. This is the
+  point of the feature: before it, a source that quietly stopped
+  returning a column produced a narrower dataset and a green run.
+
+  Declared schemas propagate. Joins carry column types through the
+  collision planner, transforms carry renamed, dropped, added and
+  aggregated fields, code-node `output_schema` survives dynamic
+  expansion, and dataset map, dataset filter, condition and wait nodes
+  pass schemas through. A union of incompatible inputs is refused rather
+  than guessed. Decimal declarations map to the engine's exact decimal
+  type, so precision and scale survive into sink table creation.
+
+  The editor gained a schema editor on file, API and database sources,
+  column completion and missing-column validation in transforms, quality
+  checks, aggregates and database sink upsert keys, join collision
+  controls with a preview of the declared output columns, runtime schema
+  snapshots (columns, types, null percentages) on a node run, and failed
+  node runs that name the missing column or join key and list what was
+  available.
+
+- **Explicit join collision policy** (#691, #694, #706, #707) --
+  @hc12r. When both sides of a join carry the same column name, the
+  policy is now stated rather than implied: `prefix` (the default, and
+  what the engine did before), `error`, or `alias` with stable
+  right-side aliases and recursive prefix avoidance. One output-schema
+  planner now serves both execution and column lineage, so what the
+  editor previews and what the run produces come from the same code.
+  When both upstream schemas are declared, join keys are validated for
+  presence and type compatibility, so a typo fails instead of being
+  hidden by the runtime's unknown-column fallback.
+
+- **Native filter, project and aggregate operators** (#692, #700 to
+  #702, #708, #722) -- @hc12r. Language-neutral relational operators
+  with a versioned predicate and `case_when` evaluator, carried through
+  both SDKs. Filters push down into SQL only where the predicate is
+  provably equivalent, and unsafe shapes are refused rather than
+  approximated. Expression output types are inferred from declared
+  input types, including decimals, and stay unknown when a result is
+  mixed or unsupported.
+
+- **API execution profiles** (#693, #721) -- @hc12r. A `source_api`
+  node can carry a versioned execution-profile marker
+  (`docs/schema/execution-profile-v1.json`) beside a fully expanded
+  policy: timeout, retries and backoff, requests per second, maximum
+  concurrency, retry scope and checkpoint interval. Core deliberately
+  does not prescribe profile names, so an organization can define its
+  own as long as it emits the same shape with every value explicit; a
+  profile that leaves any of them implicit is rejected, because a
+  profile is only portable when it carries the whole policy. A `strict`
+  profile also refuses concurrency against a sequential pagination
+  strategy (`cursor`, `next_link`, `link_header`), which cannot honour
+  it. Planner explanations show the effective policy.
+
+- **SQL Server connector** (#681, #688, #724) -- @hc12r. The pure-Go
+  `go-mssqldb` driver is compiled in and registered, connection tests go
+  through `DetectDriver` and an authenticated ping rather than a port
+  probe, and SQL Server is usable by database nodes again. Cross
+  compilation stays clean (`CGO_ENABLED=0` for linux/amd64 and
+  windows/arm64), and CI runs an environment-gated smoke test against a
+  real server.
+
+- **Customer-owned S3 for file nodes** (#538, #688, #725, #726) --
+  @hc12r. `source_file` and `sink_file` can read and write through an S3
+  connection, with endpoint options for S3-compatible providers and
+  optional `session_token` temporary credentials, which the shared
+  artifact store accepts as well. Documented in `docs/s3-file-delivery.md`
+  with Python and TypeScript examples, and covered by MinIO integration
+  tests that run through the real runner in CI.
+
+- **The installer verifies what it downloaded** (#689) -- @hc12r.
+  `install.sh` checks the archive against the release's `checksums.txt`
+  and refuses on a mismatch, a missing entry, a missing checksums file,
+  or no SHA-256 tool available. Before this it installed whatever it
+  received.
+
+### Changed
+
+- **The connection catalogue no longer claims coverage it does not
+  have** (#680, #723) -- @hc12r. `IsDatabase` is now separate from
+  `BuildsURI`, because a transport such as HTTP, SFTP or S3 has a URI
+  without being something a database node can use. Redshift and
+  ClickHouse connection tests run through their real drivers instead of
+  checking that a port accepts a TCP connection, unsupported database
+  types are refused by name, and Snowflake is out of the node-usable
+  catalogue until it has a driver. Tracked in #688.
+
+- **ADR-016 no longer claims plugin upgrade in place shipped** (#679)
+  -- @hc12r. It was never built; #511 tracks it.
+
+### Fixed
+
+- **`count_distinct` disagreed with itself between execution paths**
+  (#692, #722) -- @hc12r. The bounded-memory streaming aggregate counted
+  distinct values differently from batch execution, including how it
+  treated nulls and canonical value identity. Same pipeline, same data,
+  different answer depending on which path the dataset took.
+
+- **Decimal precision was lost on the way to a sink** (#704, #705) --
+  @hc12r. A decimal declared with precision and scale reached the
+  engine's generic numeric type, so a created table did not carry the
+  exact type that was asked for.
+
+- **Schemas did not survive code-node expansion** (#703) -- @hc12r. A
+  declared `output_schema` was dropped when a code node expanded
+  dynamically, so downstream nodes saw an undeclared dataset.
+
+- **`install.sh` could not install anything on Alpine** (#690) --
+  @hc12r. busybox `wget`, which is the `wget` on Alpine, rejects
+  `--max-redirect` and `--show-progress`; both are gone, and the
+  `Location:` header is matched by field rather than line start.
+  `scripts/install_test.sh` now runs the real installer offline under
+  dash, bash and busybox against a fake release with stubbed `curl` and
+  `wget`, 25 checks, wired into the Security workflow.
+
+## [0.11.32] - 2026-09-18
+
+> **Breaking change for out-of-tree extensions:**
+> `extensions.PlatformProvider.StartServices` gained a variadic tail,
+> `StartServices(s interface{}, engine ...interface{})`, matching the
+> convention `RegisterRoutes` already documents. An implementation must
+> add the parameter to compile; it may ignore it, and a provider must
+> tolerate an empty tail because an older core passes nothing.
+
+### Fixed
+
+- **A run dispatched to a remote worker could still be executed twice,
+  in the one process most likely to do it.** v0.11.31 gave recovery a
+  way to ask an extension "is somebody else already running this?"
+  (`Engine.ExternalRunClaim`), but the only hook that carried the engine
+  to an extension was `RegisterRoutes` — and `RegisterRoutes` is reached
+  only from `api.NewServer`. `--mode scheduler` builds
+  `api.NewMinimalServer` instead, while still running the recovery
+  sweep, so the sweep ran with no claim installed. Measured in
+  production under a burst of about twenty concurrent runs: four runs
+  executed twice, leaving sixteen duplicated `node_runs` rows, with the
+  runs reporting success. `StartServices` now receives the engine,
+  because `shouldStartPlatformServices` gates exactly the two modes that
+  run recovery (`all` and `scheduler`), making it the one hook both of
+  them pass through. (#676) -- @hc12r
+- **Every pod restart ran one recovery pass with no extension hooks
+  installed.** Recovery runs in two places: a periodic leader sweep, and
+  a startup sweep in `serve` that is unconditional in every mode. The
+  startup sweep ran before platform services were started, so it swept
+  before any extension had been given the engine — and a rolling deploy
+  is exactly when runs are in flight on remote workers. Platform
+  services now start first. (#676) -- @hc12r
+- **A re-queued run that then succeeded still showed a recovery error.**
+  Recovery records why it put an interrupted run back on the queue in
+  `runs.error`, and nothing cleared it again, so a run that executed a
+  second time and succeeded kept an error describing the execution that
+  was interrupted. The runner now clears it on the success path only;
+  the `run.recovery_requeued` event still carries the message, so the
+  audit trail is unchanged, and a failed run keeps its error. (#675)
+  -- @hc12r
+
+### Known gap
+
+- `--mode api` also runs the startup recovery sweep, and platform
+  services are deliberately not started on api replicas (that would run
+  the trial checker, usage collector and SLA checker on every one of
+  them), so an api pod still boot-sweeps without extension hooks.
+  Closing it needs either a hook-only attach point separate from
+  starting services, or not sweeping outside the mode that owns
+  recovery. Tracked rather than rushed. -- @hc12r
+
+## [0.11.31] - 2026-09-17
+
+> **Behaviour change for crash recovery:** a run is now left alone for
+> its first 30 seconds before recovery will adopt it
+> (`Engine.RecoveryMinRunAge`). A run whose process genuinely died
+> therefore stays non-terminal for up to that much longer before anyone
+> takes it over. The trade is deliberate: recovering a dead run later is
+> a delay, while adopting one that is still starting runs the pipeline
+> twice and reports no failure at all.
+>
+> **Note for anyone running the workflows themselves:** the Security
+> workflow no longer calls `govulncheck ./...` directly. It runs
+> `scripts/check-vulns.sh`, which reaches the same verdict but allows
+> audited exceptions in `security/vuln-allowlist.json`. The script needs
+> `jq`, and it runs its own test suite as a separate step beforehand.
+
+### Fixed
+
+- **A run dispatched to a remote worker could be executed twice.**
+  Recovery exists to adopt runs left behind by a dead process, and it had
+  no way to tell one of those from a run that had only just started
+  somewhere it cannot see. In production a run executing on a remote pool
+  worker was requeued to an in-cluster worker 350ms after the remote
+  worker began its first node, because that worker's first event had not
+  reached the server yet, and both then ran the pipeline through to the
+  end. The run simply succeeded twice: nothing reported a failure, and a
+  pipeline writing to a database or an API would have written everything
+  twice. Recovery now leaves a run alone until it is at least
+  `Engine.RecoveryMinRunAge` old, 30 seconds by default, which is one
+  full reclaim sweep interval plus an order of magnitude over the
+  observed first-event lag. It also gained `Engine.ExternalRunClaim`, an
+  optional hook answering whether a run is held by an executor this
+  process cannot see; it is nil here, so behaviour in this repository is
+  unchanged, and a hook that panics counts as a held claim, since
+  declining to recover is loud and reversible while assuming nobody owns
+  a live run is neither. A run with no start time is not covered by the
+  age guard, because nothing has claimed it yet. (#672) -- @hc12r
+
+### Security
+
+- **excelize moved from v2.10.0 to v2.11.0**, clearing GO-2026-6453
+  (unbounded memory allocation in the streaming row reader), which is
+  reachable from `ExcelLoader.Load`. The sibling advisory GO-2026-6452
+  (panic via a negative shared-string index) has no upstream fix: its
+  record lists every released version as affected. Its named vector does
+  not reproduce on v2.11.0, where the library returns `invalid shared
+  string index -1` as an ordinary error, so it is recorded as an audited
+  exception rather than an observed crash. As defence in depth against
+  the symbols this repository does not exercise, the Excel loader now
+  runs the excelize parse calls inside a recover, so a malformed
+  spreadsheet fails its own node instead of panicking the process that
+  hosts every other run. Errors excelize returns normally are untouched,
+  and a panic in Brokoli's own code still crashes loudly. (#673) -- @hc12r
+
+### Changed
+
+- **The vulnerability gate allows audited exceptions, and expires them.**
+  `scripts/check-vulns.sh` replaces the bare `govulncheck ./...` in the
+  Security workflow. It keeps the same verdict, failing on anything this
+  repository's own code calls, but an advisory with no upstream fix can
+  be listed in `security/vuln-allowlist.json` with a reason, a mitigation
+  and a reviewer. Two properties stop that becoming a suppression: an
+  allowlisted advisory that later gains a fixed version fails the build,
+  so an exception cannot outlive the thing that justified it, and
+  everything waived is printed with its reasoning on every run. Empty,
+  unparseable or config-less scanner output fails rather than reading as
+  clean, which is the vacuity that once let a security gate here pass
+  while inspecting nothing. govulncheck stays pinned to `@latest`, since
+  catching newly published advisories against pinned dependencies is the
+  whole point. (#673) -- @hc12r
+
+## [0.11.30] - 2026-09-17
+
+> **Behaviour change for webhook senders:** a webhook request with
+> `Content-Type: application/json` now has its body read. A malformed
+> JSON body answers 400 and starts no run, where it used to be ignored
+> and the run started anyway. A body over 64 KiB answers 413, and
+> `parameters` that fail validation against the pipeline's declared
+> parameters answer 400. Only typed `parameters` are accepted, never the
+> untyped `params` map. Requests with any other content type still have
+> their body ignored and behave exactly as before.
+>
+> **Behaviour change for variable references containing a pipe:**
+> `|` now introduces a filter inside `${...}`. A reference such as
+> `${param.x|y}`, which used to resolve to an empty string because no
+> param key is literally named `x|y`, now stays visibly unresolved in
+> the output.
+>
+> **Interface change for out-of-tree `store.Store` implementations:**
+> `store.PreviewStore` takes and returns a `store.NodePreview`, which
+> carries `Truncated` and `TotalRows`. Every implementation outside this
+> repository has to update in lockstep.
+
+### Added
+
+- **Date filters for timestamp variables.** A file or table can be named
+  after the day it covers without a second variable:
+  `${interval.start|date:YYYYMMDD}` renders `20240314`, and
+  `${interval.start|shift:-1d|date:YYYY-MM-DD}` names the day before.
+  Filters go inside the existing braces, separated by `|` and applied
+  left to right. `date:` takes the tokens `YYYY YY MM DD HH mm ss` and
+  copies every other byte, so `MM` is the month and `mm` the minute; a
+  literal may not contain the letters `Y M D H S`, which stops a typo
+  such as `yyyy-mm-dd` from rendering a real-looking wrong date.
+  `shift:` takes a signed count of `s m h d w` and chains for compound
+  offsets; there are no months or years, since neither is a fixed
+  duration. Filters apply to `interval.start`, `interval.end` and
+  `run.started_at`, and change the format, never the clock or zone. Any
+  filter the resolver cannot satisfy leaves the whole reference visible
+  rather than guessing a timestamp, and a filtered `${interval.*}` still
+  counts as slice-scoped for backfill. ADR-028 records the formatting
+  helpers as taken. (#664) -- @hc12r
+
+- **The SQL a node ran is recorded with each attempt.** A templated query
+  used to be opaque after the fact; the statement is now stored with its
+  variables already substituted, as an `attempt.query` run event whose
+  payload field is `statement`, read through the existing
+  `GET /api/runs/{id}/events`. No schema change. What is recorded is SQL
+  someone wrote: a source's query (batch and streamed), a Migrate
+  node's source query, SQL a `sql_generate` node forwards into a sink,
+  and the query a pushed-down segment reads with. The composed
+  `INSERT ... SELECT` a pushed-down write executes is recorded too,
+  because it embeds the author's query and is the only record of what
+  that path ran. SQL the engine builds for itself is not: a sink's
+  generated `INSERT ... VALUES` records a
+  `-- [brokoli] generated write not recorded:` note in its place, bulk
+  loads (PostgreSQL COPY, MySQL LOAD DATA, ClickHouse batch append)
+  record a `-- [brokoli] no SQL statement:` note, and an overwrite's
+  `DELETE` or `TRUNCATE` is not recorded, so a sink never shows an
+  unexplained empty panel. A statement is recorded before it executes, so
+  the one that failed is kept. Values from `${secret.*}` and encrypted
+  `${var.*}` are masked as `[redacted]`; if such a value appears in the
+  statement and is shorter than 8 bytes, the whole statement is withheld
+  with a note saying why,
+  since masking something that short would shred the SQL without proving
+  the secret was gone. A connection string is never recorded. Each
+  statement is capped at 64 KiB with a visible
+  `-- [brokoli] statement truncated: N of M bytes recorded` marker. A
+  single attempt can record several statements. (#665, #669) -- @hc12r
+
+- **Re-run a run from a chosen node.**
+  `POST /api/runs/{id}/resume` accepts an optional
+  `{"from_node": "<node id>"}`: that node and everything downstream of it
+  run again, and the work the earlier run already did upstream is reused.
+  It appends a new run linked back through `resumed_from_run_id` and a
+  `run.resumed_from_node` event, and leaves the original run exactly as
+  it was, rather than clearing and mutating it. Unlike a plain resume it
+  accepts a run that succeeded as well as one that failed or was
+  cancelled, since re-running one branch after fixing its query is the
+  ordinary reason to reach for it. A run still running, pending or
+  waiting is refused because its outcomes are still being written, a
+  blocked or skipped run is refused because it never executed a node, and
+  a node absent from the pipeline version the run executed is refused by
+  name. A body that cannot be read as JSON answers 400 instead of quietly
+  falling back to a plain resume. With no body the endpoint behaves
+  exactly as before, and it uses the existing `runs.resume` permission.
+  (#666) -- @hc12r
+
+- **The run UI for all three.** Templatable fields (file paths, database
+  tables, API urls and bodies) show a live preview of `${...}` date
+  filters with the specific reason for any refusal, and warn that a
+  manual run has no interval. The run page has a SQL tab listing the
+  recorded statements grouped by node and attempt, with highlighting and
+  a copy button, showing exactly what the recorder stored. A selected
+  node offers "Re-run from here", whose confirmation names how many
+  downstream nodes will run again, gated on `runs.resume` and a settled
+  run status. The truncated-preview banner
+  now falls back to the node's produced row count when the stored total
+  is unknown, so it no longer contradicts the header above it.
+  (#668, #670) -- @hc12r
+
+### Fixed
+
+- **Webhooks ignored their request body.** The handler checked the token
+  and the rate limit but never read the body, so parameters sent with a
+  webhook were silently dropped. A JSON body is now read, bounded to
+  64 KiB, and its `parameters` are passed to the run as typed run
+  parameters validated against the pipeline's declarations, so a webhook
+  can only set what the pipeline declares, with its type checked. The
+  body is decoded only for `application/json`, so senders posting form
+  or plain-text payloads keep working. Unknown fields in the body are
+  deliberately tolerated, since webhook senders post payloads of their
+  own. (#533) -- @MrBeldum
+
+- **Node previews declare when the stored sample is truncated**, with
+  `truncated` and `total_rows` on the API and in both stores, and the
+  run UI shows a truncation banner (same Callout pattern as the
+  dependency map). Existing previews whose sample sits exactly at the
+  50-row cap are backfilled as truncated with unknown total.
+  **Interface change:** exported `store.PreviewStore` / `store.NodePreview`
+  gains `Truncated` and `TotalRows` (`*int64`); every out-of-tree
+  `store.Store` implementor must update in lockstep. (#659) -- @MrBeldum
+
+## [0.11.29] - 2026-09-16
+
+> **Behaviour change for multi-workspace organizations:** pipelines are
+> now scoped to a workspace, both in what a list shows and in what an id
+> can reach. An organization whose people all share one workspace sees
+> no difference. An organization that put pipelines in separate
+> workspaces will find that the pipelines page, the dashboard and its
+> counts show only the current workspace, and that a member of workspace
+> A can no longer open, export, clone, run a plan for, roll back or
+> delete a pipeline in workspace B. Reaching another workspace's
+> pipeline by id answers 404 rather than 403, so an id you cannot see
+> does not announce that it exists.
+
+### Fixed
+
+- **Every workspace showed every pipeline in the organization.** The
+  pipelines list, the pipeline summary views and the dashboard all
+  branched on organization first and then ignored the workspace
+  entirely, so creating a second workspace and switching to it showed
+  the same pipelines as the first, and the dashboard counted them all.
+  Only the community fallback had ever filtered by workspace. The three
+  paths now scope to the caller's current workspace. A session that has
+  not chosen a workspace resolves to one the caller belongs to rather
+  than filtering on `default` and showing an empty page, and a member of
+  no workspace sees nothing rather than everything. The organization
+  scoped reads stay organization wide where that is the right question:
+  a plan limit counts an organization's pipelines wherever they sit.
+  (#662) -- @hc12r
+
+- **A pipeline could be reached by id from another workspace.** Ten
+  handlers that take a pipeline id (get, update, delete, export,
+  validate, plan, list versions, rollback, clone, validate nodes)
+  checked the caller's organization and nothing else, so inside one
+  organization a member of any workspace could read and change a
+  pipeline belonging to another. Export and clone mattered most: both
+  return a whole pipeline definition. Connections and variables already
+  resolved the caller's workspaces and were never affected. The check
+  resolves the full set of workspaces the caller belongs to, rather than
+  the single workspace a request is filed under, so somebody who belongs
+  to two workspaces keeps access to their own work in both.
+  (#661) -- @hc12r
+
+- **Built-in pipeline templates never reached an existing database.**
+  Seeding ran only when `pipeline_templates` was empty, so a template
+  added to the built-in set after an install's first migrate could not
+  arrive, and no upgrade delivered it: a database seeded with two
+  starters still offered two while the product shipped four. Each
+  database now records which built-ins it has been offered, in a
+  `pipeline_templates.seeded_ids` setting, and each migrate inserts only
+  the ones missing from that record. A template an administrator deleted
+  stays deleted, and an edited one is still never overwritten. One
+  deliberate consequence: a built-in deleted before this change returns
+  once, because nothing recorded that it had ever been offered.
+  (#660) -- @hc12r
+
+### Changed
+
+- **Light is the default theme** for anyone who has not chosen one.
+  Somebody who picked dark keeps it, since that choice is stored. The
+  community shell applies light before first paint, along with the
+  `theme-color` meta, so there is no flash of the wrong theme on load.
+  The toggle and its persistence are unchanged. (#657) -- @hc12r
+
+## [0.11.28] - 2026-09-15
+
+> **Behaviour change for deployments that reach services over Tailscale
+> or another carrier-grade NAT range:** the outbound policy now blocks
+> `100.64.0.0/10` by default. Allow it with
+> `BROKOLI_OUTBOUND_ALLOW_CIDRS=100.64.0.0/10` (or a narrower range).
+
+> **Behaviour change for deployments using `vault://` or `k8s://`
+> credential references:** they now resolve only what the operator
+> lists, in `BROKOLI_SECRET_VAULT_ALLOW` (path prefixes) and
+> `BROKOLI_SECRET_K8S_ALLOW` (`namespace/secret` names). An unlisted
+> reference fails with a message naming the setting. See
+> `docs/secret-references.md`.
+
+### Changed
+
+- **The outbound network policy blocks more internal destinations**, for
+  every pipeline connector, webhook and SFTP connection:
+  - `0.0.0.0/8` (only `0.0.0.0` itself was blocked), `100.64.0.0/10`,
+    `192.0.0.0/24` and local-use NAT64 `64:ff9b:1::/48`, blocked like
+    the private ranges and opened the same way;
+  - an IPv6 address that routes to an IPv4 one (NAT64 `64:ff9b::/96`,
+    6to4 `2002::/16`, IPv4-compatible `::a.b.c.d`) is judged as that
+    IPv4 address, so `64:ff9b::a9fe:a9fe` no longer reaches the cloud
+    metadata endpoint;
+  - cloud metadata endpoints (`169.254.169.254`, `169.254.170.2`,
+    `fd00:ec2::254`, `100.100.100.200`) stay blocked under
+    `BROKOLI_OUTBOUND_ALLOW_PRIVATE=true` and under allowlisted ranges
+    that merely contain them; only a CIDR naming the exact address opens
+    one. (#653) -- @hc12r
+
+- **`vault://` and `k8s://` references are denied by default**, as
+  `env://` already was. Each read with the server's own credentials,
+  which reach far more than one connection should, including the
+  server's own secrets, and a connection is something a workspace editor
+  can create and point at a server of their choosing. Vault paths
+  containing `%`, `?` or a backslash are refused, so an encoded `..`
+  cannot walk out of an allowed prefix. New guide:
+  `docs/secret-references.md`. (#654) -- @hc12r
+
+- **Building Brokoli from source needs Go 1.26** (`go.mod`'s `go`
+  directive moves from 1.25.0 to 1.26.0). `golang.org/x/crypto` v0.56.0,
+  which carries the SSH fixes below, declares `go 1.26.0`, as does every
+  later release. CI and the release builds already use Go 1.26.6.
+  (#650) -- @hc12r
+- **Changing a connection's type, host or port requires entering its
+  password again**, for every connection type, and its extra settings
+  too unless they are a database's driver options (`sslmode` and the
+  like). Stored secrets cannot be read back, and they are no longer
+  carried over to a different server, where the next test or run would
+  have sent them. The update is refused with a message saying which to
+  enter. (#650) -- @hc12r
+
+### Added
+
+- **Deliver files to, and collect files from, SFTP servers** (ADR-040).
+  `source_file` and `sink_file` take a `conn_id` naming an `sftp`
+  connection; `path` is then a path on that server, relative to the
+  connection's base directory unless absolute. Every format the file
+  nodes handle works remotely, on the batch and the streamed path.
+  Guide: `docs/sftp-file-delivery.md`. (#650) -- @hc12r
+  - **The server's host key must match** the connection's `host_key`
+    (a `SHA256:` fingerprint, a public key line or a `known_hosts`
+    line). A mismatch or a missing key refuses to connect and names the
+    key the server presented. `insecure_skip_host_key_check` skips the
+    check and logs a warning on every connection.
+  - **Delivery is atomic.** A file is uploaded under a hidden temporary
+    name and renamed into place once complete, so a partner never picks
+    up a half-written file and a failed run leaves the previous file as
+    it was. Replacement uses `posix-rename@openssh.com`; a server without
+    it gets remove-then-rename, and the run log says so.
+  - Password or private key authentication (with passphrase), from the
+    connection's encrypted settings.
+  - SSH connections go through the same outbound network policy as HTTP
+    connectors: private and loopback servers need
+    `BROKOLI_OUTBOUND_ALLOW_CIDRS` or `BROKOLI_OUTBOUND_ALLOW_PRIVATE`.
+  - **A connection's base directory is a boundary:** with one set, no
+    path can leave it, absolute or relative; `..` is always refused.
+  - Temporary names are unguessable and created exclusively, so nothing
+    planted on a shared server can redirect a delivery.
+  - Only algorithms Go's SSH library does not classify as insecure are
+    offered; SHA-1 key exchange and DSA host keys are refused.
+  - A transfer fails after two minutes with no data moving (keepalives
+    keep a merely quiet connection up), and a node timeout or cancelled
+    run ends a transfer immediately.
+  - The editor's preview never delivers: a remote `sink_file` does not
+    connect during a dry run.
+  - A remote file is its own lineage asset, `sftp://<conn_id>/<path>`.
+  - Downloads are capped at the connection's `max_download_bytes`
+    (10 GiB by default), against both the declared size and what arrives.
+  - A `known_hosts` line marked `@revoked` or `@cert-authority` is
+    refused as a host key; a configured key line pins negotiation to
+    that key's type.
+  - The file node forms have a **Location** field for the connection.
+  - `golang.org/x/crypto` moves to v0.56.0, which fixes two denial of
+    service bugs in its SSH channel handling (GO-2026-6354,
+    GO-2026-6355) that this is the first code to reach.
+
+### Fixed
+
+- **JSON sources keep the file's column order**, the same on every run.
+  Columns came from ranging over a Go map, so a JSON file or API
+  response feeding a CSV sink wrote its columns in a different order
+  from one run to the next. They now follow each key's first appearance
+  in the document, across every page of a paginated API response.
+  (#655) -- @hc12r
+
+- **A pipeline can only use connections from its own workspace.**
+  Connections were looked up by `conn_id` alone, and `conn_id` is unique
+  across every workspace, so a pipeline could name another workspace's
+  connection and run with its credentials. A run now resolves a
+  `conn_id` only within its pipeline's workspace, for every node type
+  that takes one; a connection from elsewhere is reported as not found,
+  in the same words as a missing one. Single-workspace installs are
+  unaffected: pipelines and connections both default to `default`.
+  (#652) -- @hc12r
+
+- **Testing an `sftp` connection now signs in.** It opened a TCP
+  connection, read the SSH banner and reported success, so a wrong
+  password or an unknown server tested green. It now checks what a run
+  needs: the network policy, the host key, authentication, the SFTP
+  subsystem and the base directory. An unknown host key fails with the
+  key the server presented. (#650) -- @hc12r
+- The connections page said `sftp` and `s3` connections were usable by
+  nodes when no node read either. `sftp` now is; `s3` is marked as not
+  usable, which is true. (#650) -- @hc12r
+
+## [0.11.27] - 2026-09-15
+
+> **Behaviour change:** the `sort` transform now orders numeric columns
+> as numbers. It compared every value as text, so ascending `2, 10` came
+> out `10, 2`. Pipelines that sort a numeric column will produce a
+> different row order. Mixed columns order numbers, then text, then empty
+> values; descending is the exact reverse.
+
+### Changed
+
+- **The embedded UI is now the React app** (#645). `build-ui.sh` builds
+  the community app into `web/dist`, the same embed target as before, so
+  the binary serves it with no change to how it is built or run. The
+  lineage page renders each column edge's `evidence` and `mapping_reason`,
+  and the reason a node's columns cannot be traced. The last Svelte
+  commit is tagged `ui-svelte-final`; restoring it is a checkout of that
+  tag. The Svelte end-to-end browser tests were dropped with it, and
+  React end-to-end tests have not been added yet. -- @hc12r
+
+### Added
+
+- `format` on each stored dataset in `GET /api/runs/{id}/provenance`
+  (`ndjson` or `arrow-ipc`), recorded with the digest because the two
+  only mean something together: the same rows stored in two formats have
+  two digests. (#643) -- @hc12r
+
+### Fixed
+
+- **`attested` column edges could not appear when a node's input was
+  stored as NDJSON.** A source's output takes its format from
+  `BROKOLI_STREAM_CODEC` or its first batch, while a node's output took
+  Arrow whenever the whole dataset allowed, so a node that changed
+  nothing stored the same rows in a different format and no digest could
+  match. A node with a single stored input now stores its output in that
+  input's format. Where the upstream is NDJSON, the node's output stays
+  NDJSON rather than upgrading to Arrow. (#643) -- @hc12r
+- **The `sort` transform ordered numeric columns as text** (#642).
+  Ascending `2, 10` came out `10, 2`, and `9.5` sorted after `10.5`,
+  whether the numbers were typed or held as text, as a CSV column often
+  is. Numbers now compare exactly as numbers (integers beyond a float's
+  precision included), then text, then empty values; descending is the
+  exact reverse, which puts empty values first as Postgres does. The sort
+  is stable. (#644) -- @hc12r
+
+## [0.11.26] - 2026-09-15
+
+### Added
+
+- **Column edges a run proved are marked `attested`** on
+  `GET /api/lineage`. An identity edge (the same column, from a node's
+  single input) is promoted from `declared` when the run its profile came
+  from stored that input and the node's output with the same digest: the
+  bytes did not change, so the column passed through untouched. Two
+  inputs, a missing digest on either side, unequal digests, or a renamed
+  or derived column all stay `declared`. The edge's `mapping_reason`
+  names the run. (#639) -- @hc12r
+
+### Fixed
+
+- **The provenance record left out the output digest for most nodes.**
+  `GET /api/runs/{id}/provenance` recorded a node's output before the
+  engine stored it, so a node that returns rows in memory (a quality
+  check, a transform, most processing nodes) showed no digest for an
+  output that was in fact stored, while the node consuming it showed
+  the digest for the same bytes. Sources were unaffected, which is why
+  the v0.11.25 tests did not see it. (#637) -- @hc12r
+
+## [0.11.25] - 2026-09-15
+
+> **Breaking:** `confidence` is gone from every entry in `column_edges` on
+> `GET /api/lineage`, replaced by `evidence`. A client that reads it as a
+> number will find it absent.
+
+### Changed
+
+- **Column lineage is derived from the pipeline definition instead of
+  guessed from column names** (ADR-039). Every node type now declares how
+  its output columns map to its inputs, or declares that it cannot say.
+  (00d376f) -- @hc12r
+
+  What changes in the graph:
+
+  - A **derived column now names what it derives from**. `total = price *
+    qty` previously produced no edge at all, because the name match found
+    nothing called `total` upstream.
+  - A **coincidental name match no longer produces an edge.** Two
+    unrelated datasets that both had `id` used to be joined by one.
+  - **No edges are drawn through a node that runs user code.** A code,
+    dataset_map, dataset_filter, task or dbt node reports that it cannot
+    trace columns, and why. The graph shows the reason.
+  - `mapping_reason` now states the derivation in the pipeline's own
+    terms -- `price * qty`, `renamed from qty`, `join key: id matched
+    against cust_id`. It was the constant string
+    `observed column name match`.
+
+  **Node and dataset lineage is unchanged and stays complete**, including
+  through the nodes above. Which node produced which dataset is always
+  knowable; which field produced which field is not, and the graph now
+  distinguishes the two.
+
+- `evidence` replaces `confidence` on each column edge: `declared`,
+  `attested`, `parsed` or `inferred`. Filter to `declared` and `attested`
+  for facts only. `confidence` was the literal `0.7` on every edge ever
+  produced, which the UI rendered as "70% inferred". (00d376f) -- @hc12r
+
+### Added
+
+- `GET /api/runs/{id}/provenance` returns what each node in a run actually
+  consumed and produced: the upstream datasets it read, the dataset it
+  wrote, row counts, observed columns, and a `sha256` digest where the
+  dataset was stored. Written for every run and deleted with the run.
+  (#633) -- @hc12r
+
+  A digest is present only when the dataset went through the artifact
+  store. Small datasets pass between nodes in memory and are recorded
+  with row counts and columns but no digest; treat an absent digest as
+  "not checkable", never as "unchanged".
+- `columns_opaque` and `opaque_reason` on a lineage node, so a node with
+  no column edges says why rather than looking unfinished. (00d376f)
+  -- @hc12r
+- `models.AllNodeTypes` and `models.IsKnownNodeType`, one canonical list
+  for the gates that iterate node types. (00d376f) -- @hc12r
+- `Engine.RunPipelineAsyncLocalOpts`, the in-process run path with
+  `RunOptions`. The in-process path returns the run ID before the run row
+  exists, so attribution written against that ID straight away races the
+  run and, since #632, is refused. Pass it as `TriggeredBy` instead; the
+  runner records it after creating the run. (#634) -- @hc12r
+
+### Fixed
+
+- **Run attribution outlived its run, permanently.** The `run_attribution`
+  table had no foreign key and its cleanup method was called from nowhere,
+  so every row written since the feature shipped survived the run's purge
+  and accumulated forever. It now cascades with the run, the same as every
+  other per-run table. Existing rows whose run is already gone are cleared
+  on the next boot. (#632) -- @hc12r
+
+### Upgrading
+
+1. **Replace `confidence` with `evidence`** wherever you read
+   `column_edges`. There is no numeric equivalent; the value was constant.
+2. **Expect fewer column edges**, and none at all for a pipeline built on
+   code nodes. The edges that are gone were name matches with nothing
+   behind them. Check `columns_opaque` on a node to tell "no lineage" from
+   "lineage not traceable here".
+3. **A new node type must declare its column lineage** or declare itself
+   opaque, or `TestEveryNodeTypeDeclaresItsColumnLineage` fails.
+
+## [0.11.24] - 2026-09-14
+
+> **Breaking:** `extensions.OpenLineageEmitter`'s three methods take two new
+> arguments. Out-of-tree implementations must be updated.
+>
+> **Security:** five endpoints could return or modify another organization's
+> data. Upgrade if you run more than one.
+
+### Security
+
+Each of these was reachable by any signed-in user. All are @hc12r.
+
+- `GET /api/audit/{id}` returned **any** audit entry among the newest 500,
+  from any organization, and required no permission. Entries carry the
+  acting user and the before and after values of a change. Now
+  feature-gated, permission-checked and scoped to the caller's
+  organization. (#625)
+- `POST /api/pipelines/{id}/dlq/{dlqId}/resolve` resolved the entry named
+  in the URL without checking it belonged to the pipeline, so any
+  dead-letter entry in the deployment could be marked resolved. (#628)
+- `GET /api/pipelines/dependency-graph` returned every pipeline in the
+  deployment, across all organizations, when the caller's organization
+  could not be resolved. (#628)
+- `GET /api/connections?page=N` returned the `encrypted://` credential
+  reference that the unpaged list masks. (#628)
+- `POST /api/pipelines/import` honoured a `workspace_id` in the request
+  body, so a pipeline could be placed in a workspace the caller does not
+  belong to. (#628)
+
+### Added
+
+- **Lineage events reach an OpenLineage catalogue.** Setting
+  `BROKOLI_OPENLINEAGE_URL` previously produced no events at all. Runs now
+  emit `START` before execution and `COMPLETE` or `FAIL` after, each
+  carrying the datasets the run reads and writes. (#627) -- @hc12r
+
+### Fixed
+
+- `limit` on `GET /api/alerts` and `GET /api/dlq` is capped at 1000 and
+  defaults to 100. It previously reached the database unbounded. (#628)
+  -- @hc12r
+
+### Documentation
+
+- **ADR-039** proposes deriving column lineage from the IR instead of
+  matching column names, with explicit evidence levels. (#626) -- @hc12r
+
+### Upgrading
+
+1. **If you implement `extensions.OpenLineageEmitter`**, add
+   `inputs, outputs []LineageDataset` to all three methods.
+2. **If you call `GET /api/audit/{id}`**, it now requires the `audit`
+   feature and returns only your organization's entries. Entries stored
+   without a tenant are no longer visible to anyone.
+3. **If you pass `limit` above 1000** to the alert or dead-letter lists,
+   you now receive 1000 rows.
+
+## [0.11.23] - 2026-09-14
+
+### Changed
+
+- The platform provider now receives the encryption key config alongside
+  the engine, so an enterprise build stores its own secrets under the same
+  key core uses rather than deriving one from the environment. No action
+  for OSS deployments. (#622) -- @hc12r
+
+## [0.11.22] - 2026-09-14
+
+### Added
+
+- **Take ownership of a failure.** Alerts carry an assignee, an
+  acknowledgement and a resolution, via `POST /api/alerts/{id}/assign`,
+  `/acknowledge` and `/resolve`, with `?state=` and `?assignee=me` filters
+  on the list. Acknowledging an unowned incident also assigns it.
+  (#619) -- @hc12r
+
+### Fixed
+
+- **Alert read state was shared by the whole organization.** One person
+  marking an alert read marked it read for everyone, and the unread count
+  was the organization's rather than the reader's. Read state is now per
+  person. (#619) -- @hc12r
+- Runs started by a dependency fan-out or a resume recorded nothing about
+  what started them, and the dashboard's recent-activity list omitted the
+  field entirely. (#620) -- @hc12r
+
+### Upgrading
+
+- `store.Store` gains seven alert methods; the five organization-wide ones
+  remain for deployments with no authentication.
+- Read state moves to a new `alert_reads` table, created on boot.
+  **Alerts marked read before upgrading stay read for everyone**, because
+  the old column is still the fallback.
+- `?state=` now rejects an unrecognised value instead of ignoring it, and
+  `?assignee=` accepts only `me`.
+
+## [0.11.21] - 2026-09-14
+
+### Added
+
+- **Runs record what started them, and who.** Every run carries
+  `triggered_by` with a kind -- `user`, `schedule`, `webhook`,
+  `dependency`, `backfill`, `api_token` or `retry` -- plus the person's id
+  and name where one was involved. Previously only scheduled runs were
+  distinguishable. (#617) -- @hc12r
+- `GET /api/runs?started_by=me` lists the caller's own recent runs across
+  pipelines. (#617) -- @hc12r
+
+### Upgrading
+
+- `store.Store` gains four attribution methods.
+- Attribution lives in a new `run_attribution` table, created on boot.
+- `triggered_by` is **absent** for runs created before upgrading. Absent
+  means "not recorded", not "nobody started it"; clients should render the
+  two differently.
+
+## [0.11.20] - 2026-09-14
+
+Every headline figure on the dashboard was wrong in some way. Two were
+wrong in a direction that reads as reassurance.
+
+### Fixed
+
+All @hc12r.
+
+- **Success rate counted runs that had not finished**, so a pipeline's
+  rate fell while its own runs were in flight and a cancelled run counted
+  as a failure. The denominator is now finished runs, and an empty window
+  reports `null` rather than `100`. (#606)
+- **Every dashboard count stopped at 200 runs per pipeline.** A pipeline
+  on a one-minute schedule produces 1,440 runs a day and reported 200; the
+  seven-day chart showed a decline that was an artifact of the cap.
+  Counting now happens in the database. (#608)
+- **Sub-second runs reported a duration of zero**, because timestamps were
+  truncated to whole seconds. The same truncation could make a pipeline's
+  "most recent run" name one that was not the latest. (#607)
+- **The seven-day trend chart bucketed UTC dates into local-day keys.**
+  East of UTC the first hours of each day landed on the previous one; west
+  of UTC, late-evening runs vanished from the chart. (#609)
+- **"Top failing pipelines" had no time window**, on a panel whose
+  neighbours are all 24-hour figures. (#610)
+- **The run calendar answered differently on SQLite and Postgres** and
+  silently substituted 90 days for any `days` value it could not honour.
+  (#611)
+
+### Added
+
+- `PUT /api/auth/me/profile` sets display name, email and a new avatar
+  URL. An account created with only a username previously had no way to
+  fill these in. (#604) -- @hc12r
+
+### Upgrading
+
+1. **`success_rate_24h` can now be `null`** when nothing finished in the
+   window. Clients reading it as a number must handle null.
+2. New response fields: `runs_24h_finished`, `top_failing_window_hours`,
+   `recent_runs_sample_size`, and `duration_ms` on each recent run.
+   Recent-run timestamps now carry fractional seconds.
+3. `GET /api/runs/calendar` returns **every** day in the window, including
+   empty ones, and rejects a `days` value outside 1..365 instead of
+   substituting 90. Days are UTC.
+4. `store.Store` gains three aggregate methods.
+
+## [0.11.19] - 2026-09-14
+
+Access-control hardening. Four of these let a pipeline author or a
+workspace editor reach things they should not, and one of them is the
+control plane's own encryption key.
+
+### Fixed
+
+- **Pipeline templating could read the server's environment** (#597) --
+  @hc12r. `NewVariableContext` copied the whole of `os.Environ()` into the
+  variable context and `${env.NAME}` returned any key from it, so an
+  author could read `BROKOLI_ENCRYPTION_KEY`, `BROKOLI_JWT_SECRET` or
+  `BROKOLI_DB_URL`. Lineage resolves variables without executing
+  anything, so a value could surface from a graph request alone.
+
+  `${env.*}` is now deny-by-default against
+  `BROKOLI_PIPELINE_ENV_ALLOW`, with four names refused even when listed.
+  A refused reference stays visible rather than resolving to empty.
+
+- **A code node could read them directly** (#598) -- @hc12r.
+  `pkg/codeexec.WorkerEnv()` decides what environment author code sees,
+  and the pooled executor always used it. The one-shot and streamed
+  executors passed `os.Environ()` straight through, so whether a script
+  could read the deployment's secrets depended on which of two
+  interchangeable executors ran it -- the exposure moved with
+  `BROKOLI_CODE_POOL`, which nobody would think of as a security setting.
+
+- **An `env://` reference resolved any server variable** (#599) --
+  @hc12r. A connection whose `password_ref` was `env://BROKOLI_JWT_SECRET`
+  handed back the signing secret, and a connection is something a
+  workspace editor can create. Now deny-by-default against
+  `BROKOLI_SECRET_ENV_ALLOW`, refused by name rather than resolving to
+  empty.
+
+  The three mechanisms above are gated separately, because "what may a
+  pipeline author interpolate" is not "what may hold a connection
+  credential". They share one floor: `pkg/secrets.AlwaysDeniedEnvName`.
+
+- **Saving a secret variable without retyping it encrypted it twice**
+  (#600) -- @hc12r. The masked-value branch restored the stored
+  ciphertext, and the encrypt step could not tell that from a freshly
+  typed secret, so it encrypted it again. A pipeline decrypted once and
+  received ciphertext; nothing failed loudly, and the only recovery was
+  to type the secret in again.
+
+- **Variables were global, not per workspace** (#601) -- @hc12r. The
+  table keyed on `(key)` alone, so one workspace's save overwrote
+  another's and a read returned whichever had written last. Variables
+  hold secrets. The key is now `(workspace_id, key)`, and `GetVariable`
+  and `DeleteVariable` take a workspace so the compiler catches a caller
+  that omits it.
+
+- **The invite routes skipped authentication instead of making it
+  optional** (#602) -- @hc12r. The middleware skipped `/api/invites/`
+  before parsing any token, so a signed-in person reached the accept
+  handler with no claims and got 401 with a valid session. Anyone signing
+  in with GitHub, Google or Keycloak has no password to fall back on, so
+  for them accepting an invite was impossible.
+
+### Changed
+
+- **`AnnounceWorkerTrustAssumptions` is exported** (#596) -- @hc12r. Two
+  worker binaries, and only one could say what it holds. The API-only
+  shape -- the one the line exists to distinguish -- could not print
+  "holds no control-plane secrets".
+
+### Upgrading
+
+`${env.*}` and `env://` are now deny-by-default. A deployment relying on
+either sets `BROKOLI_PIPELINE_ENV_ALLOW` or `BROKOLI_SECRET_ENV_ALLOW`
+with the names it uses; a refused reference says which list it wanted.
+Nothing in the documentation or examples used either, so most
+deployments need no change.
+
+
+## [0.11.18] - 2026-09-13
+
+### Added
+
+- **A worker that cannot reach the database can still be told what a
+  connection is** (#587, #588) -- @hc12r. Groundwork for the API-only
+  worker: a worker holding no database and no encryption key must still
+  connect to the data source its nodes name, so something has to resolve
+  that connection for it. `ConnectionResolver.ResolveConnectionByID`
+  resolves credential refs to plaintext where the encryption key already
+  legitimately lives, so only the result crosses the wire and not the key
+  that opens every other credential in the deployment.
+
+  It answers "what is this connection", not "may you have it"; the
+  authorisation is the caller's, and is deliberately not in core.
+
+- **A shared-store worker declares what it holds at startup** (#587) --
+  @hc12r. `--mode worker` connects straight to the database, and where a
+  signing secret is also set it can mint any session including an
+  administrative one. That is a reasonable trade inside one trust
+  boundary and the wrong shape anywhere else. It was also the quieter of
+  the two worker shapes, indistinguishable at a glance from one that
+  holds nothing, so the trade was being made by operators who had never
+  been told they were making it. Each secret is now named with what it
+  grants; a worker holding none says so. Values are never logged.
+
+### Fixed
+
+- **A worker that cannot resolve connections said the connection was
+  missing** (#587) -- @hc12r. `ConnectionResolver` reported every
+  `GetConnection` failure as `conn_id "x" not found` and then returned
+  the config unchanged, so the node ran with its credentials unresolved
+  and failed somewhere less obvious. That is right for a genuinely
+  missing connection, where a node may carry inline fields as a fallback,
+  and wrong for a store that cannot look connections up at all: the
+  operator was told something about their data that was really a property
+  of their deployment.
+
+  New `store.ErrUnsupported` separates "cannot perform this" from
+  "performed it and found nothing", which were indistinguishable at a
+  call site and call for opposite responses.
+
+
+## [0.11.17] - 2026-09-13
+
+### Fixed
+
+- **The SQL artifact cap measured the blob, not the row it writes**
+  (#585) -- @hc12r. `WriteArtifactRef` checks `ref.SizeBytes` against
+  `BROKOLI_SQL_ARTIFACT_MAX_BYTES` before converting. Since v0.11.15 the
+  bytes that reach the column are the NDJSON conversion of that blob, and
+  for a compact format those are not the same number: the blob is Arrow,
+  the column is NDJSON, and the gap widens with how compressible the data
+  is. Measured at 2.2x on a 20,000-row dataset, a 1.73 MB blob against a
+  3.75 MB column value.
+
+  So a ref comfortably under the cap could write a row well over it,
+  which is the one thing the cap exists to prevent. Its own error text
+  explains why the limit matters -- an artifact is a single column value,
+  written as one statement parameter -- and that reasoning applies to the
+  converted bytes rather than the blob.
+
+  Found by watching a fleet degrade rather than by reading the code: nine
+  streamed runs had written 238 MB of the artifacts table, more than 577
+  task runs had. The cheap pre-check stays, because rejecting an
+  oversized blob without reading it is still right; the converted bytes
+  are now checked too, against the same limit and with the same named
+  error.
+
+
+## [0.11.16] - 2026-09-13
+
+### Added
+
+- **The streamed codec is named in the node log** (#583) -- @hc12r.
+  v0.11.15 gave the streaming write path two codecs, chosen per stream
+  from the first batch, and nothing said which one ran. That matters
+  because the fallback is deliberate: `arrowEncodableSchema` declines any
+  dataset it cannot represent exactly and NDJSON takes over, so a
+  pipeline can quietly lose the faster path and look identical from the
+  outside.
+
+  ```
+  Streamed 300000 rows, 5 columns from stream.csv (11.3 MB)
+  by reference as arrow-ipc (never materialized)
+  ```
+
+  The streamed `source_file`, `source_db` and `transform` lines all carry
+  it. The name is the same string the ref carries and the same one
+  `BROKOLI_STREAM_CODEC` accepts, so an operator who reads it can act on
+  it; a test asserts that correspondence rather than leaving it to
+  coincidence.
+
+
+## [0.11.15] - 2026-09-13
+
+### Fixed
+
+- **A truncated dataset decoded as a shorter one, and reported success**
+  (#576) -- @hc12r. `DecodeNDJSON`, `ReadNDJSON` and `ReadColumnarBinary`
+  each stopped at the first row they could not parse and returned the
+  rows so far with a nil error. A truncated or corrupted blob therefore
+  read back as a smaller dataset that looked fine: a resumed node
+  restored half its own output and the run was marked successful.
+
+  Already known, and written into a test comment rather than fixed:
+  "DecodeNDJSON silently truncates at a bad line; the batch reader must
+  not". The streaming reader was made loud for exactly this reason; the
+  materialising readers never were. Each now names the row it stopped
+  at, which separates "byte one is not JSON" from "row 4,000,001 was cut
+  off mid-write".
+
+- **An Arrow artifact read back empty** (#577) -- @hc12r. `spill()` has
+  chosen Arrow for any uniformly typed dataset since #521, and two
+  artifact stores could not read one back.
+  `SQLArtifactStore.WriteArtifactRef` copied the blob's bytes verbatim
+  into a TEXT column that `ReadArtifact` decodes as NDJSON, so binary
+  Arrow IPC went in and an empty dataset came out, with no error, for any
+  node whose output happened to be typed. That is the store every
+  distributed deployment uses. `LocalDiskArtifactStore.ReadArtifact`
+  refused any format but NDJSON outright, so such a run could not be
+  replayed from its own artifact.
+
+### Added
+
+- **The streaming write path can produce Arrow** (#578, #330) -- @hc12r.
+  `PutStream` and `streamTransformToRef` wrote NDJSON unconditionally,
+  so the largest outputs in the product, the ones that by construction
+  never fit in memory, were the only ones that never got the faster
+  codec. ADR-033 section 8 calls Arrow "the preferred optional dataset
+  transport"; on the write side nothing had implemented it.
+
+  The codec is inferred from the first batch and settled before a byte is
+  written, because the media type labelling the blob is an argument to
+  `Put` and by the time a byte exists it is too late to label it. A
+  stream whose first batch is not exactly representable is NDJSON from
+  the start, which is what it would have been anyway. A later batch that
+  disagrees fails by name, since the schema is already on the wire and
+  widening it would change the data.
+
+  Measured on #330's own pipeline, 1,000,000 rows of 81 MB CSV through
+  `source_file` to `sink_file`: **21.1s to 9.0s, 2.3x**. The NDJSON arm
+  reproduces that issue's own baseline (21.1s against its reported 22s),
+  which is what makes the two comparable. On the codec alone,
+  write-then-read is 3.58x with 3.18x fewer allocations and 1.97x smaller
+  on the wire.
+
+  `BROKOLI_STREAM_CODEC` selects it: `ndjson` restores the previous
+  behaviour byte for byte, `arrow` requires Arrow and refuses to fall
+  back, which is what lets a measurement prove which codec ran.
+
+- **A column holding both integers and floats can be Arrow** (#578) --
+  @hc12r. `arrowEncodableSchema` refused that mixture, which is what
+  every decoded dataset looks like: `numericValue` returns `int64` for a
+  whole number and `float64` otherwise, deliberately, so both codecs
+  agree. A float column with some whole values therefore came back mixed
+  and re-encoding it fell back to NDJSON forever after, so a transform
+  reading Arrow could never write Arrow. Float64 holds both and the
+  decoder narrows the whole ones back; integers a widening would round
+  are refused by checking each one rather than by a magnitude bound.
+
+
+## [0.11.14] - 2026-09-13
+
+### Fixed
+
+- **A staged task input was written where the worker could not read it**
+  (#572, #574) -- @hc12r. An input above the inline row cap is staged in
+  a blob store and fetched by the claiming worker through the control
+  plane. Staging went through `SQLArtifactStore.Blobs()`, which is local
+  disk, so in a distributed deployment the bytes landed on one pod and
+  the fetch looked on another: 404, after a capability had been minted
+  and a work order dispatched, from a component that had done nothing
+  wrong.
+
+  The store's own comment recorded the assumption that had stopped
+  holding, that spill "has no cross-pod visibility requirement". True of
+  spill, false of task staging, and both were using one store.
+
+  ADR-038 separates them. Spill keeps local disk. Anything another
+  process reads goes to a store declared cross-pod, and staging now
+  refuses by name, saying what to configure, rather than succeeding and
+  failing three hops later.
+
+### Added
+
+- **`S3Store` can be configured** (#574) -- @hc12r. It has been able to
+  hold blobs since #268 and to resolve them by digest since #561, but
+  `NewS3Store` had zero non-test callers, so object storage was code
+  nothing ran. `BROKOLI_BLOB_S3_BUCKET` and its credentials now build
+  it, and it becomes the cross-pod store above. A configured bucket that
+  turns out unusable logs loudly and still yields no store, so an
+  operator's mistake cannot read as an ordinary single-node install.
+
+## [0.11.13] - 2026-09-13
+
+A correctness release. Two of these are silent-wrong-answer defects and
+one is a permission gate that was open by default.
+
+### Security
+
+- **The open-source permission fallback was allow-by-default** (#527,
+  #566) -- @hc12r. `requirePerm`'s fallback denied exactly one case, a
+  viewer attempting a write, and every other role fell through to the
+  handler. Any role the build does not recognise passed every gated
+  route: a typo, a value from a newer build, a role an operator
+  invented, and the empty string included. It is deny-by-default now
+  over the known role vocabulary. Enterprise deployments were never
+  affected, since Team's RBAC replaces this path entirely.
+
+### Fixed
+
+- **A spilled Arrow dataset reached a code node as NDJSON** (#567) --
+  @hc12r. `stageRefToNDJSONFile` copied a referenced dataset byte for
+  byte into a file named `.ndjson` and handed it to the wrapper, with no
+  check on the ref's format. Feeding Arrow to the NDJSON decoder returns
+  **zero rows**, reported as success rather than as an error.
+
+  Newly reachable in v0.11.11, which made Arrow accept integer columns:
+  ordinary tables with an id started spilling as Arrow. **If a code node
+  of yours received an empty dataset from an upstream node on v0.11.11
+  or v0.11.12, this is why.** The function had no test; it has three
+  now.
+- **A worker could not fetch a staged task input, third layer** (#565)
+  -- @hc12r. `JWTAuth` refuses a request with no session, and a worker
+  holds none. It runs before the workspace gate v0.11.12 fixed, so that
+  fix was never reached. Three middlewares sit in front of the
+  data-plane blob routes and each was exempted separately, months apart,
+  each fix uncovering the next. A test now drives the assembled chain
+  and asserts the request arrives, rather than that one middleware
+  permits it.
+- **A duplicate `pipeline_id` is 409, not 500** (#570) -- @hc12r. It
+  answered 500 with the driver's own constraint text, which a client can
+  act on in no way, and it is what an ordinary re-run of a deploy script
+  produces since the id is derived from the name.
+
+### Changed
+
+- **Arrow writes bounded record batches** (#569) -- @hc12r. The encoder
+  built the whole dataset into one record, so the reader's "one record
+  batch becomes one batch of rows" contract resolved to the entire
+  dataset: an Arrow reference materialised on read however carefully the
+  reader was written. Rows now flush every 1000, matching the NDJSON
+  batch size.
+
+  The reference streaming path had never been benchmarked, so the
+  numbers behind every "6-8x" claim in this file were measured on a
+  different path. Measured now, reading a spilled dataset back through
+  `OpenBatches`:
+
+  | rows | codec | ns/op | allocs/op |
+  | --- | --- | --- | --- |
+  | 10,000 | ndjson | 134,760,542 | 299,776 |
+  | 10,000 | arrow | 17,965,713 | 70,353 |
+  | 100,000 | ndjson | 1,029,709,527 | 2,999,956 |
+  | 100,000 | arrow | 164,124,398 | 705,303 |
+
+  7.5x and 6.3x faster, 4.3x fewer allocations, 1.48x smaller on the
+  wire.
+- **A goroutine budget that scaled with nothing** (#568) -- @hc12r. The
+  parked-waits test asserted a fixed margin of 20 while parking 250
+  runs, and failed CI at 21 on a change that touched no engine code.
+  `runtime.NumGoroutine` is process-global, so neighbouring tests land
+  inside a fixed margin. The budget scales with the park count now.
+
+## [0.11.12] - 2026-09-12
+
+### Fixed
+
+- **A worker could not fetch a staged task input on a multi-tenant
+  deployment** (#563) -- @hc12r. A worker holds no session and belongs
+  to no user, so `WorkspaceMiddleware` had no workspace to resolve for
+  it and answered 401 "authentication required" before `blobAuth` could
+  resolve its identity. Every reference-based task input, which is every
+  input above the 10,000-row inline cap, failed that way.
+
+  The rejecting branch only runs when a workspace resolver is installed,
+  so single-tenant deployments and every in-process test were
+  unaffected, which is why v0.11.11 shipped with it. The data-plane blob
+  routes are now exempt from workspace resolution, matched on segment
+  shape rather than a path prefix so the exemption cannot be reached by
+  burying "blobs" in another route.
+
+  This is the defect #528 set out to close, surviving one layer up.
+  Enterprise needs its own half of the same path; a deployment wants
+  both.
+
+## [0.11.11] - 2026-09-12
+
+### Security
+
+- **A webhook no longer says which pipelines exist** (#542, #551) --
+  @team-humaki. An unauthenticated caller got 404, 403 or 401 depending
+  on whether the pipeline was missing, had no webhook configured, or had
+  one with a different token. Three answers to a question the caller was
+  not authorised to ask, so anyone could enumerate pipeline ids from
+  outside. All three are now the same 404 with the same body, and the
+  real reason goes to the server log with the id quoted, so a newline in
+  a URL cannot forge a log line.
+- **An anonymous caller can no longer consume a pipeline's webhook
+  rate-limit slot** (#534, #541) -- @hc12r. The limiter was claimed
+  before the token was checked, on the raw id from the URL, so a
+  stranger who knew only a pipeline id could hold its slot: their own
+  request was rejected, but only after stamping the limiter, and the
+  legitimate sender then got 429. A pipeline could be silently stopped
+  from outside. The slot is claimed only after the caller has proved it
+  may trigger that pipeline, and entries for ids matching no pipeline
+  are no longer recorded at all.
+- **Rate limiting counts a client, not a connection** (#539, #540) --
+  @hc12r. The bucket key was `RemoteAddr`, which includes the ephemeral
+  source port, so every new TCP connection got its own fresh budget.
+  A caller opening a connection per request was never limited, and the
+  visitor map grew per connection rather than per client.
+- **The outbound analyzer catches `http.DefaultTransport`** (#266, #531)
+  -- @AghastyGD. The last standard-library path that could issue a
+  request without passing through `pkg/netguard`. Includes an audit of
+  every `AllowLoopback: true` site, both of which are deliberate, and a
+  regression test for the capability store's exception that ADR-022 had
+  been claiming existed.
+- **A worker can authenticate to the blob endpoints, and only those**
+  (#528) -- @hc12r. An opaque device token is accepted on the data-plane
+  blob routes and nowhere else, so a remote worker can fetch a staged
+  input without holding a session.
+
+### Fixed
+
+- **Arrow decoding was corrupting 64-bit integers** (#560) -- @hc12r.
+  Every integer was converted through `float64` before being narrowed
+  back, so anything past 2^53 arrived altered and unflagged:
+  `9007199254740993` decoded as `...992`, and `MaxInt64` decoded as a
+  float64 rather than an integer at all. Both Arrow readers share that
+  code, so it reached task datasets from a harness and spilled node
+  outputs alike.
+
+  **If a task of yours handles 64-bit identifiers and either side chose
+  Arrow, its results may have been wrong.** This is the fourth
+  appearance of one defect class, after v0.11.6, v0.11.7 and v0.11.8;
+  the file's own header had claimed integers arrive "as whole float64s",
+  which stopped being true when the NDJSON path gained a decoder that
+  holds them.
+- **`sink_file` with `format: sql` wrote JSON** (#545, #546) -- @hc12r.
+  It named the file `.sql` and put JSON in it. It now generates real
+  INSERT statements with a dialect and an optional CREATE TABLE.
+- **Generated DDL declares BIGINT past int32** (#547, #548) -- @hc12r.
+  A column holding values beyond 2^31 was declared INTEGER, so the
+  script it produced would not load.
+- **Deleting a node no longer breaks the editor** (#550) -- @hc12r.
+  Removing a node left the canvas bound to a stale index, so the wrong
+  node's properties were shown and the last node could not be deleted.
+- **A database node keeps its connection** (#544) -- @hc12r. Selecting a
+  stored connection dispatched two updates in the same tick and the
+  second landed without `conn_id`, so the panel snapped back to the
+  manual URI field and the save dropped the connection.
+- **Test Connection tests the connection the node uses** (#557) --
+  @hc12r. It only ever read `config.uri`, so the one configuration
+  carrying working credentials was the one it refused to test. A stored
+  connection is now tested by id on the server, where the credentials
+  are.
+
+### Added
+
+- **Arrow engages on tables with an integer column** (#521, #560) --
+  @hc12r. The encoder accepted only string, float64 and bool, so a
+  single integer column sent the whole dataset down the NDJSON path.
+  Essentially every real table has an integer id, and the fallback is
+  silent, so the measured 6.8x decode and 4.5x encode applied to
+  datasets that mostly do not exist. Integers map to Arrow Int64 now.
+  The conservative rule is unchanged: a column mixing an integer with a
+  float still declines, as do nested values, slices and all-null
+  columns.
+- **Draft pipelines** (#107, #554) -- @hc12r. Fail-closed persistence
+  meant a pipeline had to be executable to be saved, so there was no way
+  to start one from scratch and finish it later. A draft skips
+  executable validation on save and in exchange cannot run; publishing
+  applies the full validation, and a published pipeline cannot return to
+  draft (disable it instead).
+- **Schedules in plain language** (#552, #553) -- @hc12r. "every weekday
+  at 9am" compiles to `0 9 * * 1-5`, with the cron and the next few
+  occurrences shown before saving. A closed grammar: anything it does
+  not understand is refused with a suggestion rather than guessed at,
+  and cron is still accepted directly.
+- **`S3Store` resolves a blob by digest** (#561) -- @hc12r. The blob
+  endpoint turns a capability's namespace and digest into a reference
+  through `DigestResolver`, which only the local-disk store implemented.
+  A deployment configured for object storage therefore had a working
+  store that could not serve a single capability read.
+- **An editor toolbar that scales** (#555, #556) -- @hc12r. Twenty-one
+  controls on one row broke twice in two days. The schedule moved into a
+  popover, the long tail into an overflow menu, Run and Publish became
+  one contextual action, and every editor action is reachable from the
+  command palette the app already had.
+- **A local Postgres fixture** (#549) -- @hc12r. `scripts/devdata`
+  brings up Postgres with 100k rows chosen to be awkward: embedded
+  newlines and quotes, unicode, nulls, values past 2^31 and 2^53.
+
+### Changed
+
+- **The Security workflow runs on pushes to main and on demand** (#536,
+  #543) -- @hc12r. It only ran on pull requests, so main itself was
+  never scanned.
+- **Two tests stopped depending on their surroundings** (#558, #559) --
+  @hc12r. One reached for `select.first()` on the page, which stopped
+  meaning the connection picker once the toolbar gained a timezone
+  picker, and took main red when both landed. The other required a dial
+  to a private address to fail, which is a fact about the network the
+  suite runs on rather than about the code.
+
+## [0.11.10] - 2026-09-11
+
+A security release. Upgrade if you run Brokoli with authentication
+enabled and expose it to any network you do not fully trust. Every
+released version before this one is affected.
+
+### Security
+
+- **Authentication could be skipped on most POST routes by putting
+  "/webhook" in the path** (GHSA-jxjf-p7pv-22m9) -- @hc12r. The webhook
+  trigger routes carry their own token rather than a session, so both
+  auth middlewares exempted them. The exemption asked whether the
+  request path merely *contained* `/webhook`:
+
+  ```go
+  strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST"
+  ```
+
+  `r.URL.Path` is the decoded path, while the router dispatches on
+  `RawPath` when it is set. Two shapes satisfied the test while being
+  routed somewhere else entirely: a path parameter whose value is the
+  literal word `webhook` (`POST /api/pipelines/webhook/backfill`), and a
+  percent-encoded separator that grows a `/webhook` segment the router
+  never sees (`POST /api/pipelines/p123%2Fwebhook/backfill`).
+
+  Getting past the middlewares mattered because the open-source
+  permission gate then allowed the request through as well. It read the
+  resulting absence of claims as "open mode, no users created yet",
+  which is also exactly what an unauthenticated request looks like.
+  `HasPermission` had already been corrected for that same ambiguity and
+  consults JWTAuth's explicit marker instead; its sibling in
+  `RegisterRoutes` had not. The two together let a request reach a
+  handler with no authentication, no permission check, and no
+  organisation scoping.
+
+  Be accurate about the practical reach: no route in the shipped table
+  could be driven to read or change data, because nearly every affected
+  handler resolves its target using the same path parameter that carried
+  the bypass, and that lookup then fails. The exception is close enough
+  to matter, though. `dlqResolveHandler` uses its pipeline parameter
+  only to confirm the pipeline exists and then resolves a dead-letter
+  entry named by a second parameter, so a pipeline whose id happened to
+  be `webhook` would have made that reachable unauthenticated. The
+  containment was a property of which routes exist, not of any control.
+
+  Both halves are fixed. `isWebhookTriggerRequest` matches on method and
+  path shape, alongside the capabilities and observability helpers that
+  already worked that way, and reads the same string the router will
+  dispatch on so the two cannot disagree. The permission fallback moved
+  to `fallbackPermissionMiddleware`, where it now requires an explicit
+  open-mode marker and can be driven directly by a test rather than only
+  through the whole router.
+
+  Both fixes were confirmed by watching the new tests fail against the
+  old behaviour, not merely pass against the new one.
+
+## [0.11.9] - 2026-09-10
+
+A welcome to @harlanljones, whose first contribution is in this release.
+They picked up a good first issue, found that its central claim was
+wrong, said so, and fixed the code correctly instead of following the
+instruction. That is exactly the instinct we want, and the issue is
+better for it.
+
+### Fixed
+
+- **Remote task dispatch now actually works.** (#519, #522, #525) --
+  @hc12r. It never did in `--mode worker`, which is the only mode a
+  distributed deployment runs. Three separate defects, each hiding the
+  next, all found by standing up a fleet with one worker pool per
+  runtime and watching a JVM task fail on a pod with no JDK:
+  - **A task work order was rejected on arrival** (#519). Its identity
+    was validated as requiring a non-empty `InstanceKey`, but a task node
+    has no expansion semantics: it dispatches one job whose identity is
+    the whole-node attempt, `(RunID, NodeID, "", Attempt)`. That empty
+    key is the same convention the execution-attempt store and the blob
+    endpoint already use. The worker rejected and acked the job, the
+    dispatcher waited out its full timeout, and the run failed with
+    "timed out waiting for a worker", a message naming the symptom and
+    hiding the cause.
+  - **A worker's runner had no capability issuer** (#522). Two functions
+    build a Runner from an Engine, and the issuer was added to one of
+    them. The worker path silently lacked it, so a task input over the
+    inline row cap was refused rather than staged by reference. The
+    engine had none either, because the wiring sat on the API-only code
+    path.
+  - **A worker presented no identity to the blob endpoint** (#525).
+    The endpoint requires both a caller identity and a capability, and
+    the client sent only the capability, so every reference-based fetch
+    was rejected with 401 before the capability was read. The credential
+    is an opaque token, never a JWT.
+
+  None of these were reachable in process, so unit tests and CI stayed
+  green throughout while the feature could not run where it was needed.
+
+- **A fixable HIGH advisory in a transitive dependency** (#524) --
+  @hc12r. `google.golang.org/grpc` moves to 1.83.2 for CVE-2026-84445,
+  reached through OpenTelemetry's OTLP exporter. Real exposure here is
+  essentially nil, since the advisory concerns gRPC-Go xDS servers and
+  Brokoli runs none, but the image scan gate fails on fixable findings
+  and the bump is a patch release.
+
+### Added
+
+- **A task's data plane reaches remote workers.** (#509, #510, #517) --
+  @hc12r. A capability-authenticated blob endpoint (ADR-033 section 6),
+  input staged by reference when a dataset is too large to ride inside a
+  work order, and artifact and collection outputs written from a remote
+  worker. A write grant names the namespace rather than the object,
+  because the store is content addressed and a task's output has no
+  identity until it exists. That relaxation is refused on a read, refused
+  alongside a pinned checksum, and confined to the route that names no
+  object.
+
+### Changed
+
+- **NDJSON helpers no longer claim to be Arrow.** (#516) --
+  @harlanljones. `WriteArrowJSON` and friends wrote NDJSON, and the
+  `TransferArrow` constant named a mode that never existed. Harmless
+  while nothing used Arrow, actively misleading once real Arrow IPC
+  landed beside them. The issue wrongly suggested the constants were
+  unused and could be deleted; they drive the file-mode switch in
+  `codenode.go`, and this change correctly renames rather than removes
+  them.
+
+- **CONTRIBUTING explains why to contribute and how to build.** (#515) --
+  @hc12r. There were no setup instructions at all, and the build order
+  trap was undocumented: the UI must be built before the binary, or the
+  embedded assets are stale.
+
+- **Build artifacts are no longer tracked.** (#523) -- @hc12r. A 12MB
+  `brokolisql` binary was committed. It is an output of this repo and
+  rebuilds from source.
+
+
 ## [0.11.8] - 2026-09-08
 
 ### Fixed

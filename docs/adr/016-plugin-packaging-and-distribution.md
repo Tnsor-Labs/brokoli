@@ -258,3 +258,20 @@ unmet. The plugin ecosystem cannot grow past its authors this way.
 All five Decision parts are shipped: `pkg/plugins/manifest.go` carries `packaging_version`/`Payloads`/runtime classes; `pkg/plugins/package.go` implements the `.bkg` archive format; `api/handlers_plugins.go` provides `List`/`Install`/`InstallByName`/`Remove`/`Archive`/`Index` (the install/UX API this ADR specified, including checksum verification and the archive endpoint ADR-005 deferred); `ui/src/pages/Plugins.svelte` is the UI page; `pkg/plugins/index.go` implements the curated static-index distribution model, defaulting to a `brokoli-plugins` GitHub Releases index with `BROKOLI_PLUGIN_INDEX` override, exactly as specified.
 
 Still Deferred, as originally scoped and not blocking this ADR: the `container` and WASM runtime classes, per-plugin venv/dependency provisioning for interpreted runtimes, cosign signature verification, and index moderation tooling beyond PR review.
+
+## Update - 2026-09-19: upgrade in place was not shipped
+
+The 2026-08-18 update above says all five Decision parts shipped. One part
+did not: upgrades. The Decision says upgrades swap in place and are "the
+same call" as an install, but installing a plugin whose name is already
+installed is refused (`pkg/plugins/package.go:414`, "already installed ...
+remove it first"), and the CLI and API inherit that refusal. An upgrade
+today is remove, then install, with no rollback between the two.
+
+Whether to build the in-place swap as decided here, or move to versioned
+side-by-side installs, is open in #511. Until one of them ships, this ADR's
+upgrade semantics describe intent, not behaviour.
+
+The UI page named in the update above moved with the React migration in
+v0.11.27 and is now `ui/packages/workspace/src/plugins/PluginsPage.tsx`.
+

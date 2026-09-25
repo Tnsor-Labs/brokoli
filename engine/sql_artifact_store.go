@@ -53,6 +53,11 @@ type SQLArtifactStore struct {
 	// for why this exists and is deliberately local disk, not the SQL
 	// database WriteArtifact/ReadArtifact use.
 	blobs artifact.Store
+
+	// sharedBlobs backs SharedBlobs()/SharedBlobStoreProvider: a store
+	// another pod can read. Nil unless the deployment configured object
+	// storage, which is the honest default (ADR-038).
+	sharedBlobs artifact.Store
 }
 
 // NewSQLArtifactStore creates (if not already present) the artifacts table
@@ -68,7 +73,13 @@ func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtif
 	if spillDir == "" {
 		spillDir = "./brokoli-artifacts"
 	}
-	s := &SQLArtifactStore{db: db, dialect: dialect, blobs: artifact.NewLocalDiskStore(spillDir)}
+	s := &SQLArtifactStore{
+		db:      db,
+		dialect: dialect,
+		blobs:   artifact.NewLocalDiskStore(spillDir),
+		// Configured separately, and absent by default: see SharedBlobs.
+		sharedBlobs: sharedBlobStoreFromEnv(),
+	}
 	if err := s.ensureSchema(); err != nil {
 		return nil, fmt.Errorf("sql artifact store: %w", err)
 	}
@@ -98,6 +109,19 @@ func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtif
 // through the database instead would add write load and row bloat to
 // solve a problem local disk already solves for free.
 func (s *SQLArtifactStore) Blobs() artifact.Store { return s.blobs }
+
+// SharedBlobs implements SharedBlobStoreProvider: the store another pod
+// can read, or nil when this deployment has not configured one.
+//
+// Nil is the honest answer for the default configuration, and it is why
+// this method exists. Blobs() above is local disk on purpose, and a
+// distributed deployment has many pods with many local disks. Handing
+// that store to a caller staging bytes for a different pod produced
+// exactly the failure it sounds like: the write succeeded, a capability
+// was minted, a work order was dispatched, and the fetch three hops
+// later returned 404 from a component that had done nothing wrong
+// (#572, ADR-038).
+func (s *SQLArtifactStore) SharedBlobs() artifact.Store { return s.sharedBlobs }
 
 func (s *SQLArtifactStore) ensureSchema() error {
 	// TEXT even for created_at rather than a dialect-specific TIMESTAMP
@@ -391,9 +415,9 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 		return fmt.Errorf("write artifact ref: open blob: %w", err)
 	}
 	defer rc.Close()
-	data, err := io.ReadAll(rc)
+	data, err := ndjsonBytesForTextColumn(rc, ref, nodeID)
 	if err != nil {
-		return fmt.Errorf("write artifact ref: read blob: %w", err)
+		return fmt.Errorf("write artifact ref: %w", err)
 	}
 	cols := ref.Columns
 	if cols == nil {
@@ -411,4 +435,48 @@ func (s *SQLArtifactStore) WriteArtifactRef(runID, nodeID, instanceKey string, r
 		return fmt.Errorf("write artifact ref: %w", err)
 	}
 	return nil
+}
+
+// ndjsonBytesForTextColumn returns the blob's contents as the NDJSON text
+// the artifact column holds.
+//
+// The column is text, and ReadArtifact decodes it as NDJSON. This read
+// the blob verbatim, which was correct while NDJSON was the only format
+// a ref could name and became a bug the moment spill() started choosing
+// Arrow for uniformly typed datasets (#521): Arrow's binary IPC bytes
+// went into a text column and came back out as an empty dataset, with no
+// error, for any node whose output happened to be typed.
+//
+// Converting rather than refusing, because the caller has a valid
+// artifact in hand and the storage layer's encoding is not the caller's
+// concern. Only the formats that need it pay the decode and re-encode.
+//
+// The size cap is re-checked against the CONVERTED bytes, because those
+// are the bytes the column actually holds. WriteArtifactRef checks
+// ref.SizeBytes first, which is the blob's size, and for a compact
+// format that is not the same number: measured on a real fleet, a
+// 300,000-row Arrow blob expanded to 27 MB of NDJSON in the column, and
+// the more compressible the data the wider the gap. Checking only the
+// blob would let a ref under the cap write a row several times over it,
+// which is the one thing this cap exists to prevent.
+func ndjsonBytesForTextColumn(r io.Reader, ref *artifact.DatasetRef, nodeID string) ([]byte, error) {
+	if ref.Format == artifact.FormatNDJSON || ref.Format == "" {
+		data, err := io.ReadAll(r)
+		if err != nil {
+			return nil, fmt.Errorf("read blob: %w", err)
+		}
+		return data, nil
+	}
+	ds, err := decodeDatasetRef(r, ref)
+	if err != nil {
+		return nil, fmt.Errorf("decode %s blob: %w", ref.Format, err)
+	}
+	var buf bytes.Buffer
+	if err := EncodeNDJSON(&buf, ds); err != nil {
+		return nil, fmt.Errorf("re-encode %s blob as ndjson: %w", ref.Format, err)
+	}
+	if limit := sqlArtifactMaxBytes(); limit > 0 && int64(buf.Len()) > limit {
+		return nil, errArtifactTooLarge(nodeID, int64(buf.Len()), limit)
+	}
+	return buf.Bytes(), nil
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"sort"
@@ -78,8 +80,20 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 
 	// Async: return immediately with run ID. Pipeline executes in background.
 	// This prevents client timeouts from creating duplicate runs.
-	runID, err := h.engine.RunPipelineAsyncWithParameters(pipelineID, req.Params, req.Parameters)
+	runID, err := h.engine.RunPipelineAsyncOpts(pipelineID, engine.RunOptions{
+		Params:      req.Params,
+		TypedParams: req.Parameters,
+		// #241. Who asked, taken from the token rather than the body.
+		TriggeredBy: runAttributionFromRequest(r),
+	})
 	if err != nil {
+		// A draft is a precondition failure, not a server fault. Returning
+		// 500 would make an ordinary "not finished yet" look like a bug in
+		// the server to anything watching error rates.
+		if errors.Is(err, engine.ErrPipelineIsDraft) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if errors.Is(err, engine.ErrParameterResolution) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -156,7 +170,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		runs = populateRunErrors(runs)
+		runs = h.decorateRuns(runs)
 		writeJSON(w, http.StatusOK, PaginateSlice(runs, total, pp))
 		return
 	}
@@ -167,7 +181,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		runs = populateRunErrors(runs)
+		runs = h.decorateRuns(runs)
 		cursor := ""
 		if hasNext && len(runs) > 0 {
 			cursor = runs[len(runs)-1].ID
@@ -186,7 +200,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, populateRunErrors(runs))
+	writeJSON(w, http.StatusOK, h.decorateRuns(runs))
 }
 
 // populateRunErrors normalises a run listing for the wire: never nil, so
@@ -195,6 +209,39 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 // the same way Get already does for a single run -- a listing is not a
 // narrower audience than the single-run endpoint, so it shouldn't be a
 // wider disclosure surface.
+// decorateRuns is populateRunErrors plus who started each run (#241).
+//
+// One batched read for the page rather than one per run: attribution
+// lives in its own table, which is what keeps the seventeen positional
+// run SELECTs untouched, and the cost of that choice is this join, paid
+// only where attribution is shown.
+//
+// A failure here loses the attribution and keeps the runs. The page's
+// job is to list runs; degrading to "started by: not recorded" is worse
+// than an error only if it is silent, so it is logged.
+func (h *RunHandler) decorateRuns(runs []models.Run) []models.Run {
+	runs = populateRunErrors(runs)
+	if len(runs) == 0 {
+		return runs
+	}
+	ids := make([]string, 0, len(runs))
+	for i := range runs {
+		ids = append(ids, runs[i].ID)
+	}
+	byRun, err := h.store.GetRunAttribution(ids)
+	if err != nil {
+		log.Printf("run listing: could not read who started these runs: %v", err)
+		return runs
+	}
+	for i := range runs {
+		if a, ok := byRun[runs[i].ID]; ok {
+			attribution := a
+			runs[i].TriggeredBy = &attribution
+		}
+	}
+	return runs
+}
+
 func populateRunErrors(runs []models.Run) []models.Run {
 	if runs == nil {
 		return []models.Run{}
@@ -223,6 +270,14 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 	run.PopulateError()
 	if run.Error != "" {
 		run.Error = sanitizeRunError(run.Error)
+	}
+	if byRun, err := h.store.GetRunAttribution([]string{run.ID}); err == nil {
+		if a, ok := byRun[run.ID]; ok {
+			attribution := a
+			run.TriggeredBy = &attribution
+		}
+	} else {
+		log.Printf("run %s: could not read who started it: %v", run.ID, err)
 	}
 	writeJSON(w, http.StatusOK, run)
 }
@@ -502,7 +557,31 @@ func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 		DenyOrgAccess(w)
 		return
 	}
-	run, err := h.engine.ResumeRun(runID)
+	// Optional body. With no from_node this is exactly what it has always
+	// been: resume a failed run from its first failed node. With one, the
+	// chosen node and everything downstream of it run again, and the rest
+	// of the earlier run's work is reused.
+	var req struct {
+		FromNode string `json:"from_node"`
+	}
+	// io.EOF is the empty body, which is the plain resume and is fine.
+	// Any other decode error must be refused rather than discarded: a
+	// failed decode leaves FromNode empty, which is indistinguishable
+	// from "no from_node", so a caller who asked for one node would
+	// silently get a plain resume of the whole run instead, doing more
+	// work than was asked for with nothing to notice it by.
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "request body could not be read as JSON: "+err.Error())
+		return
+	}
+
+	var run *models.Run
+	var err error
+	if req.FromNode == "" {
+		run, err = h.engine.ResumeRun(runID)
+	} else {
+		run, err = h.engine.ResumeRunFromNode(runID, req.FromNode)
+	}
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -577,15 +656,20 @@ func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 	}
 	nodeID := chi.URLParam(r, "nodeId")
 
-	columns, rows, err := h.store.GetNodePreview(runID, nodeID)
+	preview, err := h.store.GetNodePreview(runID, nodeID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "no preview available")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]interface{}{
-		"columns": columns,
-		"rows":    rows,
-	})
+	body := map[string]interface{}{
+		"columns":   preview.Columns,
+		"rows":      preview.Rows,
+		"truncated": preview.Truncated,
+	}
+	if preview.TotalRows != nil {
+		body["total_rows"] = *preview.TotalRows
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 // NodeStats returns historical execution durations per node for sparkline charts.

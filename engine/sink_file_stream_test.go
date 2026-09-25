@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -66,7 +67,7 @@ func TestStreamedSinkFileMatchesBufferedBytes(t *testing.T) {
 			want   []byte
 		}{{"csv", wantCSV}, {"json", wantJSON}} {
 			path := filepath.Join(t.TempDir(), "out."+tc.format)
-			rows, written, err := writeSinkFileStreamed(path, tc.format, ds.Columns, batchesOf(ds, size))
+			rows, written, err := writeStreamedLocal(path, tc.format, ds.Columns, batchesOf(ds, size))
 			if err != nil {
 				t.Fatalf("%s batch=%d: %v", tc.format, size, err)
 			}
@@ -105,7 +106,7 @@ func TestStreamedSinkFileEmptyInput(t *testing.T) {
 		want   []byte
 	}{{"csv", wantCSV}, {"json", wantJSON}} {
 		path := filepath.Join(t.TempDir(), "empty."+tc.format)
-		rows, _, err := writeSinkFileStreamed(path, tc.format, empty.Columns, batchesOf(empty, 10))
+		rows, _, err := writeStreamedLocal(path, tc.format, empty.Columns, batchesOf(empty, 10))
 		if err != nil {
 			t.Fatalf("%s: %v", tc.format, err)
 		}
@@ -148,4 +149,18 @@ func TestSinkFileFormatResolution(t *testing.T) {
 			t.Errorf("%s should stream", f)
 		}
 	}
+}
+
+// writeStreamedLocal drives the streamed sink's real destination step,
+// writeFileOutput, with a local path: the bytes these tests compare are
+// the ones a run writes, not a test-only copy of the plumbing.
+func writeStreamedLocal(path, format string, columns []string, next func() (*common.DataSet, error)) (int64, int64, error) {
+	r := &Runner{}
+	var rows int64
+	out, err := r.writeFileOutput(context.Background(), models.Node{ID: "sink", Config: map[string]interface{}{"path": path}}, path, func(w io.Writer) error {
+		var encErr error
+		rows, encErr = encodeSinkFile(w, format, columns, next)
+		return encErr
+	})
+	return rows, out.bytes, err
 }

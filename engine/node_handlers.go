@@ -71,28 +71,33 @@ func (r *Runner) runCondition(node models.Node, input *common.DataSet) (*common.
 	return input, result.Passed, nil
 }
 
-func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runSourceFile(ctx context.Context, node models.Node) (*common.DataSet, error) {
 	path, _ := node.Config["path"].(string)
 	if path == "" {
 		return nil, fmt.Errorf("source_file node requires 'path' config")
 	}
 
-	if err := validateFilePath(path); err != nil {
-		return nil, fmt.Errorf("source_file: %w", err)
+	local, cleanup, remote, err := r.sourceFileLocal(ctx, node, path)
+	if err != nil {
+		return nil, err
 	}
+	defer cleanup()
 
-	loader, err := loaders.GetLoader(path)
+	loader, err := loaders.GetLoader(local)
 	if err != nil {
 		return nil, fmt.Errorf("get loader: %w", err)
 	}
 
-	ds, err := loader.Load(path)
+	ds, err := loader.Load(local)
 	if err != nil {
+		if remote {
+			return nil, fmt.Errorf("load %s: %w", remoteFileAssetID(fileConnID(node), path), err)
+		}
 		return nil, describeMissingFile(path, fmt.Errorf("load %s: %w", path, err))
 	}
 
 	// Detailed source logging
-	fi, _ := os.Stat(path)
+	fi, _ := os.Stat(local)
 	var sizeStr string
 	if fi != nil {
 		mb := float64(fi.Size()) / 1024 / 1024
@@ -104,7 +109,7 @@ func (r *Runner) runSourceFile(node models.Node) (*common.DataSet, error) {
 	}
 	ext := filepath.Ext(path)
 	r.log(node.ID, models.LogLevelInfo, "Loaded %d rows, %d columns from %s (%s, %s)", len(ds.Rows), len(ds.Columns), filepath.Base(path), ext, sizeStr)
-	if unsharedFileStorage() {
+	if unsharedFileStorage() && !remote {
 		// Which pod, and how old — the two facts an operator needs to tell
 		// a correct read from a stale one, recorded while the run is
 		// happening rather than reconstructed afterwards.
@@ -165,10 +170,16 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 	// Warn rather than silently ignoring a setting that has no effect.
 	if v, ok := execCfg["max_concurrency"]; ok {
 		if !hasPagination {
+			if strictExecution(node.Config) {
+				return nil, fmt.Errorf("strict execution profile sets max_concurrency without pagination")
+			}
 			r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v has no effect without a pagination config — ignoring", v)
 		} else {
 			switch strategy, _ := paginationCfg["strategy"].(string); strategy {
 			case "cursor", "next_link", "link_header":
+				if strictExecution(node.Config) {
+					return nil, fmt.Errorf("strict execution profile sets max_concurrency=%v for sequential pagination strategy %q", v, strategy)
+				}
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.max_concurrency=%v is not applicable to pagination strategy %q — each page's request depends on the previous page's response, so pages run sequentially regardless of this setting", v, strategy)
 			}
 		}
@@ -181,6 +192,9 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 	// unrecognized for this node type; warn instead of pretending it did
 	// something.
 	if v, ok := execCfg["retry_scope"].(string); ok && v != "" && v != "page" {
+		if strictExecution(node.Config) {
+			return nil, fmt.Errorf("strict execution profile does not recognize source_api execution.retry_scope=%q", v)
+		}
 		r.log(node.ID, models.LogLevelWarning, "source_api execution.retry_scope=%q is not a recognized value for source_api pagination (only \"page\" applies here) — ignoring", v)
 	}
 
@@ -215,6 +229,9 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 
 	if !hasCheckpointEvery || checkpointEvery <= 0 || !hasPagination || !supportsCheckpointing || r.checkpointStore == nil {
 		if hasCheckpointEvery && checkpointEvery > 0 {
+			if strictExecution(node.Config) {
+				return nil, fmt.Errorf("strict execution profile cannot apply checkpoint_every=%v: pagination, checkpoint support, and a checkpoint store are all required", execCfg["checkpoint_every"])
+			}
 			switch {
 			case !hasPagination:
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v has no effect without a pagination config — ignoring", execCfg["checkpoint_every"])
@@ -311,7 +328,7 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return records
 }
 
-func (r *Runner) runSourceDB(node models.Node) (nodeExecutionResult, error) {
+func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult, error) {
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -321,6 +338,7 @@ func (r *Runner) runSourceDB(node models.Node) (nodeExecutionResult, error) {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
+	r.recordExecutedSQL(node.ID, attempt, query)
 	ds, err := QueryDatabase(uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
@@ -481,31 +499,55 @@ func splitLines(s string) []string {
 	return lines
 }
 
-func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runJoin(node models.Node, inputs []*common.DataSet, inputSchemas []columnSchema) (nodeExecutionResult, error) {
 	if len(inputs) < 2 {
-		return nil, fmt.Errorf("join node requires exactly 2 inputs, got %d", len(inputs))
+		return nodeExecutionResult{}, fmt.Errorf("join node requires exactly 2 inputs, got %d", len(inputs))
 	}
 
 	leftKey, _ := node.Config["left_key"].(string)
 	rightKey, _ := node.Config["right_key"].(string)
 	joinTypeStr, _ := node.Config["join_type"].(string)
+	collisionPolicy, policyIsString := node.Config["collision_policy"].(string)
+	if raw, present := node.Config["collision_policy"]; present && raw != nil && !policyIsString {
+		return nodeExecutionResult{}, fmt.Errorf("join node 'collision_policy' must be a string")
+	}
+	rightAlias, aliasIsString := node.Config["right_alias"].(string)
+	if raw, present := node.Config["right_alias"]; present && raw != nil && !aliasIsString {
+		return nodeExecutionResult{}, fmt.Errorf("join node 'right_alias' must be a string")
+	}
 
 	if leftKey == "" {
-		return nil, fmt.Errorf("join node requires 'left_key' config")
+		return nodeExecutionResult{}, fmt.Errorf("join node requires 'left_key' config")
 	}
 	if rightKey == "" {
 		rightKey = leftKey
 	}
+	if collisionPolicy == "" {
+		collisionPolicy = string(JoinCollisionPrefix)
+	}
 
 	jt := ParseJoinType(joinTypeStr)
-	result, err := JoinDatasets(inputs[0], inputs[1], leftKey, rightKey, jt)
+	result, err := JoinDatasetsWithOptions(inputs[0], inputs[1], leftKey, rightKey, jt, JoinOptions{
+		CollisionPolicy: JoinCollisionPolicy(collisionPolicy),
+		RightAlias:      rightAlias,
+	})
 	if err != nil {
-		return nil, err
+		return nodeExecutionResult{}, err
+	}
+	var outputSchema columnSchema
+	if len(inputSchemas) >= 2 {
+		outputSchema, err = joinSchema(inputSchemas[0], inputSchemas[1], inputs[0].Columns, inputs[1].Columns, leftKey, rightKey, JoinOptions{
+			CollisionPolicy: JoinCollisionPolicy(collisionPolicy),
+			RightAlias:      rightAlias,
+		})
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
 	}
 
 	r.log(node.ID, models.LogLevelInfo, "%s join on %s=%s: %d + %d -> %d rows",
 		jt, leftKey, rightKey, len(inputs[0].Rows), len(inputs[1].Rows), len(result.Rows))
-	return result, nil
+	return nodeExecutionResult{output: result, outputSchema: outputSchema}, nil
 }
 
 // runUnion concatenates all of a union node's upstream datasets into one.
@@ -693,6 +735,39 @@ func (r *Runner) runTransform(node models.Node, input *common.DataSet, inputSche
 	}, nil
 }
 
+// runNativeOperator executes a dedicated relational node without passing
+// through a language runtime. The evaluator is shared with legacy transform
+// rules, but the node type makes planning and capability negotiation explicit.
+func (r *Runner) runNativeOperator(node models.Node, input *common.DataSet, inputSchema columnSchema, operator string) (nodeExecutionResult, error) {
+	if input == nil {
+		return nodeExecutionResult{}, fmt.Errorf("%s node requires input data", operator)
+	}
+	ruleJSON, err := json.Marshal(node.Config)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("marshal %s config: %w", operator, err)
+	}
+	var rule TransformRule
+	if err := json.Unmarshal(ruleJSON, &rule); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("parse %s config: %w", operator, err)
+	}
+	rule.Type = operator
+	if operator == "filter" {
+		rule.Type = "filter_native"
+	}
+	clone := &common.DataSet{Columns: append([]string(nil), input.Columns...), Rows: make([]common.DataRow, len(input.Rows))}
+	for i, row := range input.Rows {
+		clone.Rows[i] = make(common.DataRow, len(row))
+		for key, value := range row {
+			clone.Rows[i][key] = value
+		}
+	}
+	if err := ApplyTransforms([]TransformRule{rule}, clone); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("%s operator: %w", operator, err)
+	}
+	r.log(node.ID, models.LogLevelInfo, "Native %s: %d rows, %d -> %d columns", operator, len(clone.Rows), len(input.Columns), len(clone.Columns))
+	return nodeExecutionResult{output: clone, outputSchema: applyRuleToSchema(rule, inputSchema)}, nil
+}
+
 func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("quality_check node requires input data")
@@ -876,7 +951,64 @@ func sinkFileFormat(node models.Node) string {
 	}
 }
 
-func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+// sinkFileSQLConfig reads the SQL options off a sink_file node.
+//
+// The keys are the ones sql_generate already uses -- table, dialect,
+// create_table, batch_size -- rather than a second vocabulary for the
+// same ideas. Both nodes render through GenerateSQL, so a pipeline
+// author who has configured one already knows how to configure the
+// other.
+//
+// An unset table falls back to the output file's stem, which is almost
+// always what someone writing customers.sql meant. GenerateSQL's own
+// default of "data" still applies when the stem is not a usable
+// identifier, and runSinkFile logs whichever name was used so the
+// choice is visible rather than guessed at.
+func sinkFileSQLConfig(node models.Node, path string) SQLGenConfig {
+	cfg := SQLGenConfig{
+		Dialect:     getStr(node.Config, "dialect"),
+		Table:       getStr(node.Config, "table"),
+		CreateTable: configBool(node.Config["create_table"]),
+	}
+	if bs, ok := node.Config["batch_size"].(float64); ok {
+		cfg.BatchSize = int(bs)
+	}
+	if cfg.Table == "" {
+		cfg.Table = tableNameFromPath(path)
+	}
+	return cfg
+}
+
+// tableNameFromPath turns an output path into a table name, or returns
+// "" when it cannot produce a usable identifier and the generator's own
+// default should stand.
+//
+// Deliberately conservative: letters, digits and underscores only, and
+// never leading with a digit. Anything else would hand GenerateSQL a
+// name its identifier validation rejects, turning a helpful default into
+// a confusing failure.
+func tableNameFromPath(path string) string {
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	if stem == "" {
+		return ""
+	}
+	var b strings.Builder
+	for _, r := range stem {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_':
+			b.WriteRune(r)
+		case r == '-' || r == ' ' || r == '.':
+			b.WriteRune('_')
+		}
+	}
+	out := strings.Trim(b.String(), "_")
+	if out == "" || (out[0] >= '0' && out[0] <= '9') {
+		return ""
+	}
+	return out
+}
+
+func (r *Runner) runSinkFile(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_file node requires input data")
 	}
@@ -886,18 +1018,16 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("sink_file node requires 'path' config")
 	}
 
-	if err := validateFilePath(path); err != nil {
-		return nil, fmt.Errorf("sink_file: %w", err)
+	// A local path is refused before anything is encoded; a remote one is
+	// a path on the server, which this machine's data directories do not
+	// govern (ADR-040).
+	if fileConnID(node) == "" {
+		if err := validateFilePath(path); err != nil {
+			return nil, fmt.Errorf("sink_file: %w", err)
+		}
 	}
 
 	format := sinkFileFormat(node)
-
-	// Ensure output directory exists
-	if dir := filepath.Dir(path); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return nil, fmt.Errorf("create output directory: %w", err)
-		}
-	}
 
 	var content []byte
 	var err error
@@ -906,14 +1036,26 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 	case "csv":
 		content, err = r.marshalCSV(input)
 	case "sql":
-		// If input has sql_output column, write it directly
+		// A sql_generate node hands its rendered script down in a single
+		// cell; write that through untouched.
 		if len(input.Rows) > 0 {
 			if sql, ok := input.Rows[0]["sql_output"].(string); ok {
 				content = []byte(sql)
 				break
 			}
 		}
-		content, err = json.MarshalIndent(input.Rows, "", "  ")
+		// Any other dataset is generated here. This used to fall through
+		// to the JSON marshaller, so asking for SQL produced JSON in a
+		// .sql file while the log below reported "sql" (#545).
+		//
+		// GenerateSQL is the same generator the sql_generate node uses,
+		// on purpose. It resolves the dialect through pkg/dbdialect, so
+		// quoting, boolean spelling, timestamp layout and the type map
+		// come from the one table ADR-024 exists to keep singular. A
+		// hand-rolled escaper here would be the third copy.
+		var sqlText string
+		sqlText, err = GenerateSQL(sinkFileSQLConfig(node, path), input)
+		content = []byte(sqlText)
 	default: // json
 		content, err = json.MarshalIndent(input.Rows, "", "  ")
 	}
@@ -922,8 +1064,15 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 		return nil, fmt.Errorf("marshal output as %s: %w", format, err)
 	}
 
-	if err := os.WriteFile(path, content, 0o644); err != nil {
-		return nil, fmt.Errorf("write %s: %w", path, err)
+	out, err := r.writeFileOutput(ctx, node, path, func(w io.Writer) error {
+		_, werr := w.Write(content)
+		return werr
+	})
+	if err != nil {
+		return nil, err
+	}
+	if out.skipped {
+		return nil, nil
 	}
 
 	mb := float64(len(content)) / 1024 / 1024
@@ -932,8 +1081,24 @@ func (r *Runner) runSinkFile(node models.Node, input *common.DataSet) (*common.D
 	} else {
 		r.log(node.ID, models.LogLevelInfo, "Wrote %s to %s (%.0f KB, %d rows)", format, filepath.Base(path), float64(len(content))/1024, len(input.Rows))
 	}
-	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", path)
-	if unsharedFileStorage() {
+	if format == "sql" {
+		// Say which table and dialect the script was written for. Both
+		// have defaults, and a default nobody can see is the thing that
+		// turns "why does this not load" into an afternoon.
+		cfg := sinkFileSQLConfig(node, path)
+		table := cfg.Table
+		if table == "" {
+			table = "data" // GenerateSQL's own fallback
+		}
+		dialectName := cfg.Dialect
+		if dialectName == "" {
+			dialectName = "generic"
+		}
+		r.log(node.ID, models.LogLevelInfo, "  SQL for table %q, dialect %s, CREATE TABLE: %v",
+			table, dialectName, cfg.CreateTable)
+	}
+	r.log(node.ID, models.LogLevelInfo, "  Full path: %s", out.where)
+	if unsharedFileStorage() && !out.remote {
 		host, _ := os.Hostname()
 		r.log(node.ID, models.LogLevelWarning,
 			"Written to this worker's own filesystem (%s); a later run on another worker will not see it. Set BROKOLI_DATA_DIRS_SHARED=1 once the data directories are on shared storage",
@@ -962,7 +1127,7 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 	return []byte(buf.String()), w.Error()
 }
 
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema) (*common.DataSet, error) {
+func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_db node requires input data")
 	}
@@ -991,6 +1156,9 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// produced ready-to-run SQL in a single sql_output row.
 	if len(input.Rows) == 1 {
 		if s, ok := input.Rows[0]["sql_output"].(string); ok && s != "" {
+			// Author-written (#667): a person wrote this SQL in a
+			// sql_generate node and that node forwarded it here.
+			r.recordExecutedSQL(node.ID, attempt, s)
 			return r.execSinkSQL(node, uri, s)
 		}
 	}
@@ -1057,6 +1225,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// -- which carries the rows as data instead of rendering them into
 	// megabytes of SQL text for the server to parse back.
 	if w, ok := bulkWriterFor(cfg); ok {
+		r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
 		affected, err := bulkWriteRows(w, uri, cfg, input)
 		if err != nil {
 			return nil, fmt.Errorf("bulk write to %s: %w", table, err)
@@ -1069,9 +1238,17 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}
+	// Engine-generated (#667): GenerateSQL rendered the input rows into
+	// INSERT ... VALUES. Nobody wrote it, so a note is recorded in its place.
+	r.recordGeneratedWrite(node.ID, attempt, cfg.Table)
 	return r.execSinkSQL(node, uri, sql)
 }
 
+// execSinkSQL executes a sink's SQL and deliberately does NOT record it. Its
+// two callers are not equivalent: one forwards author-written SQL from a
+// sql_generate node, the other passes SQL the engine generated. Only the
+// caller knows which (#667); recording here would have to guess from the
+// text.
 func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
 	affected, err := ExecuteSQL(uri, sql)
 	if err != nil {
@@ -1257,11 +1434,11 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
+func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
-		resolved := r.connResolver.Resolve(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB)
+		resolved := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB, r.workspaceID())
 		if u, ok := resolved["uri"].(string); ok {
 			sourceURI = u
 		}
@@ -1270,7 +1447,7 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 	// Resolve dest connection
 	destURI, _ := node.Config["dest_uri"].(string)
 	if destConnID, _ := node.Config["dest_conn_id"].(string); destConnID != "" && r.connResolver != nil {
-		resolved := r.connResolver.Resolve(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB)
+		resolved := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB, r.workspaceID())
 		if u, ok := resolved["uri"].(string); ok {
 			destURI = u
 		}
@@ -1309,6 +1486,7 @@ func (r *Runner) runMigrate(node models.Node) (*common.DataSet, error) {
 
 	// Read all from source (for now — chunked read requires LIMIT/OFFSET rewriting)
 	r.log(node.ID, models.LogLevelInfo, "Reading from source...")
+	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
 	sourceDS, err := QueryDatabase(sourceURI, sourceQuery)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)

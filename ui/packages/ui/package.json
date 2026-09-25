@@ -1,0 +1,21 @@
+{
+  "name": "@brokoli/ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.tsx",
+    "./styles.css": "./src/styles.css"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "typescript": "~5.9.3"
+  },
+  "dependencies": {
+    "lucide-react": "^1.45.0"
+  }
+}

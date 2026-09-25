@@ -62,6 +62,9 @@ var requeueSafeNodeTypes = map[models.NodeType]bool{
 	models.NodeTypeSourceDB:   true,
 
 	models.NodeTypeTransform:     true,
+	models.NodeTypeProject:       true,
+	models.NodeTypeAggregate:     true,
+	models.NodeTypeFilter:        true,
 	models.NodeTypeQualityCheck:  true,
 	models.NodeTypeSQLGenerate:   true,
 	models.NodeTypeJoin:          true,

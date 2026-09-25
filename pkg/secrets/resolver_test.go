@@ -14,6 +14,10 @@ import (
 func TestEnvResolver(t *testing.T) {
 	os.Setenv("TEST_SECRET_123", "hunter2")
 	defer os.Unsetenv("TEST_SECRET_123")
+	// env:// is deny-by-default now: it used to resolve any variable of
+	// the server process, including the ones holding its signing secret
+	// and encryption key. An operator lists what a connection may read.
+	t.Setenv(EnvRefAllowEnv, "TEST_SECRET_123")
 
 	r := EnvResolver{}
 	val, err := r.Resolve(context.Background(), "env://TEST_SECRET_123")
@@ -67,6 +71,8 @@ func TestEncryptedResolver(t *testing.T) {
 }
 
 func TestChain_DispatchesByScheme(t *testing.T) {
+	// env:// is deny-by-default; the variable this exercises is opted in.
+	t.Setenv(EnvRefAllowEnv, "CHAIN_TEST_PW")
 	os.Setenv("CHAIN_TEST_PW", "secret123")
 	defer os.Unsetenv("CHAIN_TEST_PW")
 

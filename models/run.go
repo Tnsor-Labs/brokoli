@@ -21,6 +21,49 @@ const (
 	RunStatusSkipped RunStatus = "skipped"
 )
 
+// RunAttribution is what started a run.
+//
+// UserName and TokenName are copied at creation rather than resolved on
+// read: a run is a historical fact, and the person who started it may be
+// renamed, removed from the organization, or have their token revoked.
+// Resolving later would show the run as started by nobody, or by whoever
+// holds that id now.
+type RunAttribution struct {
+	Kind     RunTriggerKind `json:"kind"`
+	UserID   string         `json:"user_id,omitempty"`
+	UserName string         `json:"user_name,omitempty"`
+	// TokenName identifies an API token or work-pool credential without
+	// naming the secret. Never the token itself.
+	TokenName string `json:"token_name,omitempty"`
+}
+
+// RunTriggerKind is the closed set of things that start a run.
+type RunTriggerKind string
+
+const (
+	RunTriggerKindUser       RunTriggerKind = "user"
+	RunTriggerKindSchedule   RunTriggerKind = "schedule"
+	RunTriggerKindWebhook    RunTriggerKind = "webhook"
+	RunTriggerKindDependency RunTriggerKind = "dependency"
+	RunTriggerKindBackfill   RunTriggerKind = "backfill"
+	RunTriggerKindAPIToken   RunTriggerKind = "api_token"
+	RunTriggerKindRetry      RunTriggerKind = "retry"
+)
+
+// ValidRunTriggerKind reports whether kind is one this build knows.
+// An unrecognised value is refused at the edge rather than stored: a
+// kind nothing renders reads as a blank in the UI, which looks like the
+// attribution was never recorded.
+func ValidRunTriggerKind(kind RunTriggerKind) bool {
+	switch kind {
+	case RunTriggerKindUser, RunTriggerKindSchedule, RunTriggerKindWebhook,
+		RunTriggerKindDependency, RunTriggerKindBackfill,
+		RunTriggerKindAPIToken, RunTriggerKindRetry:
+		return true
+	}
+	return false
+}
+
 // RunTriggerScheduled marks a run created by the scheduler for a cron
 // tick (or its catch-up pass). The empty string remains "everything
 // else" -- manual, API, webhook -- undistinguished, as historically.
@@ -70,6 +113,19 @@ type Run struct {
 	// unique index guarding scheduled dispatch keys on this, which is why
 	// it is a recorded fact rather than an inference from other fields.
 	Trigger string `json:"trigger,omitempty"`
+
+	// TriggeredBy records what started this run and, when a person did,
+	// who (#241).
+	//
+	// Trigger above answers a narrower question and cannot be widened:
+	// the partial unique index guarding scheduled dispatch keys on it, so
+	// its values are load-bearing. This is the provenance record.
+	//
+	// Nil for every run created before the field existed. Absence means
+	// "not recorded", never "nobody" -- a UI that renders an empty
+	// attribution as "started by nobody" would be inventing a fact about
+	// history it does not have.
+	TriggeredBy *RunAttribution `json:"triggered_by,omitempty"`
 
 	// DataIntervalStart/End are the half-open data interval [start, end)
 	// this run is responsible for (ADR-028), stamped by whatever created

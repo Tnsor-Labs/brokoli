@@ -70,13 +70,13 @@ func (c *CommunityPII) Scan(columns []string, rows []map[string]interface{}, sam
 // CommunityOpenLineage is the default (no OpenLineage emission).
 type CommunityOpenLineage struct{}
 
-func (c *CommunityOpenLineage) EmitRunStart(pipelineID, pipelineName, runID string) error {
+func (c *CommunityOpenLineage) EmitRunStart(pipelineID, pipelineName, runID string, inputs, outputs []LineageDataset) error {
 	return nil
 }
-func (c *CommunityOpenLineage) EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64) error {
+func (c *CommunityOpenLineage) EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64, inputs, outputs []LineageDataset) error {
 	return nil
 }
-func (c *CommunityOpenLineage) EmitRunFail(pipelineID, pipelineName, runID string, err string) error {
+func (c *CommunityOpenLineage) EmitRunFail(pipelineID, pipelineName, runID string, err string, inputs, outputs []LineageDataset) error {
 	return nil
 }
 
@@ -85,7 +85,7 @@ type noopPlatform struct{}
 
 func (n *noopPlatform) Enabled() bool                                           { return false }
 func (n *noopPlatform) RegisterRoutes(r, s, us interface{}, eng ...interface{}) {}
-func (n *noopPlatform) StartServices(s interface{})                             {}
+func (n *noopPlatform) StartServices(s interface{}, engine ...interface{})      {}
 func (n *noopPlatform) StopServices()                                           {}
 func (n *noopPlatform) MigrateDB(db interface{})                                {}
 

@@ -1,12 +1,10 @@
 package engine
 
 import (
-	"bufio"
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"strconv"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
@@ -56,43 +54,17 @@ func sinkFileFormatStreams(format string) bool {
 	return format == "csv" || format == "json"
 }
 
-// writeSinkFileStreamed writes rows pulled from next to path, holding one
-// batch at a time. Returns the rows and bytes written.
-func writeSinkFileStreamed(path, format string, columns []string, next func() (*common.DataSet, error)) (int64, int64, error) {
-	// #nosec G304,G302 -- path is the node's configured output and has
-	// already been through validateFilePath; 0644 is what runSinkFile's
-	// buffered write produces, and a streamed write landing with different
-	// permissions than a buffered one would be a worse defect than the
-	// permissive mode.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
-	if err != nil {
-		return 0, 0, fmt.Errorf("write %s: %w", path, err)
-	}
-	// Closed explicitly on the success path so a failed flush is reported;
-	// this covers the error paths.
-	defer f.Close() //nolint:errcheck
-
-	counted := &countingWriter{w: bufio.NewWriterSize(f, encodeBufferSize)}
-
-	var rows int64
+// encodeSinkFile writes rows pulled from next to w in format, holding one
+// batch at a time, and returns the rows written. Where w leads, a local
+// file or a delivery in progress, is writeFileOutput's business.
+func encodeSinkFile(w io.Writer, format string, columns []string, next func() (*common.DataSet, error)) (int64, error) {
 	switch format {
 	case "csv":
-		rows, err = streamCSV(counted, columns, next)
+		return streamCSV(w, columns, next)
 	case "json":
-		rows, err = streamJSONArray(counted, next)
-	default:
-		return 0, 0, fmt.Errorf("format %q cannot be streamed", format)
+		return streamJSONArray(w, next)
 	}
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := counted.w.Flush(); err != nil {
-		return 0, 0, fmt.Errorf("write %s: %w", path, err)
-	}
-	if err := f.Close(); err != nil {
-		return 0, 0, fmt.Errorf("write %s: %w", path, err)
-	}
-	return rows, counted.n, nil
+	return 0, fmt.Errorf("format %q cannot be streamed", format)
 }
 
 func streamCSV(w io.Writer, columns []string, next func() (*common.DataSet, error)) (int64, error) {
@@ -170,7 +142,7 @@ func streamJSONArray(w io.Writer, next func() (*common.DataSet, error)) (int64, 
 // countingWriter tracks bytes written so the sink can report a size
 // without having the content in hand.
 type countingWriter struct {
-	w *bufio.Writer
+	w io.Writer
 	n int64
 }
 

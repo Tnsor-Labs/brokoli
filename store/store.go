@@ -99,6 +99,22 @@ type RunCancelRequester interface {
 // explicit parameter (rather than overloading nodeID or attempt) so a
 // caller that has never heard of instances — every caller before ADR-017 —
 // keeps working unchanged by simply passing "".
+// ErrUnsupported reports that a store implementation cannot perform an
+// operation at all, as opposed to performing it and finding nothing.
+//
+// The distinction matters because the two are indistinguishable at a call
+// site otherwise, and they call for opposite responses. A worker running
+// against an HTTP-backed store implements the subset a worker needs and
+// refuses the rest; when one of those refusals reached
+// ConnectionResolver, the operator was told `conn_id "x" not found`, which
+// is a sentence about their data describing a property of their
+// deployment. Wrapping this lets a caller say which happened.
+//
+// An implementation that cannot perform an operation should return an
+// error wrapping this. A caller that treats "absent" as recoverable must
+// check for it before doing so.
+var ErrUnsupported = errors.New("operation not supported by this store")
+
 type ExecutionAttemptStore interface {
 	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
 	// an attempt inside an existing transaction (via WithTx), so it commits
@@ -243,8 +259,17 @@ type PipelineVersion struct {
 }
 
 // CalendarDay aggregates run statuses for a single day.
+// CalendarDay is one day of run counts.
+//
+// The day is a UTC calendar day, and the two dialects used to disagree
+// about that: SQLite grouped by the UTC date text while Postgres used
+// date(started_at) on a TIMESTAMPTZ, which converts to the session's
+// TimeZone. They also covered different windows -- SQLite from midnight
+// N days ago, Postgres a rolling N*24 hours -- so the same request
+// returned different answers depending on the backend. Both are now
+// exactly `days` UTC calendar days ending today (#611).
 type CalendarDay struct {
-	Date    string `json:"date"` // YYYY-MM-DD
+	Date    string `json:"date"` // YYYY-MM-DD, UTC
 	Total   int    `json:"total"`
 	Success int    `json:"success"`
 	Failed  int    `json:"failed"`
@@ -337,6 +362,13 @@ type PipelineStore interface {
 	ListPipelinesByOrg(orgID string) ([]models.Pipeline, error)
 	ListPipelinesByOrgPaged(orgID string, limit, offset int) ([]models.Pipeline, int, error)
 	ListPipelinesByOrgCursor(orgID string, afterID string, limit int) ([]models.Pipeline, bool, error)
+	// ListPipelinesByOrgAndWorkspace and its cursor form are what the UI
+	// reads. The org-only forms above stay org-wide on purpose: a plan
+	// limit counts an organization's pipelines wherever they sit, so
+	// narrowing them would undercount a quota. What a person sees in a
+	// workspace is a different question, and these answer it.
+	ListPipelinesByOrgAndWorkspace(orgID, workspaceID string) ([]models.Pipeline, error)
+	ListPipelinesByOrgAndWorkspaceCursor(orgID, workspaceID, afterID string, limit int) ([]models.Pipeline, bool, error)
 	UpdatePipeline(p *models.Pipeline) error
 	// UpdatePipelineTx runs inside an existing transaction; for atomic cascades/decouples.
 	UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error
@@ -460,10 +492,27 @@ type LogStore interface {
 	GetLogs(runID string) ([]models.LogEntry, error)
 }
 
+// NodePreviewRowLimit is how many rows SaveNodePreview keeps for the
+// editor sample. Callers that derive Truncated/TotalRows from a known
+// full size use the same cap so the stored flag matches the truncated rows.
+const NodePreviewRowLimit = 50
+
+// NodePreview is the truncated sample persisted for the editor, plus
+// whether that sample is the whole output. TotalRows is nil when the
+// engine only knew it hit the preview cap and not the true size.
+// TotalRows is int64 so a large DatasetRef.RowCount cannot wrap on a
+// 32-bit build (and so the conversion is not a G115 candidate).
+type NodePreview struct {
+	Columns   []string
+	Rows      []common.DataRow
+	Truncated bool
+	TotalRows *int64 // nil when unknown
+}
+
 // PreviewStore persists per-node data previews for the editor.
 type PreviewStore interface {
-	SaveNodePreview(runID, nodeID string, columns []string, rows []common.DataRow) error
-	GetNodePreview(runID, nodeID string) (columns []string, rows []common.DataRow, err error)
+	SaveNodePreview(runID, nodeID string, preview NodePreview) error
+	GetNodePreview(runID, nodeID string) (NodePreview, error)
 }
 
 // VersionStore persists pipeline version snapshots.
@@ -487,11 +536,17 @@ type ConnectionStore interface {
 // VariableStore persists pipeline variables.
 type VariableStore interface {
 	SetVariable(v *models.Variable) error
-	GetVariable(key string) (*models.Variable, error)
+	// GetVariable and DeleteVariable take a workspace because a variable
+	// name is scoped to one. They did not, and the table's key was
+	// (key) alone, so one workspace's save overwrote another's and a read
+	// returned whichever had written last -- for values that include
+	// secrets. The workspace is a parameter rather than something a
+	// caller may omit, so the compiler catches the omission.
+	GetVariable(workspaceID, key string) (*models.Variable, error)
 	ListVariables() ([]models.Variable, error)
 	ListVariablesByWorkspace(workspaceID string) ([]models.Variable, error)
 	ListVariablesByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Variable, int, error)
-	DeleteVariable(key string) error
+	DeleteVariable(workspaceID, key string) error
 }
 
 // WorkspaceStore persists workspaces and their memberships.
@@ -591,6 +646,46 @@ type CountStore interface {
 	CountVariables(workspaceID string) (int, error)
 	CountRunsByPipeline(pipelineID string) (int, error)
 
+	// AggregateRunsByPipelineStatus and AggregateRunsByDayStatus count
+	// runs in the database rather than loading them (#608). The dashboard
+	// read up to 200 runs per pipeline and counted in Go, so a pipeline
+	// that ran more often than that in the reported window silently
+	// reported 200.
+	//
+	// Both cover runs started at or after `since`. The first groups by
+	// pipeline and status, for a rolling window; the second groups by
+	// calendar day and status, for a daily series, where offsetMinutes is
+	// the day boundary's offset from UTC.
+	AggregateRunsByPipelineStatus(since time.Time, scope RunScope) ([]RunAggregate, error)
+	AggregateRunsByDayStatus(since time.Time, offsetMinutes int, scope RunScope) ([]RunAggregate, error)
+
+	// ListRunIDsByStatus returns the ids of runs in one status, newest
+	// first. The dashboard's running_run_ids must be the authoritative
+	// set, because the UI clears any live entry missing from it.
+	ListRunIDsByStatus(status string, scope RunScope, limit int) ([]string, error)
+
+	// Who started a run (#241). Kept in its own table rather than as
+	// columns on runs: that row is read through seventeen positional
+	// SELECT lists across two dialects, and one left un-widened scans the
+	// next column into the wrong field.
+	//
+	// GetRunAttribution takes a batch, because the callers that want it
+	// are showing a page of runs. A run with no record is absent from the
+	// map: that means "not recorded", which is every run created before
+	// this existed, and is not the same as "started by nobody".
+	SetRunAttribution(runID string, a *models.RunAttribution) error
+	GetRunAttribution(runIDs []string) (map[string]models.RunAttribution, error)
+	ListRunIDsStartedBy(userID string, limit int) ([]string, error)
+	DeleteRunAttribution(runIDs []string) error
+
+	// Per-run provenance: what each node execution consumed and produced
+	// (ADR-039). Written for every run and removed with the run by the
+	// foreign key's cascade, so there is no delete method here -- one
+	// would be a second path that has to be remembered, which is exactly
+	// how run_attribution's rows came to outlive their runs.
+	SaveNodeProvenance(p *models.NodeProvenance) error
+	GetRunProvenance(runID string) ([]models.NodeProvenance, error)
+
 	// CountRunsByStatus totals runs per status across the whole
 	// deployment, for the metrics endpoint. In-process counters cannot
 	// answer this: runs execute on workers, so the API — the stable
@@ -626,6 +721,19 @@ type AlertStore interface {
 	MarkAlertRead(orgID, id string) error
 	MarkAllAlertsRead(orgID string) error
 	DismissAlert(orgID, id string) error
+
+	// Incident ownership and per-person read state (brokoli-ee#242).
+	//
+	// The five above stay: they are the org-wide shape, still used where
+	// there is no caller identity, and they are what every alert written
+	// before this feature carries. These take the person asking.
+	QueryAlerts(q AlertQuery) ([]models.Alert, error)
+	CountUnreadAlertsFor(orgID, userID string) (int, error)
+	MarkAlertReadBy(orgID, alertID, userID string) error
+	MarkAllAlertsReadBy(orgID, userID string) error
+	SetAlertAssignee(orgID, alertID, userID string) error
+	AcknowledgeAlert(orgID, alertID, userID string) error
+	ResolveAlert(orgID, alertID, userID string) error
 }
 
 // TemplateStore persists global, admin-curated starter pipelines offered
@@ -766,6 +874,29 @@ var ErrResolvedExecutionRecordNotFound = errors.New("resolved execution record n
 // to fire a tick loses the insert and treats this as "already dispatched",
 // not as a failure.
 var ErrDuplicateScheduledRun = errors.New("a scheduled run for this pipeline and data interval already exists")
+
+// ErrDuplicatePipelineID reports that a pipeline with this pipeline_id
+// already exists. The id is derived from the name when a caller does not
+// supply one, so two creates with the same name collide here, which is a
+// precondition failure the caller can act on rather than a server fault.
+var ErrDuplicatePipelineID = errors.New("a pipeline with this pipeline_id already exists")
+
+// isPipelineIDConflict recognises the unique-index violation behind
+// ErrDuplicatePipelineID on either backend, the same way
+// isScheduledIntervalConflict does for its own index. Postgres names the
+// index; SQLite names the column. Matching these specifics keeps the
+// sentinel from swallowing another constraint's violation.
+func isPipelineIDConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "idx_pipeline_pid") {
+		return true
+	}
+	return strings.Contains(msg, "UNIQUE constraint failed") &&
+		strings.Contains(msg, "pipelines.pipeline_id")
+}
 
 // isScheduledIntervalConflict recognises the unique-index violation behind
 // ErrDuplicateScheduledRun on either backend. Postgres names the index in

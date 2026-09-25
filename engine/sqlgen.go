@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -214,6 +215,12 @@ func inferTypes(columns []string, rows []common.DataRow) map[string]string {
 
 func inferColumnType(col string, rows []common.DataRow) string {
 	var intCount, floatCount, boolCount, dateCount, total int
+	// wide records that at least one integer does not fit in 32 bits.
+	// Without it the column was declared INTEGER, which every dialect
+	// renders as a 32-bit type, so a table created from a bigint column
+	// could not hold its own rows: the script generated cleanly and
+	// failed on load with "integer out of range" (#547).
+	var wide bool
 
 	for _, row := range rows {
 		val, ok := row[col]
@@ -226,8 +233,11 @@ func inferColumnType(col string, rows []common.DataRow) string {
 			continue
 		}
 
-		if _, err := strconv.ParseInt(s, 10, 64); err == nil {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
 			intCount++
+			if n > math.MaxInt32 || n < math.MinInt32 {
+				wide = true
+			}
 			continue
 		}
 		if _, err := strconv.ParseFloat(s, 64); err == nil {
@@ -259,6 +269,9 @@ func inferColumnType(col string, rows []common.DataRow) string {
 		threshold = 1
 	}
 	if intCount >= threshold {
+		if wide {
+			return "BIGINT"
+		}
 		return "INTEGER"
 	}
 	if floatCount+intCount >= threshold {

@@ -63,9 +63,9 @@ func TestConnectionTestStillBlocksOutsideTheAllowlist(t *testing.T) {
 }
 
 // TestS3ConnectionTestHonoursOutboundPolicy verifies that the S3 connection
-// test uses the operator-configured outbound policy. The crafted bucket puts
-// 10.20.0.1 in the URL authority; connectivity may fail, but the policy must
-// not reject an explicitly allowed CIDR.
+// test uses the operator-configured outbound policy. The endpoint targets
+// 10.20.0.1; connectivity may fail, but the policy must not reject an
+// explicitly allowed CIDR.
 func TestS3ConnectionTestHonoursOutboundPolicy(t *testing.T) {
 	_, private, err := net.ParseCIDR("10.20.0.0/16")
 	if err != nil {
@@ -78,10 +78,11 @@ func TestS3ConnectionTestHonoursOutboundPolicy(t *testing.T) {
 	defer restore()
 
 	result := testS3(context.Background(), map[string]interface{}{
-		"bucket":     "ignored@10.20.0.1:9/",
+		"bucket":     "customer-bucket",
 		"region":     "us-east-1",
 		"access_key": "test-key",
 		"secret_key": "test-secret",
+		"endpoint":   "http://10.20.0.1:9",
 	})
 
 	errMsg, _ := result["error"].(string)

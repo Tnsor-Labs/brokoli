@@ -2,8 +2,12 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,7 +66,20 @@ func dlqResolveHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "pipeline not found")
 			return
 		}
+		// The org check above is on the PIPELINE in the path. The entry
+		// being resolved is named by a separate id, and nothing tied the
+		// two together: a caller could pass their own pipeline, which
+		// passes the check, and any dlqId at all, including another
+		// tenant's. Resolving it marks somebody else's failure dealt
+		// with, in their inbox, without them ever seeing it.
 		dlqID := chi.URLParam(r, "dlqId")
+		if !dlqEntryBelongsToPipeline(s, pipelineID, dlqID) {
+			// Not found rather than forbidden, matching every other
+			// cross-tenant refusal here: the pair of answers would
+			// otherwise confirm which entry ids exist elsewhere.
+			writeError(w, http.StatusNotFound, "dead-letter entry not found")
+			return
+		}
 		if err := s.ResolveDLQ(dlqID); err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -76,20 +93,48 @@ var webhookLimiter = struct {
 	last map[string]time.Time
 }{last: make(map[string]time.Time)}
 
+// webhookMinInterval is the shortest gap allowed between two triggers of
+// the same pipeline's webhook.
+const webhookMinInterval = 10 * time.Second
+
+// claimWebhookSlot reports whether this pipeline may trigger now, and
+// records the attempt when it may.
+//
+// Only ever called for a caller that has already proved it holds the
+// pipeline's webhook token. That ordering is the point. The check used
+// to run first, on the raw {id} from the URL and before any of the
+// checks below it, which meant an unauthenticated caller could hold a
+// real pipeline's slot indefinitely by sending one request every ten
+// seconds: the legitimate sender then received 429 forever while the
+// attacker's own 401s cost it nothing. It also meant the map took an
+// entry for any {id} anyone sent, including ids matching no pipeline,
+// and nothing ever removed one.
+//
+// Expired entries are dropped on each successful claim. That sweep is
+// O(entries), but it runs at most once per pipeline per interval and
+// the map now holds only real, authenticated pipelines, so it stays
+// proportional to recently active webhooks rather than to total
+// requests ever received.
+func claimWebhookSlot(pipelineID string, now time.Time) bool {
+	webhookLimiter.Lock()
+	defer webhookLimiter.Unlock()
+
+	if last, ok := webhookLimiter.last[pipelineID]; ok && now.Sub(last) < webhookMinInterval {
+		return false
+	}
+	for id, at := range webhookLimiter.last {
+		if now.Sub(at) >= webhookMinInterval {
+			delete(webhookLimiter.last, id)
+		}
+	}
+	webhookLimiter.last[pipelineID] = now
+	return true
+}
+
 // webhookTriggerHandler handles POST /pipelines/{id}/webhook — triggers a pipeline run via webhook token.
 func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
-
-		// Rate limit: max 1 webhook trigger per pipeline per 10 seconds
-		webhookLimiter.Lock()
-		if last, ok := webhookLimiter.last[id]; ok && time.Since(last) < 10*time.Second {
-			webhookLimiter.Unlock()
-			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded — try again in 10 seconds")
-			return
-		}
-		webhookLimiter.last[id] = time.Now()
-		webhookLimiter.Unlock()
 
 		token := r.URL.Query().Get("token")
 		if token == "" {
@@ -97,19 +142,74 @@ func webhookTriggerHandler(s store.Store, e *engine.Engine) http.HandlerFunc {
 		}
 		p, err := s.GetPipeline(id)
 		if err != nil {
-			writeError(w, http.StatusNotFound, "pipeline not found")
+			// Same 404 body as the other pre-auth failures so callers cannot
+			// tell missing pipelines apart from unconfigured or bad-token ones.
+			log.Printf("webhook %q: pipeline not found", id)
+			DenyOrgAccess(w)
 			return
 		}
 		if p.WebhookToken == "" {
-			writeError(w, http.StatusForbidden, "webhook not configured for this pipeline")
+			log.Printf("webhook %q: webhook not configured", id)
+			DenyOrgAccess(w)
 			return
 		}
 		if !engine.ValidateWebhookToken(token, p.WebhookToken) {
-			writeError(w, http.StatusUnauthorized, "invalid webhook token")
+			log.Printf("webhook %q: invalid webhook token", id)
+			DenyOrgAccess(w)
 			return
 		}
-		run, err := e.RunPipeline(p.ID)
+
+		// Rate limit: max 1 webhook trigger per pipeline per 10 seconds.
+		// Claimed only now that the caller has proved it may trigger this
+		// pipeline at all (#534).
+		if !claimWebhookSlot(p.ID, time.Now()) {
+			writeError(w, http.StatusTooManyRequests, "webhook rate limit exceeded, try again in 10 seconds")
+			return
+		}
+
+		// Bound the body before any decode. Webhook tokens are pasted into
+		// third-party systems by design, so size the allocation even after
+		// auth (Tnsor-Labs/brokoli#59 review).
+		r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+
+		// Optional JSON body {"parameters": {...}} — typed run params
+		// validated against the pipeline's declarations. Only decode when
+		// Content-Type is application/json so form/plain callers keep the
+		// pre-#59 behaviour of an ignored body.
+		var typedParams map[string]interface{}
+		ct := r.Header.Get("Content-Type")
+		if strings.HasPrefix(ct, "application/json") {
+			var body struct {
+				Parameters map[string]interface{} `json:"parameters"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+				var maxErr *http.MaxBytesError
+				if errors.As(err, &maxErr) {
+					writeError(w, http.StatusRequestEntityTooLarge, "request body too large (max 64 KiB)")
+					return
+				}
+				writeError(w, http.StatusBadRequest, "invalid request body: expected JSON object with optional parameters")
+				return
+			}
+			typedParams = body.Parameters
+		}
+
+		// #241: a webhook is nobody in particular, but it is not the
+		// scheduler and it is not a person, and saying so is the point.
+		run, err := e.RunPipelineOpts(p.ID, engine.RunOptions{
+			TypedParams: typedParams,
+			TriggeredBy: &models.RunAttribution{Kind: models.RunTriggerKindWebhook},
+		})
 		if err != nil {
+			// Same as the trigger route: a draft is a state, not a fault.
+			if errors.Is(err, engine.ErrPipelineIsDraft) {
+				writeError(w, http.StatusConflict, err.Error())
+				return
+			}
+			if errors.Is(err, engine.ErrParameterResolution) {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -208,6 +308,19 @@ const maxGraphNodes = 2000
 func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		orgID := GetOrgIDFromRequest(r)
+		// An empty org means "no filter" to the store, so this returned
+		// every pipeline in the deployment -- names, ids and the
+		// dependency structure of every tenant -- to a caller whose org
+		// could not be resolved. listPipelinesForRequest already gets
+		// this right a few hundred lines away: in multi-tenant mode, a
+		// user without an org sees nothing rather than everything.
+		if orgID == "" && OrgResolverFunc != nil {
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"nodes": []map[string]interface{}{},
+				"edges": []map[string]interface{}{},
+			})
+			return
+		}
 		summaries, err := s.ListPipelineDepsByOrg(orgID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
@@ -251,15 +364,33 @@ func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
+// defaultCalendarDays is the window when the caller does not ask for one.
+const defaultCalendarDays = 90
+
 // calendarHandler handles GET /runs/calendar — returns run calendar data.
+//
+// Days are UTC calendar days. That is a deliberate choice rather than an
+// accident of the SQL: it is stable for every viewer of a shared install,
+// whereas the dashboard's local-day buckets follow the server's zone. A
+// client rendering a grid must key it in UTC to line up (#611).
 func calendarHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		days := 90
+		days := defaultCalendarDays
 		if d := r.URL.Query().Get("days"); d != "" {
-			fmt.Sscanf(d, "%d", &days)
-		}
-		if days < 1 || days > 365 {
-			days = 90
+			// Parsed strictly. Sscanf ignored its error and ignored
+			// trailing characters, so "abc" silently became the default
+			// and "30junk" silently became 30, and an out-of-range value
+			// was silently replaced by 90. A client could not tell any of
+			// those from a request the server honoured, so it could not
+			// know which window it was drawing.
+			n, err := strconv.Atoi(strings.TrimSpace(d))
+			if err != nil || n < store.MinCalendarDays || n > store.MaxCalendarDays {
+				writeError(w, http.StatusBadRequest, fmt.Sprintf(
+					"days must be a whole number between %d and %d",
+					store.MinCalendarDays, store.MaxCalendarDays))
+				return
+			}
+			days = n
 		}
 
 		orgID := GetOrgIDFromRequest(r)
@@ -268,10 +399,25 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
-		if cal == nil {
-			cal = []store.CalendarDay{}
+
+		// Fill every day in the window. The query returns only days that
+		// have runs, so a quiet period was absent rather than zero and the
+		// response carried no indication of the range it covered. A client
+		// had to synthesise the missing days from the request it sent, and
+		// could not check the two agreed.
+		counts := make(map[string]store.CalendarDay, len(cal))
+		for _, d := range cal {
+			counts[d.Date] = d
 		}
-		writeJSON(w, http.StatusOK, cal)
+		filled := make([]store.CalendarDay, 0, days)
+		for _, date := range store.CalendarWindowDates(days) {
+			if d, ok := counts[date]; ok {
+				filled = append(filled, d)
+				continue
+			}
+			filled = append(filled, store.CalendarDay{Date: date})
+		}
+		writeJSON(w, http.StatusOK, filled)
 	}
 }
 
@@ -279,7 +425,14 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline, error) {
 	orgID := GetOrgIDFromRequest(r)
 	if orgID != "" {
-		return s.ListPipelinesByOrg(orgID)
+		// Org AND workspace: by org alone, every view built on this read
+		// counted and displayed the whole organization's pipelines no
+		// matter which workspace the person was looking at.
+		wsID, ok := effectiveWorkspace(r)
+		if !ok {
+			return []models.Pipeline{}, nil
+		}
+		return s.ListPipelinesByOrgAndWorkspace(orgID, wsID)
 	}
 	// In multi-tenant mode (OrgResolverFunc set), users without an org see nothing
 	if OrgResolverFunc != nil {
@@ -288,6 +441,21 @@ func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline,
 	// Community/self-hosted mode: fall back to workspace
 	return s.ListPipelinesByWorkspace(GetWorkspaceID(r))
 }
+
+// dashboardRecentRunsSample is how many runs the "Recent activity" list
+// may hold, per pipeline before merging and in total after.
+//
+// It is a sample and nothing else. Until #608 the same read was also where
+// every count came from, at 200 per pipeline, so a pipeline that ran more
+// often than that in the reported window silently reported 200 and the
+// seven-day series had those 200 rows to spread across seven days. The
+// counts are database aggregates now and this bounds only the list.
+const dashboardRecentRunsSample = 50
+
+// dashboardRunningIDsCap bounds running_run_ids. A client uses it to clear
+// stale live entries, so it has to be the whole set in practice; this is a
+// guard against a pathological backlog, not a page size.
+const dashboardRunningIDsCap = 5000
 
 // dashboardHandler handles GET /dashboard — returns aggregated dashboard data.
 //
@@ -302,7 +470,12 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		orgID := GetOrgIDFromRequest(r)
 		var pipelines []models.Pipeline
 		if orgID != "" {
-			pipelines, _ = s.ListPipelinesByOrg(orgID)
+			// Every counter below is derived from this list, so scoping it
+			// by org alone reported the whole organization's activity under
+			// each workspace.
+			if wsID, ok := effectiveWorkspace(r); ok {
+				pipelines, _ = s.ListPipelinesByOrgAndWorkspace(orgID, wsID)
+			}
 		} else if OrgResolverFunc != nil {
 			pipelines = []models.Pipeline{}
 		} else {
@@ -317,15 +490,58 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			Error        string `json:"error,omitempty"`
 			StartedAt    string `json:"started_at,omitempty"`
 			FinishedAt   string `json:"finished_at,omitempty"`
+			// DurationMs is measured from the stored timestamps at full
+			// precision. Subtracting the two fields above used to be the
+			// only way for a client to get it, and they were emitted at
+			// whole-second resolution, so every run shorter than a second
+			// read as zero (#607). A run has no duration of its own on the
+			// model; only NodeRun carries one.
+			DurationMs int64 `json:"duration_ms,omitempty"`
+			// TriggeredBy is who started the run (#241). The dashboard's
+			// recent-activity list is one of the three places the issue
+			// names, and it builds its own row type rather than reusing
+			// models.Run, so the field has to be carried here too.
+			TriggeredBy *models.RunAttribution `json:"triggered_by,omitempty"`
+
+			startedAtTime time.Time
+			hasStartedAt  bool
 		}
 
-		// Load a wider per-pipeline window so the aggregates below reflect
-		// reality, not the last few entries. We load all of them into one
-		// flat list (`allRuns`), then take the head as the small UI sample
-		// (`recentRuns`). 200 per pipeline matches pipelineSummaryHandler.
-		var allRuns []runEntry
+		names := make(map[string]string, len(pipelines))
 		for _, p := range pipelines {
-			runs, _ := s.ListRunsByPipeline(p.ID, 200)
+			names[p.ID] = p.Name
+		}
+
+		// Which runs this request may see. Runs carry org_id; in community
+		// mode there is no org, and the workspace reaches them through the
+		// pipeline. This mirrors listPipelinesForRequest, which decided the
+		// pipeline list above.
+		scope := store.RunScope{OrgID: orgID}
+		if orgID == "" && OrgResolverFunc == nil {
+			scope.WorkspaceID = GetWorkspaceID(r)
+		}
+
+		now := time.Now()
+		todayStr := now.Format("2006-01-02")
+		yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
+		last24hCutoff := now.Add(-24 * time.Hour)
+
+		// The recent-activity list. A bounded sample by definition, and the
+		// only thing here that loads run rows. Every count below is a
+		// COUNT(*) in the database (#608), so none of them is limited by
+		// what this returns, and a pipeline that runs 1,440 times a day no
+		// longer reports 200.
+		recentRuns := make([]runEntry, 0, dashboardRecentRunsSample)
+		for _, p := range pipelines {
+			runs, err := s.ListRunsByPipeline(p.ID, dashboardRecentRunsSample)
+			if err != nil {
+				// Not fatal: the sample is a convenience and the counts do
+				// not come from it. Discarding it silently is what made a
+				// pipeline whose runs could not be read indistinguishable
+				// from one that had never run.
+				log.Printf("dashboard: recent runs for pipeline %q unavailable: %v", p.ID, err)
+				continue
+			}
 			for _, run := range runs {
 				run.PopulateError()
 				entry := runEntry{
@@ -335,86 +551,140 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 					Status:       string(run.Status),
 					Error:        run.Error,
 				}
+				// RFC3339 with fractional seconds. The previous layout had
+				// no fractional part, so a sub-second run arrived with
+				// identical start and finish times (#607).
 				if run.StartedAt != nil {
-					entry.StartedAt = run.StartedAt.Format("2006-01-02T15:04:05Z07:00")
+					entry.StartedAt = run.StartedAt.Format(time.RFC3339Nano)
+					entry.startedAtTime = *run.StartedAt
+					entry.hasStartedAt = true
 				}
 				if run.FinishedAt != nil {
-					entry.FinishedAt = run.FinishedAt.Format("2006-01-02T15:04:05Z07:00")
+					entry.FinishedAt = run.FinishedAt.Format(time.RFC3339Nano)
 				}
-				allRuns = append(allRuns, entry)
+				if run.StartedAt != nil && run.FinishedAt != nil {
+					if d := run.FinishedAt.Sub(*run.StartedAt); d > 0 {
+						entry.DurationMs = d.Milliseconds()
+					}
+				}
+				recentRuns = append(recentRuns, entry)
 			}
 		}
-		// Sort all runs by started_at desc so head = most recent.
-		for i := 0; i < len(allRuns); i++ {
-			for j := i + 1; j < len(allRuns); j++ {
-				if allRuns[j].StartedAt > allRuns[i].StartedAt {
-					allRuns[i], allRuns[j] = allRuns[j], allRuns[i]
+		// Newest first. Compared as instants rather than as strings: at
+		// whole-second resolution runs that started in the same second
+		// compared equal, so their order came down to which pipeline was
+		// read first. The run id breaks a genuine tie so the order is
+		// stable between requests.
+		sort.SliceStable(recentRuns, func(i, j int) bool {
+			a, b := recentRuns[i], recentRuns[j]
+			if a.hasStartedAt != b.hasStartedAt {
+				return a.hasStartedAt
+			}
+			if !a.startedAtTime.Equal(b.startedAtTime) {
+				return a.startedAtTime.After(b.startedAtTime)
+			}
+			return a.RunID > b.RunID
+		})
+		if len(recentRuns) > dashboardRecentRunsSample {
+			recentRuns = recentRuns[:dashboardRecentRunsSample]
+		}
+
+		// Who started each of them, in one batched read for the page
+		// (#241). Losing this leaves the runs and their counts intact,
+		// so it is logged rather than fatal: the dashboard's job is to
+		// show what ran.
+		if len(recentRuns) > 0 {
+			ids := make([]string, 0, len(recentRuns))
+			for i := range recentRuns {
+				ids = append(ids, recentRuns[i].RunID)
+			}
+			if byRun, err := s.GetRunAttribution(ids); err == nil {
+				for i := range recentRuns {
+					if a, ok := byRun[recentRuns[i].RunID]; ok {
+						attribution := a
+						recentRuns[i].TriggeredBy = &attribution
+					}
 				}
+			} else {
+				log.Printf("dashboard: could not read who started these runs: %v", err)
 			}
 		}
 
-		// Compute the real aggregates from the full window, not from the
-		// 50-entry recentRuns slice that follows.
-		now := time.Now()
-		todayStr := now.Format("2006-01-02")
-		yesterdayStr := now.AddDate(0, 0, -1).Format("2006-01-02")
-		last24hCutoff := now.Add(-24 * time.Hour)
+		// ── Counts, from the database ──────────────────────────
+
+		// Per pipeline and status over the last 24 hours. Feeds the 24h
+		// totals, the per-pipeline rollup and the failure ranking.
+		byPipeline, err := s.AggregateRunsByPipelineStatus(last24hCutoff, scope)
+		if err != nil {
+			// These are the figures the page is for. Serving zeroes with a
+			// 200 would present a failed read as a quiet system, which is
+			// the shape #529 exists to stop.
+			writeError(w, http.StatusInternalServerError, "run counts unavailable")
+			return
+		}
+
+		// Per calendar day over the last seven, in the server's local zone,
+		// which is what "today" means everywhere else on this endpoint.
+		trendStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -6)
+		byDay, err := s.AggregateRunsByDayStatus(trendStart, store.OffsetMinutesFor(now), scope)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "run counts unavailable")
+			return
+		}
+
+		var runs24hTotal, runs24hSuccess, runs24hFailed int
+		for _, a := range byPipeline {
+			runs24hTotal += a.Count
+			switch a.Status {
+			case string(models.RunStatusSuccess):
+				runs24hSuccess += a.Count
+			case string(models.RunStatusFailed):
+				runs24hFailed += a.Count
+			}
+		}
 
 		var runsToday, runsYesterday int
-		var runs24hTotal, runs24hSuccess, runs24hFailed int
-		var runsRunning int
+		for _, a := range byDay {
+			switch a.Day {
+			case todayStr:
+				runsToday += a.Count
+			case yesterdayStr:
+				runsYesterday += a.Count
+			}
+		}
+
 		// Authoritative list of currently-running run IDs. The frontend uses
 		// this to reconcile its client-side liveRunStatuses store: any "running"
 		// entry whose ID is NOT in this list is stale (probably from a missed
 		// run.completed event during a reconnect window) and should be cleared.
-		runningRunIDs := make([]string, 0, 4)
-		for _, run := range allRuns {
-			if run.StartedAt != "" {
-				if t, err := time.Parse("2006-01-02T15:04:05Z07:00", run.StartedAt); err == nil {
-					// Timestamps are persisted in UTC; "today" means the
-					// server's local day. Convert before bucketing — slicing
-					// the UTC string and comparing it against a local date
-					// misbucketed every run for the first hours of each
-					// local day on any server not running in UTC.
-					day := t.Local().Format("2006-01-02")
-					if day == todayStr {
-						runsToday++
-					} else if day == yesterdayStr {
-						runsYesterday++
-					}
-					if !t.Before(last24hCutoff) {
-						runs24hTotal++
-						switch run.Status {
-						case "success", "completed":
-							runs24hSuccess++
-						case "failed":
-							runs24hFailed++
-						}
-					}
-				}
-			}
-			if run.Status == "running" {
-				runsRunning++
-				runningRunIDs = append(runningRunIDs, run.RunID)
-			}
+		//
+		// Not windowed, deliberately: a run still marked running from before
+		// the window is exactly the stale entry a client needs told about.
+		runningRunIDs, err := s.ListRunIDsByStatus(string(models.RunStatusRunning), scope, dashboardRunningIDsCap)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "run counts unavailable")
+			return
 		}
+		if runningRunIDs == nil {
+			runningRunIDs = []string{}
+		}
+		runsRunning := len(runningRunIDs)
 
-		var successRate24h int
-		if runs24hTotal > 0 {
-			successRate24h = int((float64(runs24hSuccess) / float64(runs24hTotal)) * 100)
-		} else {
-			successRate24h = 100 // no runs in window — neutral default
-		}
-
-		// Build the small UI sample (recent_runs) from the head of the
-		// already-sorted list. Kept around for the "Recent activity" list
-		// only — never used as a source of truth for any counter.
-		recentRuns := allRuns
-		if len(recentRuns) > 50 {
-			recentRuns = recentRuns[:50]
-		}
-		if recentRuns == nil {
-			recentRuns = []runEntry{}
+		// Success rate over runs that have finished, not over every run in
+		// the window (#606). runs24hTotal includes pending, running,
+		// waiting, blocked and cancelled runs, none of which has succeeded
+		// or failed yet, so dividing by it meant a pipeline's rate fell
+		// while its runs were still in flight and a cancelled run counted
+		// as if it were a failure.
+		//
+		// Null, not 100, when nothing finished. There is no success rate
+		// over zero runs, and 100 is the value most likely to be read as
+		// "everything is fine" on a fresh install or a quiet weekend.
+		runs24hFinished := runs24hSuccess + runs24hFailed
+		var successRate24h *int
+		if runs24hFinished > 0 {
+			rate := int((float64(runs24hSuccess) / float64(runs24hFinished)) * 100)
+			successRate24h = &rate
 		}
 
 		summaries := make([]PipelineSummary, 0, len(pipelines))
@@ -422,75 +692,70 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			summaries = append(summaries, toPipelineSummary(p))
 		}
 
-		// Compute daily trends (last 7 days) from the full window, not the
-		// 50-entry recentRuns sample.
+		// Daily trends, last 7 days.
 		type dayTrend struct {
 			Date    string `json:"date"`
 			Success int    `json:"success"`
 			Failed  int    `json:"failed"`
 			Total   int    `json:"total"`
 		}
-		trendMap := make(map[string]*dayTrend)
-		for i := 6; i >= 0; i-- {
-			d := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
-			trendMap[d] = &dayTrend{Date: d}
-		}
-		// Top failing pipelines, also from the full window.
-		failCounts := make(map[string]int)
-		failNames := make(map[string]string)
-		for _, r := range allRuns {
-			if len(r.StartedAt) >= 10 {
-				day := r.StartedAt[:10]
-				if t, ok := trendMap[day]; ok {
-					t.Total++
-					if r.Status == "success" || r.Status == "completed" {
-						t.Success++
-					} else if r.Status == "failed" {
-						t.Failed++
-					}
-				}
-			}
-			if r.Status == "failed" {
-				failCounts[r.PipelineID]++
-				failNames[r.PipelineID] = r.PipelineName
-			}
-		}
+		trendMap := make(map[string]*dayTrend, 7)
 		trends := make([]dayTrend, 0, 7)
 		for i := 6; i >= 0; i-- {
-			d := time.Now().AddDate(0, 0, -i).Format("2006-01-02")
-			trends = append(trends, *trendMap[d])
+			d := now.AddDate(0, 0, -i).Format("2006-01-02")
+			trendMap[d] = &dayTrend{Date: d}
 		}
-		// Top 5 failing
+		for _, a := range byDay {
+			t, ok := trendMap[a.Day]
+			if !ok {
+				continue
+			}
+			t.Total += a.Count
+			switch a.Status {
+			case string(models.RunStatusSuccess):
+				t.Success += a.Count
+			case string(models.RunStatusFailed):
+				t.Failed += a.Count
+			}
+		}
+		for i := 6; i >= 0; i-- {
+			trends = append(trends, *trendMap[now.AddDate(0, 0, -i).Format("2006-01-02")])
+		}
+
+		// Top failing pipelines, over the same 24 hours as the aggregates
+		// they sit beside. This used to count every failure in the loaded
+		// window regardless of age, so a pipeline that failed forty times
+		// last month outranked one that failed twice this morning, and the
+		// effective period differed per pipeline because 200 runs is a day
+		// for one schedule and a year for another (#610).
 		type failEntry struct {
 			PipelineID string `json:"pipeline_id"`
 			Name       string `json:"name"`
 			FailCount  int    `json:"fail_count"`
 		}
-		var topFailing []failEntry
-		for pid, count := range failCounts {
-			topFailing = append(topFailing, failEntry{pid, failNames[pid], count})
-		}
-		// Sort by fail count desc
-		for i := 0; i < len(topFailing); i++ {
-			for j := i + 1; j < len(topFailing); j++ {
-				if topFailing[j].FailCount > topFailing[i].FailCount {
-					topFailing[i], topFailing[j] = topFailing[j], topFailing[i]
-				}
+		topFailing := make([]failEntry, 0, 4)
+		for _, a := range byPipeline {
+			if a.Status != string(models.RunStatusFailed) || a.Count == 0 {
+				continue
 			}
+			topFailing = append(topFailing, failEntry{a.PipelineID, names[a.PipelineID], a.Count})
 		}
+		// Highest count first, ties by pipeline id so the order does not
+		// depend on the order rows came back in.
+		sort.SliceStable(topFailing, func(i, j int) bool {
+			if topFailing[i].FailCount != topFailing[j].FailCount {
+				return topFailing[i].FailCount > topFailing[j].FailCount
+			}
+			return topFailing[i].PipelineID < topFailing[j].PipelineID
+		})
 		if len(topFailing) > 5 {
 			topFailing = topFailing[:5]
 		}
-		if topFailing == nil {
-			topFailing = []failEntry{}
-		}
 
-		// Per-pipeline 24h rollup. A UI that collapses consecutive runs of
-		// the same pipeline into one row needs the true count for that
-		// pipeline — counting the entries in `recent_runs` would report the
-		// size of the sample (at most 50) rather than the real number, so a
-		// pipeline run 10,000 times would read "50". These counts come from
-		// the same full per-pipeline window every other aggregate here uses.
+		// Per-pipeline 24h rollup, from the same grouped counts. A UI that
+		// collapses consecutive runs of one pipeline into a row needs the
+		// true count: counting entries in recent_runs would report the size
+		// of the sample, so a pipeline run 10,000 times would read 50.
 		type pipelineRollup struct {
 			PipelineID    string `json:"pipeline_id"`
 			Name          string `json:"name"`
@@ -503,34 +768,35 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		}
 		rollupByPipeline := make(map[string]*pipelineRollup)
 		rollupOrder := make([]string, 0, len(pipelines))
-		for _, r := range allRuns {
-			if r.StartedAt == "" {
-				continue
-			}
-			t, err := time.Parse(time.RFC3339, r.StartedAt)
-			if err != nil || t.Before(last24hCutoff) {
-				continue
-			}
-			ru, seen := rollupByPipeline[r.PipelineID]
+		for _, a := range byPipeline {
+			ru, seen := rollupByPipeline[a.PipelineID]
 			if !seen {
-				ru = &pipelineRollup{PipelineID: r.PipelineID, Name: r.PipelineName}
-				rollupByPipeline[r.PipelineID] = ru
-				rollupOrder = append(rollupOrder, r.PipelineID)
-				// allRuns is sorted newest-first, so the first entry seen for
-				// a pipeline is its most recent run.
-				ru.LastStatus = r.Status
-				ru.LastStartedAt = r.StartedAt
+				ru = &pipelineRollup{PipelineID: a.PipelineID, Name: names[a.PipelineID]}
+				rollupByPipeline[a.PipelineID] = ru
+				rollupOrder = append(rollupOrder, a.PipelineID)
 			}
-			ru.Total++
-			switch r.Status {
-			case "success", "completed":
-				ru.Success++
-			case "failed":
-				ru.Failed++
-			case "running":
-				ru.Running++
+			ru.Total += a.Count
+			switch a.Status {
+			case string(models.RunStatusSuccess):
+				ru.Success += a.Count
+			case string(models.RunStatusFailed):
+				ru.Failed += a.Count
+			case string(models.RunStatusRunning):
+				ru.Running += a.Count
 			}
 		}
+		// Last status per pipeline, from the newest-first sample. A grouped
+		// row shows it without a second request. A pipeline whose latest run
+		// fell outside the sample simply has none, which is honest: the
+		// alternative was taking it from a 200-run window and calling a run
+		// the latest when it was not.
+		for i := len(recentRuns) - 1; i >= 0; i-- {
+			if ru, ok := rollupByPipeline[recentRuns[i].PipelineID]; ok {
+				ru.LastStatus = recentRuns[i].Status
+				ru.LastStartedAt = recentRuns[i].StartedAt
+			}
+		}
+		sort.Strings(rollupOrder)
 		pipelineRollups := make([]pipelineRollup, 0, len(rollupOrder))
 		for _, pid := range rollupOrder {
 			pipelineRollups = append(pipelineRollups, *rollupByPipeline[pid])
@@ -542,9 +808,9 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			"trends":           trends,
 			"top_failing":      topFailing,
 			"pipeline_rollups": pipelineRollups,
-			// Real aggregate counts. The frontend should read these directly
-			// instead of deriving stats from `recent_runs` (which is a small
-			// UI sample, not a complete count).
+			// Real aggregate counts, from the database. The frontend should
+			// read these directly instead of deriving stats from
+			// `recent_runs`, which is a bounded UI sample.
 			"runs_today":       runsToday,
 			"runs_yesterday":   runsYesterday,
 			"runs_running":     runsRunning,
@@ -552,7 +818,18 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 			"runs_24h_total":   runs24hTotal,
 			"runs_24h_success": runs24hSuccess,
 			"runs_24h_failed":  runs24hFailed,
+			// Finished runs are the denominator of success_rate_24h, sent so
+			// a client can render "3 of 4" without recomputing it and
+			// disagreeing with the server.
+			"runs_24h_finished": runs24hFinished,
+			// Null when nothing finished in the window.
 			"success_rate_24h": successRate24h,
+			// The window top_failing covers, so the panel can label itself
+			// rather than imply a period it does not have.
+			"top_failing_window_hours": 24,
+			// How many runs recent_runs may hold. It is a sample; no count
+			// on this response is bounded by it.
+			"recent_runs_sample_size": dashboardRecentRunsSample,
 		})
 	}
 }
@@ -832,6 +1109,44 @@ func lineageHandler(s store.Store) http.HandlerFunc {
 						Schema:     &schema,
 						RunID:      record.RunID,
 						ObservedAt: &record.ObservedAt,
+					}
+				}
+			}
+		}
+		// ADR-039: an edge can be attested only against the execution record
+		// of the run its profile came from. One batch read covers every run
+		// the profiles came from. A store that keeps no provenance attests
+		// nothing, and every edge stays declared -- the honest default.
+		if provStore, ok := s.(interface {
+			GetNodeProvenanceForRuns([]string) (map[string][]models.NodeProvenance, error)
+		}); ok && len(profiles) > 0 {
+			seenRun := map[string]bool{}
+			var runIDs []string
+			for _, prof := range profiles {
+				if prof.RunID != "" && !seenRun[prof.RunID] {
+					seenRun[prof.RunID] = true
+					runIDs = append(runIDs, prof.RunID)
+				}
+			}
+			if byRun, err := provStore.GetNodeProvenanceForRuns(runIDs); err == nil {
+				// Keys are rebuilt from the pipelines rather than parsed back
+				// out of the map, so an id containing the separator cannot
+				// attach one node's record to another.
+				for _, p := range pipelines {
+					for _, n := range p.Nodes {
+						key := engine.ProfileKey(p.ID, n.ID)
+						prof, ok := profiles[key]
+						if !ok {
+							continue
+						}
+						for i := range byRun[prof.RunID] {
+							if byRun[prof.RunID][i].NodeID == n.ID {
+								rec := byRun[prof.RunID][i]
+								prof.Provenance = &rec
+								profiles[key] = prof
+								break
+							}
+						}
 					}
 				}
 			}

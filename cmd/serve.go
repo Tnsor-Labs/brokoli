@@ -19,6 +19,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
+	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
@@ -170,6 +171,20 @@ var serveCmd = &cobra.Command{
 		// downstream observes.
 		applyAdaptiveResourceDefaults(eng.SetMaxConcurrentRuns)
 
+		// Platform services (enterprise: trial checker, SLA checker, etc).
+		//
+		// Ordered before the startup recovery sweep below, and that
+		// ordering is load-bearing: this is where the platform installs
+		// its engine-level recovery hooks, and a sweep that runs first
+		// runs without them. Boot is exactly when that matters — every
+		// pod restart sweeps once, and a rolling deploy during live
+		// traffic is precisely when runs are in flight on remote workers.
+		// Nothing between here and the old call site touches
+		// Extensions.Platform, so moving it up changes nothing else.
+		if startPlatformServices(Extensions, RunMode, s, eng) {
+			defer Extensions.Platform.StopServices()
+		}
+
 		// Recover runs a prior process left in a non-terminal status
 		// (Tnsor-Labs/brokoli#9) — e.g. "running" because it was kill -9'd
 		// mid-execution. Must happen before the scheduler starts firing new
@@ -287,20 +302,21 @@ var serveCmd = &cobra.Command{
 			defer sched.Stop()
 		}
 
-		// Platform services (enterprise: trial checker, SLA checker, etc)
-		if Extensions != nil && Extensions.Platform != nil && Extensions.Platform.Enabled() && shouldStartPlatformServices(RunMode) {
-			Extensions.Platform.StartServices(s)
-			defer Extensions.Platform.StopServices()
-		}
-
 		var uiFS fs.FS
 		if UIOverride != nil {
 			uiFS = UIOverride
 			log.Println("Serving enterprise UI")
-		} else if distFS, err := fs.Sub(web.Dist, "dist"); err == nil {
-			if _, err := fs.Stat(distFS, "index.html"); err == nil {
-				uiFS = distFS
+		} else if bundled, built := web.Built(); bundled != nil {
+			// Built() distinguishes a real bundle from the placeholder.
+			// The check here used to be "does dist/index.html exist",
+			// which was always true: a built index.html was committed
+			// while its assets were gitignored, so this logged "Serving
+			// embedded UI" and served a blank screen.
+			uiFS = bundled
+			if built {
 				log.Println("Serving embedded UI")
+			} else {
+				log.Println("WARNING: this binary has no web UI bundle (build-ui.sh was not run before it was compiled); serving a placeholder page. The API is unaffected.")
 			}
 		}
 
@@ -378,11 +394,39 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
+		// Wire the lineage emitter. It was constructed by the enterprise
+		// build and read by nothing: the registry field had no consumer in
+		// either repository, so a deployment that configured a catalogue
+		// endpoint received no events at all.
+		if Extensions != nil && Extensions.OpenLineage != nil {
+			eng.Lineage = Extensions.OpenLineage
+		}
+
+		wireDataCapIssuer(eng)
+
 		// Worker-only mode: pull jobs from the queue and execute them
 		if RunMode == "worker" {
 			if Extensions == nil || Extensions.JobQueue == nil {
 				return fmt.Errorf("worker mode requires a job queue (set BROKOLI_REDIS_URL)")
 			}
+
+			// Say what this worker holds, at the top of its log.
+			//
+			// This mode connects straight to the database, and where the
+			// deployment also sets a signing secret it can mint any
+			// session it likes. That is a reasonable trade for a worker
+			// running inside the same trust boundary as the control
+			// plane, and it is the wrong shape for one running anywhere
+			// else -- a single compromised worker then reaches every
+			// tenant's data, whatever capability model sits above it.
+			//
+			// Announced rather than enforced: this is a legitimate
+			// configuration and refusing it would break every existing
+			// deployment. But the riskier of the two worker shapes was
+			// also the quieter one, indistinguishable at a glance from a
+			// worker that holds nothing, so the trade was being made by
+			// operators who had never been told they were making it.
+			AnnounceWorkerTrustAssumptions()
 
 			// Forward engine events to EventBus so API pods can broadcast via WebSocket
 			if Extensions.EventBus != nil {
@@ -532,7 +576,7 @@ var serveCmd = &cobra.Command{
 				// delivery itself, deliberately distinct from the attempt it
 				// carries (see extensions.RunJob's own doc comment).
 				if job.WorkOrder != nil {
-					if job.ID == "" || job.RunID == "" || job.NodeID == "" || job.InstanceKey == "" {
+					if !validInstanceJobIdentity(job) {
 						<-workerSlots
 						log.Printf("Worker: rejecting invalid instance job identity: job=%q run=%q node=%q instance=%q", job.ID, job.RunID, job.NodeID, job.InstanceKey)
 						if job.ID != "" {
@@ -624,17 +668,6 @@ var serveCmd = &cobra.Command{
 		}
 
 		// API or all mode: start HTTP server
-		// The engine mints data-plane capabilities with the same issuer
-		// the blob endpoint verifies against (ADR-033 section 6) --
-		// necessarily the same one, or nothing it issues would verify.
-		// Both derive from the server's root secret, so this needs no
-		// configuration of its own.
-		if issuer, issErr := api.DatacapIssuer(); issErr == nil {
-			eng.DataCapIssuer = issuer
-		} else {
-			log.Printf("WARNING: data capabilities unavailable (%v); a task input too large to inline will be refused rather than staged", issErr)
-		}
-
 		srv := api.NewServer(port, s, eng, uiFS, auth, userStore, sched, Extensions, cryptoCfg)
 		return srv.Start()
 	},
@@ -698,6 +731,30 @@ func shouldStartPlatformServices(mode string) bool {
 	return mode == "all" || mode == "scheduler"
 }
 
+// startPlatformServices hands the platform extension the store and the
+// engine, in every run mode that runs the engine's recovery sweep. It
+// reports whether it started anything, so the caller knows whether a
+// matching StopServices is owed.
+//
+// The engine is passed here, and not only to RegisterRoutes, because this
+// is the single hook both of those modes reach. RegisterRoutes is called
+// from api.NewServer, which `--mode scheduler` never builds -- it starts
+// api.NewMinimalServer instead -- so an extension that only installed
+// engine-level hooks from RegisterRoutes had none of them in the scheduler
+// process, which is precisely the process that sweeps for runs to recover.
+// That produced a real double execution: a run already executing on a
+// remote worker was adopted and re-run in-cluster, and both finished.
+//
+// eng may be nil; the provider is required to tolerate that, as it must
+// tolerate an older core passing no engine at all.
+func startPlatformServices(ext *extensions.Registry, mode string, s store.Store, eng *engine.Engine) bool {
+	if ext == nil || ext.Platform == nil || !ext.Platform.Enabled() || !shouldStartPlatformServices(mode) {
+		return false
+	}
+	ext.Platform.StartServices(s, eng)
+	return true
+}
+
 // sqlArtifactDialect reports the SQL dialect engine.NewSQLArtifactStore
 // needs for s, and whether s is a backend it supports at all — a type
 // switch on the concrete store, not a URI re-parse, since s is already
@@ -721,6 +778,57 @@ func sqlArtifactDialect(s store.Store) (string, bool) {
 // dynamic-expansion instances remotely the moment this ships. When this
 // returns false, eng.InstanceJobQueue stays nil and every expansion
 // instance keeps executing in-process exactly as before.
+// validInstanceJobIdentity reports whether a WorkOrder-bearing job
+// carries the identity the worker needs to settle it.
+//
+// A task node has no expansion semantics, so it dispatches ONE job whose
+// identity is the whole-node attempt: (RunID, NodeID, "", Attempt). That
+// empty instance key is the same convention the execution-attempt store
+// and the data-plane blob endpoint already use for a node-level attempt,
+// not a missing field.
+//
+// The instance-key requirement was written when every WorkOrder job was
+// an expansion instance, which always has a non-empty derived key, and
+// was never revisited when task dispatch arrived. The effect was that
+// every remotely dispatched task node was rejected on arrival, the
+// dispatcher waited out its full timeout, and the run failed with
+// "timed out waiting for a worker" -- a message naming the symptom and
+// hiding the cause entirely.
+func validInstanceJobIdentity(job extensions.RunJob) bool {
+	if job.ID == "" || job.RunID == "" || job.NodeID == "" {
+		return false
+	}
+	if job.WorkOrder != nil && job.WorkOrder.NodeType == string(models.NodeTypeTask) {
+		return true
+	}
+	return job.InstanceKey != ""
+}
+
+// wireDataCapIssuer gives the engine the capability issuer the blob
+// endpoint verifies against (ADR-033 section 6) -- necessarily the same
+// one, or nothing the engine issues would verify. Both derive from the
+// server's root secret, so this needs no configuration of its own.
+//
+// Called for EVERY run mode, before any of them branch. It used to be
+// set only on the API/all path, which meant a --mode worker process --
+// the one that actually dispatches task nodes in a distributed
+// deployment -- had no issuer at all. A task input over the inline row
+// cap was then refused with "this server issues no data capabilities"
+// rather than staged by reference, so the whole reference-based input
+// path could never engage precisely where it was needed.
+//
+// A function rather than four lines inline so the wiring can be
+// asserted: an unwired issuer produces a refusal far from its cause,
+// which is how the original gap survived a green CI.
+func wireDataCapIssuer(eng *engine.Engine) {
+	issuer, err := api.DatacapIssuer()
+	if err != nil {
+		log.Printf("WARNING: data capabilities unavailable (%v); a task input too large to inline will be refused rather than staged", err)
+		return
+	}
+	eng.DataCapIssuer = issuer
+}
+
 func instanceDispatchEnabled() bool {
 	return os.Getenv("BROKOLI_INSTANCE_DISPATCH") == "1"
 }
@@ -918,4 +1026,44 @@ func warnIfSQLiteMultiInstanceRisk(dbURI, mode string) {
 
 func Execute() error {
 	return rootCmd.Execute()
+}
+
+// AnnounceWorkerTrustAssumptions logs the credentials this worker process
+// holds beyond its own identity.
+//
+// Exported because there are two worker binaries and only one of them was
+// saying this. The enterprise `worker` subcommand -- the API-only shape
+// this whole line exists to distinguish -- could not print "holds no
+// control-plane secrets", which is precisely the sentence that proves a
+// deployment has moved off shared-store. A claim only the risky shape can
+// make is not much of a signal.
+//
+// Each of these grants something that outlives one job and is not scoped
+// to the work this worker was given: a database URL reads and writes every
+// tenant's rows directly, and a signing secret mints any session including
+// an administrative one. Named individually rather than as one line,
+// because which of them is set is the difference between "inside our
+// boundary" and "should never have been deployed there".
+func AnnounceWorkerTrustAssumptions() {
+	held := []struct{ env, grants string }{
+		{"BROKOLI_DB_URL", "direct read/write access to every tenant's data"},
+		{"BROKOLI_JWT_SECRET", "the ability to mint any session, including an administrative one"},
+		{"BROKOLI_ENCRYPTION_KEY", "the ability to decrypt stored connection credentials"},
+	}
+	var found []struct{ env, grants string }
+	for _, h := range held {
+		if os.Getenv(h.env) != "" {
+			found = append(found, h)
+		}
+	}
+	if len(found) == 0 {
+		log.Printf("Worker: holds no control-plane secrets; all state goes through the API")
+		return
+	}
+	log.Printf("Worker: SHARED-STORE MODE. This process holds control-plane secrets:")
+	for _, h := range found {
+		log.Printf("Worker:   %s grants %s", h.env, h.grants)
+	}
+	log.Printf("Worker: this is safe only where the worker is inside the same trust boundary")
+	log.Printf("Worker: as the control plane. Do not run it anywhere you would not run the database.")
 }

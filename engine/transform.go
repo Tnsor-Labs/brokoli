@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,9 +22,18 @@ type TransformRule struct {
 	Condition  string            `json:"condition,omitempty"`
 	Ascending  bool              `json:"ascending,omitempty"`
 	// Aggregate fields
-	GroupBy      []string   `json:"group_by,omitempty"`     // columns to group by
-	AggFields    []AggField `json:"agg_fields,omitempty"`   // aggregation definitions
-	Aggregations []AggField `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
+	GroupBy           []string               `json:"group_by,omitempty"`     // columns to group by
+	AggFields         []AggField             `json:"agg_fields,omitempty"`   // aggregation definitions
+	Aggregations      []AggField             `json:"aggregations,omitempty"` // alias for agg_fields (template compat)
+	Projections       []ProjectionField      `json:"projections,omitempty"`
+	ExpressionVersion int                    `json:"expression_version,omitempty"`
+	Predicate         map[string]interface{} `json:"predicate,omitempty"`
+}
+
+// ProjectionField is a named output expression in a native project rule.
+type ProjectionField struct {
+	Name string                 `json:"name"`
+	Expr map[string]interface{} `json:"expr"`
 }
 
 // AggField defines an aggregation operation on a column.
@@ -49,6 +59,8 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 		return renameColumns(r, ds)
 	case "add_column":
 		return addColumn(r, ds)
+	case "project", "projection":
+		return project(r, ds)
 	case "filter_rows", "filter":
 		return filterRows(r, ds)
 	case "apply_function", "function":
@@ -63,9 +75,65 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 		return deduplicate(r, ds)
 	case "aggregate", "agg":
 		return aggregate(r, ds)
+	case "filter_native":
+		return filterNative(r, ds)
 	default:
 		return fmt.Errorf("unsupported transform type: %s", r.Type)
 	}
+}
+
+func filterNative(r TransformRule, ds *common.DataSet) error {
+	if r.ExpressionVersion != 1 || len(r.Predicate) == 0 {
+		return fmt.Errorf("filter requires expression_version 1 and predicate")
+	}
+	kept := make([]common.DataRow, 0, len(ds.Rows))
+	for _, row := range ds.Rows {
+		match, err := evalPredicate(r.Predicate, row)
+		if err != nil {
+			return fmt.Errorf("filter predicate: %w", err)
+		}
+		if match {
+			kept = append(kept, row)
+		}
+	}
+	ds.Rows = kept
+	return nil
+}
+
+func project(r TransformRule, ds *common.DataSet) error {
+	if len(r.Projections) == 0 {
+		return fmt.Errorf("project requires projections")
+	}
+	if r.ExpressionVersion != 1 {
+		return fmt.Errorf("project requires expression_version 1")
+	}
+	out := make([]common.DataRow, 0, len(ds.Rows))
+	columns := make([]string, 0, len(r.Projections))
+	seenColumns := make(map[string]struct{}, len(r.Projections))
+	for _, projection := range r.Projections {
+		if strings.TrimSpace(projection.Name) == "" || len(projection.Expr) == 0 {
+			return fmt.Errorf("project projections require name and expr")
+		}
+		if _, exists := seenColumns[projection.Name]; exists {
+			return fmt.Errorf("project output column %q is declared more than once", projection.Name)
+		}
+		seenColumns[projection.Name] = struct{}{}
+		columns = append(columns, projection.Name)
+	}
+	for _, row := range ds.Rows {
+		outRow := make(common.DataRow, len(columns))
+		for _, projection := range r.Projections {
+			value, err := evalExpression(projection.Expr, row)
+			if err != nil {
+				return fmt.Errorf("project column %q: %w", projection.Name, err)
+			}
+			outRow[projection.Name] = value
+		}
+		out = append(out, outRow)
+	}
+	ds.Columns = columns
+	ds.Rows = out
+	return nil
 }
 
 func renameColumns(r TransformRule, ds *common.DataSet) error {
@@ -440,24 +508,109 @@ func dropColumns(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
+// sortRows orders rows by the given columns (#642).
+//
+// It used to format every value with %v and compare the strings, so a
+// numeric column sorted as text: ascending 2, 10 came out 10, 2, and 9.5
+// sorted after 10.5. The filter already compared numbers as numbers; the
+// sort had never been taught to.
+//
+// It cannot simply borrow the filter's rule, which decides each pair on
+// its own terms -- numeric when both parse, text otherwise. That is fine
+// for a yes/no predicate and wrong for a sort, because it is not a
+// consistent order: 9 < 10 as numbers, 10 < "5a" as text, "5a" < 9 as
+// text, a cycle, and a sort given one returns an arbitrary order. So every
+// value is given a class first, and the classes are ordered:
+//
+//   - numbers, compared exactly as numbers, whether typed or held as
+//     numeric text (a CSV column is often the latter). Exactly, not as
+//     float64: 9007199254740993 must still order after 9007199254740992;
+//   - then text, compared as text;
+//   - then empty values (nil).
+//
+// Descending is the exact reverse, so empty values come first there: the
+// same placement Postgres uses by default. Keys are computed once per row
+// rather than parsed again on every comparison. The sort is stable, so
+// rows with equal keys keep their order.
 func sortRows(r TransformRule, ds *common.DataSet) error {
 	if len(r.Columns) == 0 {
 		return fmt.Errorf("sort requires columns list")
 	}
-	sort.SliceStable(ds.Rows, func(i, j int) bool {
-		for _, col := range r.Columns {
-			vi := fmt.Sprintf("%v", ds.Rows[i][col])
-			vj := fmt.Sprintf("%v", ds.Rows[j][col])
-			if vi != vj {
+	keys := make([][]sortKey, len(ds.Rows))
+	for i, row := range ds.Rows {
+		k := make([]sortKey, len(r.Columns))
+		for c, col := range r.Columns {
+			k[c] = sortKeyOf(row[col])
+		}
+		keys[i] = k
+	}
+	order := make([]int, len(ds.Rows))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(a, b int) bool {
+		ka, kb := keys[order[a]], keys[order[b]]
+		for c := range r.Columns {
+			if cmp := compareSortKeys(ka[c], kb[c]); cmp != 0 {
 				if r.Ascending {
-					return vi < vj
+					return cmp < 0
 				}
-				return vi > vj
+				return cmp > 0
 			}
 		}
 		return false
 	})
+	sorted := make([]common.DataRow, len(ds.Rows))
+	for i, j := range order {
+		sorted[i] = ds.Rows[j]
+	}
+	ds.Rows = sorted
 	return nil
+}
+
+// The classes a sort key falls into, in ascending order.
+const (
+	sortClassNumber = iota
+	sortClassText
+	sortClassNull
+)
+
+// sortKey is one value, classified once so a comparison never parses.
+type sortKey struct {
+	class int
+	num   *big.Float
+	text  string
+}
+
+// sortKeyPrecision is enough bits for every int64 to be exact, so two
+// integers too large for a float64 to tell apart still compare correctly.
+const sortKeyPrecision = 200
+
+func sortKeyOf(v interface{}) sortKey {
+	if v == nil {
+		return sortKey{class: sortClassNull}
+	}
+	s := fmt.Sprintf("%v", v)
+	if f, _, err := big.ParseFloat(s, 10, sortKeyPrecision, big.ToNearestEven); err == nil {
+		return sortKey{class: sortClassNumber, num: f}
+	}
+	return sortKey{class: sortClassText, text: s}
+}
+
+func compareSortKeys(a, b sortKey) int {
+	if a.class != b.class {
+		if a.class < b.class {
+			return -1
+		}
+		return 1
+	}
+	switch a.class {
+	case sortClassNumber:
+		return a.num.Cmp(b.num)
+	case sortClassText:
+		return strings.Compare(a.text, b.text)
+	}
+	return 0
 }
 
 func deduplicate(r TransformRule, ds *common.DataSet) error {
@@ -502,11 +655,11 @@ func aggregate(r TransformRule, ds *common.DataSet) error {
 	var order []string
 
 	for _, row := range ds.Rows {
-		var parts []string
+		parts := make([]interface{}, 0, len(r.GroupBy))
 		for _, col := range r.GroupBy {
-			parts = append(parts, fmt.Sprintf("%v", row[col]))
+			parts = append(parts, row[col])
 		}
-		key := strings.Join(parts, "\x00")
+		key := canonicalGroupKey(parts)
 		if _, ok := groups[key]; !ok {
 			groups[key] = &group{keyRow: row}
 			order = append(order, key)
@@ -548,10 +701,22 @@ func aggregate(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
+func canonicalGroupKey(values []interface{}) string {
+	return fmt.Sprintf("%#v", values)
+}
+
 func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 	switch strings.ToLower(fn) {
 	case "count":
 		return len(rows)
+	case "count_distinct":
+		seen := make(map[string]struct{})
+		for _, row := range rows {
+			if row[col] != nil {
+				seen[canonicalValueKey(row[col])] = struct{}{}
+			}
+		}
+		return len(seen)
 	case "sum":
 		var sum float64
 		for _, row := range rows {
@@ -600,6 +765,10 @@ func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 	default:
 		return nil
 	}
+}
+
+func canonicalValueKey(value interface{}) string {
+	return fmt.Sprintf("%T:%#v", value, value)
 }
 
 func toAggFloat(v interface{}) (float64, bool) {

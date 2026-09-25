@@ -61,7 +61,7 @@ func (postgres) WriteSyntax() WriteSyntax {
 		QuoteChar: `"`, StrQuote: "'", Terminator: ";",
 		BoolTrue: "TRUE", BoolFalse: "FALSE",
 		TypeMap: map[string]string{
-			"INTEGER": "INTEGER", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN",
+			"INTEGER": "INTEGER", "BIGINT": "BIGINT", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN",
 			"TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
 		TSLayout: "2006-01-02 15:04:05.999999-07:00", TSUTC: false,
 	}
@@ -72,7 +72,7 @@ func (mysqld) WriteSyntax() WriteSyntax {
 		QuoteChar: "`", StrQuote: "'", Terminator: ";",
 		BoolTrue: "TRUE", BoolFalse: "FALSE", BackslashEscapes: true,
 		TypeMap: map[string]string{
-			"INTEGER": "INT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN",
+			"INTEGER": "INT", "BIGINT": "BIGINT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN",
 			"TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
 	}
@@ -83,7 +83,7 @@ func (clickhouse) WriteSyntax() WriteSyntax {
 		QuoteChar: "`", StrQuote: "'", Terminator: ";",
 		BoolTrue: "true", BoolFalse: "false", BackslashEscapes: true,
 		TypeMap: map[string]string{
-			"INTEGER": "Int64", "FLOAT": "Float64", "BOOLEAN": "Bool",
+			"INTEGER": "Int64", "BIGINT": "Int64", "FLOAT": "Float64", "BOOLEAN": "Bool",
 			"TEXT": "String", "TIMESTAMP": "DateTime64(6, 'UTC')"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
 		CreateTableSuffix: " ENGINE = MergeTree ORDER BY tuple()",
@@ -95,7 +95,7 @@ func (sqlited) WriteSyntax() WriteSyntax {
 		QuoteChar: `"`, StrQuote: "'", Terminator: ";",
 		BoolTrue: "1", BoolFalse: "0",
 		TypeMap: map[string]string{
-			"INTEGER": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER",
+			"INTEGER": "INTEGER", "BIGINT": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER",
 			"TEXT": "TEXT", "TIMESTAMP": "TEXT"},
 		TSLayout: "2006-01-02T15:04:05.999999Z07:00", TSUTC: false,
 	}
@@ -106,7 +106,7 @@ func (sqlserver) WriteSyntax() WriteSyntax {
 		QuoteChar: "[", StrQuote: "'", Terminator: ";",
 		BoolTrue: "1", BoolFalse: "0",
 		TypeMap: map[string]string{
-			"INTEGER": "INT", "FLOAT": "FLOAT", "BOOLEAN": "BIT",
+			"INTEGER": "INT", "BIGINT": "BIGINT", "FLOAT": "FLOAT", "BOOLEAN": "BIT",
 			"TEXT": "NVARCHAR(MAX)", "TIMESTAMP": "DATETIME2"},
 		TSLayout: "2006-01-02 15:04:05.9999999", TSUTC: true,
 	}
@@ -117,7 +117,7 @@ func (generic) WriteSyntax() WriteSyntax {
 		QuoteChar: `"`, StrQuote: "'", Terminator: ";",
 		BoolTrue: "TRUE", BoolFalse: "FALSE",
 		TypeMap: map[string]string{
-			"INTEGER": "INTEGER", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN",
+			"INTEGER": "INTEGER", "BIGINT": "BIGINT", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN",
 			"TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
 	}

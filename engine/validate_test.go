@@ -30,6 +30,184 @@ func TestValidate_ValidPipeline(t *testing.T) {
 	}
 }
 
+func TestValidate_JoinCollisionPolicyRequiresAlias(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "join-policy",
+		Nodes: []models.Node{
+			{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+			{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+			{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+				"left_key": "id", "right_key": "id", "collision_policy": "alias",
+			}},
+			{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+		},
+		Edges: []models.Edge{
+			{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"},
+		},
+	}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "right_alias") {
+		t.Fatalf("expected right_alias validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinCollisionPolicyRejectsUnknownValue(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "collision_policy": "rename",
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "collision_policy") {
+		t.Fatalf("expected collision_policy validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinCollisionPolicyRejectsNonStringValue(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "collision_policy": 42,
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "collision_policy") {
+		t.Fatalf("expected non-string collision_policy validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinSchemaRejectsInvalidDecimalDescriptor(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{"path": "/left"}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{"path": "/right"}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{
+			"left_key": "id", "right_key": "id", "schema": map[string]interface{}{
+				"contract": "brokoli.dataset-schema/v1",
+				"columns": []interface{}{map[string]interface{}{
+					"name": "amount",
+					"type": map[string]interface{}{"kind": "decimal", "precision": 2, "scale": 3},
+				}},
+				"additional_columns": "closed",
+			},
+		}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "scale must not exceed precision") {
+		t.Fatalf("expected decimal schema validation error, got %v", ve.Errors)
+	}
+}
+
+func TestValidate_JoinSchemasRejectMissingDeclaredKey(t *testing.T) {
+	p := validPipeline()
+	p.Nodes = []models.Node{
+		{ID: "left", Type: models.NodeTypeSourceFile, Name: "Left", Config: map[string]interface{}{
+			"path": "/left", "schema": testDatasetSchema("id"),
+		}},
+		{ID: "right", Type: models.NodeTypeSourceFile, Name: "Right", Config: map[string]interface{}{
+			"path": "/right", "schema": testDatasetSchema("other_id"),
+		}},
+		{ID: "join", Type: models.NodeTypeJoin, Name: "Join", Config: map[string]interface{}{"left_key": "id", "right_key": "id"}},
+		{ID: "out", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": "/out"}},
+	}
+	p.Edges = []models.Edge{{From: "left", To: "join"}, {From: "right", To: "join"}, {From: "join", To: "out"}}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "right key \"id\"") {
+		t.Fatalf("expected missing declared right key error, got %v", ve.Errors)
+	}
+}
+
+func testDatasetSchema(column string) map[string]interface{} {
+	return map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{map[string]interface{}{
+			"name": column, "type": map[string]interface{}{"kind": "int64"},
+		}},
+		"additional_columns": "closed",
+	}
+}
+
+func TestValidate_DatasetSchemaAcceptsPortableDeclaration(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "id", "type": map[string]interface{}{"kind": "int64"}},
+		},
+		"additional_columns": "closed",
+	}
+	ve := ValidatePipeline(p)
+	if ve.HasErrors() {
+		t.Fatalf("valid dataset schema rejected: %v", ve.Errors)
+	}
+}
+
+func TestValidate_DatasetSchemaAcceptsDecimalPrecisionAndScale(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "amount", "type": map[string]interface{}{
+				"kind": "decimal", "precision": float64(20), "scale": float64(4),
+			}},
+		},
+		"additional_columns": "closed",
+	}
+	if ve := ValidatePipeline(p); ve.HasErrors() {
+		t.Fatalf("valid decimal schema rejected: %v", ve.Errors)
+	}
+}
+
+func TestValidate_DatasetSchemaRejectsInvalidDecimalPrecisionAndScale(t *testing.T) {
+	for name, typ := range map[string]map[string]interface{}{
+		"non-integer precision":   {"kind": "decimal", "precision": 12.5, "scale": 2},
+		"non-positive precision":  {"kind": "decimal", "precision": 0, "scale": 0},
+		"negative scale":          {"kind": "decimal", "precision": 12, "scale": -1},
+		"scale exceeds precision": {"kind": "decimal", "precision": 2, "scale": 3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := validPipeline()
+			p.Nodes[0].Config["schema"] = map[string]interface{}{
+				"contract":           "brokoli.dataset-schema/v1",
+				"columns":            []interface{}{map[string]interface{}{"name": "amount", "type": typ}},
+				"additional_columns": "closed",
+			}
+			if ve := ValidatePipeline(p); !ve.HasErrors() {
+				t.Fatal("invalid decimal schema was accepted")
+			}
+		})
+	}
+}
+
+func TestValidate_DatasetSchemaRejectsMalformedDeclaration(t *testing.T) {
+	p := validPipeline()
+	p.Nodes[0].Config["schema"] = map[string]interface{}{
+		"contract": "brokoli.dataset-schema/v1",
+		"columns": []interface{}{
+			map[string]interface{}{"name": "id", "type": map[string]interface{}{"kind": "not-a-type"}},
+		},
+		"additional_columns": "closed",
+	}
+	ve := ValidatePipeline(p)
+	if !strings.Contains(strings.Join(ve.Errors, "; "), "schema") {
+		t.Fatalf("expected dataset schema error, got %v", ve.Errors)
+	}
+}
+
 func TestValidate_EmptyName(t *testing.T) {
 	p := validPipeline()
 	p.Name = ""

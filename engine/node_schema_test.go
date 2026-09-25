@@ -40,6 +40,65 @@ func TestRowLevelRulesKeepEveryType(t *testing.T) {
 	}
 }
 
+func TestDeclaredOutputSchemaPreservesDecimalPrecision(t *testing.T) {
+	schema, err := declaredOutputSchema(map[string]interface{}{
+		"output_schema": map[string]interface{}{
+			"columns": []interface{}{map[string]interface{}{
+				"name": "amount",
+				"type": map[string]interface{}{"kind": "decimal", "precision": float64(18), "scale": float64(6)},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("declaredOutputSchema() error = %v", err)
+	}
+	got := schema["amount"]
+	if got.Class != dbdialect.TypeDecimal || got.Precision != 18 || got.Scale != 6 {
+		t.Fatalf("amount = %v, want decimal(18,6)", got)
+	}
+}
+
+func TestJoinSchemaCarriesTypesThroughCollisionPlanning(t *testing.T) {
+	left := columnSchema{
+		"id":   {Class: dbdialect.TypeInt, Bits: 64, Nullable: false},
+		"name": {Class: dbdialect.TypeText, Nullable: true},
+	}
+	right := columnSchema{
+		"id":     {Class: dbdialect.TypeInt, Bits: 64, Nullable: false},
+		"name":   {Class: dbdialect.TypeText, Nullable: true},
+		"amount": {Class: dbdialect.TypeDecimal, Precision: 20, Scale: 4, Nullable: true},
+	}
+
+	got, err := joinSchema(left, right,
+		[]string{"id", "name"}, []string{"id", "name", "amount"},
+		"id", "id", JoinOptions{CollisionPolicy: JoinCollisionPrefix})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["right_name"].Class != dbdialect.TypeText {
+		t.Errorf("right_name = %v, want text", got["right_name"])
+	}
+	if got["right_amount"].Class != dbdialect.TypeDecimal || got["right_amount"].Precision != 20 || got["right_amount"].Scale != 4 {
+		t.Errorf("right_amount = %v, want decimal(20,4)", got["right_amount"])
+	}
+}
+
+func TestProjectSchemaInfersFieldExpressionTypes(t *testing.T) {
+	out := applyRuleToSchema(TransformRule{
+		Type: "project",
+		Projections: []ProjectionField{
+			{Name: "amount", Expr: map[string]interface{}{"op": "column", "path": []interface{}{"amount"}}},
+			{Name: "label", Expr: map[string]interface{}{"op": "concat", "left": map[string]interface{}{"op": "column", "path": []interface{}{"city"}}, "right": map[string]interface{}{"op": "literal", "value": "!"}}},
+		},
+	}, srcSchema())
+	if got := out["amount"]; got.Class != dbdialect.TypeDecimal || got.Precision != 12 || got.Scale != 2 {
+		t.Errorf("amount = %v, want decimal(12,2)", got)
+	}
+	if got := out["label"]; got.Class != dbdialect.TypeText {
+		t.Errorf("label = %v, want text", got)
+	}
+}
+
 func TestDropAndRenameFollowTheColumns(t *testing.T) {
 	dropped := applyRuleToSchema(
 		TransformRule{Type: "drop_columns", Columns: []string{"city", "is_admin"}}, srcSchema())

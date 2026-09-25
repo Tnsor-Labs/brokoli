@@ -67,6 +67,11 @@ func (e *Engine) Backfill(pipelineID string, req BackfillRequest) (*BackfillPlan
 	if err != nil {
 		return nil, fmt.Errorf("get pipeline: %w", err)
 	}
+	// A backfill is a run per interval, so a draft is refused here for
+	// the same reason it is refused everywhere else (#107).
+	if pipe.Draft {
+		return nil, ErrPipelineIsDraft
+	}
 	if pipe.Schedule == "" {
 		return nil, fmt.Errorf(
 			"pipeline %q has no schedule, so there is no interval grid to backfill over; "+
@@ -114,7 +119,11 @@ func (e *Engine) Backfill(pipelineID string, req BackfillRequest) (*BackfillPlan
 			}
 			start, end := iv[0], iv[1]
 			run, err := e.RunPipelineOpts(pipelineID, RunOptions{
-				Trigger:           models.RunTriggerBackfill,
+				Trigger: models.RunTriggerBackfill,
+				// #241. A backfill is its own kind: it is neither a person
+				// pressing run nor the scheduler reaching its next tick,
+				// and conflating it with either misreports both.
+				TriggeredBy:       &models.RunAttribution{Kind: models.RunTriggerKindBackfill},
 				DataIntervalStart: &start,
 				DataIntervalEnd:   &end,
 				// The date param the pre-ADR-028 backfill injected, kept

@@ -43,6 +43,16 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		ve.Add("Pipeline name is required")
 	}
 
+	// A schedule that cannot be parsed used to save cleanly and then fail
+	// silently at registration: no run, no error, nothing in the editor to
+	// say why (#552). The scheduler's own parser decides, so this can
+	// never reject something that would have worked.
+	if p.Schedule != "" {
+		if _, err := scheduleFor(p.Schedule, p.ScheduleTimezone); err != nil {
+			ve.Add(fmt.Sprintf("Invalid schedule %q: %v", p.Schedule, err))
+		}
+	}
+
 	if !models.IsIRVersionSupported(p.IRVersion) {
 		ve.Add(fmt.Sprintf("Unsupported pipeline IR version %q (supported: %s)", p.IRVersion, strings.Join(models.SupportedIRVersions, ", ")))
 	}
@@ -159,6 +169,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 	for _, n := range p.Nodes {
 		validateNodeConfig(n, ve)
 	}
+	validateDeclaredJoinSchemas(p, ve)
 
 	return ve
 }
@@ -169,7 +180,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 func IsBuiltInNodeType(nodeType models.NodeType) bool {
 	switch nodeType {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeTransform, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
+		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
@@ -232,6 +243,10 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			count := inputDegree[n.ID]
 			if count != 2 {
 				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
+			}
+		case models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter:
+			if count := inputDegree[n.ID]; count != 1 {
+				ve.Add(fmt.Sprintf("Node %q (%s) must have exactly 1 input, got %d", n.Name, n.Type, count))
 			}
 		case models.NodeTypeUnion:
 			// Matches brokoli-sdk's own union()/collect() requirement
@@ -460,6 +475,11 @@ func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) boo
 }
 
 func validateNodeConfig(n models.Node, ve *ValidationError) {
+	if raw, present := n.Config["schema"]; present && raw != nil {
+		for _, message := range datasetSchemaConfigErrors(raw) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
+		}
+	}
 	switch n.Type {
 	case models.NodeTypeSourceFile:
 		if getStr(n.Config, "path") == "" {
@@ -468,6 +488,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeSourceAPI:
 		if getStr(n.Config, "url") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'url' is required for source_api", n.Name))
+		}
+		for _, message := range executionProfileErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
 		}
 	case models.NodeTypeSourceDB:
 		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
@@ -479,6 +502,15 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeSQLGenerate:
 		if getStr(n.Config, "table") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'table' is required for sql_generate", n.Name))
+		}
+	case models.NodeTypeJoin:
+		for _, message := range joinCollisionPolicyErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
+		}
+		if raw, present := n.Config["schema"]; present {
+			for _, message := range datasetSchemaConfigErrors(raw) {
+				ve.Add(fmt.Sprintf("Node %q: schema: %s", n.Name, message))
+			}
 		}
 	case models.NodeTypeSinkFile:
 		if getStr(n.Config, "path") == "" {
@@ -517,6 +549,11 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		for _, msg := range codeExecutionKeyErrors(n.Config) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
+		if raw, present := n.Config["output_schema"]; present {
+			for _, msg := range datasetSchemaConfigErrors(raw) {
+				ve.Add(fmt.Sprintf("Node %q: output_schema: %s", n.Name, msg))
+			}
+		}
 		if nodeHasExpansion(n) {
 			// parseExpansionConfig's errors already name the node
 			// (Name/ID) themselves — see engine/expansion.go — so append
@@ -526,6 +563,248 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			}
 		}
 	}
+}
+
+var datasetSchemaKinds = map[string]bool{
+	"boolean": true, "int64": true, "float64": true, "decimal": true,
+	"string": true, "bytes": true, "date": true, "timestamp": true,
+	"duration": true, "json": true, "unknown": true, "enum": true,
+	"array": true, "map": true, "record": true,
+}
+
+func datasetSchemaConfigErrors(raw interface{}) []string {
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return []string{"dataset schema must be an object"}
+	}
+	var errors []string
+	if schema["contract"] != "brokoli.dataset-schema/v1" {
+		errors = append(errors, "dataset schema contract must be 'brokoli.dataset-schema/v1'")
+	}
+	additional, ok := schema["additional_columns"].(string)
+	if !ok || (additional != "closed" && additional != "open" && additional != "unknown") {
+		errors = append(errors, "dataset schema additional_columns must be 'closed', 'open', or 'unknown'")
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return append(errors, "dataset schema columns must be an array")
+	}
+	seen := map[string]bool{}
+	for index, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			errors = append(errors, fmt.Sprintf("dataset schema column %d must be an object", index))
+			continue
+		}
+		name, ok := column["name"].(string)
+		if !ok || name == "" {
+			errors = append(errors, fmt.Sprintf("dataset schema column %d requires a non-empty name", index))
+		} else if seen[name] {
+			errors = append(errors, fmt.Sprintf("dataset schema contains duplicate column %q", name))
+		} else {
+			seen[name] = true
+		}
+		errors = append(errors, datasetTypeErrors(column["type"], fmt.Sprintf("dataset schema column %q type", name))...)
+	}
+	return errors
+}
+
+// validateDeclaredJoinSchemas checks the part of a join contract that can be
+// proven before execution. Unknown or absent input schemas remain a runtime
+// concern; two declared schemas, however, must agree on their keys and output
+// collision policy rather than letting a fallback field lookup hide a typo.
+func validateDeclaredJoinSchemas(p *models.Pipeline, ve *ValidationError) {
+	nodes := make(map[string]models.Node, len(p.Nodes))
+	incoming := make(map[string][]models.Node)
+	for _, n := range p.Nodes {
+		nodes[n.ID] = n
+	}
+	for _, edge := range p.Edges {
+		if from, ok := nodes[edge.From]; ok {
+			incoming[edge.To] = append(incoming[edge.To], from)
+		}
+	}
+	for _, join := range p.Nodes {
+		if join.Type != models.NodeTypeJoin || len(incoming[join.ID]) != 2 {
+			continue
+		}
+		leftColumns, leftKinds, leftOK := declaredSchemaColumns(incoming[join.ID][0].Config["schema"])
+		rightColumns, rightKinds, rightOK := declaredSchemaColumns(incoming[join.ID][1].Config["schema"])
+		if !leftOK || !rightOK {
+			continue
+		}
+		leftKey, _ := join.Config["left_key"].(string)
+		rightKey, _ := join.Config["right_key"].(string)
+		if rightKey == "" {
+			rightKey = leftKey
+		}
+		if leftKinds[leftKey] != "" && rightKinds[rightKey] != "" &&
+			leftKinds[leftKey] != "unknown" && rightKinds[rightKey] != "unknown" &&
+			leftKinds[leftKey] != rightKinds[rightKey] {
+			ve.Add(fmt.Sprintf("Node %q: schema: join keys %q and %q have incompatible declared types %q and %q",
+				join.Name, leftKey, rightKey, leftKinds[leftKey], rightKinds[rightKey]))
+			continue
+		}
+		policy, _ := join.Config["collision_policy"].(string)
+		rightAlias, _ := join.Config["right_alias"].(string)
+		if _, _, err := planJoinColumns(leftColumns, rightColumns, leftKey, rightKey, JoinOptions{
+			CollisionPolicy: JoinCollisionPolicy(policy), RightAlias: rightAlias,
+		}); err != nil {
+			ve.Add(fmt.Sprintf("Node %q: schema: %v", join.Name, err))
+		}
+	}
+}
+
+func declaredSchemaColumns(raw interface{}) ([]string, map[string]string, bool) {
+	schema, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, nil, false
+	}
+	columns, ok := schema["columns"].([]interface{})
+	if !ok {
+		return nil, nil, false
+	}
+	names := make([]string, 0, len(columns))
+	kinds := make(map[string]string, len(columns))
+	for _, rawColumn := range columns {
+		column, ok := rawColumn.(map[string]interface{})
+		if !ok {
+			return nil, nil, false
+		}
+		name, _ := column["name"].(string)
+		typ, _ := column["type"].(map[string]interface{})
+		kind, _ := typ["kind"].(string)
+		if name == "" || kind == "" {
+			return nil, nil, false
+		}
+		names = append(names, name)
+		kinds[name] = kind
+	}
+	return names, kinds, true
+}
+
+func datasetTypeErrors(raw interface{}, path string) []string {
+	typ, ok := raw.(map[string]interface{})
+	if !ok {
+		return []string{path + " must be a BPTD object"}
+	}
+	kind, ok := typ["kind"].(string)
+	if !ok || !datasetSchemaKinds[kind] {
+		return []string{fmt.Sprintf("%s has unknown BPTD kind %q", path, kind)}
+	}
+	if kind == "array" {
+		return datasetTypeErrors(typ["items"], path+".items")
+	}
+	if kind == "map" {
+		if keys, present := typ["keys"]; present && keys != "string" {
+			return []string{path + ".keys must be 'string'"}
+		}
+		return datasetTypeErrors(typ["values"], path+".values")
+	}
+	if kind == "record" {
+		fields, ok := typ["fields"].([]interface{})
+		if !ok {
+			return []string{path + ".fields must be an array"}
+		}
+		var errors []string
+		for index, rawField := range fields {
+			field, ok := rawField.(map[string]interface{})
+			if !ok {
+				errors = append(errors, fmt.Sprintf("%s.fields[%d] must be an object", path, index))
+				continue
+			}
+			fieldName, _ := field["name"].(string)
+			errors = append(errors, datasetTypeErrors(field["type"], fmt.Sprintf("%s.fields[%d] %q type", path, index, fieldName))...)
+		}
+		return errors
+	}
+	if kind == "decimal" {
+		return decimalTypeErrors(typ, path)
+	}
+	return nil
+}
+
+func decimalTypeErrors(typ map[string]interface{}, path string) []string {
+	var errors []string
+	precision, precisionOK := schemaInteger(typ["precision"])
+	scale, scaleOK := schemaInteger(typ["scale"])
+
+	if _, present := typ["precision"]; present {
+		if !precisionOK || precision <= 0 {
+			errors = append(errors, path+".precision must be a positive integer")
+		}
+	}
+	if _, present := typ["scale"]; present {
+		if !scaleOK || scale < 0 {
+			errors = append(errors, path+".scale must be a non-negative integer")
+		}
+	}
+	if precisionOK && scaleOK && scale > precision {
+		errors = append(errors, path+".scale must not exceed precision")
+	}
+	return errors
+}
+
+func schemaInteger(value interface{}) (int, bool) {
+	switch v := value.(type) {
+	case int:
+		return v, true
+	case int8:
+		return int(v), true
+	case int16:
+		return int(v), true
+	case int32:
+		return int(v), true
+	case int64:
+		return int(v), true
+	case uint:
+		return int(v), uint64(v) <= uint64(^uint(0)>>1)
+	case uint8:
+		return int(v), true
+	case uint16:
+		return int(v), true
+	case uint32:
+		return int(v), uint64(v) <= uint64(^uint(0)>>1)
+	case uint64:
+		return int(v), v <= uint64(^uint(0)>>1)
+	case float64:
+		return int(v), v == float64(int(v))
+	case float32:
+		return int(v), v == float32(int(v))
+	default:
+		return 0, false
+	}
+}
+
+func joinCollisionPolicyErrors(config map[string]interface{}) []string {
+	var errors []string
+	collisionPolicy := ""
+	if raw, present := config["collision_policy"]; present && raw != nil {
+		var ok bool
+		collisionPolicy, ok = raw.(string)
+		if !ok {
+			errors = append(errors, "'collision_policy' must be a string")
+		}
+	}
+	if collisionPolicy != "" && collisionPolicy != string(JoinCollisionPrefix) && collisionPolicy != string(JoinCollisionError) && collisionPolicy != string(JoinCollisionAlias) {
+		errors = append(errors, fmt.Sprintf("'collision_policy' must be one of %q, %q, or %q (got %q)", JoinCollisionError, JoinCollisionPrefix, JoinCollisionAlias, collisionPolicy))
+	}
+
+	rightAlias := ""
+	if raw, present := config["right_alias"]; present && raw != nil {
+		var ok bool
+		rightAlias, ok = raw.(string)
+		if !ok {
+			errors = append(errors, "'right_alias' must be a string")
+		}
+	}
+	if collisionPolicy == string(JoinCollisionAlias) && strings.TrimSpace(rightAlias) == "" {
+		errors = append(errors, "'right_alias' is required when 'collision_policy' is 'alias'")
+	}
+	if collisionPolicy != "" && collisionPolicy != string(JoinCollisionAlias) && rightAlias != "" {
+		errors = append(errors, "'right_alias' is only valid when 'collision_policy' is 'alias'")
+	}
+	return errors
 }
 
 // codeExecutionKeyErrors validates the code node's execution-contract
@@ -629,7 +908,9 @@ func ValidateNodes(nodes []models.Node) []NodeValidationResult {
 func sinkFilePaths(nodes []models.Node) map[string]bool {
 	paths := map[string]bool{}
 	for _, n := range nodes {
-		if n.Type == models.NodeTypeSinkFile {
+		// A remote sink writes a file on a server, not the path this
+		// machine's readers would open.
+		if n.Type == models.NodeTypeSinkFile && fileConnID(n) == "" {
 			if p := getStr(n.Config, "path"); p != "" {
 				paths[p] = true
 			}
@@ -649,6 +930,11 @@ func sinkFilePaths(nodes []models.Node) map[string]bool {
 // which is the last moment where changing the design is cheap.
 func validateFileStorage(n models.Node, writtenHere map[string]bool, r *NodeValidationResult) {
 	if n.Type != models.NodeTypeSourceFile || !unsharedFileStorage() {
+		return
+	}
+	// A remote file is fetched from its server by whichever worker runs
+	// the node; worker disks play no part in it.
+	if fileConnID(n) != "" {
 		return
 	}
 	path := getStr(n.Config, "path")
@@ -720,6 +1006,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "join_type") == "" {
 			r.Warnings = append(r.Warnings, "'join_type' not set, defaults to inner")
 		}
+		r.Errors = append(r.Errors, joinCollisionPolicyErrors(n.Config)...)
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			r.Errors = append(r.Errors, fmt.Sprintf("union only supports mode=\"union\" (got %q)", mode))

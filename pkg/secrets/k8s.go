@@ -78,6 +78,15 @@ func (k *K8sResolver) Resolve(ctx context.Context, ref string) (string, error) {
 	if len(k.AllowedNamespaces) > 0 && !k.AllowedNamespaces[namespace] {
 		return "", fmt.Errorf("secrets/k8s: namespace %q not in allowed list", namespace)
 	}
+	// The namespace check alone let a reference read any secret in the
+	// server's own namespace, which is usually where the server's own
+	// database URL and encryption key live.
+	if !K8sRefAllowed(namespace, secretName) {
+		return "", fmt.Errorf(
+			"secrets/k8s: %s/%s is not listed in %s, so a k8s:// reference may not read it. "+
+				"The server's service account can read more than any one connection should; "+
+				"list the secrets connections may use as namespace/secret", namespace, secretName, K8sRefAllowEnv)
+	}
 
 	// secretName is placed after "--" (end-of-flags) so kubectl always
 	// treats it as a positional resource name, never as a flag, no

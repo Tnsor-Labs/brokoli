@@ -78,6 +78,24 @@ const (
 	// not execute because every incoming edge resolved inactive.
 	AttemptSkipped RunEventType = "attempt.skipped"
 
+	// AttemptQuery records the exact SQL statement a node executed, with
+	// every ${...} reference already substituted -- the difference between
+	// reading a pipeline's template and knowing what actually reached the
+	// server. Payload.Statement carries it.
+	//
+	// Appended BEFORE the statement runs, so the query worth reading most
+	// (the one that failed) is recorded rather than lost with the attempt.
+	// A node may append several: a pushed-down overwrite clears its table
+	// and then writes it, and both are statements that ran. They are
+	// ordered by event id like every other event.
+	//
+	// engine.ProjectRun deliberately has no case for this type. It carries
+	// no runs/node_runs state -- only statement text -- so replay
+	// reconstructs an identical Run whether these events are present or
+	// not. Adding a projection case for it would be a change in meaning,
+	// not a missing branch.
+	AttemptQuery RunEventType = "attempt.query"
+
 	// RetryScheduled marks the moment a retry is decided and its backoff
 	// delay computed, before the next attempt's node_runs row is created.
 	// This makes durable what was previously only an ephemeral
@@ -139,6 +157,20 @@ const (
 	// the audit trail and what bounds them: recovery counts these to stop
 	// a run cycling forever.
 	RunEventRecoveryRequeued RunEventType = "run.recovery_requeued"
+
+	// RunEventResumedFromNode records that this run was created by resuming
+	// an earlier run from a chosen node, re-executing that node and every
+	// node downstream of it. NodeID is the node the operator chose; the
+	// lineage back to the run it came from is models.Run.ResumedFromRunID,
+	// exactly as for an ordinary resume.
+	//
+	// This is the one event type that sets NodeID without an Attempt. It
+	// describes a decision about the run, not an execution of that node,
+	// and the node has its own AttemptStarted/Completed events when it
+	// actually runs. engine.ProjectRun deliberately ignores it: the event
+	// carries no state to project, and folding it in would invent a
+	// node_runs row for a node that had not executed yet.
+	RunEventResumedFromNode RunEventType = "run.resumed_from_node"
 )
 
 // RunEvent is a single immutable, append-only fact about a run or a node
@@ -191,6 +223,12 @@ type RunEventPayload struct {
 	// ArtifactRunID identifies the run namespace containing a reused node's
 	// carried output. Empty when the node has no downstream artifact.
 	ArtifactRunID string `json:"artifact_run_id,omitempty"`
+	// Statement is the rendered SQL a node executed (AttemptQuery only):
+	// variables substituted, bounded in size with a visible truncation
+	// marker, and with secret-derived values masked. It never carries a
+	// connection URI -- the credential lives there, not in the statement,
+	// and nothing copies it into this field.
+	Statement string `json:"statement,omitempty"`
 	// BackoffMs is the computed retry delay (RetryScheduled only).
 	BackoffMs int64             `json:"backoff_ms,omitempty"`
 	Params    map[string]string `json:"params,omitempty"`

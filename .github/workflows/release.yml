@@ -32,22 +32,29 @@ jobs:
           node-version: "20"
 
       - name: Build UI (required for go:embed before tests)
-        working-directory: ui
-        run: |
-          npm ci
-          npm run build
+        run: bash build-ui.sh
 
       - name: Run tests
         run: go test ./... -count=1
 
       - name: Verify UI build
-        run: test -f web/dist/index.html
+        # Guard against embedding a stale shell: web/dist must be the fresh
+        # React build, i.e. index.html referencing a hashed asset bundle.
+        # The shared script checks that every asset the page references is
+        # actually present, which the three inline tests this replaced did
+        # not: they accepted any index.html that merely mentioned
+        # "/assets/" next to a non-empty assets directory.
+        run: bash scripts/check-ui-bundle.sh web/dist
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:
           version: latest
-          # The UI build intentionally updates tracked go:embed assets.
+          # --skip=validate: the UI build writes web/dist, which is not
+          # committed. It is gitignored now rather than tracked, so the
+          # tree is no longer dirty here, but the flag stays because a
+          # release is the wrong place to discover a difference of opinion
+          # with goreleaser about what counts as clean.
           args: release --clean --skip=validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

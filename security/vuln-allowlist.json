@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Vulnerabilities that govulncheck reports as CALLED by this repo's own code",
+    "and that cannot be fixed by upgrading today. Every entry is an audited",
+    "exception, not a suppression: scripts/check-vulns.sh fails the build if an",
+    "entry here ever gains an upstream fixed version, so an allowlisted",
+    "vulnerability cannot quietly become permanent.",
+    "",
+    "An entry is only legitimate when the module has no released fix AND this",
+    "repo does something to reduce the impact. Record both, plus who decided.",
+    "Anything not listed here fails the gate."
+  ],
+  "allowed": [
+    {
+      "id": "GO-2026-6452",
+      "summary": "Panic via negative shared-string index in github.com/xuri/excelize",
+      "module": "github.com/xuri/excelize/v2",
+      "reason": "No upstream fix exists. The OSV record has an introduced:0 range with no fixed event, so govulncheck reports every released version as affected and there is no version to upgrade to. The sibling advisory GO-2026-6453 was fixed by moving to v2.11.0, which this repo has done. Reproduction note: a crafted .xlsx with a negative shared-string index does NOT panic on v2.11.0 -- GetCellValue, GetRows, GetCols and GetCellType all return 'invalid shared string index -1' as an ordinary error. So the named vector appears already handled upstream even though the advisory carries no fixed version, and this entry exists because govulncheck still flags the module, not because a reproducible crash was observed here.",
+      "mitigation": "pkg/loaders/excel_loader.go runs the excelize parse calls (OpenFile, GetSheetList, GetRows) inside a recover, so if any of the 29 symbols this advisory lists does panic on some input this repo has not exercised, that one node fails with an error naming the file instead of taking down the engine process hosting every other run. Defence in depth, given the vector above could not be reproduced.",
+      "reviewed_by": "hc12r",
+      "reviewed_on": "2026-09-17",
+      "remove_when": "excelize publishes a release that fixes GO-2026-6452. The gate fails automatically once the advisory gains a fixed version, so this entry does not need watching by hand."
+    }
+  ]
+}

@@ -1,0 +1,607 @@
+/* Lineage and dependency maps: canvas, node cards, edges, detail panel. Tokens only. */
+.ob-graph-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: clamp(480px, calc(100vh - 230px), 1100px);
+  overflow: hidden;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-lg);
+  background: var(--bk-color-surface);
+}
+.ob-graph-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px 16px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--bk-color-border);
+}
+.ob-counts {
+  display: flex;
+  gap: 4px 14px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+  list-style: none;
+}
+.ob-counts strong {
+  color: var(--bk-color-text);
+  font-weight: 600;
+}
+.ob-toolbar-end {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-left: auto;
+  flex-wrap: wrap;
+}
+.ob-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-sm);
+}
+.ob-graph-body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.ob-flow {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+}
+.ob-flow .react-flow {
+  --xy-background-color: var(--bk-color-canvas);
+  --xy-background-pattern-dots-color-default: var(--bk-color-canvas-dot);
+  --xy-edge-stroke-default: var(--bk-color-edge);
+  --xy-edge-stroke-selected-default: var(--bk-color-edge-active);
+  --xy-edge-stroke-width-default: 1.5;
+  --xy-attribution-background-color-default: transparent;
+  --xy-controls-button-background-color-default: var(--bk-color-surface-raised);
+  --xy-controls-button-background-color-hover-default: var(--bk-color-surface-overlay);
+  --xy-controls-button-color-default: var(--bk-color-text-secondary);
+  --xy-controls-button-color-hover-default: var(--bk-color-text);
+  --xy-controls-button-border-color-default: var(--bk-color-border);
+  --xy-controls-box-shadow-default: var(--bk-shadow-sm);
+  --xy-minimap-background-color-default: var(--bk-color-surface);
+  --xy-minimap-mask-background-color-default: var(--bk-color-scrim);
+  --xy-minimap-node-background-color-default: var(--bk-color-border-strong);
+  --xy-edge-label-background-color-default: var(--bk-color-surface-overlay);
+  --xy-edge-label-color-default: var(--bk-color-text);
+  background: var(--bk-color-canvas);
+}
+.ob-flow .react-flow__controls,
+.ob-flow .react-flow__minimap {
+  overflow: hidden;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-md);
+}
+.ob-flow .react-flow__attribution a {
+  color: var(--bk-color-text-muted);
+}
+.react-flow__minimap-node.ob-mini-source {
+  fill: var(--bk-color-tax-source);
+}
+.react-flow__minimap-node.ob-mini-processing {
+  fill: var(--bk-color-tax-processing);
+}
+.react-flow__minimap-node.ob-mini-output {
+  fill: var(--bk-color-tax-output);
+}
+.react-flow__minimap-node.ob-mini-accent {
+  fill: var(--bk-color-accent);
+}
+.react-flow__minimap-node.ob-mini-other {
+  fill: var(--bk-color-text-muted);
+}
+
+/* Node card */
+.ob-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 220px;
+  height: 56px;
+  padding: 0 12px 0 14px;
+  border: 1px solid var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-md);
+  background: var(--bk-color-surface-raised);
+  box-shadow: var(--bk-shadow-sm);
+  color: var(--bk-color-text);
+  cursor: pointer;
+  transition:
+    opacity var(--bk-duration-fast) var(--bk-ease),
+    border-color var(--bk-duration-fast) var(--bk-ease),
+    box-shadow var(--bk-duration-fast) var(--bk-ease);
+}
+.ob-card::before {
+  content: '';
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: -1px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--family);
+}
+.ob-card.is-dashed {
+  border-style: dashed;
+}
+.ob-card:hover {
+  border-color: var(--bk-color-border-hover);
+}
+.ob-card.is-related {
+  border-color: var(--bk-color-accent-border);
+}
+.ob-card.is-selected {
+  border-color: var(--bk-color-accent);
+  box-shadow:
+    0 0 0 3px var(--bk-color-accent-soft),
+    var(--bk-shadow-md);
+}
+.ob-card.is-dim {
+  opacity: 0.35;
+}
+.react-flow__node:focus-visible .ob-card {
+  outline: 2px solid var(--bk-color-focus);
+  outline-offset: 2px;
+}
+.ob-card-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex: none;
+  border-radius: var(--bk-radius-sm);
+  background: color-mix(in srgb, var(--family) 14%, transparent);
+  color: var(--family);
+}
+.ob-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.ob-card-text strong {
+  overflow: hidden;
+  font-size: var(--bk-text-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-card-text small {
+  overflow: hidden;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-handle.react-flow__handle {
+  width: 6px;
+  height: 6px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
+/* Edges */
+.react-flow__edge.ob-edge path.react-flow__edge-path {
+  transition: opacity var(--bk-duration-fast) var(--bk-ease);
+}
+.react-flow__edge.ob-edge.is-active path.react-flow__edge-path,
+.react-flow__edge.ob-edge:hover path.react-flow__edge-path {
+  stroke: var(--bk-color-edge-active);
+  stroke-width: 2;
+}
+.react-flow__edge.ob-edge.is-dim {
+  opacity: 0.15;
+}
+.react-flow__edge.ob-dep-gate path.react-flow__edge-path {
+  stroke: var(--bk-color-running);
+}
+.react-flow__edge.ob-dep-trigger path.react-flow__edge-path {
+  stroke: var(--bk-color-tax-integration);
+  stroke-dasharray: 6 4;
+}
+.react-flow__edge.ob-dep-gate.is-active path.react-flow__edge-path,
+.react-flow__edge.ob-dep-trigger.is-active path.react-flow__edge-path {
+  stroke-width: 2.5;
+}
+.ob-flow .react-flow__edge-text {
+  font: 500 var(--bk-text-xs) var(--bk-font-sans);
+}
+.ob-flow .react-flow__edge-textbg {
+  stroke: var(--bk-color-border);
+  stroke-width: 1;
+}
+
+/* Legend */
+.ob-legend {
+  display: flex;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-xs);
+  list-style: none;
+}
+.ob-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ob-legend i {
+  display: inline-block;
+  width: 26px;
+  border-top: 2px solid var(--bk-color-running);
+}
+.ob-legend i.is-trigger {
+  border-top: 2px dashed var(--bk-color-tax-integration);
+}
+.ob-legend-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  background: var(--family);
+}
+
+/* Search */
+.ob-find {
+  position: relative;
+  width: min(300px, 100%);
+}
+.ob-find-results {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  z-index: var(--bk-z-menu);
+  display: flex;
+  flex-direction: column;
+  max-height: 320px;
+  margin: 0;
+  padding: 4px;
+  overflow-y: auto;
+  border: 1px solid var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-md);
+  background: var(--bk-color-surface-overlay);
+  box-shadow: var(--bk-shadow-lg);
+  list-style: none;
+}
+.ob-find-results button {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: var(--bk-radius-sm);
+  background: transparent;
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-sm);
+  text-align: left;
+}
+.ob-find-results button:hover,
+.ob-find-results button:focus-visible {
+  background: var(--bk-color-hover);
+}
+.ob-find-results small,
+.ob-find-empty {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.ob-find-empty {
+  padding: 8px 10px;
+}
+
+/* Detail panel */
+.ob-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 340px;
+  flex: none;
+  padding: 16px;
+  overflow-y: auto;
+  border-left: 1px solid var(--bk-color-border);
+  background: var(--bk-color-surface);
+}
+.ob-detail-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.ob-detail-head > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+.ob-detail-head h2 {
+  overflow-wrap: anywhere;
+  font-size: var(--bk-text-md);
+  font-weight: 600;
+}
+.ob-kind {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-xs);
+}
+.ob-kind i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--family);
+}
+.ob-detail section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ob-detail h3 {
+  color: var(--bk-color-text-muted);
+  font: 500 var(--bk-text-2xs) / 1 var(--bk-font-mono);
+  letter-spacing: var(--bk-tracking-eyebrow);
+  text-transform: uppercase;
+}
+.ob-detail p {
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-sm);
+  line-height: var(--bk-leading-snug);
+}
+.ob-detail code,
+.ob-id {
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+  border-radius: var(--bk-radius-xs);
+  background: var(--bk-color-hover);
+  color: var(--bk-color-text);
+  font: 400 var(--bk-text-xs) / 1.5 var(--bk-font-mono);
+}
+.ob-links {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ob-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+.ob-facts div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-sm);
+}
+.ob-facts dt {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.ob-facts dd {
+  margin: 0;
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-md);
+  font-weight: 600;
+}
+.ob-columns {
+  max-height: 260px;
+  overflow: auto;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-sm);
+}
+.ob-columns table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--bk-text-xs);
+}
+.ob-columns th,
+.ob-columns td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--bk-color-border);
+  text-align: left;
+  white-space: nowrap;
+}
+.ob-columns th {
+  position: sticky;
+  top: 0;
+  background: var(--bk-color-surface-raised);
+  color: var(--bk-color-text-muted);
+  font-weight: 500;
+}
+.ob-columns td {
+  color: var(--bk-color-text-secondary);
+}
+.ob-columns td:first-child {
+  color: var(--bk-color-text);
+  font-family: var(--bk-font-mono);
+}
+.ob-columns td.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ob-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ob-list a,
+.ob-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: var(--bk-radius-sm);
+  background: transparent;
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-sm);
+  text-align: left;
+  text-decoration: none;
+}
+.ob-list a:hover,
+.ob-list button:hover,
+.ob-list a:focus-visible,
+.ob-list button:focus-visible {
+  background: var(--bk-color-hover);
+}
+.ob-list span.ob-grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-list small {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.ob-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--family);
+}
+.ob-mapping {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-sm);
+}
+.ob-mapping header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: var(--bk-text-sm);
+}
+.ob-mapping header button {
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bk-color-accent);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ob-mapping ul {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font: 400 var(--bk-text-xs) / 1.5 var(--bk-font-mono);
+  color: var(--bk-color-text-secondary);
+}
+.ob-mapping ul li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.ob-map-cols {
+  color: var(--bk-color-text);
+}
+.ob-map-reason {
+  flex-basis: 100%;
+  color: var(--bk-color-text-muted);
+}
+.ob-muted {
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-sm);
+}
+.ob-rule {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-sm);
+}
+.ob-rule.is-unmet {
+  border-color: var(--bk-color-warning);
+}
+.ob-rule header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.ob-rule header button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bk-color-text);
+  font-size: var(--bk-text-sm);
+  font-weight: 600;
+  text-align: left;
+}
+.ob-rule header button:hover {
+  color: var(--bk-color-accent);
+}
+.ob-rule-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+}
+.ob-state-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 22px;
+}
+.ob-empty {
+  border: 1px dashed var(--bk-color-border-strong);
+  border-radius: var(--bk-radius-lg);
+  background: var(--bk-color-surface);
+}
+
+@media (max-width: 900px) {
+  .ob-graph-card {
+    height: auto;
+  }
+  .ob-graph-body {
+    flex-direction: column;
+  }
+  .ob-flow {
+    height: 520px;
+    flex: none;
+  }
+  .ob-detail {
+    width: auto;
+    border-top: 1px solid var(--bk-color-border);
+    border-left: 0;
+  }
+  .ob-toolbar-end {
+    margin-left: 0;
+  }
+}

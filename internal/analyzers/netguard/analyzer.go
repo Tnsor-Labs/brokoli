@@ -172,7 +172,7 @@ func blockedNetHTTPSelector(
 	}
 
 	switch selector.Sel.Name {
-	case "DefaultClient", "Get", "Head", "Post", "PostForm":
+	case "DefaultClient", "DefaultTransport", "Get", "Head", "Post", "PostForm":
 		return selector.Sel.Name, true
 	default:
 		return "", false

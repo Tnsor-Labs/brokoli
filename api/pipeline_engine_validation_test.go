@@ -383,6 +383,13 @@ func TestRegisterRoutesWiresEngineExecutorsToPipelineHandler(t *testing.T) {
 		Edges: []models.Edge{{From: "source", To: "custom"}},
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/pipelines", bytes.NewReader(mustMarshalPipeline(p)))
+	// This test is about executor wiring, not authentication, but the
+	// create route is permission-gated and this request carries no
+	// identity. Mark it open mode, the way JWTAuth marks a request on a
+	// system with no users yet. It used to pass because the gate read
+	// absent claims as open mode on its own, which is exactly what
+	// fallbackPermissionMiddleware no longer does.
+	req = req.WithContext(withOpenMode(req.Context()))
 	rec := httptest.NewRecorder()
 	r.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {

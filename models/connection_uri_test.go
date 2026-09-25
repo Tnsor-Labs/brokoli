@@ -124,24 +124,24 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 }
 
 // Every type the connection catalog offers must either build a URI or say it
-// cannot. The failure this guards against is silent: a type with no driver
-// used to fall through to the bare hostname, which reaches the Postgres driver
-// as a malformed DSN and fails with a message naming neither the connection
-// nor the reason.
+// cannot. The failure this guards against is silent: a type with no URI
+// representation used to fall through to the bare hostname, which reaches
+// the Postgres driver as a malformed DSN and fails with a message naming
+// neither the connection nor the reason.
 func TestBuildsURICoversTheCatalog(t *testing.T) {
-	withDriver := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
+	withURI := []ConnectionType{
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
 		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
-	withoutDriver := []ConnectionType{
+	withoutURI := []ConnectionType{
 		ConnTypeBigQuery, ConnTypeDatabricks, ConnTypeOracle,
 		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeGeneric,
 	}
 
-	for _, ct := range withDriver {
+	for _, ct := range withURI {
 		c := Connection{Type: ct, Host: "h", Port: 1, Schema: "s", Login: "u", Password: "p"}
 		if !c.BuildsURI() {
-			t.Errorf("%s has a driver but BuildsURI() says otherwise", ct)
+			t.Errorf("%s has a URI representation but BuildsURI() says otherwise", ct)
 		}
 		// SQLite is the one type whose URI legitimately is the bare host: the
 		// host field holds the file path.
@@ -152,10 +152,31 @@ func TestBuildsURICoversTheCatalog(t *testing.T) {
 			t.Errorf("%s claims a URI but built %q — the bare-hostname fallback", ct, got)
 		}
 	}
-	for _, ct := range withoutDriver {
+	for _, ct := range withoutURI {
 		c := Connection{Type: ct, Host: "h", Port: 1, Schema: "s", Login: "u", Password: "p"}
 		if c.BuildsURI() {
-			t.Errorf("%s has no engine driver but BuildsURI() claims a URI", ct)
+			t.Errorf("%s has no URI representation but BuildsURI() claims one", ct)
+		}
+	}
+}
+
+func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
+	withDriver := []ConnectionType{
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse,
+	}
+	withoutDriver := []ConnectionType{
+		ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
+		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+	}
+
+	for _, ct := range withDriver {
+		if !(&Connection{Type: ct}).IsDatabase() {
+			t.Errorf("%s has a compiled database driver but IsDatabase() is false", ct)
+		}
+	}
+	for _, ct := range withoutDriver {
+		if (&Connection{Type: ct}).IsDatabase() {
+			t.Errorf("%s is not a compiled database driver but IsDatabase() is true", ct)
 		}
 	}
 }

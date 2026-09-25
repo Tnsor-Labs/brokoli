@@ -1,7 +1,14 @@
 {
   "files": [],
   "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
+    { "path": "./packages/api" },
+    { "path": "./packages/ui" },
+    { "path": "./packages/auth" },
+    { "path": "./packages/pipeline-session" },
+    { "path": "./packages/pipelines" },
+    { "path": "./packages/workspace" },
+    { "path": "./packages/observe" },
+    { "path": "./packages/shell" },
+    { "path": "./apps/community" }
   ]
 }

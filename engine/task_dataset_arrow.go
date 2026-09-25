@@ -12,16 +12,23 @@ package engine
 // happened to be chosen. That equivalence is what
 // TestArrowAndNDJSONProduceIdenticalDataSets pins down.
 //
-// Concretely that means numbers arrive as float64 and integers as
-// whole float64s, because that is what encoding/json produces for the
-// NDJSON path. Arrow's richer type system is deliberately narrowed to
-// the JSON value space on the way out rather than preserved: preserving
-// it would be the thing that changes the contract.
+// Concretely that means whole numbers arrive as int64 and fractional
+// ones as float64, because that is what the NDJSON path's decodeRow
+// produces. Arrow's richer type system is deliberately narrowed to that
+// value space on the way out rather than preserved: preserving it would
+// be the thing that changes the contract.
+//
+// This paragraph used to say integers arrive "as whole float64s", which
+// was true before #479 gave the NDJSON path a decoder that holds a
+// 64-bit integer. The Arrow side kept converting through float64 long
+// after the incumbent stopped, so the two transports disagreed above
+// 2^53 while the comment asserted they agreed.
 
 import (
 	"bytes"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 
 	"github.com/apache/arrow-go/v18/arrow"
@@ -102,23 +109,41 @@ func arrowValue(col arrow.Array, i int) (interface{}, error) {
 		return c.Value(i), nil
 	case *array.LargeString:
 		return c.Value(i), nil
+	// Integers stay integers all the way across. Routing them through
+	// float64 first, as this did, silently rounded anything past 2^53:
+	// 9007199254740993 arrived as ...992, and MaxInt64 arrived as a
+	// float64 entirely. Arrow already knows the column is integral, so
+	// there is nothing to infer and no reason to pass through a type
+	// that cannot hold the value. This is the same defect class as #479
+	// (Go task decoding) and #492 (the Node harness), in the Arrow
+	// decoder.
 	case *array.Int8:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Int16:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Int32:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Int64:
-		return num(float64(c.Value(i))), nil
+		return c.Value(i), nil
 	case *array.Uint8:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Uint16:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Uint32:
-		return num(float64(c.Value(i))), nil
+		return int64(c.Value(i)), nil
 	case *array.Uint64:
-		return num(float64(c.Value(i))), nil
+		// The one integer that int64 cannot hold. Refused by name rather
+		// than wrapped or approximated, matching how the Node harness
+		// handles the values JavaScript cannot represent (#494): a
+		// refused dataset is recoverable, a wrong id is not.
+		u := c.Value(i)
+		if u > math.MaxInt64 {
+			return nil, fmt.Errorf("arrow uint64 value %d exceeds int64 and cannot be represented exactly: write this column as a string, or use %s", u, artifactFormatNDJSONName)
+		}
+		return int64(u), nil
 	case *array.Float32:
+		// Widening float32 to float64 is exact, and numericValue then
+		// applies the same whole-number narrowing the NDJSON path uses.
 		return num(float64(c.Value(i))), nil
 	case *array.Float64:
 		return num(c.Value(i)), nil

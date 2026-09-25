@@ -1,0 +1,36 @@
+# A local Postgres with enough synthetic data to exercise a real
+# pipeline: extraction, format conversion, and the memory behaviour of a
+# dataset that does not fit comfortably in a preview.
+#
+#   docker compose -f scripts/devdata/docker-compose.yml up -d
+#
+# Port 55432, not 5432, so this cannot collide with a Postgres already
+# running on the host. Nothing here is meant for anything but local
+# development: the password is in the file on purpose.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: brokoli-devdata
+    environment:
+      POSTGRES_USER: brokoli
+      POSTGRES_PASSWORD: brokoli
+      POSTGRES_DB: brokoli_dev
+      # Seeding 100k rows is the slow part of `up`. fsync off is safe
+      # here because the whole database is disposable.
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+    command: ["postgres", "-c", "fsync=off", "-c", "synchronous_commit=off", "-c", "full_page_writes=off"]
+    ports:
+      - "127.0.0.1:55432:5432"
+    volumes:
+      - ./seed.sql:/docker-entrypoint-initdb.d/10-seed.sql:ro
+    healthcheck:
+      # Waits for the seed to finish, not just for the server to accept
+      # connections: the init scripts run before Postgres opens the real
+      # port, but a compose `up -d` returns as soon as the container is
+      # running, and a pipeline pointed at a half-seeded table is a
+      # confusing first experience.
+      test: ["CMD-SHELL", "psql -U brokoli -d brokoli_dev -tAc 'select count(*) >= 100000 from customers' | grep -q t"]
+      interval: 3s
+      timeout: 5s
+      retries: 40
+      start_period: 10s

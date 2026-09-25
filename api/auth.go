@@ -26,11 +26,93 @@ func isPublicObservabilityRequest(r *http.Request) bool {
 	return r.Method == http.MethodGet && (r.URL.Path == "/health" || r.URL.Path == "/metrics")
 }
 
+// isWebhookTriggerRequest reports whether this request is for one of the
+// two routes that authenticate themselves with their own token instead
+// of a session: the per-pipeline webhook trigger, and the enterprise git
+// sync webhook.
+//
+// Matched on method and path SHAPE, like the two helpers above, and
+// never on a substring. Both auth middlewares previously asked whether
+// the path merely CONTAINED "/webhook", which any other POST could
+// satisfy while still being routed somewhere else entirely:
+//
+//	POST /api/pipelines/webhook/backfill
+//	     a path parameter whose value is the literal word "webhook"
+//
+//	POST /api/pipelines/p123%2Fwebhook/backfill
+//	     an encoded separator, which r.URL.Path decodes into a "/webhook"
+//	     segment the router never sees
+//
+// The second is why this matches against RawPath when it is set. chi
+// dispatches on RawPath if non-empty and on Path otherwise, so reading
+// the same string the router reads is what keeps the authentication
+// decision and the routing decision from disagreeing. Under RawPath the
+// encoded form stays one segment, so it fails the shape test and is
+// authenticated normally.
+func isWebhookTriggerRequest(r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		return false
+	}
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	segments := strings.Split(strings.Trim(path, "/"), "/")
+	switch len(segments) {
+	case 3:
+		// api/git/webhook, mounted only when the enterprise git sync
+		// extension is enabled (see NewServer).
+		return segments[0] == "api" && segments[1] == "git" && segments[2] == "webhook"
+	case 4:
+		// api/pipelines/{id}/webhook
+		return segments[0] == "api" && segments[1] == "pipelines" && segments[3] == "webhook"
+	default:
+		return false
+	}
+}
+
+// isDataPlaneBlobRequest reports whether a request targets the
+// capability-authenticated blob endpoints.
+//
+// Those endpoints do NOT bypass authorization. They carry their own,
+// which is strictly narrower than a session: a signed capability bound
+// to one object, one attempt and one fencing generation, checked against
+// a tenant the request never supplies. What they bypass is the
+// requirement to be a SESSION, because a worker cannot produce one and
+// holds an opaque token instead (see blobAuth).
+//
+// Matched by shape rather than by prefix so this can never widen: three
+// methods, a fixed six-segment path under /api/runs, and nothing else.
+//
+// Read from RawPath when it is set, for the same reason
+// isWebhookTriggerRequest does. r.URL.Path is decoded, so a caller could
+// otherwise spell an encoded separator inside a single segment and have
+// this see the blob shape while chi, which dispatches on RawPath, sends
+// the request to a different route entirely.
+func isDataPlaneBlobRequest(r *http.Request) bool {
+	switch r.Method {
+	case http.MethodGet, http.MethodPut, http.MethodPost:
+	default:
+		return false
+	}
+	path := r.URL.RawPath
+	if path == "" {
+		path = r.URL.Path
+	}
+	p := strings.Split(strings.Trim(path, "/"), "/")
+	// api runs {runID} nodes {nodeID} attempts {attempt} blobs [objectID]
+	if len(p) < 8 || len(p) > 9 {
+		return false
+	}
+	return p[0] == "api" && p[1] == "runs" && p[3] == "nodes" &&
+		p[5] == "attempts" && p[7] == "blobs"
+}
+
 func withPublicAuthBypass(middleware func(http.Handler) http.Handler) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		protected := middleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if isPublicCapabilitiesRequest(r) || isPublicObservabilityRequest(r) {
+			if isPublicCapabilitiesRequest(r) || isPublicObservabilityRequest(r) || isDataPlaneBlobRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -128,7 +210,7 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 			}
 
 			// Skip webhook triggers (own token auth)
-			if strings.Contains(r.URL.Path, "/webhook") && r.Method == "POST" {
+			if isWebhookTriggerRequest(r) {
 				next.ServeHTTP(w, r)
 				return
 			}

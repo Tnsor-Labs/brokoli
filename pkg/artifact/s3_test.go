@@ -374,3 +374,79 @@ func TestNewS3Store_RequiresBucket(t *testing.T) {
 		t.Fatal("expected an error for a missing bucket")
 	}
 }
+
+// The property the capability blob endpoint needs: given only a
+// namespace and a content digest, reach the bytes. api/handlers_blobs.go
+// type-asserts DigestResolver and answers 500 when it fails, so without
+// this S3Store was a valid Store that could not serve a capability read
+// and the data plane was local-disk-only regardless of configuration.
+func TestS3Store_ResolveDigestOpensTheBlob(t *testing.T) {
+	st := newTestS3Store(t)
+	content := "the bytes a worker will fetch by digest"
+
+	put, err := st.Put(context.Background(), "run-7", strings.NewReader(content), PutOptions{MediaType: "text/plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing here carries a location: a namespace and a checksum only,
+	// which is all a capability names.
+	resolved, err := st.ResolveDigest("run-7", put.Checksum)
+	if err != nil {
+		t.Fatalf("ResolveDigest: %v", err)
+	}
+	if resolved.URI != put.URI {
+		t.Errorf("resolved URI = %q, want the one Put returned, %q", resolved.URI, put.URI)
+	}
+
+	rc, err := st.Open(context.Background(), resolved)
+	if err != nil {
+		t.Fatalf("open the resolved ref: %v", err)
+	}
+	defer func() { _ = rc.Close() }()
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("read %q, want %q", got, content)
+	}
+}
+
+// A digest resolved in the wrong namespace must not reach another
+// tenant's blob. The namespace is part of the key, so this is a
+// not-found rather than a cross-namespace read.
+func TestS3Store_ResolveDigestIsNamespaced(t *testing.T) {
+	st := newTestS3Store(t)
+	put, err := st.Put(context.Background(), "tenant-a", strings.NewReader("a secret"), PutOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	other, err := st.ResolveDigest("tenant-b", put.Checksum)
+	if err != nil {
+		t.Fatalf("ResolveDigest: %v", err)
+	}
+	if other.URI == put.URI {
+		t.Fatal("the same digest resolved to the same object across namespaces")
+	}
+	if _, err := st.Open(context.Background(), other); !errors.Is(err, ErrNotFound) {
+		t.Errorf("open across namespaces = %v, want ErrNotFound", err)
+	}
+}
+
+func TestS3Store_ResolveDigestRejectsMalformedInput(t *testing.T) {
+	st := newTestS3Store(t)
+	for name, tc := range map[string]struct{ ns, sum string }{
+		"no namespace":   {"", "sha256:" + strings.Repeat("a", 64)},
+		"no prefix":      {"run-1", strings.Repeat("a", 64)},
+		"not hex":        {"run-1", "sha256:" + strings.Repeat("z", 64)},
+		"empty checksum": {"run-1", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := st.ResolveDigest(tc.ns, tc.sum); err == nil {
+				t.Error("accepted a reference it cannot have produced")
+			}
+		})
+	}
+}

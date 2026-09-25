@@ -19,5 +19,5 @@ func (l *JSONLoader) Load(filePath string) (*common.DataSet, error) {
 		return nil, fmt.Errorf("failed to parse JSON file: %w", err)
 	}
 
-	return common.ConvertToDataSet(data), nil
+	return common.ConvertToDataSetOrdered(data, common.KeyOrder(fileContent)), nil
 }
