@@ -149,6 +149,23 @@ attribution. A record that outlives the run it describes is an orphan
 that inflates the table and answers questions about something that no
 longer exists.
 
+Writing it is best effort: the run is the product, and failing a run
+because a report about it could not be stored would trade an outage for
+a reporting gap. That makes the same demand of persistence that section
+3 makes of column mappings -- the absence has to be detectable, because
+otherwise a run with no provenance is indistinguishable from a run that
+predates the feature, one executed against a store that cannot record
+it, and one that hit a transient write failure. Those want different
+responses and the rows alone cannot tell them apart.
+
+So a lineage write that does not land appends
+`run.lineage_incomplete` to the run, carrying which half of the record
+is missing and why. It is informational and never changes the run's
+status: an incomplete report about a run is not a failure of the run.
+A store that cannot record lineage at all says so once for the whole
+run instead of once per node, because repeating a permanent capability
+limit per node says nothing new. Silence, again, is the failure.
+
 ## Consequences
 
 ### Positive

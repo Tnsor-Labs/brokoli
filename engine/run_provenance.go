@@ -1,7 +1,6 @@
 package engine
 
 import (
-	"log"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -17,10 +16,14 @@ import (
 // report of a wrong number, and the two can differ: a pipeline is edited,
 // and yesterday's run is not what is on screen today.
 //
-// Best effort and logged, for the same reason attribution is: the run is
-// the product and provenance is a report about it. Failing a run because
-// a provenance row could not be written would trade an outage for a
-// reporting gap.
+// Best effort, for the same reason attribution is: the run is the product
+// and provenance is a report about it. Failing a run because a provenance
+// row could not be written would trade an outage for a reporting gap.
+//
+// Best effort is not the same as unremarked. A write that does not land
+// is recorded on the run itself (noteLineageGap, lineage_gap.go), so the
+// absence of a provenance row is distinguishable from a run that never
+// tried.
 //
 // Nothing is recorded for a dry run, which by definition did not consume
 // or produce anything.
@@ -60,7 +63,10 @@ func (r *Runner) recordNodeProvenance(node models.Node, outputs *nodeOutputs, ed
 		RecordedAt: time.Now().UTC(),
 	}
 	if err := provStore.SaveNodeProvenance(record); err != nil {
-		log.Printf("run %s node %s: could not record provenance: %v", r.run.ID, node.ID, err)
+		// Was a log.Printf, which went to the process log and was never
+		// associated with the run -- unreachable from the run even with
+		// debug logging on.
+		r.noteLineageGap(lineageProvenance, node.ID, err)
 	}
 }
 
