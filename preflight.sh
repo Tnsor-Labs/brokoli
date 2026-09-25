@@ -206,30 +206,42 @@ else
 fi
 popd >/dev/null
 
-# svelte-check + prettier need only node_modules + source, not the Vite
-# build output (confirmed via ui/package.json's "check" script), and
-# neither CI workflow runs them at all -- they're preflight's own "two
-# deliberate strictness additions" per the header comment. Unlike the
-# Vite build itself, they have no ordering dependency on anything else in
+# The UI check chain + prettier need only node_modules + source, not the
+# Vite build output. They have no ordering dependency on anything else in
 # this script, so they run in the background (started right after `npm
 # ci`, alongside the Vite build and the security scans) instead of
 # blocking serially before the long test run, and are collected in the
 # final wait block the same way gosec/govulncheck/go-licenses are.
+#
+# This block used to run svelte-check and compare its error count against
+# ui/svelte-check-baseline.json. The UI is React (brokoli#645) -- there is
+# no svelte-check, no ui/src, and no baseline file. Two consequences, both
+# live until now:
+#
+#   `npm run check ... || true` threw the real result away, so a UI
+#   typecheck or unit-test failure could not fail preflight. The only
+#   thing gating was an error count scraped from output that no longer
+#   contains it.
+#
+#   `jq -r '.errors' svelte-check-baseline.json` read a file that does not
+#   exist, which failed the stage on every run no matter what the UI did.
+#
+# So the stage was simultaneously vacuous and always-red. It now gates on
+# the exit status of ui/package.json's own "check" script, which is the
+# thing that actually means the UI is sound (typecheck, unit tests,
+# colour tokens, build, import boundaries).
 (
   cd ui
-  npm run check > "../$LOGDIR/ui-check.log" 2>&1 || true
-  CHECK_ERRORS=$(grep -oE '[0-9]+ ERRORS' "../$LOGDIR/ui-check.log" | tail -1 | cut -d' ' -f1)
-  CHECK_BASELINE=$(jq -r '.errors' svelte-check-baseline.json)
-  echo "svelte-check errors: ${CHECK_ERRORS:-?} (baseline: $CHECK_BASELINE)" > "../$LOGDIR/ui-checks.verdict"
-  # svelte-check carries pre-existing errors (see svelte-check-baseline.json);
-  # gate on GROWTH, exactly like the gosec baseline.
-  if [ -n "${CHECK_ERRORS:-}" ] && [ "$CHECK_ERRORS" -gt "$CHECK_BASELINE" ]; then
+  if ! npm run check > "../$LOGDIR/ui-check.log" 2>&1; then
+    echo "npm run check failed -- see ui-check.log" > "../$LOGDIR/ui-checks.verdict"
     exit 1
   fi
+  echo "npm run check: clean (typecheck, tests, colors, build, boundaries)" > "../$LOGDIR/ui-checks.verdict"
   # Prettier gate scoped to CHANGED files only: the tree has never been
   # fully prettier-formatted and CI has no format gate — wholesale
   # reformatting belongs in its own dedicated PR, not as preflight fallout.
-  CHANGED_UI=$( (git -C .. diff --name-only origin/main...HEAD -- ui/src; git -C .. diff --name-only -- ui/src; git -C .. ls-files --others --exclude-standard -- ui/src) | sort -u | grep -E '\.(ts|svelte)$' | sed 's|^ui/||' || true)
+  # Sources live under ui/apps/*/src and ui/packages/*/src.
+  CHANGED_UI=$( (git -C .. diff --name-only origin/main...HEAD -- ui; git -C .. diff --name-only -- ui; git -C .. ls-files --others --exclude-standard -- ui) | sort -u | grep -E '^ui/(apps|packages)/[^/]+/src/.*\.(ts|tsx|css)$' | sed 's|^ui/||' || true)
   if [ -n "$CHANGED_UI" ]; then
     # shellcheck disable=SC2086
     npx prettier --check $CHANGED_UI > "../$LOGDIR/ui-format.log" 2>&1 || exit 1
@@ -272,21 +284,43 @@ if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}"
   fi
 fi
 
-# -timeout 15m, not Go's 10m default: the engine package measured 581s
-# under -race on a loaded machine (Tnsor-Labs/brokoli#329), so the default
-# panics under load and blames whichever test held the baton. Matches
-# .github/workflows/ci.yml.
-stage "go test -race ./... (the long pole)"
+# -timeout 15m, not Go's 10m default: a package measured 581s under -race
+# on a loaded machine (Tnsor-Labs/brokoli#329), so the default panics
+# under load and blames whichever test held the baton.
+#
+# The engine package is excluded here and run below with its own budget,
+# because that is what .github/workflows/ci.yml does: CI runs
+# `$(go list ./... | grep -v '/engine$')` at 15m and gives engine a
+# separate job at -timeout 25m. This script ran everything at 15m while
+# its comment claimed CI parity, so preflight failed on a package CI was
+# giving 10 more minutes -- measured at 1037s (17m17s) on an idle
+# machine, which is over the old ceiling before any load at all. The
+# panic then named whichever test held the baton, which is the exact
+# misdiagnosis the 15m ceiling was introduced to stop.
+stage "go test -race ./... minus engine"
 # Full output to a log, not just a tail: piping straight into `tail`
 # throws away the "--- FAIL" lines and the failing package name, which
 # left a failure showing as a bare "FAIL" with nothing to act on.
-if ! go test -race -timeout 15m ./... > "$LOGDIR/tests.log" 2>&1; then
+if ! go test -race -timeout 15m $(go list ./... | grep -v '/engine$') > "$LOGDIR/tests.log" 2>&1; then
   grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests.log" | head -20
   fail tests "$LOGDIR/tests.log"
   exit 1
 fi
 tail -3 "$LOGDIR/tests.log"
 pass tests
+
+# ---- 5a1. the engine package, on CI's budget ----
+# Matches the dedicated "Test (engine)" job: -timeout 25m inside a 30m
+# job limit. It is the most expensive package in the repo and the only
+# one that has ever needed this.
+stage "go test -race ./engine/ (the long pole)"
+if ! go test -race -timeout 25m ./engine/ > "$LOGDIR/tests-engine.log" 2>&1; then
+  grep -E "^(FAIL|--- FAIL|panic:)" "$LOGDIR/tests-engine.log" | head -20
+  fail tests-engine "$LOGDIR/tests-engine.log"
+  exit 1
+fi
+tail -3 "$LOGDIR/tests-engine.log"
+pass tests-engine
 
 # ---- 5a2. code-node legacy-path leg (ADR-029 dual mode) ----
 # The pool is the default; the legacy spawn path stays green until its
