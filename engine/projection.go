@@ -100,6 +100,13 @@ func ProjectRun(runID string, events []models.RunEvent) *models.Run {
 			run.FinishedAt = nil
 			run.Error = p.Error
 
+		case models.RunEventLineageIncomplete:
+			// Informational. A run whose lineage report is partial is not
+			// a run that failed, so this must not touch status, error or
+			// timestamps -- the event itself is the record, and a
+			// projection that overwrote run.Error with it would replace
+			// the reason a run failed with a note about its metadata.
+
 		case models.RunEventRecoveryStarted, models.RunEventRecoveryCompleted:
 			// Informational only — the audit trail of a startup recovery
 			// pass. Any state change is carried by the RunEventTerminal (or

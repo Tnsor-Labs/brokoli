@@ -60,6 +60,23 @@ const (
 	// outcome" type.
 	RunEventTerminal RunEventType = "run.terminal"
 
+	// RunEventLineageIncomplete records that this run's lineage evidence
+	// (ADR-039) is missing some of what it should hold, because a profile
+	// or provenance write did not land.
+	//
+	// It exists because the absence is otherwise indistinguishable from
+	// three other things: a run that predates the feature, a run against a
+	// store that cannot save lineage, and a transient write failure. Those
+	// want different responses, and a later audit reading only the rows
+	// cannot tell them apart. The event is informational -- it never
+	// changes a run's status, because an incomplete report about a run is
+	// not a failure of the run.
+	//
+	// Emitted at most once per (kind, cause) per run: an unsupported store
+	// produces one statement, not one per node. Payload.Error carries the
+	// underlying error.
+	RunEventLineageIncomplete RunEventType = "run.lineage_incomplete"
+
 	// AttemptStarted marks a node_runs row being created for one execution
 	// attempt of one node (Attempt=0 for the first try, 1+ for retries).
 	// Equivalent to the issue's canonical "attempt started" type.

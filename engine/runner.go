@@ -169,6 +169,11 @@ type Runner struct {
 	// profile write is intentionally fire-and-forget off the run's own
 	// critical path, with nothing in production waiting on it.
 	profileWG *sync.WaitGroup
+
+	// lineageGaps announces a missing lineage profile or provenance record
+	// once per run instead of once per node. Zero value ready; see
+	// lineage_gap.go for why a gap has to be visible on the run at all.
+	lineageGaps lineageGaps
 }
 
 type edgeResolution uint8
@@ -1623,7 +1628,7 @@ func (r *Runner) saveNodeProfile(nodeID string, output *common.DataSet, outputRe
 			return
 		}
 		if err := profiles.SaveNodeProfile(r.run.ID, nodeID, string(profileJSON), string(schemaJSON), "[]"); err != nil {
-			r.logWithTrace(nodeID, models.LogLevelDebug, "", 0, nil, "lineage profile unavailable: %v", err)
+			r.noteLineageGap(lineageProfile, nodeID, err)
 		}
 	}()
 }
