@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
@@ -67,6 +68,9 @@ func SetVersion(version, commit, date string) {
 	rootCmd.Version = version
 	// The UI asks the server what it is running, via /api/system/info.
 	api.SetBuildVersion(version)
+	// And so does every endpoint this process calls out to, via the
+	// User-Agent on outbound requests (#737).
+	netguard.SetUserAgentVersion(version)
 	rootCmd.SetVersionTemplate(fmt.Sprintf(
 		"brokoli %s (%s, %s)\n", version, shortCommit(commit), date,
 	))

@@ -69,7 +69,7 @@ func TestRESTFetcher_SelfRefClient_PermitsClusterIP(t *testing.T) {
 	f := &RESTFetcher{}
 	f.ensureClientInitialized(nil)
 
-	transport := f.selfRefClient.Transport.(*http.Transport)
+	transport := netguard.BaseTransport(f.selfRefClient)
 	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 	conn, err := transport.DialContext(ctx, "tcp", net.JoinHostPort("10.43.13.252", "8080"))

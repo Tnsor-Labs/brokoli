@@ -347,9 +347,9 @@ func TestCapabilityStorePrefersTheAttemptScopedGrant(t *testing.T) {
 func TestCapabilityStoreDefaultPolicyPermitsControlPlaneAddresses(t *testing.T) {
 	client := (&CapabilityStore{}).client()
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("client transport is %T, want *http.Transport", client.Transport)
+	transport := netguard.BaseTransport(client)
+	if transport == nil {
+		t.Fatalf("client transport is %T, want one built by netguard.Policy.Client", client.Transport)
 	}
 
 	t.Run("loopback", func(t *testing.T) {

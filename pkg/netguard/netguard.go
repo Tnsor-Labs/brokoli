@@ -353,9 +353,13 @@ func (p Policy) Client(timeout time.Duration) *http.Client {
 
 	return &http.Client{
 		Timeout: timeout,
-		Transport: &http.Transport{
+		// Every outbound client is built here, so this is where the
+		// process says who it is (see useragent.go). Wrapping the
+		// transport covers the request sites uniformly instead of relying
+		// on each one to remember.
+		Transport: &userAgentTransport{base: &http.Transport{
 			DialContext: safeDial,
-		},
+		}},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return fmt.Errorf("stopped after 10 redirects")
