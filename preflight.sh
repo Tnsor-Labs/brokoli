@@ -206,30 +206,42 @@ else
 fi
 popd >/dev/null
 
-# svelte-check + prettier need only node_modules + source, not the Vite
-# build output (confirmed via ui/package.json's "check" script), and
-# neither CI workflow runs them at all -- they're preflight's own "two
-# deliberate strictness additions" per the header comment. Unlike the
-# Vite build itself, they have no ordering dependency on anything else in
+# The UI check chain + prettier need only node_modules + source, not the
+# Vite build output. They have no ordering dependency on anything else in
 # this script, so they run in the background (started right after `npm
 # ci`, alongside the Vite build and the security scans) instead of
 # blocking serially before the long test run, and are collected in the
 # final wait block the same way gosec/govulncheck/go-licenses are.
+#
+# This block used to run svelte-check and compare its error count against
+# ui/svelte-check-baseline.json. The UI is React (brokoli#645) -- there is
+# no svelte-check, no ui/src, and no baseline file. Two consequences, both
+# live until now:
+#
+#   `npm run check ... || true` threw the real result away, so a UI
+#   typecheck or unit-test failure could not fail preflight. The only
+#   thing gating was an error count scraped from output that no longer
+#   contains it.
+#
+#   `jq -r '.errors' svelte-check-baseline.json` read a file that does not
+#   exist, which failed the stage on every run no matter what the UI did.
+#
+# So the stage was simultaneously vacuous and always-red. It now gates on
+# the exit status of ui/package.json's own "check" script, which is the
+# thing that actually means the UI is sound (typecheck, unit tests,
+# colour tokens, build, import boundaries).
 (
   cd ui
-  npm run check > "../$LOGDIR/ui-check.log" 2>&1 || true
-  CHECK_ERRORS=$(grep -oE '[0-9]+ ERRORS' "../$LOGDIR/ui-check.log" | tail -1 | cut -d' ' -f1)
-  CHECK_BASELINE=$(jq -r '.errors' svelte-check-baseline.json)
-  echo "svelte-check errors: ${CHECK_ERRORS:-?} (baseline: $CHECK_BASELINE)" > "../$LOGDIR/ui-checks.verdict"
-  # svelte-check carries pre-existing errors (see svelte-check-baseline.json);
-  # gate on GROWTH, exactly like the gosec baseline.
-  if [ -n "${CHECK_ERRORS:-}" ] && [ "$CHECK_ERRORS" -gt "$CHECK_BASELINE" ]; then
+  if ! npm run check > "../$LOGDIR/ui-check.log" 2>&1; then
+    echo "npm run check failed -- see ui-check.log" > "../$LOGDIR/ui-checks.verdict"
     exit 1
   fi
+  echo "npm run check: clean (typecheck, tests, colors, build, boundaries)" > "../$LOGDIR/ui-checks.verdict"
   # Prettier gate scoped to CHANGED files only: the tree has never been
   # fully prettier-formatted and CI has no format gate — wholesale
   # reformatting belongs in its own dedicated PR, not as preflight fallout.
-  CHANGED_UI=$( (git -C .. diff --name-only origin/main...HEAD -- ui/src; git -C .. diff --name-only -- ui/src; git -C .. ls-files --others --exclude-standard -- ui/src) | sort -u | grep -E '\.(ts|svelte)$' | sed 's|^ui/||' || true)
+  # Sources live under ui/apps/*/src and ui/packages/*/src.
+  CHANGED_UI=$( (git -C .. diff --name-only origin/main...HEAD -- ui; git -C .. diff --name-only -- ui; git -C .. ls-files --others --exclude-standard -- ui) | sort -u | grep -E '^ui/(apps|packages)/[^/]+/src/.*\.(ts|tsx|css)$' | sed 's|^ui/||' || true)
   if [ -n "$CHANGED_UI" ]; then
     # shellcheck disable=SC2086
     npx prettier --check $CHANGED_UI > "../$LOGDIR/ui-format.log" 2>&1 || exit 1
