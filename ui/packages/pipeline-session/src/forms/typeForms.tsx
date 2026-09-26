@@ -25,6 +25,7 @@ import {
 } from './fields'
 import { QualityRules } from './QualityRules'
 import { TransformRules } from './TransformRules'
+import { ContractGate } from './ContractGate'
 
 /** Connection types the engine can build a database URI for (models/connection.go BuildsURI). */
 const DB_TYPES = ['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'snowflake', 'clickhouse']
@@ -1086,6 +1087,7 @@ export const TYPE_FORMS: Record<string, ComponentType<TypeFormProps>> = {
   code: Code,
   join: Join,
   quality_check: QualityCheck,
+  contract_gate: ContractGate,
   sql_generate: SqlGenerate,
   sink_file: SinkFile,
   sink_db: SinkDb,

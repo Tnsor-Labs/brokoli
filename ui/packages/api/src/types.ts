@@ -49,6 +49,7 @@ export const KNOWN_NODE_TYPES = [
   'source_db',
   'transform',
   'quality_check',
+  'contract_gate',
   'sql_generate',
   'code',
   'join',
