@@ -152,8 +152,20 @@ jobs:
       - name: Test the license gate
         run: bash scripts/check-licenses_test.sh
 
+      # set -o pipefail is load bearing. GitHub runs a `run:` step as
+      # `bash -e {0}` -- WITHOUT pipefail -- so `check-licenses.sh | tee`
+      # gave this step tee's exit code and the gate could not fail. It
+      # reported success on a PR adding a dependency with no license at
+      # all, while the script itself was exiting 1.
+      #
+      # That is the second time this gate went vacuous (see the `|| true`
+      # described above), so scripts/check-licenses_test.sh now asserts
+      # this step propagates a failure, and will fail if the pipe ever
+      # loses its pipefail again.
       - name: Check for forbidden licenses
-        run: bash scripts/check-licenses.sh | tee /tmp/licenses.txt
+        run: |
+          set -o pipefail
+          bash scripts/check-licenses.sh | tee /tmp/licenses.txt
 
       - name: License summary
         if: always()

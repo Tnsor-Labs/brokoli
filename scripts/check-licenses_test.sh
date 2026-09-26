@@ -159,6 +159,58 @@ expect "a module missing from the cache fails" 1 "UNKNOWN  example.com/absent"
 : > "$WORK/modules.txt"
 expect "an empty scan is a failure, not a clean bill" 1 "inspected nothing"
 
+# --- the wiring, not the classifier ---
+#
+# Every case above proves the script exits non-zero on a license it must
+# refuse. None of them proved the CI step does, and for a while it did
+# not: `run: bash scripts/check-licenses.sh | tee /tmp/licenses.txt`
+# takes tee's exit code, because GitHub runs a step as `bash -e {0}`
+# without pipefail. The gate reported success on a dependency that had
+# no license at all.
+#
+# So the step's own command is extracted from the workflow and run
+# against a script that fails. A gate whose wiring has never been
+# observed to propagate a failure is indistinguishable from one that
+# cannot.
+WORKFLOW="$(cd "$(dirname "$0")/.." && pwd)/.github/workflows/security.yml"
+step_cmd=$(awk '
+  /^      - name: Check for forbidden licenses$/ { found = 1; next }
+  found && /^        run: \|$/ { collecting = 1; next }
+  collecting && /^          / { sub(/^          /, ""); print; next }
+  collecting { exit }
+' "$WORKFLOW")
+
+if [ -z "$step_cmd" ]; then
+  echo "FAIL license step wiring: could not find the step in $WORKFLOW"
+  echo "     (if the step was renamed or reformatted, update this test -- do not delete it)"
+  fail=1
+else
+  STUB_DIR=$(mktemp -d)
+  trap 'rm -rf "$STUB_DIR"' EXIT
+  mkdir -p "$STUB_DIR/scripts"
+  # Stands in for a scan that found something it must refuse.
+  printf '#!/bin/sh\necho "FORBIDDEN example.com/gpl"\nexit 1\n' > "$STUB_DIR/scripts/check-licenses.sh"
+  chmod +x "$STUB_DIR/scripts/check-licenses.sh"
+
+  # `bash -e -c` and nothing else: a fresh shell with DEFAULT options,
+  # which is what GitHub gives a `run:` step (`bash -e {0}`). Running it
+  # with eval in this shell would inherit the `set -o pipefail` at the
+  # top of this file -- the pipe would then propagate correctly, the
+  # test would pass, and it would prove nothing about CI. That mistake
+  # was made here first and caught by mutating the workflow.
+  set +e
+  ( cd "$STUB_DIR" && bash -e -c "$step_cmd" ) >/dev/null 2>&1
+  wiring_status=$?
+  set -e
+  if [ "$wiring_status" -eq 0 ]; then
+    echo "FAIL license step wiring: the workflow step returned 0 for a scan that exited 1."
+    echo "     The gate cannot fail CI. Restore 'set -o pipefail', or drop the pipe."
+    fail=1
+  else
+    echo "ok   license step wiring propagates a failing scan"
+  fi
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "license gate tests FAILED"
   exit 1
