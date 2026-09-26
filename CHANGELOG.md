@@ -11,6 +11,101 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-26
+
+### Added
+
+- **`contract_gate` node** (#741, #742) -- @hc12r. Validates rows against
+  a versioned data contract from
+  [actually-fine](https://github.com/Tnsor-Labs/actually-fine), evaluating
+  the contract's own IR rather than translating it into the older
+  `quality_check` rule model. Cleared rows pass downstream, quarantined
+  rows are excluded, and a `reject` or `halt` breach fails the node after
+  its evidence has been written to the run log. The gate **streams**: it
+  is stream-eligible like a transform, so a `source_db -> contract_gate ->
+  sink_db` pipeline keeps flowing by reference and never materialises the
+  dataset. The contract engine checks record by record and a halt stops
+  at the record that caused it. See `docs/contract-gate.md`.
+- **Guided contract editor in the UI** (#744) -- @hc12r. Contract Gate
+  appears under Processing in the Node Library with a form for contract
+  metadata and rules, predicate-specific fields for all nine predicates,
+  and optional JSON paste or `.json` upload. A rule's kind (`record` or
+  `stream`) is derived from its predicate rather than chosen, because
+  every predicate mandates exactly one and the other is always refused.
+- **`run.lineage_incomplete` run event** (#734) -- @hc12r. Recorded when
+  a lineage profile or provenance write does not land, naming which half
+  of the record is missing and why. Informational: it never changes a
+  run's status.
+- **Node.js runtime documentation and a TypeScript example** (#520) --
+  @dvd233.
+
+### Changed
+
+These can change what an existing deployment does.
+
+- **Transform rules are validated when a pipeline is saved** (#740) --
+  @hc12r. Thirteen requirements that were enforced only at execution --
+  `sort` without `columns`, `aggregate` without `group_by`, `add_column`
+  without a name or expression, `project` without projections, and so on
+  -- are now save-time **errors**, as are unknown rule types and rules
+  with no type. **A pipeline carrying such a rule, which previously saved
+  and then failed on the last step of every run, will now be refused on
+  save.** Nothing that could ever have run is affected: each of these is
+  wrong under any input. Checks that depend on the data, such as whether
+  a named column exists, remain at execution time.
+- **Contract gate contracts are validated when a pipeline is saved**
+  (#744) -- @hc12r. An invalid contract, for example a `unique` predicate
+  on a `record` rule, is refused on save rather than failing at run time.
+- **Outbound HTTP requests identify as Brokoli** (#739) -- @hc12r. Every
+  request a pipeline makes -- `source_api`, `sink_api`, webhooks, wait
+  nodes, alerts, notifications -- now sends `User-Agent:
+  brokoli/<version> (+https://github.com/Tnsor-Labs/brokoli)` unless the
+  node sets its own. Previously they arrived as `Go-http-client/1.1`.
+  Operators who filter or allowlist on the agent string will see the new
+  value.
+- **A recovered run that fails reports its own failure** (#736) --
+  @hc12r. A run put back on the queue by startup recovery carries a note
+  saying why while it is pending. If it then fails, its error is now the
+  failure that ended it, not that note. The note is not lost: it stays in
+  the `run.recovery_requeued` event.
+
+### Fixed
+
+- **A failed run persisted with an empty error** (#736) -- @hc12r. Every
+  terminal path wrote the reason into the run's terminal event and none
+  wrote it onto the run, so `runs.error` stayed empty and the run view
+  had nothing to show. Runs executed in-process by the core engine were
+  affected on every failure. The stored row now agrees with what the run's
+  own events rebuild to.
+- **Endpoints rejected pipeline requests with 406** (#739) -- @hc12r.
+  Many endpoints refuse the Go default agent outright. Measured against
+  one public API, the same request answered 406 as `Go-http-client/1.1`
+  and 200 with an identifying agent. The failure surfaced as an opaque
+  `HTTP request failed: status code 406` pointing at the user's URL.
+- **A run could succeed with its lineage silently missing** (#734) --
+  @hc12r. When a store could not write a lineage profile or provenance
+  record, the only trace was a debug log line per node, or for provenance
+  a line in the process log that was never associated with the run. The
+  gap is now logged against the run -- a store that cannot record lineage
+  says so once as a warning, a real write failure is an error -- and
+  recorded as `run.lineage_incomplete`.
+
+### Development
+
+Contributor-facing; no effect on a running deployment.
+
+- **The license gate could not fail CI** (#743) -- @hc12r. The step
+  piped the scan into `tee` without `pipefail`, so it took `tee`'s exit
+  code and passed while the scan was refusing a dependency. The gate's
+  own tests now run the workflow step's command and assert it propagates
+  a failing scan.
+- **`preflight.sh` could not pass** (#735) -- @hc12r. It gave the engine
+  package a 15 minute budget where CI gives it 25, and its UI stage
+  discarded the result of `npm run check` while failing on a Svelte
+  baseline file removed in the React migration.
+- **CI's S3 test service moved to SeaweedFS** (#731) -- @hc12r. The
+  MinIO images it used were withdrawn from public registries.
+
 ## [0.12.1] - 2026-09-22
 
 ### Fixed
