@@ -180,7 +180,7 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 func IsBuiltInNodeType(nodeType models.NodeType) bool {
 	switch nodeType {
 	case models.NodeTypeSourceFile, models.NodeTypeSourceAPI, models.NodeTypeSourceDB,
-		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeQualityCheck, models.NodeTypeSQLGenerate,
+		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeQualityCheck, models.NodeTypeContractGate, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
@@ -244,7 +244,7 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			if count != 2 {
 				ve.Add(fmt.Sprintf("Node %q (join) must have exactly 2 inputs, got %d", n.Name, count))
 			}
-		case models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter:
+		case models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeContractGate:
 			if count := inputDegree[n.ID]; count != 1 {
 				ve.Add(fmt.Sprintf("Node %q (%s) must have exactly 1 input, got %d", n.Name, n.Type, count))
 			}
@@ -544,6 +544,10 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeDatasetFilter:
 		if msg := functionRefConfigError(n.Config, "dataset_filter"); msg != "" {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
+	case models.NodeTypeContractGate:
+		if _, ok := n.Config["contract"]; !ok {
+			ve.Add(fmt.Sprintf("Node %q: 'contract' is required for contract_gate", n.Name))
 		}
 	case models.NodeTypeCode:
 		for _, msg := range codeExecutionKeyErrors(n.Config) {

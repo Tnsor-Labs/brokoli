@@ -879,6 +879,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		switch node.Type {
 		case models.NodeTypeTransform:
 			streamable = inputRef != nil
+		case models.NodeTypeContractGate:
+			// Same rule as a transform: it reshapes an input, so there
+			// has to be one and it has to arrive by reference.
+			streamable = inputRef != nil
 		case models.NodeTypeCode:
 			streamable = inputRef != nil || (activeInputs == 0 && input == nil)
 		case models.NodeTypeSourceDB:
@@ -1940,6 +1944,8 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runNativeOperator(node, input, inputSchema, "filter")
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
+	case models.NodeTypeContractGate:
+		return outputExecutionResult(r.runContractGate(node, input))
 	case models.NodeTypeCode:
 		// Dynamic node expansion (#31): a `code` node carrying an
 		// `expansion` config block (brokoli-sdk's _TaskWrapper.expand())

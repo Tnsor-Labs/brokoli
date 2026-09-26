@@ -246,6 +246,7 @@ const (
 	NodeTypeAggregate    NodeType = "aggregate"
 	NodeTypeFilter       NodeType = "filter"
 	NodeTypeQualityCheck NodeType = "quality_check"
+	NodeTypeContractGate NodeType = "contract_gate"
 	NodeTypeSQLGenerate  NodeType = "sql_generate"
 	NodeTypeCode         NodeType = "code"
 	NodeTypeJoin         NodeType = "join"

@@ -69,6 +69,11 @@ var NodeTypeInterfaces = map[NodeType]map[string]interface{}{
 		"inputs": {"input": {"value": {"kind": "dataset"}}},
 		"outputs": {"result": {"value": {"kind": "dataset"}}}
 	}`),
+	NodeTypeContractGate: mustParseInterface(`{
+		"contract": "brokoli.task-interface/v1",
+		"inputs": {"input": {"value": {"kind": "dataset"}}},
+		"outputs": {"result": {"value": {"kind": "dataset"}}}
+	}`),
 	NodeTypeCondition: mustParseInterface(`{
 		"contract": "brokoli.task-interface/v1",
 		"inputs": {"input": {"value": {"kind": "dataset"}}},

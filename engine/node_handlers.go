@@ -17,6 +17,8 @@ import (
 	"strings"
 	"time"
 
+	actuallyfine "github.com/Tnsor-Labs/actually-fine/adapter/brokoli"
+	actualfineresult "github.com/Tnsor-Labs/actually-fine/result"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
@@ -25,6 +27,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/quality"
+	"github.com/Tnsor-Labs/brokoli/quality/contractgate"
 )
 
 // validateFilePath ensures the path is within the configured data
@@ -888,6 +891,48 @@ func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*comm
 
 	// Pass data through
 	return input, nil
+}
+
+// contractEvidenceSink turns one contract finding into a run log line.
+// Shared by the batch and streamed gates so a finding reads identically
+// whichever path produced it -- the point of the gate is the evidence,
+// and evidence that changed shape with the execution mode would be worse
+// than none.
+func (r *Runner) contractEvidenceSink(node models.Node) func(actualfineresult.Event) error {
+	return func(event actualfineresult.Event) error {
+		level := models.LogLevelWarning
+		if event.Status == "warning" {
+			level = models.LogLevelInfo
+		}
+		r.log(node.ID, level, "actually-fine %s: rule=%s line=%d action=%s path=%s message=%s",
+			event.Status, event.RuleID, event.Line, event.Action, event.Path, event.Message)
+		return nil
+	}
+}
+
+// contractSummaryLine is the one-line outcome both paths log.
+func (r *Runner) contractSummaryLine(node models.Node, summary actuallyfine.Summary) {
+	r.log(node.ID, models.LogLevelInfo,
+		"actually-fine summary: %d records, %d cleared, %d warnings, %d quarantined, %d breached, halted=%t",
+		summary.Total, summary.Cleared, summary.Warnings, summary.Quarantined, summary.Breached, summary.Halted)
+}
+
+func (r *Runner) runContractGate(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+	raw, ok := node.Config["contract"]
+	if !ok {
+		return nil, fmt.Errorf("contract_gate node requires contract config")
+	}
+	c, err := contractgate.DecodeContract(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode contract_gate contract: %w", err)
+	}
+	evidence := r.contractEvidenceSink(node)
+	output, summary, err := contractgate.Run(r.ctx, c, input, evidence)
+	r.contractSummaryLine(node, summary)
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
 }
 
 func (r *Runner) runSQLGenerate(node models.Node, input *common.DataSet) (*common.DataSet, error) {

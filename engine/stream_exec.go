@@ -14,11 +14,13 @@ import (
 	"strings"
 	"time"
 
+	actuallyfine "github.com/Tnsor-Labs/actually-fine/adapter/brokoli"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
+	"github.com/Tnsor-Labs/brokoli/quality/contractgate"
 )
 
 // This file is docs/adr/019-execution-segments-and-streaming.md Milestone
@@ -74,20 +76,21 @@ func rowLocalTransformRules(rules []TransformRule) bool {
 // is summarized rather than replicated per batch — one line for the
 // whole streamed pass, so a 100-batch input doesn't produce 100x the log
 // volume of its batch equivalent.
-func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, plan transformStreamPlan) (*artifact.DatasetRef, error) {
-	var aggState *streamAggState
-	if plan.agg != nil {
-		var err error
-		if aggState, err = newStreamAggState(*plan.agg); err != nil {
-			return nil, err
-		}
-	}
-	batches, closer, err := outputs.OpenBatches(inputRef)
-	if err != nil {
-		return nil, fmt.Errorf("open streamed input: %w", err)
-	}
-	defer closer.Close()
-
+// streamOut runs produce, writing whatever it emits into one blob, and
+// returns the ref describing it.
+//
+// It owns the parts that are easy to get subtly wrong and were worth
+// getting right once: the codec cannot be chosen until the first batch
+// exists (arrow_stream_encode.go), the Put that drains the pipe must not
+// start before then, an empty result still needs its sentinel, and a
+// producer error outranks the Put error it causes -- unless the producer
+// error IS a closed pipe, which means the consumer died first and its
+// error is the root cause.
+//
+// produce reports the output column order; the row count is taken from
+// what actually went through write, so a caller cannot report one number
+// and emit another.
+func streamOut(outputs *nodeOutputs, produce func(write func(*common.DataSet) error) ([]string, error)) (*artifact.DatasetRef, error) {
 	pr, pw := io.Pipe()
 	type putResult struct {
 		ref *artifact.ArtifactRef
@@ -95,11 +98,6 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 	}
 	putDone := make(chan putResult, 1)
 
-	// Put does not start until the first output batch has chosen a codec,
-	// because the media type labelling the blob is an argument to it. Once
-	// started it drains the pipe this writes into. See
-	// arrow_stream_encode.go for why the choice cannot be deferred and
-	// what a later batch disagreeing with it costs.
 	writer := newDatasetStreamWriter(pw, streamCodecFromEnv())
 	outFormat := artifact.FormatNDJSON
 	started := false
@@ -114,93 +112,37 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 			ref, perr := outputs.blobs.Put(context.Background(), outputs.namespace, pr, artifact.PutOptions{
 				MediaType: mediaType,
 			})
-			if perr != nil {
-				// Unblock the encoder side if Put failed mid-stream.
-				_ = pr.CloseWithError(perr)
-			}
 			putDone <- putResult{ref, perr}
 		}()
 		return nil
 	}
-	// write is the single path output takes, so the row-at-a-time loop
-	// and the aggregation's one final dataset cannot disagree about the
-	// codec, the row count or the empty sentinel.
+
+	rowCount := int64(0)
 	write := func(ds *common.DataSet) error {
 		if !started {
 			if err := startPut(ds); err != nil {
 				return err
 			}
 		}
-		return writer.WriteBatch(ds)
+		if err := writer.WriteBatch(ds); err != nil {
+			return err
+		}
+		rowCount += int64(len(ds.Rows))
+		return nil
 	}
 
-	var outCols []string
-	rowCount := int64(0)
-	var streamErr error
-	for {
-		batch, err := batches.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			streamErr = fmt.Errorf("read streamed input: %w", err)
-			break
-		}
-		if err := ApplyTransforms(plan.prefix, batch); err != nil {
-			streamErr = err
-			break
-		}
-		if aggState != nil {
-			// Milestone 2 streaming aggregation: the batch folds into
-			// small per-group state instead of flowing through; the
-			// grouped result is emitted once, after EOF below.
-			aggState.fold(batch)
-			continue
-		}
-		if outCols == nil && len(batch.Columns) > 0 {
-			outCols = batch.Columns
-		}
-		if err := write(batch); err != nil {
-			streamErr = fmt.Errorf("encode streamed output: %w", err)
-			break
-		}
-		rowCount += int64(len(batch.Rows))
-	}
-	if streamErr == nil && aggState != nil {
-		final := aggState.finalize()
-		// Suffix rules — anything, including sort — run on the grouped
-		// output, which is small by construction (one row per group).
-		if err := ApplyTransforms(plan.suffix, final); err != nil {
-			streamErr = err
-		} else {
-			outCols = final.Columns
-			if err := write(final); err != nil {
-				streamErr = fmt.Errorf("encode aggregated output: %w", err)
-			} else {
-				rowCount += int64(len(final.Rows))
-			}
-		}
-	}
+	outCols, streamErr := produce(write)
+
 	if !started {
-		// Nothing was produced, so no batch chose a codec. Decide with
-		// nothing, which selects NDJSON and its empty-dataset sentinel,
-		// and start the Put that has to consume it.
 		if err := startPut(nil); err != nil && streamErr == nil {
 			streamErr = err
 		}
 	}
-	// Close flushes whatever the encoder buffered, which is not in the
-	// pipe yet, and writes the empty sentinel when nothing was produced.
 	if _, err := writer.Close(); err != nil && streamErr == nil {
 		streamErr = err
 	}
 	_ = pw.CloseWithError(streamErr)
 	put := <-putDone
-	// Error priority: a genuine producer error (transform failure, bad
-	// input) is the root cause even though it also surfaces as a Put
-	// error via the closed pipe. But a producer error that IS a pipe
-	// error means the consumer died first — Put's own error is the root
-	// cause there, and reporting "closed pipe" would bury it.
 	if streamErr != nil && !errors.Is(streamErr, io.ErrClosedPipe) {
 		return nil, streamErr
 	}
@@ -211,9 +153,6 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		return nil, streamErr
 	}
 	if outCols == nil {
-		outCols = inputRef.Columns
-	}
-	if outCols == nil {
 		outCols = []string{}
 	}
 	return &artifact.DatasetRef{
@@ -222,6 +161,67 @@ func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, p
 		Columns:     outCols,
 		RowCount:    rowCount,
 	}, nil
+}
+
+func streamTransformToRef(outputs *nodeOutputs, inputRef *artifact.DatasetRef, plan transformStreamPlan) (*artifact.DatasetRef, error) {
+	var aggState *streamAggState
+	if plan.agg != nil {
+		var err error
+		if aggState, err = newStreamAggState(*plan.agg); err != nil {
+			return nil, err
+		}
+	}
+	batches, closer, err := outputs.OpenBatches(inputRef)
+	if err != nil {
+		return nil, fmt.Errorf("open streamed input: %w", err)
+	}
+	defer closer.Close()
+
+	return streamOut(outputs, func(write func(*common.DataSet) error) ([]string, error) {
+		var outCols []string
+		for {
+			batch, err := batches.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return outCols, fmt.Errorf("read streamed input: %w", err)
+			}
+			if err := ApplyTransforms(plan.prefix, batch); err != nil {
+				return outCols, err
+			}
+			if aggState != nil {
+				// Milestone 2 streaming aggregation: the batch folds into
+				// small per-group state instead of flowing through; the
+				// grouped result is emitted once, after EOF below.
+				aggState.fold(batch)
+				continue
+			}
+			if outCols == nil && len(batch.Columns) > 0 {
+				outCols = batch.Columns
+			}
+			if err := write(batch); err != nil {
+				return outCols, fmt.Errorf("encode streamed output: %w", err)
+			}
+		}
+		if aggState != nil {
+			final := aggState.finalize()
+			// Suffix rules -- anything, including sort -- run on the
+			// grouped output, which is small by construction (one row per
+			// group).
+			if err := ApplyTransforms(plan.suffix, final); err != nil {
+				return outCols, err
+			}
+			outCols = final.Columns
+			if err := write(final); err != nil {
+				return outCols, fmt.Errorf("encode aggregated output: %w", err)
+			}
+		}
+		if outCols == nil {
+			outCols = inputRef.Columns
+		}
+		return outCols, nil
+	})
 }
 
 // codeStreamResult is what executeCodeNodeStreamed hands back: the output
@@ -594,6 +594,14 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 		}
 		_, ok := planTransformRules(rules)
 		return ok
+	case models.NodeTypeContractGate:
+		// A gate decides each record on its own and the contract engine
+		// checks with a stream checker, so nothing has to be held to
+		// evaluate it. Without this the gate takes the batch path and
+		// materialises the whole dataset, which collapses streaming for
+		// the entire pipeline it sits in -- source and sink either side
+		// stream, and the gate in the middle undoes both.
+		return true
 	}
 	return false
 }
@@ -641,6 +649,8 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 		return r.runSinkDBStreamed(ctx, node, inputRef, outputs, attempt)
 	case models.NodeTypeCode:
 		return r.runCodeStreamed(ctx, node, inputRef, outputs)
+	case models.NodeTypeContractGate:
+		return r.runContractGateStreamed(ctx, node, inputRef, outputs)
 	}
 	return nodeExecutionResult{}, fmt.Errorf("node type %q is not stream-capable", node.Type)
 }
@@ -1114,4 +1124,63 @@ func datasetRefFormatName(ref *artifact.DatasetRef) string {
 		return artifact.FormatNDJSON
 	}
 	return ref.Format
+}
+
+// runContractGateStreamed evaluates a contract over a referenced input
+// without materialising it, writing cleared records out as they are
+// produced.
+//
+// The batch gate (runContractGate) and this one share the contract, the
+// evidence sink and the summary line, so a finding reads the same
+// whichever path ran. What differs is only where the rows live: here
+// neither the input nor the accepted output is ever held whole, so a
+// gate no longer puts the memory ceiling back into a pipeline whose
+// source and sink both stream.
+//
+// Enforcement is unchanged and still comes from the contract engine:
+// quarantined records are excluded, and a breach or halt fails the node
+// after its evidence has been emitted. A halt stops the stream at the
+// record that caused it rather than reading the rest.
+func (r *Runner) runContractGateStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+	raw, ok := node.Config["contract"]
+	if !ok {
+		return nodeExecutionResult{}, fmt.Errorf("contract_gate node requires contract config")
+	}
+	c, err := contractgate.DecodeContract(raw)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("decode contract_gate contract: %w", err)
+	}
+
+	batches, closer, err := outputs.OpenBatches(inputRef)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("open streamed input: %w", err)
+	}
+	defer closer.Close()
+
+	var summary actuallyfine.Summary
+	evidence := r.contractEvidenceSink(node)
+
+	ref, streamErr := streamOut(outputs, func(write func(*common.DataSet) error) ([]string, error) {
+		// A gate never adds or removes a column, so the output order is
+		// the input's. Taken from the ref rather than the first accepted
+		// batch, because a contract that clears nothing still has to
+		// describe the shape it was given.
+		outCols := inputRef.Columns
+		var gateErr error
+		summary, gateErr = contractgate.RunStreaming(ctx, c,
+			func() (*common.DataSet, error) { return batches.Next() },
+			write, evidence)
+		return outCols, gateErr
+	})
+
+	// The summary is logged whatever the outcome: a run that failed on a
+	// breach is exactly when the counts matter.
+	r.contractSummaryLine(node, summary)
+	if streamErr != nil {
+		return nodeExecutionResult{}, streamErr
+	}
+	r.log(node.ID, models.LogLevelInfo,
+		"Streamed contract gate over %d row(s): %d cleared by reference as %s (never materialized)",
+		summary.Total, ref.RowCount, datasetRefFormatName(ref))
+	return nodeExecutionResult{outputRef: ref}, nil
 }

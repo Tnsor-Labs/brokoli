@@ -520,7 +520,7 @@ func TestUnionMergesSameNamedColumns(t *testing.T) {
 
 func TestPassThroughNodesKeepTheirColumns(t *testing.T) {
 	for _, nt := range []models.NodeType{
-		models.NodeTypeQualityCheck, models.NodeTypeCondition,
+		models.NodeTypeQualityCheck, models.NodeTypeContractGate, models.NodeTypeCondition,
 		models.NodeTypeSinkFile, models.NodeTypeSinkDB, models.NodeTypeSinkAPI,
 	} {
 		got := ColumnLineageFor(ColumnLineageRequest{

@@ -107,7 +107,7 @@ func nodeTypeValue(t *testing.T, name string) NodeType {
 		"NodeTypeSourceFile": NodeTypeSourceFile, "NodeTypeSourceAPI": NodeTypeSourceAPI,
 		"NodeTypeSourceDB": NodeTypeSourceDB, "NodeTypeTransform": NodeTypeTransform,
 		"NodeTypeProject": NodeTypeProject, "NodeTypeAggregate": NodeTypeAggregate, "NodeTypeFilter": NodeTypeFilter,
-		"NodeTypeQualityCheck": NodeTypeQualityCheck, "NodeTypeSQLGenerate": NodeTypeSQLGenerate,
+		"NodeTypeQualityCheck": NodeTypeQualityCheck, "NodeTypeContractGate": NodeTypeContractGate, "NodeTypeSQLGenerate": NodeTypeSQLGenerate,
 		"NodeTypeCode": NodeTypeCode, "NodeTypeJoin": NodeTypeJoin,
 		"NodeTypeSinkFile": NodeTypeSinkFile, "NodeTypeSinkDB": NodeTypeSinkDB,
 		"NodeTypeSinkAPI": NodeTypeSinkAPI, "NodeTypeMigrate": NodeTypeMigrate,
