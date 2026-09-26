@@ -879,6 +879,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		switch node.Type {
 		case models.NodeTypeTransform:
 			streamable = inputRef != nil
+		case models.NodeTypeContractGate:
+			// Same rule as a transform: it reshapes an input, so there
+			// has to be one and it has to arrive by reference.
+			streamable = inputRef != nil
 		case models.NodeTypeCode:
 			streamable = inputRef != nil || (activeInputs == 0 && input == nil)
 		case models.NodeTypeSourceDB:

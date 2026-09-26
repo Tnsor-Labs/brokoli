@@ -88,3 +88,68 @@ func enforcementError(summary actuallyfine.Summary) error {
 }
 
 var _ actuallyfine.EvidenceSink = func(result.Event) error { return nil }
+
+// batchSource feeds the contract engine from a pull iterator instead of
+// one materialised dataset, so a gate can run over a dataset larger than
+// memory. actually-fine's own loop already drives Source.Next until
+// io.EOF and calls Accepted per batch (adapter/brokoli/batch.go), and it
+// checks with engine.NewStreamChecker, so nothing here has to hold the
+// input to evaluate it.
+type batchSource struct {
+	next func() (transport.RecordBatch, error)
+}
+
+func (s *batchSource) Next(context.Context) (transport.RecordBatch, error) { return s.next() }
+
+// BatchOf converts one Brokoli dataset into the contract engine's batch
+// shape. Exported so the engine's streaming path can build batches from
+// its own reader without duplicating the conversion.
+func BatchOf(ds *common.DataSet) transport.RecordBatch {
+	return transport.RecordBatch{Columns: ds.Columns, Records: rows(ds)}
+}
+
+// RowsOf converts an accepted batch back into Brokoli rows.
+func RowsOf(batch transport.RecordBatch) []common.DataRow {
+	out := make([]common.DataRow, len(batch.Records))
+	for i, rec := range batch.Records {
+		out[i] = common.DataRow(rec)
+	}
+	return out
+}
+
+// RunStreaming evaluates a contract over a stream of batches, handing
+// each batch of cleared records to write as it is produced.
+//
+// Same enforcement as Run: quarantined records are excluded, and a
+// breach or halt returns an error after the evidence for it has been
+// emitted. The difference is only where the rows live -- nothing
+// accumulates the output, so the gate does not reintroduce the memory
+// ceiling on a pipeline whose source and sink both stream.
+func RunStreaming(
+	ctx context.Context,
+	c contract.Contract,
+	nextBatch func() (*common.DataSet, error),
+	write func(*common.DataSet) error,
+	evidence actuallyfine.EvidenceSink,
+) (actuallyfine.Summary, error) {
+	source := &batchSource{next: func() (transport.RecordBatch, error) {
+		ds, err := nextBatch()
+		if err != nil {
+			return transport.RecordBatch{}, err
+		}
+		return BatchOf(ds), nil
+	}}
+	summary, err := actuallyfine.RunBatches(actuallyfine.BatchRequest{
+		Contract: c,
+		Source:   source,
+		Accepted: func(_ context.Context, batch transport.RecordBatch) error {
+			return write(&common.DataSet{Columns: batch.Columns, Rows: RowsOf(batch)})
+		},
+		Evidence: evidence,
+		Context:  ctx,
+	})
+	if err != nil {
+		return summary, err
+	}
+	return summary, enforcementError(summary)
+}
