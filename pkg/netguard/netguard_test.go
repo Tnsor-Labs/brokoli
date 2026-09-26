@@ -147,7 +147,7 @@ func TestClient_DialContextValidatesTheResolvedIPNotJustTheHostname(t *testing.T
 	// real Client uses, confirming the IP-level check is what's load
 	// bearing, not a hostname string comparison alone.
 	client := Default.Client(2 * time.Second)
-	transport := client.Transport.(*http.Transport)
+	transport := BaseTransport(client)
 	_, err := transport.DialContext(context.Background(), "tcp", net.JoinHostPort("127.0.0.1", "80"))
 	if err == nil {
 		t.Fatal("expected a direct dial to 127.0.0.1 to be blocked by IP, regardless of hostname")
