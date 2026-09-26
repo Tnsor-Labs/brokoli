@@ -1002,6 +1002,12 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		} else {
 			r.Warnings = append(r.Warnings, "no transform rules defined")
 		}
+		// A rule that cannot run under any input is an error, not a
+		// warning: a warning leaves the pipeline saveable and the run
+		// still doomed. The requirements are declared once and shared
+		// with applyRule (transform_requirements.go), so this cannot
+		// promise something execution does not enforce.
+		r.Errors = append(r.Errors, transformRuleErrors(n)...)
 	case models.NodeTypeJoin:
 		if getStr(n.Config, "join_type") == "" {
 			r.Warnings = append(r.Warnings, "'join_type' not set, defaults to inner")
