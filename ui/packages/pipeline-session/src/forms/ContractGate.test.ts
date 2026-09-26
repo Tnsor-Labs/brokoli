@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseImportedContract } from './ContractGate'
+import { applyPredicateSelection, parseImportedContract } from './ContractGate'
 
 const contract = {
   ir_version: '1.0',
@@ -27,5 +27,25 @@ describe('contract gate JSON import', () => {
     expect(() =>
       parseImportedContract(JSON.stringify({ ...contract, input: { kind: 'table' } })),
     ).toThrow('record-stream')
+  })
+
+  it('couples stream-only predicates to stream rules and count to root path', () => {
+    const rule = {
+      id: 'r1',
+      kind: 'record' as const,
+      path: '$.id',
+      predicate: { op: 'required' },
+      on_breach: { action: 'reject' },
+    }
+    expect(applyPredicateSelection(rule, 'unique')).toMatchObject({
+      kind: 'stream',
+      path: '$.id',
+      predicate: { op: 'unique' },
+    })
+    expect(applyPredicateSelection(rule, 'count')).toMatchObject({
+      kind: 'stream',
+      path: '$',
+      predicate: { op: 'count' },
+    })
   })
 })

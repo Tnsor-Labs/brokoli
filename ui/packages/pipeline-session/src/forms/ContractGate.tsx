@@ -84,6 +84,16 @@ export function parseImportedContract(text: string): ContractDocument {
   return candidate as ContractDocument
 }
 
+export function applyPredicateSelection(rule: ContractRule, op: string): ContractRule {
+  const predicate = { ...rule.predicate, op }
+  return {
+    ...rule,
+    kind: op === 'unique' || op === 'count' ? 'stream' : rule.kind,
+    path: op === 'count' ? '$' : rule.path,
+    predicate,
+  }
+}
+
 function normalizeContract(value: unknown): ContractDocument {
   if (!isObject(value)) return DEFAULT_CONTRACT
   return {
@@ -110,8 +120,12 @@ function RuleEditor({
 }) {
   const predicate = rule.predicate ?? { op: 'required' }
   const setRule = (patch: Partial<ContractRule>) => onChange({ ...rule, ...patch })
-  const setPredicate = (patch: Partial<Predicate>) =>
-    setRule({ predicate: { ...predicate, ...patch } })
+  const setPredicate = (patch: Partial<Predicate>) => {
+    const next = patch.op
+      ? applyPredicateSelection(rule, patch.op)
+      : { ...rule, predicate: { ...predicate, ...patch } }
+    setRule(next)
+  }
   const enumText = JSON.stringify(predicate.values ?? [], null, 2)
   const updateNumber = (name: 'min' | 'max', value: string) => {
     if (value === '') {
@@ -122,6 +136,7 @@ function RuleEditor({
       setPredicate({ [name]: Number(value) })
     }
   }
+  const streamOnly = predicate.op === 'unique' || predicate.op === 'count'
 
   return (
     <div className="ps-rule">
@@ -150,7 +165,9 @@ function RuleEditor({
             disabled={ctx.readonly}
             onChange={(event) => setRule({ kind: event.target.value as ContractRule['kind'] })}
           >
-            <option value="record">Record</option>
+            <option value="record" disabled={streamOnly}>
+              Record
+            </option>
             <option value="stream">Stream</option>
           </Select>
         </Field>
@@ -162,7 +179,7 @@ function RuleEditor({
           <Input
             value={rule.path}
             mono
-            disabled={ctx.readonly}
+            disabled={ctx.readonly || predicate.op === 'count'}
             onChange={(event) => setRule({ path: event.target.value })}
           />
         </Field>

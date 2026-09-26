@@ -11,6 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskbundle"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
+	"github.com/Tnsor-Labs/brokoli/quality/contractgate"
 )
 
 // ValidationError holds all issues found during validation.
@@ -548,6 +549,8 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeContractGate:
 		if _, ok := n.Config["contract"]; !ok {
 			ve.Add(fmt.Sprintf("Node %q: 'contract' is required for contract_gate", n.Name))
+		} else if _, err := contractgate.DecodeContract(n.Config["contract"]); err != nil {
+			ve.Add(fmt.Sprintf("Node %q: invalid contract_gate contract: %s", n.Name, err))
 		}
 	case models.NodeTypeCode:
 		for _, msg := range codeExecutionKeyErrors(n.Config) {

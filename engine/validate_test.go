@@ -295,6 +295,53 @@ func TestValidate_MissingRequiredConfig(t *testing.T) {
 	}
 }
 
+func TestValidate_ContractGateRejectsInvalidRuleKind(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "contract-gate",
+		Nodes: []models.Node{
+			{ID: "source", Type: models.NodeTypeSourceFile, Name: "Load", Config: map[string]interface{}{"path": "/data/input.csv"}},
+			{ID: "gate", Type: models.NodeTypeContractGate, Name: "Gate", Config: map[string]interface{}{"contract": map[string]interface{}{
+				"ir_version": "1.0",
+				"contract":   map[string]interface{}{"id": "orders", "version": "1"},
+				"input":      map[string]interface{}{"kind": "record-stream"},
+				"rules": []interface{}{map[string]interface{}{
+					"id": "unique-id", "kind": "record", "path": "$.id",
+					"predicate": map[string]interface{}{"op": "unique"},
+					"on_breach": map[string]interface{}{"action": "reject"},
+				}},
+			}}},
+		},
+		Edges: []models.Edge{{From: "source", To: "gate"}},
+	}
+	ve := ValidatePipeline(p)
+	if !ve.HasErrors() || !strings.Contains(ve.Error(), "unique must be a stream rule") {
+		t.Fatalf("expected contract rule validation error, got: %v", ve.Errors)
+	}
+}
+
+func TestValidate_ContractGateAcceptsStreamRule(t *testing.T) {
+	p := &models.Pipeline{
+		Name: "contract-gate",
+		Nodes: []models.Node{
+			{ID: "source", Type: models.NodeTypeSourceFile, Name: "Load", Config: map[string]interface{}{"path": "/data/input.csv"}},
+			{ID: "gate", Type: models.NodeTypeContractGate, Name: "Gate", Config: map[string]interface{}{"contract": map[string]interface{}{
+				"ir_version": "1.0",
+				"contract":   map[string]interface{}{"id": "orders", "version": "1"},
+				"input":      map[string]interface{}{"kind": "record-stream"},
+				"rules": []interface{}{map[string]interface{}{
+					"id": "unique-id", "kind": "stream", "path": "$.id",
+					"predicate": map[string]interface{}{"op": "unique"},
+					"on_breach": map[string]interface{}{"action": "reject"},
+				}},
+			}}},
+		},
+		Edges: []models.Edge{{From: "source", To: "gate"}},
+	}
+	if ve := ValidatePipeline(p); ve.HasErrors() {
+		t.Fatalf("expected valid stream contract, got: %v", ve.Errors)
+	}
+}
+
 func TestValidate_SelfLoop(t *testing.T) {
 	p := validPipeline()
 	p.Edges = append(p.Edges, models.Edge{From: "n1", To: "n1"})
