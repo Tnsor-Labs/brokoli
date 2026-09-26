@@ -54,6 +54,14 @@ func ApplyTransforms(rules []TransformRule, ds *common.DataSet) error {
 }
 
 func applyRule(r TransformRule, ds *common.DataSet) error {
+	// What a rule needs is declared once, in transform_requirements.go,
+	// and checked here so execution enforces exactly what validation
+	// promised at save time. A type missing from that table is rejected
+	// here; a type missing from the switch below falls to its default.
+	// The two cover each other.
+	if err := transformRuleError(r); err != nil {
+		return err
+	}
 	switch r.Type {
 	case "rename_columns", "rename":
 		return renameColumns(r, ds)
@@ -83,9 +91,6 @@ func applyRule(r TransformRule, ds *common.DataSet) error {
 }
 
 func filterNative(r TransformRule, ds *common.DataSet) error {
-	if r.ExpressionVersion != 1 || len(r.Predicate) == 0 {
-		return fmt.Errorf("filter requires expression_version 1 and predicate")
-	}
 	kept := make([]common.DataRow, 0, len(ds.Rows))
 	for _, row := range ds.Rows {
 		match, err := evalPredicate(r.Predicate, row)
@@ -101,12 +106,6 @@ func filterNative(r TransformRule, ds *common.DataSet) error {
 }
 
 func project(r TransformRule, ds *common.DataSet) error {
-	if len(r.Projections) == 0 {
-		return fmt.Errorf("project requires projections")
-	}
-	if r.ExpressionVersion != 1 {
-		return fmt.Errorf("project requires expression_version 1")
-	}
 	out := make([]common.DataRow, 0, len(ds.Rows))
 	columns := make([]string, 0, len(r.Projections))
 	seenColumns := make(map[string]struct{}, len(r.Projections))
@@ -137,9 +136,6 @@ func project(r TransformRule, ds *common.DataSet) error {
 }
 
 func renameColumns(r TransformRule, ds *common.DataSet) error {
-	if len(r.Mapping) == 0 {
-		return fmt.Errorf("rename_columns requires mapping")
-	}
 	for i, col := range ds.Columns {
 		if newName, ok := r.Mapping[col]; ok {
 			ds.Columns[i] = newName
@@ -157,9 +153,6 @@ func renameColumns(r TransformRule, ds *common.DataSet) error {
 }
 
 func addColumn(r TransformRule, ds *common.DataSet) error {
-	if r.Name == "" || r.Expression == "" {
-		return fmt.Errorf("add_column requires name and expression")
-	}
 	ds.Columns = append(ds.Columns, r.Name)
 	for _, row := range ds.Rows {
 		row[r.Name] = evalAddColumnExpression(r.Expression, row)
@@ -291,9 +284,6 @@ func columnRefBroken(parts []string, row common.DataRow) bool {
 }
 
 func filterRows(r TransformRule, ds *common.DataSet) error {
-	if r.Condition == "" {
-		return fmt.Errorf("filter_rows requires condition")
-	}
 
 	// Validate the condition once, up front, so an unrecognized form fails
 	// loudly — even for an empty dataset — instead of silently keeping
@@ -435,9 +425,6 @@ func matchesCondition(cond string, row common.DataRow) (bool, error) {
 }
 
 func applyFunction(r TransformRule, ds *common.DataSet) error {
-	if r.Column == "" || r.Function == "" {
-		return fmt.Errorf("apply_function requires column and function")
-	}
 	for _, row := range ds.Rows {
 		if val, ok := row[r.Column]; ok {
 			if val == nil {
@@ -471,9 +458,6 @@ func applyFunction(r TransformRule, ds *common.DataSet) error {
 }
 
 func replaceValues(r TransformRule, ds *common.DataSet) error {
-	if r.Column == "" || len(r.Mapping) == 0 {
-		return fmt.Errorf("replace_values requires column and mapping")
-	}
 	for _, row := range ds.Rows {
 		if val, ok := row[r.Column]; ok {
 			s := fmt.Sprintf("%v", val)
@@ -486,9 +470,6 @@ func replaceValues(r TransformRule, ds *common.DataSet) error {
 }
 
 func dropColumns(r TransformRule, ds *common.DataSet) error {
-	if len(r.Columns) == 0 {
-		return fmt.Errorf("drop_columns requires columns list")
-	}
 	drop := make(map[string]bool, len(r.Columns))
 	for _, c := range r.Columns {
 		drop[c] = true
@@ -533,9 +514,6 @@ func dropColumns(r TransformRule, ds *common.DataSet) error {
 // rather than parsed again on every comparison. The sort is stable, so
 // rows with equal keys keep their order.
 func sortRows(r TransformRule, ds *common.DataSet) error {
-	if len(r.Columns) == 0 {
-		return fmt.Errorf("sort requires columns list")
-	}
 	keys := make([][]sortKey, len(ds.Rows))
 	for i, row := range ds.Rows {
 		k := make([]sortKey, len(r.Columns))
@@ -614,9 +592,6 @@ func compareSortKeys(a, b sortKey) int {
 }
 
 func deduplicate(r TransformRule, ds *common.DataSet) error {
-	if len(r.Columns) == 0 {
-		return fmt.Errorf("deduplicate requires columns (key columns)")
-	}
 	seen := make(map[string]bool)
 	var kept []common.DataRow
 	for _, row := range ds.Rows {
@@ -635,15 +610,9 @@ func deduplicate(r TransformRule, ds *common.DataSet) error {
 }
 
 func aggregate(r TransformRule, ds *common.DataSet) error {
-	if len(r.GroupBy) == 0 {
-		return fmt.Errorf("aggregate requires group_by columns")
-	}
 	// Accept both "agg_fields" and "aggregations" (template compat)
 	if len(r.AggFields) == 0 && len(r.Aggregations) > 0 {
 		r.AggFields = r.Aggregations
-	}
-	if len(r.AggFields) == 0 {
-		return fmt.Errorf("aggregate requires at least one aggregation (e.g. sum, count, avg) — add aggregation fields in the transform config")
 	}
 
 	// Group rows by key
