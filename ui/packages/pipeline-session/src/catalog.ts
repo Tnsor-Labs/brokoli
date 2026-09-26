@@ -35,6 +35,7 @@ export const CATALOG: CatalogEntry[] = [
   { type: 'code', label: 'Code', glyph: Code2, description: 'Run a Python or TypeScript script over the rows', family: 'processing', input: true, output: true, maxInputs: 1, group: 'Processing' },
   { type: 'join', label: 'Join', glyph: Merge, description: 'Combine two inputs on a key column', family: 'processing', input: true, output: true, maxInputs: 2, group: 'Processing' },
   { type: 'quality_check', label: 'Quality Check', glyph: ShieldCheck, description: 'Assert rules about the data, then block or warn', family: 'processing', input: true, output: true, maxInputs: 1, group: 'Processing' },
+  { type: 'contract_gate', label: 'Contract Gate', glyph: ShieldCheck, description: 'Validate rows against a versioned data contract', family: 'processing', input: true, output: true, maxInputs: 1, group: 'Processing' },
   { type: 'sql_generate', label: 'SQL Generate', glyph: FileCode2, description: 'Turn rows into INSERT statements', family: 'processing', input: true, output: true, maxInputs: 1, group: 'Processing' },
   { type: 'sink_file', label: 'File Output', glyph: FileDown, description: 'Write rows to a CSV, JSON or SQL file', family: 'output', input: true, output: false, maxInputs: 1, group: 'Outputs' },
   { type: 'sink_db', label: 'Database Sink', glyph: DatabaseBackup, description: 'Write rows into a database table', family: 'output', input: true, output: false, maxInputs: 1, group: 'Outputs' },
