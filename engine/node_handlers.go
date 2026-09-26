@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	actualfineresult "github.com/Tnsor-Labs/actually-fine/result"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
@@ -25,6 +26,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/quality"
+	"github.com/Tnsor-Labs/brokoli/quality/contractgate"
 )
 
 // validateFilePath ensures the path is within the configured data
@@ -888,6 +890,31 @@ func (r *Runner) runQualityCheck(node models.Node, input *common.DataSet) (*comm
 
 	// Pass data through
 	return input, nil
+}
+
+func (r *Runner) runContractGate(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+	raw, ok := node.Config["contract"]
+	if !ok {
+		return nil, fmt.Errorf("contract_gate node requires contract config")
+	}
+	c, err := contractgate.DecodeContract(raw)
+	if err != nil {
+		return nil, fmt.Errorf("decode contract_gate contract: %w", err)
+	}
+	evidence := func(event actualfineresult.Event) error {
+		level := models.LogLevelWarning
+		if event.Status == "warning" {
+			level = models.LogLevelInfo
+		}
+		r.log(node.ID, level, "actually-fine %s: rule=%s line=%d action=%s path=%s message=%s", event.Status, event.RuleID, event.Line, event.Action, event.Path, event.Message)
+		return nil
+	}
+	output, summary, err := contractgate.Run(r.ctx, c, input, evidence)
+	r.log(node.ID, models.LogLevelInfo, "actually-fine summary: %d records, %d cleared, %d warnings, %d quarantined, %d breached, halted=%t", summary.Total, summary.Cleared, summary.Warnings, summary.Quarantined, summary.Breached, summary.Halted)
+	if err != nil {
+		return nil, err
+	}
+	return output, nil
 }
 
 func (r *Runner) runSQLGenerate(node models.Node, input *common.DataSet) (*common.DataSet, error) {

@@ -1940,6 +1940,8 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runNativeOperator(node, input, inputSchema, "filter")
 	case models.NodeTypeQualityCheck:
 		return outputExecutionResult(r.runQualityCheck(node, input))
+	case models.NodeTypeContractGate:
+		return outputExecutionResult(r.runContractGate(node, input))
 	case models.NodeTypeCode:
 		// Dynamic node expansion (#31): a `code` node carrying an
 		// `expansion` config block (brokoli-sdk's _TaskWrapper.expand())

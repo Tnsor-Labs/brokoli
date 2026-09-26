@@ -172,13 +172,14 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 	models.NodeTypeJoin:      joinColumns,
 	models.NodeTypeUnion:     unionColumns,
 
-	// Nodes that provably return their input unchanged. quality_check
+	// Nodes that provably preserve the input columns. quality_check
 	// runs its checks and returns the same dataset; condition evaluates
 	// a predicate and passes the input through on the branch it takes;
 	// the sinks write what they are given. Verified in the handlers, not
 	// assumed: engine/node_handlers.go runQualityCheck returns `input`,
 	// runCondition returns `input`.
 	models.NodeTypeQualityCheck: passThroughColumns("quality_check validates and returns its input unchanged"),
+	models.NodeTypeContractGate: passThroughColumns("contract_gate validates and preserves the input columns"),
 	models.NodeTypeCondition:    passThroughColumns("condition evaluates a predicate and passes its input through"),
 	models.NodeTypeSinkFile:     passThroughColumns("sink_file writes the columns it is given"),
 	models.NodeTypeSinkDB:       passThroughColumns("sink_db writes the columns it is given"),

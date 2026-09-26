@@ -25,6 +25,7 @@ var AllNodeTypes = []NodeType{
 	NodeTypeAggregate,
 	NodeTypeFilter,
 	NodeTypeQualityCheck,
+	NodeTypeContractGate,
 	NodeTypeSQLGenerate,
 	NodeTypeCode,
 	NodeTypeJoin,

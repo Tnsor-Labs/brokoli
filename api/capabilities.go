@@ -24,6 +24,7 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 	models.NodeTypeAggregate:     {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeFilter:        {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeQualityCheck:  {models.CapabilityCompute},
+	models.NodeTypeContractGate:  {models.CapabilityCompute},
 	models.NodeTypeSQLGenerate:   {models.CapabilityCompute},
 	models.NodeTypeCode:          {models.CapabilityCompute},
 	models.NodeTypeJoin:          {models.CapabilityCompute},
