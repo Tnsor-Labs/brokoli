@@ -35,17 +35,30 @@ const DEFAULT_CONTRACT: ContractDocument = {
   rules: [],
 }
 
+// Every predicate mandates exactly one rule kind -- the contract
+// validator refuses the other ("required must be a record rule",
+// "unique must be a stream rule"). There is no combination where the
+// user has a real choice, so the kind is declared here beside the
+// operator it belongs to and derived, never picked.
 const OPERATORS = [
-  { value: 'required', label: 'Required' },
-  { value: 'not_null', label: 'Not null' },
-  { value: 'type', label: 'Type' },
-  { value: 'format', label: 'Format' },
-  { value: 'regex', label: 'Regular expression' },
-  { value: 'range', label: 'Numeric range' },
-  { value: 'enum', label: 'Allowed values' },
-  { value: 'unique', label: 'Unique in stream' },
-  { value: 'count', label: 'Stream row count' },
-]
+  { value: 'required', label: 'Required', kind: 'record' },
+  { value: 'not_null', label: 'Not null', kind: 'record' },
+  { value: 'type', label: 'Type', kind: 'record' },
+  { value: 'format', label: 'Format', kind: 'record' },
+  { value: 'regex', label: 'Regular expression', kind: 'record' },
+  { value: 'range', label: 'Numeric range', kind: 'record' },
+  { value: 'enum', label: 'Allowed values', kind: 'record' },
+  { value: 'unique', label: 'Unique in stream', kind: 'stream' },
+  { value: 'count', label: 'Stream row count', kind: 'stream' },
+] as const satisfies ReadonlyArray<{ value: string; label: string; kind: ContractRule['kind'] }>
+
+// kindForPredicate answers what the contract validator will demand.
+// Unknown operators keep a record rule, which is what an imported
+// contract using a predicate this UI does not list should stay as
+// rather than being silently rewritten.
+export function kindForPredicate(op: string): ContractRule['kind'] {
+  return OPERATORS.find((operator) => operator.value === op)?.kind ?? 'record'
+}
 
 const ACTIONS = [
   { value: 'warn', label: 'Warn and continue' },
@@ -88,7 +101,11 @@ export function applyPredicateSelection(rule: ContractRule, op: string): Contrac
   const predicate = { ...rule.predicate, op }
   return {
     ...rule,
-    kind: op === 'unique' || op === 'count' ? 'stream' : rule.kind,
+    // Both directions. Deriving only towards stream left the reverse
+    // open: choosing Stream and then a record predicate kept kind
+    // "stream", which the validator refuses.
+    kind: kindForPredicate(op),
+    // count is the one predicate that also fixes the path.
     path: op === 'count' ? '$' : rule.path,
     predicate,
   }
@@ -136,7 +153,6 @@ function RuleEditor({
       setPredicate({ [name]: Number(value) })
     }
   }
-  const streamOnly = predicate.op === 'unique' || predicate.op === 'count'
 
   return (
     <div className="ps-rule">
@@ -158,18 +174,9 @@ function RuleEditor({
         </Field>
         <Field
           label="Rule kind"
-          hint="Record rules run per row; stream rules inspect the whole input."
+          hint="Set by the predicate: record rules run per row, stream rules inspect the whole input."
         >
-          <Select
-            value={rule.kind}
-            disabled={ctx.readonly}
-            onChange={(event) => setRule({ kind: event.target.value as ContractRule['kind'] })}
-          >
-            <option value="record" disabled={streamOnly}>
-              Record
-            </option>
-            <option value="stream">Stream</option>
-          </Select>
+          <Input value={rule.kind} mono disabled />
         </Field>
         <Field
           label="JSON path"
@@ -404,7 +411,7 @@ export function ContractGate({ ctx }: TypeFormProps) {
                 ...document.rules,
                 {
                   id: '',
-                  kind: 'record',
+                  kind: kindForPredicate('required'),
                   path: '$.',
                   predicate: { op: 'required' },
                   on_breach: { action: 'quarantine', severity: 'error' },
