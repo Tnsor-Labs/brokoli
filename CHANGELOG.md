@@ -11,6 +11,31 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-26
+
+Fixes two defects in 0.13.0, both found by validating 0.13.0 live on a
+cluster before deploying it. Upgrade if you run 0.13.0.
+
+### Fixed
+
+- **Numeric contract rules gave wrong answers on integer data** (#748,
+  Tnsor-Labs/actually-fine#8) -- @hc12r. `range`, `type: number` and
+  `type: integer` breached every value that was not a 64-bit float,
+  reporting "value is outside the allowed range" for 3 in [0, 5]. That is
+  every integer column from `source_db`, and any spilled or streamed
+  data, where whole numbers come back as 64-bit integers to stay exact.
+  Under `quarantine` the rows were dropped without explanation, and the
+  same pipeline cleared different rows depending on whether its data had
+  been spilled. The contract engine now treats every numeric type as a
+  number and decides `integer` on the value.
+- **Unrunnable transform rules are now actually refused on save** (#747)
+  -- @hc12r. 0.13.0 described this and did not do it: the check was wired
+  into the per-node detail validation, not the path saving a pipeline
+  takes. **The behaviour change listed under 0.13.0 takes effect in this
+  release.** The same split ran the other way for contracts, which were
+  refused on save but not flagged in the per-node view; both checks now
+  run on both paths, and a test asserts the two validators agree.
+
 ## [0.13.0] - 2026-09-26
 
 ### Added
