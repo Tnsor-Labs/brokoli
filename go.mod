@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.48.0
-	github.com/Tnsor-Labs/actually-fine v0.0.0-20260926033018-9f4973153370
+	github.com/Tnsor-Labs/actually-fine v0.0.0-20260926045346-3592c35c68a0
 	github.com/apache/arrow-go/v18 v18.7.0
 	github.com/aws/aws-sdk-go-v2 v1.43.7
 	github.com/aws/aws-sdk-go-v2/config v1.32.38
