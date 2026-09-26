@@ -546,6 +546,17 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if msg := functionRefConfigError(n.Config, "dataset_filter"); msg != "" {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
+	case models.NodeTypeTransform:
+		// The rule requirements must be checked HERE, on the path every
+		// save takes (ValidatePipeline). v0.13.0 wired them only into
+		// validateNodeConfigDetailed, the per-node detail path, so the
+		// release that promised "refused on save" saved them anyway --
+		// found by a live test that created the pipeline through the API.
+		// The two validators are parallel switches; a check added to one
+		// is not in the other.
+		for _, msg := range transformRuleErrors(n) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
 	case models.NodeTypeContractGate:
 		if _, ok := n.Config["contract"]; !ok {
 			ve.Add(fmt.Sprintf("Node %q: 'contract' is required for contract_gate", n.Name))
@@ -1015,6 +1026,16 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		// with applyRule (transform_requirements.go), so this cannot
 		// promise something execution does not enforce.
 		r.Errors = append(r.Errors, transformRuleErrors(n)...)
+	case models.NodeTypeContractGate:
+		// Mirrors the save path (validateNodeConfig). Without it the
+		// per-node detail view showed nothing for an invalid contract that
+		// the save then refused -- the opposite drift from the transform
+		// check, found by the parity test on its first run.
+		if raw, ok := n.Config["contract"]; !ok {
+			r.Errors = append(r.Errors, "'contract' is required for contract_gate")
+		} else if _, err := contractgate.DecodeContract(raw); err != nil {
+			r.Errors = append(r.Errors, fmt.Sprintf("invalid contract_gate contract: %s", err))
+		}
 	case models.NodeTypeJoin:
 		if getStr(n.Config, "join_type") == "" {
 			r.Warnings = append(r.Warnings, "'join_type' not set, defaults to inner")
