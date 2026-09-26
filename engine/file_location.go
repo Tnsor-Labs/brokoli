@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	pathpkg "path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -195,36 +194,24 @@ func (r *Runner) writeFileOutput(ctx context.Context, node models.Node, path str
 }
 
 func (r *Runner) deliverRemote(ctx context.Context, node models.Node, connID, path string, write func(io.Writer) error) (fileWrite, error) {
-	asset := remoteFileAssetURI("sftp", connID, path)
 	if r.dryRun {
-		// A preview must never hand a partner a truncated file.
+		// A preview must never hand a partner a truncated file. The
+		// destination is named with the connection's own scheme when it
+		// resolves; a run reports a connection that does not.
+		scheme := "sftp"
+		if conn, err := r.resolveFileConnection(node); err == nil {
+			scheme = fileTransportScheme(conn.Type)
+		}
+		asset := remoteFileAssetURI(scheme, connID, path)
 		r.log(node.ID, models.LogLevelInfo, "Dry run: nothing delivered; a run would write %s", asset)
 		return fileWrite{where: asset, remote: true, skipped: true}, nil
 	}
 
-	conn, err := r.resolveFileConnection(node)
+	transport, err := r.openFileTransport(ctx, node)
 	if err != nil {
 		return fileWrite{}, fmt.Errorf("sink_file: %w", err)
 	}
-	if conn.Type == models.ConnTypeS3 {
-		client, err := newS3FileClient(ctx, conn)
-		if err != nil {
-			return fileWrite{}, fmt.Errorf("sink_file: conn_id %q: %w", connID, err)
-		}
-		bytes, err := client.upload(ctx, path, write)
-		if err != nil {
-			return fileWrite{}, fmt.Errorf("sink_file: deliver %s: %w", remoteFileAssetURI("s3", connID, path), err)
-		}
-		return fileWrite{bytes: bytes, where: connID + ":" + path, remote: true}, nil
-	}
-	if conn.Type != models.ConnTypeSFTP {
-		return fileWrite{}, fmt.Errorf("sink_file: conn_id %q is a %s connection; file nodes support sftp and s3", connID, conn.Type)
-	}
-	client, err := r.openFileConnection(ctx, node)
-	if err != nil {
-		return fileWrite{}, fmt.Errorf("sink_file: %w", err)
-	}
-	defer client.Close() //nolint:errcheck
+	defer transport.close() //nolint:errcheck
 
 	// Unique per run and node, so two runs (or two nodes of one run)
 	// delivering the same file never write into each other's temporary.
@@ -232,16 +219,14 @@ func (r *Runner) deliverRemote(ctx context.Context, node models.Node, connID, pa
 	if r.run != nil && r.run.ID != "" {
 		tag = r.run.ID + "-" + node.ID
 	}
-	res, err := client.Upload(path, tag, write)
+	delivered, err := transport.upload(ctx, path, tag, write)
 	if err != nil {
-		return fileWrite{}, fmt.Errorf("sink_file: deliver %s: %w", asset, err)
+		return fileWrite{}, fmt.Errorf("sink_file: deliver %s: %w", remoteFileAssetURI(transport.scheme(), connID, path), err)
 	}
-	if !res.Atomic {
-		r.log(node.ID, models.LogLevelWarning,
-			"The server does not support posix-rename, so the previous %s was removed before the new one was renamed in: a reader polling the directory could have found no file for a moment",
-			res.Path)
+	if delivered.warning != "" {
+		r.log(node.ID, models.LogLevelWarning, "%s", delivered.warning)
 	}
-	return fileWrite{bytes: res.Bytes, where: connID + ":" + res.Path, remote: true}, nil
+	return fileWrite{bytes: delivered.bytes, where: connID + ":" + delivered.path, remote: true}, nil
 }
 
 // sourceFileLocal returns a path on this machine holding the file a
@@ -258,53 +243,23 @@ func (r *Runner) sourceFileLocal(ctx context.Context, node models.Node, path str
 		return path, func() {}, false, nil
 	}
 
-	conn, err := r.resolveFileConnection(node)
+	transport, err := r.openFileTransport(ctx, node)
 	if err != nil {
 		return "", nil, true, fmt.Errorf("source_file: %w", err)
 	}
-	if conn.Type == models.ConnTypeS3 {
-		client, err := newS3FileClient(ctx, conn)
-		if err != nil {
-			return "", nil, true, fmt.Errorf("source_file: conn_id %q: %w", connID, err)
-		}
-		dir, err := downloadScratchDir()
-		if err != nil {
-			return "", nil, true, fmt.Errorf("source_file: %w", err)
-		}
-		cleanup = func() { _ = os.RemoveAll(dir) }
-		local = filepath.Join(dir, s3StagedFilename(path))
-		n, err := client.download(ctx, path, local)
-		if err != nil {
-			cleanup()
-			return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetURI("s3", connID, path), err)
-		}
-		r.log(node.ID, models.LogLevelInfo, "Fetched %s from %s (%s)", remoteFileAssetURI("s3", connID, path), connID, humanBytes(n))
-		return local, cleanup, true, nil
-	}
-	if conn.Type != models.ConnTypeSFTP {
-		return "", nil, true, fmt.Errorf("source_file: conn_id %q is a %s connection; file nodes support sftp and s3", connID, conn.Type)
-	}
-	client, err := r.openFileConnection(ctx, node)
-	if err != nil {
-		return "", nil, true, fmt.Errorf("source_file: %w", err)
-	}
-	defer client.Close() //nolint:errcheck
+	defer transport.close() //nolint:errcheck
 
 	dir, err := downloadScratchDir()
 	if err != nil {
 		return "", nil, true, fmt.Errorf("source_file: %w", err)
 	}
 	cleanup = func() { _ = os.RemoveAll(dir) }
-	// A fixed name with the remote file's extension: the loader is chosen
-	// by extension alone, and the data-directory check refuses any path
-	// containing "..", which an ordinary name like "q3..final.csv" does.
-	local = filepath.Join(dir, "download"+pathpkg.Ext(path))
-	remotePath, n, err := client.Download(path, local)
+	local, fetched, n, err := transport.download(ctx, path, dir)
 	if err != nil {
 		cleanup()
-		return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetURI("sftp", connID, path), err)
+		return "", nil, true, fmt.Errorf("source_file: fetch %s: %w", remoteFileAssetURI(transport.scheme(), connID, path), err)
 	}
-	r.log(node.ID, models.LogLevelInfo, "Fetched %s from %s (%s)", remotePath, connID, humanBytes(n))
+	r.log(node.ID, models.LogLevelInfo, "Fetched %s from %s (%s)", fetched, connID, humanBytes(n))
 	return local, cleanup, true, nil
 }
 
