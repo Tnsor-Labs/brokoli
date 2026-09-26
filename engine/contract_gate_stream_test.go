@@ -160,3 +160,83 @@ func TestContractGateIsStreamEligible(t *testing.T) {
 		t.Error("quality_check reported stream-eligible; streamEligible is answering yes to everything")
 	}
 }
+
+// idAtMostFive clears ids 1..5 and quarantines the rest.
+func idAtMostFive() contract.Contract {
+	max := 5.0
+	return contract.Contract{
+		IRVersion: "1.0",
+		Metadata:  contract.Metadata{ID: "ids", Version: "1"},
+		Input:     contract.Input{Kind: "record-stream"},
+		Rules: []contract.Rule{{
+			ID: "id-at-most-5", Kind: "record", Path: "$.id",
+			Predicate: contract.Predicate{Op: "range", Max: &max},
+			OnBreach:  contract.Policy{Action: "quarantine"},
+		}},
+	}
+}
+
+// The gate's answer must not depend on how a number happens to be typed.
+//
+// Brokoli holds a JSON source's numbers as float64 in memory, but decodes
+// whole numbers as int64 when a dataset comes back from a spilled blob (to
+// keep 64-bit values exact), and a database source hands over int64 for
+// integer columns. The contract engine used to accept only float64 as a
+// number, so the same contract over the same ten rows cleared 5 when the
+// rows were in memory and 0 when they had been spilled -- found on a live
+// cluster. The differential test above could not see it: it gates on
+// "required", which never reads a value.
+func TestContractGateAnswerDoesNotDependOnNumericType(t *testing.T) {
+	rows := func(num func(int) any) *common.DataSet {
+		ds := &common.DataSet{Columns: []string{"id"}}
+		for i := 1; i <= 10; i++ {
+			ds.Rows = append(ds.Rows, common.DataRow{"id": num(i)})
+		}
+		return ds
+	}
+	noEvidence := func(result.Event) error { return nil }
+
+	for name, ds := range map[string]*common.DataSet{
+		"float64 (a JSON source in memory)":        rows(func(i int) any { return float64(i) }),
+		"int64 (a spilled dataset, a DB column)":   rows(func(i int) any { return int64(i) }),
+		"int (a Go caller building rows directly)": rows(func(i int) any { return i }),
+	} {
+		_, summary, err := contractgate.Run(context.Background(), idAtMostFive(), ds, noEvidence)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if summary.Cleared != 5 || summary.Quarantined != 5 {
+			t.Errorf("%s: cleared %d, quarantined %d; want 5 and 5 whatever the type",
+				name, summary.Cleared, summary.Quarantined)
+		}
+	}
+
+	// And through the real streaming path, where the int64 comes from.
+	outputs := newStreamTestOutputs(t)
+	if err := outputs.Put("up", rows(func(i int) any { return float64(i) })); err != nil {
+		t.Fatal(err)
+	}
+	inRef, ok := outputs.GetRef("up")
+	if !ok {
+		t.Fatal("input did not spill to a ref")
+	}
+	var streamed actuallyfine.Summary
+	if _, err := streamOut(outputs, func(write func(*common.DataSet) error) ([]string, error) {
+		batches, closer, oerr := outputs.OpenBatches(inRef)
+		if oerr != nil {
+			return nil, oerr
+		}
+		defer closer.Close()
+		s, gerr := contractgate.RunStreaming(context.Background(), idAtMostFive(),
+			func() (*common.DataSet, error) { return batches.Next() }, write, noEvidence)
+		streamed = s
+		return inRef.Columns, gerr
+	}); err != nil {
+		t.Fatalf("streamed gate: %v", err)
+	}
+	if streamed.Cleared != 5 || streamed.Quarantined != 5 {
+		t.Errorf("streamed over a spilled ref: cleared %d, quarantined %d; want 5 and 5 -- "+
+			"the same rows gave a different answer once they had been spilled",
+			streamed.Cleared, streamed.Quarantined)
+	}
+}
