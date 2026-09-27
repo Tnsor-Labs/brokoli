@@ -531,3 +531,27 @@ Phases:
    `gcp_secret_manager`, `azure_key_vault`, `infisical`, `http`.
 4. **Deferred items** as demand appears: dynamic secrets, secret
    variables from stores.
+
+## Update (2026-09-27)
+
+The token-source half of section 4 is built, ahead of the stores
+themselves, because ADR-042 (BigQuery) needs it first.
+
+- **It lives in `pkg/identity`, not in the secret-store package**, since
+  backends that are not secret stores use it too. `TokenRequest` names its
+  subject as `SubjectKind` and `SubjectID` (`"store"` or `"connection"` and
+  an immutable ID) instead of a store ID.
+- **The file token source is the machine's identity.** Section 4 presented
+  it as a way to use `oidc` anywhere. A token a platform projects onto the
+  machine, such as a Kubernetes service-account token, identifies the pod,
+  not the workspace, so it is ambient identity in another form. It
+  implements `identity.Machine`, and `identity.Token` refuses it where
+  `BROKOLI_SECRET_STORE_AMBIENT=deny`. `oidc` that is safe on a server
+  running work for several workspaces needs a source that issues a token
+  per workspace, which a distribution provides through
+  `extensions.Registry.TokenSource`.
+- **The ambient switch exists** (`identity.AmbientAllowed`), and the file
+  source is its first user.
+- **Google workload identity federation is built on it**
+  (`pkg/identity/gcpfederation`). Brokoli builds the external-account
+  configuration itself, as ADR-042 section 2 requires.
