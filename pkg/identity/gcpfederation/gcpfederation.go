@@ -31,7 +31,7 @@ import (
 const DefaultScope = "https://www.googleapis.com/auth/cloud-platform"
 
 const (
-	subjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
+	subjectTokenType = "urn:ietf:params:oauth:token-type:jwt" // #nosec G101 -- an RFC 8693 token type identifier, not a credential
 	impersonationFmt = "%s/v1/projects/-/serviceAccounts/%s:generateAccessToken"
 	impersonationAPI = "https://iamcredentials.googleapis.com"
 )
