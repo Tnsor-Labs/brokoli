@@ -168,6 +168,18 @@ func TestBulkWriterScope(t *testing.T) {
 			t.Errorf("expected a bulk writer for %+v", cfg)
 		}
 	}
+	// SQL Server append and overwrite go through TDS bulk copy (#681);
+	// sqlserver_infra_test.go and sqlserver_million_test.go prove them
+	// against a real server. Both dialect spellings resolve to it.
+	yes = append(yes, SQLGenConfig{Dialect: "sqlserver", Mode: ModeAppend},
+		SQLGenConfig{Dialect: "sqlserver", Mode: ""},
+		SQLGenConfig{Dialect: "sqlserver", Mode: ModeOverwrite},
+		SQLGenConfig{Dialect: "mssql", Mode: ModeAppend})
+	for _, cfg := range yes[len(yes)-4:] {
+		if _, ok := bulkWriterFor(cfg); !ok {
+			t.Errorf("expected a bulk writer for %+v", cfg)
+		}
+	}
 
 	no := []SQLGenConfig{
 		// An upsert without its conflict target has nothing to merge on.
@@ -180,7 +192,9 @@ func TestBulkWriterScope(t *testing.T) {
 		{Dialect: "postgres", Mode: ModeAppend, CreateTable: true}, // DDL moves via bulkCreateReady, not here
 		{Dialect: "mysql", Mode: ModeAppend, CreateTable: true},
 		{Dialect: "sqlite", Mode: ModeAppend},
-		{Dialect: "sqlserver", Mode: ModeAppend},
+		// TDS bulk copy has no conflict operation, and no staged merge is
+		// built for SQL Server: upsert must not quietly become append.
+		{Dialect: "sqlserver", Mode: ModeUpsert, KeyColumns: []string{"id"}},
 		{Dialect: "generic", Mode: ModeAppend},
 	}
 	for _, cfg := range no {

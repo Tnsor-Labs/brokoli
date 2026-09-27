@@ -393,6 +393,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testDBConnection(ctx, c.Host)
 	case models.ConnTypeClickHouse:
 		return testDBConnection(ctx, c.BuildURI())
+	case models.ConnTypeMSSQL:
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeHTTP:
 		return testHTTPAuth(ctx, c, extra)
 	case models.ConnTypeSFTP:
@@ -401,8 +403,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testS3(ctx, extra)
 	case models.ConnTypeAzureBlob:
 		return testAzureBlob(ctx, extra)
-	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
-		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
+	case models.ConnTypeSnowflake, models.ConnTypeOracle, models.ConnTypeBigQuery,
+		models.ConnTypeDatabricks:
 		return unsupportedDatabaseTest(c.Type)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP

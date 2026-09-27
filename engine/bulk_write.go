@@ -21,13 +21,13 @@ type bulkBatchWriter func(ctx context.Context, uri string, cfg SQLGenConfig, col
 // takes.
 //
 // Append and overwrite go straight through. Upsert goes through staged
-// (#377): no bulk protocol carries a conflict clause, so the rows bulk-load
-// into a session temp table and one merge statement moves them on -- which
-// still spares the server parsing the rows as SQL text, the cost that made
-// the statement-path upsert the slowest write in the product. CreateTable
-// alone does not disqualify a write; bulkCreateReady moves its DDL into the
-// writer's transaction. A dialect with no writer here simply keeps today's
-// statement path -- absence degrades, it does not error.
+// (#377) where a backend has a staged merge implementation: no bulk protocol
+// carries a conflict clause, so the rows bulk-load into a session temp table
+// and one merge statement moves them on. SQL Server currently refuses upsert
+// until that merge is implemented. CreateTable alone does not disqualify a
+// write; bulkCreateReady moves its DDL into the writer's transaction. A
+// dialect with no writer here simply keeps today's statement path -- absence
+// degrades, it does not error.
 func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 	if copyFastPathDisabled() {
 		return nil, false
@@ -64,6 +64,14 @@ func bulkWriterFor(cfg SQLGenConfig) (bulkBatchWriter, bool) {
 			return appendBatchesToClickHouse, true
 		}
 		return nil, false
+	case "sqlserver", "mssql":
+		// SQL Server's native TDS bulk-copy protocol has no conflict
+		// operation. Append and overwrite are safe; upsert stays on the
+		// refusal path rather than silently becoming append.
+		if strings.EqualFold(strings.TrimSpace(cfg.Mode), ModeUpsert) {
+			return nil, false
+		}
+		return copyBatchesToSQLServer, true
 	}
 	return nil, false
 }
