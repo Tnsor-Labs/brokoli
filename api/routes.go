@@ -38,12 +38,12 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	}
 	plugh := NewPluginHandler(pluginMgr)
 
-	// Connection handler (crypto config optional for backward compat)
-	var cc *crypto.Config
+	// Without a crypto config there is no key, and saving or reading a
+	// stored credential fails with an error. It never falls back to a
+	// fixed key, which would store credentials anyone can decrypt (#754).
+	cc := &crypto.Config{}
 	if len(cryptoCfg) > 0 && cryptoCfg[0] != nil {
 		cc = cryptoCfg[0]
-	} else {
-		cc = &crypto.Config{Key: make([]byte, 32)} // zero key fallback
 	}
 	ch := NewConnectionHandler(s, cc)
 	vh := NewVariableHandler(s, cc)
