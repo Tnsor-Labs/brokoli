@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
@@ -24,7 +25,7 @@ func TestBigQueryEmulatorPhase1(t *testing.T) {
 	uri := "bigquery://test/brokoli_test"
 	table := fmt.Sprintf("phase1_rows_%d", time.Now().UnixNano())
 	config := map[string]interface{}{}
-	if err := CheckBigQueryConnection(ctx, uri, config, ""); err != nil {
+	if err := CheckBigQueryConnection(ctx, uri, config, "", nil, identity.TokenRequest{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -32,13 +33,14 @@ func TestBigQueryEmulatorPhase1(t *testing.T) {
 		Columns: []string{"id", "name"},
 		Rows:    []common.DataRow{{"id": int64(1), "name": "one"}},
 	}
-	if _, err := QueryBigQuery(ctx, uri, fmt.Sprintf("CREATE TABLE %s (id INT64, name STRING)", table), config, ""); err != nil {
+	auth := bigQueryAuth{}
+	if _, err := QueryBigQuery(ctx, uri, fmt.Sprintf("CREATE TABLE %s (id INT64, name STRING)", table), config, auth); err != nil {
 		t.Fatal(err)
 	}
-	if err := LoadBigQuery(ctx, uri, table, ModeAppend, data, config, ""); err != nil {
+	if err := LoadBigQuery(ctx, uri, table, ModeAppend, data, config, auth); err != nil {
 		t.Fatal(err)
 	}
-	got, err := QueryBigQuery(ctx, uri, fmt.Sprintf("SELECT id, name FROM %s", table), config, "")
+	got, err := QueryBigQuery(ctx, uri, fmt.Sprintf("SELECT id, name FROM %s", table), config, auth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,10 +56,10 @@ func TestBigQueryEmulatorPhase1(t *testing.T) {
 	if len(got.Rows) != 1 || name != "one" {
 		t.Fatalf("rows = %#v, want one row named one", got.Rows)
 	}
-	if _, _, err := DryRunBigQuery(ctx, uri, fmt.Sprintf("SELECT id FROM %s", table), config, ""); err != nil {
+	if _, _, err := DryRunBigQuery(ctx, uri, fmt.Sprintf("SELECT id FROM %s", table), config, auth); err != nil {
 		t.Fatal(err)
 	}
-	if err := LoadBigQuery(ctx, uri, table, ModeUpsert, data, config, ""); err == nil {
+	if err := LoadBigQuery(ctx, uri, table, ModeUpsert, data, config, auth); err == nil {
 		t.Fatal("upsert must be refused by name")
 	}
 }

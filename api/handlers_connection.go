@@ -17,6 +17,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient"
@@ -33,6 +34,9 @@ type ConnectionHandler struct {
 	// creds resolves a connection's credential references for the test,
 	// with the same chain a run resolves them with (#752).
 	creds *engine.ConnectionResolver
+	// tokens is the deployment's OIDC token source, for connections that
+	// authenticate by workload identity federation. Nil when there is none.
+	tokens identity.TokenSource
 }
 
 // validateConnectionAccess checks if a connection exists in the user's org-scoped connection set.
@@ -404,7 +408,7 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 	case models.ConnTypeAzureBlob:
 		return testAzureBlob(ctx, extra)
 	case models.ConnTypeBigQuery:
-		return testBigQuery(ctx, c, extra)
+		return h.testBigQuery(ctx, c)
 	case models.ConnTypeSnowflake, models.ConnTypeOracle,
 		models.ConnTypeDatabricks:
 		return unsupportedDatabaseTest(c.Type)
@@ -414,10 +418,13 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 	}
 }
 
-func testBigQuery(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
+func (h *ConnectionHandler) testBigQuery(ctx context.Context, c *models.Connection) map[string]interface{} {
 	// c.Extra was resolved by the test handler through the same path a run
 	// uses; it is passed to the backend directly, never through a config.
-	if err := engine.CheckBigQueryConnection(ctx, c.BuildURI(), nil, c.Extra); err != nil {
+	// An oidc connection is tested with the deployment's token source, for
+	// the connection's own workspace and ID, as a run would be.
+	req := identity.TokenRequest{WorkspaceID: c.WorkspaceID, SubjectKind: "connection", SubjectID: c.ID}
+	if err := engine.CheckBigQueryConnection(ctx, c.BuildURI(), nil, c.Extra, h.tokens, req); err != nil {
 		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"success": true}
