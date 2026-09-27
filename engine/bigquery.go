@@ -26,6 +26,14 @@ func isBigQueryURI(uri string) bool {
 	return strings.HasPrefix(uri, "bigquery://")
 }
 
+func bigQueryQuotaProject(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("invalid BigQuery URI")
+	}
+	return u.Query().Get("billing_project"), nil
+}
+
 // bigQueryClient opens a client for uri with the connection's settings.
 //
 // settings is the connection's extra document, resolved where the node runs
@@ -46,6 +54,11 @@ func bigQueryClient(ctx context.Context, uri, settings string) (*bigquery.Client
 
 	httpClient := netguard.Outbound().Client(30 * time.Minute)
 	opts := []option.ClientOption{option.WithHTTPClient(httpClient)}
+	if billingProject, err := bigQueryQuotaProject(uri); err != nil {
+		return nil, err
+	} else if billingProject != "" {
+		opts = append(opts, option.WithQuotaProject(billingProject))
+	}
 	if endpoint := os.Getenv("BROKOLI_BIGQUERY_ENDPOINT"); endpoint != "" {
 		// Test-only endpoint for the local emulator. The production path never
 		// uses an endpoint from connection data, and the emulator has no auth.

@@ -125,3 +125,14 @@ func TestBigQueryRefusesACredentialThatIsNotAServiceAccountKey(t *testing.T) {
 		}
 	}
 }
+func TestBigQueryQuotaProjectComesFromURI(t *testing.T) {
+	for uri, want := range map[string]string{
+		"bigquery://analytics/events?billing_project=billing-prod": "billing-prod",
+		"bigquery://analytics/events":                              "",
+	} {
+		got, err := bigQueryQuotaProject(uri)
+		if err != nil || got != want {
+			t.Errorf("bigQueryQuotaProject(%q) = %q, %v; want %q", uri, got, err, want)
+		}
+	}
+}
