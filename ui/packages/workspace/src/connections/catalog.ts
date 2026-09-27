@@ -17,14 +17,51 @@ export const DEFAULT_PORT: Record<string, string> = {
 }
 
 /** Types some node can actually use: database URIs, http for API nodes, and sftp/s3 for file nodes. */
-export const USABLE_BY_NODES = new Set(['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'clickhouse', 'http', 'sftp', 's3'])
+export const USABLE_BY_NODES = new Set([
+  'postgres',
+  'redshift',
+  'mysql',
+  'sqlite',
+  'mssql',
+  'clickhouse',
+  'http',
+  'sftp',
+  's3',
+])
 
 /** Driver options BuildURI reads from `extra` (models/connection.go allowlist). */
 export const DRIVER_OPTIONS: Record<string, string[]> = {
-  postgres: ['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'application_name', 'connect_timeout', 'target_session_attrs'],
+  postgres: [
+    'sslmode',
+    'sslrootcert',
+    'sslcert',
+    'sslkey',
+    'application_name',
+    'connect_timeout',
+    'target_session_attrs',
+  ],
   redshift: ['sslmode', 'sslrootcert', 'sslcert', 'sslkey', 'application_name', 'connect_timeout'],
-  mysql: ['tls', 'charset', 'collation', 'parseTime', 'loc', 'timeout', 'readTimeout', 'writeTimeout', 'interpolateParams', 'maxAllowedPacket', 'clientFoundRows'],
-  mssql: ['encrypt', 'TrustServerCertificate', 'hostNameInCertificate', 'connection timeout', 'dial timeout', 'app name'],
+  mysql: [
+    'tls',
+    'charset',
+    'collation',
+    'parseTime',
+    'loc',
+    'timeout',
+    'readTimeout',
+    'writeTimeout',
+    'interpolateParams',
+    'maxAllowedPacket',
+    'clientFoundRows',
+  ],
+  mssql: [
+    'encrypt',
+    'TrustServerCertificate',
+    'hostNameInCertificate',
+    'connection timeout',
+    'dial timeout',
+    'app name',
+  ],
   clickhouse: ['secure', 'dial_timeout', 'read_timeout', 'compress'],
   snowflake: ['warehouse', 'role', 'authenticator', 'loginTimeout', 'application'],
 }
@@ -56,7 +93,9 @@ export function groupTypes(types: ConnectionTypeMeta[]) {
 
 /** Fields to render for a type: the server's list, plus driver options where BuildURI reads them, minus a port Snowflake ignores. */
 export function formFields(type: string, meta: ConnectionTypeMeta | undefined) {
-  const base = meta?.fields?.length ? [...meta.fields] : ['host', 'port', 'schema', 'login', 'password', 'extra']
+  const base = meta?.fields?.length
+    ? [...meta.fields]
+    : ['host', 'port', 'schema', 'login', 'password', 'extra']
   if (DRIVER_OPTIONS[type] && !base.includes('extra')) base.push('extra')
   return type === 'snowflake' ? base.filter((f) => f !== 'port') : base
 }
