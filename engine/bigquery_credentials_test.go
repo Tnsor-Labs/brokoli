@@ -2,15 +2,20 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -132,32 +137,184 @@ func TestBigQueryRefusesACredentialThatIsNotAServiceAccountKey(t *testing.T) {
 	}
 }
 
-func TestBigQueryUsesOIDCCredentialsFromConnectionSettings(t *testing.T) {
-	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
-	settings := `{"auth_method":"oidc","provider":"//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs","service_account":"loader@acme.iam.gserviceaccount.com"}`
-	client, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{
-		settings: settings,
-		tokens:   bigQueryTokenSource{},
-		request: identity.TokenRequest{
-			Audience:    "unused-before-federation-rewrites-it",
-			WorkspaceID: "ws-a",
-			SubjectKind: "connection",
-			SubjectID:   "warehouse",
-			RunID:       "run-1",
-			NodeID:      "node-1",
-		},
-	})
-	if err != nil {
-		t.Fatalf("OIDC client: %v", err)
-	}
-	_ = client.Close()
-}
-
 func TestBigQueryOIDCRequiresDeploymentTokenSource(t *testing.T) {
 	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
 	settings := `{"auth_method":"oidc","provider":"//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs"}`
 	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: settings})
 	if !errors.Is(err, identity.ErrNoTokenSource) {
 		t.Fatalf("err = %v, want ErrNoTokenSource", err)
+	}
+}
+
+const bigQueryTestProvider = "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs"
+
+// recordingTokenSource returns a fixed subject token and records requests.
+type recordingTokenSource struct {
+	mu   sync.Mutex
+	reqs []identity.TokenRequest
+}
+
+func (s *recordingTokenSource) Token(_ context.Context, req identity.TokenRequest) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reqs = append(s.reqs, req)
+	return "subject-jwt", nil
+}
+
+// fakeGoogleFederation answers Google's token exchange and IAM Credentials
+// impersonation, and records what each was sent.
+func fakeGoogleFederation(t *testing.T) (url string, exchange map[string]string, impersonated *string) {
+	t.Helper()
+	exchange = map[string]string{}
+	var who string
+	var mu sync.Mutex
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/token", func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		mu.Lock()
+		for k := range r.PostForm {
+			exchange[k] = r.PostForm.Get(k)
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"federated","issued_token_type":"urn:ietf:params:oauth:token-type:access_token","token_type":"Bearer","expires_in":3600}`))
+	})
+	mux.HandleFunc("/v1/projects/-/serviceAccounts/", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		who = r.URL.Path
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"accessToken":"impersonated","expireTime":%q}`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	prev := bigQueryFederationEndpoints
+	bigQueryFederationEndpoints.tokenURL = srv.URL + "/v1/token"
+	bigQueryFederationEndpoints.impersonationURL = srv.URL
+	t.Cleanup(func() { bigQueryFederationEndpoints = prev })
+	return srv.URL, exchange, &who
+}
+
+// End to end from the node's view: the runner resolves an oidc connection,
+// and the credentials it produces exchange a token that names the run's
+// workspace, the connection's immutable ID, the run and the node, then
+// impersonate the configured service account.
+func TestBigQueryOIDCExchangesATokenForTheRun(t *testing.T) {
+	_, exchange, impersonated := fakeGoogleFederation(t)
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "bq-oidc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	now := time.Now().UTC()
+	settings := `{"auth_method":"oidc","provider":"` + bigQueryTestProvider + `","service_account":"loader@acme.iam.gserviceaccount.com"}`
+	if err := st.CreateConnection(&models.Connection{ID: "conn-uuid-1", ConnID: "warehouse-oidc", Type: models.ConnTypeBigQuery,
+		Schema: "acme.analytics", Extra: settings, WorkspaceID: "ws-a", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	tokens := &recordingTokenSource{}
+	cr := NewConnectionResolver(st, nil)
+	cr.SetTokenSource(tokens)
+	r := &Runner{connResolver: cr, pipe: &models.Pipeline{WorkspaceID: "ws-a"}, run: &models.Run{ID: "run-9"}}
+
+	auth, err := r.bigQuerySettings(map[string]interface{}{"conn_id": "warehouse-oidc"}, "node-3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal([]byte(auth.settings), &raw); err != nil {
+		t.Fatal(err)
+	}
+	creds, err := bigQueryOIDCCredentials(raw, auth, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tok, err := creds.Token(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tok.Value != "impersonated" {
+		t.Fatalf("access token = %q, want the impersonated one", tok.Value)
+	}
+
+	if len(tokens.reqs) != 1 {
+		t.Fatalf("the token source was asked %d times, want 1", len(tokens.reqs))
+	}
+	want := identity.TokenRequest{Audience: "https:" + bigQueryTestProvider, WorkspaceID: "ws-a",
+		SubjectKind: "connection", SubjectID: "conn-uuid-1", RunID: "run-9", NodeID: "node-3"}
+	if got := tokens.reqs[0]; got != want {
+		t.Errorf("token request = %+v\nwant           %+v", got, want)
+	}
+	if exchange["audience"] != bigQueryTestProvider || exchange["subject_token"] != "subject-jwt" {
+		t.Errorf("token exchange got audience %q, subject token %q", exchange["audience"], exchange["subject_token"])
+	}
+	if !strings.Contains(*impersonated, "loader@acme.iam.gserviceaccount.com:generateAccessToken") {
+		t.Errorf("impersonated %q, want the configured service account", *impersonated)
+	}
+}
+
+// A configured token_audience replaces Google's default.
+func TestBigQueryOIDCUsesAConfiguredTokenAudience(t *testing.T) {
+	fakeGoogleFederation(t)
+	tokens := &recordingTokenSource{}
+	raw := map[string]interface{}{"auth_method": "oidc", "provider": bigQueryTestProvider, "token_audience": "brokoli-runs"}
+	creds, err := bigQueryOIDCCredentials(raw, bigQueryAuth{tokens: tokens}, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := creds.Token(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if tokens.reqs[0].Audience != "brokoli-runs" {
+		t.Fatalf("audience = %q", tokens.reqs[0].Audience)
+	}
+}
+
+// An unknown auth_method is refused by name, not read as a key.
+func TestBigQueryRefusesAnUnknownAuthMethod(t *testing.T) {
+	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: `{"auth_method":"odic","provider":"x"}`})
+	if err == nil || !strings.Contains(err.Error(), `auth_method "odic" is not supported`) {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+// The credentials reach the request. option.WithHTTPClient takes precedence
+// over option.WithAuthCredentials, so passing both sent every BigQuery
+// request without credentials -- a 401 from real Google that the emulator
+// (which runs without authentication) could never show. A fake BigQuery API
+// records the Authorization header an oidc connection's request carries.
+func TestBigQueryRequestsCarryTheConnectionsCredentials(t *testing.T) {
+	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
+	fakeGoogleFederation(t)
+	var mu sync.Mutex
+	var authorization []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		authorization = append(authorization, r.Header.Get("Authorization"))
+		mu.Unlock()
+		http.Error(w, `{"error":{"code":400,"message":"fake"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(api.Close)
+	prev := bigQueryAPIEndpoint
+	bigQueryAPIEndpoint = api.URL + "/"
+	t.Cleanup(func() { bigQueryAPIEndpoint = prev })
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
+
+	settings := `{"auth_method":"oidc","provider":"` + bigQueryTestProvider + `","service_account":"loader@acme.iam.gserviceaccount.com"}`
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_ = CheckBigQueryConnection(ctx, "bigquery://acme/analytics", nil, settings, &recordingTokenSource{},
+		identity.TokenRequest{WorkspaceID: "ws-a", SubjectKind: "connection", SubjectID: "conn-uuid-1"})
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(authorization) == 0 {
+		t.Fatal("no request reached the BigQuery API")
+	}
+	for i, h := range authorization {
+		if h != "Bearer impersonated" {
+			t.Errorf("request %d carried Authorization %q, want the connection's impersonated token", i, h)
+		}
 	}
 }

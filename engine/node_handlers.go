@@ -1880,8 +1880,11 @@ func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) 
 		request: identity.TokenRequest{
 			WorkspaceID: r.workspaceID(),
 			SubjectKind: "connection",
-			SubjectID:   connID,
-			NodeID:      nodeID,
+			// The immutable ID, never the slug: a customer's trust
+			// configuration matches the token's subject exactly (Azure
+			// allows no wildcards), so a rename must not change it.
+			SubjectID: conn.ID,
+			NodeID:    nodeID,
 		},
 	}
 	if r.run != nil {

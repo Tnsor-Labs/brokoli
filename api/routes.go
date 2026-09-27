@@ -46,6 +46,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		cc = cryptoCfg[0]
 	}
 	ch := NewConnectionHandler(s, cc)
+	if e != nil && e.ConnResolver != nil {
+		ch.tokens = e.ConnResolver.TokenSource()
+	}
 	vh := NewVariableHandler(s, cc)
 	th := NewTemplateHandler(s)
 	ah := NewAlertHandler(s)

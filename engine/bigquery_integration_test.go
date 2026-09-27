@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
@@ -24,7 +25,7 @@ func TestBigQueryEmulatorPhase1(t *testing.T) {
 	uri := "bigquery://test/brokoli_test"
 	table := fmt.Sprintf("phase1_rows_%d", time.Now().UnixNano())
 	config := map[string]interface{}{}
-	if err := CheckBigQueryConnection(ctx, uri, config, ""); err != nil {
+	if err := CheckBigQueryConnection(ctx, uri, config, "", nil, identity.TokenRequest{}); err != nil {
 		t.Fatal(err)
 	}
 

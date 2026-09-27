@@ -26,7 +26,21 @@ credentials:
 
 `provider` is required. `service_account` and `token_audience` are optional.
 The worker's configured OIDC token source supplies the short-lived token; an
-OIDC connection fails if the deployment has no token source.
+OIDC connection fails if the deployment has no token source. **Test
+connection** uses the same token source, for the connection's workspace and ID.
+
+The token names the connection by its immutable ID, not its name, so renaming
+a connection does not change what the customer's trust configuration matches.
+
+A token source that reads tokens from disk (`BROKOLI_OIDC_TOKEN_FILES`, such
+as a Kubernetes projected service-account token) is the machine's own
+identity, not the workspace's. Where `BROKOLI_SECRET_STORE_AMBIENT=deny`, it
+is refused like any machine identity; a server that runs pipelines for several
+workspaces needs a token source that issues a token per workspace. See
+[workload identity](workload-identity.md).
+
+`auth_method` is either `oidc` or absent (a service-account key, or the
+machine's identity). Any other value is refused by name.
 
 Source queries are standard GoogleSQL query jobs. Every query has a default
 `maximum_bytes_billed` of 10 GiB; set `maximum_bytes_billed` in `extra` to
