@@ -13,6 +13,7 @@ import (
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 )
 
 // testAzureBlobThroughHandler creates an azure_blob connection through the
@@ -127,5 +128,61 @@ func TestAzureBlobConnectionTestAgainstAzurite(t *testing.T) {
 	})
 	if ok, _ := bad["success"].(bool); ok {
 		t.Fatalf("a wrong key passed the connection test: %v", bad)
+	}
+}
+
+// #752, end to end against Azurite: a connection whose whole extra
+// settings -- account, container, key, endpoint -- come from an env://
+// reference tests green only if the test resolves the reference. Before,
+// it was tested with no extra at all and failed on a missing account.
+func TestAzureBlobConnectionTestResolvesAnExtraReference(t *testing.T) {
+	endpoint := os.Getenv("BROKOLI_TEST_AZURE_BLOB_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("set BROKOLI_TEST_AZURE_BLOB_ENDPOINT to run the Azurite connection test")
+	}
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
+
+	const account = "devstoreaccount1"
+	const key = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
+	cred, err := azblob.NewSharedKeyCredential(account, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	admin, err := azblob.NewClientWithSharedKeyCredential(strings.TrimRight(endpoint, "/")+"/", cred, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("ref-%d", time.Now().UnixNano()%1_000_000_000)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := admin.CreateContainer(ctx, name, nil); err != nil {
+		t.Fatalf("create container: %v", err)
+	}
+	t.Cleanup(func() { _, _ = admin.DeleteContainer(context.Background(), name, nil) })
+
+	extra, err := json.Marshal(map[string]string{"account": account, "container": name, "key": key, "endpoint": endpoint})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BROKOLI_TEST_752_AZURE_EXTRA", string(extra))
+	t.Setenv(secrets.EnvRefAllowEnv, "BROKOLI_TEST_752_AZURE_EXTRA")
+
+	h, _ := connRoundTripEnv(t)
+	r := routeConn(h)
+	r.Post("/api/connections/{connId}/test", h.Test)
+	body := map[string]interface{}{"conn_id": "az-by-ref", "type": "azure_blob", "extra_ref": "env://BROKOLI_TEST_752_AZURE_EXTRA"}
+	if w := doJSON(t, r, "POST", "/api/connections", body); w.Code >= 300 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	w := doJSON(t, r, "POST", "/api/connections/az-by-ref/test", nil)
+	var out map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("test: %v (%s)", err, w.Body.String())
+	}
+	if ok, _ := out["success"].(bool); !ok {
+		t.Fatalf("a connection whose extra settings are an env:// reference failed the test: %v", out)
+	}
+	if note, _ := out["note"].(string); note == "" {
+		t.Errorf("no note that the reference was resolved on the server: %v", out)
 	}
 }

@@ -29,11 +29,20 @@ import '../workspace.css'
 
 const PAGE_SIZE = 25
 
-function DeleteConnection({ connection, onClose }: { connection: Connection; onClose: () => void }) {
+function DeleteConnection({
+  connection,
+  onClose,
+}: {
+  connection: Connection
+  onClose: () => void
+}) {
   const toast = useToast()
   const queryClient = useQueryClient()
   // The server deletes regardless of references, so show them before the user confirms.
-  const usage = useQuery({ queryKey: ['connections', connection.conn_id, 'used-by'], queryFn: () => connectionApi.usedBy(connection.conn_id) })
+  const usage = useQuery({
+    queryKey: ['connections', connection.conn_id, 'used-by'],
+    queryFn: () => connectionApi.usedBy(connection.conn_id),
+  })
   const pipelines = [...new Set((usage.data ?? []).map((u) => u.pipeline_name))]
   return (
     <ConfirmDialog
@@ -54,10 +63,16 @@ function DeleteConnection({ connection, onClose }: { connection: Connection; onC
           <Spinner size="sm" /> Checking which pipelines use it
         </p>
       ) : usage.isError ? (
-        <Callout tone="warning">Could not check which pipelines use it: {errorMessage(usage.error)}</Callout>
+        <Callout tone="warning">
+          Could not check which pipelines use it: {errorMessage(usage.error)}
+        </Callout>
       ) : usage.data.length ? (
-        <Callout tone="danger" title={`Used by ${usage.data.length} node${usage.data.length === 1 ? '' : 's'} in ${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'}`}>
-          {pipelines.join(', ')}. Those nodes will run without its credentials until they are pointed at another connection.
+        <Callout
+          tone="danger"
+          title={`Used by ${usage.data.length} node${usage.data.length === 1 ? '' : 's'} in ${pipelines.length} pipeline${pipelines.length === 1 ? '' : 's'}`}
+        >
+          {pipelines.join(', ')}. Those nodes will run without its credentials until they are
+          pointed at another connection.
         </Callout>
       ) : (
         <p>No node references this connection by ID. Its stored credentials are removed.</p>
@@ -70,7 +85,11 @@ export function ConnectionsPage() {
   const session = useSession()
   const toast = useToast()
   const list = useQuery({ queryKey: ['connections'], queryFn: connectionApi.list })
-  const types = useQuery({ queryKey: ['connection-types'], queryFn: connectionApi.types, staleTime: 5 * 60_000 })
+  const types = useQuery({
+    queryKey: ['connection-types'],
+    queryFn: connectionApi.types,
+    staleTime: 5 * 60_000,
+  })
   const [params] = useSearchParams()
   const [search, setSearch] = useState(() => params.get('q') ?? '')
   // The search palette opens this page with ?q= naming one item; follow it when already here.
@@ -91,7 +110,10 @@ export function ConnectionsPage() {
     return all.filter(
       (c) =>
         (!type || c.type === type) &&
-        (!q || `${c.conn_id} ${c.type} ${metaOf(c.type)?.label ?? ''} ${c.host ?? ''} ${c.schema ?? ''} ${c.description ?? ''}`.toLowerCase().includes(q)),
+        (!q ||
+          `${c.conn_id} ${c.type} ${metaOf(c.type)?.label ?? ''} ${c.host ?? ''} ${c.schema ?? ''} ${c.description ?? ''}`
+            .toLowerCase()
+            .includes(q)),
     )
   }, [all, search, type, types.data]) // eslint-disable-line react-hooks/exhaustive-deps
   const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -103,8 +125,13 @@ export function ConnectionsPage() {
     setTesting(c.conn_id)
     try {
       const r = await connectionApi.test(c.conn_id)
-      if (r.success) toast.success(`${c.conn_id} works`, r.message)
-      else toast.error(`${c.conn_id} failed`, r.error || r.message || 'No details from the server')
+      const note = r.note ? ` ${r.note}` : ''
+      if (r.success) toast.success(`${c.conn_id} works`, `${r.message ?? ''}${note}`.trim())
+      else
+        toast.error(
+          `${c.conn_id} failed`,
+          `${r.error || r.message || 'No details from the server'}${note}`,
+        )
     } catch (e) {
       toast.error(`Could not test ${c.conn_id}`, e)
     } finally {
@@ -120,14 +147,26 @@ export function ConnectionsPage() {
         description="Databases, storage and APIs your pipelines use. Credentials are encrypted on the server and never shown again."
         actions={
           session.can('connections.create') && (
-            <Button variant="primary" icon={<Plus size={16} aria-hidden="true" />} onClick={() => setEditing('new')}>
+            <Button
+              variant="primary"
+              icon={<Plus size={16} aria-hidden="true" />}
+              onClick={() => setEditing('new')}
+            >
               New connection
             </Button>
           )
         }
       />
       {list.isError ? (
-        <Callout tone="danger" title="Connections could not be loaded" action={<Button size="sm" onClick={() => void list.refetch()}>Try again</Button>}>
+        <Callout
+          tone="danger"
+          title="Connections could not be loaded"
+          action={
+            <Button size="sm" onClick={() => void list.refetch()}>
+              Try again
+            </Button>
+          }
+        >
           {errorMessage(list.error)}
         </Callout>
       ) : list.isPending ? (
@@ -143,7 +182,11 @@ export function ConnectionsPage() {
             title="No connections yet"
             action={
               session.can('connections.create') && (
-                <Button variant="primary" icon={<Plus size={16} aria-hidden="true" />} onClick={() => setEditing('new')}>
+                <Button
+                  variant="primary"
+                  icon={<Plus size={16} aria-hidden="true" />}
+                  onClick={() => setEditing('new')}
+                >
                   Add a connection
                 </Button>
               )
@@ -184,7 +227,12 @@ export function ConnectionsPage() {
               {filtered.length} of {all.length}
             </span>
           </div>
-          {types.isError && <Callout tone="warning">Connection types could not be loaded ({errorMessage(types.error)}); new connections cannot be created until they are.</Callout>}
+          {types.isError && (
+            <Callout tone="warning">
+              Connection types could not be loaded ({errorMessage(types.error)}); new connections
+              cannot be created until they are.
+            </Callout>
+          )}
           {!filtered.length ? (
             <div className="bk-table-wrap">
               <EmptyState
@@ -225,7 +273,11 @@ export function ConnectionsPage() {
                           <td>
                             <div className="ws-name">
                               <span className="ws-type-icon is-brand">
-                                <VendorIcon type={c.type} category={meta?.category ?? 'other'} size={16} />
+                                <VendorIcon
+                                  type={c.type}
+                                  category={meta?.category ?? 'other'}
+                                  size={16}
+                                />
                               </span>
                               <span>
                                 <code>{c.conn_id}</code>
@@ -235,26 +287,52 @@ export function ConnectionsPage() {
                           </td>
                           <td>
                             <Badge>{meta?.label ?? c.type}</Badge>
-                            {!USABLE_BY_NODES.has(c.type) && <small className="ws-note">not usable by nodes</small>}
+                            {!USABLE_BY_NODES.has(c.type) && (
+                              <small className="ws-note">not usable by nodes</small>
+                            )}
                           </td>
                           <td className="bk-mono ws-endpoint">
-                            {c.host ? `${c.host}${c.port ? `:${c.port}` : ''}` : <span className="ws-muted">Not set</span>}
+                            {c.host ? (
+                              `${c.host}${c.port ? `:${c.port}` : ''}`
+                            ) : (
+                              <span className="ws-muted">Not set</span>
+                            )}
                             {c.schema && <small>{c.schema}</small>}
                           </td>
-                          <td>{c.max_concurrent ? `${c.max_concurrent} at once` : <span className="ws-muted">None</span>}</td>
+                          <td>
+                            {c.max_concurrent ? (
+                              `${c.max_concurrent} at once`
+                            ) : (
+                              <span className="ws-muted">None</span>
+                            )}
+                          </td>
                           <td>{formatRelative(c.updated_at)}</td>
                           <td>
                             <div className="ws-actions" onClick={(e) => e.stopPropagation()}>
                               {session.can('connections.test') && (
-                                <Button size="sm" icon={<PlugZap size={14} aria-hidden="true" />} loading={testing === c.conn_id} onClick={() => void test(c)}>
+                                <Button
+                                  size="sm"
+                                  icon={<PlugZap size={14} aria-hidden="true" />}
+                                  loading={testing === c.conn_id}
+                                  onClick={() => void test(c)}
+                                >
                                   Test
                                 </Button>
                               )}
-                              <IconButton size="sm" label={`Edit ${c.conn_id}`} onClick={() => setEditing(c)}>
+                              <IconButton
+                                size="sm"
+                                label={`Edit ${c.conn_id}`}
+                                onClick={() => setEditing(c)}
+                              >
                                 <PencilLine size={15} aria-hidden="true" />
                               </IconButton>
                               {session.can('connections.delete') && (
-                                <IconButton size="sm" variant="danger" label={`Delete ${c.conn_id}`} onClick={() => setDeleting(c)}>
+                                <IconButton
+                                  size="sm"
+                                  variant="danger"
+                                  label={`Delete ${c.conn_id}`}
+                                  onClick={() => setDeleting(c)}
+                                >
                                   <Trash2 size={15} aria-hidden="true" />
                                 </IconButton>
                               )}
@@ -266,12 +344,24 @@ export function ConnectionsPage() {
                   </tbody>
                 </table>
               </div>
-              <Pagination page={current} pageSize={PAGE_SIZE} total={filtered.length} onPage={setPage} label="connections" />
+              <Pagination
+                page={current}
+                pageSize={PAGE_SIZE}
+                total={filtered.length}
+                onPage={setPage}
+                label="connections"
+              />
             </>
           )}
         </section>
       )}
-      {editing && <ConnectionForm existing={editing === 'new' ? undefined : editing} types={types.data ?? []} onClose={() => setEditing(null)} />}
+      {editing && (
+        <ConnectionForm
+          existing={editing === 'new' ? undefined : editing}
+          types={types.data ?? []}
+          onClose={() => setEditing(null)}
+        />
+      )}
       {deleting && <DeleteConnection connection={deleting} onClose={() => setDeleting(null)} />}
     </Page>
   )

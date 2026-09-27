@@ -138,7 +138,19 @@ export interface Pipeline {
 
 /** Fields accepted by POST /api/pipelines. */
 export type PipelineCreate = Pick<Pipeline, 'name'> &
-  Partial<Pick<Pipeline, 'description' | 'enabled' | 'nodes' | 'edges' | 'draft' | 'schedule' | 'schedule_timezone' | 'tags'>>
+  Partial<
+    Pick<
+      Pipeline,
+      | 'description'
+      | 'enabled'
+      | 'nodes'
+      | 'edges'
+      | 'draft'
+      | 'schedule'
+      | 'schedule_timezone'
+      | 'tags'
+    >
+  >
 
 /** One row of GET /api/pipelines/summary. */
 export interface PipelineSummary {
@@ -258,7 +270,15 @@ export interface NodeRun {
 }
 
 /** The closed set of things that start a run (core brokoli#617). */
-export type RunTriggerKind = 'user' | 'schedule' | 'webhook' | 'dependency' | 'backfill' | 'api_token' | 'retry' | (string & {})
+export type RunTriggerKind =
+  | 'user'
+  | 'schedule'
+  | 'webhook'
+  | 'dependency'
+  | 'backfill'
+  | 'api_token'
+  | 'retry'
+  | (string & {})
 
 /** Who or what started a run, recorded when the run is triggered. */
 export interface RunAttribution {
@@ -403,7 +423,12 @@ export interface DriftAlert {
 }
 
 export interface NodeProfile {
-  profile: { row_count: number; column_count: number; columns: ColumnProfile[] | null; profiling_ms: number } | null
+  profile: {
+    row_count: number
+    column_count: number
+    columns: ColumnProfile[] | null
+    profiling_ms: number
+  } | null
   schema?: { columns: { name: string; type: string; null_pct?: number }[] } | null
   drift: DriftAlert[] | null
 }
@@ -419,7 +444,13 @@ export interface PipelineGrid {
     data_interval_end?: string
     pipeline_version: number
   }[]
-  cells: Record<string, Record<string, { status: string; attempt: number; duration_ms: number; row_count: number; error?: string }>>
+  cells: Record<
+    string,
+    Record<
+      string,
+      { status: string; attempt: number; duration_ms: number; row_count: number; error?: string }
+    >
+  >
 }
 
 export interface Connection {
@@ -505,12 +536,21 @@ export interface Plugin {
   node_types: PluginNodeType[] | null
   packaged: boolean
   archive_sha256?: string
-  payloads?: { runtime: string; os?: string; arch?: string; path: string; entrypoint: string; sha256: string }[]
+  payloads?: {
+    runtime: string
+    os?: string
+    arch?: string
+    path: string
+    entrypoint: string
+    sha256: string
+  }[]
 }
 
 export interface PluginIndex {
   version: number
-  plugins: { name: string; version: string; description?: string; archive_url: string; sha256: string }[] | null
+  plugins:
+    | { name: string; version: string; description?: string; archive_url: string; sha256: string }[]
+    | null
 }
 
 /** Install responses: the plugin, or the plugin plus a warning when the server could not finish the install. */
@@ -528,6 +568,8 @@ export interface ConnectionTestResult {
   message?: string
   driver?: string
   error?: string
+  /** Set when credential references were resolved on the server rather than where runs resolve them. */
+  note?: string
 }
 
 /*

@@ -267,6 +267,14 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) error 
 	return nil
 }
 
+// ResolveCredentials resolves conn's password_ref and extra_ref in place,
+// through the same path a run uses, and returns the same error a run would
+// fail with. For callers that already hold the connection and have
+// decided access themselves, such as the API's connection test.
+func (cr *ConnectionResolver) ResolveCredentials(conn *models.Connection) error {
+	return cr.resolveCredentials(conn)
+}
+
 // credentialError names the connection, the field, where its value was
 // to come from, and why it could not be read. Never the value, and never
 // an encrypted:// reference's ciphertext: that is described, not quoted.
