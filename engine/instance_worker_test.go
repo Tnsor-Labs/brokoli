@@ -411,7 +411,7 @@ func TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact(t *testing
 
 	runJob := func(attempt int, gen int64, script string) error {
 		t.Helper()
-		return executeInstanceJobContext(context.Background(), realStore, artifacts, extensions.RunJob{
+		return executeInstanceJobContext(context.Background(), realStore, artifacts, nil, extensions.RunJob{
 			ID: "job-stale", RunID: "run-stale", NodeID: "source", InstanceKey: "page-0",
 			Attempt: attempt, FencingGeneration: gen,
 			WorkOrder: &extensions.InstanceWorkOrder{NodeType: "code", Script: script, TimeoutSeconds: 5},
