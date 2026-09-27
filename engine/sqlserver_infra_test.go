@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -351,4 +352,114 @@ func seedSQLServerRows(tb testing.TB, ctx context.Context, db *sql.DB, table str
 
 func sqlServerStringLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+// go-mssqldb matches bulk-copy columns to the table byte for byte, while
+// SQL Server resolves column names under the database collation. On the
+// default case-insensitive collation the statement path wrote a dataset
+// column "ID" into a table column "id"; the bulk path refused it. The bulk
+// path now follows the collation, in both directions: a case-insensitive
+// database matches regardless of case, and a case-sensitive one still
+// refuses, as its statement path does.
+func TestSQLServerBulkWriteMatchesColumnsUnderTheCollation(t *testing.T) {
+	uri := os.Getenv("BROKOLI_TEST_SQLSERVER_URL")
+	if uri == "" {
+		t.Skip("BROKOLI_TEST_SQLSERVER_URL not set")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	open := func(t *testing.T, uri string) *sql.DB {
+		t.Helper()
+		driver, dsn, err := DetectDriver(uri)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open(driver, dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		if err := db.PingContext(ctx); err != nil {
+			t.Fatal(err)
+		}
+		return db
+	}
+	ds := &common.DataSet{Columns: []string{"ID", "Name"}, Rows: []common.DataRow{
+		{"ID": 1, "Name": "a"}, {"ID": 2, "Name": "b"},
+	}}
+	write := func(uri, table string) error {
+		sent := false
+		_, err := copyBatchesToSQLServer(ctx, uri, SQLGenConfig{Table: table, Mode: ModeAppend, Dialect: "sqlserver"}, ds.Columns,
+			func() (*common.DataSet, error) {
+				if sent {
+					return nil, io.EOF
+				}
+				sent = true
+				return ds, nil
+			})
+		return err
+	}
+	const table = "brokoli_connector_column_case"
+
+	t.Run("case-insensitive database", func(t *testing.T) {
+		db := open(t, uri)
+		var collation string
+		if err := db.QueryRowContext(ctx, "SELECT CONVERT(nvarchar(128), DATABASEPROPERTYEX(DB_NAME(), 'Collation'))").Scan(&collation); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(collation, "_CI_") {
+			t.Skipf("the test database's collation is %s, not case-insensitive", collation)
+		}
+		for _, s := range []string{"DROP TABLE IF EXISTS [" + table + "]", "CREATE TABLE [" + table + "] ([id] INT NOT NULL, [name] NVARCHAR(50) NOT NULL)"} {
+			if _, err := db.ExecContext(ctx, s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		t.Cleanup(func() { _, _ = db.ExecContext(context.Background(), "DROP TABLE IF EXISTS ["+table+"]") })
+
+		if err := write(uri, table); err != nil {
+			t.Fatalf("dataset columns ID, Name into table columns id, name: %v", err)
+		}
+		var count, sum int
+		if err := db.QueryRowContext(ctx, "SELECT COUNT(*), SUM([id]) FROM ["+table+"] WHERE [name] IN ('a', 'b')").Scan(&count, &sum); err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 || sum != 3 {
+			t.Fatalf("count=%d sum=%d, want 2 rows with ids 1 and 2", count, sum)
+		}
+	})
+
+	t.Run("case-sensitive database", func(t *testing.T) {
+		admin := open(t, uri)
+		database := fmt.Sprintf("brokoli_cs_%d", time.Now().UnixNano()%1_000_000_000)
+		if _, err := admin.ExecContext(ctx, "CREATE DATABASE ["+database+"] COLLATE Latin1_General_CS_AS"); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			_, _ = admin.ExecContext(context.Background(), "ALTER DATABASE ["+database+"] SET SINGLE_USER WITH ROLLBACK IMMEDIATE")
+			_, _ = admin.ExecContext(context.Background(), "DROP DATABASE ["+database+"]")
+		})
+		csURI := strings.Replace(uri, "database=master", "database="+database, 1)
+		if csURI == uri {
+			t.Skip("BROKOLI_TEST_SQLSERVER_URL does not select database=master, so the test cannot point at its own database")
+		}
+		db := open(t, csURI)
+		if _, err := db.ExecContext(ctx, "CREATE TABLE ["+table+"] ([id] INT NOT NULL, [name] NVARCHAR(50) NOT NULL)"); err != nil {
+			t.Fatal(err)
+		}
+
+		// The statement path refuses the mismatched case here...
+		stmt, err := GenerateSQL(SQLGenConfig{Table: table, Mode: ModeAppend, Dialect: "sqlserver"}, ds)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.ExecContext(ctx, stmt); err == nil {
+			t.Fatal("the statement path accepted ID for id on a case-sensitive database; the premise of this test is wrong")
+		}
+		// ...and so does the bulk path, rather than being looser than the server.
+		if err := write(csURI, table); err == nil {
+			t.Fatal("the bulk path wrote ID into id on a case-sensitive database")
+		}
+	})
 }

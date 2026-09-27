@@ -69,11 +69,15 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 		}
 	}
 
+	destination, err := sqlServerDestinationColumns(ctx, tx, cfg.Table, columns)
+	if err != nil {
+		return 0, err
+	}
 	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(cfg.Table, mssql.BulkOptions{
 		KeepNulls:    true,
 		RowsPerBatch: 5000,
 		Tablock:      true,
-	}, columns...))
+	}, destination...))
 	if err != nil {
 		return 0, fmt.Errorf("prepare SQL Server bulk copy: %w", err)
 	}
@@ -110,4 +114,34 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 	}
 	committed = true
 	return affected, nil
+}
+
+// sqlServerDestinationColumns returns the destination table's own name for
+// each column, in the order given.
+//
+// go-mssqldb matches bulk-copy columns to the table byte for byte. SQL
+// Server resolves a column name under the database's collation, which is
+// case-insensitive by default, so the statement path wrote a dataset
+// column "ID" into a table column "id", and the bulk path refused it
+// ("column ID does not exist in destination table"). Asking the server
+// with name = @p2 applies exactly the collation the statement path got:
+// a case-insensitive database matches regardless of case, a case-sensitive
+// one does not. A column the server does not find keeps its given name, so
+// the driver's own error names it.
+func sqlServerDestinationColumns(ctx context.Context, tx *sql.Tx, table string, columns []string) ([]string, error) {
+	out := make([]string, len(columns))
+	for i, column := range columns {
+		var name string
+		err := tx.QueryRowContext(ctx,
+			"SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
+			table, column).Scan(&name)
+		switch {
+		case err == sql.ErrNoRows:
+			name = column
+		case err != nil:
+			return nil, fmt.Errorf("look up column %q of %s: %w", column, table, err)
+		}
+		out[i] = name
+	}
+	return out, nil
 }
