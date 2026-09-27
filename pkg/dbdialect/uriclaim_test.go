@@ -15,6 +15,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		"clickhouse": {"clickhouse", "clickhouse"},
 		"sqlserver":  {"sqlserver", "sqlserver"},
 		"mssql":      {"sqlserver", "sqlserver"},
+		"snowflake":  {"snowflake", "snowflake"},
 	}
 	got := AllURIClaims()
 	if len(got) != len(want)+1 {
@@ -62,6 +63,9 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		if byScheme[passthrough].DSN != nil {
 			t.Errorf("%s should pass the URI through (nil DSN)", passthrough)
 		}
+	}
+	if dsn := byScheme["snowflake"].DSN("snowflake://u:p@account/db/schema?warehouse=WH"); dsn != "u:p@account/db/schema?warehouse=WH" {
+		t.Errorf("snowflake DSN = %q", dsn)
 	}
 }
 

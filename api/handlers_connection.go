@@ -399,6 +399,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeMSSQL:
 		return testDBConnection(ctx, c.BuildURI())
+	case models.ConnTypeSnowflake:
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeHTTP:
 		return testHTTPAuth(ctx, c, extra)
 	case models.ConnTypeSFTP:
@@ -411,7 +413,7 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return h.testGCS(ctx, c)
 	case models.ConnTypeBigQuery:
 		return h.testBigQuery(ctx, c)
-	case models.ConnTypeSnowflake, models.ConnTypeOracle,
+	case models.ConnTypeOracle,
 		models.ConnTypeDatabricks:
 		return unsupportedDatabaseTest(c.Type)
 	default:
@@ -706,7 +708,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"host", "port", "schema", "login", "password"},
 			"hints":       map[string]string{"port": "9000 (native protocol)", "schema": "database name"}},
 		{"type": "snowflake", "label": "Snowflake", "category": "database", "icon": "connSnowflake",
-			"description": "Cloud data warehouse with separated storage and compute. No driver in this build: the connection test says so by name",
+			"description": "Cloud data warehouse with separated storage and compute. Query, append, and overwrite are supported through the Snowflake SQL driver",
 			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
 			"hints":       map[string]string{"host": "account.snowflakecomputing.com", "schema": "database/schema", "extra": `{"warehouse": "COMPUTE_WH", "role": "SYSADMIN"}`}},
 		{"type": "redshift", "label": "Amazon Redshift", "category": "database", "icon": "connRedshift",

@@ -169,10 +169,10 @@ func TestBuildsURICoversTheCatalog(t *testing.T) {
 
 func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
 	withDriver := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeBigQuery,
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeSnowflake, ConnTypeBigQuery,
 	}
 	withoutDriver := []ConnectionType{
-		ConnTypeSnowflake, ConnTypeOracle,
+		ConnTypeOracle,
 		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 

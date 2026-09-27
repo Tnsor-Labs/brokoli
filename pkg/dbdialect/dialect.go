@@ -153,5 +153,6 @@ var registry = map[string]Dialect{
 	"clickhouse": clickhouse{},
 	"sqlite":     sqlited{},
 	"sqlserver":  sqlserver{},
+	"snowflake":  snowflake{},
 	"generic":    generic{},
 }
