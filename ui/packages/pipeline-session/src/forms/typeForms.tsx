@@ -22,6 +22,7 @@ import {
   str,
   type FormCtx,
   type TypeFormProps,
+  useConnections,
 } from './fields'
 import { QualityRules } from './QualityRules'
 import { TransformRules } from './TransformRules'
@@ -31,8 +32,43 @@ import { ContractGate } from './ContractGate'
 const DB_TYPES = ['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'snowflake', 'clickhouse']
 const HTTP_TYPES = ['http']
 const DBT_TYPES = ['postgres', 'mysql', 'clickhouse']
-/** Connection types a file node reads and writes through (ADR-040). */
-const FILE_TYPES = ['sftp']
+/**
+ * Connection types a file node reads and writes through: the transports
+ * engine/file_transport.go opens. What `path` means differs per transport,
+ * so each carries its own wording.
+ */
+const FILE_LOCATIONS: Record<
+  string,
+  { where: string; read: string; write: string; delivery?: string }
+> = {
+  sftp: {
+    where: "A path on the SFTP server. A relative path starts in the connection's base directory.",
+    read: 'inbound/orders.csv',
+    write: 'outbound/orders.csv',
+    delivery:
+      'The file is written under a temporary name and renamed into place once complete, so a reader never sees it half-written.',
+  },
+  s3: {
+    where: "An object key in the connection's bucket, used literally: a prefix is part of the key.",
+    read: 'incoming/orders.csv',
+    write: 'processed/orders.csv',
+  },
+  azure_blob: {
+    where:
+      "A blob name in the connection's container, used literally: a virtual directory is part of the name.",
+    read: 'incoming/orders.csv',
+    write: 'processed/orders.csv',
+    delivery:
+      'The blob is committed only once completely written; a failed write leaves an existing blob unchanged.',
+  },
+}
+const FILE_TYPES = Object.keys(FILE_LOCATIONS)
+
+/** The saved connection's type, once the connection list has loaded. */
+function useConnectionType(connId: string): string | undefined {
+  const connections = useConnections()
+  return connId ? connections.data?.find((c) => c.conn_id === connId)?.type : undefined
+}
 const DIALECTS = [
   { value: 'postgres', label: 'PostgreSQL' },
   { value: 'mysql', label: 'MySQL' },
@@ -80,7 +116,9 @@ function DatabaseTarget({
 }
 
 function SourceFile({ ctx }: TypeFormProps) {
-  const remote = !!str(ctx.get('conn_id'))
+  const connId = str(ctx.get('conn_id'))
+  const remote = !!connId
+  const location = FILE_LOCATIONS[useConnectionType(connId) ?? '']
   return (
     <Section title="File">
       <ConnectionField
@@ -88,7 +126,7 @@ function SourceFile({ ctx }: TypeFormProps) {
         types={FILE_TYPES}
         label="Location"
         noneLabel="This server's data directories"
-        hint="With an SFTP connection the file is fetched from that server."
+        hint="With a connection the file is fetched from that SFTP server, S3 bucket or Azure Blob container."
       />
       <TextField
         ctx={ctx}
@@ -97,10 +135,15 @@ function SourceFile({ ctx }: TypeFormProps) {
         mono
         required
         templatable
-        placeholder={remote ? 'inbound/orders.csv' : '/data/input.csv'}
+        placeholder={remote ? (location?.read ?? 'incoming/orders.csv') : '/data/input.csv'}
         hint={
           remote
-            ? "A path on the SFTP server. A relative path starts in the connection's base directory. The format comes from the extension: .csv, .json, .xml, .xlsx or .xls."
+            ? [
+                location?.where,
+                'The format comes from the extension: .csv, .json, .xml, .xlsx or .xls.',
+              ]
+                .filter(Boolean)
+                .join(' ')
             : "The format comes from the extension: .csv, .json, .xml, .xlsx or .xls. The path must be inside the server's data directories."
         }
       />
@@ -518,7 +561,9 @@ function SinkFile({ ctx }: TypeFormProps) {
   const path = str(ctx.get('path'))
   const inferred = inferFileFormat(path)
   const effective = str(ctx.get('format')) || inferred
-  const remote = !!str(ctx.get('conn_id'))
+  const connId = str(ctx.get('conn_id'))
+  const remote = !!connId
+  const location = FILE_LOCATIONS[useConnectionType(connId) ?? '']
   return (
     <Section title="File">
       <ConnectionField
@@ -526,7 +571,7 @@ function SinkFile({ ctx }: TypeFormProps) {
         types={FILE_TYPES}
         label="Location"
         noneLabel="This server's data directories"
-        hint="With an SFTP connection the file is delivered to that server."
+        hint="With a connection the file is delivered to that SFTP server, S3 bucket or Azure Blob container."
       />
       <TextField
         ctx={ctx}
@@ -535,10 +580,10 @@ function SinkFile({ ctx }: TypeFormProps) {
         mono
         required
         templatable
-        placeholder={remote ? 'outbound/orders.csv' : '/output/result.csv'}
+        placeholder={remote ? (location?.write ?? 'processed/orders.csv') : '/output/result.csv'}
         hint={
           remote
-            ? "A path on the SFTP server; a relative path starts in the connection's base directory. The file is written under a temporary name and renamed into place once complete, so a reader never sees it half-written."
+            ? [location?.where, location?.delivery].filter(Boolean).join(' ') || undefined
             : undefined
         }
       />
