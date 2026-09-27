@@ -20,6 +20,12 @@ const bigQueryTestKey = `{"type":"service_account","project_id":"acme","private_
 	`"private_key":"-----BEGIN PRIVATE KEY-----\nMARKER-bq-private-key\n-----END PRIVATE KEY-----\n",` +
 	`"client_email":"loader@acme.iam.gserviceaccount.com"}`
 
+type bigQueryTokenSource struct{}
+
+func (bigQueryTokenSource) Token(context.Context, identity.TokenRequest) (string, error) {
+	return "token", nil
+}
+
 func bigQueryStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
 	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "bq.db"))
@@ -73,27 +79,27 @@ func bigQueryRunner(st store.Store, workspace string) *Runner {
 func TestBigQuerySettingsAreResolvedWhereTheNodeRuns(t *testing.T) {
 	st := bigQueryStore(t)
 
-	got, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"})
-	if err != nil || got != bigQueryTestKey {
-		t.Fatalf("own workspace: settings %q, err %v", got, err)
+	got, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"}, "node")
+	if err != nil || got.settings != bigQueryTestKey {
+		t.Fatalf("own workspace: settings %q, err %v", got.settings, err)
 	}
 
-	if _, err := bigQueryRunner(st, "ws-b").bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"}); err == nil ||
+	if _, err := bigQueryRunner(st, "ws-b").bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"}, "node"); err == nil ||
 		!strings.Contains(err.Error(), "not found in this pipeline's workspace") {
 		t.Fatalf("another workspace's connection: err = %v", err)
 	}
 
-	if _, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{"conn_id": "pg"}); err == nil ||
+	if _, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{"conn_id": "pg"}, "node"); err == nil ||
 		!strings.Contains(err.Error(), "not bigquery") {
 		t.Fatalf("a non-BigQuery connection: err = %v", err)
 	}
 
-	if got, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{}); err != nil || got != "" {
-		t.Fatalf("no conn_id: settings %q, err %v; want none, for the machine's identity", got, err)
+	if got, err := bigQueryRunner(st, "ws-a").bigQuerySettings(map[string]interface{}{}, "node"); err != nil || got.settings != "" {
+		t.Fatalf("no conn_id: settings %q, err %v; want none, for the machine's identity", got.settings, err)
 	}
 
 	r := &Runner{pipe: &models.Pipeline{WorkspaceID: "ws-a"}}
-	if _, err := r.bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"}); err == nil {
+	if _, err := r.bigQuerySettings(map[string]interface{}{"conn_id": "warehouse"}, "node"); err == nil {
 		t.Fatal("a runner with no resolver produced settings")
 	}
 }
@@ -103,7 +109,7 @@ func TestBigQuerySettingsAreResolvedWhereTheNodeRuns(t *testing.T) {
 func TestBigQueryRefusesTheMachineIdentityWhereAmbientIsDenied(t *testing.T) {
 	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
 	t.Setenv(identity.AmbientEnv, "deny")
-	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", "")
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{})
 	if !errors.Is(err, identity.ErrAmbientDenied) {
 		t.Fatalf("err = %v, want ErrAmbientDenied", err)
 	}
@@ -119,9 +125,39 @@ func TestBigQueryRefusesACredentialThatIsNotAServiceAccountKey(t *testing.T) {
 		"external account":            external,
 		"external account, nested in": `{"credentials":` + fmt.Sprintf("%q", external) + `}`,
 	} {
-		if _, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", settings); err == nil ||
+		if _, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: settings}); err == nil ||
 			!strings.Contains(err.Error(), "service_account") {
 			t.Errorf("%s: err = %v", name, err)
 		}
+	}
+}
+
+func TestBigQueryUsesOIDCCredentialsFromConnectionSettings(t *testing.T) {
+	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
+	settings := `{"auth_method":"oidc","provider":"//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs","service_account":"loader@acme.iam.gserviceaccount.com"}`
+	client, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{
+		settings: settings,
+		tokens:   bigQueryTokenSource{},
+		request: identity.TokenRequest{
+			Audience:    "unused-before-federation-rewrites-it",
+			WorkspaceID: "ws-a",
+			SubjectKind: "connection",
+			SubjectID:   "warehouse",
+			RunID:       "run-1",
+			NodeID:      "node-1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("OIDC client: %v", err)
+	}
+	_ = client.Close()
+}
+
+func TestBigQueryOIDCRequiresDeploymentTokenSource(t *testing.T) {
+	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
+	settings := `{"auth_method":"oidc","provider":"//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs"}`
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: settings})
+	if !errors.Is(err, identity.ErrNoTokenSource) {
+		t.Fatalf("err = %v, want ErrNoTokenSource", err)
 	}
 }

@@ -24,6 +24,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/loaders"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/quality"
@@ -348,11 +349,11 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 			config[key] = value
 		}
 		config["node_id"] = node.ID
-		settings, err := r.bigQuerySettings(node.Config)
+		auth, err := r.bigQuerySettings(node.Config, node.ID)
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
-		ds, err := QueryBigQuery(r.ctx, uri, query, config, settings)
+		ds, err := QueryBigQuery(r.ctx, uri, query, config, auth)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
 		}
@@ -387,12 +388,12 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 			config[key] = value
 		}
 		config["node_id"] = node.ID
-		settings, err := r.bigQuerySettings(node.Config)
+		auth, err := r.bigQuerySettings(node.Config, node.ID)
 		if err != nil {
 			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery skipped: %v", err)
 			return nil
 		}
-		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config, settings)
+		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config, auth)
 		if err != nil {
 			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery failed: %v", err)
 			return nil
@@ -1240,11 +1241,11 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		if r.run != nil {
 			config["run_id"] = r.run.ID
 		}
-		settings, err := r.bigQuerySettings(node.Config)
+		auth, err := r.bigQuerySettings(node.Config, node.ID)
 		if err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
-		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config, settings); err != nil {
+		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config, auth); err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Loaded %d rows into BigQuery table %s", len(input.Rows), table)
@@ -1858,20 +1859,33 @@ func (r *Runner) attachArtifactSink(fetcher fetchers.Fetcher) {
 //
 // A node with no conn_id has no stored settings, and the backend uses the
 // machine's own identity where that is allowed.
-func (r *Runner) bigQuerySettings(config map[string]interface{}) (string, error) {
+func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) (bigQueryAuth, error) {
 	connID, _ := config["conn_id"].(string)
 	if connID == "" {
-		return "", nil
+		return bigQueryAuth{}, nil
 	}
 	if r.connResolver == nil {
-		return "", fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
+		return bigQueryAuth{}, fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
 	}
 	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
-		return "", err
+		return bigQueryAuth{}, err
 	}
 	if conn.Type != models.ConnTypeBigQuery {
-		return "", fmt.Errorf("connection %q is type %q, not bigquery", connID, conn.Type)
+		return bigQueryAuth{}, fmt.Errorf("connection %q is type %q, not bigquery", connID, conn.Type)
 	}
-	return conn.Extra, nil
+	auth := bigQueryAuth{
+		settings: conn.Extra,
+		tokens:   r.connResolver.TokenSource(),
+		request: identity.TokenRequest{
+			WorkspaceID: r.workspaceID(),
+			SubjectKind: "connection",
+			SubjectID:   connID,
+			NodeID:      nodeID,
+		},
+	}
+	if r.run != nil {
+		auth.request.RunID = r.run.ID
+	}
+	return auth, nil
 }

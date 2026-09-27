@@ -15,12 +15,19 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity/gcpfederation"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
 const bigQueryDefaultMaxBytes = int64(10 << 30)
+
+type bigQueryAuth struct {
+	settings string
+	tokens   identity.TokenSource
+	request  identity.TokenRequest
+}
 
 func isBigQueryURI(uri string) bool {
 	return strings.HasPrefix(uri, "bigquery://")
@@ -34,7 +41,7 @@ func isBigQueryURI(uri string) bool {
 // else, so the key never enters a node's config, a log line or a work order
 // (ADR-042 section 1). Empty settings mean the machine's own identity, which
 // is refused where ambient identity is denied.
-func bigQueryClient(ctx context.Context, uri, settings string) (*bigquery.Client, error) {
+func bigQueryClient(ctx context.Context, uri string, auth bigQueryAuth) (*bigquery.Client, error) {
 	u, err := url.Parse(uri)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid BigQuery URI")
@@ -52,11 +59,26 @@ func bigQueryClient(ctx context.Context, uri, settings string) (*bigquery.Client
 		opts = append(opts, option.WithEndpoint(endpoint), option.WithoutAuthentication())
 		return bigquery.NewClient(ctx, project, opts...)
 	}
-	extra := settings
+	extra := auth.settings
 	if strings.TrimSpace(extra) != "" {
 		var raw map[string]interface{}
 		if err := json.Unmarshal([]byte(extra), &raw); err != nil {
 			return nil, fmt.Errorf("BigQuery credentials/config are not valid JSON: %w", err)
+		}
+		if method, _ := raw["auth_method"].(string); strings.EqualFold(method, "oidc") {
+			provider, _ := raw["provider"].(string)
+			if provider == "" {
+				return nil, fmt.Errorf("BigQuery OIDC settings require provider")
+			}
+			cfg := gcpfederation.Config{Provider: provider}
+			cfg.TokenAudience, _ = raw["token_audience"].(string)
+			cfg.ServiceAccount, _ = raw["service_account"].(string)
+			creds, err := gcpfederation.Credentials(auth.tokens, auth.request, cfg, httpClient)
+			if err != nil {
+				return nil, fmt.Errorf("BigQuery OIDC credentials: %w", err)
+			}
+			opts = append(opts, option.WithAuthCredentials(creds))
+			return bigquery.NewClient(ctx, project, opts...)
 		}
 		credentialJSON := []byte(extra)
 		if nested, ok := raw["credentials"].(string); ok && nested != "" {
@@ -122,13 +144,13 @@ func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[
 // DryRunBigQuery validates a query and returns its result schema without
 // scanning or charging for data. The byte estimate is retained for the caller
 // to apply a cost policy before the real query runs.
-func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, settings string) (bigquery.Schema, int64, error) {
-	client, err := bigQueryClient(ctx, uri, settings)
+func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth bigQueryAuth) (bigquery.Schema, int64, error) {
+	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(client, uri, query, config, settings)
+	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -213,13 +235,13 @@ func bigQueryLoadSchema(data *common.DataSet) bigquery.Schema {
 	return fields
 }
 
-func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, settings string) (*common.DataSet, error) {
-	client, err := bigQueryClient(ctx, uri, settings)
+func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth bigQueryAuth) (*common.DataSet, error) {
+	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(client, uri, query, config, settings)
+	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings)
 	if err != nil {
 		return nil, err
 	}
@@ -232,7 +254,7 @@ func QueryBigQuery(ctx context.Context, uri, query string, config map[string]int
 		columns = append(columns, field.Name)
 	}
 	if len(columns) == 0 {
-		if schema, _, dryErr := DryRunBigQuery(ctx, uri, query, config, settings); dryErr == nil {
+		if schema, _, dryErr := DryRunBigQuery(ctx, uri, query, config, auth); dryErr == nil {
 			for _, field := range schema {
 				columns = append(columns, field.Name)
 			}
@@ -262,12 +284,13 @@ func QueryBigQuery(ctx context.Context, uri, query string, config map[string]int
 }
 
 func CheckBigQueryConnection(ctx context.Context, uri string, config map[string]interface{}, settings string) error {
-	client, err := bigQueryClient(ctx, uri, settings)
+	auth := bigQueryAuth{settings: settings}
+	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(client, uri, "SELECT 1", config, settings)
+	q, err := bigQueryQueryConfig(client, uri, "SELECT 1", config, auth.settings)
 	if err != nil {
 		return err
 	}
@@ -282,7 +305,7 @@ func CheckBigQueryConnection(ctx context.Context, uri string, config map[string]
 	return status.Err()
 }
 
-func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.DataSet, config map[string]interface{}, settings string) error {
+func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.DataSet, config map[string]interface{}, auth bigQueryAuth) error {
 	if strings.EqualFold(strings.TrimSpace(mode), ModeUpsert) {
 		return fmt.Errorf("BigQuery does not support upsert in this build")
 	}
@@ -294,7 +317,7 @@ func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.Dat
 	if dataset == "" {
 		return fmt.Errorf("BigQuery URI has no dataset")
 	}
-	client, err := bigQueryClient(ctx, uri, settings)
+	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return err
 	}

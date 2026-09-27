@@ -12,6 +12,22 @@ have `"type": "service_account"`; credentials are never placed in the URI or
 pipeline configuration. Without a key, the worker uses its machine identity.
 The ambient identity can be denied with `BROKOLI_SECRET_STORE_AMBIENT=deny`.
 
+For workload identity federation, use an `extra` object with no secret
+credentials:
+
+```json
+{
+  "auth_method": "oidc",
+  "provider": "//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs",
+  "service_account": "loader@acme-analytics.iam.gserviceaccount.com",
+  "token_audience": "optional-custom-audience"
+}
+```
+
+`provider` is required. `service_account` and `token_audience` are optional.
+The worker's configured OIDC token source supplies the short-lived token; an
+OIDC connection fails if the deployment has no token source.
+
 Source queries are standard GoogleSQL query jobs. Every query has a default
 `maximum_bytes_billed` of 10 GiB; set `maximum_bytes_billed` in `extra` to
 override it. Column discovery uses a free dry run. Query and load jobs carry
