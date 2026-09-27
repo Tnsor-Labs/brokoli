@@ -11,6 +11,97 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-28
+
+Three new backends -- Azure Blob Storage for file nodes, native bulk
+writes to SQL Server, and BigQuery -- and short-lived OIDC credentials
+for reaching a customer's cloud without a stored key. It also closes
+four ways a credential could be used wrongly or leak. **Three changes
+need attention before upgrading**; they are listed first.
+
+### Changed -- read before upgrading
+
+- **The server refuses to start without a valid encryption key** (#757)
+  -- @hc12r. When `BROKOLI_ENCRYPTION_KEY` was set but invalid (not
+  base64, or not 32 bytes), the server logged one warning and ran with a
+  key of 32 zero bytes: credentials saved under the real key stopped
+  decrypting, and new ones were encrypted under a key anyone can
+  reproduce. A key file that existed but was unreadable or short was
+  silently replaced with a new key, losing every stored credential. Each
+  is now a startup error naming what to fix. **Before upgrading, grep
+  the server logs for `could not load encryption key`**: a deployment
+  that logs it has been running on the zero key and will not start until
+  the key is fixed. Key files longer than 32 bytes are still read as
+  their first 32 bytes, as before.
+- **A credential reference that cannot be resolved fails the node**
+  (#758) -- @hc12r. A `password_ref` or `extra_ref` (`env://`,
+  `vault://`, `k8s://`, `encrypted://`) that failed to resolve was logged
+  to the server and skipped, and the node ran with an empty password, or
+  with the ciphertext as the password. The run log now says which
+  reference failed and why, and the node stops before it runs. Runs that
+  were silently proceeding on an empty credential will now fail at the
+  step that caused it.
+- **Remote `source_api` pages carry the connection by reference** (#760)
+  -- @hc12r. A paginated page dispatched to a worker used to carry the
+  connection's password and auth headers in its work order. It now
+  carries the connection's ID and the pipeline's workspace, and the
+  worker resolves the connection itself. **Workers from before this
+  release fail those pages** with "source URL is required" (never an
+  unauthenticated request), so upgrade workers with the server. Code
+  that runs work orders directly should call
+  `ExecuteInstanceWorkOrderResolving` / `ExecuteInstanceJobResolving`
+  with a connection resolver.
+- For code embedding the engine: `ConnectionResolver.Resolve`,
+  `ResolveIn`, `ResolveWithWarnings` and `ResolveWithWarningsIn` gain an
+  `error` return (#758).
+
+### Added
+
+- **Azure Blob Storage for `source_file` and `sink_file`** (#750, #687)
+  -- @hc12r. Through an `azure_blob` connection, with an account key or
+  a SAS token, on the batch and streaming paths. A failed write leaves
+  nothing behind, and the connection test authenticates for real. Every
+  remote file location now sits behind one transport interface, so the
+  next one is a single file. See `docs/azure-blob-file-delivery.md`.
+- **SQL Server bulk writes** (#761, #681) -- @hc12r. `sink_db` and
+  `migrate` append and overwrite through SQL Server's native TDS bulk
+  copy: a million rows in about 12 seconds instead of about 3 minutes.
+  Columns are matched under the database's collation, as statements
+  are. Upsert is refused by name. Test connection uses the compiled
+  driver.
+- **BigQuery** (#762, #764, #765, #766, #767, #685) -- @hc12r. A native
+  backend (ADR-042): `source_db` queries as query jobs, `sink_db` append
+  and overwrite as load jobs, which are free and atomic per job. Every
+  query is capped at 10 GiB billed by default, columns are discovered by
+  a free dry run, and jobs are labelled with the run. Authentication by
+  service-account key, by the machine's own identity, or by OIDC
+  workload identity federation with no stored key; an optional
+  `billing_project` pays for the jobs. Upsert is refused by name. See
+  `docs/bigquery.md`.
+- **OIDC token sources and Google workload identity federation** (#763)
+  -- @hc12r. `BROKOLI_OIDC_TOKEN_FILES` serves tokens a platform writes
+  to disk, such as Kubernetes projected service-account tokens.
+  `BROKOLI_SECRET_STORE_AMBIENT=deny` switches off the machine's own
+  identity on servers that run pipelines for several teams; tokens read
+  from disk are that identity and follow the switch. See
+  `docs/workload-identity.md`.
+- **Test connection resolves credential references** (#759) -- @hc12r,
+  through the same path a run uses. A connection whose credentials come
+  from `env://`, `vault://` or `k8s://` used to be tested with none. The
+  result notes when references were resolved on the server rather than
+  where runs resolve them.
+- **ADR-041, external secret stores** (#756) and **ADR-042, native
+  BigQuery backend** (#762) -- @hc12r.
+
+### Fixed
+
+- **File nodes could only pick SFTP connections** (#750) -- @hc12r. The
+  Location field offered SFTP alone, so an S3 connection was never
+  selectable in the UI though the engine supported it.
+- **SQL Server statement writes over 1,000 rows** (#761) -- @hc12r. SQL
+  Server refuses an `INSERT` with more than 1,000 row values; batches are
+  now capped there.
+
 ## [0.13.1] - 2026-09-26
 
 Fixes two defects in 0.13.0, both found by validating 0.13.0 live on a
