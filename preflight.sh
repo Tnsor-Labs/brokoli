@@ -277,7 +277,10 @@ if [ -z "${BROKOLI_TEST_POSTGRES_URL:-}" ] || [ -z "${BROKOLI_TEST_MYSQL_URL:-}"
     : "${BROKOLI_TEST_MYSQL_URL:=mysql://brokoli:br@k:li/pw#1@tcp(localhost:55533)/brokoli_test}"
     : "${BROKOLI_TEST_MYSQL_ROOT_URL:=mysql://root:rootpw@tcp(localhost:55533)/brokoli_test}"
     : "${BROKOLI_TEST_CLICKHOUSE_URL:=clickhouse://brokoli:brokoli@localhost:55534/brokoli_test}"
-    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL BROKOLI_TEST_MYSQL_ROOT_URL BROKOLI_TEST_CLICKHOUSE_URL
+    # The azure_blob tests opt into loopback per test, so unlike the S3
+    # ones they need no process-wide policy override and can run here too.
+    : "${BROKOLI_TEST_AZURE_BLOB_ENDPOINT:=http://127.0.0.1:55537/devstoreaccount1}"
+    export BROKOLI_TEST_POSTGRES_URL BROKOLI_TEST_MYSQL_URL BROKOLI_TEST_MYSQL_ROOT_URL BROKOLI_TEST_CLICKHOUSE_URL BROKOLI_TEST_AZURE_BLOB_ENDPOINT
   else
     say "WARNING: no docker compose — live-database tests will SKIP, and they are"
     say "         the ones that check what a real server does with a literal."

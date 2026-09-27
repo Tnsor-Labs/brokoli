@@ -79,6 +79,12 @@ func (r *Runner) openFileTransport(ctx context.Context, node models.Node) (fileT
 			return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 		}
 		return &s3Transport{client: client, connID: connID}, nil
+	case models.ConnTypeAzureBlob:
+		client, err := newAzureBlobFileClient(conn)
+		if err != nil {
+			return nil, fmt.Errorf("conn_id %q: %w", connID, err)
+		}
+		return &azureBlobTransport{client: client, connID: connID}, nil
 	default:
 		return nil, fmt.Errorf("conn_id %q is a %s connection; file nodes support %s", connID, conn.Type, fileTransportTypes)
 	}
@@ -86,7 +92,7 @@ func (r *Runner) openFileTransport(ctx context.Context, node models.Node) (fileT
 
 // fileTransportTypes is named in the refusal for any other connection
 // type, so the message cannot fall behind the switch above.
-const fileTransportTypes = "sftp and s3"
+const fileTransportTypes = "sftp, s3 and azure_blob"
 
 // fileTransportScheme is the asset-URI scheme for a connection type, used
 // where a message has to name the destination before anything is dialled.
@@ -94,6 +100,8 @@ func fileTransportScheme(t models.ConnectionType) string {
 	switch t {
 	case models.ConnTypeS3:
 		return "s3"
+	case models.ConnTypeAzureBlob:
+		return "azblob"
 	default:
 		return "sftp"
 	}

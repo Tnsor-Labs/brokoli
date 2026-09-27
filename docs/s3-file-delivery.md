@@ -6,7 +6,8 @@ chooses the format, while `conn_id` chooses where the object lives.
 
 This is an OSS data-plane connector. It is not Strata, does not use managed
 Brokoli storage, and does not add tenant or retention behavior to the object
-store.
+store. The same file nodes also reach [SFTP servers](sftp-file-delivery.md)
+and [Azure Blob Storage](azure-blob-file-delivery.md).
 
 - [Connection configuration](#connection-configuration)
 - [Python](#python)
