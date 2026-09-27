@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -66,6 +67,25 @@ func isBigQueryURI(uri string) bool {
 	return strings.HasPrefix(uri, "bigquery://")
 }
 
+// bigQueryProjectID is a Google Cloud project ID, optionally prefixed by a
+// domain as older projects are ("example.com:project").
+var bigQueryProjectID = regexp.MustCompile(`^([a-z0-9][a-z0-9.-]*[a-z0-9]:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$`)
+
+// bigQueryQuotaProject returns the URI's billing_project, the project that
+// pays for and is charged quota for the jobs, or "" to bill the resource
+// project. It becomes a request header, so it must look like a project ID.
+func bigQueryQuotaProject(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil || u.Host == "" {
+		return "", fmt.Errorf("invalid BigQuery URI")
+	}
+	project := u.Query().Get("billing_project")
+	if project != "" && !bigQueryProjectID.MatchString(project) {
+		return "", fmt.Errorf("BigQuery billing_project %q is not a Google Cloud project ID", project)
+	}
+	return project, nil
+}
+
 // bigQueryClient opens a client for uri with the connection's settings.
 //
 // settings is the connection's extra document, resolved where the node runs
@@ -103,9 +123,24 @@ func bigQueryClient(ctx context.Context, uri string, auth bigQueryAuth) (*bigque
 	// without credentials. Google's authenticating transport is layered over
 	// the outbound-policy transport instead, and that one client is all the
 	// BigQuery client gets.
+	// The billing project is a header on the authenticated client, where
+	// Google's transport reads it as the quota project. It cannot be
+	// option.WithQuotaProject: beside WithHTTPClient the library refuses to
+	// build a client at all ("WithHTTPClient is incompatible with
+	// QuotaProject"). An explicit billing_project takes precedence over a
+	// quota project embedded in a service-account key.
+	quotaProject, err := bigQueryQuotaProject(uri)
+	if err != nil {
+		return nil, err
+	}
+	headers := http.Header{}
+	if quotaProject != "" {
+		headers.Set("X-Goog-User-Project", quotaProject)
+	}
 	authClient, err := googlehttp.NewClient(&googlehttp.Options{
 		BaseRoundTripper: httpClient.Transport,
 		Credentials:      creds,
+		Headers:          headers,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BigQuery authenticated client: %w", err)

@@ -318,3 +318,69 @@ func TestBigQueryRequestsCarryTheConnectionsCredentials(t *testing.T) {
 		}
 	}
 }
+
+func TestBigQueryQuotaProjectComesFromURI(t *testing.T) {
+	for uri, want := range map[string]string{
+		"bigquery://analytics/events?billing_project=billing-prod":             "billing-prod",
+		"bigquery://analytics/events?billing_project=example.com:billing-prod": "example.com:billing-prod",
+		"bigquery://analytics/events":                                          "",
+	} {
+		got, err := bigQueryQuotaProject(uri)
+		if err != nil || got != want {
+			t.Errorf("bigQueryQuotaProject(%q) = %q, %v; want %q", uri, got, err, want)
+		}
+	}
+	// It becomes a request header, so anything that is not a project ID is
+	// refused.
+	for _, bad := range []string{"Billing", "bp", "billing prod", "billing-prod%0D%0AX-Evil:1"} {
+		if _, err := bigQueryQuotaProject("bigquery://analytics/events?billing_project=" + bad); err == nil {
+			t.Errorf("billing_project %q was accepted", bad)
+		}
+	}
+}
+
+// The billing project reaches the request as the quota-project header. It
+// was passed as option.WithQuotaProject beside WithHTTPClient, which the
+// library refuses outright ("WithHTTPClient is incompatible with
+// QuotaProject"), so every call on such a connection failed.
+func TestBigQueryRequestsCarryTheBillingProject(t *testing.T) {
+	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
+	fakeGoogleFederation(t)
+	var mu sync.Mutex
+	var quota []string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		quota = append(quota, r.Header.Get("X-Goog-User-Project"))
+		mu.Unlock()
+		http.Error(w, `{"error":{"code":400,"message":"fake"}}`, http.StatusBadRequest)
+	}))
+	t.Cleanup(api.Close)
+	prev := bigQueryAPIEndpoint
+	bigQueryAPIEndpoint = api.URL + "/"
+	t.Cleanup(func() { bigQueryAPIEndpoint = prev })
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
+	settings := `{"auth_method":"oidc","provider":"` + bigQueryTestProvider + `"}`
+
+	for uri, want := range map[string]string{
+		"bigquery://acme/analytics?billing_project=billing-prod": "billing-prod",
+		"bigquery://acme/analytics":                              "",
+	} {
+		mu.Lock()
+		quota = nil
+		mu.Unlock()
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		err := CheckBigQueryConnection(ctx, uri, nil, settings, &recordingTokenSource{}, identity.TokenRequest{SubjectKind: "connection", SubjectID: "c"})
+		cancel()
+		mu.Lock()
+		got := append([]string(nil), quota...)
+		mu.Unlock()
+		if len(got) == 0 {
+			t.Fatalf("%s: no request reached the BigQuery API (err: %v)", uri, err)
+		}
+		for i, h := range got {
+			if h != want {
+				t.Errorf("%s: request %d carried X-Goog-User-Project %q, want %q", uri, i, h, want)
+			}
+		}
+	}
+}
