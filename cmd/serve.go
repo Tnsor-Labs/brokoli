@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
@@ -381,6 +382,14 @@ var serveCmd = &cobra.Command{
 		eng.VarStore = engine.NewVarStoreAdapter(s, cryptoCfg)
 		secretsChain := secrets.NewDefaultChain(cryptoCfg)
 		eng.ConnResolver = engine.NewConnectionResolver(s, secretsChain)
+		// OIDC tokens for workload identity federation: the distribution's
+		// source if it has one, else tokens a platform writes to disk.
+		if Extensions != nil && Extensions.TokenSource != nil {
+			eng.ConnResolver.SetTokenSource(Extensions.TokenSource)
+		} else if files := identity.FileTokenSourceFromEnv(); files != nil {
+			eng.ConnResolver.SetTokenSource(files)
+			log.Printf("OIDC token source: %s (the machine's identity; honours %s)", identity.FilesEnv, identity.AmbientEnv)
+		}
 		if Extensions != nil && len(Extensions.Executors) > 0 {
 			eng.Executors = Extensions.Executors
 			log.Printf("Enterprise: %d external executor(s) registered", len(Extensions.Executors))

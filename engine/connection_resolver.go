@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
@@ -25,6 +27,30 @@ type ConnectionResolver struct {
 	// Runner already holds, and pool membership is decided by the same
 	// conn_id the resolver resolves.
 	pools *connectionPools
+	// tokens issues OIDC tokens for connections that authenticate by
+	// workload identity federation. Nil when the deployment has none.
+	tokens identity.TokenSource
+}
+
+// SetTokenSource sets where connections authenticating by OIDC get their
+// tokens. A nil pointer inside a non-nil interface is treated as none, so a
+// caller can pass a constructor's nil result through unchanged.
+func (cr *ConnectionResolver) SetTokenSource(src identity.TokenSource) {
+	if src == nil || reflect.ValueOf(src).Kind() == reflect.Ptr && reflect.ValueOf(src).IsNil() {
+		cr.tokens = nil
+		return
+	}
+	cr.tokens = src
+}
+
+// TokenSource returns the deployment's OIDC token source, or nil. A backend
+// gets its token through identity.Token with this source, which refuses a
+// machine's identity where ambient identity is denied.
+func (cr *ConnectionResolver) TokenSource() identity.TokenSource {
+	if cr == nil {
+		return nil
+	}
+	return cr.tokens
 }
 
 // NewConnectionResolver creates a new resolver.
