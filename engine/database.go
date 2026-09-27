@@ -24,6 +24,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/microsoft/go-mssqldb"
+	_ "github.com/snowflakedb/gosnowflake/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -117,10 +118,6 @@ func detectDriver(uri string) (string, string, error) {
 	// The adapter's recorded leftovers -- each here because it has no
 	// claim to make, not because folding was forgotten:
 	switch {
-	case strings.HasPrefix(uri, "snowflake://"):
-		// A driver with no dialect owner in the registry; stays here
-		// until snowflake earns a registration tier.
-		return "snowflake", strings.TrimPrefix(uri, "snowflake://"), nil
 	case strings.HasSuffix(uri, ".db") || strings.HasSuffix(uri, ".sqlite"):
 		// A filename, not a scheme: nothing to claim.
 		return "sqlite", uri, nil

@@ -75,6 +75,13 @@ func (generic) CastToText(expr string) string      { return "CAST(" + expr + " A
 func (generic) CastToFloat(expr string) string     { return "CAST(" + expr + " AS FLOAT)" }
 func (generic) ByteOrderedText(expr string) string { return expr }
 
+// snowflake currently uses the generic statement vocabulary. Keeping a named
+// dialect lets the URI registry and future Snowflake-specific SQL evolve
+// without routing the connector through an unrelated backend name.
+type snowflake struct{ generic }
+
+func (snowflake) Name() string { return "snowflake" }
+
 // quoteDotted quotes a possibly schema-qualified name part by part, the
 // same rule every other dialect applies: more than two parts is quoted
 // whole so it fails loudly rather than being silently reinterpreted.

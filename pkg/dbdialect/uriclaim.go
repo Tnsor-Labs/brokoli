@@ -15,8 +15,6 @@ import (
 //
 // Deliberately NOT claims (recorded here because the fold's honesty is the
 // point):
-//   - snowflake:// maps to a driver with no dialect owner in this registry;
-//     it stays in the engine adapter until snowflake earns a registration.
 //   - the .db/.sqlite filename suffixes and the schemeless-string Postgres
 //     default are heuristics about strings with no scheme to claim; they
 //     stay in the adapter, pinned by its mapping tests.
@@ -107,4 +105,13 @@ func (sqlserver) URIClaims() []URIClaim {
 		{Scheme: "sqlserver", Driver: "sqlserver", Dialect: "sqlserver"},
 		{Scheme: "mssql", Driver: "sqlserver", Dialect: "sqlserver"},
 	}
+}
+
+func (snowflake) URIClaims() []URIClaim {
+	return []URIClaim{{
+		Scheme:  "snowflake",
+		Driver:  "snowflake",
+		Dialect: "snowflake",
+		DSN:     stripScheme("snowflake"),
+	}}
 }

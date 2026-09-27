@@ -126,7 +126,7 @@ binary then starts with no UI and says so on its first page.
 
 **Explainable operations.** Live run status and log streaming over WebSocket, physical execution plans, run evidence, artifacts, profiling, a run calendar heatmap, and cross-pipeline lineage.
 
-**Secrets and connections.** AES-256-GCM encryption at rest, 7 connection types (Postgres, MySQL, SQLite, HTTP, SFTP, customer-owned S3 file locations, Generic), typed variables with `${var.key}` resolution in any config field.
+**Secrets and connections.** AES-256-GCM encryption at rest, typed database, API, file, and cloud-storage connections, typed variables with `${var.key}` resolution in any config field.
 
 **Authentication.** httpOnly cookie sessions, JWT auth, API key support, role-based access (admin/editor/viewer).
 

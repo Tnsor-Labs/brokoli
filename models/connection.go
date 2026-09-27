@@ -242,7 +242,7 @@ func (c *Connection) BuildsURI() bool {
 // have URI representations, but database nodes must refuse them by name.
 func (c *Connection) IsDatabase() bool {
 	switch c.Type {
-	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse, ConnTypeBigQuery:
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse, ConnTypeBigQuery:
 		return true
 	default:
 		return false
@@ -253,9 +253,9 @@ func (c *Connection) IsDatabase() bool {
 //
 // This is the only URI builder in the codebase. It is deliberately the single
 // implementation: the engine previously carried a second one that supported
-// Redshift, Snowflake, and SQL Server and pinned sslmode=require, but nothing
-// ever called it, so those connection types fell through to a bare hostname
-// and no Postgres connection ever asked for TLS.
+// Redshift and SQL Server and pinned sslmode=require, but nothing ever called
+// it, so those connection types fell through to a bare hostname and no
+// Postgres connection ever asked for TLS.
 //
 // Driver options come from the connection's Extra blob (see driverOptionKeys).
 // No option is applied by default, including sslmode: libpq's own default of

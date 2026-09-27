@@ -334,7 +334,7 @@ func TestDialectForURI(t *testing.T) {
 		"mysql://x":     "mysql",
 		"/tmp/a.db":     "sqlite",
 		"sqlserver://x": "sqlserver",
-		"snowflake://x": "generic",
+		"snowflake://x": "snowflake",
 	}
 	for uri, want := range cases {
 		if got := dialectForURI(uri); got != want {

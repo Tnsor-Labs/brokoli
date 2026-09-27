@@ -23,6 +23,7 @@ export const USABLE_BY_NODES = new Set([
   'mysql',
   'sqlite',
   'mssql',
+  'snowflake',
   'clickhouse',
   'bigquery',
   'http',
