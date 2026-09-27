@@ -125,8 +125,13 @@ export function ConnectionsPage() {
     setTesting(c.conn_id)
     try {
       const r = await connectionApi.test(c.conn_id)
-      if (r.success) toast.success(`${c.conn_id} works`, r.message)
-      else toast.error(`${c.conn_id} failed`, r.error || r.message || 'No details from the server')
+      const note = r.note ? ` ${r.note}` : ''
+      if (r.success) toast.success(`${c.conn_id} works`, `${r.message ?? ''}${note}`.trim())
+      else
+        toast.error(
+          `${c.conn_id} failed`,
+          `${r.error || r.message || 'No details from the server'}${note}`,
+        )
     } catch (e) {
       toast.error(`Could not test ${c.conn_id}`, e)
     } finally {

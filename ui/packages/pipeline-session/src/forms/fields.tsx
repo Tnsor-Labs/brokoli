@@ -841,9 +841,11 @@ export function TestConnection({ connId, uri }: { connId?: string; uri?: string 
       setState({
         busy: false,
         ok: result.success,
-        message: result.success
-          ? `Connected${result.driver ? ` with the ${result.driver} driver` : ''}${result.message ? `: ${result.message}` : ''}`
-          : result.error || result.message || 'The server reported a failure without details.',
+        message:
+          (result.success
+            ? `Connected${result.driver ? ` with the ${result.driver} driver` : ''}${result.message ? `: ${result.message}` : ''}`
+            : result.error || result.message || 'The server reported a failure without details.') +
+          (result.note ? ` ${result.note}` : ''),
       })
     } catch (e) {
       setState({ busy: false, ok: false, message: errorMessage(e) })

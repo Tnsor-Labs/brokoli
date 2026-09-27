@@ -85,10 +85,15 @@ holding Brokoli's own configuration.
 ## Where references are resolved
 
 Runs resolve references on the machine that runs the node, so the
-allowlists must be set there too (workers included). The connection
-test in the UI uses only credentials stored in Brokoli: a connection
-whose credentials are references tests as missing them, while runs
-using it work.
+allowlists must be set there too (workers included).
+
+The connection test resolves references too, through the same chain and
+allowlists a run on the server uses. A reference that cannot be resolved
+fails the test with the message a run would fail with. The test runs on
+the server, though, so when a connection's credentials come from `env://`,
+`vault://` or `k8s://`, the result says they were resolved there: a
+worker resolves them with its own environment, and passes only if it has
+the same variables, allowlists and access.
 
 ## When a reference cannot be resolved
 

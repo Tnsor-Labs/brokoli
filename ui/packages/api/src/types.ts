@@ -568,6 +568,8 @@ export interface ConnectionTestResult {
   message?: string
   driver?: string
   error?: string
+  /** Set when credential references were resolved on the server rather than where runs resolve them. */
+  note?: string
 }
 
 /*
