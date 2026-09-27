@@ -58,11 +58,12 @@ func dialectForURI(uri string) string {
 // DetectDriver returns the Go sql driver name and DSN for a connection URI.
 //
 // A scheme this recognizes is not the same as a scheme this build can open:
-// the connection catalog offers Snowflake, SQL Server, Oracle, BigQuery, and
-// Databricks, but only pgx, mysql, and sqlite drivers are compiled in. Naming
-// a driver that was never registered gets database/sql's "unknown driver
-// (forgotten import?)", which reads like a build defect rather than an
-// unsupported connection type, so check first and say which it is.
+// the connection catalog offers Snowflake, Oracle, BigQuery, and Databricks
+// without compiled drivers, while pgx, mysql, sqlite, ClickHouse, and SQL
+// Server are registered here. Naming a driver that was never registered gets
+// database/sql's "unknown driver (forgotten import?)", which reads like a
+// build defect rather than an unsupported connection type, so check first and
+// say which it is.
 func DetectDriver(uri string) (string, string, error) {
 	if err := refuseNativeDatabase(uri, "database/sql driver detection"); err != nil {
 		return "", "", err

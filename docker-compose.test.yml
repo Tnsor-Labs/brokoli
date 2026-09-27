@@ -113,7 +113,10 @@ services:
     ports:
       - "55535:1433"
     tmpfs:
-      - /var/opt/mssql
+      # The 2022 image runs as the non-root mssql user. Docker creates a
+      # tmpfs mount as root unless its ownership is explicit, which prevents
+      # the image from creating /.system during startup.
+      - /var/opt/mssql:rw,uid=10001,gid=0,mode=1770
     healthcheck:
       test: ["CMD-SHELL", "timeout 1 bash -c '</dev/tcp/127.0.0.1/1433'"]
       interval: 5s
