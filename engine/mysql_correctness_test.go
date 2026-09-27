@@ -325,8 +325,11 @@ func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 	}
 
 	resolver := NewConnectionResolver(st, nil)
-	resolved, warnings := resolver.ResolveWithWarnings(
+	resolved, warnings, err := resolver.ResolveWithWarnings(
 		map[string]interface{}{"conn_id": "legacy-oracle"}, models.NodeTypeSourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if len(warnings) == 0 {
 		t.Fatal("an unsupported connection type must produce a warning the run can log")

@@ -18,6 +18,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
@@ -29,6 +30,9 @@ import (
 type ConnectionHandler struct {
 	store  store.Store
 	crypto *crypto.Config
+	// creds resolves a connection's credential references for the test,
+	// with the same chain a run resolves them with (#752).
+	creds *engine.ConnectionResolver
 }
 
 // validateConnectionAccess checks if a connection exists in the user's org-scoped connection set.
@@ -62,7 +66,10 @@ func (h *ConnectionHandler) validateConnectionAccess(r *http.Request, connID str
 }
 
 func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
-	return &ConnectionHandler{store: s, crypto: c}
+	// The chain is built the way serve builds the one runs use
+	// (secrets.NewDefaultChain over the same key), so a reference the test
+	// resolves is one a run on this server resolves, allowlists included.
+	return &ConnectionHandler{store: s, crypto: c, creds: engine.NewConnectionResolver(s, secrets.NewDefaultChain(c))}
 }
 
 func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
@@ -329,72 +336,79 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Decrypt password
-	if c.Password != "" {
-		dec, err := h.crypto.Decrypt(c.Password)
-		if err == nil {
-			c.Password = dec
-		}
+	// Resolve the credentials the way a run does (#752). This used to
+	// decrypt Password and Extra directly, so a connection whose
+	// credentials are references (env://, vault://, k8s://) was tested with
+	// none, and failed the test while runs using it worked -- or passed it
+	// against a server that accepts no password. A reference that cannot be
+	// resolved fails the test with the message the run would fail with.
+	//
+	// The plaintext extra goes back onto the connection as well as into
+	// the parsed map: the HTTP paths below take the map, but BuildURI reads
+	// c.Extra for driver options. An encrypted blob there parses as
+	// nothing, which once silently dropped sslmode, so a connection set to
+	// "sslmode": "require" tested green against a server with TLS off.
+	if err := h.creds.ResolveCredentials(c); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
 	}
-
-	// Decrypt extras. The plaintext goes back onto the connection as well as
-	// into the parsed map: the HTTP paths below take the map, but BuildURI
-	// reads c.Extra for driver options, and an encrypted blob there parses as
-	// nothing. That silently dropped sslmode, so testing a connection with
-	// "sslmode": "require" against a server with TLS switched off reported
-	// "Connected successfully" for a session that was in the clear -- the
-	// exact false assurance the option exists to prevent.
 	var extra map[string]interface{}
 	if c.Extra != "" {
-		dec, err := h.crypto.Decrypt(c.Extra)
-		if err == nil {
-			c.Extra = dec
-			json.Unmarshal([]byte(dec), &extra)
-		}
+		json.Unmarshal([]byte(c.Extra), &extra)
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
+	writeJSON(w, http.StatusOK, withResolvedHereNote(h.testResolved(ctx, c, extra), c))
+}
+
+// resolvedHereNote is added to a test of a connection whose credentials
+// come from the server's environment, Vault or Kubernetes: the test ran on
+// this server, and a run resolves references on whichever machine runs the
+// node, with that machine's environment and allowlists.
+const resolvedHereNote = "Credential references were resolved on this server. " +
+	"A run resolves them on the machine that runs the node, which needs the same variables, allowlists and access."
+
+func withResolvedHereNote(result map[string]interface{}, c *models.Connection) map[string]interface{} {
+	for _, ref := range []string{c.PasswordRef, c.ExtraRef} {
+		if ref != "" && !strings.HasPrefix(ref, "encrypted://") {
+			result["note"] = resolvedHereNote
+			break
+		}
+	}
+	return result
+}
+
+// testResolved tests a connection whose credentials are already resolved.
+func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	switch c.Type {
 	case models.ConnTypePostgres:
-		result := testDBConnection(ctx, c.BuildURI())
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeRedshift:
-		result := testDBConnection(ctx, c.BuildURI())
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeMySQL:
-		result := testDBConnection(ctx, c.BuildURI())
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeSQLite:
-		result := testDBConnection(ctx, c.Host)
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.Host)
 	case models.ConnTypeClickHouse:
-		result := testDBConnection(ctx, c.BuildURI())
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeMSSQL:
-		result := testDBConnection(ctx, c.BuildURI())
-		writeJSON(w, http.StatusOK, result)
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeHTTP:
-		result := testHTTPAuth(ctx, c, extra)
-		writeJSON(w, http.StatusOK, result)
+		return testHTTPAuth(ctx, c, extra)
 	case models.ConnTypeSFTP:
-		result := testSSH(ctx, c)
-		writeJSON(w, http.StatusOK, result)
+		return testSSH(ctx, c)
 	case models.ConnTypeS3:
-		result := testS3(ctx, extra)
-		writeJSON(w, http.StatusOK, result)
+		return testS3(ctx, extra)
 	case models.ConnTypeAzureBlob:
-		result := testAzureBlob(ctx, extra)
-		writeJSON(w, http.StatusOK, result)
+		return testAzureBlob(ctx, extra)
 	case models.ConnTypeSnowflake, models.ConnTypeOracle, models.ConnTypeBigQuery,
 		models.ConnTypeDatabricks:
-		result := unsupportedDatabaseTest(c.Type)
-		writeJSON(w, http.StatusOK, result)
+		return unsupportedDatabaseTest(c.Type)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
-		result := testGeneric(ctx, c, extra)
-		writeJSON(w, http.StatusOK, result)
+		return testGeneric(ctx, c, extra)
 	}
 }
 

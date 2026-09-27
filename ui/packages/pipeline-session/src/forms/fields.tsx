@@ -2,7 +2,17 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Code2, Plus, Trash2 } from 'lucide-react'
 import { connectionApi, type Connection, type PipelineEdge, type PipelineNode } from '@brokoli/api'
-import { Button, Callout, Checkbox, Field, IconButton, Input, Select, Textarea, errorMessage } from '@brokoli/ui'
+import {
+  Button,
+  Callout,
+  Checkbox,
+  Field,
+  IconButton,
+  Input,
+  Select,
+  Textarea,
+  errorMessage,
+} from '@brokoli/ui'
 import { CodeEditorModal, type CodeLanguage } from './CodeEditorModal'
 import { TemplatePreview } from './TemplatePreview'
 import type { DatasetSchema } from '../document'
@@ -17,9 +27,18 @@ export type FormCtx = {
 
 export type TypeFormProps = { ctx: FormCtx; nodes: PipelineNode[]; edges: PipelineEdge[] }
 
-export const str = (v: unknown) => (typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v))
+export const str = (v: unknown) =>
+  typeof v === 'string' ? v : v === undefined || v === null ? '' : String(v)
 
-export function Section({ title, description, children }: { title: string; description?: ReactNode; children: ReactNode }) {
+export function Section({
+  title,
+  description,
+  children,
+}: {
+  title: string
+  description?: ReactNode
+  children: ReactNode
+}) {
   return (
     <section className="ps-form-section">
       <header>
@@ -61,9 +80,20 @@ export function TextField({
   const field = (
     <Field label={label} hint={hint} error={error} required={required}>
       {multiline ? (
-        <Textarea value={value} rows={rows} mono={mono} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        <Textarea
+          value={value}
+          rows={rows}
+          mono={mono}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
       ) : (
-        <Input value={value} mono={mono} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+        <Input
+          value={value}
+          mono={mono}
+          placeholder={placeholder}
+          onChange={(e) => onChange(e.target.value)}
+        />
       )}
     </Field>
   )
@@ -130,7 +160,8 @@ export function NumberField({
           const raw = e.target.value
           setText(raw)
           if (raw === '') ctx.set({ [name]: undefined }, `field:${ctx.node.id}:${name}`)
-          else if (Number.isFinite(Number(raw))) ctx.set({ [name]: Number(raw) }, `field:${ctx.node.id}:${name}`)
+          else if (Number.isFinite(Number(raw)))
+            ctx.set({ [name]: Number(raw) }, `field:${ctx.node.id}:${name}`)
         }}
       />
     </Field>
@@ -159,7 +190,16 @@ export function SelectField({
   const opts = options.map((o) => (typeof o === 'string' ? { value: o, label: o } : o))
   const unknown = value && !opts.some((o) => o.value === value)
   return (
-    <Field label={label} hint={hint} required={required} error={unknown ? `"${value}" is not a value this editor knows; the server may reject it.` : undefined}>
+    <Field
+      label={label}
+      hint={hint}
+      required={required}
+      error={
+        unknown
+          ? `"${value}" is not a value this editor knows; the server may reject it.`
+          : undefined
+      }
+    >
       <Select value={value} onChange={(e) => ctx.set({ [name]: e.target.value })}>
         <option value="">{defaultLabel ? `Default: ${defaultLabel}` : 'Choose...'}</option>
         {unknown && <option value={value}>{value}</option>}
@@ -173,12 +213,45 @@ export function SelectField({
   )
 }
 
-export function CheckField({ ctx, name, label, description }: { ctx: FormCtx; name: string; label: string; description?: ReactNode }) {
-  return <Checkbox label={label} description={description} checked={Boolean(ctx.get(name))} onChange={(e) => ctx.set({ [name]: e.target.checked || undefined })} />
+export function CheckField({
+  ctx,
+  name,
+  label,
+  description,
+}: {
+  ctx: FormCtx
+  name: string
+  label: string
+  description?: ReactNode
+}) {
+  return (
+    <Checkbox
+      label={label}
+      description={description}
+      checked={Boolean(ctx.get(name))}
+      onChange={(e) => ctx.set({ [name]: e.target.checked || undefined })}
+    />
+  )
 }
 
 /** Comma-separated list stored as string[]. */
-export function ListField({ ctx, name, label, placeholder, hint, required, schema }: { ctx: FormCtx; name: string; label: string; placeholder?: string; hint?: ReactNode; required?: boolean; schema?: DatasetSchema }) {
+export function ListField({
+  ctx,
+  name,
+  label,
+  placeholder,
+  hint,
+  required,
+  schema,
+}: {
+  ctx: FormCtx
+  name: string
+  label: string
+  placeholder?: string
+  hint?: ReactNode
+  required?: boolean
+  schema?: DatasetSchema
+}) {
   const stored = ctx.get(name)
   const joined = Array.isArray(stored) ? stored.join(', ') : str(stored)
   const [text, setText] = useState(joined)
@@ -189,7 +262,18 @@ export function ListField({ ctx, name, label, placeholder, hint, required, schem
   const listId = `${ctx.node.id}-${name}-columns`
   return (
     <>
-      <Field label={label} hint={missing.length ? undefined : hint ?? 'Separate names with commas.'} required={required} error={required && !values.length ? 'Required' : missing.length ? `Unknown column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}` : undefined}>
+      <Field
+        label={label}
+        hint={missing.length ? undefined : (hint ?? 'Separate names with commas.')}
+        required={required}
+        error={
+          required && !values.length
+            ? 'Required'
+            : missing.length
+              ? `Unknown column${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}`
+              : undefined
+        }
+      >
         <Input
           value={text}
           mono
@@ -202,7 +286,13 @@ export function ListField({ ctx, name, label, placeholder, hint, required, schem
           }}
         />
       </Field>
-      {schema && <datalist id={listId}>{schema.columns.map((column) => <option key={column.name} value={column.name} />)}</datalist>}
+      {schema && (
+        <datalist id={listId}>
+          {schema.columns.map((column) => (
+            <option key={column.name} value={column.name} />
+          ))}
+        </datalist>
+      )}
     </>
   )
 }
@@ -231,7 +321,9 @@ export function MapEditor({
   valuePlaceholder?: string
   addLabel?: string
 }) {
-  const [rows, setRows] = useState<Row[]>(() => Object.entries(value ?? {}).map(([key, v]) => ({ id: ++rowSeq, key, value: str(v) })))
+  const [rows, setRows] = useState<Row[]>(() =>
+    Object.entries(value ?? {}).map(([key, v]) => ({ id: ++rowSeq, key, value: str(v) })),
+  )
   const commit = (next: Row[]) => {
     setRows(next)
     const entries = next.filter((r) => r.key.trim()).map((r) => [r.key.trim(), r.value] as const)
@@ -243,36 +335,106 @@ export function MapEditor({
     <div className="ps-map">
       {rows.map((r) => (
         <div key={r.id} className="ps-map-row">
-          <Input mono value={r.key} placeholder={keyPlaceholder} aria-label="Name" onChange={(e) => commit(rows.map((x) => (x.id === r.id ? { ...x, key: e.target.value } : x)))} />
-          <Input value={r.value} placeholder={valuePlaceholder} aria-label={`Value for ${r.key || 'entry'}`} onChange={(e) => commit(rows.map((x) => (x.id === r.id ? { ...x, value: e.target.value } : x)))} />
-          <IconButton size="sm" variant="danger" label="Remove" onClick={() => commit(rows.filter((x) => x.id !== r.id))}>
+          <Input
+            mono
+            value={r.key}
+            placeholder={keyPlaceholder}
+            aria-label="Name"
+            onChange={(e) =>
+              commit(rows.map((x) => (x.id === r.id ? { ...x, key: e.target.value } : x)))
+            }
+          />
+          <Input
+            value={r.value}
+            placeholder={valuePlaceholder}
+            aria-label={`Value for ${r.key || 'entry'}`}
+            onChange={(e) =>
+              commit(rows.map((x) => (x.id === r.id ? { ...x, value: e.target.value } : x)))
+            }
+          />
+          <IconButton
+            size="sm"
+            variant="danger"
+            label="Remove"
+            onClick={() => commit(rows.filter((x) => x.id !== r.id))}
+          >
             <Trash2 size={14} aria-hidden="true" />
           </IconButton>
         </div>
       ))}
-      <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden="true" />} onClick={() => setRows([...rows, { id: ++rowSeq, key: '', value: '' }])}>
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Plus size={14} aria-hidden="true" />}
+        onClick={() => setRows([...rows, { id: ++rowSeq, key: '', value: '' }])}
+      >
         {addLabel}
       </Button>
-      {duplicate && <p className="ps-form-warning">"{duplicate}" appears twice; only the last one is kept.</p>}
+      {duplicate && (
+        <p className="ps-form-warning">"{duplicate}" appears twice; only the last one is kept.</p>
+      )}
     </div>
   )
 }
 
-export function MapField({ ctx, name, label, hint, ...rest }: { ctx: FormCtx; name: string; label: string; hint?: ReactNode; keyPlaceholder?: string; valuePlaceholder?: string; addLabel?: string }) {
+export function MapField({
+  ctx,
+  name,
+  label,
+  hint,
+  ...rest
+}: {
+  ctx: FormCtx
+  name: string
+  label: string
+  hint?: ReactNode
+  keyPlaceholder?: string
+  valuePlaceholder?: string
+  addLabel?: string
+}) {
   const value = ctx.get(name)
   return (
     <div className="bk-field">
       <div className="bk-field-label">
         <label>{label}</label>
       </div>
-      <MapEditor key={ctx.node.id} value={value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined} onChange={(v) => ctx.set({ [name]: v })} {...rest} />
+      <MapEditor
+        key={ctx.node.id}
+        value={value && typeof value === 'object' ? (value as Record<string, unknown>) : undefined}
+        onChange={(v) => ctx.set({ [name]: v })}
+        {...rest}
+      />
       {hint && <small className="bk-field-hint">{hint}</small>}
     </div>
   )
 }
 
-type SchemaRow = { id: number; name: string; kind: string; nullable: boolean; precision: string; scale: string; details: string }
-const SCHEMA_TYPES = ['int64', 'float64', 'string', 'boolean', 'bytes', 'decimal', 'date', 'timestamp', 'duration', 'json', 'unknown', 'enum', 'array', 'map', 'record']
+type SchemaRow = {
+  id: number
+  name: string
+  kind: string
+  nullable: boolean
+  precision: string
+  scale: string
+  details: string
+}
+const SCHEMA_TYPES = [
+  'int64',
+  'float64',
+  'string',
+  'boolean',
+  'bytes',
+  'decimal',
+  'date',
+  'timestamp',
+  'duration',
+  'json',
+  'unknown',
+  'enum',
+  'array',
+  'map',
+  'record',
+]
 let schemaRowSeq = 0
 
 function schemaRows(value: DatasetSchema | undefined): SchemaRow[] {
@@ -284,14 +446,35 @@ function schemaRows(value: DatasetSchema | undefined): SchemaRow[] {
     nullable: Boolean(column.type?.nullable),
     precision: typeof column.type?.precision === 'number' ? String(column.type.precision) : '',
     scale: typeof column.type?.scale === 'number' ? String(column.type.scale) : '',
-    details: column.type ? JSON.stringify(Object.fromEntries(Object.entries(column.type).filter(([key]) => !['kind', 'nullable', 'precision', 'scale'].includes(key))), null, 2) : '',
+    details: column.type
+      ? JSON.stringify(
+          Object.fromEntries(
+            Object.entries(column.type).filter(
+              ([key]) => !['kind', 'nullable', 'precision', 'scale'].includes(key),
+            ),
+          ),
+          null,
+          2,
+        )
+      : '',
   }))
 }
 
 /** Authoring editor for the portable dataset-schema/v1 source declaration. */
-export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schema' }: { ctx: FormCtx; name?: string; label?: string }) {
+export function DatasetSchemaField({
+  ctx,
+  name = 'schema',
+  label = 'Output schema',
+}: {
+  ctx: FormCtx
+  name?: string
+  label?: string
+}) {
   const stored = ctx.get(name)
-  const value = stored && typeof stored === 'object' && !Array.isArray(stored) ? (stored as DatasetSchema) : undefined
+  const value =
+    stored && typeof stored === 'object' && !Array.isArray(stored)
+      ? (stored as DatasetSchema)
+      : undefined
   const [rows, setRows] = useState<SchemaRow[]>(() => schemaRows(value))
   const [additional, setAdditional] = useState(value?.additional_columns ?? 'unknown')
   useEffect(() => {
@@ -308,28 +491,32 @@ export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schem
       ctx.set({ [name]: undefined }, `schema:${ctx.node.id}`)
       return
     }
-    const columns = nextRows.filter((row) => row.name.trim()).map((row) => {
-      let details: Record<string, unknown> = {}
-      if (row.details.trim()) {
-        try {
-          const parsed = JSON.parse(row.details)
-          if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
-          details = parsed as Record<string, unknown>
-        } catch {
-          return undefined
+    const columns = nextRows
+      .filter((row) => row.name.trim())
+      .map((row) => {
+        let details: Record<string, unknown> = {}
+        if (row.details.trim()) {
+          try {
+            const parsed = JSON.parse(row.details)
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined
+            details = parsed as Record<string, unknown>
+          } catch {
+            return undefined
+          }
         }
-      }
-      return {
-        name: row.name.trim(),
-        type: {
-          ...details,
-          kind: row.kind,
-          ...(row.kind === 'decimal' && row.precision ? { precision: Number(row.precision) } : {}),
-          ...(row.kind === 'decimal' && row.scale ? { scale: Number(row.scale) } : {}),
-          ...(row.nullable ? { nullable: true } : {}),
-        },
-      }
-    })
+        return {
+          name: row.name.trim(),
+          type: {
+            ...details,
+            kind: row.kind,
+            ...(row.kind === 'decimal' && row.precision
+              ? { precision: Number(row.precision) }
+              : {}),
+            ...(row.kind === 'decimal' && row.scale ? { scale: Number(row.scale) } : {}),
+            ...(row.nullable ? { nullable: true } : {}),
+          },
+        }
+      })
     if (columns.some((column) => !column)) return
     ctx.set(
       {
@@ -350,36 +537,177 @@ export function DatasetSchemaField({ ctx, name = 'schema', label = 'Output schem
       <div className="bk-field-label">
         <label>{label}</label>
       </div>
-      <p className="bk-field-hint">Declare columns when the source shape is known. This enables field completion and schema validation downstream.</p>
+      <p className="bk-field-hint">
+        Declare columns when the source shape is known. This enables field completion and schema
+        validation downstream.
+      </p>
       <div className="ps-schema-editor-rows">
         {rows.map((row) => (
           <div key={row.id} className="ps-schema-editor-row">
-            <Input mono value={row.name} placeholder="column" aria-label="Column name" onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, name: event.target.value } : entry)))} />
-            <Select aria-label={`Type for ${row.name || 'column'}`} value={row.kind} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, kind: event.target.value, precision: event.target.value === 'decimal' ? entry.precision : '', scale: event.target.value === 'decimal' ? entry.scale : '' } : entry)))}>
-              {SCHEMA_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}
+            <Input
+              mono
+              value={row.name}
+              placeholder="column"
+              aria-label="Column name"
+              onChange={(event) =>
+                commit(
+                  rows.map((entry) =>
+                    entry.id === row.id ? { ...entry, name: event.target.value } : entry,
+                  ),
+                )
+              }
+            />
+            <Select
+              aria-label={`Type for ${row.name || 'column'}`}
+              value={row.kind}
+              onChange={(event) =>
+                commit(
+                  rows.map((entry) =>
+                    entry.id === row.id
+                      ? {
+                          ...entry,
+                          kind: event.target.value,
+                          precision: event.target.value === 'decimal' ? entry.precision : '',
+                          scale: event.target.value === 'decimal' ? entry.scale : '',
+                        }
+                      : entry,
+                  ),
+                )
+              }
+            >
+              {SCHEMA_TYPES.map((type) => (
+                <option key={type} value={type}>
+                  {type}
+                </option>
+              ))}
             </Select>
-            {row.kind === 'decimal' && <Input type="number" min={1} value={row.precision} placeholder="precision" aria-label={`Precision for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, precision: event.target.value } : entry)))} />}
-            {row.kind === 'decimal' && <Input type="number" min={0} value={row.scale} placeholder="scale" aria-label={`Scale for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, scale: event.target.value } : entry)))} />}
-            {(row.details.trim() || ['enum', 'array', 'map', 'record'].includes(row.kind)) && <Textarea mono rows={2} value={row.details} placeholder={row.kind === 'enum' ? '{"values":["active","closed"]}' : '{"...":"type details"}'} aria-label={`Details for ${row.name || 'column'}`} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, details: event.target.value } : entry)))} />}
-            <Checkbox label="Nullable" checked={row.nullable} onChange={(event) => commit(rows.map((entry) => (entry.id === row.id ? { ...entry, nullable: event.target.checked } : entry)))} />
-            <IconButton size="sm" variant="danger" label={`Remove ${row.name || 'column'}`} onClick={() => commit(rows.filter((entry) => entry.id !== row.id))}><Trash2 size={14} aria-hidden="true" /></IconButton>
+            {row.kind === 'decimal' && (
+              <Input
+                type="number"
+                min={1}
+                value={row.precision}
+                placeholder="precision"
+                aria-label={`Precision for ${row.name || 'column'}`}
+                onChange={(event) =>
+                  commit(
+                    rows.map((entry) =>
+                      entry.id === row.id ? { ...entry, precision: event.target.value } : entry,
+                    ),
+                  )
+                }
+              />
+            )}
+            {row.kind === 'decimal' && (
+              <Input
+                type="number"
+                min={0}
+                value={row.scale}
+                placeholder="scale"
+                aria-label={`Scale for ${row.name || 'column'}`}
+                onChange={(event) =>
+                  commit(
+                    rows.map((entry) =>
+                      entry.id === row.id ? { ...entry, scale: event.target.value } : entry,
+                    ),
+                  )
+                }
+              />
+            )}
+            {(row.details.trim() || ['enum', 'array', 'map', 'record'].includes(row.kind)) && (
+              <Textarea
+                mono
+                rows={2}
+                value={row.details}
+                placeholder={
+                  row.kind === 'enum' ? '{"values":["active","closed"]}' : '{"...":"type details"}'
+                }
+                aria-label={`Details for ${row.name || 'column'}`}
+                onChange={(event) =>
+                  commit(
+                    rows.map((entry) =>
+                      entry.id === row.id ? { ...entry, details: event.target.value } : entry,
+                    ),
+                  )
+                }
+              />
+            )}
+            <Checkbox
+              label="Nullable"
+              checked={row.nullable}
+              onChange={(event) =>
+                commit(
+                  rows.map((entry) =>
+                    entry.id === row.id ? { ...entry, nullable: event.target.checked } : entry,
+                  ),
+                )
+              }
+            />
+            <IconButton
+              size="sm"
+              variant="danger"
+              label={`Remove ${row.name || 'column'}`}
+              onClick={() => commit(rows.filter((entry) => entry.id !== row.id))}
+            >
+              <Trash2 size={14} aria-hidden="true" />
+            </IconButton>
           </div>
         ))}
       </div>
-      <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden="true" />} onClick={() => setRows([...rows, { id: ++schemaRowSeq, name: '', kind: 'string', nullable: false, precision: '', scale: '', details: '' }])}>Add column</Button>
-      <Field label="Additional columns" hint="Open accepts undeclared columns; unknown keeps the declaration non-authoritative.">
+      <Button
+        size="sm"
+        variant="ghost"
+        icon={<Plus size={14} aria-hidden="true" />}
+        onClick={() =>
+          setRows([
+            ...rows,
+            {
+              id: ++schemaRowSeq,
+              name: '',
+              kind: 'string',
+              nullable: false,
+              precision: '',
+              scale: '',
+              details: '',
+            },
+          ])
+        }
+      >
+        Add column
+      </Button>
+      <Field
+        label="Additional columns"
+        hint="Open accepts undeclared columns; unknown keeps the declaration non-authoritative."
+      >
         <Select value={additional} onChange={(event) => commit(rows, event.target.value)}>
           <option value="closed">Closed</option>
           <option value="open">Open</option>
           <option value="unknown">Unknown</option>
         </Select>
       </Field>
-      {duplicate && <p className="ps-form-warning">"{duplicate}" appears twice; downstream field validation cannot distinguish those columns.</p>}
+      {duplicate && (
+        <p className="ps-form-warning">
+          "{duplicate}" appears twice; downstream field validation cannot distinguish those columns.
+        </p>
+      )}
     </div>
   )
 }
 
-export function ScriptField({ ctx, name, label, language, required, hint }: { ctx: FormCtx; name: string; label: string; language: CodeLanguage; required?: boolean; hint?: ReactNode }) {
+export function ScriptField({
+  ctx,
+  name,
+  label,
+  language,
+  required,
+  hint,
+}: {
+  ctx: FormCtx
+  name: string
+  label: string
+  language: CodeLanguage
+  required?: boolean
+  hint?: ReactNode
+}) {
   const [open, setOpen] = useState(false)
   const value = str(ctx.get(name))
   const lines = value.split('\n')
@@ -390,11 +718,22 @@ export function ScriptField({ ctx, name, label, language, required, hint }: { ct
           {label}
           {required && <span className="bk-field-required">*</span>}
         </label>
-        <Button size="sm" variant="ghost" icon={<Code2 size={14} aria-hidden="true" />} onClick={() => setOpen(true)} disabled={false}>
+        <Button
+          size="sm"
+          variant="ghost"
+          icon={<Code2 size={14} aria-hidden="true" />}
+          onClick={() => setOpen(true)}
+          disabled={false}
+        >
           {ctx.readonly ? 'View' : value ? 'Edit' : 'Write'}
         </Button>
       </div>
-      <button type="button" className="ps-script-preview" onClick={() => setOpen(true)} aria-label={`Open ${label} in the editor`}>
+      <button
+        type="button"
+        className="ps-script-preview"
+        onClick={() => setOpen(true)}
+        aria-label={`Open ${label} in the editor`}
+      >
         {value ? (
           <pre>
             {lines.slice(0, 8).join('\n')}
@@ -460,9 +799,14 @@ export function ConnectionField({
       hint={
         connections.isError
           ? `Connections could not be loaded: ${errorMessage(connections.error)}`
-          : hint ?? (connections.isSuccess && !usable.length ? `No saved ${types.join(' or ')} connections yet.` : undefined)
+          : (hint ??
+            (connections.isSuccess && !usable.length
+              ? `No saved ${types.join(' or ')} connections yet.`
+              : undefined))
       }
-      error={missing ? `The connection "${value}" does not exist or is not a supported type.` : undefined}
+      error={
+        missing ? `The connection "${value}" does not exist or is not a supported type.` : undefined
+      }
     >
       <Select
         value={value}
@@ -485,15 +829,23 @@ export function ConnectionField({
 }
 
 export function TestConnection({ connId, uri }: { connId?: string; uri?: string }) {
-  const [state, setState] = useState<{ busy: boolean; ok?: boolean; message?: string }>({ busy: false })
+  const [state, setState] = useState<{ busy: boolean; ok?: boolean; message?: string }>({
+    busy: false,
+  })
   const run = async () => {
     setState({ busy: true })
     try {
-      const result = connId ? await connectionApi.test(connId) : await connectionApi.testUri(uri ?? '')
+      const result = connId
+        ? await connectionApi.test(connId)
+        : await connectionApi.testUri(uri ?? '')
       setState({
         busy: false,
         ok: result.success,
-        message: result.success ? `Connected${result.driver ? ` with the ${result.driver} driver` : ''}${result.message ? `: ${result.message}` : ''}` : result.error || result.message || 'The server reported a failure without details.',
+        message:
+          (result.success
+            ? `Connected${result.driver ? ` with the ${result.driver} driver` : ''}${result.message ? `: ${result.message}` : ''}`
+            : result.error || result.message || 'The server reported a failure without details.') +
+          (result.note ? ` ${result.note}` : ''),
       })
     } catch (e) {
       setState({ busy: false, ok: false, message: errorMessage(e) })
@@ -509,7 +861,17 @@ export function TestConnection({ connId, uri }: { connId?: string; uri?: string 
   )
 }
 
-export function LegacyKeyNotice({ ctx, name, children, fix }: { ctx: FormCtx; name: string; children: ReactNode; fix?: { label: string; patch: Record<string, unknown> } }) {
+export function LegacyKeyNotice({
+  ctx,
+  name,
+  children,
+  fix,
+}: {
+  ctx: FormCtx
+  name: string
+  children: ReactNode
+  fix?: { label: string; patch: Record<string, unknown> }
+}) {
   if (ctx.get(name) === undefined) return null
   return (
     <Callout

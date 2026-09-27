@@ -107,6 +107,8 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-037](./037-authoring-experience-and-editor-integration.md) | Authoring experience — move preflight to where the mistake is made | Proposed |
 | [ADR-038](./038-where-staged-task-bytes-live.md) | Where staged task bytes live | Proposed |
 | [ADR-039](./039-lineage-that-says-how-it-knows.md) | Lineage that says how it knows | Proposed |
+| [ADR-040](./040-remote-file-locations-for-file-nodes.md) | Remote file locations for file nodes | Proposed |
+| [ADR-041](./041-external-secret-stores.md) | External secret stores — credentials stay in the customer's secret manager | Proposed |
 
 ## How to add a new ADR
 

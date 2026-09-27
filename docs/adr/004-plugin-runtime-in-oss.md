@@ -104,3 +104,13 @@ of the plugin story is OSS, and what part is enterprise?
 - Team memory entry reinforcing this rule already exists as
   `feedback_oss_ee_separation.md` — this ADR is its code-level
   counterpart.
+
+## Update (2026-09-27)
+
+"Secret injection from vaults" is no longer an enterprise-only feature.
+ADR-041 moves fetching credentials from a customer's secret manager
+into core, for connections first, on this ADR's own argument that
+connectors which only work for paying customers are a demo rather than
+an ecosystem. What stays outside core is operational: issuing
+identities, guided setup, governance over which stores a workspace may
+use, and audit.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -41,7 +42,7 @@ func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolve
 // catalog, no driver compiled in) failed with an error naming neither
 // Oracle nor the connection, while the sentence that would have explained
 // it went to a log the author cannot see.
-func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, []string) {
+func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, []string, error) {
 	return cr.ResolveWithWarningsIn(config, nodeType, "")
 }
 
@@ -51,17 +52,22 @@ func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{},
 // pipeline could name any workspace's connection and run with its
 // credentials. Runs resolve through the *In methods; the unscoped ones
 // remain for callers with no pipeline, which decide access themselves.
-func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, []string) {
+//
+// The error is a connection whose credentials could not be resolved. The
+// node must not run: it would run with an empty or unresolved credential
+// and fail, if at all, with the target's authentication error instead of
+// the reason (#751).
+func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, []string, error) {
 	var warnings []string
-	resolved := cr.resolve(config, nodeType, workspaceID, func(format string, args ...interface{}) {
+	resolved, err := cr.resolve(config, nodeType, workspaceID, func(format string, args ...interface{}) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
-	return resolved, warnings
+	return resolved, warnings, err
 }
 
 // ResolveIn is Resolve for a pipeline in workspaceID; see
 // ResolveWithWarningsIn.
-func (cr *ConnectionResolver) ResolveIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) map[string]interface{} {
+func (cr *ConnectionResolver) ResolveIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, error) {
 	return cr.resolve(config, nodeType, workspaceID, nil)
 }
 
@@ -82,14 +88,14 @@ const notInWorkspace = "conn_id %q not found in this pipeline's workspace"
 // Returns the config unchanged if no conn_id is present (backward compatible).
 //
 // Callers that can reach the run's log should prefer ResolveWithWarnings.
-func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) map[string]interface{} {
+func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, error) {
 	return cr.resolve(config, nodeType, "", nil)
 }
 
-func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, workspaceID string, warn func(string, ...interface{})) map[string]interface{} {
+func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, workspaceID string, warn func(string, ...interface{})) (map[string]interface{}, error) {
 	connID, ok := config["conn_id"].(string)
 	if !ok || connID == "" {
-		return config
+		return config, nil
 	}
 
 	conn, err := cr.store.GetConnection(connID)
@@ -117,17 +123,19 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		if warn != nil {
 			warn(msg, args...)
 		}
-		return config
+		return config, nil
 	}
 	if !sameWorkspace(conn, workspaceID) {
 		log.Printf("[conn-resolver] WARNING: "+notInWorkspace, connID)
 		if warn != nil {
 			warn(notInWorkspace, connID)
 		}
-		return config
+		return config, nil
 	}
 
-	cr.resolveCredentials(conn)
+	if err := cr.resolveCredentials(conn); err != nil {
+		return config, err
+	}
 
 	// Parse decrypted extra into a map
 	var extra map[string]interface{}
@@ -162,7 +170,7 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		resolveAPIConnectionFields(config, resolved, conn, extra)
 	}
 
-	return resolved
+	return resolved, nil
 }
 
 // resolveAPIConnectionFields injects a connection's base URL, merged headers,
@@ -205,20 +213,40 @@ func resolveAPIConnectionFields(
 
 // resolveCredentials resolves password_ref and extra_ref using the secrets chain,
 // populating the plaintext Password and Extra fields on the connection.
-func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) {
+//
+// A reference that cannot be resolved is an error (#751). It used to be
+// logged to the server and skipped, so the node ran with whatever the
+// field held before: an empty password for env://, vault:// and k8s://,
+// and the ciphertext itself for an encrypted:// value that failed to
+// decrypt. The author then saw the target's authentication error, with
+// nothing in the run log to say the reference was the cause.
+//
+// With no secrets chain there is nothing to resolve, and the connection is
+// used as it is. That is the contract for a connection that arrives
+// already resolved, as it does on a worker that receives credentials from
+// its control plane rather than reading them itself.
+//
+// A value with no reference is the legacy shape: plaintext from before
+// references existed, or an encrypted blob. It is offered to the chain's
+// fallback, and when that cannot decrypt it, it is kept, because failing
+// to decrypt is how a legacy plaintext value is recognised. Connections
+// read from the store always carry a reference for an encrypted value
+// (the startup backfill in both stores), so this path does not hide a
+// failed decryption of a stored credential.
+func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) error {
 	if cr.secrets == nil {
-		return
+		return nil
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	if conn.PasswordRef != "" {
-		if plain, err := cr.secrets.Resolve(ctx, conn.PasswordRef); err != nil {
-			log.Printf("[conn-resolver] failed to resolve password for conn %q: %v", conn.ConnID, err)
-		} else {
-			conn.Password = plain
+		plain, err := cr.secrets.Resolve(ctx, conn.PasswordRef)
+		if err != nil {
+			return credentialError(conn.ConnID, "password", conn.PasswordRef, err)
 		}
+		conn.Password = plain
 	} else if conn.Password != "" {
 		if plain, err := cr.secrets.Resolve(ctx, conn.Password); err == nil {
 			conn.Password = plain
@@ -226,16 +254,36 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) {
 	}
 
 	if conn.ExtraRef != "" {
-		if plain, err := cr.secrets.Resolve(ctx, conn.ExtraRef); err != nil {
-			log.Printf("[conn-resolver] failed to resolve extra for conn %q: %v", conn.ConnID, err)
-		} else {
-			conn.Extra = plain
+		plain, err := cr.secrets.Resolve(ctx, conn.ExtraRef)
+		if err != nil {
+			return credentialError(conn.ConnID, "extra settings", conn.ExtraRef, err)
 		}
+		conn.Extra = plain
 	} else if conn.Extra != "" {
 		if plain, err := cr.secrets.Resolve(ctx, conn.Extra); err == nil {
 			conn.Extra = plain
 		}
 	}
+	return nil
+}
+
+// ResolveCredentials resolves conn's password_ref and extra_ref in place,
+// through the same path a run uses, and returns the same error a run would
+// fail with. For callers that already hold the connection and have
+// decided access themselves, such as the API's connection test.
+func (cr *ConnectionResolver) ResolveCredentials(conn *models.Connection) error {
+	return cr.resolveCredentials(conn)
+}
+
+// credentialError names the connection, the field, where its value was
+// to come from, and why it could not be read. Never the value, and never
+// an encrypted:// reference's ciphertext: that is described, not quoted.
+func credentialError(connID, field, ref string, err error) error {
+	source := ref
+	if strings.HasPrefix(ref, "encrypted://") {
+		source = "its stored encrypted value"
+	}
+	return fmt.Errorf("connection %q: %s: could not resolve %s: %w", connID, field, source, err)
 }
 
 // ResolveConnection returns a connection with its credentials resolved.
@@ -265,7 +313,9 @@ func (cr *ConnectionResolver) ResolveConnectionIn(connID, workspaceID string) (*
 	if !sameWorkspace(conn, workspaceID) {
 		return nil, fmt.Errorf(notInWorkspace, connID)
 	}
-	cr.resolveCredentials(conn)
+	if err := cr.resolveCredentials(conn); err != nil {
+		return nil, err
+	}
 	return conn, nil
 }
 
@@ -297,6 +347,8 @@ func (cr *ConnectionResolver) ResolveConnectionByID(connID string) (*models.Conn
 	if conn == nil {
 		return nil, fmt.Errorf("resolve connection %q: not found", connID)
 	}
-	cr.resolveCredentials(conn)
+	if err := cr.resolveCredentials(conn); err != nil {
+		return nil, err
+	}
 	return conn, nil
 }

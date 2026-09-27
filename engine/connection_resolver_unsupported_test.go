@@ -27,8 +27,11 @@ func (c *connStore) GetConnection(string) (*models.Connection, error) { return n
 func resolveWith(t *testing.T, err error) []string {
 	t.Helper()
 	cr := &ConnectionResolver{store: &connStore{err: err}}
-	_, warnings := cr.ResolveWithWarnings(
+	_, warnings, rerr := cr.ResolveWithWarnings(
 		map[string]interface{}{"conn_id": "prod-warehouse"}, models.NodeTypeSourceDB)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
 	if len(warnings) != 1 {
 		t.Fatalf("got %d warnings, want 1: %v", len(warnings), warnings)
 	}

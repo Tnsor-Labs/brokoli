@@ -85,7 +85,44 @@ holding Brokoli's own configuration.
 ## Where references are resolved
 
 Runs resolve references on the machine that runs the node, so the
-allowlists must be set there too (workers included). The connection
-test in the UI uses only credentials stored in Brokoli: a connection
-whose credentials are references tests as missing them, while runs
-using it work.
+allowlists must be set there too (workers included).
+
+The connection test resolves references too, through the same chain and
+allowlists a run on the server uses. A reference that cannot be resolved
+fails the test with the message a run would fail with. The test runs on
+the server, though, so when a connection's credentials come from `env://`,
+`vault://` or `k8s://`, the result says they were resolved there: a
+worker resolves them with its own environment, and passes only if it has
+the same variables, allowlists and access.
+
+## When a reference cannot be resolved
+
+The node fails before it runs, and says which reference failed and why.
+The message appears in the node's log and as the run's error:
+
+```
+connection "warehouse": password: could not resolve env://WAREHOUSE_PASSWORD:
+secrets/env: variable "WAREHOUSE_PASSWORD" not set
+```
+
+It names the connection, the field (`password` or `extra settings`), the
+reference, and the resolver's reason. It never includes the value. An
+`encrypted://` reference is described as "its stored encrypted value"
+rather than quoted, since the reference is the ciphertext itself. That
+case usually means the encryption key has changed since the credential
+was saved.
+
+Common causes, by what the message contains:
+
+| Message contains | Cause |
+| --- | --- |
+| `is not listed in BROKOLI_SECRET_ENV_ALLOW` | The variable is not on the allowlist on the machine running the node |
+| `variable "..." not set` | The variable is allowed, but not set on that machine |
+| `is not under a path listed in BROKOLI_SECRET_VAULT_ALLOW` | The Vault path is not under an allowed prefix |
+| `is not listed in BROKOLI_SECRET_K8S_ALLOW` | The Kubernetes secret is not on the allowlist |
+| `unsupported scheme "vault"` | `VAULT_ADDR` is not set on that machine, so the Vault resolver is not enabled |
+| `decrypt failed` | The value was encrypted under a different key than the server has now |
+
+Before this, a run continued with an empty credential and failed, if at
+all, with the target's own authentication error. The only mention of the
+reference was in the server's log.

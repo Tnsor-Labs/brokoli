@@ -1483,7 +1483,10 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
-		resolved := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB, r.workspaceID())
+		resolved, err := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB, r.workspaceID())
+		if err != nil {
+			return nil, fmt.Errorf("source: %w", err)
+		}
 		if u, ok := resolved["uri"].(string); ok {
 			sourceURI = u
 		}
@@ -1492,7 +1495,10 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// Resolve dest connection
 	destURI, _ := node.Config["dest_uri"].(string)
 	if destConnID, _ := node.Config["dest_conn_id"].(string); destConnID != "" && r.connResolver != nil {
-		resolved := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB, r.workspaceID())
+		resolved, err := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB, r.workspaceID())
+		if err != nil {
+			return nil, fmt.Errorf("destination: %w", err)
+		}
 		if u, ok := resolved["uri"].(string); ok {
 			destURI = u
 		}
