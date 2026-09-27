@@ -919,6 +919,9 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	}
 
 	r.recordExecutedSQL(node.ID, attempt, query)
+	if isBigQueryURI(uri) {
+		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")
+	}
 	var columns []string
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
