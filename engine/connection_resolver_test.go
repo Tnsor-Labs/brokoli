@@ -16,7 +16,10 @@ func TestConnectionResolver_NoConnID(t *testing.T) {
 	config := map[string]interface{}{
 		"uri": "postgres://localhost/mydb",
 	}
-	result := cr.Resolve(config, models.NodeTypeSourceDB)
+	result, err := cr.Resolve(config, models.NodeTypeSourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result["uri"] != "postgres://localhost/mydb" {
 		t.Error("expected config unchanged when no conn_id")
 	}
@@ -28,7 +31,10 @@ func TestConnectionResolver_EmptyConnID(t *testing.T) {
 		"conn_id": "",
 		"uri":     "postgres://localhost/mydb",
 	}
-	result := cr.Resolve(config, models.NodeTypeSourceDB)
+	result, err := cr.Resolve(config, models.NodeTypeSourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if result["uri"] != "postgres://localhost/mydb" {
 		t.Error("expected config unchanged when conn_id is empty")
 	}
@@ -52,7 +58,10 @@ func TestConnectionResolver_DatabaseNodeRefusesTransportConnection(t *testing.T)
 
 	cr := NewConnectionResolver(s, nil)
 	config := map[string]interface{}{"conn_id": "partner-files", "uri": "postgres://inline/db"}
-	resolved, warnings := cr.ResolveWithWarnings(config, models.NodeTypeSourceDB)
+	resolved, warnings, err := cr.ResolveWithWarnings(config, models.NodeTypeSourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resolved["uri"] != config["uri"] {
 		t.Fatalf("transport connection replaced database URI: %v", resolved["uri"])
 	}
@@ -101,7 +110,10 @@ func TestConnectionResolver_SinkAPI(t *testing.T) {
 		"headers": map[string]interface{}{"Content-Type": "application/json"},
 	}
 
-	result := cr.Resolve(config, models.NodeTypeSinkAPI)
+	result, err := cr.Resolve(config, models.NodeTypeSinkAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if got := result["url"]; got != "https://api.example.com/v1/import" {
 		t.Errorf("url = %v, want base URL + path", got)
@@ -132,8 +144,14 @@ func TestConnectionResolver_SourceAndSinkAPI_Identical(t *testing.T) {
 		"url":     "/v1/events",
 	}
 
-	source := cr.Resolve(config, models.NodeTypeSourceAPI)
-	sink := cr.Resolve(config, models.NodeTypeSinkAPI)
+	source, err := cr.Resolve(config, models.NodeTypeSourceAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sink, err := cr.Resolve(config, models.NodeTypeSinkAPI)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, key := range []string{"url", "headers", "auth_user", "auth_password"} {
 		if !reflect.DeepEqual(source[key], sink[key]) {

@@ -775,11 +775,17 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// run's own log as well as the server's: the person who has to act on
 	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
-		var warnings []string
-		node.Config, warnings = r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
+		resolved, warnings, err := r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
 		for _, w := range warnings {
 			r.log(node.ID, models.LogLevelWarning, "%s", w)
 		}
+		if err != nil {
+			// #751: a credential that cannot be resolved stops the node
+			// here, saying why, instead of letting it run without one.
+			r.log(node.ID, models.LogLevelError, "%v", err)
+			return nil, fmt.Errorf("node %s: %w", node.Name, err)
+		}
+		node.Config = resolved
 	}
 
 	// ADR-019 Milestone 1: decide whether this node takes the

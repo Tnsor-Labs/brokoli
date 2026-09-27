@@ -51,18 +51,24 @@ func TestAConnectionServesOnlyItsOwnWorkspace(t *testing.T) {
 		t.Fatalf("unscoped: %v", err)
 	}
 
-	cfg, warnings := cr.ResolveWithWarningsIn(map[string]interface{}{"conn_id": "wh-b"}, models.NodeTypeSourceDB, "ws-a")
+	cfg, warnings, err := cr.ResolveWithWarningsIn(map[string]interface{}{"conn_id": "wh-b"}, models.NodeTypeSourceDB, "ws-a")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := cfg["uri"]; ok {
 		t.Fatalf("another workspace's credentials were injected: %v", cfg["uri"])
 	}
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "not found in this pipeline's workspace") {
 		t.Fatalf("warnings = %v", warnings)
 	}
-	cfg, _ = cr.ResolveWithWarningsIn(map[string]interface{}{"conn_id": "wh-b"}, models.NodeTypeSourceDB, "ws-b")
+	cfg, _, err = cr.ResolveWithWarningsIn(map[string]interface{}{"conn_id": "wh-b"}, models.NodeTypeSourceDB, "ws-b")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if uri, _ := cfg["uri"].(string); !strings.Contains(uri, "b.example") {
 		t.Fatalf("own workspace: uri = %q", uri)
 	}
-	if cfg := cr.ResolveIn(map[string]interface{}{"conn_id": "wh-a"}, models.NodeTypeSinkDB, "ws-b"); cfg["uri"] != nil {
+	if cfg, err := cr.ResolveIn(map[string]interface{}{"conn_id": "wh-a"}, models.NodeTypeSinkDB, "ws-b"); err != nil || cfg["uri"] != nil {
 		t.Fatalf("ResolveIn injected another workspace's credentials")
 	}
 }
