@@ -17,10 +17,16 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		"mssql":      {"sqlserver", "sqlserver"},
 	}
 	got := AllURIClaims()
-	if len(got) != len(want) {
-		t.Fatalf("%d claims, want %d: %+v", len(got), len(want), got)
+	if len(got) != len(want)+1 {
+		t.Fatalf("%d claims, want %d: %+v", len(got), len(want)+1, got)
 	}
 	for _, c := range got {
+		if c.Scheme == "bigquery" {
+			if !c.Native || c.Driver != "" || c.Dialect != "" {
+				t.Errorf("bigquery: %#v, want native claim without SQL driver or dialect", c)
+			}
+			continue
+		}
 		w, ok := want[c.Scheme]
 		if !ok {
 			t.Errorf("unexpected claim for scheme %q", c.Scheme)
@@ -56,5 +62,15 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		if byScheme[passthrough].DSN != nil {
 			t.Errorf("%s should pass the URI through (nil DSN)", passthrough)
 		}
+	}
+}
+
+func TestBigQueryIsNativeURI(t *testing.T) {
+	claim, ok := NativeURI("bigquery://project/dataset")
+	if !ok {
+		t.Fatal("bigquery URI is not claimed")
+	}
+	if claim.Driver != "" || !claim.Native {
+		t.Fatalf("claim = %#v, want native claim with no SQL driver", claim)
 	}
 }

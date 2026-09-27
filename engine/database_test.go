@@ -94,7 +94,6 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 func TestUnknownSchemesAreRefusedByName(t *testing.T) {
 	for _, uri := range []string{
 		"oracle://u:p@h:1521/svc",
-		"bigquery://project/dataset",
 		"databricks://token@workspace/warehouse",
 		"gopher://why:not@h/x",
 	} {
@@ -123,5 +122,12 @@ func TestUnknownSchemesAreRefusedByName(t *testing.T) {
 		if err != nil || driver != "pgx" {
 			t.Errorf("schemeless %q: driver=%q err=%v, want the pinned pgx default", uri, driver, err)
 		}
+	}
+}
+
+func TestNativeDatabaseSchemesAreRefusedBeforeSQL(t *testing.T) {
+	_, _, err := DetectDriver("bigquery://project/dataset")
+	if err == nil || err.Error() != "BigQuery does not support database/sql driver detection in this build" {
+		t.Fatalf("error = %v, want explicit native-backend refusal", err)
 	}
 }

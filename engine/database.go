@@ -64,6 +64,9 @@ func dialectForURI(uri string) string {
 // (forgotten import?)", which reads like a build defect rather than an
 // unsupported connection type, so check first and say which it is.
 func DetectDriver(uri string) (string, string, error) {
+	if err := refuseNativeDatabase(uri, "database/sql driver detection"); err != nil {
+		return "", "", err
+	}
 	driver, dsn, err := detectDriver(uri)
 	if err != nil {
 		return "", "", err
@@ -147,8 +150,23 @@ func parseJSON(s string, v interface{}) error {
 	return json.Unmarshal([]byte(s), v)
 }
 
+func refuseNativeDatabase(uri, operation string) error {
+	claim, ok := dbdialect.NativeURI(uri)
+	if !ok {
+		return nil
+	}
+	name := claim.Scheme
+	if claim.Scheme == "bigquery" {
+		name = "BigQuery"
+	}
+	return fmt.Errorf("%s does not support %s in this build", name, operation)
+}
+
 // QueryDatabase opens a connection, runs a query, and returns a DataSet.
 func QueryDatabase(uri, query string) (*common.DataSet, error) {
+	if err := refuseNativeDatabase(uri, "query"); err != nil {
+		return nil, err
+	}
 	driver, dsn, err := DetectDriver(uri)
 	if err != nil {
 		return nil, err
@@ -233,6 +251,9 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 
 // ExecuteSQL opens a connection and executes SQL statements (for sink_db).
 func ExecuteSQL(uri, sqlStatements string) (int64, error) {
+	if err := refuseNativeDatabase(uri, "SQL execution"); err != nil {
+		return 0, err
+	}
 	driver, dsn, err := DetectDriver(uri)
 	if err != nil {
 		return 0, err
@@ -548,6 +569,9 @@ func (s *rowScanner) next(rows *sql.Rows) (common.DataRow, error) {
 // reused. ctx governs the whole scan, so a cancelled run stops mid-result
 // instead of reading to the end of a large table first.
 func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, emit func(*common.DataSet) error) ([]string, int64, error) {
+	if err := refuseNativeDatabase(uri, "streaming query"); err != nil {
+		return nil, 0, err
+	}
 	if batchSize <= 0 {
 		batchSize = streamBatchRows
 	}

@@ -230,7 +230,7 @@ func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
 		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse,
-		ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
+		ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
 		return true
 	default:
 		return false
@@ -242,7 +242,7 @@ func (c *Connection) BuildsURI() bool {
 // have URI representations, but database nodes must refuse them by name.
 func (c *Connection) IsDatabase() bool {
 	switch c.Type {
-	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse:
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse, ConnTypeBigQuery:
 		return true
 	default:
 		return false
@@ -355,6 +355,29 @@ func (c *Connection) BuildURI() string {
 
 	case ConnTypeSQLite:
 		return c.Host // host is the file path
+
+	case ConnTypeBigQuery:
+		// BigQuery's URI names the project and dataset only. Credentials stay
+		// in Extra/ExtraRef and are resolved at execution time.
+		project, dataset := c.Host, c.Schema
+		if parts := strings.SplitN(c.Schema, ".", 2); len(parts) == 2 {
+			project, dataset = parts[0], parts[1]
+		}
+		u := &url.URL{Scheme: "bigquery", Host: project}
+		if dataset != "" {
+			u.Path = "/" + dataset
+		}
+		var extra map[string]interface{}
+		if json.Unmarshal([]byte(c.Extra), &extra) == nil {
+			q := url.Values{}
+			for _, key := range []string{"location", "billing_project"} {
+				if value, ok := extra[key].(string); ok && value != "" {
+					q.Set(key, value)
+				}
+			}
+			u.RawQuery = q.Encode()
+		}
+		return u.String()
 
 	case ConnTypeHTTP:
 		scheme := "https"

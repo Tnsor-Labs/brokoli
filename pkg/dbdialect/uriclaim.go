@@ -27,6 +27,8 @@ type URIClaim struct {
 	Scheme string
 	// Driver is the database/sql driver name that opens claimed URIs.
 	Driver string
+	// Native means the scheme is handled by a non-database/sql backend.
+	Native bool
 	// Dialect is the registry name statement generation should target.
 	Dialect string
 	// DSN converts a claimed URI into the driver's DSN. nil means the URI
@@ -51,8 +53,21 @@ func AllURIClaims() []URIClaim {
 			out = append(out, c.URIClaims()...)
 		}
 	}
+	// BigQuery is a native backend, so it has no SQL dialect registration.
+	out = append(out, URIClaim{Scheme: "bigquery", Native: true})
 	sort.Slice(out, func(i, j int) bool { return out[i].Scheme < out[j].Scheme })
 	return out
+}
+
+// NativeURI reports whether a URI belongs to a native backend rather than a
+// database/sql driver. Native backends must be selected before DetectDriver.
+func NativeURI(uri string) (URIClaim, bool) {
+	for _, c := range AllURIClaims() {
+		if c.Native && strings.HasPrefix(uri, c.Scheme+"://") {
+			return c, true
+		}
+	}
+	return URIClaim{}, false
 }
 
 func stripScheme(scheme string) func(string) string {

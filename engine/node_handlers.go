@@ -1181,6 +1181,9 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	if uri == "" {
 		return nil, fmt.Errorf("sink_db node requires 'uri' config")
 	}
+	if err := refuseNativeDatabase(uri, "writes"); err != nil {
+		return nil, fmt.Errorf("sink_db: %w", err)
+	}
 	if err := refuseUnearnedWrite(uri, sinkMode(node)); err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
 	}

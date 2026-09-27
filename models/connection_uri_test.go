@@ -81,6 +81,13 @@ func TestBuildURI(t *testing.T) {
 			conn: Connection{Type: ConnTypeSQLite, Host: "/data/app.db"},
 			want: "/data/app.db",
 		},
+		{
+			name: "bigquery names the project and dataset without credentials",
+			conn: Connection{Type: ConnTypeBigQuery, Schema: "analytics-prod.events",
+				Login: "ignored", Password: "secret",
+				Extra: `{"location":"EU","billing_project":"billing-prod","credentials":"must-not-leak"}`},
+			want: "bigquery://analytics-prod/events?billing_project=billing-prod&location=EU",
+		},
 	}
 
 	for _, tt := range tests {
@@ -131,10 +138,10 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 func TestBuildsURICoversTheCatalog(t *testing.T) {
 	withURI := []ConnectionType{
 		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
-		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 	withoutURI := []ConnectionType{
-		ConnTypeBigQuery, ConnTypeDatabricks, ConnTypeOracle,
+		ConnTypeDatabricks, ConnTypeOracle,
 		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeGeneric,
 	}
 
@@ -162,10 +169,10 @@ func TestBuildsURICoversTheCatalog(t *testing.T) {
 
 func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
 	withDriver := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse,
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeBigQuery,
 	}
 	withoutDriver := []ConnectionType{
-		ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
+		ConnTypeSnowflake, ConnTypeOracle,
 		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 
