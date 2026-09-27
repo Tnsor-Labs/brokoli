@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -36,6 +37,12 @@ func bigQueryClient(ctx context.Context, uri string, config map[string]interface
 
 	httpClient := netguard.Outbound().Client(30 * time.Minute)
 	opts := []option.ClientOption{option.WithHTTPClient(httpClient)}
+	if endpoint := os.Getenv("BROKOLI_BIGQUERY_ENDPOINT"); endpoint != "" {
+		// Test-only endpoint for the local emulator. The production path never
+		// uses an endpoint from connection data, and the emulator has no auth.
+		opts = append(opts, option.WithEndpoint(endpoint), option.WithoutAuthentication())
+		return bigquery.NewClient(ctx, project, opts...)
+	}
 	extra, _ := config["bigquery_extra"].(string)
 	if strings.TrimSpace(extra) != "" {
 		var raw map[string]interface{}
@@ -67,18 +74,16 @@ func bigQueryClient(ctx context.Context, uri string, config map[string]interface
 	return bigquery.NewClient(ctx, project, opts...)
 }
 
-func bigQueryQueryConfig(uri, query string, config map[string]interface{}) (*bigquery.Query, error) {
+func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[string]interface{}) (*bigquery.Query, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("invalid BigQuery URI: %w", err)
 	}
-	q := &bigquery.Query{QueryConfig: bigquery.QueryConfig{
-		Q:                query,
-		UseLegacySQL:     false,
-		MaxBytesBilled:   bigQueryDefaultMaxBytes,
-		Labels:           map[string]string{"brokoli": "true"},
-		DefaultProjectID: u.Hostname(),
-	}}
+	q := client.Query(query)
+	q.UseLegacySQL = false
+	q.MaxBytesBilled = bigQueryDefaultMaxBytes
+	q.Labels = map[string]string{"brokoli": "true"}
+	q.DefaultProjectID = u.Hostname()
 	if dataset := strings.TrimPrefix(u.Path, "/"); dataset != "" {
 		q.DefaultDatasetID = dataset
 	}
@@ -111,7 +116,7 @@ func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]in
 		return nil, 0, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(uri, query, config)
+	q, err := bigQueryQueryConfig(client, uri, query, config)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -168,13 +173,41 @@ func bigQueryColumnSchema(schema bigquery.Schema) columnSchema {
 	return out
 }
 
+func bigQueryLoadSchema(data *common.DataSet) bigquery.Schema {
+	fields := make(bigquery.Schema, 0, len(data.Columns))
+	for _, name := range data.Columns {
+		field := &bigquery.FieldSchema{Name: name, Type: bigquery.StringFieldType}
+		for _, row := range data.Rows {
+			value := row[name]
+			if value == nil {
+				continue
+			}
+			switch value.(type) {
+			case int, int8, int16, int32, int64, uint8, uint16, uint32:
+				field.Type = bigquery.IntegerFieldType
+			case float32, float64:
+				field.Type = bigquery.FloatFieldType
+			case bool:
+				field.Type = bigquery.BooleanFieldType
+			case []byte:
+				field.Type = bigquery.BytesFieldType
+			case time.Time:
+				field.Type = bigquery.TimestampFieldType
+			}
+			break
+		}
+		fields = append(fields, field)
+	}
+	return fields
+}
+
 func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}) (*common.DataSet, error) {
 	client, err := bigQueryClient(ctx, uri, config)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(uri, query, config)
+	q, err := bigQueryQueryConfig(client, uri, query, config)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +218,13 @@ func QueryBigQuery(ctx context.Context, uri, query string, config map[string]int
 	columns := make([]string, 0, len(it.Schema))
 	for _, field := range it.Schema {
 		columns = append(columns, field.Name)
+	}
+	if len(columns) == 0 {
+		if schema, _, dryErr := DryRunBigQuery(ctx, uri, query, config); dryErr == nil {
+			for _, field := range schema {
+				columns = append(columns, field.Name)
+			}
+		}
 	}
 	rows := make([]common.DataRow, 0)
 	for {
@@ -207,6 +247,27 @@ func QueryBigQuery(ctx context.Context, uri, query string, config map[string]int
 		rows = append(rows, row)
 	}
 	return &common.DataSet{Columns: columns, Rows: rows}, nil
+}
+
+func CheckBigQueryConnection(ctx context.Context, uri string, config map[string]interface{}) error {
+	client, err := bigQueryClient(ctx, uri, config)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	q, err := bigQueryQueryConfig(client, uri, "SELECT 1", config)
+	if err != nil {
+		return err
+	}
+	job, err := q.Run(ctx)
+	if err != nil {
+		return fmt.Errorf("BigQuery connection test: %w", err)
+	}
+	status, err := job.Wait(ctx)
+	if err != nil {
+		return fmt.Errorf("BigQuery connection test: %w", err)
+	}
+	return status.Err()
 }
 
 func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.DataSet, config map[string]interface{}) error {
@@ -240,7 +301,7 @@ func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.Dat
 	}()
 	source := bigquery.NewReaderSource(reader)
 	source.SourceFormat = bigquery.JSON
-	source.AutoDetect = true
+	source.Schema = bigQueryLoadSchema(data)
 	loader := client.Dataset(dataset).Table(table).LoaderFrom(source)
 	loader.CreateDisposition = bigquery.CreateIfNeeded
 	loader.WriteDisposition = bigquery.WriteAppend

@@ -238,6 +238,14 @@ jobs:
     # testing less, which is the failure this repo has been fixing all
     # week.
     services:
+      bigquery:
+        image: ghcr.io/goccy/bigquery-emulator:latest
+        command: ["--project=test", "--dataset=brokoli_test"]
+        ports:
+          - 9050:9050
+        options: >-
+          --health-cmd "wget -qO- http://127.0.0.1:9050/ || true"
+          --health-interval 2s --health-timeout 3s --health-retries 30
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
@@ -312,9 +320,14 @@ jobs:
       # Root, for the one test that toggles a server global (the LOAD DATA
       # fallback test flips local_infile off and back).
       BROKOLI_TEST_MYSQL_ROOT_URL: mysql://root:rootpw@tcp(localhost:3306)/brokoli_test
+      BROKOLI_BIGQUERY_ENDPOINT: http://127.0.0.1:9050
+      BROKOLI_OUTBOUND_ALLOW_LOOPBACK: "true"
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Wait for BigQuery emulator
+        run: curl --retry 30 --retry-delay 1 --retry-connrefused -s -o /dev/null http://127.0.0.1:9050/
 
       # The same setup the Test job does, minus the UI build. Each of
       # these gates real engine tests that SKIP without it -- a first

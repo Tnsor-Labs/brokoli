@@ -401,13 +401,23 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testS3(ctx, extra)
 	case models.ConnTypeAzureBlob:
 		return testAzureBlob(ctx, extra)
+	case models.ConnTypeBigQuery:
+		return testBigQuery(ctx, c, extra)
 	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
-		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
+		models.ConnTypeDatabricks:
 		return unsupportedDatabaseTest(c.Type)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
 		return testGeneric(ctx, c, extra)
 	}
+}
+
+func testBigQuery(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
+	config := map[string]interface{}{"bigquery_extra": c.Extra}
+	if err := engine.CheckBigQueryConnection(ctx, c.BuildURI(), config); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"success": true}
 }
 
 func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
@@ -681,9 +691,9 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"host", "port", "schema", "login", "password"},
 			"hints":       map[string]string{"host": "cluster.region.redshift.amazonaws.com", "port": "5439"}},
 		{"type": "bigquery", "label": "Google BigQuery", "category": "database", "icon": "connBigquery",
-			"description": "Serverless data warehouse on Google Cloud. No driver in this build: the connection test says so by name",
+			"description": "Serverless data warehouse on Google Cloud. Reads and atomic load-job writes supported",
 			"fields":      []string{"schema", "extra"},
-			"hints":       map[string]string{"schema": "project_id.dataset", "extra": "Service account JSON key"}},
+			"hints":       map[string]string{"schema": "project_id.dataset", "extra": `Service account JSON, location and optional billing project`}},
 		{"type": "databricks", "label": "Databricks", "category": "database", "icon": "connDatabricks",
 			"description": "Lakehouse platform for analytics and machine learning. No driver in this build: the connection test says so by name",
 			"fields":      []string{"host", "port", "schema", "login", "password"},

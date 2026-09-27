@@ -24,6 +24,7 @@ export const USABLE_BY_NODES = new Set([
   'sqlite',
   'mssql',
   'clickhouse',
+  'bigquery',
   'http',
   'sftp',
   's3',
