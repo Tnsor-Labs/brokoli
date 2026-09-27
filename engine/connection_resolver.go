@@ -190,13 +190,10 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 			}
 			break
 		}
+		// A BigQuery URI names only the project, dataset and location. Its
+		// key stays out of the node config: the backend resolves it by the
+		// conn_id already there, where the node runs (ADR-042 section 1).
 		resolved["uri"] = conn.BuildURI()
-		if conn.Type == models.ConnTypeBigQuery {
-			// Native backends need the connection reference and resolved
-			// type-specific settings; neither is encoded in the URI.
-			resolved["conn_id"] = conn.ConnID
-			resolved["bigquery_extra"] = conn.Extra
-		}
 
 	case models.NodeTypeSourceAPI, models.NodeTypeSinkAPI:
 		resolveAPIConnectionFields(config, resolved, conn, extra)

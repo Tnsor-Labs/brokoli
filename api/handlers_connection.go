@@ -415,8 +415,9 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 }
 
 func testBigQuery(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
-	config := map[string]interface{}{"bigquery_extra": c.Extra}
-	if err := engine.CheckBigQueryConnection(ctx, c.BuildURI(), config); err != nil {
+	// c.Extra was resolved by the test handler through the same path a run
+	// uses; it is passed to the backend directly, never through a config.
+	if err := engine.CheckBigQueryConnection(ctx, c.BuildURI(), nil, c.Extra); err != nil {
 		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"success": true}
