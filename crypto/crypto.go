@@ -8,7 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"io/fs"
 	"os"
 	"path/filepath"
 )
@@ -85,9 +85,18 @@ func (c *Config) Decrypt(encoded string) (string, error) {
 	return string(plaintext), nil
 }
 
-// LoadOrCreateKey loads an encryption key from environment, file, or generates one.
+// LoadOrCreateKey returns the key that encrypts stored credentials.
+//
+// In order: BROKOLI_ENCRYPTION_KEY (base64, 32 bytes), the key file at
+// keyPath, or a new key written to keyPath when that file does not exist.
+//
+// Every failure is an error, never a substitute key. A key that is
+// configured but unusable, or a key file that exists but cannot be read
+// or is too short, must stop the server: continuing under any other key
+// makes every credential saved under the real one unreadable, and every
+// credential saved from then on unreadable once the real key is back. An
+// existing key file is never overwritten, for the same reason.
 func LoadOrCreateKey(keyPath string) ([]byte, error) {
-	// Priority 1: Environment variable (production)
 	if envKey := os.Getenv("BROKOLI_ENCRYPTION_KEY"); envKey != "" {
 		decoded, err := base64.StdEncoding.DecodeString(envKey)
 		if err != nil {
@@ -99,28 +108,59 @@ func LoadOrCreateKey(keyPath string) ([]byte, error) {
 		return decoded, nil
 	}
 
-	// Priority 2: File-based key (development)
-	if key, err := os.ReadFile(keyPath); err == nil {
-		if len(key) >= 32 {
-			return key[:32], nil
+	key, err := readKeyFile(keyPath)
+	if err == nil || !errors.Is(err, fs.ErrNotExist) {
+		return key, err
+	}
+
+	key = make([]byte, 32)
+	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		return nil, fmt.Errorf("generate encryption key: %w", err)
+	}
+	if dir := filepath.Dir(keyPath); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return nil, fmt.Errorf("create directory for encryption key file %s: %w", keyPath, err)
 		}
 	}
-
-	// Priority 3: Generate new key (first run)
-	key := make([]byte, 32)
-	if _, err := io.ReadFull(rand.Reader, key); err != nil {
-		return nil, fmt.Errorf("generate key: %w", err)
+	// O_EXCL: if another process created the file since it was read above
+	// (two replicas starting on one volume), use its key rather than
+	// replacing it.
+	// #nosec G304 -- keyPath is the operator's database path plus ".key", never request input
+	f, err := os.OpenFile(keyPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return readKeyFile(keyPath)
 	}
-
-	// Ensure directory exists
-	dir := filepath.Dir(keyPath)
-	if dir != "" && dir != "." {
-		os.MkdirAll(dir, 0o700)
+	if err != nil {
+		return nil, fmt.Errorf("create encryption key file %s: %w; set BROKOLI_ENCRYPTION_KEY or make the directory writable", keyPath, err)
 	}
-
-	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
-		log.Printf("WARNING: could not persist encryption key: %v", err)
+	// On a failed write the partial file is removed, so the next start
+	// creates a whole key instead of refusing a short one. The write's
+	// error is the one worth reporting; a failed cleanup leaves a file the
+	// next start refuses by name.
+	if _, err := f.Write(key); err != nil {
+		_ = f.Close()
+		_ = os.Remove(keyPath)
+		return nil, fmt.Errorf("write encryption key file %s: %w", keyPath, err)
 	}
-
+	if err := f.Close(); err != nil {
+		_ = os.Remove(keyPath)
+		return nil, fmt.Errorf("write encryption key file %s: %w", keyPath, err)
+	}
 	return key, nil
+}
+
+// readKeyFile reads an existing key file. The error wraps fs.ErrNotExist
+// only when there is no file at all.
+func readKeyFile(keyPath string) ([]byte, error) {
+	key, err := os.ReadFile(keyPath) // #nosec G304 -- the operator's database path plus ".key", never request input
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("read encryption key file %s: %w", keyPath, err)
+	}
+	if len(key) < 32 {
+		return nil, fmt.Errorf("encryption key file %s holds %d bytes, want 32; it is left as it is, because replacing it would make every credential saved under the key it held unreadable", keyPath, len(key))
+	}
+	return key[:32], nil
 }

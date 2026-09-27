@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +82,18 @@ func TestPlatformServicesRunOnceInDistributedMode(t *testing.T) {
 		if shouldStartPlatformServices(mode) {
 			t.Fatalf("platform services enabled in %s mode", mode)
 		}
+	}
+}
+
+// #754: serve used to replace a key it could not load with 32 zero bytes
+// and start anyway.
+func TestLoadEncryptionKeyRefusesToStartWithoutTheKey(t *testing.T) {
+	t.Setenv("BROKOLI_ENCRYPTION_KEY", "not-base64!!")
+	cfg, err := loadEncryptionKey(filepath.Join(t.TempDir(), "brokoli.db"))
+	if err == nil {
+		t.Fatalf("an invalid BROKOLI_ENCRYPTION_KEY gave a key: %x", cfg.Key)
+	}
+	if !strings.Contains(err.Error(), "BROKOLI_ENCRYPTION_KEY") {
+		t.Errorf("error = %q, want it to name the setting to fix", err)
 	}
 }

@@ -372,15 +372,10 @@ var serveCmd = &cobra.Command{
 		}
 
 		// Encryption for connection secrets
-		keyPath := encryptionKeyPath(dbPath)
-		encKey, err := crypto.LoadOrCreateKey(keyPath)
+		cryptoCfg, err := loadEncryptionKey(dbPath)
 		if err != nil {
-			log.Printf("WARNING: could not load encryption key: %v", err)
-			encKey = make([]byte, 32) // fallback zero key
-		} else {
-			log.Printf("Encryption key: %s", keyPath)
+			return err
 		}
-		cryptoCfg := &crypto.Config{Key: encKey}
 
 		// Wire variable store and connection resolver into engine
 		eng.VarStore = engine.NewVarStoreAdapter(s, cryptoCfg)
@@ -704,6 +699,24 @@ func defaultDatabasePath() string {
 		return value
 	}
 	return "./brokoli.db"
+}
+
+// loadEncryptionKey returns the key that encrypts stored credentials, or
+// an error that stops the server. There is no stand-in key: one would
+// encrypt new credentials under a key anyone can reproduce, and fail to
+// read every credential saved under the real one (#754).
+func loadEncryptionKey(databasePath string) (*crypto.Config, error) {
+	keyPath := encryptionKeyPath(databasePath)
+	key, err := crypto.LoadOrCreateKey(keyPath)
+	if err != nil {
+		return nil, fmt.Errorf("refusing to start without the encryption key for stored credentials: %w", err)
+	}
+	if os.Getenv("BROKOLI_ENCRYPTION_KEY") != "" {
+		log.Printf("Encryption key: BROKOLI_ENCRYPTION_KEY")
+	} else {
+		log.Printf("Encryption key: %s", keyPath)
+	}
+	return &crypto.Config{Key: key}, nil
 }
 
 func encryptionKeyPath(databasePath string) string {
