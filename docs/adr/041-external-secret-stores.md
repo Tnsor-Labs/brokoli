@@ -501,18 +501,18 @@ store change and token issued.
 
 Prerequisites. These are bugs today, independent of the feature:
 
-- Fail the node on an unresolvable reference, and say why in the run
-  log (finding 1).
-- Resolve references in the connection test (finding 2).
+- #751: fail the node on an unresolvable reference, and say why in the
+  run log (finding 1).
+- #752: resolve references in the connection test (finding 2).
 - Validate references on save (finding 3).
-- Send references, not resolved values, in remote work orders
+- #753: send references, not resolved values, in remote work orders
   (finding 4).
 - Redact resolved values from node logs and run errors (finding 5).
-- `cmd/serve.go:377-380`: when the encryption key cannot be loaded, the
-  server falls back to an all-zero key and only logs a warning.
-  Credentials saved while in that state are encrypted with a key anyone
-  can guess. It should refuse to start.
-- `api/connection_masking.go:14-17` says references are hidden
+- #754: when the encryption key cannot be loaded, the server falls back
+  to an all-zero key and only logs a warning (`cmd/serve.go:377-380`), and
+  a damaged key file is silently overwritten with a new key. Both were
+  reproduced. It should refuse to start.
+- #755: `api/connection_masking.go:14-17` says references are hidden
   everywhere. `maskRef` (`api/handlers_connection.go:732-740`) hides only
   `encrypted://`. The comment and the code have to agree, one way or the
   other.
