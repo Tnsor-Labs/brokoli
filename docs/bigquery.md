@@ -6,6 +6,12 @@ BigQuery connections use a secret-free URI:
 bigquery://project/dataset?location=EU&billing_project=billing-project
 ```
 
+`billing_project` is optional. When set, jobs are billed to and draw quota
+from that project instead of the one that holds the data. It must be a Google
+Cloud project ID, and the identity the connection uses needs
+`serviceusage.services.use` on it. It takes precedence over a quota project
+named inside a service-account key.
+
 Set the connection `schema` to `project.dataset`. Put a service-account JSON
 document in the encrypted `extra` value or behind `ExtraRef`. The document must
 have `"type": "service_account"`; credentials are never placed in the URI or
