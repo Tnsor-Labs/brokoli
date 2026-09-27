@@ -348,7 +348,11 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 			config[key] = value
 		}
 		config["node_id"] = node.ID
-		ds, err := QueryBigQuery(r.ctx, uri, query, config)
+		settings, err := r.bigQuerySettings(node.Config)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		ds, err := QueryBigQuery(r.ctx, uri, query, config, settings)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
 		}
@@ -383,7 +387,12 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 			config[key] = value
 		}
 		config["node_id"] = node.ID
-		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config)
+		settings, err := r.bigQuerySettings(node.Config)
+		if err != nil {
+			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery skipped: %v", err)
+			return nil
+		}
+		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config, settings)
 		if err != nil {
 			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery failed: %v", err)
 			return nil
@@ -1231,7 +1240,11 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		if r.run != nil {
 			config["run_id"] = r.run.ID
 		}
-		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config); err != nil {
+		settings, err := r.bigQuerySettings(node.Config)
+		if err != nil {
+			return nil, fmt.Errorf("sink_db: %w", err)
+		}
+		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config, settings); err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Loaded %d rows into BigQuery table %s", len(input.Rows), table)
@@ -1834,4 +1847,31 @@ func (r *Runner) attachArtifactSink(fetcher fetchers.Fetcher) {
 		return
 	}
 	aware.SetArtifactSink(&runArtifactSink{store: blobs, runID: r.run.ID})
+}
+
+// bigQuerySettings resolves the BigQuery connection a node names, in the
+// run's workspace, and returns its settings for the backend to authenticate
+// with. It is called at the moment the node talks to BigQuery, on the
+// machine that runs it, and the result goes straight to the backend: the key
+// never sits in node.Config, where it could reach a log, a persisted record
+// or a work order (ADR-042 section 1; the pattern #760 uses for remote pages).
+//
+// A node with no conn_id has no stored settings, and the backend uses the
+// machine's own identity where that is allowed.
+func (r *Runner) bigQuerySettings(config map[string]interface{}) (string, error) {
+	connID, _ := config["conn_id"].(string)
+	if connID == "" {
+		return "", nil
+	}
+	if r.connResolver == nil {
+		return "", fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
+	}
+	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
+	if err != nil {
+		return "", err
+	}
+	if conn.Type != models.ConnTypeBigQuery {
+		return "", fmt.Errorf("connection %q is type %q, not bigquery", connID, conn.Type)
+	}
+	return conn.Extra, nil
 }

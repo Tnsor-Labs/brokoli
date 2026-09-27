@@ -26,7 +26,9 @@
 # that will fail mysteriously in CI.
 services:
   bigquery:
-    image: ghcr.io/goccy/bigquery-emulator:latest
+    # Pinned, like every other service here. goccy/bigquery-emulator is a
+    # community project (MIT); 0.8.1 is its release of 2026-06-13.
+    image: ghcr.io/goccy/bigquery-emulator:0.8.1
     command: ["--project=test", "--dataset=brokoli_test"]
     ports:
       - "55538:9050"
