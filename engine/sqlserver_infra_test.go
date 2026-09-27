@@ -81,7 +81,10 @@ func TestSQLServerSourceToSink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	// Closed by a cleanup, not a defer: a defer runs before the cleanups
+	// below, which then drop nothing on a closed connection and leave the
+	// tables to break the next run against the same server.
+	t.Cleanup(func() { _ = db.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -158,7 +161,10 @@ func TestSQLServerLoadAndFailureEdges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	// Closed by a cleanup, not a defer: a defer runs before the cleanups
+	// below, which then drop nothing on a closed connection and leave the
+	// tables to break the next run against the same server.
+	t.Cleanup(func() { _ = db.Close() })
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -252,7 +258,10 @@ func BenchmarkSQLServerReadGenerateWrite(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer db.Close()
+	// Closed by a cleanup, not a defer: a defer runs before the cleanups
+	// below, which then drop nothing on a closed connection and leave the
+	// tables to break the next run against the same server.
+	b.Cleanup(func() { _ = db.Close() })
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	if err := db.PingContext(ctx); err != nil {
