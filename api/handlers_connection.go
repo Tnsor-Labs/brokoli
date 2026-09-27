@@ -372,6 +372,9 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	case models.ConnTypeClickHouse:
 		result := testDBConnection(ctx, c.BuildURI())
 		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeMSSQL:
+		result := testDBConnection(ctx, c.BuildURI())
+		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeHTTP:
 		result := testHTTPAuth(ctx, c, extra)
 		writeJSON(w, http.StatusOK, result)
@@ -384,8 +387,8 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	case models.ConnTypeAzureBlob:
 		result := testAzureBlob(ctx, extra)
 		writeJSON(w, http.StatusOK, result)
-	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
-		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
+	case models.ConnTypeSnowflake, models.ConnTypeOracle, models.ConnTypeBigQuery,
+		models.ConnTypeDatabricks:
 		result := unsupportedDatabaseTest(c.Type)
 		writeJSON(w, http.StatusOK, result)
 	default:

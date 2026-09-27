@@ -124,6 +124,13 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 	if cfg.Dialect == "" {
 		cfg.Dialect = "generic"
 	}
+	// SQL Server rejects an INSERT with more than 1,000 row-value
+	// expressions. Keep the public batch-size option, but cap it at the
+	// server's hard limit so migration and sink paths cannot generate a
+	// statement the destination will refuse.
+	if (strings.EqualFold(cfg.Dialect, "sqlserver") || strings.EqualFold(cfg.Dialect, "mssql")) && cfg.BatchSize > 1000 {
+		cfg.BatchSize = 1000
+	}
 
 	// Every identifier that will reach quoteIdent -- the table name, every
 	// column, and (for upsert) the conflict-target key columns -- is
