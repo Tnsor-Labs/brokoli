@@ -12,7 +12,8 @@ design is recorded in
 [ADR-040](adr/040-remote-file-locations-for-file-nodes.md).
 
 For customer-owned S3 buckets, see [Reading and writing files in
-customer-owned S3](s3-file-delivery.md).
+customer-owned S3](s3-file-delivery.md); for Azure, [Reading and writing
+files in customer-owned Azure Blob Storage](azure-blob-file-delivery.md).
 
 - [1. Create the connection](#1-create-the-connection)
 - [2. Get the server's host key](#2-get-the-servers-host-key)

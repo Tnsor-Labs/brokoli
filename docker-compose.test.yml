@@ -130,6 +130,29 @@ services:
   #
   # The service keeps the name, port and credentials the old one had, so
   # the workflow, the env vars and the tests are untouched.
+  azurite:
+    # Microsoft's own Azure Storage emulator, for the azure_blob file
+    # transport (#687): blob service only, data in tmpfs, pinned like the
+    # S3 service so an image change is a deliberate edit.
+    # --skipApiVersionCheck: the SDK may speak a newer API version than a
+    # pinned emulator knows, and the operations used here are old ones.
+    image: mcr.microsoft.com/azure-storage/azurite:3.37.0
+    command: azurite-blob --blobHost 0.0.0.0 --blobPort 10000 --location /data --skipApiVersionCheck
+    ports:
+      - "55537:10000"
+    tmpfs:
+      - /data
+    healthcheck:
+      # Any HTTP status line means the blob API is serving; an anonymous
+      # list is refused, which is fine. busybox wget, as the image has no
+      # curl.
+      test:
+        - CMD-SHELL
+        - 'wget -q -S -O /dev/null "http://127.0.0.1:10000/devstoreaccount1?comp=list" 2>&1 | grep -qE "HTTP/1.1 [0-9]{3}"'
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
   minio:
     image: chrislusf/seaweedfs:3.80
     command: server -s3 -s3.port=8333 -s3.config=/etc/seaweedfs/s3.json -dir=/data

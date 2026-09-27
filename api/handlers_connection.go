@@ -381,6 +381,9 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	case models.ConnTypeS3:
 		result := testS3(ctx, extra)
 		writeJSON(w, http.StatusOK, result)
+	case models.ConnTypeAzureBlob:
+		result := testAzureBlob(ctx, extra)
+		writeJSON(w, http.StatusOK, result)
 	case models.ConnTypeMSSQL, models.ConnTypeSnowflake, models.ConnTypeOracle,
 		models.ConnTypeBigQuery, models.ConnTypeDatabricks:
 		result := unsupportedDatabaseTest(c.Type)
@@ -552,6 +555,19 @@ func testS3(ctx context.Context, extra map[string]interface{}) map[string]interf
 	return map[string]interface{}{"success": true, "message": "Authenticated successfully against the S3 bucket"}
 }
 
+// testAzureBlob authenticates against the configured container and lists
+// it, through the same client file nodes use at runtime, so a wrong key
+// or a missing container fails here rather than in a pipeline (#680).
+func testAzureBlob(ctx context.Context, extra map[string]interface{}) map[string]interface{} {
+	if extra == nil {
+		return map[string]interface{}{"success": false, "error": "No extra config — set account, container, and key or sas_token"}
+	}
+	if err := engine.TestAzureBlobConnection(ctx, extra); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"success": true, "message": "Authenticated and listed the Azure Blob container"}
+}
+
 // testGeneric tries the best test for a generic connection.
 func testGeneric(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	// If extra has a webhook_url, try an authenticated request to it
@@ -676,9 +692,9 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"extra"},
 			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
 		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "icon": "connAzureBlob",
-			"description": "Object storage on Microsoft Azure",
+			"description": "Object storage on Microsoft Azure — file nodes read and write blobs in a container",
 			"fields":      []string{"extra"},
-			"hints":       map[string]string{"extra": `{"container": "my-container", "account": "storageaccount", "key": "..."}`}},
+			"hints":       map[string]string{"extra": `{"container": "my-container", "account": "storageaccount", "key": "..."} — or "sas_token" instead of "key"; optional "endpoint" for a sovereign cloud, private endpoint or Azurite`}},
 		// APIs & Other
 		{"type": "http", "label": "HTTP / REST API", "category": "api", "icon": "connHttp",
 			"description": "Any HTTP endpoint — REST APIs, webhooks, exports",
