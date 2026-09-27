@@ -11,7 +11,7 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
-## [0.14.0] - 2026-09-27
+## [0.14.0] - 2026-09-28
 
 Three new backends -- Azure Blob Storage for file nodes, native bulk
 writes to SQL Server, and BigQuery -- and short-lived OIDC credentials
