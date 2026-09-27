@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -34,6 +35,16 @@ func ExecuteInstanceWorkOrder(wo *extensions.InstanceWorkOrder) (*common.DataSet
 // caller cancels it. Code nodes propagate the context to their subprocess;
 // other node types still observe cancellation before and after their fetch.
 func ExecuteInstanceWorkOrderContext(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
+	return ExecuteInstanceWorkOrderResolving(ctx, wo, nil)
+}
+
+// ExecuteInstanceWorkOrderResolving is ExecuteInstanceWorkOrderContext on a
+// worker that can resolve connections. A source_api page names its
+// connection by conn_id and carries none of its credentials (#753), so the
+// worker resolves it here, with cr, in the work order's workspace. A page
+// that names a connection fails on a worker with no resolver, rather than
+// fetching without the credentials.
+func ExecuteInstanceWorkOrderResolving(ctx context.Context, wo *extensions.InstanceWorkOrder, cr *ConnectionResolver) (*common.DataSet, error) {
 	if wo == nil {
 		return nil, fmt.Errorf("execute instance work order: nil work order")
 	}
@@ -44,7 +55,7 @@ func ExecuteInstanceWorkOrderContext(ctx context.Context, wo *extensions.Instanc
 	case string(models.NodeTypeCode):
 		return executeCodeWorkOrder(ctx, wo)
 	case string(models.NodeTypeSourceAPI):
-		result, err := executeSourceAPIPageWorkOrder(ctx, wo)
+		result, err := executeSourceAPIPageWorkOrder(ctx, wo, cr)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -72,8 +83,26 @@ func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder)
 	return result, err
 }
 
-func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {
-	if wo.SourceURL == "" {
+func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder, cr *ConnectionResolver) (*common.DataSet, error) {
+	source, config := wo.SourceURL, wo.Config
+	if connID, _ := config["conn_id"].(string); connID != "" {
+		if cr == nil {
+			return nil, fmt.Errorf("execute source_api page work order: the page uses connection %q, and this worker has no connection resolver to fetch its credentials with", connID)
+		}
+		resolved, warnings, err := cr.ResolveWithWarningsIn(config, models.NodeTypeSourceAPI, wo.WorkspaceID)
+		if err != nil {
+			return nil, fmt.Errorf("execute source_api page work order: %w", err)
+		}
+		// A warning here means the connection was not resolved at all
+		// (missing, another workspace's, or a store that cannot look it
+		// up). The page would go out with no base URL and no credentials.
+		if len(warnings) > 0 {
+			return nil, fmt.Errorf("execute source_api page work order: %s", strings.Join(warnings, "; "))
+		}
+		config = resolved
+		source, _ = resolved["url"].(string)
+	}
+	if source == "" {
 		return nil, fmt.Errorf("execute source_api page work order: source URL is required")
 	}
 	sourceType := wo.SourceType
@@ -89,9 +118,9 @@ func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceW
 		return nil, fmt.Errorf("execute source_api page work order: source type %q does not support page execution", sourceType)
 	}
 	if cancellable, ok := pageFetcher.(fetchers.ContextPageFetcher); ok {
-		return cancellable.FetchPageContext(ctx, wo.SourceURL, wo.Config, wo.PageURL, wo.PageParams)
+		return cancellable.FetchPageContext(ctx, source, config, wo.PageURL, wo.PageParams)
 	}
-	return pageFetcher.FetchPage(wo.SourceURL, wo.Config, wo.PageURL, wo.PageParams)
+	return pageFetcher.FetchPage(source, config, wo.PageURL, wo.PageParams)
 }
 
 // ExecuteInstanceJob is the full worker-side handling of a WorkOrder-
@@ -117,6 +146,12 @@ func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceW
 // same FencingGeneration the job already carries is safe and meaningful,
 // not a stale token.
 func ExecuteInstanceJob(s store.Store, artifacts ArtifactStore, job extensions.RunJob) error {
+	return ExecuteInstanceJobResolving(s, artifacts, nil, job)
+}
+
+// ExecuteInstanceJobResolving is ExecuteInstanceJob on a worker that can
+// resolve connections with cr; see ExecuteInstanceWorkOrderResolving.
+func ExecuteInstanceJobResolving(s store.Store, artifacts ArtifactStore, cr *ConnectionResolver, job extensions.RunJob) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -127,10 +162,10 @@ func ExecuteInstanceJob(s store.Store, artifacts ArtifactStore, job extensions.R
 	}
 	go watchRunCancellation(ctx, cancel, s, job.RunID)
 
-	return executeInstanceJobContext(ctx, s, artifacts, job)
+	return executeInstanceJobContext(ctx, s, artifacts, cr, job)
 }
 
-func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts ArtifactStore, job extensions.RunJob) error {
+func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts ArtifactStore, cr *ConnectionResolver, job extensions.RunJob) error {
 	if job.WorkOrder == nil {
 		return fmt.Errorf("execute instance job: job %s has no work order", job.ID)
 	}
@@ -150,7 +185,7 @@ func executeInstanceJobContext(ctx context.Context, s store.Store, artifacts Art
 	if job.WorkOrder.NodeType == string(models.NodeTypeTask) {
 		result, execErr = ExecuteTaskWorkOrderWithArtifacts(ctx, s, artifacts, job.RunID, job.NodeID, job.WorkOrder)
 	} else {
-		result, execErr = ExecuteInstanceWorkOrderContext(ctx, job.WorkOrder)
+		result, execErr = ExecuteInstanceWorkOrderResolving(ctx, job.WorkOrder, cr)
 	}
 	if execErr != nil {
 		if failErr := attemptStore.FailAttempt(job.RunID, job.NodeID, job.InstanceKey, job.Attempt, job.FencingGeneration, execErr.Error()); failErr != nil {

@@ -68,6 +68,20 @@ func (r *Runner) runSourceAPIRemotePages(node models.Node, source, sourceType st
 		timeoutSec = 30
 	}
 
+	// A page sent to another machine carries the connection by reference
+	// (#753). node.Config here is the resolved one, with the password and
+	// auth headers written in; the page gets the config from before that,
+	// and no URL, since the URL comes from the connection too. The worker
+	// resolves the connection itself.
+	workConfig, workSource := node.Config, source
+	if unresolved, ok := r.referenceConfigs.Load(node.ID); ok {
+		if cfg, _ := unresolved.(map[string]interface{}); cfg != nil {
+			if connID, _ := cfg["conn_id"].(string); connID != "" {
+				workConfig, workSource = cfg, ""
+			}
+		}
+	}
+
 	allRows := make([]common.DataRow, 0)
 	var columns []string
 	pagesFetched := 0
@@ -85,7 +99,7 @@ func (r *Runner) runSourceAPIRemotePages(node models.Node, source, sourceType st
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				results[i] = r.dispatchSourceAPIPage(node, source, sourceType, specs[i], node.Config, timeoutSec, pageRetries, backoff)
+				results[i] = r.dispatchSourceAPIPage(node, workSource, sourceType, specs[i], workConfig, timeoutSec, pageRetries, backoff)
 			}(i)
 		}
 		wg.Wait()
@@ -159,6 +173,7 @@ func (r *Runner) dispatchSourceAPIPage(node models.Node, source, sourceType stri
 			SourceType:     sourceType,
 			PageParams:     spec.params,
 			TimeoutSeconds: timeoutSec,
+			WorkspaceID:    r.workspaceID(),
 		}
 		data, dispatchErr := r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, spec.instanceKey, fencingGeneration, workOrder, timeoutSec, nil)
 		if dispatchErr == nil {

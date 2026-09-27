@@ -593,7 +593,7 @@ var serveCmd = &cobra.Command{
 							defer cancelRenew()
 							go renewJobClaim(renewCtx, renewer, j.ID)
 						}
-						if execErr := engine.ExecuteInstanceJob(s, eng.ArtifactStore, j); execErr != nil {
+						if execErr := engine.ExecuteInstanceJobResolving(s, eng.ArtifactStore, eng.ConnResolver, j); execErr != nil {
 							log.Printf("Worker: instance job failed: %v", execErr)
 							if settleErr := Extensions.JobQueue.Fail(j.ID, execErr); settleErr != nil {
 								log.Printf("Worker: fail instance job %s: %v", j.ID, settleErr)

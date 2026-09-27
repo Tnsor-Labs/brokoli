@@ -37,6 +37,13 @@ type Runner struct {
 	connResolver *ConnectionResolver // for conn_id → URI
 	ctx          context.Context
 	cancel       context.CancelFunc
+
+	// referenceConfigs holds each node's config as it was before connection
+	// resolution wrote credentials into it (node ID → config). Work sent to
+	// another machine carries this one, and that machine resolves the
+	// connection itself, so credentials never travel in a work order (#753).
+	referenceConfigs sync.Map
+
 	// cancelMu guards cancel/preCancelled so Cancel is durable across the
 	// window before Execute creates r.ctx. Without it, a Cancel that lands
 	// while the runner is registered in Engine.active but not yet executing
@@ -775,6 +782,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// run's own log as well as the server's: the person who has to act on
 	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
+		r.referenceConfigs.Store(node.ID, node.Config)
 		resolved, warnings, err := r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
 		for _, w := range warnings {
 			r.log(node.ID, models.LogLevelWarning, "%s", w)

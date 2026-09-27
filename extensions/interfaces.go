@@ -622,10 +622,20 @@ type InstanceWorkOrder struct {
 	// They are populated only when NodeType is "source_api"; code expansion
 	// WorkOrders continue to use ItemColumns/ItemRow above. PageParams are
 	// merged with the source node's configured params by the worker.
+	//
+	// When the node's Config names a conn_id, the page carries the
+	// connection by reference, never its credentials (#753): Config is the
+	// node's config before connection resolution, SourceURL is empty, and
+	// the worker resolves the connection itself within WorkspaceID. A
+	// worker that predates this finds no SourceURL and fails the page,
+	// rather than fetching without the credentials.
 	SourceURL  string            `json:"source_url,omitempty"`
 	SourceType string            `json:"source_type,omitempty"`
 	PageURL    string            `json:"page_url,omitempty"`
 	PageParams map[string]string `json:"page_params,omitempty"`
+	// WorkspaceID is the owning pipeline's workspace: the scope a worker
+	// resolves a conn_id in, the one the dispatcher would have used.
+	WorkspaceID string `json:"workspace_id,omitempty"`
 }
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.
