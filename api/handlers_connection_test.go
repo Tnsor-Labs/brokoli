@@ -28,7 +28,6 @@ func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
 	for _, kind := range []models.ConnectionType{
 		models.ConnTypeSnowflake,
 		models.ConnTypeOracle,
-		models.ConnTypeBigQuery,
 		models.ConnTypeDatabricks,
 	} {
 		result := unsupportedDatabaseTest(kind)

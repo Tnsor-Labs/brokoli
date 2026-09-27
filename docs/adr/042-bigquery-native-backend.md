@@ -60,7 +60,7 @@ v1.85.0, 2026-09-24):
 | Question | Finding |
 | --- | --- |
 | Pure Go? | Yes. No `import "C"`; `CGO_ENABLED=0` builds pass for linux, darwin and windows. Apache-2.0. |
-| Size | About 17-19 MB added to a standalone binary. Its effect on Brokoli's 77 MB binary is not measured yet. It depends on `apache/arrow/go/v15`, while Brokoli ships `arrow-go/v18`, so the binary would carry two copies of Arrow. |
+| Size | A stripped Brokoli binary grew by 4.26-4.64 MiB across the six targets (8.3-8.4%). The measured binaries were 48.6-53.6 MiB before and 52.7-58.2 MiB after linking the client. It depends on `apache/arrow/go/v15`, while Brokoli ships `arrow-go/v18`, so the binary carries two copies of Arrow. |
 | Load jobs | Load from any `io.Reader` (`bigquery.NewReaderSource`): NDJSON, CSV, Avro, Parquet, ORC, no Cloud Storage needed. **Free.** **Atomic**: "either all records get inserted or none do". 1,500 per table per day, failures included; 100,000 per project per day; 15 TB per job. |
 | Overwrite | A load job with `WRITE_TRUNCATE_DATA` "overwrites the data, but keeps the constraints and schema of the existing table", atomically. `WRITE_TRUNCATE` also replaces the schema and removes row-level access policies. |
 | Storage Write API | gRPC. Rows must be protobuf messages built from a descriptor at run time (no Arrow in the Go writer). $0.025/GiB past 2 TiB a month. Only **pending** streams commit several batches atomically; a **committed** stream makes each batch visible as it is written. Append only. |

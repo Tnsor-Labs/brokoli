@@ -919,6 +919,9 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	}
 
 	r.recordExecutedSQL(node.ID, attempt, query)
+	if isBigQueryURI(uri) {
+		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")
+	}
 	var columns []string
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
@@ -950,6 +953,9 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 	uri, cfg, ok := sinkStreamConfig(node)
 	if !ok {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db node is not streamable (dispatch bug: eligibility should have caught this)")
+	}
+	if err := refuseNativeDatabase(uri, "streaming writes"); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_db: %w", err)
 	}
 	w, ok := bulkWriterFor(cfg)
 	if !ok {

@@ -191,6 +191,12 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 			break
 		}
 		resolved["uri"] = conn.BuildURI()
+		if conn.Type == models.ConnTypeBigQuery {
+			// Native backends need the connection reference and resolved
+			// type-specific settings; neither is encoded in the URI.
+			resolved["conn_id"] = conn.ConnID
+			resolved["bigquery_extra"] = conn.Extra
+		}
 
 	case models.NodeTypeSourceAPI, models.NodeTypeSinkAPI:
 		resolveAPIConnectionFields(config, resolved, conn, extra)

@@ -342,6 +342,19 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 	}
 
 	r.recordExecutedSQL(node.ID, attempt, query)
+	if isBigQueryURI(uri) {
+		config := make(map[string]interface{}, len(node.Config)+1)
+		for key, value := range node.Config {
+			config[key] = value
+		}
+		config["node_id"] = node.ID
+		ds, err := QueryBigQuery(r.ctx, uri, query, config)
+		if err != nil {
+			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from BigQuery", len(ds.Rows), len(ds.Columns))
+		return nodeExecutionResult{output: ds}, nil
+	}
 	ds, err := QueryDatabase(uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
@@ -363,6 +376,20 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema {
 	if !r.schemaCarryWanted() {
 		return nil
+	}
+	if isBigQueryURI(uri) {
+		config := make(map[string]interface{}, len(node.Config)+1)
+		for key, value := range node.Config {
+			config[key] = value
+		}
+		config["node_id"] = node.ID
+		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config)
+		if err != nil {
+			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery failed: %v", err)
+			return nil
+		}
+		r.log(node.ID, models.LogLevelInfo, "BigQuery dry run discovered %d columns; estimated %d bytes processed", len(schema), bytesProcessed)
+		return bigQueryColumnSchema(schema)
 	}
 	types, _, ok := sourceColumnTypes(r.ctx, uri, query)
 	if !ok {
@@ -1180,6 +1207,38 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	uri, _ := node.Config["uri"].(string)
 	if uri == "" {
 		return nil, fmt.Errorf("sink_db node requires 'uri' config")
+	}
+	if isBigQueryURI(uri) {
+		if len(input.Rows) == 1 {
+			if _, ok := input.Rows[0]["sql_output"].(string); ok {
+				return nil, fmt.Errorf("sink_db: BigQuery does not support SQL execution in this build")
+			}
+		}
+		table, _ := node.Config["table"].(string)
+		if table == "" {
+			return nil, fmt.Errorf("sink_db requires a 'table' for BigQuery")
+		}
+		if len(input.Rows) == 0 {
+			r.log(node.ID, models.LogLevelInfo, "sink_db: no rows to write to %q", table)
+			return nil, nil
+		}
+		mode, _ := node.Config["mode"].(string)
+		config := make(map[string]interface{}, len(node.Config)+2)
+		for key, value := range node.Config {
+			config[key] = value
+		}
+		config["node_id"] = node.ID
+		if r.run != nil {
+			config["run_id"] = r.run.ID
+		}
+		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config); err != nil {
+			return nil, fmt.Errorf("sink_db: %w", err)
+		}
+		r.log(node.ID, models.LogLevelInfo, "Loaded %d rows into BigQuery table %s", len(input.Rows), table)
+		return nil, nil
+	}
+	if err := refuseNativeDatabase(uri, "writes"); err != nil {
+		return nil, fmt.Errorf("sink_db: %w", err)
 	}
 	if err := refuseUnearnedWrite(uri, sinkMode(node)); err != nil {
 		return nil, fmt.Errorf("sink_db: %w", err)
