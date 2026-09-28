@@ -45,6 +45,12 @@ func TestBuildURI(t *testing.T) {
 			want: "snowflake://svc:pw@acme.snowflakecomputing.com/PROD?warehouse=ETL_WH",
 		},
 		{
+			name: "oracle carries service and TLS options",
+			conn: Connection{Type: ConnTypeOracle, Host: "oracle.example.com", Schema: "ORCL",
+				Login: "svc", Password: "pw", Extra: `{"sid":"ORCL","ssl":true,"ssl verify":true}`},
+			want: "oracle://svc:pw@oracle.example.com:1521/ORCL?sid=ORCL&ssl=true&ssl+verify=true",
+		},
+		{
 			name: "mysql keeps the tcp() DSN shape",
 			conn: Connection{Type: ConnTypeMySQL, Host: "mysql.example.com", Port: 3306,
 				Schema: "app", Login: "root", Password: "pw"},
@@ -138,10 +144,10 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 func TestBuildsURICoversTheCatalog(t *testing.T) {
 	withURI := []ConnectionType{
 		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
-		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 	withoutURI := []ConnectionType{
-		ConnTypeDatabricks, ConnTypeOracle,
+		ConnTypeDatabricks,
 		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeGeneric,
 	}
 
@@ -169,10 +175,9 @@ func TestBuildsURICoversTheCatalog(t *testing.T) {
 
 func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
 	withDriver := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeSnowflake, ConnTypeBigQuery,
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
 	}
 	withoutDriver := []ConnectionType{
-		ConnTypeOracle,
 		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 

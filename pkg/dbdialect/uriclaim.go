@@ -118,3 +118,12 @@ func (snowflake) URIClaims() []URIClaim {
 		DSN:     stripScheme("snowflake"),
 	}}
 }
+
+func (oracle) URIClaims() []URIClaim {
+	return []URIClaim{{
+		Scheme:  "oracle",
+		Driver:  "oracle",
+		Dialect: "oracle",
+		DSN:     stripScheme("oracle"),
+	}}
+}

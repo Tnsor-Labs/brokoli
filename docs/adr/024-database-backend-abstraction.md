@@ -185,13 +185,9 @@ world changes.
 
 ### Deferred
 
-- **Oracle.** No driver exists and no code path mentions it beyond a catalog
-  card and an icon. The binding constraint is the build: the release is
-  `CGO_ENABLED=0` cross-compiled to six targets, and `modernc.org/sqlite` was
-  chosen over the CGO SQLite driver for that reason — so `godror`, which
-  needs CGO and Oracle Instant Client, cannot be used without giving up the
-  single static binary. Pure-Go `go-ora` is the only candidate that fits.
-  Recorded so the constraint is not rediscovered.
+- **Oracle.** The pure-Go `go-ora` driver satisfies the six-target
+  `CGO_ENABLED=0` release constraint. Oracle-specific pushdown and type
+  metadata remain deferred.
 - **The control plane.** Brokoli's own metadata store is a separate axis with
   its own two parallel implementations. Nothing here touches it.
 - **SQL Server, BigQuery, and Databricks.** At the time of this ADR they were

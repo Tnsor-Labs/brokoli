@@ -24,6 +24,7 @@ export const USABLE_BY_NODES = new Set([
   'sqlite',
   'mssql',
   'snowflake',
+  'oracle',
   'clickhouse',
   'bigquery',
   'http',
@@ -67,6 +68,17 @@ export const DRIVER_OPTIONS: Record<string, string[]> = {
     'app name',
   ],
   clickhouse: ['secure', 'dial_timeout', 'read_timeout', 'compress'],
+  oracle: [
+    'sid',
+    'instance name',
+    'ssl',
+    'ssl verify',
+    'wallet',
+    'wallet password',
+    'connect timeout',
+    'encryption',
+    'data integrity',
+  ],
   snowflake: ['warehouse', 'role', 'authenticator', 'loginTimeout', 'application'],
 }
 

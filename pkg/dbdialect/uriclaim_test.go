@@ -16,6 +16,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		"sqlserver":  {"sqlserver", "sqlserver"},
 		"mssql":      {"sqlserver", "sqlserver"},
 		"snowflake":  {"brokoli-snowflake", "snowflake"},
+		"oracle":     {"oracle", "oracle"},
 	}
 	got := AllURIClaims()
 	if len(got) != len(want)+1 {
@@ -66,6 +67,9 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 	}
 	if dsn := byScheme["snowflake"].DSN("snowflake://u:p@account/db/schema?warehouse=WH"); dsn != "u:p@account/db/schema?warehouse=WH" {
 		t.Errorf("snowflake DSN = %q", dsn)
+	}
+	if dsn := byScheme["oracle"].DSN("oracle://u:p@h:1521/ORCL"); dsn != "u:p@h:1521/ORCL" {
+		t.Errorf("oracle DSN = %q", dsn)
 	}
 }
 

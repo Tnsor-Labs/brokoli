@@ -302,7 +302,7 @@ func runMySQLSinkExpectingFailure(t *testing.T, csv, targetDB, table string, key
 	return err
 }
 
-// A connection type with no compiled-in driver -- Oracle is the live
+// A connection type with no compiled-in driver -- Databricks is the live
 // example: advertised in the catalog, no driver -- used to fail a run with
 // an error naming neither the connection nor its type, because the sentence
 // that explained it went to the server's stdout. It has to reach the run's
@@ -316,17 +316,17 @@ func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 	defer st.Close()
 
 	conn := &models.Connection{
-		ConnID: "legacy-oracle", Type: "oracle",
-		Host: "oracle.internal", Port: 1521, Schema: "ORCL",
+		ConnID: "legacy-databricks", Type: "databricks",
+		Host: "workspace.cloud.databricks.com", Schema: "warehouse",
 		Login: "etl", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateConnection(conn); err != nil {
-		t.Skipf("this store rejects an oracle connection outright, which is also acceptable: %v", err)
+		t.Skipf("this store rejects a Databricks connection outright, which is also acceptable: %v", err)
 	}
 
 	resolver := NewConnectionResolver(st, nil)
 	resolved, warnings, err := resolver.ResolveWithWarnings(
-		map[string]interface{}{"conn_id": "legacy-oracle"}, models.NodeTypeSourceDB)
+		map[string]interface{}{"conn_id": "legacy-databricks"}, models.NodeTypeSourceDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,10 +335,10 @@ func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 		t.Fatal("an unsupported connection type must produce a warning the run can log")
 	}
 	joined := strings.Join(warnings, "\n")
-	if !strings.Contains(joined, "legacy-oracle") {
+	if !strings.Contains(joined, "legacy-databricks") {
 		t.Errorf("the warning must name the connection: %s", joined)
 	}
-	if !strings.Contains(joined, "oracle") {
+	if !strings.Contains(joined, "databricks") {
 		t.Errorf("the warning must name the type: %s", joined)
 	}
 	if _, ok := resolved["uri"]; ok {

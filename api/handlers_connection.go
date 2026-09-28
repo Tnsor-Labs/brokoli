@@ -401,6 +401,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeSnowflake:
 		return testDBConnection(ctx, c.BuildURI())
+	case models.ConnTypeOracle:
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeHTTP:
 		return testHTTPAuth(ctx, c, extra)
 	case models.ConnTypeSFTP:
@@ -413,8 +415,7 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return h.testGCS(ctx, c)
 	case models.ConnTypeBigQuery:
 		return h.testBigQuery(ctx, c)
-	case models.ConnTypeOracle,
-		models.ConnTypeDatabricks:
+	case models.ConnTypeDatabricks:
 		return unsupportedDatabaseTest(c.Type)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
@@ -724,8 +725,9 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"host", "port", "schema", "login", "password"},
 			"hints":       map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
 		{"type": "oracle", "label": "Oracle", "category": "database", "icon": "connOracle",
-			"description": "Enterprise relational database for mission-critical workloads. No driver in this build: the connection test says so by name",
-			"fields":      []string{"host", "port", "schema", "login", "password"}},
+			"description": "Enterprise relational database for mission-critical workloads. Query, append, and overwrite are supported through the pure-Go Oracle SQL driver",
+			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints":       map[string]string{"port": "1521", "schema": "service name", "extra": `{"ssl": true, "ssl verify": true}`}},
 		{"type": "mssql", "label": "SQL Server", "category": "database", "icon": "connMssql",
 			"description": "Microsoft's enterprise relational database with authenticated read and write support",
 			"fields":      []string{"host", "port", "schema", "login", "password"}},
