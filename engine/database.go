@@ -24,6 +24,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/microsoft/go-mssqldb"
+	_ "github.com/sijms/go-ora/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -122,7 +123,7 @@ func detectDriver(uri string) (string, string, error) {
 		return "sqlite", uri, nil
 	default:
 		// A scheme nothing claims is refused by that name (#383). It
-		// used to fall through to pgx, so oracle:// and bigquery://
+		// used to fall through to pgx, so bigquery://
 		// produced a Postgres driver error about the wrong backend,
 		// named confidently -- the failure ADR-024's survey called "a
 		// default that guesses". Schemeless strings keep the pgx

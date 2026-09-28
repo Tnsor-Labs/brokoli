@@ -335,6 +335,7 @@ func TestDialectForURI(t *testing.T) {
 		"/tmp/a.db":     "sqlite",
 		"sqlserver://x": "sqlserver",
 		"snowflake://x": "snowflake",
+		"oracle://x":    "oracle",
 	}
 	for uri, want := range cases {
 		if got := dialectForURI(uri); got != want {
@@ -463,7 +464,7 @@ func TestGetDialectMatchesLegacyTable(t *testing.T) {
 		"mssql":      {"sqlserver", "[", "1", "2006-01-02 15:04:05.9999999", true, false, "INT", "DATETIME2", ""},
 		"generic":    {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
 		// Unknown names fall to generic, as the old default: arm did.
-		"oracle": {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
+		"oracle": {"oracle", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
 		"":       {"generic", `"`, "TRUE", "2006-01-02 15:04:05.999999", true, false, "INTEGER", "TIMESTAMP", ""},
 	}
 	for in, want := range cases {

@@ -3,6 +3,8 @@ package engine
 import (
 	"strings"
 	"testing"
+
+	goora "github.com/sijms/go-ora/v2"
 )
 
 // Scheme-to-driver mapping, independent of whether the driver is compiled in.
@@ -23,6 +25,7 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"test.db", "sqlite", "test.db"},
 		{"sqlserver://user:pass@host:1433?database=db", "sqlserver", "sqlserver://user:pass@host:1433?database=db"},
 		{"mssql://user:pass@host:1433?database=db", "sqlserver", "mssql://user:pass@host:1433?database=db"},
+		{"oracle://user:pass@host:1521/service", "oracle", "user:pass@host:1521/service"},
 		// Default falls through to pgx
 		{"host:5432/db", "pgx", "host:5432/db"},
 	}
@@ -43,6 +46,26 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 	}
 }
 
+func TestOracleDSNIsAcceptedByDriver(t *testing.T) {
+	driver, dsn, err := DetectDriver("oracle://svc:p%40ss@oracle.example.com:1521/ORCL?sid=ORCL&ssl=true&ssl+verify=true")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver != "oracle" {
+		t.Fatalf("driver = %q, want oracle", driver)
+	}
+	cfg, err := goora.ParseConfig("oracle://" + dsn)
+	if err != nil {
+		t.Fatalf("ParseConfig: %v", err)
+	}
+	if cfg.UserID != "svc" || cfg.ServiceName != "ORCL" || cfg.SID != "ORCL" || !cfg.SSL || !cfg.SSLVerify {
+		t.Fatalf("parsed config = user %q service %q sid %q ssl %v verify %v", cfg.UserID, cfg.ServiceName, cfg.SID, cfg.SSL, cfg.SSLVerify)
+	}
+	if cfg.DatabaseInfo.Password != "p@ss" {
+		t.Fatalf("password was not decoded by the driver")
+	}
+}
+
 // The connection catalog offers more database types than this build has
 // drivers for. That is a product limitation, not a defect, and the error has
 // to say so: database/sql's own message for an unregistered driver is
@@ -57,6 +80,7 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 		{"sqlite:///data/app.db", "sqlite"},
 		{"sqlserver://u:p@h:1433?database=d", "sqlserver"},
 		{"mssql://u:p@h:1433?database=d", "sqlserver"},
+		{"oracle://u:p@h:1521/svc", "oracle"},
 	}
 	for _, tc := range supported {
 		got, _, err := DetectDriver(tc.uri)
@@ -78,7 +102,6 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 // above pins that.
 func TestUnknownSchemesAreRefusedByName(t *testing.T) {
 	for _, uri := range []string{
-		"oracle://u:p@h:1521/svc",
 		"databricks://token@workspace/warehouse",
 		"gopher://why:not@h/x",
 	} {

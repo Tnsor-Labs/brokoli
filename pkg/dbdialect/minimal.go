@@ -92,6 +92,10 @@ func (snowflake) QuoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+type oracle struct{ generic }
+
+func (oracle) Name() string { return "oracle" }
+
 // quoteDotted quotes a possibly schema-qualified name part by part, the
 // same rule every other dialect applies: more than two parts is quoted
 // whole so it fails loudly rather than being silently reinterpreted.

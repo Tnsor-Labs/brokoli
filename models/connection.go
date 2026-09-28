@@ -110,6 +110,10 @@ var driverOptionKeys = map[ConnectionType][]string{
 		"encrypt", "TrustServerCertificate", "hostNameInCertificate",
 		"connection timeout", "dial timeout", "app name",
 	},
+	ConnTypeOracle: {
+		"sid", "instance name", "ssl", "ssl verify", "wallet",
+		"wallet password", "connect timeout", "encryption", "data integrity",
+	},
 	ConnTypeSnowflake: {
 		"warehouse", "role", "authenticator", "loginTimeout", "application",
 	},
@@ -229,7 +233,7 @@ func (c *Connection) hostPort(defaultPort int) string {
 func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
-		ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse,
+		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeClickHouse,
 		ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
 		return true
 	default:
@@ -242,7 +246,7 @@ func (c *Connection) BuildsURI() bool {
 // have URI representations, but database nodes must refuse them by name.
 func (c *Connection) IsDatabase() bool {
 	switch c.Type {
-	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeClickHouse, ConnTypeBigQuery:
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeOracle, ConnTypeClickHouse, ConnTypeBigQuery:
 		return true
 	default:
 		return false
@@ -347,6 +351,17 @@ func (c *Connection) BuildURI() string {
 	case ConnTypeSnowflake:
 		// Snowflake DSN: user:password@account/database/schema?warehouse=X
 		u := &url.URL{Scheme: "snowflake", User: c.userinfo(), Host: c.Host}
+		if c.Schema != "" {
+			u.Path = "/" + c.Schema
+		}
+		u.RawQuery = encodeOptions(opts)
+		return u.String()
+
+	case ConnTypeOracle:
+		// go-ora uses oracle://user:password@host:port/service. The
+		// service name is the connection schema; SID and wallet settings
+		// remain explicit driver options in Extra.
+		u := &url.URL{Scheme: "oracle", User: c.userinfo(), Host: c.hostPort(1521)}
 		if c.Schema != "" {
 			u.Path = "/" + c.Schema
 		}
