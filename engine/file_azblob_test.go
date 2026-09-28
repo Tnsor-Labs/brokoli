@@ -69,7 +69,7 @@ func TestAzureBlobAcceptsTheCatalogueHintFields(t *testing.T) {
 // An unsupported connection type is refused by name, and the message
 // lists every transport, so it cannot fall behind openFileTransport.
 func TestFileTransportRefusalNamesEveryTransport(t *testing.T) {
-	for _, name := range []string{"sftp", "s3", "azure_blob"} {
+	for _, name := range []string{"sftp", "s3", "gcs", "azure_blob"} {
 		if !strings.Contains(fileTransportTypes, name) {
 			t.Errorf("fileTransportTypes %q does not name %s", fileTransportTypes, name)
 		}

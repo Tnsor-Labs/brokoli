@@ -28,6 +28,7 @@ export const USABLE_BY_NODES = new Set([
   'http',
   'sftp',
   's3',
+  'gcs',
   'azure_blob',
 ])
 

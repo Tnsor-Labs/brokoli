@@ -85,6 +85,12 @@ func (r *Runner) openFileTransport(ctx context.Context, node models.Node) (fileT
 			return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 		}
 		return &azureBlobTransport{client: client, connID: connID}, nil
+	case models.ConnTypeGCS:
+		client, err := newGCSFileClient(ctx, conn)
+		if err != nil {
+			return nil, fmt.Errorf("conn_id %q: %w", connID, err)
+		}
+		return &gcsTransport{client: client, connID: connID}, nil
 	default:
 		return nil, fmt.Errorf("conn_id %q is a %s connection; file nodes support %s", connID, conn.Type, fileTransportTypes)
 	}
@@ -92,7 +98,7 @@ func (r *Runner) openFileTransport(ctx context.Context, node models.Node) (fileT
 
 // fileTransportTypes is named in the refusal for any other connection
 // type, so the message cannot fall behind the switch above.
-const fileTransportTypes = "sftp, s3 and azure_blob"
+const fileTransportTypes = "sftp, s3, gcs and azure_blob"
 
 // fileTransportScheme is the asset-URI scheme for a connection type, used
 // where a message has to name the destination before anything is dialled.
@@ -102,6 +108,8 @@ func fileTransportScheme(t models.ConnectionType) string {
 		return "s3"
 	case models.ConnTypeAzureBlob:
 		return "azblob"
+	case models.ConnTypeGCS:
+		return "gs"
 	default:
 		return "sftp"
 	}
@@ -160,3 +168,28 @@ func (t *s3Transport) upload(ctx context.Context, remotePath, _ string, write fu
 }
 
 func (t *s3Transport) close() error { return nil }
+
+// gcsTransport is the customer-owned Google Cloud Storage transport. A GCS
+// object becomes visible when its writer is closed successfully.
+type gcsTransport struct {
+	client *gcsFileClient
+	connID string
+}
+
+func (t *gcsTransport) scheme() string { return "gs" }
+
+func (t *gcsTransport) download(ctx context.Context, remotePath, dir string) (string, string, int64, error) {
+	local := filepath.Join(dir, s3StagedFilename(remotePath))
+	n, err := t.client.download(ctx, remotePath, local)
+	return local, remoteFileAssetURI("gs", t.connID, remotePath), n, err
+}
+
+func (t *gcsTransport) upload(ctx context.Context, remotePath, _ string, write func(io.Writer) error) (fileDelivery, error) {
+	n, err := t.client.upload(ctx, remotePath, write)
+	if err != nil {
+		return fileDelivery{}, err
+	}
+	return fileDelivery{bytes: n, path: remotePath}, nil
+}
+
+func (t *gcsTransport) close() error { return t.client.client.Close() }
