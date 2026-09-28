@@ -50,6 +50,22 @@ func TestOracleConnectionTestIsReal(t *testing.T) {
 	}
 }
 
+func TestDatabricksConnectionTestUsesCompiledDriver(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	result := testDBConnection(ctx, "databricks://token:wrong@127.0.0.1:1/sql/1.0/warehouses/test")
+	if result["success"] != false {
+		t.Fatalf("success = %v, want false for an unreachable server", result["success"])
+	}
+	if result["driver"] != "databricks" {
+		t.Fatalf("driver = %v, want databricks; Databricks must use the real connection test", result["driver"])
+	}
+	if result["error"] == "databricks has no driver in this build" {
+		t.Fatal("Databricks was routed through the unsupported-driver path")
+	}
+}
+
 func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
 	for _, kind := range []models.ConnectionType{
 		models.ConnTypeSnowflake,

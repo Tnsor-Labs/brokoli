@@ -26,6 +26,7 @@ export const USABLE_BY_NODES = new Set([
   'mssql',
   'snowflake',
   'oracle',
+  'databricks',
   'clickhouse',
   'bigquery',
   'http',
@@ -79,6 +80,16 @@ export const DRIVER_OPTIONS: Record<string, string[]> = {
     'data integrity',
   ],
   snowflake: ['warehouse', 'role', 'authenticator', 'loginTimeout', 'application'],
+  databricks: [
+    'catalog',
+    'schema',
+    'maxRows',
+    'timeout',
+    'userAgentEntry',
+    'useCloudFetch',
+    'maxDownloadThreads',
+    'useArrowNativeDecimal',
+  ],
 }
 
 /** Stored ref schemes that the server returns verbatim and that win over a typed secret. */

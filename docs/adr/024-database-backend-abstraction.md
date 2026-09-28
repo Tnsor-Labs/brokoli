@@ -195,9 +195,10 @@ world changes.
   Pushdown and type metadata are deferred with it.
 - **The control plane.** Brokoli's own metadata store is a separate axis with
   its own two parallel implementations. Nothing here touches it.
-- **SQL Server, BigQuery, and Databricks.** At the time of this ADR they were
-  advertised in the catalog without compiled drivers. SQL Server and BigQuery
-  have since been implemented; Databricks remains deferred.
+- **SQL Server, BigQuery, Snowflake, and Databricks.** At the time of this ADR
+  they were advertised in the catalog without compiled drivers. All four have
+  since been implemented; Snowflake and Databricks are read-only, with writes
+  refused by name.
 - **Parameter binding.** Generated SQL interpolates literals rather than
   binding parameters, which is why escaping carries the whole risk. Moving to
   bound parameters would remove that class of defect entirely and is a larger

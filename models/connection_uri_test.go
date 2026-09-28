@@ -51,6 +51,13 @@ func TestBuildURI(t *testing.T) {
 			want: "oracle://svc:pw@oracle.example.com:1521/ORCL?sid=ORCL&ssl=true&ssl+verify=true",
 		},
 		{
+			name: "databricks carries token and warehouse path",
+			conn: Connection{Type: ConnTypeDatabricks, Host: "workspace.cloud.databricks.com",
+				Schema: "/sql/1.0/warehouses/WH", Login: "token", Password: "p@ss",
+				Extra: `{"catalog":"main","schema":"raw"}`},
+			want: "databricks://token:p%40ss@workspace.cloud.databricks.com:443/sql/1.0/warehouses/WH?catalog=main&schema=raw",
+		},
+		{
 			name: "mysql keeps the tcp() DSN shape",
 			conn: Connection{Type: ConnTypeMySQL, Host: "mysql.example.com", Port: 3306,
 				Schema: "app", Login: "root", Password: "pw"},
@@ -144,10 +151,9 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 func TestBuildsURICoversTheCatalog(t *testing.T) {
 	withURI := []ConnectionType{
 		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
-		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeDatabricks, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 	withoutURI := []ConnectionType{
-		ConnTypeDatabricks,
 		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeGeneric,
 	}
 
@@ -175,10 +181,10 @@ func TestBuildsURICoversTheCatalog(t *testing.T) {
 
 func TestIsDatabaseMatchesCompiledDrivers(t *testing.T) {
 	withDriver := []ConnectionType{
-		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeSnowflake, ConnTypeOracle, ConnTypeBigQuery,
+		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeClickHouse, ConnTypeSnowflake, ConnTypeOracle, ConnTypeDatabricks, ConnTypeBigQuery,
 	}
 	withoutDriver := []ConnectionType{
-		ConnTypeDatabricks, ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 
 	for _, ct := range withDriver {

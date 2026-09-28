@@ -20,6 +20,7 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"postgresql://user:pass@host/db", "pgx", "postgresql://user:pass@host/db"},
 		{"redshift://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db", "pgx", "postgres://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db"},
 		{"snowflake://user:pass@account/db/schema?warehouse=WH", "brokoli-snowflake", "user:pass@account/db/schema?warehouse=WH"},
+		{"databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh", "databricks", "token:p%40ss@workspace:443/sql/1.0/warehouses/wh"},
 		{"mysql://user:pass@host:3306/db", "mysql", "user:pass@host:3306/db"},
 		{"sqlite://test.db", "sqlite", "test.db"},
 		{"test.db", "sqlite", "test.db"},
@@ -144,6 +145,21 @@ func TestOracleWritesAreRefused(t *testing.T) {
 	}
 }
 
+func TestDatabricksDSNIsAcceptedByDriver(t *testing.T) {
+	driver, dsn, err := DetectDriver("databricks://token:p%40ss@workspace.cloud.databricks.com:443/sql/1.0/warehouses/wh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if driver != "databricks" {
+		t.Fatalf("driver = %q, want databricks", driver)
+	}
+	db, err := sql.Open(driver, dsn)
+	if err != nil {
+		t.Fatalf("sql.Open: %v", err)
+	}
+	defer db.Close()
+}
+
 // The connection catalog offers more database types than this build has
 // drivers for. That is a product limitation, not a defect, and the error has
 // to say so: database/sql's own message for an unregistered driver is
@@ -159,6 +175,7 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 		{"sqlserver://u:p@h:1433?database=d", "sqlserver"},
 		{"mssql://u:p@h:1433?database=d", "sqlserver"},
 		{"oracle://u:p@h:1521/svc", "oracle"},
+		{"databricks://token:p@h:443/sql/1.0/warehouses/wh", "databricks"},
 	}
 	for _, tc := range supported {
 		got, _, err := DetectDriver(tc.uri)
@@ -180,7 +197,6 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 // above pins that.
 func TestUnknownSchemesAreRefusedByName(t *testing.T) {
 	for _, uri := range []string{
-		"databricks://token@workspace/warehouse",
 		"gopher://why:not@h/x",
 	} {
 		t.Run(uri, func(t *testing.T) {

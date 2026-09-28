@@ -23,6 +23,7 @@ import (
 	// it in is what lets the phase-0 smoke test prove the driver, the
 	// container and the env-gate agree before any dialect work starts.
 	_ "github.com/ClickHouse/clickhouse-go/v2"
+	_ "github.com/databricks/databricks-sql-go"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/microsoft/go-mssqldb"

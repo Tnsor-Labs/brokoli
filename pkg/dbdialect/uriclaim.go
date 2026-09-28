@@ -125,3 +125,12 @@ func (snowflake) URIClaims() []URIClaim {
 func (oracle) URIClaims() []URIClaim {
 	return []URIClaim{{Scheme: "oracle", Driver: "oracle", Dialect: "oracle"}}
 }
+
+func (databricks) URIClaims() []URIClaim {
+	return []URIClaim{{
+		Scheme:  "databricks",
+		Driver:  "databricks",
+		Dialect: "databricks",
+		DSN:     stripScheme("databricks"),
+	}}
+}

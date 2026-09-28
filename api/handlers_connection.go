@@ -403,6 +403,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeOracle:
 		return testDBConnection(ctx, c.BuildURI())
+	case models.ConnTypeDatabricks:
+		return testDBConnection(ctx, c.BuildURI())
 	case models.ConnTypeHTTP:
 		return testHTTPAuth(ctx, c, extra)
 	case models.ConnTypeSFTP:
@@ -415,8 +417,6 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return h.testGCS(ctx, c)
 	case models.ConnTypeBigQuery:
 		return h.testBigQuery(ctx, c)
-	case models.ConnTypeDatabricks:
-		return unsupportedDatabaseTest(c.Type)
 	default:
 		// Generic: try HTTP GET if it looks like a URL, otherwise TCP
 		return testGeneric(ctx, c, extra)
@@ -721,9 +721,9 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"schema", "extra"},
 			"hints":       map[string]string{"schema": "project_id.dataset", "extra": `Service account JSON, location and optional billing project`}},
 		{"type": "databricks", "label": "Databricks", "category": "database", "icon": "connDatabricks",
-			"description": "Lakehouse platform for analytics and machine learning. No driver in this build: the connection test says so by name",
-			"fields":      []string{"host", "port", "schema", "login", "password"},
-			"hints":       map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
+			"description": "Lakehouse SQL warehouse. Query, append, and overwrite are supported through the pure-Go Databricks SQL driver",
+			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
+			"hints":       map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi...", "schema": "/sql/1.0/warehouses/..."}},
 		{"type": "oracle", "label": "Oracle", "category": "database", "icon": "connOracle",
 			"description": "Enterprise relational database for mission-critical workloads. Read-only in this build: database nodes can query Oracle, but not write to it",
 			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
