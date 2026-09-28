@@ -39,3 +39,15 @@ func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
 		}
 	}
 }
+
+func TestGCSConnectionTestUsesCompiledTransport(t *testing.T) {
+	result := testGCS(context.Background(), map[string]interface{}{
+		"bucket": "Bad Bucket",
+	})
+	if result["success"] != false {
+		t.Fatalf("success = %v, want false for invalid GCS config", result["success"])
+	}
+	if result["error"] == "gcs has no driver in this build" {
+		t.Fatal("GCS was routed through the generic unsupported path")
+	}
+}

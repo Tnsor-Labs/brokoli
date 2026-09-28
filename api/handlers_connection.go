@@ -407,6 +407,8 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 		return testS3(ctx, extra)
 	case models.ConnTypeAzureBlob:
 		return testAzureBlob(ctx, extra)
+	case models.ConnTypeGCS:
+		return testGCS(ctx, extra)
 	case models.ConnTypeBigQuery:
 		return h.testBigQuery(ctx, c)
 	case models.ConnTypeSnowflake, models.ConnTypeOracle,
@@ -603,6 +605,18 @@ func testAzureBlob(ctx context.Context, extra map[string]interface{}) map[string
 	return map[string]interface{}{"success": true, "message": "Authenticated and listed the Azure Blob container"}
 }
 
+// testGCS authenticates against the configured bucket through the same client
+// file nodes use at runtime.
+func testGCS(ctx context.Context, extra map[string]interface{}) map[string]interface{} {
+	if extra == nil {
+		return map[string]interface{}{"success": false, "error": "No extra config — set bucket and credentials"}
+	}
+	if err := engine.TestGCSConnection(ctx, extra); err != nil {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	return map[string]interface{}{"success": true, "message": "Authenticated and listed the GCS bucket"}
+}
+
 // testGeneric tries the best test for a generic connection.
 func testGeneric(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	// If extra has a webhook_url, try an authenticated request to it
@@ -723,7 +737,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"extra"},
 			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "region": "us-east-1", "access_key": "...", "secret_key": "..."}`}},
 		{"type": "gcs", "label": "Google Cloud Storage", "category": "storage", "icon": "connGcs",
-			"description": "Object storage on Google Cloud",
+			"description": "Google Cloud object storage — file nodes read and write objects in a bucket",
 			"fields":      []string{"extra"},
 			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
 		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "icon": "connAzureBlob",
