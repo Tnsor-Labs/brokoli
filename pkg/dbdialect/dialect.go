@@ -155,5 +155,6 @@ var registry = map[string]Dialect{
 	"sqlserver":  sqlserver{},
 	"snowflake":  snowflake{},
 	"oracle":     oracle{},
+	"databricks": databricks{},
 	"generic":    generic{},
 }

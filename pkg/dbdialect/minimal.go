@@ -106,6 +106,10 @@ func (oracle) ProbeColumnsSQL(query string) string {
 	return "SELECT * FROM (" + query + ") brokoli_probe WHERE 1 = 0"
 }
 
+type databricks struct{ generic }
+
+func (databricks) Name() string { return "databricks" }
+
 // quoteDotted quotes a possibly schema-qualified name part by part, the
 // same rule every other dialect applies: more than two parts is quoted
 // whole so it fails loudly rather than being silently reinterpreted.

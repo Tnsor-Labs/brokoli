@@ -121,6 +121,10 @@ var driverOptionKeys = map[ConnectionType][]string{
 	ConnTypeSnowflake: {
 		"warehouse", "role", "authenticator", "loginTimeout", "application",
 	},
+	ConnTypeDatabricks: {
+		"catalog", "schema", "maxRows", "timeout", "userAgentEntry",
+		"useCloudFetch", "maxDownloadThreads", "useArrowNativeDecimal",
+	},
 }
 
 // ExtraIsDriverOptions reports whether this type's Extra blob holds driver
@@ -237,7 +241,7 @@ func (c *Connection) hostPort(defaultPort int) string {
 func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
-		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeClickHouse,
+		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeDatabricks, ConnTypeClickHouse,
 		ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
 		return true
 	default:
@@ -250,7 +254,7 @@ func (c *Connection) BuildsURI() bool {
 // have URI representations, but database nodes must refuse them by name.
 func (c *Connection) IsDatabase() bool {
 	switch c.Type {
-	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeOracle, ConnTypeClickHouse, ConnTypeBigQuery:
+	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeSnowflake, ConnTypeOracle, ConnTypeDatabricks, ConnTypeClickHouse, ConnTypeBigQuery:
 		return true
 	default:
 		return false
@@ -368,6 +372,20 @@ func (c *Connection) BuildURI() string {
 		u := &url.URL{Scheme: "oracle", User: c.userinfo(), Host: c.hostPort(1521)}
 		if c.Schema != "" {
 			u.Path = "/" + c.Schema
+		}
+		u.RawQuery = encodeOptions(opts)
+		return u.String()
+
+	case ConnTypeDatabricks:
+		// The Databricks driver expects token:<PAT>@host:port/http-path.
+		// Keep the public URI scheme distinct so the registry can select the
+		// driver while the claim strips it before database/sql opens the DSN.
+		u := &url.URL{Scheme: "databricks", User: url.UserPassword("token", c.Password), Host: c.hostPort(443)}
+		if c.Schema != "" {
+			u.Path = c.Schema
+			if !strings.HasPrefix(u.Path, "/") {
+				u.Path = "/" + u.Path
+			}
 		}
 		u.RawQuery = encodeOptions(opts)
 		return u.String()

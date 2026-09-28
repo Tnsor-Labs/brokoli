@@ -330,12 +330,13 @@ func TestGenerateSQL_UnknownModeErrors(t *testing.T) {
 
 func TestDialectForURI(t *testing.T) {
 	cases := map[string]string{
-		"postgres://x":  "postgres",
-		"mysql://x":     "mysql",
-		"/tmp/a.db":     "sqlite",
-		"sqlserver://x": "sqlserver",
-		"snowflake://x": "snowflake",
-		"oracle://x":    "oracle",
+		"postgres://x":   "postgres",
+		"mysql://x":      "mysql",
+		"/tmp/a.db":      "sqlite",
+		"sqlserver://x":  "sqlserver",
+		"snowflake://x":  "snowflake",
+		"oracle://x":     "oracle",
+		"databricks://x": "databricks",
 	}
 	for uri, want := range cases {
 		if got := dialectForURI(uri); got != want {
