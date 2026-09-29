@@ -2008,6 +2008,8 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		return r.runDBT(node)
 	case models.NodeTypeNotify:
 		return outputExecutionResult(r.runNotify(node, input))
+	case models.NodeTypeBash:
+		return outputExecutionResult(r.runBash(ctx, node, input))
 	case models.NodeTypeWait:
 		return outputExecutionResult(r.runWait(node, input))
 	case models.NodeTypeUnion:

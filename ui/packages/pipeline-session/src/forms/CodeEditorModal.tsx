@@ -4,7 +4,7 @@ import { Button, ConfirmDialog, Kbd, Modal, Spinner, useTheme } from '@brokoli/u
 
 const CodeMirror = lazy(() => import('@uiw/react-codemirror'))
 
-export type CodeLanguage = 'python' | 'sql' | 'typescript' | 'yaml' | 'json'
+export type CodeLanguage = 'python' | 'bash' | 'sql' | 'typescript' | 'yaml' | 'json'
 
 async function languageExtension(language: CodeLanguage): Promise<Extension> {
   switch (language) {
@@ -22,6 +22,7 @@ async function languageExtension(language: CodeLanguage): Promise<Extension> {
 const HINTS: Record<CodeLanguage, string> = {
   python:
     'The script receives columns, rows, config and params, and sets output_data = {"columns": [...], "rows": [...]}. Lines printed to stderr become run warnings.',
+  bash: 'Runs on the trusted worker through Bash. stdout and stderr become node logs; the input dataset passes through unchanged.',
   typescript: 'TypeScript runs in the server code worker pool and needs Node 20 or newer on the server.',
   sql: 'Runs on the connection chosen for this node. ${...} placeholders (variables, run parameters, ${interval.start}) are substituted before the query is sent.',
   yaml: '',

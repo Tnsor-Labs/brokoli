@@ -113,6 +113,7 @@ func nodeTypeValue(t *testing.T, name string) NodeType {
 		"NodeTypeSinkAPI": NodeTypeSinkAPI, "NodeTypeMigrate": NodeTypeMigrate,
 		"NodeTypeCondition": NodeTypeCondition, "NodeTypeWait": NodeTypeWait,
 		"NodeTypeDBT": NodeTypeDBT, "NodeTypeNotify": NodeTypeNotify,
+		"NodeTypeBash":  NodeTypeBash,
 		"NodeTypeUnion": NodeTypeUnion, "NodeTypeDatasetMap": NodeTypeDatasetMap,
 		"NodeTypeDatasetFilter": NodeTypeDatasetFilter, "NodeTypeTask": NodeTypeTask,
 	}
