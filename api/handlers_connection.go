@@ -457,7 +457,7 @@ func unsupportedDatabaseTest(kind models.ConnectionType) map[string]interface{} 
 func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		log.Printf("Connection test failed (open %s): %v", driver, err)
+		log.Printf("Connection test failed (open %s): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -467,7 +467,7 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
-		log.Printf("Connection test failed (ping %s): %v", driver, err)
+		log.Printf("Connection test failed (ping %s): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -725,7 +725,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"fields":      []string{"host", "port", "schema", "login", "password"},
 			"hints":       map[string]string{"host": "workspace.cloud.databricks.com", "login": "token", "password": "dapi..."}},
 		{"type": "oracle", "label": "Oracle", "category": "database", "icon": "connOracle",
-			"description": "Enterprise relational database for mission-critical workloads. Query, append, and overwrite are supported through the pure-Go Oracle SQL driver",
+			"description": "Enterprise relational database for mission-critical workloads. Read-only in this build: database nodes can query Oracle, but not write to it",
 			"fields":      []string{"host", "port", "schema", "login", "password", "extra"},
 			"hints":       map[string]string{"port": "1521", "schema": "service name", "extra": `{"ssl": true, "ssl verify": true}`}},
 		{"type": "mssql", "label": "SQL Server", "category": "database", "icon": "connMssql",

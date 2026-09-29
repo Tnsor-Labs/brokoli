@@ -32,6 +32,8 @@ func TestClearTablePerDialect(t *testing.T) {
 		// DELETE into the same whole-table drop.
 		{"sqlite", true, `DELETE FROM "t"`},
 		{"generic", true, `DELETE FROM "t"`},
+		// Oracle TRUNCATE is DDL and commits, as MySQL's does.
+		{"oracle", true, `DELETE FROM "t"`},
 	}
 	for _, c := range cases {
 		got := getDialect(c.dialect).clearTable("t", c.truncate)

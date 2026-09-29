@@ -111,8 +111,12 @@ var driverOptionKeys = map[ConnectionType][]string{
 		"connection timeout", "dial timeout", "app name",
 	},
 	ConnTypeOracle: {
-		"sid", "instance name", "ssl", "ssl verify", "wallet",
-		"wallet password", "connect timeout", "encryption", "data integrity",
+		"sid", "instance name", "ssl", "ssl verify",
+		"connect timeout", "encryption", "data integrity",
+		// "wallet" is deliberately absent: it is a directory on the
+		// worker that go-ora reads, so a connection could point it at
+		// another workspace's wallet. Wallets wait for a way to supply
+		// them per connection.
 	},
 	ConnTypeSnowflake: {
 		"warehouse", "role", "authenticator", "loginTimeout", "application",
@@ -359,7 +363,7 @@ func (c *Connection) BuildURI() string {
 
 	case ConnTypeOracle:
 		// go-ora uses oracle://user:password@host:port/service. The
-		// service name is the connection schema; SID and wallet settings
+		// service name is the connection schema; SID and TLS settings
 		// remain explicit driver options in Extra.
 		u := &url.URL{Scheme: "oracle", User: c.userinfo(), Host: c.hostPort(1521)}
 		if c.Schema != "" {

@@ -12,6 +12,7 @@ export const DEFAULT_PORT: Record<string, string> = {
   mysql: '3306',
   clickhouse: '9000',
   mssql: '1433',
+  oracle: '1521',
   sftp: '22',
   http: '443 (80 means plain http)',
 }
@@ -73,8 +74,6 @@ export const DRIVER_OPTIONS: Record<string, string[]> = {
     'instance name',
     'ssl',
     'ssl verify',
-    'wallet',
-    'wallet password',
     'connect timeout',
     'encryption',
     'data integrity',

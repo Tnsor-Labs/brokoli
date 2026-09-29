@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"net/url"
+	"os"
 	"testing"
 	"time"
 
@@ -21,6 +23,30 @@ func TestMSSQLConnectionTestUsesCompiledDriver(t *testing.T) {
 	}
 	if result["error"] == "mssql has no driver in this build" {
 		t.Fatal("SQL Server was routed through the unsupported-driver path")
+	}
+}
+
+// Against a real Oracle (BROKOLI_TEST_ORACLE_URL; see
+// docker-compose.test.yml): the right password connects and a wrong one
+// fails, through the compiled driver.
+func TestOracleConnectionTestIsReal(t *testing.T) {
+	uri := os.Getenv("BROKOLI_TEST_ORACLE_URL")
+	if uri == "" {
+		t.Skip("set BROKOLI_TEST_ORACLE_URL to run the Oracle connection test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if result := testDBConnection(ctx, uri); result["success"] != true {
+		t.Fatalf("the right credentials failed: %v", result)
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.User = url.UserPassword(u.User.Username(), "wrong-password")
+	result := testDBConnection(ctx, u.String())
+	if result["success"] != false || result["driver"] != "oracle" {
+		t.Fatalf("a wrong password: %v, want a failure from the oracle driver", result)
 	}
 }
 

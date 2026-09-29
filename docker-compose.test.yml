@@ -116,6 +116,35 @@ services:
       timeout: 5s
       retries: 30
 
+  # Oracle Database Free, from gvenzl/oracle-free (Apache-2.0 image build of
+  # Oracle's free edition), pinned by digest: the 23-slim tag moves with
+  # each Oracle release. It is a 2 GB image, so it sits behind a profile and
+  # a plain `up -d` does not pull it; naming it starts it:
+  #
+  #   docker compose -f docker-compose.test.yml up -d --wait oracle
+  #   export BROKOLI_TEST_ORACLE_URL='oracle://brokoli:p%40ss%2Fw%3Ard%231@127.0.0.1:55544/FREEPDB1'
+  #
+  # The application user's password carries @, /, : and # on purpose, so
+  # the tests prove a connection's URI survives URL syntax in a credential.
+  oracle:
+    image: gvenzl/oracle-free:23-slim@sha256:6d61d267a3b978c24c5ac1790e62e927416a0aec446bd86e4b3a1527562757bd
+    profiles: ["oracle"]
+    environment:
+      ORACLE_PASSWORD: "Brokoli_sys1"
+      APP_USER: brokoli
+      APP_USER_PASSWORD: "p@ss/w:rd#1"
+    ports:
+      - "55544:1521"
+    tmpfs:
+      - /opt/oracle/oradata
+    healthcheck:
+      # The image's own check: the database is open and the PDB is up.
+      test: ["CMD", "healthcheck.sh"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+
   sqlserver:
     image: mcr.microsoft.com/mssql/server:2022-latest
     environment:

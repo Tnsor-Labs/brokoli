@@ -119,11 +119,9 @@ func (snowflake) URIClaims() []URIClaim {
 	}}
 }
 
+// go-ora parses its DSN as a URL and needs the oracle:// scheme to find the
+// host and port: stripped, every connection fails with "missing port in
+// address". The URI is the DSN.
 func (oracle) URIClaims() []URIClaim {
-	return []URIClaim{{
-		Scheme:  "oracle",
-		Driver:  "oracle",
-		Dialect: "oracle",
-		DSN:     stripScheme("oracle"),
-	}}
+	return []URIClaim{{Scheme: "oracle", Driver: "oracle", Dialect: "oracle"}}
 }

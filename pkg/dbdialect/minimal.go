@@ -92,9 +92,19 @@ func (snowflake) QuoteLiteral(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
 
+// oracle reads only: the write vocabulary it inherits from generic is never
+// reached, because the engine refuses Oracle writes by name
+// (refuseUnearnedWrite). Oracle needs its own write syntax -- no multi-row
+// VALUES before 23ai, no BOOLEAN or TEXT type before 23ai, TRUNCATE that
+// commits -- and that has to come with tests against a server.
 type oracle struct{ generic }
 
 func (oracle) Name() string { return "oracle" }
+
+// Oracle takes no AS before a table alias and has no LIMIT.
+func (oracle) ProbeColumnsSQL(query string) string {
+	return "SELECT * FROM (" + query + ") brokoli_probe WHERE 1 = 0"
+}
 
 // quoteDotted quotes a possibly schema-qualified name part by part, the
 // same rule every other dialect applies: more than two parts is quoted

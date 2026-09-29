@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 	"math"
+	"net/url"
 	"os"
 	"runtime/debug"
 	"strconv"
@@ -171,7 +173,7 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", driver, err)
+		return nil, fmt.Errorf("open %s: %w", driver, RedactDSNError(err, dsn))
 	}
 	defer db.Close()
 
@@ -180,7 +182,7 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
-		return nil, fmt.Errorf("ping %s: %w", driver, err)
+		return nil, fmt.Errorf("ping %s: %w", driver, RedactDSNError(err, dsn))
 	}
 
 	rows, err := db.QueryContext(ctx, query)
@@ -205,7 +207,10 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 	var maxRows int
 
 	var dataRows []common.DataRow
-	scan := newRowScanner(columns)
+	scan, err := newRowScannerFor(driver, rows, columns)
+	if err != nil {
+		return nil, err
+	}
 	for rows.Next() {
 		row, err := scan.next(rows)
 		if err != nil {
@@ -258,7 +263,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return 0, fmt.Errorf("open %s: %w", driver, err)
+		return 0, fmt.Errorf("open %s: %w", driver, RedactDSNError(err, dsn))
 	}
 	defer db.Close()
 
@@ -266,7 +271,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
-		return 0, fmt.Errorf("ping %s: %w", driver, err)
+		return 0, fmt.Errorf("ping %s: %w", driver, RedactDSNError(err, dsn))
 	}
 
 	// Execute in a transaction
@@ -326,7 +331,7 @@ func validateMySQLUpsertKey(ctx context.Context, uri, table string, keyCols []st
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", driver, err)
+		return nil, fmt.Errorf("open %s: %w", driver, RedactDSNError(err, dsn))
 	}
 	defer db.Close()
 
@@ -522,6 +527,110 @@ type rowScanner struct {
 	columns []string
 	values  []interface{}
 	ptrs    []interface{}
+	// decode, when set, converts a column's scanned value; nil entries
+	// keep the value as scanned.
+	decode []func(interface{}) interface{}
+}
+
+// newRowScannerFor is newRowScanner plus the conversions one driver needs.
+//
+// go-ora scans every Oracle NUMBER -- which is how Oracle stores integers
+// too -- as its decimal text, so without this an ID column arrives as the
+// string "42" and compares, sorts and loads as text. Each NUMBER value is
+// decoded as exactly as its text allows: see decodeOracleNumber.
+func newRowScannerFor(driver string, rows *sql.Rows, columns []string) (*rowScanner, error) {
+	s := newRowScanner(columns)
+	if driver != "oracle" {
+		return s, nil
+	}
+	types, err := rows.ColumnTypes()
+	if err != nil {
+		return nil, fmt.Errorf("column types: %w", err)
+	}
+	for i, ct := range types {
+		if i < len(columns) && ct.DatabaseTypeName() == "NUMBER" {
+			if s.decode == nil {
+				s.decode = make([]func(interface{}) interface{}, len(columns))
+			}
+			s.decode[i] = decodeOracleNumber
+		}
+	}
+	return s, nil
+}
+
+// decodeOracleNumber turns the decimal text of an Oracle NUMBER into the
+// value it is, without losing anything:
+//
+//   - a whole number that fits in 64 bits becomes int64, exactly, all the
+//     way to 9223372036854775807 (a float64 would round anything past 2^53);
+//   - a number with at most 15 significant digits becomes float64, which
+//     round-trips any 15-digit decimal to the same text;
+//   - anything longer (NUMBER holds 38 digits) stays text, the one form that
+//     keeps every digit.
+func decodeOracleNumber(v interface{}) interface{} {
+	text, ok := v.(string)
+	if !ok {
+		return v
+	}
+	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return n
+	}
+	if significantDigits(text) > 15 {
+		return text
+	}
+	if f, err := strconv.ParseFloat(text, 64); err == nil {
+		return f
+	}
+	return text
+}
+
+// significantDigits counts the significant digits of a decimal's text,
+// ignoring sign, point, exponent, and leading zeros -- and trailing zeros
+// after the point, which carry no value. It errs high, never low.
+func significantDigits(text string) int {
+	mantissa := strings.TrimLeft(text, "+-")
+	if i := strings.IndexAny(mantissa, "eE"); i >= 0 {
+		mantissa = mantissa[:i]
+	}
+	if strings.Contains(mantissa, ".") {
+		mantissa = strings.TrimRight(mantissa, "0")
+	}
+	digits := strings.TrimLeft(strings.ReplaceAll(mantissa, ".", ""), "0")
+	return len(digits)
+}
+
+// RedactDSNError removes the password in dsn from err's text. Some drivers
+// quote the whole DSN when they cannot parse it -- go-ora reports a bad host
+// as `parse "oracle://user:secret@bad host:1521/x": invalid character` --
+// and the error reaches the run log. Both the URL-encoded and the decoded
+// password are removed, and dsn does not have to parse: a DSN that fails to
+// parse is exactly the case that leaks.
+func RedactDSNError(err error, dsn string) error {
+	if err == nil {
+		return nil
+	}
+	rest := dsn
+	if i := strings.Index(rest, "://"); i >= 0 {
+		rest = rest[i+3:]
+	}
+	at := strings.LastIndex(rest, "@")
+	if at < 0 {
+		return err
+	}
+	colon := strings.IndexByte(rest[:at], ':')
+	if colon < 0 || colon == at-1 {
+		return err
+	}
+	encoded := rest[colon+1 : at]
+	msg := err.Error()
+	redacted := strings.ReplaceAll(msg, encoded, "xxxxx")
+	if decoded, derr := url.PathUnescape(encoded); derr == nil && decoded != "" {
+		redacted = strings.ReplaceAll(redacted, decoded, "xxxxx")
+	}
+	if redacted == msg {
+		return err
+	}
+	return errors.New(redacted)
 }
 
 func newRowScanner(columns []string) *rowScanner {
@@ -546,6 +655,9 @@ func (s *rowScanner) next(rows *sql.Rows) (common.DataRow, error) {
 		// Convert []byte to string for readability
 		if b, ok := v.([]byte); ok {
 			v = string(b)
+		}
+		if s.decode != nil && s.decode[i] != nil {
+			v = s.decode[i](v)
 		}
 		row[col] = v
 	}
@@ -579,12 +691,12 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, 0, fmt.Errorf("open %s: %w", driver, err)
+		return nil, 0, fmt.Errorf("open %s: %w", driver, RedactDSNError(err, dsn))
 	}
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
-		return nil, 0, fmt.Errorf("ping %s: %w", driver, err)
+		return nil, 0, fmt.Errorf("ping %s: %w", driver, RedactDSNError(err, dsn))
 	}
 
 	rows, err := db.QueryContext(ctx, query)
@@ -598,7 +710,10 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 		return nil, 0, fmt.Errorf("columns: %w", err)
 	}
 
-	scan := newRowScanner(columns)
+	scan, err := newRowScannerFor(driver, rows, columns)
+	if err != nil {
+		return nil, 0, err
+	}
 	batch := &common.DataSet{Columns: columns, Rows: make([]common.DataRow, 0, batchSize)}
 	total := int64(0)
 	for rows.Next() {
@@ -650,11 +765,22 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 //
 // Snowflake has earned no write at all yet, and every mode is refused by
 // name (errSnowflakeWrite says why).
+//
+// Oracle has earned reads only, so every write to it is refused by name,
+// whatever the mode. The shared statement writer would produce SQL Oracle
+// rejects or misreads: multi-row VALUES (only 23ai accepts it), TEXT and
+// BOOLEAN columns (only 23ai has BOOLEAN), and unquoted-versus-quoted case
+// folding that sends a quoted lowercase name to a different table than the
+// one an Oracle user sees. Overwrite would be worse than refused: TRUNCATE
+// commits in Oracle, so a failed load would leave the table emptied.
 func refuseUnearnedWrite(uri, mode string) error {
 	switch dialectForURI(uri) {
 	case "clickhouse":
 	case "snowflake":
 		return errSnowflakeWrite
+	case "oracle":
+		return fmt.Errorf("Oracle connections are read-only in this build: " +
+			"source_db and migrate sources can read from Oracle, but sink_db and migrate cannot write to it yet")
 	default:
 		return nil
 	}
