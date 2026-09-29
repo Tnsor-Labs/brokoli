@@ -1003,18 +1003,24 @@ function Notify({ ctx }: TypeFormProps) {
 function Bash({ ctx }: TypeFormProps) {
   return (
     <>
-      <Section title="Command" description="Runs on the worker as a trusted shell command. Do not use this node for untrusted pipeline authors.">
+      <Section
+        title="Command"
+        description="Runs on the worker as a trusted shell command. Do not use this node for untrusted pipeline authors."
+      >
         <ScriptField ctx={ctx} name="command" label="Bash command" language="bash" required />
         <TextField
           ctx={ctx}
           name="working_dir"
           label="Working directory"
           mono
-          placeholder="Temporary directory"
-          hint="Must be inside the worker's allowed data directories."
+          placeholder="A private temporary directory"
+          hint="Must be inside the worker's allowed data directories. Without it, the command gets a private directory that is removed afterwards."
         />
       </Section>
-      <Section title="Environment" description="Only variables listed here are added to the filtered worker environment.">
+      <Section
+        title="Environment"
+        description="Added to the filtered worker environment. Values may use ${param.*} and ${var.*}; this is how they reach the command."
+      >
         <MapField ctx={ctx} name="env" label="Environment variables" addLabel="Add variable" />
       </Section>
     </>

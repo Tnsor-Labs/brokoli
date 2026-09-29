@@ -762,7 +762,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 
 	// Resolve variables in node config
 	if r.varCtx != nil && node.Config != nil {
-		node.Config = r.varCtx.ResolveConfig(node.Config)
+		node.Config = resolveNodeConfig(r.varCtx, node)
 	}
 
 	// Connection-pool membership (#398) is decided by the config BEFORE
