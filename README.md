@@ -105,7 +105,7 @@ The smallest working example is also in [`examples/hello-world.py`](examples/hel
 
 ```bash
 bash build-ui.sh                        # builds the React UI onto web/dist
-go build -o brokoli . && ./brokoli serve
+go build -tags minicore_disabled -o brokoli . && ./brokoli serve
 ```
 
 `build-ui.sh` is the step that places the built UI on the embed target.

@@ -15,6 +15,11 @@ builds:
     goarch:
       - amd64
       - arm64
+    # Leaves the Snowflake driver's embedded native library (minicore) out
+    # of the binary. The driver would otherwise write it to disk and load
+    # it at the first Snowflake connection (on Windows, even with cgo off).
+    tags:
+      - minicore_disabled
     ldflags:
       - -s -w -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
     main: .

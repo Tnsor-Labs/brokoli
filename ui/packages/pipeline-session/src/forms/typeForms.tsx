@@ -30,6 +30,8 @@ import { ContractGate } from './ContractGate'
 
 /** Connection types the engine can build a database URI for (models/connection.go BuildsURI). */
 const DB_TYPES = ['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'snowflake', 'clickhouse']
+/** The subset sink_db and migrate can write to: Snowflake is query-only (the engine refuses its writes by name). */
+const WRITE_DB_TYPES = DB_TYPES.filter((t) => t !== 'snowflake')
 const HTTP_TYPES = ['http']
 const DBT_TYPES = ['postgres', 'mysql', 'clickhouse']
 /**
@@ -94,9 +96,11 @@ const WRITE_MODES = [
 function DatabaseTarget({
   ctx,
   uriPlaceholder = 'postgres://user:pass@host:5432/db',
+  types = DB_TYPES,
 }: {
   ctx: FormCtx
   uriPlaceholder?: string
+  types?: string[]
 }) {
   const conn = str(ctx.get('conn_id'))
   return (
@@ -104,7 +108,7 @@ function DatabaseTarget({
       <ConnectionField
         ctx={ctx}
         uriKey="uri"
-        types={DB_TYPES}
+        types={types}
         noneLabel="Enter a connection URI instead"
       />
       {!conn && (
@@ -645,7 +649,7 @@ function SinkDb({ ctx, nodes, edges }: TypeFormProps) {
   return (
     <>
       <Section title="Destination">
-        <DatabaseTarget ctx={ctx} />
+        <DatabaseTarget ctx={ctx} types={WRITE_DB_TYPES} />
         <TextField
           ctx={ctx}
           name="table"
@@ -766,7 +770,7 @@ function Migrate({ ctx }: TypeFormProps) {
           ctx={ctx}
           idKey="dest_conn_id"
           uriKey="dest_uri"
-          types={DB_TYPES}
+          types={WRITE_DB_TYPES}
           label="Destination connection"
           noneLabel="Enter a destination URI instead"
         />

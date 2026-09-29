@@ -15,7 +15,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		"clickhouse": {"clickhouse", "clickhouse"},
 		"sqlserver":  {"sqlserver", "sqlserver"},
 		"mssql":      {"sqlserver", "sqlserver"},
-		"snowflake":  {"snowflake", "snowflake"},
+		"snowflake":  {"brokoli-snowflake", "snowflake"},
 	}
 	got := AllURIClaims()
 	if len(got) != len(want)+1 {

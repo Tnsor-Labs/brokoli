@@ -24,13 +24,12 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/microsoft/go-mssqldb"
-	_ "github.com/snowflakedb/gosnowflake/v2"
 	_ "modernc.org/sqlite"
 )
 
 // dialectForURI maps a connection URI to the SQL dialect name GenerateSQL
-// understands, via the same scheme detection DetectDriver uses. Snowflake
-// and anything unrecognized fall back to "generic" — append/overwrite work
+// understands, via the same scheme detection DetectDriver uses. Anything
+// unrecognized falls back to "generic" — append/overwrite work
 // there, and upsert (which has no portable form) errors with a name.
 func dialectForURI(uri string) string {
 	// Pure scheme detection: the dialect GenerateSQL should target is a
@@ -44,9 +43,9 @@ func dialectForURI(uri string) string {
 		}
 	}
 	// The adapter's recorded leftovers, matching detectDriver's: sqlite
-	// filename suffixes, and the schemeless Postgres default. Snowflake
-	// and refused schemes have no registered dialect and fall to generic,
-	// exactly as the driver switch used to send them.
+	// filename suffixes, and the schemeless Postgres default. Refused
+	// schemes have no registered dialect and fall to generic, exactly as
+	// the driver switch used to send them.
 	if strings.HasSuffix(uri, ".db") || strings.HasSuffix(uri, ".sqlite") {
 		return "sqlite"
 	}
@@ -59,9 +58,9 @@ func dialectForURI(uri string) string {
 // DetectDriver returns the Go sql driver name and DSN for a connection URI.
 //
 // A scheme this recognizes is not the same as a scheme this build can open:
-// the connection catalog offers Snowflake, Oracle, BigQuery, and Databricks
-// without compiled drivers, while pgx, mysql, sqlite, ClickHouse, and SQL
-// Server are registered here. Naming a driver that was never registered gets
+// the connection catalog offers Oracle and Databricks without compiled
+// drivers, while pgx, mysql, sqlite, ClickHouse, SQL Server and Snowflake
+// (engine/snowflake.go) are registered here. Naming a driver that was never registered gets
 // database/sql's "unknown driver (forgotten import?)", which reads like a
 // build defect rather than an unsupported connection type, so check first and
 // say which it is.
@@ -135,7 +134,6 @@ func detectDriver(uri string) (string, string, error) {
 			for _, c := range dbdialect.AllURIClaims() {
 				schemes = append(schemes, c.Scheme)
 			}
-			schemes = append(schemes, "snowflake")
 			return "", "", fmt.Errorf(
 				"connection scheme %q has no driver in this build (supported: %s)",
 				schemeOf(uri), strings.Join(schemes, ", "))
@@ -648,8 +646,15 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 // claim would need can never pass. ReplacingMergeTree remains available to
 // users who want eventual dedup and know it, by creating the table
 // themselves and appending.
+//
+// Snowflake has earned no write at all yet, and every mode is refused by
+// name (errSnowflakeWrite says why).
 func refuseUnearnedWrite(uri, mode string) error {
-	if dialectForURI(uri) != "clickhouse" {
+	switch dialectForURI(uri) {
+	case "clickhouse":
+	case "snowflake":
+		return errSnowflakeWrite
+	default:
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(mode)) {
