@@ -53,6 +53,14 @@ const FILE_LOCATIONS: Record<
     read: 'incoming/orders.csv',
     write: 'processed/orders.csv',
   },
+  gcs: {
+    where:
+      "An object name in the connection's bucket, used literally: a prefix is part of the name.",
+    read: 'incoming/orders.csv',
+    write: 'processed/orders.csv',
+    delivery:
+      'The object is created only when its upload completes; a failed write leaves an existing object unchanged.',
+  },
   azure_blob: {
     where:
       "A blob name in the connection's container, used literally: a virtual directory is part of the name.",
@@ -126,7 +134,7 @@ function SourceFile({ ctx }: TypeFormProps) {
         types={FILE_TYPES}
         label="Location"
         noneLabel="This server's data directories"
-        hint="With a connection the file is fetched from that SFTP server, S3 bucket or Azure Blob container."
+        hint="With a connection the file is fetched from that SFTP server, S3 bucket, Cloud Storage bucket or Azure Blob container."
       />
       <TextField
         ctx={ctx}
@@ -571,7 +579,7 @@ function SinkFile({ ctx }: TypeFormProps) {
         types={FILE_TYPES}
         label="Location"
         noneLabel="This server's data directories"
-        hint="With a connection the file is delivered to that SFTP server, S3 bucket or Azure Blob container."
+        hint="With a connection the file is delivered to that SFTP server, S3 bucket, Cloud Storage bucket or Azure Blob container."
       />
       <TextField
         ctx={ctx}

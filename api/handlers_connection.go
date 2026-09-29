@@ -408,7 +408,7 @@ func (h *ConnectionHandler) testResolved(ctx context.Context, c *models.Connecti
 	case models.ConnTypeAzureBlob:
 		return testAzureBlob(ctx, extra)
 	case models.ConnTypeGCS:
-		return testGCS(ctx, extra)
+		return h.testGCS(ctx, c)
 	case models.ConnTypeBigQuery:
 		return h.testBigQuery(ctx, c)
 	case models.ConnTypeSnowflake, models.ConnTypeOracle,
@@ -605,13 +605,12 @@ func testAzureBlob(ctx context.Context, extra map[string]interface{}) map[string
 	return map[string]interface{}{"success": true, "message": "Authenticated and listed the Azure Blob container"}
 }
 
-// testGCS authenticates against the configured bucket through the same client
-// file nodes use at runtime.
-func testGCS(ctx context.Context, extra map[string]interface{}) map[string]interface{} {
-	if extra == nil {
-		return map[string]interface{}{"success": false, "error": "No extra config — set bucket and credentials"}
-	}
-	if err := engine.TestGCSConnection(ctx, extra); err != nil {
+// testGCS authenticates and lists one object in the configured bucket,
+// through the same client file nodes use. An oidc connection gets the
+// deployment's token source, for the connection's own workspace and ID.
+func (h *ConnectionHandler) testGCS(ctx context.Context, c *models.Connection) map[string]interface{} {
+	req := identity.TokenRequest{WorkspaceID: c.WorkspaceID, SubjectKind: "connection", SubjectID: c.ID}
+	if err := engine.TestGCSConnection(ctx, c.Extra, h.tokens, req); err != nil {
 		return map[string]interface{}{"success": false, "error": err.Error()}
 	}
 	return map[string]interface{}{"success": true, "message": "Authenticated and listed the GCS bucket"}
@@ -739,7 +738,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 		{"type": "gcs", "label": "Google Cloud Storage", "category": "storage", "icon": "connGcs",
 			"description": "Google Cloud object storage — file nodes read and write objects in a bucket",
 			"fields":      []string{"extra"},
-			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "service-account-json"}`}},
+			"hints":       map[string]string{"extra": `{"bucket": "my-bucket", "credentials": "<service-account JSON key>"} — or "auth_method": "oidc" with "provider" (and optional "service_account") instead of a key; with neither, the worker's own identity where allowed`}},
 		{"type": "azure_blob", "label": "Azure Blob Storage", "category": "storage", "icon": "connAzureBlob",
 			"description": "Object storage on Microsoft Azure — file nodes read and write blobs in a container",
 			"fields":      []string{"extra"},

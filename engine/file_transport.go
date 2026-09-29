@@ -86,7 +86,7 @@ func (r *Runner) openFileTransport(ctx context.Context, node models.Node) (fileT
 		}
 		return &azureBlobTransport{client: client, connID: connID}, nil
 	case models.ConnTypeGCS:
-		client, err := newGCSFileClient(ctx, conn)
+		client, err := newGCSFileClient(ctx, conn, r.googleAuthFor(conn, node))
 		if err != nil {
 			return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 		}
@@ -169,8 +169,8 @@ func (t *s3Transport) upload(ctx context.Context, remotePath, _ string, write fu
 
 func (t *s3Transport) close() error { return nil }
 
-// gcsTransport is the customer-owned Google Cloud Storage transport. A GCS
-// object becomes visible when its writer is closed successfully.
+// gcsTransport is the customer-owned Google Cloud Storage transport. An
+// object is created or replaced only when its upload completes.
 type gcsTransport struct {
 	client *gcsFileClient
 	connID string
@@ -192,4 +192,4 @@ func (t *gcsTransport) upload(ctx context.Context, remotePath, _ string, write f
 	return fileDelivery{bytes: n, path: remotePath}, nil
 }
 
-func (t *gcsTransport) close() error { return t.client.client.Close() }
+func (t *gcsTransport) close() error { return nil }

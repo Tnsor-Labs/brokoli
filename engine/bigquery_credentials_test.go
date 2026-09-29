@@ -114,7 +114,7 @@ func TestBigQuerySettingsAreResolvedWhereTheNodeRuns(t *testing.T) {
 func TestBigQueryRefusesTheMachineIdentityWhereAmbientIsDenied(t *testing.T) {
 	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
 	t.Setenv(identity.AmbientEnv, "deny")
-	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{})
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", googleAuth{})
 	if !errors.Is(err, identity.ErrAmbientDenied) {
 		t.Fatalf("err = %v, want ErrAmbientDenied", err)
 	}
@@ -130,7 +130,7 @@ func TestBigQueryRefusesACredentialThatIsNotAServiceAccountKey(t *testing.T) {
 		"external account":            external,
 		"external account, nested in": `{"credentials":` + fmt.Sprintf("%q", external) + `}`,
 	} {
-		if _, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: settings}); err == nil ||
+		if _, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", googleAuth{settings: settings}); err == nil ||
 			!strings.Contains(err.Error(), "service_account") {
 			t.Errorf("%s: err = %v", name, err)
 		}
@@ -140,7 +140,7 @@ func TestBigQueryRefusesACredentialThatIsNotAServiceAccountKey(t *testing.T) {
 func TestBigQueryOIDCRequiresDeploymentTokenSource(t *testing.T) {
 	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
 	settings := `{"auth_method":"oidc","provider":"//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/brokoli/providers/runs"}`
-	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: settings})
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", googleAuth{settings: settings})
 	if !errors.Is(err, identity.ErrNoTokenSource) {
 		t.Fatalf("err = %v, want ErrNoTokenSource", err)
 	}
@@ -188,10 +188,10 @@ func fakeGoogleFederation(t *testing.T) (url string, exchange map[string]string,
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	prev := bigQueryFederationEndpoints
-	bigQueryFederationEndpoints.tokenURL = srv.URL + "/v1/token"
-	bigQueryFederationEndpoints.impersonationURL = srv.URL
-	t.Cleanup(func() { bigQueryFederationEndpoints = prev })
+	prev := googleFederationEndpoints
+	googleFederationEndpoints.tokenURL = srv.URL + "/v1/token"
+	googleFederationEndpoints.impersonationURL = srv.URL
+	t.Cleanup(func() { googleFederationEndpoints = prev })
 	return srv.URL, exchange, &who
 }
 
@@ -225,7 +225,7 @@ func TestBigQueryOIDCExchangesATokenForTheRun(t *testing.T) {
 	if err := json.Unmarshal([]byte(auth.settings), &raw); err != nil {
 		t.Fatal(err)
 	}
-	creds, err := bigQueryOIDCCredentials(raw, auth, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
+	creds, err := googleOIDCCredentials("BigQuery", raw, auth, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,7 +258,7 @@ func TestBigQueryOIDCUsesAConfiguredTokenAudience(t *testing.T) {
 	fakeGoogleFederation(t)
 	tokens := &recordingTokenSource{}
 	raw := map[string]interface{}{"auth_method": "oidc", "provider": bigQueryTestProvider, "token_audience": "brokoli-runs"}
-	creds, err := bigQueryOIDCCredentials(raw, bigQueryAuth{tokens: tokens}, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
+	creds, err := googleOIDCCredentials("BigQuery", raw, googleAuth{tokens: tokens}, netguard.Policy{AllowLoopback: true}.Client(10*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -273,7 +273,7 @@ func TestBigQueryOIDCUsesAConfiguredTokenAudience(t *testing.T) {
 // An unknown auth_method is refused by name, not read as a key.
 func TestBigQueryRefusesAnUnknownAuthMethod(t *testing.T) {
 	t.Setenv("BROKOLI_BIGQUERY_ENDPOINT", "")
-	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", bigQueryAuth{settings: `{"auth_method":"odic","provider":"x"}`})
+	_, err := bigQueryClient(context.Background(), "bigquery://acme/analytics", googleAuth{settings: `{"auth_method":"odic","provider":"x"}`})
 	if err == nil || !strings.Contains(err.Error(), `auth_method "odic" is not supported`) {
 		t.Fatalf("err = %v", err)
 	}

@@ -41,9 +41,8 @@ func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
 }
 
 func TestGCSConnectionTestUsesCompiledTransport(t *testing.T) {
-	result := testGCS(context.Background(), map[string]interface{}{
-		"bucket": "Bad Bucket",
-	})
+	h := &ConnectionHandler{}
+	result := h.testGCS(context.Background(), &models.Connection{Type: models.ConnTypeGCS, Extra: `{"bucket":"Bad Bucket"}`})
 	if result["success"] != false {
 		t.Fatalf("success = %v, want false for invalid GCS config", result["success"])
 	}

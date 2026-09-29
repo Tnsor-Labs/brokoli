@@ -25,6 +25,16 @@
 # servers, and a test that depends on state surviving a restart is a test
 # that will fail mysteriously in CI.
 services:
+  gcs:
+    # fake-gcs-server (MIT), pinned like every other service here. The public
+    # host and external URL keep resumable uploads on this address: without
+    # them the emulator hands back a session URL on storage.googleapis.com.
+    image: fsouza/fake-gcs-server:1.56.1
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory",
+              "-public-host", "127.0.0.1:55543", "-external-url", "http://127.0.0.1:55543"]
+    ports:
+      - "55543:4443"
+
   bigquery:
     # Pinned, like every other service here. goccy/bigquery-emulator is a
     # community project (MIT); 0.8.1 is its release of 2026-06-13.
