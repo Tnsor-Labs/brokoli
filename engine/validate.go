@@ -184,7 +184,7 @@ func IsBuiltInNodeType(nodeType models.NodeType) bool {
 		models.NodeTypeTransform, models.NodeTypeProject, models.NodeTypeAggregate, models.NodeTypeFilter, models.NodeTypeQualityCheck, models.NodeTypeContractGate, models.NodeTypeSQLGenerate,
 		models.NodeTypeCode, models.NodeTypeTask, models.NodeTypeJoin, models.NodeTypeSinkFile,
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
-		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify,
+		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify, models.NodeTypeBash,
 		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter,
 		models.NodeTypeWait:
 		return true
@@ -596,6 +596,10 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			if _, err := parseExpansionConfig(n); err != nil {
 				ve.Add(err.Error())
 			}
+		}
+	case models.NodeTypeBash:
+		for _, msg := range bashConfigErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
 	}
 }
@@ -1028,6 +1032,8 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 				r.Errors = append(r.Errors, err.Error())
 			}
 		}
+	case models.NodeTypeBash:
+		r.Errors = append(r.Errors, bashConfigErrors(n.Config)...)
 	case models.NodeTypeTransform:
 		// Check if rules exist
 		if rules, ok := n.Config["rules"]; ok {

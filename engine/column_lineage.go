@@ -185,6 +185,7 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 	models.NodeTypeSinkDB:       passThroughColumns("sink_db writes the columns it is given"),
 	models.NodeTypeSinkAPI:      passThroughColumns("sink_api sends the columns it is given"),
 	models.NodeTypeNotify:       passThroughColumns("notify sends a message and passes its input through"),
+	models.NodeTypeBash:         passThroughColumns("bash runs a worker command and passes its input through"),
 	models.NodeTypeWait:         passThroughColumns("wait delays and passes its input through"),
 
 	// migrate has no dataset input at all: it reads source_uri and

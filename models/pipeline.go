@@ -262,6 +262,7 @@ const (
 	NodeTypeWait   NodeType = "wait"
 	NodeTypeDBT    NodeType = "dbt"    // dbt run/test/build
 	NodeTypeNotify NodeType = "notify" // send Slack/email/webhook notification
+	NodeTypeBash   NodeType = "bash"   // trusted worker shell command
 
 	// NodeTypeUnion concatenates two or more upstream datasets into one.
 	// Emitted by brokoli-sdk's union(name, *refs) and

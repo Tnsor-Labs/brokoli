@@ -37,6 +37,7 @@ var AllNodeTypes = []NodeType{
 	NodeTypeWait,
 	NodeTypeDBT,
 	NodeTypeNotify,
+	NodeTypeBash,
 	NodeTypeUnion,
 	NodeTypeDatasetMap,
 	NodeTypeDatasetFilter,

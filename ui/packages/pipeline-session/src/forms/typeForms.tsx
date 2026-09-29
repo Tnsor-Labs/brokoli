@@ -1000,6 +1000,27 @@ function Notify({ ctx }: TypeFormProps) {
   )
 }
 
+function Bash({ ctx }: TypeFormProps) {
+  return (
+    <>
+      <Section title="Command" description="Runs on the worker as a trusted shell command. Do not use this node for untrusted pipeline authors.">
+        <ScriptField ctx={ctx} name="command" label="Bash command" language="bash" required />
+        <TextField
+          ctx={ctx}
+          name="working_dir"
+          label="Working directory"
+          mono
+          placeholder="Temporary directory"
+          hint="Must be inside the worker's allowed data directories."
+        />
+      </Section>
+      <Section title="Environment" description="Only variables listed here are added to the filtered worker environment.">
+        <MapField ctx={ctx} name="env" label="Environment variables" addLabel="Add variable" />
+      </Section>
+    </>
+  )
+}
+
 function Wait({ ctx }: TypeFormProps) {
   const condition = str(ctx.get('condition'))
   return (
@@ -1164,6 +1185,7 @@ export const TYPE_FORMS: Record<string, ComponentType<TypeFormProps>> = {
   condition: Condition,
   dbt: Dbt,
   notify: Notify,
+  bash: Bash,
   wait: Wait,
   union: Union,
   task: Task,

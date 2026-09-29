@@ -51,6 +51,7 @@ func TestNodeTypeInterfacesExcludedTypesAreDeliberate(t *testing.T) {
 	excluded := []models.NodeType{
 		models.NodeTypeSourceAPI, models.NodeTypeJoin, models.NodeTypeDBT,
 		models.NodeTypeWait, models.NodeTypeSQLGenerate, models.NodeTypeCode,
+		models.NodeTypeBash,
 	}
 	for _, nt := range excluded {
 		if _, ok := models.NodeTypeInterfaces[nt]; ok {

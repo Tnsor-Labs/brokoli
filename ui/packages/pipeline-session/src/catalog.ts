@@ -1,4 +1,4 @@
-import { ArrowRightLeft, Bell, Boxes, Code2, Combine, Database, DatabaseBackup, FileCode2, FileDown, FileInput, Filter, Globe, Hourglass, Merge, Package, Puzzle, Send, ShieldCheck, Shuffle, Split, Waypoints, type LucideIcon } from 'lucide-react'
+import { ArrowRightLeft, Bell, Boxes, Code2, Combine, Database, DatabaseBackup, FileCode2, FileDown, FileInput, Filter, Globe, Hourglass, Merge, Package, Puzzle, Send, ShieldCheck, Shuffle, Split, Terminal, Waypoints, type LucideIcon } from 'lucide-react'
 import type { PipelineNode } from '@brokoli/api'
 
 export type Family = 'source' | 'processing' | 'output' | 'integration' | 'migration' | 'control'
@@ -42,6 +42,7 @@ export const CATALOG: CatalogEntry[] = [
   { type: 'sink_api', label: 'API Sink', glyph: Send, description: 'Send rows to an HTTP endpoint in batches', family: 'output', input: true, output: false, maxInputs: 1, group: 'Outputs' },
   { type: 'dbt', label: 'dbt', glyph: Boxes, description: 'Run a dbt command against a project', family: 'integration', input: false, output: true, maxInputs: 0, group: 'Extensions' },
   { type: 'notify', label: 'Notify', glyph: Bell, description: 'Post a message to Slack or a webhook', family: 'integration', input: true, output: false, maxInputs: 1, group: 'Extensions' },
+  { type: 'bash', label: 'Bash Operator', glyph: Terminal, description: 'Run a trusted Bash command on the worker', family: 'integration', input: true, output: true, maxInputs: 1, group: 'Extensions' },
   { type: 'migrate', label: 'DB Migration', glyph: ArrowRightLeft, description: 'Copy a table from one database to another', family: 'migration', input: false, output: false, maxInputs: 0, group: 'Migration' },
   { type: 'condition', label: 'If / Else', glyph: Split, description: 'Continue or skip downstream nodes based on the data', family: 'control', input: true, output: true, maxInputs: 1, group: 'Flow control' },
   // Authored through the SDKs; rendered and editable, not offered in the palette.

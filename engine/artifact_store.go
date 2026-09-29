@@ -85,6 +85,7 @@ var nonResumableNodeTypes = map[models.NodeType]bool{
 	models.NodeTypeNotify:  true,
 	models.NodeTypeMigrate: true,
 	models.NodeTypeDBT:     true,
+	models.NodeTypeBash:    true,
 }
 
 // LocalDiskArtifactStore is a minimal, single-host artifact backend for
