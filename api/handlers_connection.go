@@ -446,13 +446,6 @@ func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
 	return testDBReal(ctx, driver, dsn)
 }
 
-func unsupportedDatabaseTest(kind models.ConnectionType) map[string]interface{} {
-	return map[string]interface{}{
-		"success": false,
-		"error":   fmt.Sprintf("%s has no driver in this build", kind),
-	}
-}
-
 // testDBReal actually opens a DB connection and pings it.
 func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} {
 	db, err := sql.Open(driver, dsn)

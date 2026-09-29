@@ -302,10 +302,11 @@ func runMySQLSinkExpectingFailure(t *testing.T, csv, targetDB, table string, key
 	return err
 }
 
-// A connection type with no compiled-in driver -- Databricks is the live
-// example: advertised in the catalog, no driver -- used to fail a run with
-// an error naming neither the connection nor its type, because the sentence
-// that explained it went to the server's stdout. It has to reach the run's
+// A database node pointed at a connection with no database driver -- once
+// Databricks, Snowflake and Oracle, now any non-database type such as a
+// generic connection -- used to fail a run with an error naming neither the
+// connection nor its type, because the sentence that explained it went to
+// the server's stdout. It has to reach the run's
 // node log, which is what the pipeline author actually reads.
 func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 	dir := t.TempDir()
@@ -316,17 +317,17 @@ func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 	defer st.Close()
 
 	conn := &models.Connection{
-		ConnID: "legacy-databricks", Type: "databricks",
-		Host: "workspace.cloud.databricks.com", Schema: "warehouse",
+		ConnID: "legacy-generic", Type: models.ConnTypeGeneric,
+		Host: "warehouse.example.com", Schema: "warehouse",
 		Login: "etl", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
 	}
 	if err := st.CreateConnection(conn); err != nil {
-		t.Skipf("this store rejects a Databricks connection outright, which is also acceptable: %v", err)
+		t.Fatal(err)
 	}
 
 	resolver := NewConnectionResolver(st, nil)
 	resolved, warnings, err := resolver.ResolveWithWarnings(
-		map[string]interface{}{"conn_id": "legacy-databricks"}, models.NodeTypeSourceDB)
+		map[string]interface{}{"conn_id": "legacy-generic"}, models.NodeTypeSourceDB)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,10 +336,10 @@ func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 		t.Fatal("an unsupported connection type must produce a warning the run can log")
 	}
 	joined := strings.Join(warnings, "\n")
-	if !strings.Contains(joined, "legacy-databricks") {
+	if !strings.Contains(joined, "legacy-generic") {
 		t.Errorf("the warning must name the connection: %s", joined)
 	}
-	if !strings.Contains(joined, "databricks") {
+	if !strings.Contains(joined, `"generic"`) {
 		t.Errorf("the warning must name the type: %s", joined)
 	}
 	if _, ok := resolved["uri"]; ok {

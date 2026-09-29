@@ -96,21 +96,6 @@ func TestDatabricksConnectionTestUsesCompiledDriver(t *testing.T) {
 	}
 }
 
-func TestUnsupportedDatabaseTestNamesMissingDriver(t *testing.T) {
-	for _, kind := range []models.ConnectionType{
-		models.ConnTypeSnowflake,
-		models.ConnTypeDatabricks,
-	} {
-		result := unsupportedDatabaseTest(kind)
-		if result["success"] != false {
-			t.Errorf("%s: success = %v, want false", kind, result["success"])
-		}
-		if result["error"] != string(kind)+" has no driver in this build" {
-			t.Errorf("%s: error = %v", kind, result["error"])
-		}
-	}
-}
-
 func TestGCSConnectionTestUsesCompiledTransport(t *testing.T) {
 	h := &ConnectionHandler{}
 	result := h.testGCS(context.Background(), &models.Connection{Type: models.ConnTypeGCS, Extra: `{"bucket":"Bad Bucket"}`})
