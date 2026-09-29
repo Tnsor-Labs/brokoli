@@ -45,6 +45,7 @@ const oracleTypesQuery = `SELECT
 	0.1 AS decimal_fraction,
 	TO_BINARY_DOUBLE(2.5) AS binary_double,
 	'text' AS label,
+	'' AS empty_text,
 	DATE '2024-01-02' AS day,
 	CAST(NULL AS NUMBER) AS missing
 FROM dual`
@@ -60,7 +61,10 @@ func assertOracleTypes(t *testing.T, row common.DataRow) {
 		"DECIMAL_FRACTION": 0.1,
 		"BINARY_DOUBLE":    2.5,
 		"LABEL":            "text",
-		"MISSING":          nil,
+		// Oracle stores '' as NULL, and Brokoli passes that through as
+		// it arrives rather than guessing which NULLs were empty strings.
+		"EMPTY_TEXT": nil,
+		"MISSING":    nil,
 	}
 	for column, value := range want {
 		if got := row[column]; got != value {

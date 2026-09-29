@@ -140,6 +140,13 @@ significant digits survives the round trip through a double unchanged. A
 get a number anyway, round it in the query (`ROUND(amount, 2)`) or cast it to
 `BINARY_DOUBLE` and accept the rounding.
 
+**Empty strings are nulls.** Oracle stores `''` as `NULL`, in
+`VARCHAR2` and `CHAR` alike, so an empty value read from Oracle arrives as
+null. Brokoli passes it through as it arrives, and does not guess which
+nulls were empty strings. A transform comparing a column to `""` will not
+match those rows. Test for null instead, or use `NVL(column, 'x')` in the
+query. A test pins this.
+
 An Oracle `DATE` has a time part. It arrives as a timestamp, midnight when
 the time part is zero.
 
