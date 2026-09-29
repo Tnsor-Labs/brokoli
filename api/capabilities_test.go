@@ -276,3 +276,28 @@ func assertCapabilitiesBypass(t *testing.T, handler http.Handler, protectedStatu
 		t.Fatalf("protected status = %d, want %d", protectedRec.Code, protectedStatus)
 	}
 }
+
+func TestCapabilitiesAdvertiseDisabledNodeTypes(t *testing.T) {
+	decode := func() map[string]interface{} {
+		rec := httptest.NewRecorder()
+		CapabilitiesHandler(rec, httptest.NewRequest(http.MethodGet, "/api/capabilities", nil))
+		var body map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	t.Setenv("BROKOLI_DISABLED_NODE_TYPES", "")
+	if got, ok := decode()["disabled_node_types"].([]interface{}); !ok || len(got) != 0 {
+		t.Fatalf("nothing disabled: disabled_node_types = %#v, want []", decode()["disabled_node_types"])
+	}
+	t.Setenv("BROKOLI_DISABLED_NODE_TYPES", "code,bash")
+	got, _ := decode()["disabled_node_types"].([]interface{})
+	if len(got) != 2 || got[0] != "bash" || got[1] != "code" {
+		t.Fatalf("disabled_node_types = %#v, want [bash code]", got)
+	}
+	caps, _ := decode()["node_type_capabilities"].(map[string]interface{})
+	if _, ok := caps["bash"]; !ok {
+		t.Error("node_type_capabilities has no entry for bash")
+	}
+}

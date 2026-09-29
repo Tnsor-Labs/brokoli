@@ -1868,6 +1868,12 @@ func externalExecutorMustReturnData(n models.Node) bool {
 // competing one at the same key: a task node's one instance IS the
 // whole node, unlike an expansion item's own distinct "idx:N" key.
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, allInputSchemas []columnSchema, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
+	// A disabled node type is refused here as well as at validation: this
+	// runs on the worker, whose operator may disable what the server that
+	// dispatched the run did not.
+	if err := nodeTypeDisabledError(node.Type); err != nil {
+		return nodeExecutionResult{}, err
+	}
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
