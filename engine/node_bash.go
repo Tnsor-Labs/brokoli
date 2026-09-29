@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -139,25 +138,6 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		return nil, fmt.Errorf("bash command failed: %w", waitErr)
 	}
 	return input, nil
-}
-
-// bashPlatformReference matches a Brokoli ${...} reference, which is
-// substituted into node configs before a node runs.
-var bashPlatformReference = regexp.MustCompile(`\$\{(interval|env|param|secret|var|run)\.[^}]*\}`)
-
-// resolveNodeConfig substitutes ${...} references in a node's config,
-// except in a bash node's command. Substituting there splices the value
-// into shell source: a run parameter of "x; rm -rf ~" would run. Values
-// reach the command through its env entries, which are substituted and
-// arrive as environment variables, never parsed as shell.
-func resolveNodeConfig(vc *VariableContext, node models.Node) map[string]interface{} {
-	resolved := vc.ResolveConfig(node.Config)
-	if node.Type == models.NodeTypeBash {
-		if command, ok := node.Config["command"]; ok {
-			resolved["command"] = command
-		}
-	}
-	return resolved
 }
 
 // logBashLine writes one output line to the run log, within the node's
@@ -294,7 +274,7 @@ func bashConfigErrors(config map[string]interface{}) []string {
 	if strings.TrimSpace(command) == "" {
 		errors = append(errors, "'command' is required")
 	}
-	if ref := bashPlatformReference.FindString(command); ref != "" {
+	if ref := platformReference.FindString(command); ref != "" {
 		errors = append(errors, fmt.Sprintf(
 			"'command' contains %s, which is not substituted in a bash command: "+
 				"a substituted value would be run as shell code. Set it in 'env' "+

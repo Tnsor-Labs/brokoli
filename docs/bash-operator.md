@@ -27,7 +27,9 @@ not a boundary: a command can `cd /`, read `/proc`, or open a socket.
 In that respect a bash node is no different from a code node, which can do
 the same from Python or TypeScript. Only give pipeline-editing rights to people
 you would give a shell on the worker. On a server that runs pipelines for
-people who should not have that, keep bash and code nodes off it.
+people who should not have that, disable the node type:
+`BROKOLI_DISABLED_NODE_TYPES=bash` (see
+[Code execution policy](code-execution-policy.md)).
 
 ## Configuration
 

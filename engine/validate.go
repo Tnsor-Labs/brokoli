@@ -168,6 +168,9 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 
 	// Check required config per node type
 	for _, n := range p.Nodes {
+		if err := nodeTypeDisabledError(n.Type); err != nil {
+			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, err))
+		}
 		validateNodeConfig(n, ve)
 	}
 	validateDeclaredJoinSchemas(p, ve)
@@ -584,6 +587,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		for _, msg := range codeExecutionKeyErrors(n.Config) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
 		}
+		if msg := codeScriptParamError(n.Config); msg != "" {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
 		if raw, present := n.Config["output_schema"]; present {
 			for _, msg := range datasetSchemaConfigErrors(raw) {
 				ve.Add(fmt.Sprintf("Node %q: output_schema: %s", n.Name, msg))
@@ -988,6 +994,9 @@ func validateFileStorage(n models.Node, writtenHere map[string]bool, r *NodeVali
 }
 
 func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
+	if err := nodeTypeDisabledError(n.Type); err != nil {
+		r.Errors = append(r.Errors, err.Error())
+	}
 	switch n.Type {
 	case models.NodeTypeSourceFile:
 		if getStr(n.Config, "path") == "" {
@@ -1027,6 +1036,9 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 			r.Errors = append(r.Errors, "'script' is required")
 		}
 		r.Errors = append(r.Errors, codeExecutionKeyErrors(n.Config)...)
+		if msg := codeScriptParamError(n.Config); msg != "" {
+			r.Errors = append(r.Errors, msg)
+		}
 		if nodeHasExpansion(n) {
 			if _, err := parseExpansionConfig(n); err != nil {
 				r.Errors = append(r.Errors, err.Error())

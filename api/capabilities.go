@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sync"
 
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
@@ -33,6 +34,7 @@ var nodeTypeCapabilities = map[models.NodeType][]string{
 	models.NodeTypeSinkDB:        {models.CapabilitySink},
 	models.NodeTypeSinkAPI:       {models.CapabilitySink},
 	models.NodeTypeNotify:        {models.CapabilitySink},
+	models.NodeTypeBash:          {models.CapabilityCompute},
 	models.NodeTypeUnion:         {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeWait:          {models.CapabilityCompute, models.CapabilityDatasetOutput},
 	models.NodeTypeDatasetMap:    {models.CapabilityCompute, models.CapabilityDatasetOutput},
@@ -90,6 +92,9 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		"node_capabilities":                  []string{models.CapabilitySource, models.CapabilitySink, models.CapabilityCompute, models.CapabilityDatasetOutput},
 		"node_type_capabilities":             nodeTypeCapabilities,
 		"node_type_interfaces":               models.NodeTypeInterfaces,
+		// Node types this deployment refuses (engine.DisabledNodeTypesEnv),
+		// so a client can leave them out rather than fail validation.
+		"disabled_node_types": engine.DisabledNodeTypes(),
 	}
 	// The wrapper contract is embedded even when Node is unavailable; this
 	// version identifies what the binary would run if the runtime resolves.

@@ -69,6 +69,18 @@ func (vc *VariableContext) Resolve(s string) string {
 	})
 }
 
+// resolveExceptParams is Resolve leaving every ${param...} reference as
+// written. See resolveNodeConfig for where and why.
+func (vc *VariableContext) resolveExceptParams(s string) string {
+	return varPattern.ReplaceAllStringFunc(s, func(match string) string {
+		key := match[2 : len(match)-1]
+		if strings.HasPrefix(key, "param.") {
+			return match
+		}
+		return vc.resolveKey(key)
+	})
+}
+
 // filterSep separates a reference from its filters inside ${...}, as in
 // ${interval.start|shift:-1d|date:YYYYMMDD}. Filters apply left to right.
 const filterSep = "|"
