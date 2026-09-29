@@ -1,23 +1,45 @@
 package engine
 
 import (
-	"bufio"
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
+	"regexp"
+	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/proctree"
 )
+
+// Output limits for one bash node. The command's output goes to the run
+// log, a row per line, so it is bounded: a command that prints a
+// generated file or loops forever must not fill the metadata store.
+// Beyond the limits the output is still read -- a command blocked on a
+// full pipe would never finish -- but no longer logged.
+const (
+	bashMaxLineBytes = 16 << 10
+	bashStderrTail   = 20
+	bashTermGrace    = 5 * time.Second
+)
+
+// bashMaxLogLines is a variable so tests can lower it.
+var bashMaxLogLines = 10000
 
 // runBash executes a trusted worker command and preserves the input dataset.
 // This is intentionally a shell operator, not a sandbox: only trusted
 // pipeline authors should be allowed to create bash nodes.
+//
+// The command runs the way code nodes and task harnesses do: in its own
+// process group, so cancellation and timeouts stop everything it
+// started, not only bash; under the code-node rlimits; with the filtered
+// worker environment.
 func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	command, _ := node.Config["command"].(string)
 	if strings.TrimSpace(command) == "" {
@@ -26,66 +48,210 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 
 	workingDir, _ := node.Config["working_dir"].(string)
 	if workingDir == "" {
-		workingDir = os.TempDir()
-	}
-	if err := common.PathAllowed(workingDir); err != nil {
-		return nil, fmt.Errorf("bash working_dir: %w", err)
+		// A private directory per attempt, removed afterwards. The shared
+		// temp directory is neither private nor, when BROKOLI_DATA_DIRS
+		// excludes it, allowed.
+		scratch, err := os.MkdirTemp("", "brokoli-bash-")
+		if err != nil {
+			return nil, fmt.Errorf("bash working directory: %w", err)
+		}
+		defer func() { _ = os.RemoveAll(scratch) }()
+		workingDir = scratch
+	} else {
+		if err := common.PathAllowed(workingDir); err != nil {
+			return nil, fmt.Errorf("bash working_dir: %w", err)
+		}
+		if info, err := os.Stat(workingDir); err != nil || !info.IsDir() {
+			return nil, fmt.Errorf("bash working_dir %q is not a directory", workingDir)
+		}
 	}
 
 	bash, err := exec.LookPath("bash")
 	if err != nil {
 		return nil, fmt.Errorf("bash executable is not available: %w", err)
 	}
+	limits := codeexec.Resolve(node.Config)
+	// #nosec G204 -- running the pipeline author's command is this node's
+	// purpose; it is documented as trusted-worker execution.
 	cmd := exec.CommandContext(ctx, bash, "-o", "pipefail", "-c", command)
 	cmd.Dir = workingDir
 	cmd.Env = append(codeexec.WorkerEnv(), "BROKOLI_NODE_ID="+node.ID)
-	for key, value := range bashEnvironment(node.Config["env"]) {
-		cmd.Env = append(cmd.Env, key+"="+value)
+	if r.run != nil {
+		cmd.Env = append(cmd.Env, "BROKOLI_RUN_ID="+r.run.ID)
 	}
+	env := bashEnvironment(node.Config["env"])
+	keys := make([]string, 0, len(env))
+	for key := range env {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		cmd.Env = append(cmd.Env, key+"="+env[key])
+	}
+	proctree.ConfigureProcessGroup(cmd)
+	cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
+	// Bounds Wait both after a cancel and when the command exits but
+	// something it started in the background still holds its output.
+	cmd.WaitDelay = bashTermGrace
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("bash stdout: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return nil, fmt.Errorf("bash stderr: %w", err)
-	}
+	logged := &bashLogBudget{remaining: bashMaxLogLines}
+	stdout := &bashLineWriter{emit: func(line string) { r.logBashLine(node.ID, models.LogLevelInfo, "bash", line, logged) }}
+	stderr := &bashLineWriter{tail: bashStderrTail, emit: func(line string) {
+		r.logBashLine(node.ID, models.LogLevelInfo, "bash stderr", line, logged)
+	}}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start bash: %w", err)
 	}
-
-	logLines := func(prefix string, stream io.Reader) error {
-		scanner := bufio.NewScanner(stream)
-		// Commands can emit generated lines larger than Scanner's default.
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if line != "" && r.store != nil && r.run != nil {
-				r.log(node.ID, models.LogLevelInfo, "[%s] %s", prefix, line)
-			}
-		}
-		return scanner.Err()
+	if err := proctree.ApplyRlimits(cmd.Process.Pid, proctree.Rlimits{
+		CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
+		FileSizeBytes: uint64(max(limits.FileSizeMB, 0)) * 1024 * 1024,
+		OpenFiles:     uint64(max(limits.OpenFiles, 0)),
+	}); err != nil {
+		_ = proctree.KillProcessTree(cmd.Process)
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("apply bash limits: %w", err)
 	}
-
-	stdoutErr := make(chan error, 1)
-	stderrErr := make(chan error, 1)
-	go func() { stdoutErr <- logLines("bash", stdout) }()
-	go func() { stderrErr <- logLines("bash stderr", stderr) }()
 	waitErr := cmd.Wait()
-	if err := <-stdoutErr; err != nil && !errors.Is(err, os.ErrClosed) {
-		return nil, fmt.Errorf("read bash stdout: %w", err)
+	// Whatever the command left running in the background is part of
+	// this node and does not outlive it, on success as on failure.
+	_ = proctree.KillProcessTree(cmd.Process)
+	stdout.flush()
+	stderr.flush()
+	if logged.dropped > 0 {
+		r.logBashLine(node.ID, models.LogLevelWarning, "bash", fmt.Sprintf(
+			"%d further output lines were not logged (the limit is %d lines per node)",
+			logged.dropped, bashMaxLogLines), &bashLogBudget{remaining: 1})
 	}
-	if err := <-stderrErr; err != nil && !errors.Is(err, os.ErrClosed) {
-		return nil, fmt.Errorf("read bash stderr: %w", err)
-	}
+
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 	if waitErr != nil {
+		if lerr := signalBreachError(waitErr, limits); lerr != nil {
+			return nil, fmt.Errorf("bash command: %w", lerr)
+		}
+		if tail := stderr.tailText(); tail != "" {
+			return nil, fmt.Errorf("bash command failed: %w\nstderr: %s", waitErr, tail)
+		}
 		return nil, fmt.Errorf("bash command failed: %w", waitErr)
 	}
 	return input, nil
+}
+
+// bashPlatformReference matches a Brokoli ${...} reference, which is
+// substituted into node configs before a node runs.
+var bashPlatformReference = regexp.MustCompile(`\$\{(interval|env|param|secret|var|run)\.[^}]*\}`)
+
+// resolveNodeConfig substitutes ${...} references in a node's config,
+// except in a bash node's command. Substituting there splices the value
+// into shell source: a run parameter of "x; rm -rf ~" would run. Values
+// reach the command through its env entries, which are substituted and
+// arrive as environment variables, never parsed as shell.
+func resolveNodeConfig(vc *VariableContext, node models.Node) map[string]interface{} {
+	resolved := vc.ResolveConfig(node.Config)
+	if node.Type == models.NodeTypeBash {
+		if command, ok := node.Config["command"]; ok {
+			resolved["command"] = command
+		}
+	}
+	return resolved
+}
+
+// logBashLine writes one output line to the run log, within the node's
+// budget.
+func (r *Runner) logBashLine(nodeID string, level models.LogLevel, prefix, line string, budget *bashLogBudget) {
+	if line == "" || r.store == nil || r.run == nil {
+		return
+	}
+	if !budget.take() {
+		return
+	}
+	r.log(nodeID, level, "[%s] %s", prefix, line)
+}
+
+type bashLogBudget struct {
+	mu        sync.Mutex
+	remaining int
+	dropped   int
+}
+
+func (b *bashLogBudget) take() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.remaining <= 0 {
+		b.dropped++
+		return false
+	}
+	b.remaining--
+	return true
+}
+
+// bashLineWriter splits a stream into lines for emit. It never refuses a
+// write: a writer that errors stops exec's copy, and a command writing
+// into a pipe nobody reads blocks until the node times out. A line longer
+// than bashMaxLineBytes is cut there and the rest of it discarded.
+type bashLineWriter struct {
+	emit      func(string)
+	tail      int
+	buf       []byte
+	truncated bool
+	last      []string
+}
+
+func (w *bashLineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 {
+		i := bytes.IndexByte(p, '\n')
+		chunk := p
+		if i >= 0 {
+			chunk = p[:i]
+		}
+		if room := bashMaxLineBytes - len(w.buf); room > 0 {
+			if len(chunk) > room {
+				w.buf = append(w.buf, chunk[:room]...)
+				w.truncated = true
+			} else {
+				w.buf = append(w.buf, chunk...)
+			}
+		} else if len(chunk) > 0 {
+			w.truncated = true
+		}
+		if i < 0 {
+			break
+		}
+		w.line()
+		p = p[i+1:]
+	}
+	return n, nil
+}
+
+func (w *bashLineWriter) line() {
+	text := strings.TrimRight(string(w.buf), "\r")
+	if w.truncated {
+		text += " ... [line truncated]"
+	}
+	w.buf, w.truncated = w.buf[:0], false
+	if w.tail > 0 && text != "" {
+		w.last = append(w.last, text)
+		if len(w.last) > w.tail {
+			w.last = w.last[1:]
+		}
+	}
+	w.emit(text)
+}
+
+// flush emits a final line that had no newline.
+func (w *bashLineWriter) flush() {
+	if len(w.buf) > 0 || w.truncated {
+		w.line()
+	}
+}
+
+func (w *bashLineWriter) tailText() string {
+	return strings.Join(w.last, "\n")
 }
 
 func bashEnvironment(raw interface{}) map[string]string {
@@ -95,7 +261,7 @@ func bashEnvironment(raw interface{}) map[string]string {
 		return out
 	}
 	for key, rawValue := range values {
-		if key == "" || strings.ContainsAny(key, "=\x00") {
+		if !validBashEnvName(key) {
 			continue
 		}
 		if value, ok := rawValue.(string); ok && !strings.ContainsRune(value, '\x00') {
@@ -105,13 +271,38 @@ func bashEnvironment(raw interface{}) map[string]string {
 	return out
 }
 
+// validBashEnvName is a POSIX shell variable name: bash cannot reference
+// any other, so a key like "MY-VAR" would be silently unusable.
+func validBashEnvName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for i, c := range name {
+		switch {
+		case c == '_', c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z':
+		case c >= '0' && c <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 func bashConfigErrors(config map[string]interface{}) []string {
 	var errors []string
 	command, _ := config["command"].(string)
 	if strings.TrimSpace(command) == "" {
 		errors = append(errors, "'command' is required")
 	}
+	if ref := bashPlatformReference.FindString(command); ref != "" {
+		errors = append(errors, fmt.Sprintf(
+			"'command' contains %s, which is not substituted in a bash command: "+
+				"a substituted value would be run as shell code. Set it in 'env' "+
+				"(for example {\"NAME\": \"${param.name}\"}) and use \"$NAME\" in the command", ref))
+	}
 	if value, ok := config["working_dir"]; ok {
+		// Only the type: the allowed directories are the worker's, which
+		// the server validating this config may not share.
 		if _, ok := value.(string); !ok {
 			errors = append(errors, "'working_dir' must be a string")
 		}
@@ -122,8 +313,8 @@ func bashConfigErrors(config map[string]interface{}) []string {
 			errors = append(errors, "'env' must be an object of string values")
 		} else {
 			for key, rawValue := range values {
-				if key == "" || strings.ContainsAny(key, "=\x00") {
-					errors = append(errors, "'env' contains an invalid variable name")
+				if !validBashEnvName(key) {
+					errors = append(errors, fmt.Sprintf("'env' variable name %q is not a valid shell variable name", key))
 					break
 				}
 				value, ok := rawValue.(string)

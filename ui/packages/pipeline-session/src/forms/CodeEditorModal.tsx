@@ -14,16 +14,22 @@ async function languageExtension(language: CodeLanguage): Promise<Extension> {
       return (await import('@codemirror/lang-sql')).sql()
     case 'yaml':
       return (await import('@codemirror/lang-yaml')).yaml()
+    case 'bash':
+      // No shell grammar is bundled; plain text beats JavaScript's.
+      return []
     default:
-      return (await import('@codemirror/lang-javascript')).javascript({ typescript: language === 'typescript' })
+      return (await import('@codemirror/lang-javascript')).javascript({
+        typescript: language === 'typescript',
+      })
   }
 }
 
 const HINTS: Record<CodeLanguage, string> = {
   python:
     'The script receives columns, rows, config and params, and sets output_data = {"columns": [...], "rows": [...]}. Lines printed to stderr become run warnings.',
-  bash: 'Runs on the trusted worker through Bash. stdout and stderr become node logs; the input dataset passes through unchanged.',
-  typescript: 'TypeScript runs in the server code worker pool and needs Node 20 or newer on the server.',
+  bash: 'Runs on the trusted worker through Bash. stdout and stderr become node logs; the input dataset passes through unchanged. ${param.*} and ${var.*} are not substituted here: set them in Environment and use "$NAME".',
+  typescript:
+    'TypeScript runs in the server code worker pool and needs Node 20 or newer on the server.',
   sql: 'Runs on the connection chosen for this node. ${...} placeholders (variables, run parameters, ${interval.start}) are substituted before the query is sent.',
   yaml: '',
   json: '',
