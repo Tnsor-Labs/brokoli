@@ -1859,24 +1859,31 @@ func (r *Runner) attachArtifactSink(fetcher fetchers.Fetcher) {
 //
 // A node with no conn_id has no stored settings, and the backend uses the
 // machine's own identity where that is allowed.
-func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) (bigQueryAuth, error) {
+func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) (googleAuth, error) {
 	connID, _ := config["conn_id"].(string)
 	if connID == "" {
-		return bigQueryAuth{}, nil
+		return googleAuth{}, nil
 	}
 	if r.connResolver == nil {
-		return bigQueryAuth{}, fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
+		return googleAuth{}, fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
 	}
 	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
 	if err != nil {
-		return bigQueryAuth{}, err
+		return googleAuth{}, err
 	}
 	if conn.Type != models.ConnTypeBigQuery {
-		return bigQueryAuth{}, fmt.Errorf("connection %q is type %q, not bigquery", connID, conn.Type)
+		return googleAuth{}, fmt.Errorf("connection %q is type %q, not bigquery", connID, conn.Type)
 	}
-	auth := bigQueryAuth{
+	return r.googleAuthFor(conn, models.Node{ID: nodeID}), nil
+}
+
+// googleAuthFor is how a node authenticates to Google (BigQuery, Cloud
+// Storage) with conn: its settings, the deployment's token source, and a
+// token request naming the run's workspace, the connection's immutable ID,
+// the run and the node.
+func (r *Runner) googleAuthFor(conn *models.Connection, node models.Node) googleAuth {
+	auth := googleAuth{
 		settings: conn.Extra,
-		tokens:   r.connResolver.TokenSource(),
 		request: identity.TokenRequest{
 			WorkspaceID: r.workspaceID(),
 			SubjectKind: "connection",
@@ -1884,11 +1891,14 @@ func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) 
 			// configuration matches the token's subject exactly (Azure
 			// allows no wildcards), so a rename must not change it.
 			SubjectID: conn.ID,
-			NodeID:    nodeID,
+			NodeID:    node.ID,
 		},
+	}
+	if r.connResolver != nil {
+		auth.tokens = r.connResolver.TokenSource()
 	}
 	if r.run != nil {
 		auth.request.RunID = r.run.ID
 	}
-	return auth, nil
+	return auth
 }

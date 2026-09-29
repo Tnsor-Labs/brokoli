@@ -12,56 +12,17 @@ import (
 	"strings"
 	"time"
 
-	googleauth "cloud.google.com/go/auth"
-	"cloud.google.com/go/auth/credentials"
 	googlehttp "cloud.google.com/go/auth/httptransport"
 	"cloud.google.com/go/bigquery"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
-	"github.com/Tnsor-Labs/brokoli/pkg/identity/gcpfederation"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
 
 const bigQueryDefaultMaxBytes = int64(10 << 30)
-
-// bigQueryAuth is how one BigQuery call authenticates: the connection's
-// settings, plus, for auth_method "oidc", the deployment's token source and
-// the request that says whose work the token is for.
-type bigQueryAuth struct {
-	settings string
-	tokens   identity.TokenSource
-	request  identity.TokenRequest
-}
-
-// bigQueryFederationEndpoints replaces Google's token exchange and
-// impersonation endpoints. Tests only: a connection cannot set them, because
-// whoever controls the token URL receives the token Brokoli signs (ADR-042
-// section 2: Brokoli builds the federation configuration itself).
-var bigQueryFederationEndpoints struct{ tokenURL, impersonationURL string }
-
-// bigQueryOIDCCredentials builds Google credentials for a connection whose
-// settings say auth_method "oidc", from the deployment's token source.
-func bigQueryOIDCCredentials(settings map[string]interface{}, auth bigQueryAuth, httpClient *http.Client) (*googleauth.Credentials, error) {
-	provider, _ := settings["provider"].(string)
-	if provider == "" {
-		return nil, fmt.Errorf("BigQuery OIDC settings require provider")
-	}
-	cfg := gcpfederation.Config{
-		Provider:         provider,
-		TokenURL:         bigQueryFederationEndpoints.tokenURL,
-		ImpersonationURL: bigQueryFederationEndpoints.impersonationURL,
-	}
-	cfg.TokenAudience, _ = settings["token_audience"].(string)
-	cfg.ServiceAccount, _ = settings["service_account"].(string)
-	creds, err := gcpfederation.Credentials(auth.tokens, auth.request, cfg, httpClient)
-	if err != nil {
-		return nil, fmt.Errorf("BigQuery OIDC credentials: %w", err)
-	}
-	return creds, nil
-}
 
 func isBigQueryURI(uri string) bool {
 	return strings.HasPrefix(uri, "bigquery://")
@@ -94,7 +55,7 @@ func bigQueryQuotaProject(uri string) (string, error) {
 // else, so the key never enters a node's config, a log line or a work order
 // (ADR-042 section 1). Empty settings mean the machine's own identity, which
 // is refused where ambient identity is denied.
-func bigQueryClient(ctx context.Context, uri string, auth bigQueryAuth) (*bigquery.Client, error) {
+func bigQueryClient(ctx context.Context, uri string, auth googleAuth) (*bigquery.Client, error) {
 	u, err := url.Parse(uri)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("invalid BigQuery URI")
@@ -113,7 +74,7 @@ func bigQueryClient(ctx context.Context, uri string, auth bigQueryAuth) (*bigque
 			option.WithEndpoint(endpoint), option.WithoutAuthentication())
 	}
 
-	creds, err := bigQueryCredentials(auth, httpClient)
+	creds, err := googleCredentials("BigQuery", auth, httpClient, "https://www.googleapis.com/auth/cloud-platform")
 	if err != nil {
 		return nil, err
 	}
@@ -158,59 +119,6 @@ func bigQueryClient(ctx context.Context, uri string, auth bigQueryAuth) (*bigque
 // cannot set it.
 var bigQueryAPIEndpoint string
 
-// bigQueryCredentials returns the Google credentials a connection's settings
-// call for: workload identity federation for auth_method "oidc", a
-// service-account key, or with no settings the machine's own identity where
-// ambient identity is allowed. httpClient carries any token fetch.
-func bigQueryCredentials(auth bigQueryAuth, httpClient *http.Client) (*googleauth.Credentials, error) {
-	scopes := []string{"https://www.googleapis.com/auth/cloud-platform"}
-	extra := auth.settings
-	if strings.TrimSpace(extra) == "" {
-		if !identity.AmbientAllowed() {
-			return nil, fmt.Errorf("BigQuery connection has no service-account key, and %w", identity.ErrAmbientDenied)
-		}
-		creds, err := credentials.DetectDefault(&credentials.DetectOptions{Scopes: scopes, Client: httpClient})
-		if err != nil {
-			return nil, fmt.Errorf("BigQuery ambient credentials: %w", err)
-		}
-		return creds, nil
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal([]byte(extra), &raw); err != nil {
-		return nil, fmt.Errorf("BigQuery credentials/config are not valid JSON: %w", err)
-	}
-	switch method, _ := raw["auth_method"].(string); strings.ToLower(strings.TrimSpace(method)) {
-	case "oidc":
-		return bigQueryOIDCCredentials(raw, auth, httpClient)
-	case "":
-		// A service-account key, below.
-	default:
-		// Refused by name: falling through would read the settings as a key
-		// and fail with a message about key types instead.
-		return nil, fmt.Errorf("BigQuery auth_method %q is not supported; use \"oidc\", or omit auth_method for a service-account key", method)
-	}
-	credentialJSON := []byte(extra)
-	if nested, ok := raw["credentials"].(string); ok && nested != "" {
-		credentialJSON = []byte(nested)
-	}
-	var credentialType map[string]interface{}
-	if err := json.Unmarshal(credentialJSON, &credentialType); err != nil {
-		return nil, fmt.Errorf("BigQuery credentials are not valid JSON: %w", err)
-	}
-	if credentialType["type"] != "service_account" {
-		return nil, fmt.Errorf("BigQuery credential type must be service_account in this build")
-	}
-	// NewCredentialsFromJSON with an explicit type refuses any other kind of
-	// credential file too, a second guard behind the check above.
-	creds, err := credentials.NewCredentialsFromJSON(credentials.ServiceAccount, credentialJSON,
-		&credentials.DetectOptions{Scopes: scopes, Client: httpClient})
-	if err != nil {
-		return nil, fmt.Errorf("BigQuery service-account key: %w", err)
-	}
-	return creds, nil
-}
-
 func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[string]interface{}, settings string) (*bigquery.Query, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
@@ -247,7 +155,7 @@ func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[
 // DryRunBigQuery validates a query and returns its result schema without
 // scanning or charging for data. The byte estimate is retained for the caller
 // to apply a cost policy before the real query runs.
-func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth bigQueryAuth) (bigquery.Schema, int64, error) {
+func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth) (bigquery.Schema, int64, error) {
 	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, 0, err
@@ -338,7 +246,7 @@ func bigQueryLoadSchema(data *common.DataSet) bigquery.Schema {
 	return fields
 }
 
-func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth bigQueryAuth) (*common.DataSet, error) {
+func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth) (*common.DataSet, error) {
 	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, err
@@ -390,7 +298,7 @@ func QueryBigQuery(ctx context.Context, uri, query string, config map[string]int
 // auth_method "oidc" it takes a token from tokens with req, so a connection
 // test exercises the same federation a run does.
 func CheckBigQueryConnection(ctx context.Context, uri string, config map[string]interface{}, settings string, tokens identity.TokenSource, req identity.TokenRequest) error {
-	auth := bigQueryAuth{settings: settings, tokens: tokens, request: req}
+	auth := googleAuth{settings: settings, tokens: tokens, request: req}
 	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return err
@@ -411,7 +319,7 @@ func CheckBigQueryConnection(ctx context.Context, uri string, config map[string]
 	return status.Err()
 }
 
-func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.DataSet, config map[string]interface{}, auth bigQueryAuth) error {
+func LoadBigQuery(ctx context.Context, uri, table, mode string, data *common.DataSet, config map[string]interface{}, auth googleAuth) error {
 	if strings.EqualFold(strings.TrimSpace(mode), ModeUpsert) {
 		return fmt.Errorf("BigQuery does not support upsert in this build")
 	}

@@ -12,7 +12,7 @@ func TestGCSFileConfigFromExtra(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Bucket != "brokoli-test" || cfg.CredentialsJSON != gcsTestCredentials || cfg.MaxDownloadBytes != 42 {
+	if cfg.Bucket != "brokoli-test" || cfg.MaxDownloadBytes != 42 {
 		t.Fatalf("config = %#v", cfg)
 	}
 }
@@ -20,9 +20,10 @@ func TestGCSFileConfigFromExtra(t *testing.T) {
 func TestGCSFileConfigRejectsInvalidCredentialsAndBucket(t *testing.T) {
 	invalidBucket := `{"bucket":"Bad Bucket","credentials":` + strconv.Quote(gcsTestCredentials) + `}`
 	for name, extra := range map[string]string{
-		"missing credentials":   `{"bucket":"brokoli-test"}`,
 		"wrong credential type": `{"bucket":"brokoli-test","credentials":"{\"type\":\"authorized_user\"}"}`,
 		"invalid bucket":        invalidBucket,
+		// Whoever controls the endpoint receives the access token.
+		"endpoint from connection data": `{"bucket":"brokoli-test","endpoint":"http://example.com"}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := GCSFileConfigFromExtra(extra); err == nil {

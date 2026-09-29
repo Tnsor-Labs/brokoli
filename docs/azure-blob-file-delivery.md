@@ -5,9 +5,9 @@ Azure Blob Storage container through an `azure_blob` connection. There is no
 separate Azure node: the file node still chooses the format, while `conn_id`
 chooses where the blob lives.
 
-This is the third remote location a file node can use, beside
-[SFTP](sftp-file-delivery.md) and [customer-owned S3](s3-file-delivery.md).
-All three sit behind the same transport, so dry runs, data directories,
+This is one of four remote locations a file node can use, beside
+[SFTP](sftp-file-delivery.md), [customer-owned S3](s3-file-delivery.md) and
+[Google Cloud Storage](gcs-file-delivery.md). All four sit behind the same transport, so dry runs, data directories,
 lineage, and the rule that a file node with a `conn_id` never falls back to
 the worker's local disk behave the same way for each.
 

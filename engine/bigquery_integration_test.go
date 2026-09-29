@@ -33,7 +33,7 @@ func TestBigQueryEmulatorPhase1(t *testing.T) {
 		Columns: []string{"id", "name"},
 		Rows:    []common.DataRow{{"id": int64(1), "name": "one"}},
 	}
-	auth := bigQueryAuth{}
+	auth := googleAuth{}
 	if _, err := QueryBigQuery(ctx, uri, fmt.Sprintf("CREATE TABLE %s (id INT64, name STRING)", table), config, auth); err != nil {
 		t.Fatal(err)
 	}
