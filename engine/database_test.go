@@ -1,10 +1,10 @@
 package engine
 
 import (
+	"database/sql"
+	"errors"
 	"strings"
 	"testing"
-
-	goora "github.com/sijms/go-ora/v2"
 )
 
 // Scheme-to-driver mapping, independent of whether the driver is compiled in.
@@ -25,7 +25,8 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"test.db", "sqlite", "test.db"},
 		{"sqlserver://user:pass@host:1433?database=db", "sqlserver", "sqlserver://user:pass@host:1433?database=db"},
 		{"mssql://user:pass@host:1433?database=db", "sqlserver", "mssql://user:pass@host:1433?database=db"},
-		{"oracle://user:pass@host:1521/service", "oracle", "user:pass@host:1521/service"},
+		// go-ora needs the scheme: stripped, it cannot find the port.
+		{"oracle://user:pass@host:1521/service", "oracle", "oracle://user:pass@host:1521/service"},
 		// Default falls through to pgx
 		{"host:5432/db", "pgx", "host:5432/db"},
 	}
@@ -46,23 +47,100 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 	}
 }
 
-func TestOracleDSNIsAcceptedByDriver(t *testing.T) {
-	driver, dsn, err := DetectDriver("oracle://svc:p%40ss@oracle.example.com:1521/ORCL?sid=ORCL&ssl=true&ssl+verify=true")
-	if err != nil {
-		t.Fatal(err)
+// The Oracle driver is registered by engine/database.go's import, not by
+// a test file: no test in this package imports go-ora, so removing that
+// import fails here rather than passing on the tests' own registration.
+func TestOracleDriverIsCompiledIn(t *testing.T) {
+	for _, name := range sql.Drivers() {
+		if name == "oracle" {
+			return
+		}
 	}
-	if driver != "oracle" {
-		t.Fatalf("driver = %q, want oracle", driver)
+	t.Fatalf("no database/sql driver named oracle is registered: %v", sql.Drivers())
+}
+
+// go-ora quotes the whole DSN when it cannot parse it. The run log must get
+// the reason without the password, in either its encoded or decoded form.
+func TestOracleConnectErrorsDoNotCarryThePassword(t *testing.T) {
+	for _, uri := range []string{
+		"oracle://svc:s3cr%40t-pw@bad host:1521/ORCL",
+		"oracle://svc:s3cr%40t-pw@127.0.0.1:1521:443/ORCL",
+	} {
+		_, err := QueryDatabase(uri, "SELECT 1 FROM dual")
+		if err == nil {
+			t.Fatalf("%s: expected a connection error", uri)
+		}
+		msg := err.Error()
+		if strings.Contains(msg, "s3cr%40t-pw") || strings.Contains(msg, "s3cr@t-pw") {
+			t.Fatalf("the error carries the password: %s", msg)
+		}
 	}
-	cfg, err := goora.ParseConfig("oracle://" + dsn)
-	if err != nil {
-		t.Fatalf("ParseConfig: %v", err)
+}
+
+func TestRedactDSNError(t *testing.T) {
+	cases := []struct {
+		dsn, err, want string
+	}{
+		{"oracle://u:p%40ss@bad host:1521/x", `parse "oracle://u:p%40ss@bad host:1521/x": invalid character`, `parse "oracle://u:xxxxx@bad host:1521/x": invalid character`},
+		{"oracle://u:p%40ss@h/x", "login as u with p@ss failed", "login as u with xxxxx failed"},
+		// No password, nothing to remove.
+		{"oracle://u@h/x", "boom u@h", "boom u@h"},
+		{"postgres://h/x", "boom", "boom"},
 	}
-	if cfg.UserID != "svc" || cfg.ServiceName != "ORCL" || cfg.SID != "ORCL" || !cfg.SSL || !cfg.SSLVerify {
-		t.Fatalf("parsed config = user %q service %q sid %q ssl %v verify %v", cfg.UserID, cfg.ServiceName, cfg.SID, cfg.SSL, cfg.SSLVerify)
+	for _, c := range cases {
+		if got := RedactDSNError(errors.New(c.err), c.dsn).Error(); got != c.want {
+			t.Errorf("RedactDSNError(%q, %q) = %q, want %q", c.err, c.dsn, got, c.want)
+		}
 	}
-	if cfg.DatabaseInfo.Password != "p@ss" {
-		t.Fatalf("password was not decoded by the driver")
+	if RedactDSNError(nil, "oracle://u:p@h/x") != nil {
+		t.Error("a nil error must stay nil")
+	}
+}
+
+// go-ora returns every NUMBER as text. The decoded value keeps every digit:
+// int64 for whole numbers that fit, float64 only where the text round-trips,
+// text otherwise.
+func TestDecodeOracleNumber(t *testing.T) {
+	cases := []struct {
+		in   interface{}
+		want interface{}
+	}{
+		{"1", int64(1)},
+		{"-7", int64(-7)},
+		{"9223372036854775807", int64(9223372036854775807)},
+		{"-9223372036854775808", int64(-9223372036854775808)},
+		// Past int64: 20 digits cannot be a float64 without rounding.
+		{"9223372036854775808", "9223372036854775808"},
+		{"12345678901234567890123", "12345678901234567890123"},
+		{"1.5", 1.5},
+		{"-0.25", -0.25},
+		{"0.1", 0.1},
+		{"123456789012.345", 123456789012.345},
+		// 16 significant digits: not every one survives float64.
+		{"1234567890123.4567", "1234567890123.4567"},
+		{"0.0000000000000000000000000001", 1e-28},
+		{nil, nil},
+		{float64(2.5), float64(2.5)},
+	}
+	for _, c := range cases {
+		if got := decodeOracleNumber(c.in); got != c.want {
+			t.Errorf("decodeOracleNumber(%#v) = %#v (%T), want %#v (%T)", c.in, got, got, c.want, c.want)
+		}
+	}
+}
+
+// Oracle has earned reads only: every write mode is refused by name, before
+// any statement is generated.
+func TestOracleWritesAreRefused(t *testing.T) {
+	for _, mode := range []string{"", ModeAppend, ModeOverwrite, "replace", ModeUpsert, "create_table"} {
+		err := refuseUnearnedWrite("oracle://u:p@h:1521/svc", mode)
+		if err == nil || !strings.Contains(err.Error(), "Oracle connections are read-only") {
+			t.Errorf("mode %q: err = %v, want the read-only refusal", mode, err)
+		}
+	}
+	// The control: the refusal is Oracle's, not every backend's.
+	if err := refuseUnearnedWrite("postgres://u:p@h/db", ModeAppend); err != nil {
+		t.Errorf("postgres append refused: %v", err)
 	}
 }
 

@@ -413,6 +413,42 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml down --volumes
 
+  # A real Oracle server, in its own job so its 2 GB image and start-up do
+  # not come out of the engine job's budget. Compose rather than a service
+  # container because the image's health check is a script, and --wait
+  # waits on it.
+  test-oracle:
+    name: Test (Oracle / oracle-free)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      BROKOLI_TEST_ORACLE_URL: oracle://brokoli:p%40ss%2Fw%3Ard%231@127.0.0.1:55544/FREEPDB1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Oracle
+        run: |
+          if ! docker compose -f docker-compose.test.yml up -d --wait --wait-timeout 600 oracle; then
+            docker compose -f docker-compose.test.yml logs oracle | tail -50
+            echo "::error::Oracle did not become healthy within 10 minutes"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Test Oracle reads and refusals
+        run: go test -v -count=1 ./engine -run '^TestOracle'
+
+      - name: Test the Oracle connection test
+        run: go test -v -count=1 ./api -run '^TestOracleConnectionTest'
+
+      - name: Stop Oracle
+        if: always()
+        run: docker compose -f docker-compose.test.yml --profile oracle down --volumes
+
   # The BigQuery emulator runs from docker compose, not as a service
   # container: it needs --project and --dataset, and a service container
   # cannot take arguments (a "command:" key makes GitHub reject the whole

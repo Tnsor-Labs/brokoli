@@ -186,8 +186,13 @@ world changes.
 ### Deferred
 
 - **Oracle.** The pure-Go `go-ora` driver satisfies the six-target
-  `CGO_ENABLED=0` release constraint. Oracle-specific pushdown and type
-  metadata remain deferred.
+  `CGO_ENABLED=0` release constraint (`godror` needs CGO and Oracle Instant
+  Client), and Oracle is registered for reads, tested against a real
+  server. Writes are refused by name: the shared statement writer's SQL is
+  wrong for Oracle (multi-row `VALUES` and `BOOLEAN` only exist from 23ai,
+  `TRUNCATE` commits, quoted identifiers fold differently), so writing
+  needs its own vocabulary with the same server tests behind it.
+  Pushdown and type metadata are deferred with it.
 - **The control plane.** Brokoli's own metadata store is a separate axis with
   its own two parallel implementations. Nothing here touches it.
 - **SQL Server, BigQuery, and Databricks.** At the time of this ADR they were

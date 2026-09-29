@@ -335,7 +335,8 @@ func (d dialect) clearTable(table string, truncate bool) string {
 	// emptied with nothing to roll back -- the previous rows destroyed and
 	// the new ones absent. DELETE is transactional on MySQL, so the truncate
 	// request degrades to the correct statement rather than the fast one.
-	if truncate && d.name != "sqlite" && d.name != "generic" && d.name != "mysql" {
+	// Oracle likewise: TRUNCATE is DDL there and commits.
+	if truncate && d.name != "sqlite" && d.name != "generic" && d.name != "mysql" && d.name != "oracle" {
 		return "TRUNCATE TABLE " + d.quoteIdent(table)
 	}
 	return "DELETE FROM " + d.quoteIdent(table)
