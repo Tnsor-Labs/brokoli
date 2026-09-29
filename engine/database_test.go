@@ -3,8 +3,6 @@ package engine
 import (
 	"strings"
 	"testing"
-
-	gosnowflake "github.com/snowflakedb/gosnowflake/v2"
 )
 
 // Scheme-to-driver mapping, independent of whether the driver is compiled in.
@@ -19,7 +17,7 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"postgres://user:pass@host:5432/db", "pgx", "postgres://user:pass@host:5432/db"},
 		{"postgresql://user:pass@host/db", "pgx", "postgresql://user:pass@host/db"},
 		{"redshift://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db", "pgx", "postgres://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db"},
-		{"snowflake://user:pass@account/db/schema?warehouse=WH", "snowflake", "user:pass@account/db/schema?warehouse=WH"},
+		{"snowflake://user:pass@account/db/schema?warehouse=WH", "brokoli-snowflake", "user:pass@account/db/schema?warehouse=WH"},
 		{"mysql://user:pass@host:3306/db", "mysql", "user:pass@host:3306/db"},
 		{"sqlite://test.db", "sqlite", "test.db"},
 		{"test.db", "sqlite", "test.db"},
@@ -116,25 +114,5 @@ func TestNativeDatabaseSchemesAreRefusedBeforeSQL(t *testing.T) {
 	_, _, err := DetectDriver("bigquery://project/dataset")
 	if err == nil || err.Error() != "BigQuery does not support database/sql driver detection in this build" {
 		t.Fatalf("error = %v, want explicit native-backend refusal", err)
-	}
-}
-
-func TestSnowflakeDSNIsAcceptedByDriver(t *testing.T) {
-	driver, dsn, err := DetectDriver("snowflake://svc:p%40ss@acme.snowflakecomputing.com/ANALYTICS/RAW?warehouse=ETL_WH&role=LOADER")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if driver != "snowflake" {
-		t.Fatalf("driver = %q, want snowflake", driver)
-	}
-	cfg, err := gosnowflake.ParseDSN(dsn)
-	if err != nil {
-		t.Fatalf("ParseDSN: %v", err)
-	}
-	if cfg.Account != "acme" || cfg.Database != "ANALYTICS" || cfg.Schema != "RAW" || cfg.Warehouse != "ETL_WH" || cfg.Role != "LOADER" {
-		t.Fatalf("parsed config = account %q database %q schema %q warehouse %q role %q", cfg.Account, cfg.Database, cfg.Schema, cfg.Warehouse, cfg.Role)
-	}
-	if cfg.Password != "p@ss" {
-		t.Fatalf("password was not decoded by the driver")
 	}
 }

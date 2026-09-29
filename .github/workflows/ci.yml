@@ -519,9 +519,17 @@ jobs:
         run: bash build-ui.sh
 
       - name: Build binary
+        # minicore_disabled matches .goreleaser.yaml: the Snowflake
+        # driver's native library stays out of the binary. The check
+        # fails the job if a driver upgrade renames the tag and the
+        # library comes back.
         run: |
-          CGO_ENABLED=0 go build -o brokoli .
+          CGO_ENABLED=0 go build -tags minicore_disabled -o brokoli .
           echo "Binary size: $(du -h brokoli | cut -f1)"
+          if grep -q 'libsf_mini_core' brokoli; then
+            echo "::error::the Snowflake minicore library is embedded despite -tags minicore_disabled"
+            exit 1
+          fi
 
       - name: Smoke test
         run: ./brokoli --help

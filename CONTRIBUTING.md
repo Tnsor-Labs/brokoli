@@ -94,7 +94,9 @@ cd brokoli
 cd ui && npm ci && npm run build && cd ..
 
 # 2. then the binary -- the main package is the repo root, not cmd/
-CGO_ENABLED=0 go build -o brokoli .
+#    (minicore_disabled leaves the Snowflake driver's native library out,
+#    as release builds do)
+CGO_ENABLED=0 go build -tags minicore_disabled -o brokoli .
 
 # 3. run it
 ./brokoli serve

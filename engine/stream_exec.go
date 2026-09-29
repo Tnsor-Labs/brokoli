@@ -957,6 +957,9 @@ func (r *Runner) runSinkDBStreamed(ctx context.Context, node models.Node, inputR
 	if err := refuseNativeDatabase(uri, "streaming writes"); err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("sink_db: %w", err)
 	}
+	if err := refuseUnearnedWrite(uri, cfg.Mode); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("sink_db: %w", err)
+	}
 	w, ok := bulkWriterFor(cfg)
 	if !ok {
 		return nodeExecutionResult{}, fmt.Errorf("no bulk writer for %q (dispatch bug: eligibility should have caught this)", cfg.Dialect)

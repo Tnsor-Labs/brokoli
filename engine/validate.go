@@ -534,6 +534,14 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 					"promise; append into a ReplacingMergeTree table you create if eventual dedup is what "+
 					"you want", n.Name))
 		}
+		// The same rule for Snowflake, which has no write mode at all yet.
+		if strings.HasPrefix(getStr(n.Config, "uri"), "snowflake://") {
+			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, errSnowflakeWrite))
+		}
+	case models.NodeTypeMigrate:
+		if strings.HasPrefix(getStr(n.Config, "dest_uri"), "snowflake://") {
+			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, errSnowflakeWrite))
+		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			ve.Add(fmt.Sprintf("Node %q: union only supports mode=\"union\" (got %q)", n.Name, mode))

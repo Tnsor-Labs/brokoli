@@ -109,8 +109,11 @@ func (sqlserver) URIClaims() []URIClaim {
 
 func (snowflake) URIClaims() []URIClaim {
 	return []URIClaim{{
-		Scheme:  "snowflake",
-		Driver:  "snowflake",
+		Scheme: "snowflake",
+		// The engine's guarded registration (engine/snowflake.go), not
+		// gosnowflake's own "snowflake": that one accepts every DSN
+		// parameter the driver knows, including ones that read files.
+		Driver:  "brokoli-snowflake",
 		Dialect: "snowflake",
 		DSN:     stripScheme("snowflake"),
 	}}

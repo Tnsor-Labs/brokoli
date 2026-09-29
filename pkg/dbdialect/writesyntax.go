@@ -112,6 +112,20 @@ func (sqlserver) WriteSyntax() WriteSyntax {
 	}
 }
 
+// Snowflake: backslash escapes in string literals (see snowflake in
+// minimal.go). TIMESTAMP is spelled TIMESTAMP_NTZ rather than left to the
+// account's TIMESTAMP_TYPE_MAPPING, matching the zone-less UTC literal.
+func (snowflake) WriteSyntax() WriteSyntax {
+	return WriteSyntax{
+		QuoteChar: `"`, StrQuote: "'", Terminator: ";",
+		BoolTrue: "TRUE", BoolFalse: "FALSE", BackslashEscapes: true,
+		TypeMap: map[string]string{
+			"INTEGER": "INTEGER", "BIGINT": "BIGINT", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN",
+			"TEXT": "VARCHAR", "TIMESTAMP": "TIMESTAMP_NTZ"},
+		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+	}
+}
+
 func (generic) WriteSyntax() WriteSyntax {
 	return WriteSyntax{
 		QuoteChar: `"`, StrQuote: "'", Terminator: ";",

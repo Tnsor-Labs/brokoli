@@ -373,7 +373,7 @@ fi
 
 # ---- 7. build + smoke — CI parity ----
 stage "CGO_ENABLED=0 build + --help smoke"
-CGO_ENABLED=0 go build -o "$LOGDIR/brokoli-preflight" .
+CGO_ENABLED=0 go build -tags minicore_disabled -o "$LOGDIR/brokoli-preflight" .
 "$LOGDIR/brokoli-preflight" --help >/dev/null
 pass build-smoke
 
