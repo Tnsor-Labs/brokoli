@@ -106,9 +106,29 @@ func (oracle) ProbeColumnsSQL(query string) string {
 	return "SELECT * FROM (" + query + ") brokoli_probe WHERE 1 = 0"
 }
 
-type databricks struct{ generic }
+// databricks is Databricks SQL (Spark SQL). Read only: every write is
+// refused by the engine before any statement is generated. The quoting is
+// Spark's, not the generic dialect's: double quotes delimit a string there,
+// not an identifier, and a backslash escapes inside a string literal, so
+// doubling the quote alone would leave a value able to end the literal.
+type databricks struct{}
 
 func (databricks) Name() string { return "databricks" }
+func (databricks) QuoteIdent(name string) string {
+	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
+}
+func (d databricks) QuoteQualifiedIdent(name string) string { return quoteDotted(d.QuoteIdent, name) }
+func (databricks) QuoteLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return "'" + strings.ReplaceAll(s, "'", `\'`) + "'"
+}
+func (databricks) ClassifyType(string) ColumnKind { return KindUnclassified }
+func (databricks) ProbeColumnsSQL(query string) string {
+	return "SELECT * FROM (" + query + ") AS brokoli_probe LIMIT 0"
+}
+func (databricks) CastToText(expr string) string      { return "CAST(" + expr + " AS STRING)" }
+func (databricks) CastToFloat(expr string) string     { return "CAST(" + expr + " AS DOUBLE)" }
+func (databricks) ByteOrderedText(expr string) string { return expr }
 
 // quoteDotted quotes a possibly schema-qualified name part by part, the
 // same rule every other dialect applies: more than two parts is quoted

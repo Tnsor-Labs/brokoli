@@ -13,6 +13,7 @@ export const DEFAULT_PORT: Record<string, string> = {
   clickhouse: '9000',
   mssql: '1433',
   oracle: '1521',
+  databricks: '443',
   sftp: '22',
   http: '443 (80 means plain http)',
 }

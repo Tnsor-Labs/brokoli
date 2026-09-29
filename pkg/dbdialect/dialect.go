@@ -144,6 +144,9 @@ func For(name string) (Dialect, bool) {
 //     No Addresser, no TypeReader/TypeRenderer; every compile- and
 //     typed-DDL path degrades exactly as it did when these names were
 //     absent.
+//   - databricks: reads only. Registered for its URI claim and Spark SQL
+//     quoting; the engine refuses every write (the driver has no
+//     transactions), and like the tier above it has no Addresser.
 //
 // Widening any tier means providing that tier's proof, not editing this
 // map.

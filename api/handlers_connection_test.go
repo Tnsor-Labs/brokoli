@@ -1,13 +1,18 @@
 package api
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"log"
 	"net/url"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 func TestMSSQLConnectionTestUsesCompiledDriver(t *testing.T) {
@@ -50,19 +55,44 @@ func TestOracleConnectionTestIsReal(t *testing.T) {
 	}
 }
 
+// Test connection routes a Databricks connection to its compiled driver, and
+// a host saved with its port -- the input that made the upstream driver quote
+// the token in its parse error -- fails without the token reaching the result
+// or the server log.
 func TestDatabricksConnectionTestUsesCompiledDriver(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	const token = "dapiSECRET0123456789abcdef"
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{}))
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	result := testDBConnection(ctx, "databricks://token:wrong@127.0.0.1:1/sql/1.0/warehouses/test")
-	if result["success"] != false {
-		t.Fatalf("success = %v, want false for an unreachable server", result["success"])
+	h := &ConnectionHandler{}
+	for name, host := range map[string]string{
+		"unreachable":    "127.0.0.1",
+		"host with port": "workspace.cloud.databricks.com:443",
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			c := &models.Connection{Type: models.ConnTypeDatabricks, Host: host, Port: 1,
+				Schema: "/sql/1.0/warehouses/wh", Password: token}
+			result := h.testResolved(ctx, c, nil)
+			if result["success"] != false {
+				t.Fatalf("success = %v, want false", result["success"])
+			}
+			if result["driver"] != "brokoli-databricks" {
+				t.Fatalf("result = %v, want the compiled Databricks driver", result)
+			}
+			if strings.Contains(fmt.Sprint(result), token) {
+				t.Fatalf("the token reached the result: %v", result)
+			}
+		})
 	}
-	if result["driver"] != "databricks" {
-		t.Fatalf("driver = %v, want databricks; Databricks must use the real connection test", result["driver"])
+	if !strings.Contains(logged.String(), "bare hostname") {
+		t.Fatalf("the malformed host was not explained in the log: %s", logged.String())
 	}
-	if result["error"] == "databricks has no driver in this build" {
-		t.Fatal("Databricks was routed through the unsupported-driver path")
+	if strings.Contains(logged.String(), token) {
+		t.Fatalf("the token reached the server log: %s", logged.String())
 	}
 }
 

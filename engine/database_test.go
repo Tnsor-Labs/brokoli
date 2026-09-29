@@ -20,7 +20,7 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"postgresql://user:pass@host/db", "pgx", "postgresql://user:pass@host/db"},
 		{"redshift://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db", "pgx", "postgres://user:pass@cluster.us-east-1.redshift.amazonaws.com:5439/db"},
 		{"snowflake://user:pass@account/db/schema?warehouse=WH", "brokoli-snowflake", "user:pass@account/db/schema?warehouse=WH"},
-		{"databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh", "databricks", "token:p%40ss@workspace:443/sql/1.0/warehouses/wh"},
+		{"databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh", "brokoli-databricks", "databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh"},
 		{"mysql://user:pass@host:3306/db", "mysql", "user:pass@host:3306/db"},
 		{"sqlite://test.db", "sqlite", "test.db"},
 		{"test.db", "sqlite", "test.db"},
@@ -150,8 +150,8 @@ func TestDatabricksDSNIsAcceptedByDriver(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if driver != "databricks" {
-		t.Fatalf("driver = %q, want databricks", driver)
+	if driver != databricksDriverName {
+		t.Fatalf("driver = %q, want %s", driver, databricksDriverName)
 	}
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
@@ -175,7 +175,7 @@ func TestDetectDriverRejectsUncompiledDrivers(t *testing.T) {
 		{"sqlserver://u:p@h:1433?database=d", "sqlserver"},
 		{"mssql://u:p@h:1433?database=d", "sqlserver"},
 		{"oracle://u:p@h:1521/svc", "oracle"},
-		{"databricks://token:p@h:443/sql/1.0/warehouses/wh", "databricks"},
+		{"databricks://token:p@h:443/sql/1.0/warehouses/wh", databricksDriverName},
 	}
 	for _, tc := range supported {
 		got, _, err := DetectDriver(tc.uri)
