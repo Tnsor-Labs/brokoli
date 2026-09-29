@@ -29,9 +29,19 @@ import { TransformRules } from './TransformRules'
 import { ContractGate } from './ContractGate'
 
 /** Connection types the engine can build a database URI for (models/connection.go BuildsURI). */
-const DB_TYPES = ['postgres', 'redshift', 'mysql', 'sqlite', 'mssql', 'snowflake', 'clickhouse']
-/** The subset sink_db and migrate can write to: Snowflake is query-only (the engine refuses its writes by name). */
-const WRITE_DB_TYPES = DB_TYPES.filter((t) => t !== 'snowflake')
+const DB_TYPES = [
+  'postgres',
+  'redshift',
+  'mysql',
+  'sqlite',
+  'mssql',
+  'snowflake',
+  'oracle',
+  'clickhouse',
+]
+/** The subset sink_db and migrate can write to: Snowflake and Oracle are read-only (the engine refuses their writes by name). */
+const READ_ONLY_DB_TYPES = ['snowflake', 'oracle']
+const WRITE_DB_TYPES = DB_TYPES.filter((t) => !READ_ONLY_DB_TYPES.includes(t))
 const HTTP_TYPES = ['http']
 const DBT_TYPES = ['postgres', 'mysql', 'clickhouse']
 /**
