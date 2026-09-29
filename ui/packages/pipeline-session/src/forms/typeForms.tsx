@@ -37,10 +37,11 @@ const DB_TYPES = [
   'mssql',
   'snowflake',
   'oracle',
+  'databricks',
   'clickhouse',
 ]
-/** The subset sink_db and migrate can write to: Snowflake and Oracle are read-only (the engine refuses their writes by name). */
-const READ_ONLY_DB_TYPES = ['snowflake', 'oracle']
+/** The subset sink_db and migrate can write to: Snowflake, Oracle and Databricks are read-only (the engine refuses their writes by name). */
+const READ_ONLY_DB_TYPES = ['snowflake', 'oracle', 'databricks']
 const WRITE_DB_TYPES = DB_TYPES.filter((t) => !READ_ONLY_DB_TYPES.includes(t))
 const HTTP_TYPES = ['http']
 const DBT_TYPES = ['postgres', 'mysql', 'clickhouse']
