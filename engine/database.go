@@ -23,7 +23,6 @@ import (
 	// it in is what lets the phase-0 smoke test prove the driver, the
 	// container and the env-gate agree before any dialect work starts.
 	_ "github.com/ClickHouse/clickhouse-go/v2"
-	_ "github.com/databricks/databricks-sql-go"
 	_ "github.com/go-sql-driver/mysql"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	_ "github.com/microsoft/go-mssqldb"
@@ -62,12 +61,13 @@ func dialectForURI(uri string) string {
 // DetectDriver returns the Go sql driver name and DSN for a connection URI.
 //
 // A scheme this recognizes is not the same as a scheme this build can open:
-// the connection catalog offers Oracle and Databricks without compiled
-// drivers, while pgx, mysql, sqlite, ClickHouse, SQL Server and Snowflake
-// (engine/snowflake.go) are registered here. Naming a driver that was never registered gets
-// database/sql's "unknown driver (forgotten import?)", which reads like a
-// build defect rather than an unsupported connection type, so check first and
-// say which it is.
+// the connection catalog can offer database types this build has no driver
+// for, while pgx, mysql, sqlite, ClickHouse, SQL Server, Oracle, Snowflake
+// (engine/snowflake.go) and Databricks (engine/databricks.go) are registered
+// here. Naming a driver that was never registered gets database/sql's
+// "unknown driver (forgotten import?)", which reads like a build defect
+// rather than an unsupported connection type, so check first and say which
+// it is.
 func DetectDriver(uri string) (string, string, error) {
 	if err := refuseNativeDatabase(uri, "database/sql driver detection"); err != nil {
 		return "", "", err
@@ -255,6 +255,9 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 // ExecuteSQL opens a connection and executes SQL statements (for sink_db).
 func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 	if err := refuseNativeDatabase(uri, "SQL execution"); err != nil {
+		return 0, err
+	}
+	if err := refuseDatabricksWrite(uri); err != nil {
 		return 0, err
 	}
 	driver, dsn, err := DetectDriver(uri)
@@ -775,6 +778,9 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 // one an Oracle user sees. Overwrite would be worse than refused: TRUNCATE
 // commits in Oracle, so a failed load would leave the table emptied.
 func refuseUnearnedWrite(uri, mode string) error {
+	if err := refuseDatabricksWrite(uri); err != nil {
+		return err
+	}
 	switch dialectForURI(uri) {
 	case "clickhouse":
 	case "snowflake":

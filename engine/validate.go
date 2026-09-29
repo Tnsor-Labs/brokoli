@@ -544,6 +544,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 			ve.Add(fmt.Sprintf("Node %q: Oracle connections are read-only in this build; "+
 				"sink_db cannot write to Oracle yet", n.Name))
 		}
+		if err := refuseDatabricksWrite(getStr(n.Config, "uri")); err != nil {
+			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, err))
+		}
 	case models.NodeTypeMigrate:
 		if strings.HasPrefix(getStr(n.Config, "dest_uri"), "snowflake://") {
 			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, errSnowflakeWrite))

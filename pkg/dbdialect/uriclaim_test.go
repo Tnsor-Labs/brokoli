@@ -17,7 +17,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 		"mssql":      {"sqlserver", "sqlserver"},
 		"snowflake":  {"brokoli-snowflake", "snowflake"},
 		"oracle":     {"oracle", "oracle"},
-		"databricks": {"databricks", "databricks"},
+		"databricks": {"brokoli-databricks", "databricks"},
 	}
 	got := AllURIClaims()
 	if len(got) != len(want)+1 {
@@ -61,10 +61,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 	if dsn := byScheme["sqlite"].DSN("sqlite:///tmp/x.db"); dsn != "/tmp/x.db" {
 		t.Errorf("sqlite DSN = %q", dsn)
 	}
-	if dsn := byScheme["databricks"].DSN("databricks://token:p@h:443/sql/1.0/warehouses/wh"); dsn != "token:p@h:443/sql/1.0/warehouses/wh" {
-		t.Errorf("databricks DSN = %q", dsn)
-	}
-	for _, passthrough := range []string{"postgres", "postgresql", "clickhouse", "sqlserver", "mssql", "oracle"} {
+	for _, passthrough := range []string{"postgres", "postgresql", "clickhouse", "sqlserver", "mssql", "oracle", "databricks"} {
 		if byScheme[passthrough].DSN != nil {
 			t.Errorf("%s should pass the URI through (nil DSN)", passthrough)
 		}

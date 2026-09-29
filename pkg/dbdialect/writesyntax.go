@@ -126,6 +126,21 @@ func (snowflake) WriteSyntax() WriteSyntax {
 	}
 }
 
+// Databricks writes are refused by the engine (refuseDatabricksWrite), so
+// this is never rendered. It is Spark SQL's vocabulary all the same, so a
+// future write path does not start from the generic dialect's, which Spark
+// would misread (a double-quoted identifier is a string there).
+func (databricks) WriteSyntax() WriteSyntax {
+	return WriteSyntax{
+		QuoteChar: "`", StrQuote: "'", Terminator: ";",
+		BoolTrue: "TRUE", BoolFalse: "FALSE", BackslashEscapes: true,
+		TypeMap: map[string]string{
+			"INTEGER": "INT", "BIGINT": "BIGINT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN",
+			"TEXT": "STRING", "TIMESTAMP": "TIMESTAMP"},
+		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+	}
+}
+
 func (generic) WriteSyntax() WriteSyntax {
 	return WriteSyntax{
 		QuoteChar: `"`, StrQuote: "'", Terminator: ";",

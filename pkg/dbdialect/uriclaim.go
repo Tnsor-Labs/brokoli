@@ -127,10 +127,9 @@ func (oracle) URIClaims() []URIClaim {
 }
 
 func (databricks) URIClaims() []URIClaim {
-	return []URIClaim{{
-		Scheme:  "databricks",
-		Driver:  "databricks",
-		Dialect: "databricks",
-		DSN:     stripScheme("databricks"),
-	}}
+	// Not the upstream driver's own "databricks" registration: the engine
+	// registers a wrapper that parses the URI itself (so a malformed one
+	// cannot echo the token into an error) and dials through the outbound
+	// policy. It takes the URI as is.
+	return []URIClaim{{Scheme: "databricks", Driver: "brokoli-databricks", Dialect: "databricks"}}
 }
