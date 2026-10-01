@@ -35,6 +35,7 @@ import {
 import { ApiError, downloadText, pipelineApi, type DryRunResponse, type NodeIssue, type Pipeline, type PipelineEdge } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import { Button, Callout, ConfirmDialog, IconButton, Kbd, Menu, Modal, PageLoading, cx, errorMessage, formatRelative, useToast } from '@brokoli/ui'
+import { disabledNodeMessage, useDisabledNodeTypes } from '../capabilities'
 import { catalogEntry } from '../catalog'
 import {
   autoLayout,
@@ -89,6 +90,7 @@ function Editor({ pipelineId }: { pipelineId: string }) {
   const canvasRef = useRef<HTMLDivElement>(null)
   const loaded = useQuery({ queryKey: pipelineKey(pipelineId), queryFn: () => pipelineApi.get(pipelineId), staleTime: Infinity, refetchOnWindowFocus: false })
   const { doc, docRef, change, undo, redo, reset, saved, revision, dirty, canUndo, canRedo } = useDocument(loaded.data)
+  const disabledTypes = useDisabledNodeTypes()
 
   const [selection, setSelection] = useState<Selection>(null)
   const [side, setSide] = useState<Side>('inspector')
@@ -130,13 +132,16 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       if (!node || !doc) return undefined
       const server = issues[id]
       const local = nodeWarnings(node, doc.edges)
-      const errors = server?.errors ?? []
+      const errors = [...(server?.errors ?? [])]
+      // Known before any validation round trip; the server says the same once it validates.
+      const refused = disabledNodeMessage(node.type)
+      if (disabledTypes.has(node.type) && !errors.includes(refused)) errors.unshift(refused)
       const warnings = [...(server?.warnings ?? []), ...local]
       if (errors.length) return { level: 'error' as const, messages: [...errors, ...warnings] }
       if (warnings.length) return { level: 'warning' as const, messages: warnings }
       return undefined
     },
-    [nodeById, issues, doc],
+    [nodeById, issues, doc, disabledTypes],
   )
 
   // React Flow keeps measured sizes on its node objects, so node view state is kept and patched rather than rebuilt.
@@ -146,12 +151,12 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       const byId = new Map(prev.map((n) => [n.id, n]))
       return doc.nodes.map((node) => {
         const previous = byId.get(node.id)
-        const data = { node, issue: issueFor(node.id), readonly }
+        const data = { node, issue: issueFor(node.id), readonly, disabled: disabledTypes.has(node.type) }
         const selected = selection?.kind === 'node' && selection.id === node.id
         return previous ? { ...previous, position: node.position, data, selected } : { id: node.id, type: 'brokoli' as const, position: node.position, data, selected }
       })
     })
-  }, [doc, issueFor, selection, readonly])
+  }, [doc, issueFor, selection, readonly, disabledTypes])
 
   const flowEdges = useMemo(() => toFlowEdges(doc?.edges ?? [], undefined, selection?.kind === 'edge' ? selection.id : null), [doc?.edges, selection])
 
@@ -168,6 +173,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
 
   const addNode = (type: string, at?: { x: number; y: number }) => {
     if (!doc || readonly) return
+    // The palette does not offer these; this also covers a drag from another tab.
+    if (disabledTypes.has(type)) {
+      toast.error('Node type disabled', disabledNodeMessage(type))
+      return
+    }
     let position = at
     if (!position) {
       const rect = canvasRef.current?.getBoundingClientRect()
@@ -517,7 +527,7 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       )}
 
       <div className="ps-workspace">
-        {!readonly && <Palette onAdd={(type) => addNode(type)} />}
+        {!readonly && <Palette onAdd={(type) => addNode(type)} hidden={disabledTypes} />}
         <div className="ps-canvas" ref={canvasRef} onDragOver={(e) => e.dataTransfer.types.includes(PALETTE_MIME) && e.preventDefault()} onDrop={onDrop}>
           <ReactFlow
             nodes={flowNodes}

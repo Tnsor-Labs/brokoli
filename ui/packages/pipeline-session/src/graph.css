@@ -127,6 +127,13 @@
 .ps-node.has-status {
   border-color: var(--tone);
 }
+/* A node of a type this server refuses: dashed, and its type line says so. */
+.ps-node.is-disabled-type {
+  border-style: dashed;
+}
+.ps-node.is-disabled-type .ps-node-text small {
+  color: var(--bk-color-danger);
+}
 /* A calm badge cell: the icon is monochrome; a faint family wash keeps the category cue without the rainbow. */
 .ps-node-badge {
   display: grid;

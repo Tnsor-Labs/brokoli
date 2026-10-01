@@ -1,20 +1,17 @@
 import { useMemo, useState } from 'react'
 import { SearchInput } from '@brokoli/ui'
-import { CATALOG, FAMILY_COLOR, PALETTE_GROUPS } from '../catalog'
+import { FAMILY_COLOR, paletteGroups } from '../catalog'
 import './panels.css'
 
 export const PALETTE_MIME = 'application/x-brokoli-node'
 
-/** Node library. Drag an item onto the canvas, or click it to add it at the centre of the view. */
-export function Palette({ onAdd }: { onAdd: (type: string) => void }) {
+/**
+ * Node library. Drag an item onto the canvas, or click it to add it at the centre of the view.
+ * `hidden` holds the node types this server refuses; they are not offered.
+ */
+export function Palette({ onAdd, hidden }: { onAdd: (type: string) => void; hidden?: ReadonlySet<string> }) {
   const [query, setQuery] = useState('')
-  const groups = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    return PALETTE_GROUPS.map((group) => ({
-      group,
-      items: CATALOG.filter((e) => e.group === group && (!q || `${e.label} ${e.description} ${e.type}`.toLowerCase().includes(q))),
-    })).filter((g) => g.items.length)
-  }, [query])
+  const groups = useMemo(() => paletteGroups(query, hidden), [query, hidden])
 
   return (
     <aside className="ps-palette" aria-label="Node library">
