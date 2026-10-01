@@ -85,7 +85,7 @@ Code and bash nodes run under the same ceilings, set by the operator:
 | Setting | Limit |
 | --- | --- |
 | `BROKOLI_CODE_CPU_SECONDS` (node `max_cpu_seconds`, clamped to `BROKOLI_CODE_MAX_CPU_SECONDS`) | CPU time |
-| `BROKOLI_CODE_MEMORY_MB` (node `max_memory_mb`, clamped to `BROKOLI_CODE_MAX_MEMORY_MB`) | Memory, code nodes only |
+| `BROKOLI_CODE_MEMORY_MB` (node `max_memory_mb`, clamped to `BROKOLI_CODE_MAX_MEMORY_MB`) | Memory. Code nodes enforce it in the interpreter. Bash nodes enforce it with a cgroup when `BROKOLI_BASH_CGROUP` gives the worker one, otherwise as address space only when the node set `max_memory_mb` itself (see [Bash operator](bash-operator.md#memory)) |
 | `BROKOLI_CODE_FILE_SIZE_MB` (default 4096) | Largest file written |
 | `BROKOLI_CODE_OPEN_FILES` (default 256) | Open files |
 | `BROKOLI_CODE_PASS_ENV` | Host environment variables visible to author code, beyond `PATH`, `HOME`, `LANG`, `LC_*`, `TZ` and `TMPDIR` |

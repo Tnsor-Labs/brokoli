@@ -70,48 +70,70 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		return nil, fmt.Errorf("bash executable is not available: %w", err)
 	}
 	limits := codeexec.Resolve(node.Config)
-	// #nosec G204 -- running the pipeline author's command is this node's
-	// purpose; it is documented as trusted-worker execution.
-	cmd := exec.CommandContext(ctx, bash, "-o", "pipefail", "-c", command)
-	cmd.Dir = workingDir
-	cmd.Env = append(codeexec.WorkerEnv(), "BROKOLI_NODE_ID="+node.ID)
-	if r.run != nil {
-		cmd.Env = append(cmd.Env, "BROKOLI_RUN_ID="+r.run.ID)
-	}
 	env := bashEnvironment(node.Config["env"])
 	keys := make([]string, 0, len(env))
 	for key := range env {
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		cmd.Env = append(cmd.Env, key+"="+env[key])
-	}
-	proctree.ConfigureProcessGroup(cmd)
-	cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
-	// Bounds Wait both after a cancel and when the command exits but
-	// something it started in the background still holds its output.
-	cmd.WaitDelay = bashTermGrace
 
 	logged := &bashLogBudget{remaining: bashMaxLogLines}
 	stdout := &bashLineWriter{emit: func(line string) { r.logBashLine(node.ID, models.LogLevelInfo, "bash", line, logged) }}
 	stderr := &bashLineWriter{tail: bashStderrTail, emit: func(line string) {
 		r.logBashLine(node.ID, models.LogLevelInfo, "bash stderr", line, logged)
 	}}
-	cmd.Stdout = stdout
-	cmd.Stderr = stderr
 
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start bash: %w", err)
+	newCmd := func() *exec.Cmd {
+		// #nosec G204 -- running the pipeline author's command is this node's
+		// purpose; it is documented as trusted-worker execution.
+		cmd := exec.CommandContext(ctx, bash, "-o", "pipefail", "-c", command)
+		cmd.Dir = workingDir
+		cmd.Env = append(codeexec.WorkerEnv(), "BROKOLI_NODE_ID="+node.ID)
+		if r.run != nil {
+			cmd.Env = append(cmd.Env, "BROKOLI_RUN_ID="+r.run.ID)
+		}
+		for _, key := range keys {
+			cmd.Env = append(cmd.Env, key+"="+env[key])
+		}
+		proctree.ConfigureProcessGroup(cmd)
+		cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
+		// Bounds Wait both after a cancel and when the command exits but
+		// something it started in the background still holds its output.
+		cmd.WaitDelay = bashTermGrace
+		cmd.Stdout = stdout
+		cmd.Stderr = stderr
+		return cmd
 	}
-	if err := proctree.ApplyRlimits(cmd.Process.Pid, proctree.Rlimits{
+
+	memory := r.planBashMemory(node, limits.MemoryMB)
+	defer memory.close()
+	cmd := newCmd()
+	memory.place(cmd)
+	if err := cmd.Start(); err != nil {
+		if memory.cgroup == nil {
+			return nil, fmt.Errorf("start bash: %w", err)
+		}
+		// Starting inside the cgroup can be refused (moving a process
+		// needs write access up to the common ancestor of its old and new
+		// cgroups); fall back as if no cgroup were available.
+		memory.fallBack(r, node, fmt.Errorf("start inside %s: %w", memory.parent, err))
+		cmd = newCmd()
+		if err := cmd.Start(); err != nil {
+			return nil, fmt.Errorf("start bash: %w", err)
+		}
+	}
+	limitErr := proctree.ApplyRlimits(cmd.Process.Pid, proctree.Rlimits{
 		CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
 		FileSizeBytes: uint64(max(limits.FileSizeMB, 0)) * 1024 * 1024,
 		OpenFiles:     uint64(max(limits.OpenFiles, 0)),
-	}); err != nil {
+	})
+	if limitErr == nil && memory.addressSpace {
+		limitErr = proctree.ApplyAddressSpaceLimit(cmd.Process.Pid, uint64(max(memory.limitMB, 0))*1024*1024)
+	}
+	if limitErr != nil {
 		_ = proctree.KillProcessTree(cmd.Process)
 		_ = cmd.Wait()
-		return nil, fmt.Errorf("apply bash limits: %w", err)
+		return nil, fmt.Errorf("apply bash limits: %w", limitErr)
 	}
 	waitErr := cmd.Wait()
 	// Whatever the command left running in the background is part of
@@ -128,7 +150,14 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
+	if memory.cgroup != nil && memory.cgroup.OOMKilled() {
+		return nil, fmt.Errorf("bash command exceeded the memory limit (%d MiB): raise max_memory_mb on the node or the server default", memory.limitMB)
+	}
 	if waitErr != nil {
+		if memory.addressSpace && bashOutOfMemory(stderr.tailText()) {
+			return nil, fmt.Errorf("bash command exceeded the memory limit (%d MiB, enforced as address space): "+
+				"raise max_memory_mb on the node\nstderr: %s", memory.limitMB, stderr.tailText())
+		}
 		if lerr := signalBreachError(waitErr, limits); lerr != nil {
 			return nil, fmt.Errorf("bash command: %w", lerr)
 		}

@@ -146,10 +146,58 @@ The command runs under the code-node ceilings the operator configures:
 | `BROKOLI_CODE_CPU_SECONDS`, or the node's `max_cpu_seconds` (clamped to `BROKOLI_CODE_MAX_CPU_SECONDS`) | CPU time. Exceeding it fails the node with a message naming the CPU limit. |
 | `BROKOLI_CODE_FILE_SIZE_MB` (default 4096) | Largest file the command can write. |
 | `BROKOLI_CODE_OPEN_FILES` (default 256) | Open file descriptors. |
+| `BROKOLI_CODE_MEMORY_MB`, or the node's `max_memory_mb` (clamped to `BROKOLI_CODE_MAX_MEMORY_MB`) | Memory. See [Memory](#memory). |
 
-The limits apply to bash and are inherited by what it starts. There is no
-memory limit for bash nodes: code nodes enforce memory inside their own
-interpreter, which a shell command does not have.
+The limits apply to bash and are inherited by what it starts.
+
+### Memory
+
+Code nodes limit memory from inside their interpreter. A shell command has
+no interpreter, so a bash node's memory limit is applied from outside, in
+this order:
+
+1. **A cgroup, when the worker can create one.** The command and everything
+   it starts run in a cgroup v2 leaf with `memory.max` set to the limit and
+   swap off. This counts memory actually used, so a JVM, Node or Python the
+   command starts behaves normally until it really uses more than the limit.
+   When it does, the kernel kills the whole tree, and the node fails with
+   `bash command exceeded the memory limit (N MiB)`. The cgroup is removed
+   when the attempt ends, and anything still in it is killed, including a
+   process that left the process group with `setsid`. The node log says
+   `memory limit N MiB, enforced by a cgroup`.
+2. **Address space, only when the node asked for a limit itself.** Without a
+   cgroup, a node that sets `max_memory_mb` gets `RLIMIT_AS`. That limits
+   address space, not memory used. Programs that reserve much more than they
+   use, a JVM or Node above all, can fail under it at sizes they would
+   otherwise run in. The node log warns about this. A failure that reads like
+   an allocation failure is reported as
+   `bash command exceeded the memory limit (N MiB, enforced as address space)`.
+3. **Otherwise, not enforced, and said so.** The server default
+   (`BROKOLI_CODE_MEMORY_MB`) is never turned into `RLIMIT_AS`: it would break
+   every JVM and Node a bash command starts. Without a cgroup, the node log
+   carries `memory limit N MiB is NOT enforced for this bash command`, with
+   the reason.
+
+**Giving the worker a cgroup.** Moving a process into a cgroup needs write
+access up to the common ancestor of its old and new cgroup, so the worker
+needs a cgroup v2 subtree delegated to it. `BROKOLI_BASH_CGROUP` names it,
+absolute or relative to `/sys/fs/cgroup`. The worker enables the memory
+controller for its children and creates one child per bash attempt. Common
+setups:
+
+- **systemd service:** `Delegate=yes` on the worker's unit. Then set
+  `BROKOLI_BASH_CGROUP` to a sub-directory of the unit's cgroup, created
+  empty, because a cgroup holding processes cannot also give its children
+  controllers. Or leave it unset and run the worker process itself in a
+  leaf child of the unit.
+- **Container with its own writable cgroup namespace:** leave
+  `BROKOLI_BASH_CGROUP` unset. The worker is at its namespace's root, where
+  enabling the controller is allowed. Most container runtimes mount
+  `/sys/fs/cgroup` read-only, and then this falls back as above.
+
+On an ordinary host, the worker's own cgroup is a leaf holding processes.
+The kernel refuses to give such a cgroup's children a controller (`EBUSY`),
+so without `BROKOLI_BASH_CGROUP` it falls back.
 
 ## Data flow and lineage
 

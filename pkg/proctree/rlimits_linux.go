@@ -51,3 +51,23 @@ func ApplyRlimits(pid int, limits Rlimits) error {
 	}
 	return nil
 }
+
+// ApplyAddressSpaceLimit sets RLIMIT_AS, inherited by everything the
+// process starts afterwards. It is kept out of Rlimits on purpose: address
+// space is not memory used, and a JVM or Node reserves far more than it
+// uses, so this ceiling breaks them at sizes they would run fine in. Only
+// a caller that was asked for it explicitly should use it.
+func ApplyAddressSpaceLimit(pid int, limitBytes uint64) error {
+	if limitBytes == 0 {
+		return nil
+	}
+	var inherited unix.Rlimit
+	if err := unix.Prlimit(pid, unix.RLIMIT_AS, nil, &inherited); err != nil {
+		return fmt.Errorf("read address-space rlimit: %w", err)
+	}
+	limit := min(limitBytes, inherited.Max)
+	if err := unix.Prlimit(pid, unix.RLIMIT_AS, &unix.Rlimit{Cur: limit, Max: limit}, nil); err != nil {
+		return fmt.Errorf("apply address-space rlimit: %w", err)
+	}
+	return nil
+}
