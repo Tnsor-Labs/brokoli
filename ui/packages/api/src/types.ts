@@ -61,6 +61,7 @@ export const KNOWN_NODE_TYPES = [
   'wait',
   'dbt',
   'notify',
+  'bash',
   'union',
   'dataset_map',
   'dataset_filter',
@@ -493,6 +494,13 @@ export interface User {
   email?: string
   role: string
   created_at: string
+}
+
+/** GET /api/capabilities: what this server can run. Public; only the fields the UI reads are typed. */
+export interface Capabilities {
+  /** Node types the server refuses (BROKOLI_DISABLED_NODE_TYPES). Always present on servers that support the setting. */
+  disabled_node_types?: string[]
+  [key: string]: unknown
 }
 
 export interface SystemInfo {

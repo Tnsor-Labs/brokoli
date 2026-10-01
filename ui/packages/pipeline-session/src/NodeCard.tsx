@@ -11,18 +11,28 @@ export type NodeCardData = {
   /** Validation result from the server, or structural warnings from the editor. */
   issue?: { level: 'error' | 'warning'; messages: string[] }
   readonly?: boolean
+  /** The server refuses this node type (BROKOLI_DISABLED_NODE_TYPES): it cannot run here. */
+  disabled?: boolean
 }
 
 export type FlowNode = Node<NodeCardData, 'brokoli'>
 
 export function NodeCard({ data, selected }: NodeProps<FlowNode>) {
-  const { node, status, issue } = data
+  const { node, status, issue, disabled } = data
   const entry = catalogEntry(node.type)
   const ports = portsFor(node)
   const meta = status ? statusMeta(status) : null
+  const kind = node.type === 'migrate' ? `${entry.label.toLowerCase()} · standalone` : entry.label.toLowerCase()
   return (
     <div
-      className={cx('ps-node', selected && 'is-selected', issue && `has-${issue.level}`, meta && `bk-tone-${meta.tone}`, meta && 'has-status')}
+      className={cx(
+        'ps-node',
+        selected && 'is-selected',
+        issue && `has-${issue.level}`,
+        meta && `bk-tone-${meta.tone}`,
+        meta && 'has-status',
+        disabled && 'is-disabled-type',
+      )}
       style={{ ['--family' as string]: FAMILY_COLOR[entry.family] }}
       title={issue ? issue.messages.join('\n') : undefined}
     >
@@ -32,7 +42,7 @@ export function NodeCard({ data, selected }: NodeProps<FlowNode>) {
       </span>
       <span className="ps-node-text">
         <strong>{node.name || entry.label}</strong>
-        <small>{node.type === 'migrate' ? `${entry.label.toLowerCase()} · standalone` : entry.label.toLowerCase()}</small>
+        <small>{disabled ? `${kind} · disabled` : kind}</small>
       </span>
       {meta && (
         <span className={cx('ps-node-status', meta.pulse && 'is-live')} title={meta.label} aria-label={meta.label}>

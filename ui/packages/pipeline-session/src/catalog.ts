@@ -55,6 +55,17 @@ export const CATALOG: CatalogEntry[] = [
 
 const BY_TYPE = new Map(CATALOG.map((e) => [e.type, e]))
 
+/** The palette's groups for a search, leaving out entries without a group and the types the server refuses. */
+export function paletteGroups(query: string, hidden: ReadonlySet<string> = new Set()) {
+  const q = query.trim().toLowerCase()
+  return PALETTE_GROUPS.map((group) => ({
+    group,
+    items: CATALOG.filter(
+      (e) => e.group === group && !hidden.has(e.type) && (!q || `${e.label} ${e.description} ${e.type}`.toLowerCase().includes(q)),
+    ),
+  })).filter((g) => g.items.length)
+}
+
 function humanize(type: string) {
   return type.replaceAll('_', ' ').replace(/^\w/, (c) => c.toUpperCase())
 }

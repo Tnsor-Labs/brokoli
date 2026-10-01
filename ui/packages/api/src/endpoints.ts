@@ -9,6 +9,7 @@ import {
   type RequestOptions,
 } from './client'
 import type {
+  Capabilities,
   AuthClaims,
   AuthMethods,
   AuthUser,
@@ -249,6 +250,7 @@ export const pluginApi = {
 
 export const systemApi = {
   info: () => request<SystemInfo>('/system/info'),
+  capabilities: () => request<Capabilities>('/capabilities', { retries: 0 }),
   /** Deletes runs older than `days`; on a single-organisation server that is every run on the server. */
   purge: (days: number) => request<{ deleted: number; days: number; org_id?: string }>('/system/purge', { json: { days }, timeout: 0 }),
 }
