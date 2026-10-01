@@ -527,6 +527,38 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml down --volumes
 
+  # Bash nodes limit memory with a cgroup v2 leaf when the worker has a
+  # delegated subtree. The runner user has none, so the tests run as root
+  # against a cgroup made for them. Elsewhere those tests skip; here a skip
+  # fails the job, so the cgroup path is really exercised.
+  test-bash-memory-cgroup:
+    name: Test (bash memory / cgroup)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Build the engine tests
+        run: go test -c -o "$RUNNER_TEMP/engine.test" ./engine
+
+      - name: Test bash memory limits against a delegated cgroup
+        working-directory: engine
+        run: |
+          set -euo pipefail
+          sudo mkdir -p /sys/fs/cgroup/brokoli-ci
+          echo +memory | sudo tee /sys/fs/cgroup/brokoli-ci/cgroup.subtree_control
+          sudo BROKOLI_TEST_CGROUP=/sys/fs/cgroup/brokoli-ci \
+            "$RUNNER_TEMP/engine.test" -test.run '^TestBash' -test.count=1 -test.v | tee "$RUNNER_TEMP/bash-memory.log"
+          if grep -q -- '--- SKIP' "$RUNNER_TEMP/bash-memory.log"; then
+            echo "::error::a bash test skipped; the cgroup path was not exercised"
+            exit 1
+          fi
+
   build:
     name: Build
     runs-on: ubuntu-latest

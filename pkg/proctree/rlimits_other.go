@@ -2,6 +2,8 @@
 
 package proctree
 
+import "errors"
+
 // Rlimits mirrors the Linux API. Other platforms deliberately degrade
 // to no external process limits; Node's heap flag remains portable.
 type Rlimits struct {
@@ -11,3 +13,8 @@ type Rlimits struct {
 }
 
 func ApplyRlimits(_ int, _ Rlimits) error { return nil }
+
+// ApplyAddressSpaceLimit is Linux-only.
+func ApplyAddressSpaceLimit(_ int, _ uint64) error {
+	return errors.New("address-space limits are Linux-only")
+}
