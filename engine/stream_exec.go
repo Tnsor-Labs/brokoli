@@ -918,14 +918,18 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
-	r.recordExecutedSQL(node.ID, attempt, query)
 	if isBigQueryURI(uri) {
 		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")
 	}
+	query, args, err := r.bindNodeSQL(uri, query)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("source_db query: %w", err)
+	}
+	r.recordExecutedSQL(node.ID, attempt, query)
 	var columns []string
 	ref, err := outputs.PutStream(
 		func(emit func(*common.DataSet) error) error {
-			cols, _, qerr := StreamQueryDatabase(ctx, uri, query, 0, emit)
+			cols, _, qerr := streamQueryDatabase(ctx, uri, query, args, 0, emit)
 			columns = cols
 			return qerr
 		},

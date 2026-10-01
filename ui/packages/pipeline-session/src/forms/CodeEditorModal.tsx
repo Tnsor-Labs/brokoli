@@ -30,7 +30,7 @@ const HINTS: Record<CodeLanguage, string> = {
   bash: 'Runs on the trusted worker through Bash. stdout and stderr become node logs; the input dataset passes through unchanged. ${param.*} and ${var.*} are not substituted here: set them in Environment and use "$NAME".',
   typescript:
     'TypeScript runs in the server code worker pool and needs Node 20 or newer on the server.',
-  sql: 'Runs on the connection chosen for this node. ${...} placeholders (variables, run parameters, ${interval.start}) are substituted before the query is sent.',
+  sql: "Runs on the connection chosen for this node. Run parameters are bound, not pasted: write '${param.x}' for text or ${param.x} for a number. ${var.*} and ${interval.start} are substituted before the query is sent.",
   yaml: '',
   json: '',
 }

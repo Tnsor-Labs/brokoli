@@ -503,6 +503,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		if getStr(n.Config, "query") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'query' is required for source_db", n.Name))
 		}
+		for _, msg := range sqlParamPositionErrors(getStr(n.Config, "query")) {
+			ve.Add(fmt.Sprintf("Node %q: 'query': %s", n.Name, msg))
+		}
 	case models.NodeTypeSQLGenerate:
 		if getStr(n.Config, "table") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'table' is required for sql_generate", n.Name))
@@ -553,6 +556,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 	case models.NodeTypeMigrate:
 		if strings.HasPrefix(getStr(n.Config, "dest_uri"), "snowflake://") {
 			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, errSnowflakeWrite))
+		}
+		for _, msg := range sqlParamPositionErrors(getStr(n.Config, "source_query")) {
+			ve.Add(fmt.Sprintf("Node %q: 'source_query': %s", n.Name, msg))
 		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
@@ -1016,6 +1022,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "query") == "" {
 			r.Errors = append(r.Errors, "'query' is required")
 		}
+		r.Errors = append(r.Errors, sqlParamPositionErrors(getStr(n.Config, "query"))...)
 	case models.NodeTypeSQLGenerate:
 		if getStr(n.Config, "table") == "" {
 			r.Errors = append(r.Errors, "'table' is required")

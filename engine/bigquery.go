@@ -119,13 +119,17 @@ func bigQueryClient(ctx context.Context, uri string, auth googleAuth) (*bigquery
 // cannot set it.
 var bigQueryAPIEndpoint string
 
-func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[string]interface{}, settings string) (*bigquery.Query, error) {
+func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[string]interface{}, settings string, args ...interface{}) (*bigquery.Query, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
 		return nil, fmt.Errorf("invalid BigQuery URI: %w", err)
 	}
 	q := client.Query(query)
 	q.UseLegacySQL = false
+	// Positional parameters: the ? placeholders bindSQLParams wrote.
+	for _, arg := range args {
+		q.Parameters = append(q.Parameters, bigquery.QueryParameter{Value: arg})
+	}
 	q.MaxBytesBilled = bigQueryDefaultMaxBytes
 	q.Labels = map[string]string{"brokoli": "true"}
 	q.DefaultProjectID = u.Hostname()
@@ -155,13 +159,13 @@ func bigQueryQueryConfig(client *bigquery.Client, uri, query string, config map[
 // DryRunBigQuery validates a query and returns its result schema without
 // scanning or charging for data. The byte estimate is retained for the caller
 // to apply a cost policy before the real query runs.
-func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth) (bigquery.Schema, int64, error) {
+func DryRunBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth, args ...interface{}) (bigquery.Schema, int64, error) {
 	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, 0, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings)
+	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings, args...)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -246,13 +250,13 @@ func bigQueryLoadSchema(data *common.DataSet) bigquery.Schema {
 	return fields
 }
 
-func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth) (*common.DataSet, error) {
+func QueryBigQuery(ctx context.Context, uri, query string, config map[string]interface{}, auth googleAuth, args ...interface{}) (*common.DataSet, error) {
 	client, err := bigQueryClient(ctx, uri, auth)
 	if err != nil {
 		return nil, err
 	}
 	defer client.Close()
-	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings)
+	q, err := bigQueryQueryConfig(client, uri, query, config, auth.settings, args...)
 	if err != nil {
 		return nil, err
 	}

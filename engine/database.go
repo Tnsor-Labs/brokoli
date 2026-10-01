@@ -163,7 +163,9 @@ func refuseNativeDatabase(uri, operation string) error {
 }
 
 // QueryDatabase opens a connection, runs a query, and returns a DataSet.
-func QueryDatabase(uri, query string) (*common.DataSet, error) {
+// QueryDatabase runs a query and reads its whole result. args are bound to
+// the query's placeholders (see bindSQLParams).
+func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, error) {
 	if err := refuseNativeDatabase(uri, "query"); err != nil {
 		return nil, err
 	}
@@ -186,7 +188,7 @@ func QueryDatabase(uri, query string) (*common.DataSet, error) {
 		return nil, fmt.Errorf("ping %s: %w", driver, RedactDSNError(err, dsn))
 	}
 
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
@@ -682,6 +684,12 @@ func (s *rowScanner) next(rows *sql.Rows) (common.DataRow, error) {
 // reused. ctx governs the whole scan, so a cancelled run stops mid-result
 // instead of reading to the end of a large table first.
 func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, emit func(*common.DataSet) error) ([]string, int64, error) {
+	return streamQueryDatabase(ctx, uri, query, nil, batchSize, emit)
+}
+
+// streamQueryDatabase is StreamQueryDatabase with args bound to the query's
+// placeholders (see bindSQLParams).
+func streamQueryDatabase(ctx context.Context, uri, query string, args []interface{}, batchSize int, emit func(*common.DataSet) error) ([]string, int64, error) {
 	if err := refuseNativeDatabase(uri, "streaming query"); err != nil {
 		return nil, 0, err
 	}
@@ -703,7 +711,7 @@ func StreamQueryDatabase(ctx context.Context, uri, query string, batchSize int, 
 		return nil, 0, fmt.Errorf("ping %s: %w", driver, RedactDSNError(err, dsn))
 	}
 
-	rows, err := db.QueryContext(ctx, query)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("query: %w", err)
 	}
