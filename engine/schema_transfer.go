@@ -30,7 +30,7 @@ import (
 // Returns ok=false when the source backend has no type reader, which is the
 // absent-capability-degrades path: the caller falls back to value inference
 // rather than failing, because that is what a file source has always done.
-func sourceColumnTypes(ctx context.Context, uri, query string) (map[string]dbdialect.ColumnType, []string, bool) {
+func sourceColumnTypes(ctx context.Context, uri, query string, args ...interface{}) (map[string]dbdialect.ColumnType, []string, bool) {
 	d, dOK := dbdialect.For(dialectForURI(uri))
 	if !dOK {
 		return nil, nil, false
@@ -50,7 +50,7 @@ func sourceColumnTypes(ctx context.Context, uri, query string) (map[string]dbdia
 	}
 	defer db.Close()
 
-	rows, err := db.QueryContext(ctx, d.ProbeColumnsSQL(query))
+	rows, err := db.QueryContext(ctx, d.ProbeColumnsSQL(query), args...)
 	if err != nil {
 		return nil, nil, false
 	}

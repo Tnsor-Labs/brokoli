@@ -9,6 +9,7 @@ from outside the pipeline from becoming code.
 - [Who can do what](#who-can-do-what)
 - [Disabling node types](#disabling-node-types)
 - [Run parameters never become code](#run-parameters-never-become-code)
+- [Run parameters in SQL](#run-parameters-in-sql)
 - [Limits that apply to author code](#limits-that-apply-to-author-code)
 
 ## Who can do what
@@ -67,16 +68,53 @@ So:
   TypeScript. Other references (`${var.*}`, `${run.*}`, `${interval.*}`)
   are still substituted. They come from people who can already edit the
   workspace.
+- **SQL a source runs** (`source_db` `query`, `migrate` `source_query`):
+  `${param.*}` is bound as a database parameter, never written into the SQL
+  text. See [Run parameters in SQL](#run-parameters-in-sql).
 
-In both cases a script or command that contains the reference fails
-validation, with a message saying what to use instead. The reference is
-never run as written by accident.
+For the bash command and the code script, a reference that would not be
+substituted fails validation, with a message saying what to use instead,
+so it is never run as written by accident.
 
-**SQL is different today ([#774](https://github.com/Tnsor-Labs/brokoli/issues/774)).** `${param.*}` is substituted into `source_db`
-queries and other SQL, and that is documented behaviour. A value is
-therefore spliced into SQL text. Treat pipeline parameters used in SQL as
-trusted, or validate them in a declared parameter type, until SQL gets bound
-parameters.
+## Run parameters in SQL
+
+A `${param.*}` reference in a source query becomes the driver's own
+placeholder (`$1` on Postgres, `?` on MySQL, SQLite, ClickHouse,
+Snowflake, Databricks and BigQuery, `@p1` on SQL Server, `:1` on Oracle),
+and its value is passed to the database separately. Whatever the value
+contains, it is compared as data, never run. Two forms are accepted:
+
+| Written as | Bound as | Example |
+| --- | --- | --- |
+| `'${param.x}'`, the whole of a string literal | text | `WHERE region = '${param.region}'` |
+| `${param.x}` on its own, outside quotes | a whole number as an integer, a decimal as its exact text | `LIMIT ${param.limit}`, `WHERE amount > ${param.min}` |
+
+A one-letter literal prefix goes with the literal: `N'${param.x}'` on SQL
+Server and `E'${param.x}'` on Postgres both bind as text. Where `"..."` is a
+string (MySQL, Databricks, BigQuery), `"${param.x}"` binds as text too.
+
+These are refused, with a message saying what to write instead:
+
+- **Inside a longer literal**, such as `LIKE '%${param.x}%'` or
+  `'${param.d} 00:00:00'`. Build the value outside the literal, for example
+  `LIKE CONCAT('%', '${param.x}', '%')` or `'%' || '${param.x}' || '%'`.
+  This is caught when the pipeline is validated.
+- **As a name**, such as `FROM ${param.table}` or `"${param.col}"`. A
+  database cannot bind a table or column name. Use a fixed name, or a
+  workspace variable (`${var.x}`), which editors control.
+- **A bare reference whose value is not a number**, such as
+  `WHERE id = ${param.id}` run with `id=abc`. Quote it to bind it as text.
+  This depends on the value, so it fails the run rather than validation.
+
+References in SQL comments are left as they are. Other references
+(`${var.*}`, `${interval.*}`, `${run.*}`) are still written into the SQL
+text: they come from editors and from Brokoli itself, not from whoever
+starts the run.
+
+A source query that uses a run parameter is not pushed down into a
+same-server write: the pushed-down statement could not carry the binding.
+The rows go through the engine instead, which is slower for large copies
+but gives the same result.
 
 ## Limits that apply to author code
 

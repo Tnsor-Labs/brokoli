@@ -342,6 +342,10 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
+	query, args, err := r.bindNodeSQL(uri, query)
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("source_db query: %w", err)
+	}
 	r.recordExecutedSQL(node.ID, attempt, query)
 	if isBigQueryURI(uri) {
 		config := make(map[string]interface{}, len(node.Config)+1)
@@ -353,14 +357,14 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
-		ds, err := QueryBigQuery(r.ctx, uri, query, config, auth)
+		ds, err := QueryBigQuery(r.ctx, uri, query, config, auth, args...)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from BigQuery", len(ds.Rows), len(ds.Columns))
 		return nodeExecutionResult{output: ds}, nil
 	}
-	ds, err := QueryDatabase(uri, query)
+	ds, err := QueryDatabase(uri, query, args...)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
 	}
@@ -370,7 +374,7 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 	// downstream sink creating a table does not have to guess from the
 	// values. Only when something downstream would use the answer -- this
 	// is a second round trip, and most pipelines have no use for it.
-	return nodeExecutionResult{output: ds, outputSchema: r.sourceSchema(node, uri, query)}, nil
+	return nodeExecutionResult{output: ds, outputSchema: r.sourceSchema(node, uri, query, args...)}, nil
 }
 
 // sourceSchema probes a source's column types, or returns nil.
@@ -378,7 +382,7 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 // Every failure is nil, never an error: a source that cannot report types is
 // the absent-capability-degrades path (a file source never could), and the
 // consumer falls back to inference exactly as before.
-func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema {
+func (r *Runner) sourceSchema(node models.Node, uri, query string, args ...interface{}) columnSchema {
 	if !r.schemaCarryWanted() {
 		return nil
 	}
@@ -393,7 +397,7 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery skipped: %v", err)
 			return nil
 		}
-		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config, auth)
+		schema, bytesProcessed, err := DryRunBigQuery(r.ctx, uri, query, config, auth, args...)
 		if err != nil {
 			r.log(node.ID, models.LogLevelWarning, "BigQuery dry-run schema discovery failed: %v", err)
 			return nil
@@ -401,7 +405,7 @@ func (r *Runner) sourceSchema(node models.Node, uri, query string) columnSchema 
 		r.log(node.ID, models.LogLevelInfo, "BigQuery dry run discovered %d columns; estimated %d bytes processed", len(schema), bytesProcessed)
 		return bigQueryColumnSchema(schema)
 	}
-	types, _, ok := sourceColumnTypes(r.ctx, uri, query)
+	types, _, ok := sourceColumnTypes(r.ctx, uri, query, args...)
 	if !ok {
 		r.log(node.ID, models.LogLevelWarning,
 			"This source could not report its column types, so a downstream create_table will "+
@@ -1610,8 +1614,12 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 
 	// Read all from source (for now — chunked read requires LIMIT/OFFSET rewriting)
 	r.log(node.ID, models.LogLevelInfo, "Reading from source...")
+	sourceQuery, sourceArgs, err := r.bindNodeSQL(sourceURI, sourceQuery)
+	if err != nil {
+		return nil, fmt.Errorf("source query: %w", err)
+	}
 	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
-	sourceDS, err := QueryDatabase(sourceURI, sourceQuery)
+	sourceDS, err := QueryDatabase(sourceURI, sourceQuery, sourceArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
@@ -1645,7 +1653,7 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// its own below, exactly as before.
 	typedDDL := ""
 	if createTable {
-		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery)
+		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery, sourceArgs...)
 		if haveTypes {
 			tableEngine, _ := node.Config["table_engine"].(string)
 			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes)

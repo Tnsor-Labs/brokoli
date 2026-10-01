@@ -33,6 +33,11 @@ func (r *Runner) tableRefFromSourceDB(node models.Node) (*TableRef, bool) {
 	if uri == "" || query == "" {
 		return nil, false
 	}
+	// A query with run parameters is bound when it runs (bindSQLParams);
+	// a pushed-down write would embed it in SQL that carries no bindings.
+	if hasSQLParamReference(query) {
+		return nil, false
+	}
 	dialectName := dialectForURI(uri)
 	d, ok := dbdialect.For(dialectName)
 	if !ok {

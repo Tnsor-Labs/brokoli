@@ -75,11 +75,17 @@ var paramReference = regexp.MustCompile(`\$\{param\.[^}]*\}`)
 //   - a bash node's command is not substituted at all. Every value would
 //     be spliced into shell source; they reach the command through env,
 //     which is substituted and arrives as environment variables.
+//
 //   - a code node's script keeps its ${param...} references. A run
 //     parameter is chosen by whoever starts the run, which pipelines.run
 //     allows without pipelines.edit, so substituting it into the script
 //     would let someone who may only run a pipeline change its code. The
 //     script reads it from params instead.
+//
+//   - SQL a source runs (source_db query, migrate source_query) keeps its
+//     ${param...} references for the same reason; they are bound as driver
+//     parameters when the query runs (bindSQLParams), never written into
+//     the SQL text.
 //
 // Validation refuses both forms with a message saying what to use, so
 // the unsubstituted text is never run silently; this is the runner's own
@@ -94,6 +100,15 @@ func resolveNodeConfig(vc *VariableContext, node models.Node) map[string]interfa
 	case models.NodeTypeCode:
 		if script, ok := node.Config["script"].(string); ok {
 			resolved["script"] = vc.resolveExceptParams(script)
+		}
+	case models.NodeTypeSourceDB:
+		// Bound at execution instead (bindSQLParams, #774).
+		if query, ok := node.Config["query"].(string); ok {
+			resolved["query"] = vc.resolveExceptParams(query)
+		}
+	case models.NodeTypeMigrate:
+		if query, ok := node.Config["source_query"].(string); ok {
+			resolved["source_query"] = vc.resolveExceptParams(query)
 		}
 	}
 	return resolved
