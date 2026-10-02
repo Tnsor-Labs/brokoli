@@ -11,6 +11,86 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-02
+
+Four new connectors -- Google Cloud Storage for file nodes, and
+Snowflake, Oracle and Databricks for reading -- and a Bash operator
+node. It also closes two ways a role that may only start runs could
+change what a pipeline executes. **Two changes need attention before
+upgrading**; they are listed first.
+
+### Changed -- read before upgrading
+
+- **Run parameters are bound in source SQL, not written into it** (#778,
+  closes #774) -- @hc12r. A `${param.*}` reference in a `source_db`
+  query or a `migrate` `source_query` was pasted into the SQL text, so
+  anyone allowed to start a run (`pipelines.run`, which the built-in
+  operator role has without `pipelines.edit`) could change the SQL it
+  executed. It is now replaced by the driver's placeholder and the value
+  passed separately. `'${param.x}'` binds as text and a bare
+  `${param.x}` as a number. **These now fail, with a message saying
+  what to write instead:** a reference inside a longer literal
+  (`LIKE '%${param.x}%'`, refused at validation), one used as a table or
+  column name, and a bare one whose value is not a number. A query that
+  uses a run parameter is no longer pushed down into a same-server
+  write. `${var.*}`, `${interval.*}` and `${run.*}` are unchanged.
+- **Code-node scripts no longer substitute `${param.*}`** (#775) --
+  @hc12r. The same escalation in Python and TypeScript source: a run
+  parameter could change the code a node ran. Scripts read parameters
+  from `params` (`params["x"]`, `params.x`), as they always could. A
+  script that contains `${param.x}` now fails validation with that
+  advice. Other references still substitute.
+- For code embedding the engine: `QueryDatabase`, `QueryBigQuery` and
+  `DryRunBigQuery` take trailing bind arguments (#778); existing calls
+  compile unchanged.
+
+### Added
+
+- **Google Cloud Storage for file nodes** (#772) -- @hc12r.
+  `source_file` and `sink_file` read and write objects in a `gcs`
+  connection's bucket, authenticating with OIDC workload identity
+  federation, a service-account key, or the machine's identity where
+  allowed. A failed write leaves no object behind, downloads are capped
+  and pinned to the measured generation, and the API endpoint cannot be
+  set from connection data. See `docs/gcs-file-delivery.md`.
+- **Snowflake, read-only** (#769) -- @hc12r. Queries through a guarded
+  driver: only five URI options are accepted, password authentication
+  only, `PUT`/`GET` file transfer refused, the native minicore library
+  never loaded (`-tags minicore_disabled` plus `SF_DISABLE_MINICORE`),
+  and errors never repeat the password. Writes are refused by name. See
+  `docs/snowflake.md`.
+- **Oracle, read-only** (#770) -- @hc12r. Through the pure-Go `go-ora`
+  driver: numbers decode exactly, passwords are redacted from driver
+  errors, and writes are refused by name. Tested against a real Oracle
+  Free server in CI. See `docs/oracle.md`.
+- **Databricks SQL, read-only** (#771) -- @hc12r. Through a guarded
+  driver that validates the host and HTTP path, never repeats the token,
+  and sends every request through the outbound network policy. Writes
+  are refused by name. See `docs/databricks.md`.
+- **Bash operator node** (#773) -- @hc12r. Runs a shell command on the
+  worker and passes its input through. It runs in its own process group,
+  so cancellation stops everything it started; output is logged with
+  bounds; values reach the command only through `env`, never by
+  substitution into the command. Trusted-worker execution, like a code
+  node. See `docs/bash-operator.md`.
+- **Memory limit for bash nodes** (#777) -- @hc12r. Enforced through a
+  cgroup v2 leaf per run under `BROKOLI_BASH_CGROUP`, which counts real
+  memory so a JVM or Node started from the command works; an address
+  space limit only when the node sets `max_memory_mb`; otherwise the log
+  says the limit is not enforced. On Kubernetes the pod's memory limit
+  remains the ceiling.
+- **`BROKOLI_DISABLED_NODE_TYPES`** (#775) -- @hc12r. Refuses node types
+  such as `bash,code,task` at validation and again on the worker, and
+  lists them in `GET /api/capabilities` as `disabled_node_types`. The
+  editor leaves them out of the node palette and marks existing nodes of
+  a refused type (#776). See `docs/code-execution-policy.md`.
+
+### Fixed
+
+- **The editor's file-node Location field offers Cloud Storage** (#772)
+  and the source-database forms offer Snowflake, Oracle and Databricks
+  as sources only (#769, #770, #771) -- @hc12r.
+
 ## [0.14.0] - 2026-09-28
 
 Three new backends -- Azure Blob Storage for file nodes, native bulk
