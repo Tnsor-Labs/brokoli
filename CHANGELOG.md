@@ -11,6 +11,77 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-10-03
+
+Secret stores (ADR-041): a workspace can keep its credentials in its own
+secret manager (HashiCorp Vault, OpenBao, AWS Secrets Manager or SSM), and a
+connection refers to them with `secret://<store>/<path>#<field>`. The value is
+fetched where the node runs and never written down. Resolved credentials are
+now masked in everything a run records. **One change needs attention before
+upgrading**; it is listed first.
+
+### Changed -- read before upgrading
+
+- **Credential references are checked when a connection is saved** (#783,
+  closes #781) -- @hc12r. `password_ref` and `extra_ref` used to be accepted
+  whatever they held, and a typo surfaced as a failed run. Saving now refuses,
+  with a 400 naming the field: an unknown scheme, a malformed `vault://` or
+  `k8s://` body, an `env://` name that is one of the server's own secrets, a
+  client-made `encrypted://` value, and a `secret://` reference to a store
+  that does not exist in the connection's workspace or whose `#field` does not
+  suit the provider. Nothing is fetched on save, and the operator allowlists
+  are still enforced where a reference resolves, not on save. A reference
+  already stored is not re-checked.
+- For code embedding the engine: `secrets.Resolver.Resolve` takes a
+  `secrets.Scope` (#784). `Chain.Resolve(ctx, ref)` keeps its signature;
+  `Chain.ResolveIn(ctx, scope, ref)` is new.
+
+### Added
+
+- **Secret stores** (#787, #788) -- @hc12r. A store is a named,
+  workspace-scoped connection to a secret manager, managed under
+  `/api/secret-stores` (create, edit, delete, test) and on a new Secret
+  stores page. A connection's password, its whole extra document, or any
+  single value inside extra can be a `secret://` reference; the connection
+  form offers "From a secret store" for the password. Stores authenticate
+  with the machine's own identity (`ambient`, refused where
+  `BROKOLI_SECRET_STORE_AMBIENT=deny`), a short-lived OIDC token naming the
+  store, run and node (`oidc`), or a stored token (`token`, encrypted, never
+  returned). Values are cached for one run and dropped when it ends; a store
+  test reports the version and field names, never the value; a store a
+  connection refers to cannot be deleted or renamed. A distribution can add
+  providers through `extensions.Registry.SecretStoreProviders`. See
+  `docs/secret-stores.md`.
+- **`vault` provider** for HashiCorp Vault and OpenBao (#789) -- @hc12r.
+  KV v2 with versions; token, JWT/OIDC and Kubernetes login; https required
+  except for a loopback dev server; redirects kept on the configured server;
+  session tokens revoked after use. See `docs/secret-store-vault.md`.
+- **`aws_secrets_manager` and `aws_ssm` providers** (#790) -- @hc12r.
+  Secrets Manager secrets are single values or, when JSON objects, named
+  fields; SSM parameters are decrypted single values. OIDC uses
+  `AssumeRoleWithWebIdentity` with a session named after the run;
+  `ambient` uses the machine's credential chain. A store cannot set its own
+  endpoint. See `docs/secret-store-aws.md`.
+
+### Security
+
+- **Resolved credentials are redacted from what a run records** (#784,
+  closes #782) -- @hc12r. A connection's password and the credential-like
+  values of its extra settings (keys, tokens, auth headers, with the token
+  after a `Bearer` scheme on its own) are masked as `[redacted]` in node
+  logs, node and run errors, events, alerts and notifications, the DLQ and
+  recorded SQL. Before this, a target that echoed a credential back put it
+  verbatim in the run's error and every log line. Values under 8 bytes are
+  not masked. Remote paginated `source_api` pages mask their own errors.
+- **The connection API says which references it shows** (#783, closes
+  #755) -- @hc12r. `encrypted://` stays masked; `env://`, `vault://`,
+  `k8s://` and `secret://` references are returned, as the location of a
+  credential a user needs to see to edit it. The code comments now agree.
+
+### Docs
+
+- ADR-041 is accepted (#785).
+
 ## [0.15.0] - 2026-10-02
 
 Four new connectors -- Google Cloud Storage for file nodes, and
