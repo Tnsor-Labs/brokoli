@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/fetchers"
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -83,13 +85,27 @@ func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder)
 	return result, err
 }
 
-func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder, cr *ConnectionResolver) (*common.DataSet, error) {
+func executeSourceAPIPageWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder, cr *ConnectionResolver) (ds *common.DataSet, err error) {
+	// The page resolves its connection here, outside any run's runner, and
+	// its error is settled into the store from here (#782). So it gets a
+	// redaction set of its own, keyed by this call rather than the run --
+	// several pages of one run can be in flight on this worker -- and
+	// masks its error before returning it.
+	scope := secrets.Scope{WorkspaceID: wo.WorkspaceID, RunID: "workorder:" + common.NewID()}
+	defer dropRunRedactions(scope.RunID)
+	defer func() {
+		if err != nil {
+			if masked := redactRun(scope.RunID, err.Error()); masked != err.Error() {
+				err = errors.New(masked)
+			}
+		}
+	}()
 	source, config := wo.SourceURL, wo.Config
 	if connID, _ := config["conn_id"].(string); connID != "" {
 		if cr == nil {
 			return nil, fmt.Errorf("execute source_api page work order: the page uses connection %q, and this worker has no connection resolver to fetch its credentials with", connID)
 		}
-		resolved, warnings, err := cr.ResolveWithWarningsIn(config, models.NodeTypeSourceAPI, wo.WorkspaceID)
+		resolved, warnings, err := cr.ResolveWithWarningsScoped(config, models.NodeTypeSourceAPI, scope)
 		if err != nil {
 			return nil, fmt.Errorf("execute source_api page work order: %w", err)
 		}
