@@ -21,7 +21,7 @@ func TestEnvRefCannotReadTheControlPlanesSecrets(t *testing.T) {
 			// Listed explicitly: a typo must not be what hands it over.
 			t.Setenv(EnvRefAllowEnv, secret)
 
-			got, err := EnvResolver{}.Resolve(context.Background(), "env://"+secret)
+			got, err := EnvResolver{}.Resolve(context.Background(), Scope{}, "env://"+secret)
 			if err == nil {
 				t.Fatalf("env://%s resolved", secret)
 			}
@@ -37,7 +37,7 @@ func TestEnvRefRefusesAnUnlistedVariable(t *testing.T) {
 	t.Setenv("SOME_HOST_VALUE", "should-not-appear")
 	t.Setenv(EnvRefAllowEnv, "")
 
-	got, err := EnvResolver{}.Resolve(context.Background(), "env://SOME_HOST_VALUE")
+	got, err := EnvResolver{}.Resolve(context.Background(), Scope{}, "env://SOME_HOST_VALUE")
 	if err == nil {
 		t.Fatal("an unlisted variable resolved")
 	}
@@ -57,7 +57,7 @@ func TestEnvRefResolvesAnAllowedVariable(t *testing.T) {
 	t.Setenv("WAREHOUSE_PASSWORD", "pw-123")
 	t.Setenv(EnvRefAllowEnv, "OTHER, WAREHOUSE_PASSWORD ,THIRD")
 
-	got, err := EnvResolver{}.Resolve(context.Background(), "env://WAREHOUSE_PASSWORD")
+	got, err := EnvResolver{}.Resolve(context.Background(), Scope{}, "env://WAREHOUSE_PASSWORD")
 	if err != nil {
 		t.Fatalf("an allowed variable was refused: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestTheTwoAllowlistsAreIndependent(t *testing.T) {
 	t.Setenv(EnvRefAllowEnv, "")
 	t.Setenv("BROKOLI_PIPELINE_ENV_ALLOW", "WAREHOUSE_PASSWORD")
 
-	if _, err := (EnvResolver{}).Resolve(context.Background(), "env://WAREHOUSE_PASSWORD"); err == nil {
+	if _, err := (EnvResolver{}).Resolve(context.Background(), Scope{}, "env://WAREHOUSE_PASSWORD"); err == nil {
 		t.Error("the pipeline-templating allowlist also opened env:// references")
 	}
 }

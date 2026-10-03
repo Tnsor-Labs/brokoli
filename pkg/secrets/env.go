@@ -13,7 +13,7 @@ type EnvResolver struct{}
 
 func (EnvResolver) Scheme() string { return "env" }
 
-func (EnvResolver) Resolve(_ context.Context, ref string) (string, error) {
+func (EnvResolver) Resolve(_ context.Context, _ Scope, ref string) (string, error) {
 	name := strings.TrimPrefix(ref, "env://")
 	if name == "" {
 		return "", fmt.Errorf("secrets/env: empty variable name in ref %q", ref)

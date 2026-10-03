@@ -43,7 +43,7 @@ func NewK8sResolver() *K8sResolver {
 
 func (*K8sResolver) Scheme() string { return "k8s" }
 
-func (k *K8sResolver) Resolve(ctx context.Context, ref string) (string, error) {
+func (k *K8sResolver) Resolve(ctx context.Context, _ Scope, ref string) (string, error) {
 	body := strings.TrimPrefix(ref, "k8s://")
 	parts := strings.Split(body, "/")
 

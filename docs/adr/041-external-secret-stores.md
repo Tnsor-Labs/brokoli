@@ -372,9 +372,10 @@ it. The release notes say so.
 
 Every value a run resolves is added to that run's redaction set. Node
 log lines, `run.Error`, recorded SQL and validation-failure messages
-pass through it. Values shorter than 6 bytes are not redacted, because
+pass through it. Values shorter than 8 bytes are not redacted, because
 masking every `yes` in a log would make it unreadable, and the form
-warns when a secret is that short.
+warns when a secret is that short. (8, not the 6 first written here: the
+same floor recorded SQL already used, so the two masks agree.)
 
 ### 8. What a user does
 

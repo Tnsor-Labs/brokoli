@@ -135,7 +135,7 @@ func (r *Runner) resolveFileConnection(node models.Node) (*models.Connection, er
 	if r.connResolver == nil {
 		return nil, fmt.Errorf("conn_id %q is set, but this runner has no connection store to resolve it", connID)
 	}
-	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
+	conn, err := r.connResolver.ResolveConnectionScoped(connID, r.credScope(node.ID))
 	if err != nil {
 		return nil, fmt.Errorf("conn_id %q: %w", connID, err)
 	}

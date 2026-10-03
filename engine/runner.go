@@ -22,6 +22,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/datacap"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"go.opentelemetry.io/otel/attribute"
@@ -387,6 +388,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	// record (ADR-015 point 3, #90 M3) that GET /runs/{id}/instances
 	// reads authoritatively and that dispatch will later lease against.
 	defer r.savePhysicalInstances()
+	// The credentials this run resolved are forgotten when it ends, by
+	// every exit path. Registered after savePhysicalInstances, so it runs
+	// before it; nothing after the run records text through the set.
+	defer dropRunRedactions(r.run.ID)
 	span.SetAttributes(attribute.String("run_id", r.run.ID), attribute.String("trace_id", r.traceID))
 	common.SLog().Info("run started",
 		common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID), common.TraceAttr(r.traceID))
@@ -661,7 +666,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		// the run view has nothing to show. It is also what ProjectRun
 		// rebuilds from the terminal payload, and the row written here and
 		// the row rebuilt from events must not disagree.
-		r.run.Error = runErr.Error()
+		r.run.Error = r.redact(runErr.Error())
 		if err := r.store.UpdateRun(r.run); err != nil {
 			return r.run, fmt.Errorf("persist failed run: %w", err)
 		}
@@ -783,7 +788,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// them is the pipeline author, who reads this node's log.
 	if r.connResolver != nil && node.Config != nil {
 		r.referenceConfigs.Store(node.ID, node.Config)
-		resolved, warnings, err := r.connResolver.ResolveWithWarningsIn(node.Config, node.Type, r.workspaceID())
+		resolved, warnings, err := r.connResolver.ResolveWithWarningsScoped(node.Config, node.Type, r.credScope(node.ID))
 		for _, w := range warnings {
 			r.log(node.ID, models.LogLevelWarning, "%s", w)
 		}
@@ -1543,7 +1548,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		// ── Failure for this attempt ──
 		nr.Status = models.RunStatusFailed
 		nr.DurationMs = duration
-		nr.Error = err.Error()
+		nr.Error = r.redact(err.Error())
 		if !r.dryRun {
 			// If we can't durably record that this attempt failed, don't
 			// keep retrying against a store we can no longer trust to
@@ -2150,9 +2155,12 @@ func (r *Runner) failRun(err error) error {
 	r.run.FinishedAt = &finishTime
 	// Same reason as the wave-loop exit above: the run carries why, so a
 	// reader of the run does not have to go to the event log for it.
-	r.run.Error = err.Error()
+	// Everything below leaves the run as text -- the run row, events,
+	// alerts, notifications, the DLQ -- so it is the redacted message.
+	msg := r.redact(err.Error())
+	r.run.Error = msg
 	if persistErr := r.store.UpdateRun(r.run); persistErr != nil {
-		return fmt.Errorf("run failed: %v; persist failed run: %w", err, persistErr)
+		return fmt.Errorf("run failed: %v; persist failed run: %w", msg, persistErr)
 	}
 	r.appendEvent(models.RunEvent{
 		RunID:     r.run.ID,
@@ -2163,14 +2171,14 @@ func (r *Runner) failRun(err error) error {
 			Error:      r.run.Error,
 		},
 	})
-	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: err.Error()})
-	r.raiseFailureAlert(err)
-	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), err.Error())
-	NotifyPipelineEvent(r.pipe, r.run, "run.failed", err.Error())
+	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: msg})
+	r.raiseFailureAlert(errors.New(msg))
+	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), msg)
+	NotifyPipelineEvent(r.pipe, r.run, "run.failed", msg)
 	// Add to dead letter queue
 	if r.store != nil {
-		if dlqErr := r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", err.Error(), ""); dlqErr != nil {
-			return fmt.Errorf("run failed: %v; persist dlq entry: %w", err, dlqErr)
+		if dlqErr := r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", msg, ""); dlqErr != nil {
+			return fmt.Errorf("run failed: %v; persist dlq entry: %w", msg, dlqErr)
 		}
 	}
 	return err
@@ -2178,6 +2186,8 @@ func (r *Runner) failRun(err error) error {
 
 func (r *Runner) emit(e models.Event) {
 	e.Timestamp = time.Now().UTC()
+	e.Message = r.redact(e.Message)
+	e.Error = r.redact(e.Error)
 	e.OrgID = r.orgID // tenant isolation
 	// Stamp the pipeline's name at emit time so downstream consumers never
 	// have to resolve an ID back to a name. That resolution is impossible
@@ -2238,6 +2248,7 @@ func (r *Runner) raiseFailureAlert(runErr error) {
 // transactionally required (e.g. via an outbox) is tracked separately
 // (Tnsor-Labs/brokoli#7).
 func (r *Runner) appendEvent(ev models.RunEvent) {
+	ev.Payload.Error = r.redact(ev.Payload.Error)
 	if err := r.store.AppendEvent(&ev); err != nil {
 		r.metrics.incrEventsAppendFailed()
 		r.log(ev.NodeID, models.LogLevelWarning, "append run event %s: %v", ev.EventType, err)
@@ -2251,7 +2262,7 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 }
 
 func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID string, attempt int, metadata map[string]string, format string, args ...interface{}) {
-	msg := fmt.Sprintf(format, args...)
+	msg := r.redact(fmt.Sprintf(format, args...))
 	// AppendLog is called from ~70 sites across engine/*.go for routine
 	// informational logging (source/transform/sink node bodies, retries,
 	// hooks, etc.). Unlike CreateNodeRun/UpdateNodeRun/SaveNodePreview/
@@ -2487,6 +2498,24 @@ const (
 
 // workspaceID is the workspace this run's pipeline belongs to, "" for a
 // runner built without a pipeline. Connections resolve only within it.
+// credScope is the secrets scope a node's references resolve in: its
+// pipeline's workspace, this run, and the node (ADR-041 section 5).
+func (r *Runner) credScope(nodeID string) secrets.Scope {
+	scope := secrets.Scope{WorkspaceID: r.workspaceID(), NodeID: nodeID}
+	if r.run != nil {
+		scope.RunID = r.run.ID
+	}
+	return scope
+}
+
+// redact masks this run's resolved credentials in msg (run_redaction.go).
+func (r *Runner) redact(msg string) string {
+	if r.run == nil {
+		return msg
+	}
+	return redactRun(r.run.ID, msg)
+}
+
 func (r *Runner) workspaceID() string {
 	if r.pipe == nil {
 		return ""

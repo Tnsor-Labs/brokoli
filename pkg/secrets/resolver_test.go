@@ -20,7 +20,7 @@ func TestEnvResolver(t *testing.T) {
 	t.Setenv(EnvRefAllowEnv, "TEST_SECRET_123")
 
 	r := EnvResolver{}
-	val, err := r.Resolve(context.Background(), "env://TEST_SECRET_123")
+	val, err := r.Resolve(context.Background(), Scope{}, "env://TEST_SECRET_123")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestEnvResolver(t *testing.T) {
 
 func TestEnvResolver_Missing(t *testing.T) {
 	r := EnvResolver{}
-	_, err := r.Resolve(context.Background(), "env://NONEXISTENT_VAR_XYZ_999")
+	_, err := r.Resolve(context.Background(), Scope{}, "env://NONEXISTENT_VAR_XYZ_999")
 	if err == nil {
 		t.Fatal("expected error for missing var")
 	}
@@ -52,7 +52,7 @@ func TestEncryptedResolver(t *testing.T) {
 	r := NewEncryptedResolver(cr)
 
 	// With scheme prefix
-	val, err := r.Resolve(context.Background(), "encrypted://"+ciphertext)
+	val, err := r.Resolve(context.Background(), Scope{}, "encrypted://"+ciphertext)
 	if err != nil {
 		t.Fatalf("resolve with scheme: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestEncryptedResolver(t *testing.T) {
 	}
 
 	// Without scheme prefix (legacy fallback)
-	val, err = r.Resolve(context.Background(), ciphertext)
+	val, err = r.Resolve(context.Background(), Scope{}, ciphertext)
 	if err != nil {
 		t.Fatalf("resolve legacy: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestK8sResolver_NamespaceIsolation(t *testing.T) {
 	r := NewK8sResolver()
 	r.AllowedNamespaces = map[string]bool{"brokoli": true}
 
-	_, err := r.Resolve(context.Background(), "k8s://kube-system/admin-secret/token")
+	_, err := r.Resolve(context.Background(), Scope{}, "k8s://kube-system/admin-secret/token")
 	if err == nil {
 		t.Fatal("expected error for disallowed namespace")
 	}
@@ -150,7 +150,7 @@ func TestK8sResolver_NamespaceIsolation(t *testing.T) {
 func TestK8sResolver_InvalidChars(t *testing.T) {
 	r := NewK8sResolver()
 
-	_, err := r.Resolve(context.Background(), "k8s://ns/secret/key; echo pwned")
+	_, err := r.Resolve(context.Background(), Scope{}, "k8s://ns/secret/key; echo pwned")
 	if err == nil {
 		t.Fatal("expected error for invalid characters")
 	}
@@ -175,7 +175,7 @@ func TestK8sResolver_RejectsLeadingHyphen(t *testing.T) {
 		"k8s://brokoli/secret/-key",
 	}
 	for _, ref := range cases {
-		_, err := r.Resolve(context.Background(), ref)
+		_, err := r.Resolve(context.Background(), Scope{}, ref)
 		if err == nil {
 			t.Fatalf("Resolve(%q): expected error for leading-hyphen component, got nil", ref)
 		}
@@ -191,7 +191,7 @@ func TestVaultResolver_PathTraversal(t *testing.T) {
 		token:  "test",
 		client: &http.Client{Timeout: time.Second},
 	}
-	_, err := v.Resolve(context.Background(), "vault://../../sys/policy#data")
+	_, err := v.Resolve(context.Background(), Scope{}, "vault://../../sys/policy#data")
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -220,5 +220,33 @@ func TestParseRef(t *testing.T) {
 			t.Errorf("parseRef(%q) = (%q, %q, %v), want (%q, %q, %v)",
 				tt.input, scheme, body, ok, tt.scheme, tt.body, tt.ok)
 		}
+	}
+}
+
+type scopeRecorder struct{ got Scope }
+
+func (*scopeRecorder) Scheme() string { return "rec" }
+func (s *scopeRecorder) Resolve(_ context.Context, scope Scope, _ string) (string, error) {
+	s.got = scope
+	return "v", nil
+}
+
+// The chain hands each backend the scope it was asked for, and the
+// unscoped form resolves with none (ADR-041 section 5).
+func TestChainPassesTheScopeToTheBackend(t *testing.T) {
+	rec := &scopeRecorder{}
+	chain := NewChain(nil, rec)
+	want := Scope{WorkspaceID: "ws-1", RunID: "run-1", NodeID: "node-1"}
+	if _, err := chain.ResolveIn(context.Background(), want, "rec://x"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.got != want {
+		t.Fatalf("backend got %+v, want %+v", rec.got, want)
+	}
+	if _, err := chain.Resolve(context.Background(), "rec://x"); err != nil {
+		t.Fatal(err)
+	}
+	if rec.got != (Scope{}) {
+		t.Fatalf("unscoped Resolve passed %+v, want the zero scope", rec.got)
 	}
 }
