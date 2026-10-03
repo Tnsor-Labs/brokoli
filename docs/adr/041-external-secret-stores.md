@@ -1,6 +1,6 @@
 # ADR-041: External secret stores — credentials stay in the customer's secret manager
 
-**Status:** proposed
+**Status:** accepted (2026-10-03)
 **Date:** 2026-09-27
 
 ## Context
@@ -556,3 +556,19 @@ themselves, because ADR-042 (BigQuery) needs it first.
 - **Google workload identity federation is built on it**
   (`pkg/identity/gcpfederation`). Brokoli builds the external-account
   configuration itself, as ADR-042 section 2 requires.
+
+## Update (2026-10-03): accepted
+
+Phase 1 is complete: #751, #752, #753, #754, #755, #781 (references
+validated on save), #782 (resolved values redacted) and the resolver's
+`Scope` (#784). Phase 2 starts with this acceptance; its progress is
+tracked in a single issue.
+
+Two details of phase 1 differ from the text above, and the code is the
+reference:
+
+- References are validated on save for syntax and scheme, but not
+  against the operator's allowlists: a reference resolves on the machine
+  that runs the node, and a remote worker has its own allowlists.
+- The redaction floor is 8 bytes, the floor recorded SQL already used
+  (section 7 is corrected).
