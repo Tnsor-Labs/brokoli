@@ -253,3 +253,7 @@ curl -X POST https://brokoli.example.com/api/secret-stores \
 provider knows one secret manager's API: its settings, how it logs in with
 each identity method, and how it reads. Each provider's settings are documented
 on its own page as it is added. A distribution can add providers of its own.
+
+| Provider | Secret manager | Secret shape | Auth methods | Page |
+| --- | --- | --- | --- | --- |
+| `vault` | HashiCorp Vault and OpenBao, KV version 2 | map (`#field` required) | `token`, `oidc` (JWT auth), `ambient` (Kubernetes auth) | [Vault and OpenBao](secret-store-vault.md) |
