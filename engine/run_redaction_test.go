@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
@@ -136,5 +138,53 @@ func TestRunDoesNotRecordResolvedCredentials(t *testing.T) {
 	}
 	if _, ok := runRedactions.Load(run.ID); ok {
 		t.Error("the run's redaction set outlived the run")
+	}
+}
+
+// A remote source_api page resolves its connection on the worker, outside
+// any run's runner, and its error is settled from there: it is masked by
+// the page's own set, which does not outlive the call.
+func TestRemotePageErrorsAreRedacted(t *testing.T) {
+	const apiKey = "pk-live-5c4b3a29181716"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "http://127.0.0.1:1/denied?key="+r.Header.Get("X-Api-Key"), http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
+
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "page.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	key := testKey(4)
+	sealed, err := key.Encrypt(`{"headers":{"X-Api-Key":"` + apiKey + `"}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateConnection(&models.Connection{ID: "c-page", ConnID: "page-api", Type: models.ConnTypeHTTP,
+		Host: "unused.invalid", Extra: sealed, ExtraRef: "encrypted://" + sealed,
+		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	enc := secrets.NewEncryptedResolver(key)
+	cr := NewConnectionResolver(st, secrets.NewChain(enc, enc))
+
+	before := 0
+	runRedactions.Range(func(_, _ interface{}) bool { before++; return true })
+	_, err = executeSourceAPIPageWorkOrder(context.Background(), &extensions.InstanceWorkOrder{
+		NodeType: string(models.NodeTypeSourceAPI), SourceType: "rest", PageURL: srv.URL,
+		Config: map[string]interface{}{"conn_id": "page-api", "url": srv.URL},
+	}, cr)
+	if err == nil || !strings.Contains(err.Error(), "denied?key=") {
+		t.Fatalf("the leak path was not exercised: %v", err)
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Fatalf("the page error carries the API key: %v", err)
+	}
+	after := 0
+	runRedactions.Range(func(_, _ interface{}) bool { after++; return true })
+	if after != before {
+		t.Errorf("the page's redaction set outlived the call (%d sets before, %d after)", before, after)
 	}
 }
