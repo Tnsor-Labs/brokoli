@@ -1,6 +1,9 @@
 package extensions
 
-import "github.com/Tnsor-Labs/brokoli/pkg/identity"
+import (
+	"github.com/Tnsor-Labs/brokoli/pkg/identity"
+	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
+)
 
 // Registry holds all extension implementations.
 // The open source binary uses DefaultRegistry().
@@ -26,4 +29,9 @@ type Registry struct {
 	// issues a token per workspace or run sets it; without one, the
 	// deployment falls back to identity.FileTokenSourceFromEnv.
 	TokenSource identity.TokenSource
+
+	// SecretStoreProviders are secret-manager providers a distribution adds
+	// to core's own (ADR-041 section 3). Appended after core's, so one with
+	// the same name replaces core's.
+	SecretStoreProviders []secretstore.Provider
 }

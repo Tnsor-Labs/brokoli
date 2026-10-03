@@ -24,6 +24,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
+	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/Tnsor-Labs/brokoli/web"
@@ -384,11 +385,31 @@ var serveCmd = &cobra.Command{
 		eng.ConnResolver = engine.NewConnectionResolver(s, secretsChain)
 		// OIDC tokens for workload identity federation: the distribution's
 		// source if it has one, else tokens a platform writes to disk.
+		var tokenSource identity.TokenSource
 		if Extensions != nil && Extensions.TokenSource != nil {
-			eng.ConnResolver.SetTokenSource(Extensions.TokenSource)
+			tokenSource = Extensions.TokenSource
 		} else if files := identity.FileTokenSourceFromEnv(); files != nil {
-			eng.ConnResolver.SetTokenSource(files)
+			tokenSource = files
 			log.Printf("OIDC token source: %s (the machine's identity; honours %s)", identity.FilesEnv, identity.AmbientEnv)
+		}
+		if tokenSource != nil {
+			eng.ConnResolver.SetTokenSource(tokenSource)
+		}
+		// ADR-041: secret:// references into the workspace's secret stores.
+		if ss, ok := s.(store.SecretStoreStore); ok {
+			providers := secretstore.NewRegistry(secretstore.Builtin()...)
+			if Extensions != nil {
+				for _, p := range Extensions.SecretStoreProviders {
+					providers.Add(p)
+				}
+			}
+			storeResolver := engine.NewSecretStoreResolver(ss, providers, secretsChain)
+			if tokenSource != nil {
+				storeResolver.SetTokenSource(tokenSource)
+			}
+			secretsChain.Register(storeResolver)
+			eng.SecretStores = storeResolver
+			log.Printf("[secrets] secret stores: providers %v", providers.Names())
 		}
 		if Extensions != nil && len(Extensions.Executors) > 0 {
 			eng.Executors = Extensions.Executors

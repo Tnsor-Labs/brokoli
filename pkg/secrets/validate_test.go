@@ -25,7 +25,8 @@ func TestValidateRefRefusesByName(t *testing.T) {
 	for ref, want := range map[string]string{
 		"WAREHOUSE_PASSWORD":                "is not a reference",
 		"valt://secret/data/x#k":            `scheme "valt://" is not supported`,
-		"secret://vault-prod/warehouse#pw":  `scheme "secret://" is not supported`,
+		"secret://Vault_Prod/warehouse#pw":  `not a valid store name`,
+		"secret://vault-prod":               `expected secret://<store>/<path>`,
 		"encrypted://Zm9vYmFy":              "created by the server",
 		"env://":                            "variable name",
 		"env://1ST":                         "variable name",

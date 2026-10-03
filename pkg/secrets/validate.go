@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 )
 
 // Validating a reference when a connection is saved (#781).
@@ -25,17 +27,23 @@ import (
 // environment variable no allowlist can ever grant.
 
 // refValidators holds the schemes a client may store a reference with,
-// and how each checks its body. ADR-041 Phase 2 adds "secret" here, for
-// references to a workspace's own secret store.
+// and how each checks its body. "secret" is a reference to a workspace's
+// own secret store (ADR-041); its syntax is checked here, and that the
+// store exists in the workspace is checked by the API, which knows the
+// workspace.
 var refValidators = map[string]func(body string) error{
 	"env":   validateEnvRef,
 	"vault": validateVaultRef,
 	"k8s":   validateK8sRef,
+	"secret": func(body string) error {
+		_, err := secretstore.ParseRef("secret://" + body)
+		return err
+	},
 }
 
 // RefSchemes lists the schemes ValidateRef accepts, for messages.
 func RefSchemes() []string {
-	return []string{"env://", "vault://", "k8s://"}
+	return []string{"secret://", "env://", "vault://", "k8s://"}
 }
 
 // ValidateRef reports why ref cannot be stored as a credential reference,

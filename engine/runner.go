@@ -391,7 +391,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	// The credentials this run resolved are forgotten when it ends, by
 	// every exit path. Registered after savePhysicalInstances, so it runs
 	// before it; nothing after the run records text through the set.
-	defer dropRunRedactions(r.run.ID)
+	defer dropRunSecretState(r.run.ID)
 	span.SetAttributes(attribute.String("run_id", r.run.ID), attribute.String("trace_id", r.traceID))
 	common.SLog().Info("run started",
 		common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID), common.TraceAttr(r.traceID))

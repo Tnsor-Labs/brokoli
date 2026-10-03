@@ -76,6 +76,15 @@ func (c *Chain) ResolveIn(ctx context.Context, scope Scope, ref string) (string,
 	return r.Resolve(ctx, scope, ref)
 }
 
+// Register adds r to the chain, replacing any resolver for its scheme. For
+// resolvers built after the chain, such as one that needs the metadata
+// store (secret://).
+func (c *Chain) Register(r Resolver) {
+	if c != nil && r != nil {
+		c.resolvers[r.Scheme()] = r
+	}
+}
+
 // HasScheme returns true if the chain has a resolver for the given scheme.
 func (c *Chain) HasScheme(scheme string) bool {
 	_, ok := c.resolvers[scheme]
