@@ -161,6 +161,10 @@ func TestFallbackPermissionGatePreservesRoleRules(t *testing.T) {
 		{"viewer", models.PermPipelinesView, true},
 		{"editor", models.PermPipelinesRun, true},
 		{"admin", models.PermPipelinesRun, true},
+		// Changing a secret store is a write: viewers are refused,
+		// editors (who manage connections) are not.
+		{"viewer", models.PermSecretStoresManage, false},
+		{"editor", models.PermSecretStoresManage, true},
 	}
 
 	for _, tc := range cases {
