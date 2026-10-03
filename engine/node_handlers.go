@@ -1560,7 +1560,7 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
-		resolved, err := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB, r.workspaceID())
+		resolved, err := r.connResolver.ResolveScoped(map[string]interface{}{"conn_id": sourceConnID}, models.NodeTypeSourceDB, r.credScope(node.ID))
 		if err != nil {
 			return nil, fmt.Errorf("source: %w", err)
 		}
@@ -1572,7 +1572,7 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// Resolve dest connection
 	destURI, _ := node.Config["dest_uri"].(string)
 	if destConnID, _ := node.Config["dest_conn_id"].(string); destConnID != "" && r.connResolver != nil {
-		resolved, err := r.connResolver.ResolveIn(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB, r.workspaceID())
+		resolved, err := r.connResolver.ResolveScoped(map[string]interface{}{"conn_id": destConnID}, models.NodeTypeSinkDB, r.credScope(node.ID))
 		if err != nil {
 			return nil, fmt.Errorf("destination: %w", err)
 		}
@@ -1875,7 +1875,7 @@ func (r *Runner) bigQuerySettings(config map[string]interface{}, nodeID string) 
 	if r.connResolver == nil {
 		return googleAuth{}, fmt.Errorf("BigQuery connection %q cannot be resolved: this runner has no connection resolver", connID)
 	}
-	conn, err := r.connResolver.ResolveConnectionIn(connID, r.workspaceID())
+	conn, err := r.connResolver.ResolveConnectionScoped(connID, r.credScope(nodeID))
 	if err != nil {
 		return googleAuth{}, err
 	}

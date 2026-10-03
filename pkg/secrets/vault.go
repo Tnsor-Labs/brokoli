@@ -46,7 +46,7 @@ func NewVaultResolver() *VaultResolver {
 
 func (*VaultResolver) Scheme() string { return "vault" }
 
-func (v *VaultResolver) Resolve(ctx context.Context, ref string) (string, error) {
+func (v *VaultResolver) Resolve(ctx context.Context, _ Scope, ref string) (string, error) {
 	body := strings.TrimPrefix(ref, "vault://")
 	parts := strings.SplitN(body, "#", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {

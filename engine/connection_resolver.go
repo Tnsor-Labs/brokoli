@@ -84,8 +84,17 @@ func (cr *ConnectionResolver) ResolveWithWarnings(config map[string]interface{},
 // and fail, if at all, with the target's authentication error instead of
 // the reason (#751).
 func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, []string, error) {
+	return cr.ResolveWithWarningsScoped(config, nodeType, secrets.Scope{WorkspaceID: workspaceID})
+}
+
+// ResolveWithWarningsScoped is ResolveWithWarningsIn for one node of one
+// run: the scope's workspace bounds which connections it may use, and
+// the run and node say whose work a reference is resolved for (ADR-041
+// section 5). Credentials resolved for a run are redacted from what the
+// run records.
+func (cr *ConnectionResolver) ResolveWithWarningsScoped(config map[string]interface{}, nodeType models.NodeType, scope secrets.Scope) (map[string]interface{}, []string, error) {
 	var warnings []string
-	resolved, err := cr.resolve(config, nodeType, workspaceID, func(format string, args ...interface{}) {
+	resolved, err := cr.resolve(config, nodeType, scope, func(format string, args ...interface{}) {
 		warnings = append(warnings, fmt.Sprintf(format, args...))
 	})
 	return resolved, warnings, err
@@ -94,7 +103,13 @@ func (cr *ConnectionResolver) ResolveWithWarningsIn(config map[string]interface{
 // ResolveIn is Resolve for a pipeline in workspaceID; see
 // ResolveWithWarningsIn.
 func (cr *ConnectionResolver) ResolveIn(config map[string]interface{}, nodeType models.NodeType, workspaceID string) (map[string]interface{}, error) {
-	return cr.resolve(config, nodeType, workspaceID, nil)
+	return cr.resolve(config, nodeType, secrets.Scope{WorkspaceID: workspaceID}, nil)
+}
+
+// ResolveScoped is ResolveIn for one node of one run; see
+// ResolveWithWarningsScoped.
+func (cr *ConnectionResolver) ResolveScoped(config map[string]interface{}, nodeType models.NodeType, scope secrets.Scope) (map[string]interface{}, error) {
+	return cr.resolve(config, nodeType, scope, nil)
 }
 
 // sameWorkspace reports whether conn may serve a pipeline in workspaceID.
@@ -115,10 +130,11 @@ const notInWorkspace = "conn_id %q not found in this pipeline's workspace"
 //
 // Callers that can reach the run's log should prefer ResolveWithWarnings.
 func (cr *ConnectionResolver) Resolve(config map[string]interface{}, nodeType models.NodeType) (map[string]interface{}, error) {
-	return cr.resolve(config, nodeType, "", nil)
+	return cr.resolve(config, nodeType, secrets.Scope{}, nil)
 }
 
-func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, workspaceID string, warn func(string, ...interface{})) (map[string]interface{}, error) {
+func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType models.NodeType, scope secrets.Scope, warn func(string, ...interface{})) (map[string]interface{}, error) {
+	workspaceID := scope.WorkspaceID
 	connID, ok := config["conn_id"].(string)
 	if !ok || connID == "" {
 		return config, nil
@@ -159,7 +175,7 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		return config, nil
 	}
 
-	if err := cr.resolveCredentials(conn); err != nil {
+	if err := cr.resolveCredentials(conn, scope); err != nil {
 		return config, err
 	}
 
@@ -262,7 +278,11 @@ func resolveAPIConnectionFields(
 // read from the store always carry a reference for an encrypted value
 // (the startup backfill in both stores), so this path does not hide a
 // failed decryption of a stored credential.
-func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) error {
+//
+// Each value resolved for a run (scope.RunID) joins that run's redaction
+// set (run_redaction.go): the password, and the credential-like values of
+// the extra document.
+func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection, scope secrets.Scope) error {
 	if cr.secrets == nil {
 		return nil
 	}
@@ -271,26 +291,30 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) error 
 	defer cancel()
 
 	if conn.PasswordRef != "" {
-		plain, err := cr.secrets.Resolve(ctx, conn.PasswordRef)
+		plain, err := cr.secrets.ResolveIn(ctx, scope, conn.PasswordRef)
 		if err != nil {
 			return credentialError(conn.ConnID, "password", conn.PasswordRef, err)
 		}
 		conn.Password = plain
+		addRunSecret(scope.RunID, plain)
 	} else if conn.Password != "" {
-		if plain, err := cr.secrets.Resolve(ctx, conn.Password); err == nil {
+		if plain, err := cr.secrets.ResolveIn(ctx, scope, conn.Password); err == nil {
 			conn.Password = plain
+			addRunSecret(scope.RunID, plain)
 		}
 	}
 
 	if conn.ExtraRef != "" {
-		plain, err := cr.secrets.Resolve(ctx, conn.ExtraRef)
+		plain, err := cr.secrets.ResolveIn(ctx, scope, conn.ExtraRef)
 		if err != nil {
 			return credentialError(conn.ConnID, "extra settings", conn.ExtraRef, err)
 		}
 		conn.Extra = plain
+		addRunExtraSecrets(scope.RunID, plain)
 	} else if conn.Extra != "" {
-		if plain, err := cr.secrets.Resolve(ctx, conn.Extra); err == nil {
+		if plain, err := cr.secrets.ResolveIn(ctx, scope, conn.Extra); err == nil {
 			conn.Extra = plain
+			addRunExtraSecrets(scope.RunID, plain)
 		}
 	}
 	return nil
@@ -301,7 +325,7 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection) error 
 // fail with. For callers that already hold the connection and have
 // decided access themselves, such as the API's connection test.
 func (cr *ConnectionResolver) ResolveCredentials(conn *models.Connection) error {
-	return cr.resolveCredentials(conn)
+	return cr.resolveCredentials(conn, secrets.Scope{WorkspaceID: conn.WorkspaceID})
 }
 
 // credentialError names the connection, the field, where its value was
@@ -332,6 +356,13 @@ func (cr *ConnectionResolver) ResolveConnection(connID string) (*models.Connecti
 // another workspace's connection is refused before its credentials are
 // resolved.
 func (cr *ConnectionResolver) ResolveConnectionIn(connID, workspaceID string) (*models.Connection, error) {
+	return cr.ResolveConnectionScoped(connID, secrets.Scope{WorkspaceID: workspaceID})
+}
+
+// ResolveConnectionScoped is ResolveConnectionIn for one node of one run;
+// see ResolveWithWarningsScoped.
+func (cr *ConnectionResolver) ResolveConnectionScoped(connID string, scope secrets.Scope) (*models.Connection, error) {
+	workspaceID := scope.WorkspaceID
 	if connID == "" {
 		return nil, fmt.Errorf("no conn_id given")
 	}
@@ -342,7 +373,7 @@ func (cr *ConnectionResolver) ResolveConnectionIn(connID, workspaceID string) (*
 	if !sameWorkspace(conn, workspaceID) {
 		return nil, fmt.Errorf(notInWorkspace, connID)
 	}
-	if err := cr.resolveCredentials(conn); err != nil {
+	if err := cr.resolveCredentials(conn, scope); err != nil {
 		return nil, err
 	}
 	return conn, nil
@@ -376,7 +407,7 @@ func (cr *ConnectionResolver) ResolveConnectionByID(connID string) (*models.Conn
 	if conn == nil {
 		return nil, fmt.Errorf("resolve connection %q: not found", connID)
 	}
-	if err := cr.resolveCredentials(conn); err != nil {
+	if err := cr.resolveCredentials(conn, secrets.Scope{WorkspaceID: conn.WorkspaceID}); err != nil {
 		return nil, err
 	}
 	return conn, nil

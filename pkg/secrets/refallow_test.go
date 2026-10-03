@@ -30,7 +30,7 @@ func TestVaultRefResolvesOnlyListedPaths(t *testing.T) {
 	t.Setenv(VaultRefAllowEnv, "secret/data/brokoli, kv/data/shared/")
 
 	for _, ref := range []string{"vault://secret/data/brokoli/warehouse#pw", "vault://kv/data/shared#pw", "vault://secret/data/brokoli#pw"} {
-		if got, err := v.Resolve(context.Background(), ref); err != nil || got != "s3cret" {
+		if got, err := v.Resolve(context.Background(), Scope{}, ref); err != nil || got != "s3cret" {
 			t.Errorf("%s: %q, %v", ref, got, err)
 		}
 	}
@@ -44,7 +44,7 @@ func TestVaultRefResolvesOnlyListedPaths(t *testing.T) {
 		"vault://secret/data/brokoli/..%2fother#pw",
 		"vault://secret/data/brokoli\\..\\other#pw",
 	} {
-		_, err := v.Resolve(context.Background(), ref)
+		_, err := v.Resolve(context.Background(), Scope{}, ref)
 		if err == nil {
 			t.Errorf("%s resolved", ref)
 		}
@@ -57,7 +57,7 @@ func TestVaultRefResolvesOnlyListedPaths(t *testing.T) {
 func TestVaultRefIsDeniedByDefault(t *testing.T) {
 	v, hits := testVault(t)
 	t.Setenv(VaultRefAllowEnv, "")
-	_, err := v.Resolve(context.Background(), "vault://secret/data/app#pw")
+	_, err := v.Resolve(context.Background(), Scope{}, "vault://secret/data/app#pw")
 	if err == nil || !strings.Contains(err.Error(), VaultRefAllowEnv) {
 		t.Fatalf("err = %v, want a refusal naming %s", err, VaultRefAllowEnv)
 	}
@@ -73,14 +73,14 @@ func TestK8sRefIsDeniedByDefault(t *testing.T) {
 	t.Setenv(K8sRefAllowEnv, "")
 	k := &K8sResolver{defaultNS: "brokoli", AllowedNamespaces: map[string]bool{"brokoli": true}}
 	for _, ref := range []string{"k8s://brokoli-secrets/encryption-key", "k8s://brokoli/brokoli-secrets/db-url"} {
-		_, err := k.Resolve(context.Background(), ref)
+		_, err := k.Resolve(context.Background(), Scope{}, ref)
 		if err == nil || !strings.Contains(err.Error(), K8sRefAllowEnv) {
 			t.Errorf("%s: err = %v, want a refusal naming %s", ref, err, K8sRefAllowEnv)
 		}
 	}
 	// A listed secret gets past the allowlist and on to kubectl.
 	t.Setenv(K8sRefAllowEnv, "brokoli/warehouse-creds")
-	_, err := k.Resolve(context.Background(), "k8s://warehouse-creds/password")
+	_, err := k.Resolve(context.Background(), Scope{}, "k8s://warehouse-creds/password")
 	if err == nil || strings.Contains(err.Error(), K8sRefAllowEnv) {
 		t.Fatalf("a listed secret was refused by the allowlist: %v", err)
 	}

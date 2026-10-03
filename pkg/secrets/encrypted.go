@@ -23,7 +23,7 @@ func NewEncryptedResolver(c *crypto.Config) *EncryptedResolver {
 
 func (e *EncryptedResolver) Scheme() string { return "encrypted" }
 
-func (e *EncryptedResolver) Resolve(_ context.Context, ref string) (string, error) {
+func (e *EncryptedResolver) Resolve(_ context.Context, _ Scope, ref string) (string, error) {
 	if e.crypto == nil {
 		return "", fmt.Errorf("secrets/encrypted: no encryption key configured")
 	}

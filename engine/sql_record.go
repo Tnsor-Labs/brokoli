@@ -194,8 +194,11 @@ func maskRecordedSQL(statement string, secrets []string) string {
 // recordedSQLSecrets is every value this node could have substituted that
 // must not be written down.
 //
-// Two sources, deliberately asymmetric:
+// Three sources, deliberately asymmetric:
 //
+//   - Every credential this run resolved from a connection reference
+//     (run_redaction.go, #782): a password embedded in a URI the
+//     statement quotes, a key a node spliced in.
 //   - Every BROKED_SECRET_* value in the run's environment, whether or not
 //     this node references it. Enumerating them costs nothing and masks a
 //     secret that reached the statement by some route this function did not
@@ -205,11 +208,14 @@ func maskRecordedSQL(statement string, secrets []string) string {
 //     value, so these have to be looked up by name; an unencrypted one is
 //     not a secret, because not encrypting it was a choice.
 func (r *Runner) recordedSQLSecrets(nodeID string) []string {
+	var out []string
+	if r.run != nil {
+		out = append(out, runSecrets(r.run.ID)...)
+	}
 	vc := r.varCtx
 	if vc == nil {
-		return nil
+		return out
 	}
-	var out []string
 	for k, v := range vc.Env {
 		if v != "" && strings.HasPrefix(k, "BROKED_SECRET_") {
 			out = append(out, v)
