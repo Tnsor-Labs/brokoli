@@ -257,3 +257,5 @@ on its own page as it is added. A distribution can add providers of its own.
 | Provider | Secret manager | Secret shape | Auth methods | Page |
 | --- | --- | --- | --- | --- |
 | `vault` | HashiCorp Vault and OpenBao, KV version 2 | map (`#field` required) | `token`, `oidc` (JWT auth), `ambient` (Kubernetes auth) | [Vault and OpenBao](secret-store-vault.md) |
+| `aws_secrets_manager` | AWS Secrets Manager | a string, or a JSON object of fields (decided per secret) | `ambient`, `oidc` | [AWS](secret-store-aws.md) |
+| `aws_ssm` | AWS SSM Parameter Store | one value | `ambient`, `oidc` | [AWS](secret-store-aws.md) |

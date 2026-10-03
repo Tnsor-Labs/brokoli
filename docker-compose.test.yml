@@ -240,3 +240,21 @@ services:
       timeout: 5s
       retries: 40
       start_period: 10s
+
+  localstack:
+    # The aws_secrets_manager and aws_ssm secret-store providers (ADR-041)
+    # are tested against LocalStack's Secrets Manager, SSM and STS. 4.4 is
+    # the community edition and runs without an auth token; pinned by digest
+    # so a later image that requires one cannot arrive silently.
+    image: localstack/localstack:4.4@sha256:b52c16663c70b7234f217cb993a339b46686e30a1a5d9279cb5feeb2202f837c
+    environment:
+      SERVICES: secretsmanager,ssm,sts
+    ports:
+      - "55545:4566"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl -s http://127.0.0.1:4566/_localstack/health | grep -q "\"secretsmanager\": \"available\""'
+      interval: 2s
+      timeout: 5s
+      retries: 60

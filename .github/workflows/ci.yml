@@ -569,6 +569,48 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml down --volumes
 
+  # The aws_secrets_manager and aws_ssm secret-store providers (ADR-041)
+  # against LocalStack's Secrets Manager, SSM and STS. The tests opt into
+  # loopback themselves, and the "AWS" filter must match tests, or the
+  # job would pass on nothing: the step fails when none ran.
+  test-secret-store-aws:
+    name: Test (secret stores / LocalStack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BROKOLI_TEST_AWS_ENDPOINT: http://127.0.0.1:55545
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start LocalStack
+        # Docker binds the port before LocalStack serves, so retry any
+        # failure, and wait for the services, not only the port.
+        run: |
+          docker compose -f docker-compose.test.yml up -d localstack
+          for i in $(seq 1 90); do
+            if curl -s http://127.0.0.1:55545/_localstack/health | grep -q '"secretsmanager": "available"'; then exit 0; fi
+            sleep 1
+          done
+          docker compose -f docker-compose.test.yml logs localstack
+          echo "::error::LocalStack did not become ready within 90s"
+          exit 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Test the AWS providers
+        run: |
+          set -o pipefail
+          go test -v -count=1 ./pkg/secretstore ./engine -run 'AWS' | tee aws-tests.log
+          if grep -q -- '--- SKIP' aws-tests.log; then echo "::error::an AWS test skipped"; exit 1; fi
+          grep -q -- '--- PASS: TestRunResolvesAnAWSSecret' aws-tests.log
+
+      - name: Stop LocalStack
+        if: always()
+        run: docker compose -f docker-compose.test.yml down --volumes
+
   # Bash nodes limit memory with a cgroup v2 leaf when the worker has a
   # delegated subtree. The runner user has none, so the tests run as root
   # against a cgroup made for them. Elsewhere those tests skip; here a skip
