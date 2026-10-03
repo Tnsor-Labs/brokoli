@@ -4,5 +4,7 @@ package secretstore
 // a test against its vendor's emulator or dev server (ADR-041 section 3);
 // they are added here as they land.
 func Builtin() []Provider {
-	return nil
+	return []Provider{
+		Vault(),
+	}
 }

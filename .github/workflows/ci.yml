@@ -449,6 +449,48 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.test.yml --profile oracle down --volumes
 
+  # OpenBao's dev server runs from docker compose for the same reason as
+  # the BigQuery emulator: it needs arguments (dev mode, a fixed root token,
+  # the listen address). It speaks Vault's HTTP API, so the vault secret-store
+  # provider is tested against it: KV v2 reads, versions, a policy-limited
+  # token, a namespace, JWT login, and a run that resolves a secret://
+  # reference through the real provider. The tests opt into loopback
+  # themselves.
+  test-vault-openbao:
+    name: Test (Vault / OpenBao)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      BROKOLI_TEST_VAULT_ADDR: http://127.0.0.1:55547
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start OpenBao
+        # Retry any curl failure, not only a refused connection: Docker
+        # binds the port before the server listens, and early requests are
+        # reset. sys/health answers 200 once the dev server is unsealed.
+        run: |
+          docker compose -f docker-compose.test.yml up -d openbao
+          for i in $(seq 1 60); do
+            if curl -sf -o /dev/null http://127.0.0.1:55547/v1/sys/health; then exit 0; fi
+            sleep 1
+          done
+          docker compose -f docker-compose.test.yml logs openbao
+          echo "::error::OpenBao did not answer within 60s"
+          exit 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.6"
+
+      - name: Test the vault secret-store provider
+        run: go test -v -count=1 ./pkg/secretstore/... ./engine -run Vault
+
+      - name: Stop OpenBao
+        if: always()
+        run: docker compose -f docker-compose.test.yml down --volumes
+
   # The BigQuery emulator runs from docker compose, not as a service
   # container: it needs --project and --dataset, and a service container
   # cannot take arguments (a "command:" key makes GitHub reject the whole

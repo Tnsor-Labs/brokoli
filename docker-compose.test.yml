@@ -35,6 +35,17 @@ services:
     ports:
       - "55543:4443"
 
+  openbao:
+    # OpenBao (MPL-2.0) speaks Vault's HTTP API, so the vault secret-store
+    # provider is tested against it. Dev mode: in-memory, unsealed, a KV v2
+    # mount at secret/, and a fixed root token the tests use to configure
+    # policies and auth methods.
+    image: openbao/openbao:2.4.1
+    command: ["server", "-dev", "-dev-root-token-id=brokoli-test-root", "-dev-listen-address=0.0.0.0:8200"]
+    cap_add: ["IPC_LOCK"]
+    ports:
+      - "55547:8200"
+
   bigquery:
     # Pinned, like every other service here. goccy/bigquery-emulator is a
     # community project (MIT); 0.8.1 is its release of 2026-06-13.
