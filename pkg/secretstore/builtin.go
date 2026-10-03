@@ -6,5 +6,7 @@ package secretstore
 func Builtin() []Provider {
 	return []Provider{
 		Vault(),
+		AWSSecretsManager(),
+		AWSSSM(),
 	}
 }

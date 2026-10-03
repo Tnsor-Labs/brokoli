@@ -52,6 +52,18 @@ type Identity struct {
 	// Token is the OIDC token to exchange (AuthOIDC) or the static token to
 	// present (AuthToken). Empty for AuthAmbient.
 	Token string
+	// Session names the work the read is for -- the store, the run and the
+	// node -- for a provider that records a session name in the secret
+	// manager's own audit log (AWS's RoleSessionName). Identifiers only,
+	// never a secret.
+	Session Session
+}
+
+// Session identifies whose work a read is for.
+type Session struct {
+	StoreID string
+	RunID   string
+	NodeID  string
 }
 
 // Shape is the shape of the secrets a provider returns.

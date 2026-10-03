@@ -158,7 +158,8 @@ func (r *SecretStoreResolver) fetch(ctx context.Context, scope secrets.Scope, st
 // identityFor builds what the provider authenticates with (ADR-041
 // section 4).
 func (r *SecretStoreResolver) identityFor(ctx context.Context, scope secrets.Scope, st *models.SecretStore, provider secretstore.Provider) (secretstore.Identity, error) {
-	id := secretstore.Identity{Method: secretstore.AuthMethod(st.AuthMethod), Settings: st.AuthSettings}
+	id := secretstore.Identity{Method: secretstore.AuthMethod(st.AuthMethod), Settings: st.AuthSettings,
+		Session: secretstore.Session{StoreID: st.ID, RunID: scope.RunID, NodeID: scope.NodeID}}
 	switch id.Method {
 	case secretstore.AuthAmbient:
 		// Refused by name where the operator denies it, rather than
