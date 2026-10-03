@@ -82,6 +82,54 @@ The resolver runs `kubectl`, which must be on the Brokoli process's
 `PATH`, with the service account's permissions. Never list the Secret
 holding Brokoli's own configuration.
 
+## When a reference is saved
+
+Creating or updating a connection checks each new reference's shape,
+without resolving it: nothing is read from the store, and no
+environment variable's value is looked at. A reference is refused, with
+a 400 that names the field and the reason, when:
+
+| Reference | Refused because |
+| --- | --- |
+| `valt://...`, `secret://...`, any other scheme | The scheme is not one of `env://`, `vault://`, `k8s://` |
+| `WAREHOUSE_PASSWORD` (no scheme) | It is not a reference |
+| `env://1ST`, `env://MY-VAR` | The name is not a valid environment variable name |
+| `env://BROKOLI_ENCRYPTION_KEY` and the other names listed above | No allowlist can ever grant it |
+| `vault://secret/data/x` | There is no `#key` |
+| `vault://secret/../sys#k`, a path with `%`, `?` or a backslash | Refused outright, as at run time |
+| `k8s://only`, `k8s://a/b/c/d`, `k8s://ns/-name/key` | Not `[namespace/]secret/key` with valid names |
+| `encrypted://...` | The server creates these when a credential is entered; send the credential itself |
+
+```
+password_ref: scheme "valt://" is not supported; use env://, vault://, k8s://
+```
+
+The allowlists and the server's Vault and Kubernetes settings are not
+checked on save. A reference is resolved on the machine that runs the
+node, and a worker has its own environment, allowlists and Vault: a
+reference the server would refuse may be exactly what a worker in your
+network resolves. Use **Test connection** to check one against the
+server, and a run to check it where it will be used; both say by name
+when an allowlist refuses it.
+
+A reference identical to the one already stored is not checked again,
+so editing a connection whose reference was saved before these rules
+does not fail until the reference itself is changed.
+
+## What the API returns
+
+Reading a connection never returns its password or extra settings. Of
+its references:
+
+- **`encrypted://...` comes back as `encrypted://********`.** The body is
+  the credential itself, encrypted under the server's key. Sending the
+  masked value back in an update means "unchanged".
+- **`env://`, `vault://` and `k8s://` references come back as stored.**
+  They are the location of a credential, not the credential, and you
+  need to see them to edit the connection. Reading one requires access
+  to the connection; resolving it requires the operator's allowlist on
+  the machine that runs the node.
+
 ## Where references are resolved
 
 Runs resolve references on the machine that runs the node, so the

@@ -172,6 +172,11 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if msg := refErrors(&c, nil); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	// Credential handling: if a password_ref is provided (env://, vault://, k8s://),
 	// store it directly — no encryption needed since we're storing a reference, not the value.
 	// If a bare password is provided (no ref), encrypt it and store as encrypted:// ref.
@@ -244,6 +249,10 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// them into an update means "unchanged", never "set the credential to the
 	// mask".
 	unmaskCredentials(&c)
+	if msg := refErrors(&c, existing); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 
 	// A stored secret belongs to the server it was entered for. Nobody can
 	// read it back through the API, but an editor could otherwise point
@@ -758,11 +767,44 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, types)
 }
 
-// maskRef returns the credential ref with the sensitive portion masked.
-// "env://MY_VAR" stays as-is (env var name is not a secret).
-// "encrypted://..." becomes "encrypted://********".
-// "vault://secret/data/prod#password" stays as-is (path is not a secret).
-// "k8s://ns/secret/key" stays as-is (reference path is not a secret).
+// refErrors checks the credential references a create or update would
+// store, without resolving them (#781). A reference identical to the one
+// already stored is not checked again: the form echoes stored references on
+// every save, and renaming a connection must not fail because the rules
+// changed after its reference was saved.
+func refErrors(c, existing *models.Connection) string {
+	var storedPassword, storedExtra string
+	if existing != nil {
+		storedPassword, storedExtra = existing.PasswordRef, existing.ExtraRef
+	}
+	for _, f := range []struct{ field, ref, stored string }{
+		{"password_ref", c.PasswordRef, storedPassword},
+		{"extra_ref", c.ExtraRef, storedExtra},
+	} {
+		if f.ref == "" || (existing != nil && f.ref == f.stored) {
+			continue
+		}
+		if err := secrets.ValidateRef(f.ref); err != nil {
+			return f.field + ": " + err.Error()
+		}
+	}
+	return ""
+}
+
+// maskRef returns a credential reference as the API may show it (#755).
+//
+// "encrypted://<ciphertext>" becomes "encrypted://********": the body is
+// the credential itself, encrypted under the server's key, and nobody needs
+// to see it to edit the connection.
+//
+// Every other reference -- "env://NAME", "vault://path#key",
+// "k8s://ns/secret/key" -- is returned as stored. It is the location of a
+// credential, not the credential, and it is what a user types: the form
+// shows it so the connection can be edited without retyping it, and a
+// reference to a workspace's own secret store (ADR-041) has to be visible
+// to be usable. Reading it requires access to the connection; resolving it
+// requires the operator's allowlist on the machine that runs the node.
+//
 // maskedRef is what Get and List return in place of an encrypted credential
 // ref, and maskedSecret is the same for a bare password. Both are sentinels,
 // not values: a client doing read-modify-write against the REST API sends

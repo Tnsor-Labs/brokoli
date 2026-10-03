@@ -11,12 +11,14 @@ import "github.com/Tnsor-Labs/brokoli/models"
 // GET /connections hid the references and GET /connections?page=1
 // returned them.
 //
-// A secret reference is not a secret, but it is the location of one --
-// "encrypted://<ciphertext>", "env://NAME", a vault path. Handing that
-// out tells a reader which ciphertext to attack or which variable to
-// read, and the product deliberately hides it everywhere else.
+// What is hidden: the password and extra values, and the body of an
+// encrypted:// reference, which is the credential itself under the
+// server's key. What is shown: env://, vault:// and k8s:// references,
+// which are the location of a credential, not the credential, and which a
+// user needs to see to edit the connection. maskRef (#755) is the one place
+// that rule is written.
 
-// maskConnection removes the secret material and the location of it.
+// maskConnection removes the secret material.
 func maskConnection(c *models.Connection) {
 	if c == nil {
 		return
