@@ -395,3 +395,41 @@
   background: var(--bk-color-hover);
   font-size: var(--bk-text-xs);
 }
+/* Secret stores (ADR-041): reference picker, extra-setting builder, settings rows. */
+.ws-secret-ref {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ws-secret-ref .ws-row {
+  grid-template-columns: 1fr 140px;
+}
+.ws-secret-ref-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--bk-color-border);
+  border-radius: var(--bk-radius-sm);
+}
+.ws-secret-ref-builder > .bk-button:only-child {
+  align-self: flex-start;
+}
+.ws-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.ws-rows-label {
+  font-size: var(--bk-text-sm);
+  color: var(--bk-color-text-secondary);
+}
+.ws-rows-item {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 6px;
+  align-items: center;
+}
+.ws-rows > .bk-button {
+  align-self: flex-start;
+}
