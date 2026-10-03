@@ -487,6 +487,10 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.seedPipelineTemplates(); err != nil {
 		return fmt.Errorf("seed pipeline templates: %w", err)
 	}
+	// ADR-041: secret stores.
+	if err := s.secretStores().migrate(); err != nil {
+		return err
+	}
 
 	return nil
 }

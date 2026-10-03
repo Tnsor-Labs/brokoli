@@ -43,11 +43,14 @@ type Engine struct {
 	active        map[string]*Runner
 	maxConcurrent int
 	runSem        chan struct{}
-	VarStore      VariableStore                   // for resolving ${var.key}
-	ConnResolver  *ConnectionResolver             // for resolving conn_id → URI
-	Executors     []extensions.NodeExecutor       // enterprise: K8s, Docker, etc.
-	Notifier      extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
-	JobQueue      extensions.JobQueue             // nil = run in-process (default)
+	VarStore      VariableStore       // for resolving ${var.key}
+	ConnResolver  *ConnectionResolver // for resolving conn_id → URI
+	// SecretStores resolves secret:// references (ADR-041); nil when the
+	// store has no secret stores. The API uses it to test a store.
+	SecretStores *SecretStoreResolver
+	Executors    []extensions.NodeExecutor       // enterprise: K8s, Docker, etc.
+	Notifier     extensions.NotificationProvider // enterprise: Slack, PagerDuty, etc.
+	JobQueue     extensions.JobQueue             // nil = run in-process (default)
 
 	// Lineage emits run lifecycle events to an OpenLineage-compatible
 	// catalogue, with the datasets the run reads and writes.

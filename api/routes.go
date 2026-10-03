@@ -49,6 +49,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	if e != nil && e.ConnResolver != nil {
 		ch.tokens = e.ConnResolver.TokenSource()
 	}
+	// ADR-041: secret stores, and secret:// references in connections.
+	ssh := &SecretStoreHandler{store: s, crypto: cc}
+	if ss, ok := s.(store.SecretStoreStore); ok {
+		ssh.stores = ss
+	}
+	if e != nil && e.SecretStores != nil {
+		ssh.resolver = e.SecretStores
+		ch.useSecretStores(e.SecretStores)
+	}
 	vh := NewVariableHandler(s, cc)
 	th := NewTemplateHandler(s)
 	ah := NewAlertHandler(s)
@@ -243,6 +252,14 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermConnectionsEdit)).Put("/connections/{connId}", ch.Update)
 		r.With(requirePerm(models.PermConnectionsDelete)).Delete("/connections/{connId}", ch.Delete)
 		r.With(requirePerm(models.PermConnectionsTest)).Post("/connections/{connId}/test", ch.Test)
+		// Secret stores are connection configuration: the same permissions.
+		r.Get("/secret-stores/providers", ssh.Providers)
+		r.Get("/secret-stores", ssh.List)
+		r.With(requirePerm(models.PermConnectionsCreate)).Post("/secret-stores", ssh.Create)
+		r.Get("/secret-stores/{storeId}", ssh.Get)
+		r.With(requirePerm(models.PermConnectionsEdit)).Put("/secret-stores/{storeId}", ssh.Update)
+		r.With(requirePerm(models.PermConnectionsDelete)).Delete("/secret-stores/{storeId}", ssh.Delete)
+		r.With(requirePerm(models.PermConnectionsTest)).Post("/secret-stores/{storeId}/test", ssh.Test)
 		r.Get("/connection-types", ConnectionTypes)
 
 		// Calendar

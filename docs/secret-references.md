@@ -12,6 +12,11 @@ database.
 | `env://NAME` | an environment variable of the Brokoli process | no: `BROKOLI_SECRET_ENV_ALLOW` |
 | `vault://path#key` | HashiCorp Vault (KV version 2) | no: `BROKOLI_SECRET_VAULT_ALLOW` |
 | `k8s://[namespace/]secret/key` | a Kubernetes Secret | no: `BROKOLI_SECRET_K8S_ALLOW` |
+| `secret://<store>/<path>#<field>` | the workspace's own secret store | yes: see [Secret stores](secret-stores.md) |
+
+These operator-level schemes (`env`, `vault`, `k8s`) read with the server's own
+credentials and suit a single-team deployment. For a workspace that keeps
+credentials in its own secret manager, use a [secret store](secret-stores.md).
 
 ## Why the external schemes are denied by default
 

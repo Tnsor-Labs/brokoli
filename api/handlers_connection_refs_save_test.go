@@ -15,12 +15,12 @@ func TestConnectionSaveRefusesBadReferences(t *testing.T) {
 	for name, tc := range map[string]struct {
 		field, ref, want string
 	}{
-		"unknown scheme":           {"password_ref", "valt://secret/data/x#k", `password_ref: scheme "valt://" is not supported`},
-		"no scheme":                {"password_ref", "WAREHOUSE_PASSWORD", "password_ref:"},
-		"malformed vault":          {"extra_ref", "vault://secret/data/x", "extra_ref: vault://secret/data/x: expected vault://path#key"},
-		"server's own secret":      {"password_ref", "env://BROKOLI_ENCRYPTION_KEY", "can never be read"},
-		"client-made ciphertext":   {"password_ref", "encrypted://Zm9vYmFy", "created by the server"},
-		"store reference, not yet": {"password_ref", "secret://vault-prod/x#pw", `scheme "secret://" is not supported`},
+		"unknown scheme":             {"password_ref", "valt://secret/data/x#k", `password_ref: scheme "valt://" is not supported`},
+		"no scheme":                  {"password_ref", "WAREHOUSE_PASSWORD", "password_ref:"},
+		"malformed vault":            {"extra_ref", "vault://secret/data/x", "extra_ref: vault://secret/data/x: expected vault://path#key"},
+		"server's own secret":        {"password_ref", "env://BROKOLI_ENCRYPTION_KEY", "can never be read"},
+		"client-made ciphertext":     {"password_ref", "encrypted://Zm9vYmFy", "created by the server"},
+		"store reference, malformed": {"password_ref", "secret://Vault_Prod/x#pw", `not a valid store name`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := doJSON(t, r, "POST", "/api/connections", map[string]interface{}{

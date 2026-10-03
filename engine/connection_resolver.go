@@ -13,6 +13,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
+	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -316,6 +317,58 @@ func (cr *ConnectionResolver) resolveCredentials(conn *models.Connection, scope 
 			conn.Extra = plain
 			addRunExtraSecrets(scope.RunID, plain)
 		}
+	}
+	return cr.resolveExtraFieldRefs(ctx, conn, scope)
+}
+
+// resolveExtraFieldRefs resolves secret:// references held by single string
+// values inside the extra document (ADR-041 section 2): S3's secret_key or
+// SFTP's private_key as a reference to one secret, beside plain values
+// such as access_key and host. Each resolved value joins the run's
+// redaction set. An error names the field and the reference, never the
+// value.
+func (cr *ConnectionResolver) resolveExtraFieldRefs(ctx context.Context, conn *models.Connection, scope secrets.Scope) error {
+	if !strings.Contains(conn.Extra, secretstore.Scheme+"://") {
+		return nil
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal([]byte(conn.Extra), &doc); err != nil {
+		return nil
+	}
+	changed := false
+	var walk func(m map[string]interface{}, prefix string) error
+	walk = func(m map[string]interface{}, prefix string) error {
+		for key, raw := range m {
+			path := prefix + key
+			switch v := raw.(type) {
+			case string:
+				if !secretstore.IsRef(v) {
+					continue
+				}
+				plain, err := cr.secrets.ResolveIn(ctx, scope, v)
+				if err != nil {
+					return credentialError(conn.ConnID, "extra."+path, v, err)
+				}
+				m[key] = plain
+				addRunSecret(scope.RunID, plain)
+				changed = true
+			case map[string]interface{}:
+				if err := walk(v, path+"."); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	if err := walk(doc, ""); err != nil {
+		return err
+	}
+	if changed {
+		b, err := json.Marshal(doc)
+		if err != nil {
+			return fmt.Errorf("connection %q: encode extra settings: %w", conn.ConnID, err)
+		}
+		conn.Extra = string(b)
 	}
 	return nil
 }

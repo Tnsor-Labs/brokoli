@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
+	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
@@ -37,6 +39,77 @@ type ConnectionHandler struct {
 	// tokens is the deployment's OIDC token source, for connections that
 	// authenticate by workload identity federation. Nil when there is none.
 	tokens identity.TokenSource
+	// secretStores resolves and checks secret:// references (ADR-041).
+	// Nil when the server has no secret stores.
+	secretStores *engine.SecretStoreResolver
+}
+
+// useSecretStores makes the connection test resolve secret:// references
+// through res, with the chain a run uses, and lets saving check them.
+func (h *ConnectionHandler) useSecretStores(res *engine.SecretStoreResolver) {
+	chain := secrets.NewDefaultChain(h.crypto)
+	chain.Register(res)
+	h.creds = engine.NewConnectionResolver(h.store, chain)
+	h.secretStores = res
+}
+
+// secretRefErrors checks a connection's secret:// references against its
+// workspace when it is saved: the store exists there, and a #field suits
+// the provider's shape. Nothing is fetched (ADR-041 section 8). It covers
+// password_ref, extra_ref, and any string inside the submitted extra
+// document.
+func (h *ConnectionHandler) secretRefErrors(c *models.Connection, workspaceID string) string {
+	var refs []struct{ field, ref string }
+	add := func(field, ref string) {
+		if secretstore.IsRef(ref) {
+			refs = append(refs, struct{ field, ref string }{field, ref})
+		}
+	}
+	add("password_ref", c.PasswordRef)
+	add("extra_ref", c.ExtraRef)
+	if strings.Contains(c.Extra, secretstore.Scheme+"://") {
+		var doc map[string]interface{}
+		if json.Unmarshal([]byte(c.Extra), &doc) == nil {
+			var walk func(m map[string]interface{}, prefix string)
+			walk = func(m map[string]interface{}, prefix string) {
+				for k, v := range m {
+					switch t := v.(type) {
+					case string:
+						add("extra."+prefix+k, t)
+					case map[string]interface{}:
+						walk(t, prefix+k+".")
+					}
+				}
+			}
+			walk(doc, "")
+		}
+	}
+	if len(refs) == 0 {
+		return ""
+	}
+	ss, ok := h.store.(store.SecretStoreStore)
+	if !ok || h.secretStores == nil {
+		return refs[0].field + ": secret:// references need secret stores, which this server does not have"
+	}
+	sort.Slice(refs, func(i, j int) bool { return refs[i].field < refs[j].field })
+	for _, f := range refs {
+		ref, err := secretstore.ParseRef(f.ref)
+		if err != nil {
+			return f.field + ": " + err.Error()
+		}
+		st, err := ss.GetSecretStoreByName(workspaceID, ref.Store)
+		if err != nil {
+			return fmt.Sprintf("%s: %s: no secret store named %q in this workspace", f.field, f.ref, ref.Store)
+		}
+		p, ok := h.secretStores.Providers().Get(st.Provider)
+		if !ok {
+			return fmt.Sprintf("%s: secret store %q uses provider %q, which this server does not have", f.field, st.Name, st.Provider)
+		}
+		if err := secretstore.CheckShape(ref, p.Shape()); err != nil {
+			return f.field + ": " + err.Error()
+		}
+	}
+	return ""
 }
 
 // validateConnectionAccess checks if a connection exists in the user's org-scoped connection set.
@@ -176,6 +249,10 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := h.secretRefErrors(&c, c.WorkspaceID); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 
 	// Credential handling: if a password_ref is provided (env://, vault://, k8s://),
 	// store it directly — no encryption needed since we're storing a reference, not the value.
@@ -250,6 +327,10 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// mask".
 	unmaskCredentials(&c)
 	if msg := refErrors(&c, existing); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
+	if msg := h.secretRefErrors(&c, existing.WorkspaceID); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
