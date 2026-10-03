@@ -4,6 +4,7 @@ import { PageLoading } from '@brokoli/ui'
 
 const ConnectionsPage = lazy(() => import('./connections/ConnectionsPage').then((m) => ({ default: m.ConnectionsPage })))
 const VariablesPage = lazy(() => import('./variables/VariablesPage').then((m) => ({ default: m.VariablesPage })))
+const SecretStoresPage = lazy(() => import('./secret-stores/SecretStoresPage').then((m) => ({ default: m.SecretStoresPage })))
 const PluginsPage = lazy(() => import('./plugins/PluginsPage').then((m) => ({ default: m.PluginsPage })))
 const SettingsPage = lazy(() => import('./settings/SettingsPage').then((m) => ({ default: m.SettingsPage })))
 
@@ -16,6 +17,7 @@ export function workspaceRoutes(): RouteObject[] {
   return [
     { path: 'connections', element: <Deferred label="Loading connections"><ConnectionsPage /></Deferred> },
     { path: 'variables', element: <Deferred label="Loading variables"><VariablesPage /></Deferred> },
+    { path: 'secret-stores', element: <Deferred label="Loading secret stores"><SecretStoresPage /></Deferred> },
     { path: 'plugins', element: <Deferred label="Loading plugins"><PluginsPage /></Deferred> },
     { path: 'settings', element: <Deferred label="Loading settings"><SettingsPage /></Deferred> },
     // The previous interface had a separate API page; its content is the API tab now.

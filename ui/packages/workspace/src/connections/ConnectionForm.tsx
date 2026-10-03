@@ -3,8 +3,12 @@ import { useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Database, Globe, HardDrive, Plug, PlugZap } from 'lucide-react'
 import { connectionApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
-import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
+import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, SegmentedControl, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
 import { CATEGORY_LABEL, DEFAULT_PORT, DRIVER_OPTIONS, USABLE_BY_NODES, externalSecret, formFields, groupTypes } from './catalog'
+import { EMPTY_REF, SecretRefPicker } from '../secret-stores/SecretRefPicker'
+import { composeSecretRef, isSecretRef, parseSecretRef, secretRefProblem, setExtraReference, type SecretRefParts } from '../secret-stores/reference'
+import { useSecretStores } from '../secret-stores/useSecretStores'
+import { passwordFields } from './passwordSource'
 
 import { VendorIcon } from './VendorIcon'
 
@@ -19,6 +23,9 @@ type Draft = {
   schema: string
   login: string
   password: string
+  /** Where the password comes from: typed and stored by Brokoli, or a reference into a secret store. */
+  password_source: 'stored' | 'store'
+  password_ref: SecretRefParts
   extra: string
   s3_endpoint: string
   s3_use_path_style: boolean
@@ -48,6 +55,8 @@ function draftFrom(c?: Connection, type = ''): Draft {
     schema: c?.schema ?? '',
     login: c?.login ?? '',
     password: '',
+    password_source: isSecretRef(c?.password_ref) ? 'store' : 'stored',
+    password_ref: parseSecretRef(c?.password_ref) ?? EMPTY_REF,
     extra: '',
     s3_endpoint: s3Endpoint,
     s3_use_path_style: s3UsePathStyle,
@@ -100,8 +109,15 @@ export function ConnectionForm({
   const has = (f: string) => fields.includes(f)
   const hint = (f: string) => meta?.hints?.[f]
   const dirty = JSON.stringify(draft) !== JSON.stringify(pristine)
-  const passwordSecret = externalSecret(saved?.password_ref)
+  const secretStores = useSecretStores()
+  // A secret-store reference is edited with the picker; an operator-level one (env://, vault://, k8s://) is shown read-only.
+  const passwordSecret = isSecretRef(saved?.password_ref) ? null : externalSecret(saved?.password_ref)
   const extraSecret = externalSecret(saved?.extra_ref)
+  const storedRefIsSecret = isSecretRef(saved?.password_ref)
+  const [extraRefKey, setExtraRefKey] = useState('')
+  const [extraRef, setExtraRef] = useState<SecretRefParts>(EMPTY_REF)
+  const [extraRefOpen, setExtraRefOpen] = useState(false)
+  const extraRefProblem = !extraRefKey.trim() ? 'Name the setting' : secretRefProblem(extraRef, secretStores.shapeOf(extraRef.store))
   const set = (patch: Partial<Draft>) => {
     setDraft((d) => ({ ...d, ...patch }))
     setTest(null)
@@ -113,6 +129,10 @@ export function ConnectionForm({
     else if (!CONN_ID.test(draft.conn_id)) p.conn_id = 'Lowercase letters, digits, hyphens and underscores only'
     if (draft.port && (!/^\d+$/.test(draft.port) || Number(draft.port) < 1 || Number(draft.port) > 65535)) p.port = 'A port between 1 and 65535'
     if (draft.max_concurrent && (!/^\d+$/.test(draft.max_concurrent))) p.max_concurrent = 'A whole number, 0 or more'
+    if (draft.password_source === 'store') {
+      const problem = secretRefProblem(draft.password_ref, secretStores.shapeOf(draft.password_ref.store))
+      if (problem) p.password_ref = problem
+    } else if (storedRefIsSecret && !draft.password) p.password = 'Enter the password to store it in Brokoli instead of the secret store'
     if (draft.extra.trim()) {
       try {
         const v = JSON.parse(draft.extra)
@@ -122,7 +142,9 @@ export function ConnectionForm({
       }
     }
     return p
-  }, [draft])
+    // shapeOf reads only the store and provider lists.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, secretStores.stores, secretStores.providers, storedRefIsSecret])
   const invalid = Object.keys(problems).length > 0
 
   const filteredTypes = useMemo(() => {
@@ -143,7 +165,7 @@ export function ConnectionForm({
       login: draft.login,
       max_concurrent: draft.max_concurrent ? Number(draft.max_concurrent) : 0,
     }
-    if (draft.password && !passwordSecret) body.password = draft.password
+    Object.assign(body, passwordFields(draft.password_source, draft.password_ref, draft.password, saved?.password_ref, Boolean(passwordSecret)))
     if (draft.type === 's3' && !extraSecret) {
       let extra: Record<string, unknown> = {}
       if (draft.extra.trim()) {
@@ -160,7 +182,6 @@ export function ConnectionForm({
       body.extra = JSON.stringify(extra)
     } else if (draft.extra.trim() && !extraSecret) body.extra = draft.extra.trim()
     // Echo stored refs: the server keeps an encrypted secret when its masked ref comes back, and an external ref stays authoritative.
-    if (saved?.password_ref) body.password_ref = saved.password_ref
     if (saved?.extra_ref) body.extra_ref = saved.extra_ref
     try {
       const result = saved ? await connectionApi.update(saved.conn_id, body) : await connectionApi.create(body)
@@ -322,9 +343,46 @@ export function ConnectionForm({
                 This connection reads its password from <code>{passwordSecret.ref}</code>. Change it there; a password typed here would be ignored.
               </Callout>
             ) : (
-              <Field label="Password" hint={editing ? 'Leave empty to keep the stored password. It is encrypted and never shown again.' : 'Encrypted on the server and never shown again.'}>
-                <Input type="password" autoComplete="new-password" value={draft.password} placeholder={editing ? 'Unchanged' : hint('password') ?? ''} onChange={(e) => set({ password: e.target.value })} />
-              </Field>
+              <>
+                {(secretStores.available && secretStores.stores.length > 0) || draft.password_source === 'store' ? (
+                  <SegmentedControl
+                    label="Where the password comes from"
+                    size="sm"
+                    value={draft.password_source}
+                    onChange={(v) => set({ password_source: v })}
+                    options={[
+                      { value: 'stored', label: 'Stored in Brokoli' },
+                      { value: 'store', label: 'From a secret store' },
+                    ]}
+                  />
+                ) : null}
+                {draft.password_source === 'store' ? (
+                  <>
+                    <SecretRefPicker
+                      idPrefix="ws-password-ref"
+                      stores={secretStores.stores}
+                      shapeOf={secretStores.shapeOf}
+                      value={draft.password_ref}
+                      onChange={(password_ref) => set({ password_ref })}
+                    />
+                    <p className="ws-muted">Read from your secret manager each time a run needs it, on the machine that runs the node. Brokoli never stores the value.</p>
+                  </>
+                ) : (
+                  <Field
+                    label="Password"
+                    error={problems.password}
+                    hint={
+                      storedRefIsSecret
+                        ? 'The password currently comes from a secret store. Enter one to store it in Brokoli instead.'
+                        : editing
+                          ? 'Leave empty to keep the stored password. It is encrypted and never shown again.'
+                          : 'Encrypted on the server and never shown again.'
+                    }
+                  >
+                    <Input type="password" autoComplete="new-password" value={draft.password} placeholder={editing && !storedRefIsSecret ? 'Unchanged' : hint('password') ?? ''} onChange={(e) => set({ password: e.target.value })} />
+                  </Field>
+                )}
+              </>
             ))}
           {has('extra') &&
             (extraSecret ? (
@@ -345,6 +403,41 @@ export function ConnectionForm({
                 <Textarea mono rows={4} value={draft.extra} placeholder={hint('extra') ?? (DRIVER_OPTIONS[draft.type] ? `{"${DRIVER_OPTIONS[draft.type][0]}": "..."}` : '{}')} onChange={(e) => set({ extra: e.target.value })} />
               </Field>
             ))}
+          {has('extra') && !extraSecret && secretStores.available && secretStores.stores.length > 0 && (
+            <div className="ws-secret-ref-builder">
+              {!extraRefOpen ? (
+                <Button size="sm" variant="ghost" onClick={() => setExtraRefOpen(true)}>
+                  Read one extra setting from a secret store
+                </Button>
+              ) : (
+                <>
+                  <Field label="Setting" required hint="The key in the extra settings whose value comes from the store, for example secret_key or private_key.">
+                    <Input id="ws-extra-ref-key" mono value={extraRefKey} placeholder="secret_key" onChange={(e) => setExtraRefKey(e.target.value.trim())} />
+                  </Field>
+                  <SecretRefPicker idPrefix="ws-extra-ref" stores={secretStores.stores} shapeOf={secretStores.shapeOf} value={extraRef} onChange={setExtraRef} />
+                  <div className="ws-inline">
+                    <Button
+                      size="sm"
+                      disabled={Boolean(extraRefProblem)}
+                      title={extraRefProblem || undefined}
+                      onClick={() => {
+                        set({ extra: setExtraReference(draft.extra, extraRefKey, composeSecretRef(extraRef)) })
+                        setExtraRefKey('')
+                        setExtraRef(EMPTY_REF)
+                        setExtraRefOpen(false)
+                      }}
+                    >
+                      Insert into extra settings
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setExtraRefOpen(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                  {editing && <p className="ws-muted">The extra settings you type replace all of the stored ones, so include every setting the connection needs.</p>}
+                </>
+              )}
+            </div>
+          )}
           {draft.type === 's3' && !extraSecret && (
             <>
               <Field label="S3 endpoint" hint="Leave empty for AWS S3. Set this for MinIO or another S3-compatible service.">

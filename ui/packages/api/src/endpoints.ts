@@ -26,6 +26,9 @@ import type {
   ConnectionTestResult,
   ConnectionTypeMeta,
   ConnectionUsage,
+  SecretStore,
+  SecretStoreProvider,
+  SecretStoreTestResult,
   DryRunResponse,
   LogEntry,
   NodeIssue,
@@ -220,6 +223,18 @@ export const connectionApi = {
   usedBy: (connId: string) => request<ConnectionUsage[] | null>(`/connections/${enc(connId)}/used-by`).then((d) => d ?? []),
   test: (connId: string) => request<ConnectionTestResult>(`/connections/${enc(connId)}/test`, { method: 'POST', timeout: 60_000 }),
   testUri: (uri: string) => request<ConnectionTestResult>('/test-connection', { json: { uri }, timeout: 60_000 }),
+}
+
+export const secretStoreApi = {
+  providers: () => request<SecretStoreProvider[] | null>('/secret-stores/providers').then((d) => d ?? []),
+  /** Rejects with status 501 when the server's metadata store has no secret stores. */
+  list: () => request<SecretStore[] | null>('/secret-stores').then((d) => d ?? []),
+  get: (id: string) => request<SecretStore>(`/secret-stores/${enc(id)}`),
+  create: (body: Partial<SecretStore>) => request<SecretStore>('/secret-stores', { json: body }),
+  update: (id: string, body: Partial<SecretStore>) => request<SecretStore>(`/secret-stores/${enc(id)}`, { method: 'PUT', json: body }),
+  remove: (id: string) => request<void>(`/secret-stores/${enc(id)}`, { method: 'DELETE' }),
+  test: (id: string, body: { path: string; version?: string; field?: string }) =>
+    request<SecretStoreTestResult>(`/secret-stores/${enc(id)}/test`, { json: body, timeout: 60_000 }),
 }
 
 export const variableApi = {

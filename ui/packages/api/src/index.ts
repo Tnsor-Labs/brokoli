@@ -32,6 +32,7 @@ export {
   variableApi,
   runApi,
   schedulerApi,
+  secretStoreApi,
   templateApi,
 } from './endpoints'
 export type { DeleteResolve } from './endpoints'

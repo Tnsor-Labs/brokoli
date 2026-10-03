@@ -768,6 +768,47 @@ export interface DependencyStatus {
     | null
 }
 
+/** How a secret store authenticates to its secret manager (ADR-041). */
+export type SecretStoreAuthMethod = 'ambient' | 'oidc' | 'token'
+
+/** The shape of a provider's secrets: one value, a map of fields, or either, per secret. */
+export type SecretShape = 'string' | 'map' | 'either'
+
+/** GET /api/secret-stores/providers: what this server can talk to. */
+export interface SecretStoreProvider {
+  name: string
+  shape: SecretShape
+  auth_methods: SecretStoreAuthMethod[]
+}
+
+/** A workspace's connection to its secret manager. Never carries the credential back. */
+export interface SecretStore {
+  id: string
+  name: string
+  description?: string
+  provider: string
+  settings: Record<string, string>
+  auth_method: SecretStoreAuthMethod
+  auth_settings: Record<string, string>
+  /** True when a token is stored for auth_method "token". */
+  has_credential?: boolean
+  /** Write-only: sent to set or change the token; omitted to keep the stored one. */
+  credential?: string
+  created_at?: string
+  updated_at?: string
+}
+
+/** POST /api/secret-stores/{id}/test: what was read, never the value. */
+export interface SecretStoreTestResult {
+  success: boolean
+  version?: string
+  shape?: 'string' | 'map'
+  fields?: string[]
+  error?: string
+  /** Where the test ran: with the server's identity, which a worker may not share. */
+  note?: string
+}
+
 /** GET /api/pipelines/{id}/node-stats: durations of successful node runs over recent runs. */
 export interface NodeStats {
   nodes: Record<string, { durations: number[] | null; avg: number; p95: number }> | null

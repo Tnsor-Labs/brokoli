@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Braces, CalendarDays, LayoutDashboard, Network, PanelLeftClose, PanelLeftOpen, Plug, Settings, Waypoints, Workflow, type LucideIcon } from 'lucide-react'
+import { Braces, CalendarDays, KeyRound, LayoutDashboard, Network, PanelLeftClose, PanelLeftOpen, Plug, Settings, Waypoints, Workflow, type LucideIcon } from 'lucide-react'
 import { ShellOverlays, SidebarSearch, SidebarStatus, type ShellPage } from '@brokoli/shell'
 import { SidebarAccount } from '@brokoli/auth'
 import { AppShell, Brand, BrandIcon, IconButton, NavSection, cx, type BrandIconName } from '@brokoli/ui'
@@ -22,6 +22,7 @@ const SECTIONS: { label: string; items: Item[] }[] = [
       { to: '/pipelines', label: 'Pipelines', icon: Workflow, ready: true, key: 'p' },
       { to: '/connections', label: 'Connections', icon: 'bk-connections', ready: true, key: 'c' },
       { to: '/variables', label: 'Variables', icon: Braces, ready: true, key: 'v' },
+      { to: '/secret-stores', label: 'Secret stores', icon: KeyRound, ready: true },
       { to: '/plugins', label: 'Plugins', icon: Plug, ready: true },
     ],
   },
