@@ -110,6 +110,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-040](./040-remote-file-locations-for-file-nodes.md) | Remote file locations for file nodes | Proposed |
 | [ADR-041](./041-external-secret-stores.md) | External secret stores — credentials stay in the customer's secret manager | Proposed |
 | [ADR-042](./042-bigquery-native-backend.md) | Native BigQuery backend | Proposed |
+| [ADR-043](./043-arrow-native-database-migration.md) | Arrow-native database migration transport | Proposed |
 
 ## How to add a new ADR
 
