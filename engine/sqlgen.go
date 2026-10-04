@@ -38,6 +38,10 @@ type SQLGenConfig struct {
 	CreateTable bool     `json:"create_table"`
 	Mode        string   `json:"mode"`        // append (default), overwrite, upsert
 	KeyColumns  []string `json:"key_columns"` // conflict target for upsert
+	// Partitioned marks an upsert whose ranges are proven disjoint by the
+	// migration planner. Postgres can then avoid serializing writers with a
+	// table-wide lock.
+	Partitioned bool `json:"-"`
 
 	// CreateDDL is a rendered CREATE TABLE for a bulk write to execute
 	// inside its own transaction, before the rows (#376).

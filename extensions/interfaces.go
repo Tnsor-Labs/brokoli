@@ -527,6 +527,11 @@ type InstanceWorkOrder struct {
 	// claimant needs this to know how to interpret Script/Config, mirroring
 	// models.Node.Type.
 	NodeType string `json:"node_type"`
+	RunID    string `json:"run_id,omitempty"`
+	// Migrate describes one explicit key-range partition of a migrate node.
+	// It carries connection references rather than resolved credentials; the
+	// worker resolves them in the owning workspace before executing.
+	Migrate *MigrateWorkOrder `json:"migrate,omitempty"`
 	// OrgID is the owning pipeline's tenant (mirrors RunJob.OrgID). Added
 	// for ADR-033's task-node dispatch: a remote claimant fetching a
 	// task-bundle/v2 archive needs the org to scope
@@ -636,6 +641,23 @@ type InstanceWorkOrder struct {
 	// WorkspaceID is the owning pipeline's workspace: the scope a worker
 	// resolves a conn_id in, the one the dispatcher would have used.
 	WorkspaceID string `json:"workspace_id,omitempty"`
+}
+
+// MigrateWorkOrder is the credential-free payload for one migrate partition.
+type MigrateWorkOrder struct {
+	SourceConnID   string                 `json:"source_conn_id,omitempty"`
+	DestConnID     string                 `json:"dest_conn_id,omitempty"`
+	SourceURI      string                 `json:"source_uri,omitempty"`
+	DestURI        string                 `json:"dest_uri,omitempty"`
+	SourceQuery    string                 `json:"source_query"`
+	DestTable      string                 `json:"dest_table"`
+	Dialect        string                 `json:"dialect,omitempty"`
+	Mode           string                 `json:"mode,omitempty"`
+	KeyColumns     []string               `json:"key_columns,omitempty"`
+	ChunkSize      int                    `json:"chunk_size,omitempty"`
+	CreateTable    bool                   `json:"create_table,omitempty"`
+	Partition      map[string]interface{} `json:"partition"`
+	PartitionIndex int                    `json:"partition_index"`
 }
 
 // ErrQueueClosed is returned by Dequeue when the queue is shut down.

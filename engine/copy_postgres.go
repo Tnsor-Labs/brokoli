@@ -188,7 +188,7 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 			}
 		}
 
-		if upsert {
+		if upsert && !cfg.Partitioned {
 			// The same EXCLUSIVE lock the overwrite branch takes, for a
 			// harder reason: the merge below is two statements, and a
 			// concurrent insert between them would turn the anti-join's
@@ -200,6 +200,8 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 			if _, err := tx.Exec(ctx, "LOCK TABLE "+d.quoteIdent(cfg.Table)+" IN EXCLUSIVE MODE"); err != nil {
 				return fmt.Errorf("lock table for upsert: %w", err)
 			}
+		}
+		if upsert {
 			// The merge updates whatever the key columns match, so they
 			// must be a unique index -- an UPDATE joined on a non-unique
 			// key would touch every matching row where the statement path

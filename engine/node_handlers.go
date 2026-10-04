@@ -1556,7 +1556,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, error) {
+func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSet, error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
@@ -1618,7 +1618,33 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
+	if partitionArgs, ok := node.Config["_partition_args"].([]interface{}); ok {
+		sourceArgs = partitionArgs
+	}
 	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
+	if canMigratePostgresSameServer(sourceURI, destURI, dialect, mode, createTable, sourceQuery) {
+		r.log(node.ID, models.LogLevelInfo, "Migration: staging the source query inside PostgreSQL")
+		affected, err := migratePostgresSameServer(r.ctx, destURI, sourceQuery, destTable, keyColumns, sourceArgs, boolConfig(node.Config["_partition_disjoint"]))
+		if err != nil {
+			return nil, fmt.Errorf("migrate: direct PostgreSQL upsert: %w", err)
+		}
+		return migrateSummary(int(affected), destTable, 1), nil
+	}
+	if !createTable && strings.EqualFold(dialect, "postgres") {
+		streamCfg := SQLGenConfig{
+			Dialect: dialect, Table: destTable, BatchSize: chunkSize, Mode: mode, KeyColumns: keyColumns,
+			Partitioned: boolConfig(node.Config["_partition_disjoint"]),
+		}
+		if writer, ok := bulkWriterFor(streamCfg); ok {
+			r.log(node.ID, models.LogLevelInfo, "Migration: streaming source batches into the bulk writer")
+			affected, chunks, err := r.streamMigrateBulk(sourceURI, sourceQuery, sourceArgs, destURI, streamCfg, writer)
+			if err != nil {
+				return nil, fmt.Errorf("migrate: streaming bulk write to %s: %w", destTable, err)
+			}
+			r.log(node.ID, models.LogLevelInfo, "Migration complete: %d rows migrated to %s in %d streamed chunks", affected, destTable, chunks)
+			return migrateSummary(int(affected), destTable, chunks), nil
+		}
+	}
 	sourceDS, err := QueryDatabase(sourceURI, sourceQuery, sourceArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
@@ -1671,11 +1697,12 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	// One config for the whole migration, so the write path is chosen once
 	// with full information rather than per chunk.
 	writeCfg := SQLGenConfig{
-		Dialect:    dialect,
-		Table:      destTable,
-		BatchSize:  chunkSize,
-		Mode:       mode,
-		KeyColumns: keyColumns,
+		Dialect:     dialect,
+		Table:       destTable,
+		BatchSize:   chunkSize,
+		Mode:        mode,
+		KeyColumns:  keyColumns,
+		Partitioned: boolConfig(node.Config["_partition_disjoint"]),
 		// A rendered DDL supersedes the flag: the statement path must not
 		// emit CREATE TABLE a second time.
 		CreateTable: createTable && typedDDL == "",

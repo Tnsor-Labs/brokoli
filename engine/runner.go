@@ -116,7 +116,8 @@ type Runner struct {
 	// crash-survivable per-item retry needs durable per-instance output
 	// storage, deferred to #90 M3's larger per-instance dispatch work, same
 	// as #143's paginated-source case.
-	expansionResults map[string]map[string]*common.DataSet
+	expansionResultsMu sync.RWMutex
+	expansionResults   map[string]map[string]*common.DataSet
 
 	// pipelineVersion pins a freshly created run (acceptedRun == nil) to the
 	// store.PipelineVersion snapshot it was resolved against — see
@@ -2262,6 +2263,9 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 }
 
 func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID string, attempt int, metadata map[string]string, format string, args ...interface{}) {
+	if r.store == nil || r.run == nil {
+		return
+	}
 	msg := r.redact(fmt.Sprintf(format, args...))
 	// AppendLog is called from ~70 sites across engine/*.go for routine
 	// informational logging (source/transform/sink node bodies, retries,

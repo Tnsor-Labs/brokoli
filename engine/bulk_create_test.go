@@ -257,9 +257,9 @@ func TestMigrateWritePathSelection(t *testing.T) {
 		t.Errorf("an append migration should have used the bulk writer; log said:\n%s", logs)
 	}
 
-	// A Postgres upsert stages through the same writer (#377): COPY into
-	// a temp table, one merge out. The completion line says so, and the
-	// merged contents are checked rather than assumed.
+	// A Postgres upsert either stages through the bulk writer (cross-server)
+	// or stages the source query inside Postgres when both connections are the
+	// exact same endpoint. Both paths use the same merge semantics.
 	db.Exec("DROP TABLE IF EXISTS mbulk_up")
 	t.Cleanup(func() { db.Exec("DROP TABLE IF EXISTS mbulk_up") })
 	if _, err := db.Exec("CREATE TABLE mbulk_up (id bigint PRIMARY KEY, city text)"); err != nil {
@@ -272,8 +272,8 @@ func TestMigrateWritePathSelection(t *testing.T) {
 	if upRun.Status != models.RunStatusSuccess {
 		t.Fatalf("upsert migrate failed: %s", upRun.Error)
 	}
-	if !strings.Contains(upLogs, "(bulk)") {
-		t.Errorf("a keyed Postgres upsert should go through the staged bulk path; log said:\n%s", upLogs)
+	if !strings.Contains(upLogs, "(bulk)") && !strings.Contains(upLogs, "staging the source query inside PostgreSQL") {
+		t.Errorf("a keyed Postgres upsert should use a staged bulk or direct path; log said:\n%s", upLogs)
 	}
 	var city string
 	if err := db.QueryRow("SELECT city FROM mbulk_up WHERE id = 1").Scan(&city); err != nil {
