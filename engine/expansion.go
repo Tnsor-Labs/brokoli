@@ -879,6 +879,8 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 // output for (nodeID, instanceKey) within this Runner's lifetime, if any —
 // see Runner.expansionResults.
 func (r *Runner) reusedExpansionInstance(nodeID, instanceKey string) (*common.DataSet, bool) {
+	r.expansionResultsMu.RLock()
+	defer r.expansionResultsMu.RUnlock()
 	byKey, ok := r.expansionResults[nodeID]
 	if !ok {
 		return nil, false
@@ -890,6 +892,8 @@ func (r *Runner) reusedExpansionInstance(nodeID, instanceKey string) (*common.Da
 // rememberExpansionInstance caches a successful item's output so a later
 // retry of the same node (same Runner, same run) can skip re-executing it.
 func (r *Runner) rememberExpansionInstance(nodeID, instanceKey string, ds *common.DataSet) {
+	r.expansionResultsMu.Lock()
+	defer r.expansionResultsMu.Unlock()
 	if r.expansionResults == nil {
 		r.expansionResults = make(map[string]map[string]*common.DataSet)
 	}

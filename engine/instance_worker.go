@@ -56,6 +56,8 @@ func ExecuteInstanceWorkOrderResolving(ctx context.Context, wo *extensions.Insta
 	switch wo.NodeType {
 	case string(models.NodeTypeCode):
 		return executeCodeWorkOrder(ctx, wo)
+	case string(models.NodeTypeMigrate):
+		return executeMigrateWorkOrder(ctx, wo, cr)
 	case string(models.NodeTypeSourceAPI):
 		result, err := executeSourceAPIPageWorkOrder(ctx, wo, cr)
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -65,6 +67,75 @@ func ExecuteInstanceWorkOrderResolving(ctx context.Context, wo *extensions.Insta
 	default:
 		return nil, fmt.Errorf("execute instance work order: unsupported node type %q", wo.NodeType)
 	}
+}
+
+func executeMigrateWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder, cr *ConnectionResolver) (*common.DataSet, error) {
+	if wo.Migrate == nil {
+		return nil, fmt.Errorf("execute migrate work order: migrate payload is required")
+	}
+	m := wo.Migrate
+	sourceURI, err := resolveMigrateWorkOrderURI(cr, wo.WorkspaceID, wo.RunID, m.SourceConnID, m.SourceURI, models.NodeTypeSourceDB)
+	if err != nil {
+		return nil, fmt.Errorf("source: %w", err)
+	}
+	destURI, err := resolveMigrateWorkOrderURI(cr, wo.WorkspaceID, wo.RunID, m.DestConnID, m.DestURI, models.NodeTypeSinkDB)
+	if err != nil {
+		return nil, fmt.Errorf("destination: %w", err)
+	}
+	partition, ranges, err := parseMigratePartitionConfig(m.Partition)
+	if err != nil {
+		return nil, err
+	}
+	if m.PartitionIndex < 0 || m.PartitionIndex >= len(ranges) {
+		return nil, fmt.Errorf("partition index %d is out of range", m.PartitionIndex)
+	}
+	dialect := m.Dialect
+	if dialect == "" {
+		dialect = dialectForURI(sourceURI)
+	}
+	query, args, err := migratePartitionQuery(m.SourceQuery, dialect, partition, ranges[m.PartitionIndex])
+	if err != nil {
+		return nil, err
+	}
+	config := map[string]interface{}{
+		"source_uri":          sourceURI,
+		"dest_uri":            destURI,
+		"source_query":        query,
+		"_partition_args":     args,
+		"dest_table":          m.DestTable,
+		"dialect":             dialect,
+		"mode":                m.Mode,
+		"key_columns":         m.KeyColumns,
+		"chunk_size":          m.ChunkSize,
+		"create_table":        false,
+		"_partition_disjoint": true,
+	}
+	runner := &Runner{ctx: ctx}
+	return runner.runMigrateSingle(models.Node{ID: wo.NodeType, Type: models.NodeTypeMigrate, Config: config}, 0)
+}
+
+func resolveMigrateWorkOrderURI(cr *ConnectionResolver, workspaceID, runID, connID, directURI string, nodeType models.NodeType) (string, error) {
+	if connID == "" {
+		if directURI == "" {
+			return "", fmt.Errorf("connection reference is required")
+		}
+		return directURI, nil
+	}
+	if cr == nil {
+		return "", fmt.Errorf("connection resolver is required for %q", connID)
+	}
+	config, warnings, err := cr.ResolveWithWarningsScoped(map[string]interface{}{"conn_id": connID}, nodeType, secrets.Scope{WorkspaceID: workspaceID, RunID: "workorder:" + runID})
+	if err != nil {
+		return "", err
+	}
+	if len(warnings) > 0 {
+		return "", fmt.Errorf("%s", strings.Join(warnings, "; "))
+	}
+	uri, _ := config["uri"].(string)
+	if uri == "" {
+		return "", fmt.Errorf("connection %q did not resolve to a URI", connID)
+	}
+	return uri, nil
 }
 
 func executeCodeWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrder) (*common.DataSet, error) {

@@ -560,6 +560,23 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		for _, msg := range sqlParamPositionErrors(getStr(n.Config, "source_query")) {
 			ve.Add(fmt.Sprintf("Node %q: 'source_query': %s", n.Name, msg))
 		}
+		for _, msg := range migratePartitionErrors(n.Config) {
+			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, msg))
+		}
+		if _, partitioned := n.Config["partition"]; partitioned {
+			if !strings.EqualFold(getStr(n.Config, "mode"), ModeUpsert) {
+				ve.Add(fmt.Sprintf("Node %q: partitioned migrate requires mode=upsert", n.Name))
+			}
+			if len(configStringSlice(n.Config["key_columns"])) == 0 {
+				ve.Add(fmt.Sprintf("Node %q: partitioned migrate requires key_columns", n.Name))
+			}
+			if partition, _, err := parseMigratePartitionConfig(n.Config["partition"]); err == nil && !containsStringFold(configStringSlice(n.Config["key_columns"]), partition.Column) {
+				ve.Add(fmt.Sprintf("Node %q: partition.column %q must be included in key_columns", n.Name, partition.Column))
+			}
+			if create, _ := n.Config["create_table"].(bool); create {
+				ve.Add(fmt.Sprintf("Node %q: partitioned migrate requires create_table=false", n.Name))
+			}
+		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			ve.Add(fmt.Sprintf("Node %q: union only supports mode=\"union\" (got %q)", n.Name, mode))
@@ -1049,6 +1066,22 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if nodeHasExpansion(n) {
 			if _, err := parseExpansionConfig(n); err != nil {
 				r.Errors = append(r.Errors, err.Error())
+			}
+		}
+	case models.NodeTypeMigrate:
+		r.Errors = append(r.Errors, migratePartitionErrors(n.Config)...)
+		if _, partitioned := n.Config["partition"]; partitioned {
+			if !strings.EqualFold(getStr(n.Config, "mode"), ModeUpsert) {
+				r.Errors = append(r.Errors, "partitioned migrate requires mode=upsert")
+			}
+			if len(configStringSlice(n.Config["key_columns"])) == 0 {
+				r.Errors = append(r.Errors, "partitioned migrate requires key_columns")
+			}
+			if partition, _, err := parseMigratePartitionConfig(n.Config["partition"]); err == nil && !containsStringFold(configStringSlice(n.Config["key_columns"]), partition.Column) {
+				r.Errors = append(r.Errors, fmt.Sprintf("partition.column %q must be included in key_columns", partition.Column))
+			}
+			if create, _ := n.Config["create_table"].(bool); create {
+				r.Errors = append(r.Errors, "partitioned migrate requires create_table=false")
 			}
 		}
 	case models.NodeTypeBash:
