@@ -29,12 +29,22 @@ func (a *VarStoreAdapter) GetVariableValue(workspaceID, key string) (string, boo
 		return "", false, err
 	}
 
-	if v.Type == models.VarTypeSecret && a.crypto != nil {
-		dec, err := a.crypto.Decrypt(v.Value)
-		if err != nil {
-			return "", true, err
-		}
-		return dec, true, nil
+	if v.Type != models.VarTypeSecret {
+		return v.Value, false, nil
 	}
-	return v.Value, false, nil
+	// A secret variable is secret however it arrives. With a key, the
+	// stored value is ciphertext and is decrypted here. Without one -- a
+	// worker that holds no encryption key and reads variables from its
+	// control plane, which decrypts them for the job -- it arrives as the
+	// value. Either way it is reported as secret, so recorded SQL and the
+	// run's other records mask it. It used to be reported as not secret
+	// when there was no key, which left the value unmasked.
+	if a.crypto == nil {
+		return v.Value, true, nil
+	}
+	dec, err := a.crypto.Decrypt(v.Value)
+	if err != nil {
+		return "", true, err
+	}
+	return dec, true, nil
 }

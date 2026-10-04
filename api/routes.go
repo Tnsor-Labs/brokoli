@@ -252,13 +252,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.With(requirePerm(models.PermConnectionsEdit)).Put("/connections/{connId}", ch.Update)
 		r.With(requirePerm(models.PermConnectionsDelete)).Delete("/connections/{connId}", ch.Delete)
 		r.With(requirePerm(models.PermConnectionsTest)).Post("/connections/{connId}/test", ch.Test)
-		// Secret stores are connection configuration: the same permissions.
+		// Secret stores: viewing and testing take the connection
+		// permissions; changing a store takes secret_stores.manage, which
+		// editors hold by default and a distribution may restrict further.
 		r.Get("/secret-stores/providers", ssh.Providers)
 		r.Get("/secret-stores", ssh.List)
-		r.With(requirePerm(models.PermConnectionsCreate)).Post("/secret-stores", ssh.Create)
+		r.With(requirePerm(models.PermSecretStoresManage)).Post("/secret-stores", ssh.Create)
 		r.Get("/secret-stores/{storeId}", ssh.Get)
-		r.With(requirePerm(models.PermConnectionsEdit)).Put("/secret-stores/{storeId}", ssh.Update)
-		r.With(requirePerm(models.PermConnectionsDelete)).Delete("/secret-stores/{storeId}", ssh.Delete)
+		r.With(requirePerm(models.PermSecretStoresManage)).Put("/secret-stores/{storeId}", ssh.Update)
+		r.With(requirePerm(models.PermSecretStoresManage)).Delete("/secret-stores/{storeId}", ssh.Delete)
 		r.With(requirePerm(models.PermConnectionsTest)).Post("/secret-stores/{storeId}/test", ssh.Test)
 		r.Get("/connection-types", ConnectionTypes)
 

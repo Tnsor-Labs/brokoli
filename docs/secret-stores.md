@@ -40,8 +40,11 @@ A store has:
 | `auth_settings` | That method's non-secret settings: a role, a role ARN. |
 | `credential` | Only for `auth_method: token`: the static token. Encrypted at rest; never returned. |
 
-Creating, editing, deleting and testing a store take the same permission as
-doing that to a connection. A store is part of connection configuration.
+Creating, editing and deleting a store take the `secret_stores.manage`
+permission, which the built-in editor and admin roles have. Viewing and
+testing a store take the connection permissions. A distribution can restrict
+`secret_stores.manage` further, for example to organization owners, because a
+store opens a door into your secret manager.
 
 A store that a connection refers to cannot be deleted or renamed. The refusal
 names the connections, so you can change them first.

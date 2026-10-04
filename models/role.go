@@ -58,6 +58,13 @@ const (
 	// list (GET /api/templates) requires no permission, same as
 	// connection-types; only curation is gated.
 	PermTemplatesManage Permission = "templates.manage"
+
+	// Secret stores (ADR-041): creating, changing and deleting a
+	// workspace's connections to its secret managers. Viewing and testing
+	// a store take the connection permissions. A distribution may hold
+	// this to a stricter rule than editing a connection: a store opens a
+	// door into the customer's secret manager.
+	PermSecretStoresManage Permission = "secret_stores.manage"
 )
 
 // AllPermissions returns all available permissions.
@@ -72,6 +79,7 @@ func AllPermissions() []Permission {
 		PermAuditView, PermAuditExport,
 		PermGitSyncView, PermGitSyncPull, PermGitSyncPush,
 		PermTemplatesManage,
+		PermSecretStoresManage,
 	}
 }
 
@@ -120,6 +128,7 @@ func AllPermissionInfos() []PermissionInfo {
 		{PermGitSyncPull, "Git Sync", "Pull from git"},
 		{PermGitSyncPush, "Git Sync", "Push to git"},
 		{PermTemplatesManage, "Templates", "Create, edit, and delete pipeline templates"},
+		{PermSecretStoresManage, "Connections", "Create, edit, and delete secret stores"},
 	}
 }
 
@@ -142,6 +151,7 @@ func DefaultRoles() []Role {
 		PermPipelinesView, PermPipelinesCreate, PermPipelinesEdit, PermPipelinesDelete, PermPipelinesRun, PermPipelinesExport,
 		PermRunsView, PermRunsCancel, PermRunsResume, PermRunsBackfill,
 		PermConnectionsView, PermConnectionsCreate, PermConnectionsEdit, PermConnectionsDelete, PermConnectionsTest,
+		PermSecretStoresManage,
 		PermVariablesView, PermVariablesCreate, PermVariablesEdit, PermVariablesDelete,
 		PermWorkspacesView,
 		PermSettingsView,
