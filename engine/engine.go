@@ -85,6 +85,9 @@ type Engine struct {
 	// (or ./brokoli-artifacts); assign a different implementation the same
 	// way VarStore/ConnResolver are overridden after NewEngine.
 	ArtifactStore ArtifactStore
+	// NativeFlightSQLWorker enables local, isolated-child execution for saved
+	// Flight SQL source_db connections. Nil refuses those connections clearly.
+	NativeFlightSQLWorker NativeFlightSQLRunner
 
 	// DataCapIssuer mints the data-plane capabilities a remotely
 	// dispatched task presents to fetch input too large to inline
@@ -686,6 +689,11 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	return e.RunPipelineOpts(pipelineID, opts)
 }
 
+func (e *Engine) configureRunner(r *Runner) *Runner {
+	r.flightSQLWorker = e.NativeFlightSQLWorker
+	return r
+}
+
 // RunPipelineOpts is RunPipeline with the run's provenance attached.
 func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Run, error) {
 	if e.closing() {
@@ -769,7 +777,7 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		return blocked, nil
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -1011,6 +1019,13 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	if ve := ValidatePipeline(pipe, e.Executors...); ve.HasErrors() {
 		return "", ve
 	}
+	if useJobQueue {
+		capabilities, err := e.ConnResolver.PipelineRequiredCapabilities(pipe)
+		if err != nil {
+			return "", fmt.Errorf("pipeline worker requirements: %w", err)
+		}
+		requiredCapabilities = appendUniqueCapabilities(requiredCapabilities, capabilities)
+	}
 
 	// ADR-032 rollout step 4 (#439): validate and resolve typed run
 	// parameters against the pipeline's declarations before any run is
@@ -1180,7 +1195,7 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	}
 
 	// Default: run in-process (current behavior)
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue, requiredCapabilities)
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue, requiredCapabilities))
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
 	runner.artifactStore = e.ArtifactStore
@@ -1226,6 +1241,22 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	}()
 
 	return runID, nil
+}
+
+func appendUniqueCapabilities(base, additional []string) []string {
+	seen := make(map[string]struct{}, len(base)+len(additional))
+	result := make([]string, 0, len(base)+len(additional))
+	for _, capability := range append(base, additional...) {
+		if capability == "" {
+			continue
+		}
+		if _, ok := seen[capability]; ok {
+			continue
+		}
+		seen[capability] = struct{}{}
+		result = append(result, capability)
+	}
+	return result
 }
 
 // ExecuteQueuedRun executes a previously accepted run using its durable ID.
@@ -1323,7 +1354,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 			Params:    params,
 		},
 	})
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
 	runner.orgID = pipe.OrgID
 	runner.params = params
 	runner.acceptedRun = accepted
@@ -1438,7 +1469,7 @@ func (e *Engine) DryRun(p *models.Pipeline, maxRows int) (map[string]*DryRunNode
 		maxRows = 10
 	}
 
-	runner := NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
 	runner.dryRun = true
 	runner.dryRunMaxRows = maxRows
 
@@ -1764,7 +1795,7 @@ func (e *Engine) resumeRun(runID, fromNodeID string) (*models.Run, error) {
 	//
 	dropReusedOutcomes(reRun, succeeded, conditionResults, artifactSourceRunIDs)
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.conditionResults = conditionResults

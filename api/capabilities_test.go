@@ -1,9 +1,15 @@
 package api
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +156,77 @@ func TestCapabilitiesHandler(t *testing.T) {
 		if !seen {
 			t.Errorf("supported_execution_features missing %q", name)
 		}
+	}
+}
+
+func TestCapabilitiesReportInstalledNativeADBCDriversAsNotWired(t *testing.T) {
+	driverDir := t.TempDir()
+	t.Setenv("BROKOLI_DRIVER_DIR", driverDir)
+	installCapabilityTestDriver(t, driverDir, "flightsql")
+
+	rec := httptest.NewRecorder()
+	CapabilitiesHandler(rec, httptest.NewRequest(http.MethodGet, "/api/capabilities", nil))
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+
+	var status struct {
+		Status    string `json:"status"`
+		Reason    string `json:"reason"`
+		Installed []struct {
+			Name       string `json:"name"`
+			Version    string `json:"version"`
+			OS         string `json:"os"`
+			Arch       string `json:"arch"`
+			Entrypoint string `json:"entrypoint"`
+			Library    string `json:"library"`
+			Digest     string `json:"library_sha256"`
+		} `json:"installed"`
+	}
+	if err := json.Unmarshal(body["native_adbc_drivers"], &status); err != nil {
+		t.Fatalf("decode native ADBC status: %v", err)
+	}
+	if status.Status != "not_wired" || status.Reason != nativeADBCDriverReason {
+		t.Fatalf("native ADBC status = %#v", status)
+	}
+	if len(status.Installed) != 1 {
+		t.Fatalf("installed drivers = %#v", status.Installed)
+	}
+	driver := status.Installed[0]
+	if driver.Name != "flightsql" || driver.Version != "1.0.0" || driver.OS != runtime.GOOS || driver.Arch != runtime.GOARCH || driver.Entrypoint != "AdbcDriverInit" {
+		t.Fatalf("driver = %#v", driver)
+	}
+	if driver.Library != "" {
+		t.Fatalf("driver exposed library path: %#v", driver)
+	}
+	if driver.Digest == "" {
+		t.Fatalf("driver omitted library digest: %#v", driver)
+	}
+}
+
+func installCapabilityTestDriver(t *testing.T, driverDir, name string) {
+	t.Helper()
+	dir := filepath.Join(driverDir, name)
+	if err := os.Mkdir(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	library := []byte("native library")
+	if err := os.WriteFile(filepath.Join(dir, "driver.so"), library, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(library)
+	manifest := map[string]string{
+		"name": name, "version": "1.0.0", "os": runtime.GOOS, "arch": runtime.GOARCH,
+		"library": "driver.so", "entrypoint": "AdbcDriverInit",
+		"library_sha256": fmt.Sprintf("%x", digest), "archive_sha256": strings.Repeat("0", 64),
+	}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }
 

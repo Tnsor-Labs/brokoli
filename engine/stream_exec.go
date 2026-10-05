@@ -917,6 +917,16 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	if query == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
+	if library, ok := node.Config["native_flightsql_library"].(string); ok {
+		headers, _ := node.Config["native_flightsql_headers"].(map[string]string)
+		r.recordExecutedSQL(node.ID, attempt, query)
+		ref, err := runFlightSQLSource(ctx, r.flightSQLWorker, outputs, library, uri, query, headers)
+		if err != nil {
+			return nodeExecutionResult{}, err
+		}
+		r.log(node.ID, models.LogLevelInfo, "Streamed %d rows, %d columns from Flight SQL by reference as Arrow IPC (never materialized)", ref.RowCount, len(ref.Columns))
+		return nodeExecutionResult{outputRef: ref}, nil
+	}
 
 	if isBigQueryURI(uri) {
 		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")

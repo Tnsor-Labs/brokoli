@@ -14,6 +14,7 @@ export const DEFAULT_PORT: Record<string, string> = {
   mssql: '1433',
   oracle: '1521',
   databricks: '443',
+  flightsql: '32010',
   sftp: '22',
   http: '443 (80 means plain http)',
 }

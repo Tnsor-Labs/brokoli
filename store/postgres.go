@@ -163,6 +163,7 @@ func (s *PostgresStore) migrate() error {
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS password_ref TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS extra_ref TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS max_concurrent INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS driver_identity TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`UPDATE connections SET password_ref = 'encrypted://' || password_enc WHERE password_enc != '' AND password_ref = ''`)
 	s.db.Exec(`UPDATE connections SET extra_ref = 'encrypted://' || extra_enc WHERE extra_enc != '' AND extra_ref = ''`)
 
@@ -2117,23 +2118,31 @@ func (s *PostgresStore) CreateConnection(c *models.Connection) error {
 	if extraRef == "" && extraEnc != "" {
 		extraRef = "encrypted://" + extraEnc
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at, max_concurrent)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
+	driverIdentity, err := connectionDriverIdentity(c)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at, max_concurrent, driver_identity)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		passEnc, extraEnc, passRef, extraRef, wsID, c.CreatedAt, c.UpdatedAt, c.MaxConcurrent,
+		passEnc, extraEnc, passRef, extraRef, wsID, c.CreatedAt, c.UpdatedAt, c.MaxConcurrent, driverIdentity,
 	)
 	return err
 }
 
 func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error) {
 	var c models.Connection
+	var driverIdentity string
 	err := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id, driver_identity
 		 FROM connections WHERE conn_id = $1`, connID,
 	).Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &c.WorkspaceID)
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &c.WorkspaceID, &driverIdentity)
 	if err != nil {
+		return nil, err
+	}
+	if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 		return nil, err
 	}
 	return &c, nil
@@ -2141,7 +2150,7 @@ func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error)
 
 func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
 		 FROM connections ORDER BY conn_id`,
 	)
 	if err != nil {
@@ -2152,8 +2161,12 @@ func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
+		var driverIdentity string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
+			return nil, err
+		}
+		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 			return nil, err
 		}
 		conns = append(conns, c)
@@ -2172,11 +2185,15 @@ func (s *PostgresStore) UpdateConnection(c *models.Connection) error {
 	if extraRef == "" && extraEnc != "" {
 		extraRef = "encrypted://" + extraEnc
 	}
+	driverIdentity, err := connectionDriverIdentity(c)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.Exec(
-		`UPDATE connections SET type=$1, description=$2, host=$3, port=$4, schema_name=$5, login=$6, password_enc=$7, extra_enc=$8, password_ref=$9, extra_ref=$10, updated_at=$11, max_concurrent=$13
+		`UPDATE connections SET type=$1, description=$2, host=$3, port=$4, schema_name=$5, login=$6, password_enc=$7, extra_enc=$8, password_ref=$9, extra_ref=$10, updated_at=$11, max_concurrent=$13, driver_identity=$14
 		 WHERE conn_id = $12`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		passEnc, extraEnc, passRef, extraRef, c.UpdatedAt, c.ConnID, c.MaxConcurrent,
+		passEnc, extraEnc, passRef, extraRef, c.UpdatedAt, c.ConnID, c.MaxConcurrent, driverIdentity,
 	)
 	if err != nil {
 		return err
@@ -2887,7 +2904,7 @@ func (s *PostgresStore) ListConnectionsByWorkspacePaged(workspaceID string, limi
 	var total int
 	s.db.QueryRow(`SELECT COUNT(*) FROM connections WHERE workspace_id = $1`, workspaceID).Scan(&total)
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
 		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id LIMIT $2 OFFSET $3`, workspaceID, limit, offset,
 	)
 	if err != nil {
@@ -2897,7 +2914,13 @@ func (s *PostgresStore) ListConnectionsByWorkspacePaged(workspaceID string, limi
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
-		rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login, &c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent)
+		var driverIdentity string
+		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login, &c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
+			return nil, 0, err
+		}
+		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
+			return nil, 0, err
+		}
 		conns = append(conns, c)
 	}
 	return conns, total, rows.Err()
@@ -2924,7 +2947,7 @@ func (s *PostgresStore) ListVariablesByWorkspacePaged(workspaceID string, limit,
 
 func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
 		 FROM connections WHERE workspace_id = $1 ORDER BY conn_id`, workspaceID,
 	)
 	if err != nil {
@@ -2934,8 +2957,12 @@ func (s *PostgresStore) ListConnectionsByWorkspace(workspaceID string) ([]models
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
+		var driverIdentity string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
+			return nil, err
+		}
+		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 			return nil, err
 		}
 		conns = append(conns, c)

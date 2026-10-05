@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 )
 
 // ConnectionType identifies the kind of external system.
@@ -28,6 +30,7 @@ const (
 	ConnTypeOracle     ConnectionType = "oracle"
 	ConnTypeMSSQL      ConnectionType = "mssql"
 	ConnTypeClickHouse ConnectionType = "clickhouse"
+	ConnTypeFlightSQL  ConnectionType = "flightsql"
 	ConnTypeGeneric    ConnectionType = "generic"
 )
 
@@ -49,6 +52,9 @@ type Connection struct {
 	Extra       string         `json:"extra,omitempty"`        // resolved plaintext (in-memory only, never persisted)
 	PasswordRef string         `json:"password_ref,omitempty"` // credential ref: env://VAR, vault://path#key, k8s://ns/secret/key, encrypted://...
 	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
+	// DriverIdentity pins the verified native ADBC artifact Flight SQL needs.
+	// It is metadata, not a credential, and is safe to persist and return.
+	DriverIdentity *drivers.DriverIdentity `json:"driver_identity,omitempty"`
 	// MaxConcurrent bounds how many node executions may hold this
 	// connection at once (#398, Airflow-pools shape): a node resolving
 	// this conn_id acquires a slot for the duration of its execution,
@@ -242,7 +248,7 @@ func (c *Connection) BuildsURI() bool {
 	switch c.Type {
 	case ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite,
 		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeDatabricks, ConnTypeClickHouse,
-		ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
+		ConnTypeBigQuery, ConnTypeFlightSQL, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3:
 		return true
 	default:
 		return false
@@ -413,6 +419,15 @@ func (c *Connection) BuildURI() string {
 				}
 			}
 			u.RawQuery = q.Encode()
+		}
+		return u.String()
+
+	case ConnTypeFlightSQL:
+		// Flight SQL ADBC accepts gRPC URIs directly. It is intentionally not
+		// included in IsDatabase: this URI must never be sent to database/sql.
+		u := &url.URL{Scheme: "grpc+tcp", Host: c.hostPort(32010)}
+		if c.Schema != "" {
+			u.Path = "/" + strings.TrimPrefix(c.Schema, "/")
 		}
 		return u.String()
 

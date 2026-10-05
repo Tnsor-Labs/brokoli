@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
@@ -31,7 +33,14 @@ type ConnectionResolver struct {
 	// tokens issues OIDC tokens for connections that authenticate by
 	// workload identity federation. Nil when the deployment has none.
 	tokens identity.TokenSource
+	// driverManager verifies pinned native driver identities. It never loads a
+	// driver; execution remains restricted to the isolated native worker.
+	driverManager *drivers.Manager
 }
+
+// ErrNativeWorkerUnavailable reports that a Flight SQL connection passed
+// identity validation but this process cannot execute native drivers.
+var ErrNativeWorkerUnavailable = errors.New("isolated native worker execution is not enabled")
 
 // SetTokenSource sets where connections authenticating by OIDC get their
 // tokens. A nil pointer inside a non-nil interface is treated as none, so a
@@ -57,6 +66,82 @@ func (cr *ConnectionResolver) TokenSource() identity.TokenSource {
 // NewConnectionResolver creates a new resolver.
 func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolver {
 	return &ConnectionResolver{store: s, secrets: sec, pools: newConnectionPools()}
+}
+
+// SetDriverManager sets the verified native-driver inventory used for Flight
+// SQL preflight. It is primarily useful to wire an isolated worker inventory.
+func (cr *ConnectionResolver) SetDriverManager(manager *drivers.Manager) { cr.driverManager = manager }
+
+// ValidateConnection checks gates that must run before any credential is read.
+func (cr *ConnectionResolver) ValidateConnection(conn *models.Connection) error {
+	if conn == nil || conn.Type != models.ConnTypeFlightSQL {
+		return nil
+	}
+	manager := cr.driverManager
+	if manager == nil {
+		var err error
+		manager, err = drivers.NewManager(drivers.DefaultDir())
+		if err != nil {
+			return fmt.Errorf("Flight SQL driver inventory: %w", err)
+		}
+	}
+	if conn.DriverIdentity == nil {
+		// RequiredCapabilities owns canonical identity validation, including
+		// the missing identity case; never broaden this into a name-only match.
+		_, err := manager.RequiredCapabilities(drivers.DriverIdentity{})
+		return fmt.Errorf("Flight SQL driver identity: %w", err)
+	}
+	if _, err := manager.RequiredCapabilities(*conn.DriverIdentity); err != nil {
+		return fmt.Errorf("Flight SQL driver identity: %w", err)
+	}
+	return nil
+}
+
+// PipelineRequiredCapabilities returns the exact native-driver tags required
+// by saved Flight SQL sources. This happens before a queued run is published,
+// so a scheduler can place it only on a worker with the pinned driver.
+func (cr *ConnectionResolver) PipelineRequiredCapabilities(pipe *models.Pipeline) ([]string, error) {
+	if cr == nil || pipe == nil {
+		return nil, nil
+	}
+	seen := make(map[string]struct{})
+	var capabilities []string
+	for _, node := range pipe.Nodes {
+		if node.Type != models.NodeTypeSourceDB {
+			continue
+		}
+		connID, _ := node.Config["conn_id"].(string)
+		if connID == "" {
+			continue
+		}
+		conn, err := cr.store.GetConnection(connID)
+		if err != nil {
+			return nil, fmt.Errorf("Flight SQL connection %q: %w", connID, err)
+		}
+		if conn.Type != models.ConnTypeFlightSQL {
+			continue
+		}
+		if err := cr.ValidateConnection(conn); err != nil {
+			return nil, err
+		}
+		for _, capability := range mustDriverCapabilities(cr, *conn.DriverIdentity) {
+			if _, ok := seen[capability]; !ok {
+				seen[capability] = struct{}{}
+				capabilities = append(capabilities, capability)
+			}
+		}
+	}
+	return capabilities, nil
+}
+
+func mustDriverCapabilities(cr *ConnectionResolver, identity drivers.DriverIdentity) []string {
+	capabilities, err := managerFor(cr).RequiredCapabilities(identity)
+	if err != nil {
+		// ValidateConnection above performs this exact check; this preserves its
+		// error handling if manager construction ever changes.
+		return nil
+	}
+	return capabilities
 }
 
 // ResolveWithWarnings is Resolve, plus the warnings it would otherwise only
@@ -175,6 +260,9 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		}
 		return config, nil
 	}
+	if err := cr.ValidateConnection(conn); err != nil {
+		return config, err
+	}
 
 	if err := cr.resolveCredentials(conn, scope); err != nil {
 		return config, err
@@ -194,6 +282,15 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 
 	switch nodeType {
 	case models.NodeTypeSourceDB, models.NodeTypeSinkDB:
+		if conn.Type == models.ConnTypeFlightSQL {
+			// This marker is only injected for a saved, identity-validated
+			// connection. The runner uses it to keep Flight SQL out of database/sql.
+			manifest := managerFor(cr).Get(conn.DriverIdentity.Name)
+			resolved["uri"] = conn.BuildURI()
+			resolved["native_flightsql_library"] = manifest.LibraryPath()
+			resolved["native_flightsql_headers"] = flightSQLHeaders(conn, extra)
+			break
+		}
 		// A connection type with no engine driver has no URI to inject. Leaving
 		// the node's own uri untouched makes the failure say so; fabricating one
 		// from the bare hostname used to hand the Postgres driver a malformed
@@ -217,6 +314,33 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 	}
 
 	return resolved, nil
+}
+
+func managerFor(cr *ConnectionResolver) *drivers.Manager {
+	if cr.driverManager != nil {
+		return cr.driverManager
+	}
+	manager, _ := drivers.NewManager(drivers.DefaultDir())
+	return manager
+}
+
+func flightSQLHeaders(conn *models.Connection, extra map[string]interface{}) map[string]string {
+	headers := make(map[string]string)
+	if raw, ok := extra["headers"].(map[string]interface{}); ok {
+		for name, value := range raw {
+			if text, ok := value.(string); ok {
+				headers[name] = text
+			}
+		}
+	}
+	if conn.Password != "" {
+		if conn.Login == "" {
+			headers["authorization"] = "Bearer " + conn.Password
+		} else {
+			headers["authorization"] = "Basic " + base64.StdEncoding.EncodeToString([]byte(conn.Login+":"+conn.Password))
+		}
+	}
+	return headers
 }
 
 // resolveAPIConnectionFields injects a connection's base URL, merged headers,
@@ -426,6 +550,9 @@ func (cr *ConnectionResolver) ResolveConnectionScoped(connID string, scope secre
 	if !sameWorkspace(conn, workspaceID) {
 		return nil, fmt.Errorf(notInWorkspace, connID)
 	}
+	if err := cr.ValidateConnection(conn); err != nil {
+		return nil, err
+	}
 	if err := cr.resolveCredentials(conn, scope); err != nil {
 		return nil, err
 	}
@@ -459,6 +586,9 @@ func (cr *ConnectionResolver) ResolveConnectionByID(connID string) (*models.Conn
 	}
 	if conn == nil {
 		return nil, fmt.Errorf("resolve connection %q: not found", connID)
+	}
+	if err := cr.ValidateConnection(conn); err != nil {
+		return nil, err
 	}
 	if err := cr.resolveCredentials(conn, secrets.Scope{WorkspaceID: conn.WorkspaceID}); err != nil {
 		return nil, err

@@ -39,6 +39,7 @@ const LETTER: Record<string, string> = {
   mssql: 'SQL',
   s3: 'S3',
   azure_blob: 'AZ',
+  flightsql: 'FS',
 }
 
 export function VendorIcon({ type, category, size = 18 }: { type: string; category: string; size?: number }) {

@@ -224,6 +224,41 @@ func (q *inMemoryJobQueue) Dequeue() (RunJob, error) {
 	return job, nil
 }
 
+func (q *inMemoryJobQueue) DequeueForCapabilities(workerCapabilities []string) (RunJob, error) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for {
+		for index, job := range q.pending {
+			if !jobCapabilitiesMatch(job.RequiredCapabilities, workerCapabilities) {
+				continue
+			}
+			q.pending = append(q.pending[:index], q.pending[index+1:]...)
+			q.processing[job.ID] = job
+			return job, nil
+		}
+		if q.closed {
+			return RunJob{}, ErrQueueClosed
+		}
+		q.ready.Wait()
+	}
+}
+
+func jobCapabilitiesMatch(required, available []string) bool {
+	if len(required) == 0 {
+		return true
+	}
+	have := make(map[string]struct{}, len(available))
+	for _, capability := range available {
+		have[capability] = struct{}{}
+	}
+	for _, capability := range required {
+		if _, ok := have[capability]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func (q *inMemoryJobQueue) Ack(jobID string) error {
 	return q.settle(jobID)
 }
