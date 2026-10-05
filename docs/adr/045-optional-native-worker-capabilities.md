@@ -166,11 +166,24 @@ as a view, execute a Brokoli-visible SQL transform, and emit another Arrow
 reader. This is the preferred path for local joins and lake queries; it is
 not a claim that DuckDB replaces the database-specific hot paths.
 
-The Arrow C Data Interface makes zero-copy interchange possible, but this ADR
-does **not** promise zero-copy. The actual Go ADBC binding, DuckDB binding,
-record ownership, release order, schema fidelity and memory use must be
-demonstrated by correctness and benchmark tests before the implementation is
-advertised as zero-copy.
+There are two deliberately different Arrow boundaries:
+
+- **Fused native stages in one task child** pass an `arrow.RecordReader`
+  directly through the Arrow C Data Interface. An ADBC source may feed DuckDB,
+  then an ADBC or native sink, without a `common.DataSet`, row map or Arrow IPC
+  file between stages. This path is ephemeral: a child crash restarts the
+  segment from its last durable input.
+- **Durable or distributed boundaries** use Arrow IPC artifacts. Checkpoints,
+  retries, fan-out, remote-worker transfer and durable intermediate outputs
+  require bytes that outlive a process, so IPC's serialization cost is an
+  explicit correctness trade, not a failed attempt at zero-copy.
+
+The Arrow C Data Interface makes a low-copy in-process handoff possible, but
+this ADR does **not** promise end-to-end zero-copy. Network drivers may still
+decode and allocate before presenting an Arrow reader, and native consumers may
+import into their own vectors. Record ownership, release order, schema fidelity
+and memory use must be demonstrated by correctness and benchmark tests before
+any path is advertised as zero-copy.
 
 ### 6. Resource, process and network isolation
 
@@ -268,3 +281,82 @@ Implementation proceeds in this order:
 Trino through ADBC is a later optional source pack. It does not replace the
 separate experimental Trino integration and must pass the same driver and
 capability gates.
+
+## Update (2026-10-04): Arrow boundary measurements
+
+The first prototype measured a Dremio OSS Flight SQL source over a DuckDB
+generated TPC-H SF1 `lineitem` scan: 6,001,215 rows, 16 typed columns and a
+1.11 GB Arrow IPC result. These findings refine, rather than replace, the
+decision above:
+
+| Path | Median rows/s | Heap allocation/op | Allocations/op |
+| --- | ---: | ---: | ---: |
+| Go Flight SQL ADBC receive only | 426,052 | 1.53 GB | 254,001 |
+| Go Flight SQL ADBC to Arrow IPC | 426,763 | 1.58 GB | 306,673 |
+| Go Flight SQL ADBC to native DuckDB ADBC | 372,178 | 1.54 GB | 371,730 |
+| Prebuilt Arrow reader to native DuckDB ADBC, 1M rows | 2,739,309 | 7 KiB | 71 |
+
+The native DuckDB `ArrowArrayStream` handoff avoids row materialization and
+does not copy the full result into the host Go heap. The host's pure-Go Flight
+SQL driver's gRPC/protobuf decode dominates that host heap accounting. Arrow
+IPC adds a measurable but secondary serialization cost.
+
+A matched three-run comparison against the same Dremio SF1 query subsequently
+tested Apache's Flight SQL driver through the ADBC driver manager. The host
+pure-Go driver median was 525,042 rows/s, 1.51 GB/op and 255,779 host Go
+allocations/op. The driver-manager path's median was 432,191 rows/s, 28.4 MB/op
+and 228,982 host Go allocations/op. This result is not an allocation-saving or
+throughput conclusion.
+
+Inspection of the official `libadbc_driver_flightsql.so` v1.12.0 binary with
+`go version -m` shows it is Go 1.26.5 built with `-buildmode=c-shared`, with
+Arrow Go, gRPC and protobuf dependencies. Loading it embeds a second Go runtime
+whose heap and GC are outside the host benchmark's `B/op` and allocation
+accounting. One `/usr/bin/time -v` sample for each path reported essentially
+equal peak RSS (1,100,928 KiB host Go; 1,100,416 KiB driver manager). The
+numbers therefore show an accounting shift, not lower total process memory.
+
+The fixed-order three-run samples also do not establish an 18% throughput
+difference: pure-Go samples ranged from 11.10 to 13.48 seconds/op and
+driver-manager samples ranged from 12.67 to 15.23 seconds/op. Any comparative
+claim requires interleaved runs in one controlled session, at least ten samples
+per path, fixed `GOMAXPROCS` and Dremio state, and `benchstat` analysis. Native
+drivers must additionally be tested under concurrent pulls against the task
+cgroup budget because each embedded Go runtime can apply `GOMEMLIMIT` as if it
+owned the whole limit.
+
+Accordingly, new Arrow-native plans must request a fused same-task-process
+capability when they can use it, for example `adbc:flightsql`, `duckdb`, and
+`same-task-process`. The scheduler may insert an IPC artifact only when
+durability or distribution requires it. Flight SQL does not presently justify
+a driver-manager source path over the pure-Go source. The next comparative
+targets are a C++ ADBC PostgreSQL/libpq driver against the existing pgx hot
+path, and a C++ Flight client baseline against Dremio. No end-to-end zero-copy
+or total-memory claim is earned until ownership, throughput, and concurrent
+cgroup-memory tests pass.
+
+## Update (2026-10-04): Controlled comparison follow-up
+
+Ten alternating, one-iteration Dremio Flight SQL runs were collected with a
+fixed `GOMAXPROCS=8` and analysed with `benchstat`. The pure-Go receive path
+was 12.57 s/op +/- 7% (477,400 rows/s +/- 7%); the driver-manager path was
+12.48 s/op +/- 6% (481,000 rows/s +/- 5%). The distributions overlap at this
+precision and do not support a throughput-selection claim. Their host Go `B/op`
+values remain non-comparable because the
+driver-manager library contains its own Go runtime.
+
+A separate PyArrow 25.0.1 Flight transport baseline, which uses Arrow C++
+transport with Python only as orchestration, received the same result at
+544,189, 570,990 and 583,445 rows/s over three warm runs. Its process peak RSS
+was 1.84 GiB. It establishes a faster client ceiling for this setup, not a
+memory-efficient worker default.
+
+The native PostgreSQL ADBC driver is a different candidate: its official
+library has no Go build metadata and is native C++. In a five-run first-pass
+read of one million typed rows, Brokoli's bounded pgx stream median was
+2.53 s/op (394,931 rows/s) and the native Arrow reader median was 1.92 s/op
+(520,884 rows/s). Host Go allocation was 424 MiB/op versus 24 KiB/op, but this
+does not establish total allocation. Direct test-binary RSS samples were
+58 MiB for pgx and 76 MiB for native ADBC. These source-read results merit a
+type-fidelity, cancellation, concurrent-cgroup-memory and properly interleaved
+follow-up; they do not yet change the PostgreSQL COPY write path.
