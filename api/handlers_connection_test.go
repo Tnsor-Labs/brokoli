@@ -3,16 +3,26 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestMSSQLConnectionTestUsesCompiledDriver(t *testing.T) {
@@ -105,4 +115,55 @@ func TestGCSConnectionTestUsesCompiledTransport(t *testing.T) {
 	if result["error"] == "gcs has no driver in this build" {
 		t.Fatal("GCS was routed through the generic unsupported path")
 	}
+}
+
+func TestFlightSQLConnectionTestReportsIdentityGateBeforeCredentials(t *testing.T) {
+	s, err := store.NewSQLiteStore(t.TempDir() + "/connections.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	manager, identity := testFlightSQLManager(t)
+	if err := s.CreateConnection(&models.Connection{ID: "c1", ConnID: "flight", Type: models.ConnTypeFlightSQL,
+		Host: "flight.example.com", DriverIdentity: identity, PasswordRef: "unsupported://must-not-resolve", CreatedAt: time.Now(), UpdatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewConnectionHandler(s, nil)
+	h.creds.SetDriverManager(manager)
+	r := chi.NewRouter()
+	r.Post("/connections/{connId}/test", h.Test)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/connections/flight/test", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "isolated native worker execution is not enabled") || strings.Contains(w.Body.String(), "unsupported scheme") {
+		t.Fatalf("connection test response = %s, want pre-credential worker gate", w.Body.String())
+	}
+}
+
+func testFlightSQLManager(t *testing.T) (*drivers.Manager, *drivers.DriverIdentity) {
+	t.Helper()
+	root, name, library := t.TempDir(), "adbc-flightsql", []byte("native Flight SQL driver")
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(filepath.Join(dir, "lib"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "lib", "driver.so"), library, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(library)
+	manifest := drivers.Manifest{Name: name, Version: "1.0.0", OS: runtime.GOOS, Arch: runtime.GOARCH, Library: "lib/driver.so", Entrypoint: "AdbcDriverFlightSQLInit", LibrarySHA256: hex.EncodeToString(digest[:]), ArchiveSHA256: strings.Repeat("0", 64)}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := drivers.NewManager(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return manager, &drivers.DriverIdentity{Name: name, Version: manifest.Version, LibrarySHA256: manifest.LibrarySHA256}
 }

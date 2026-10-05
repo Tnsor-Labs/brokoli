@@ -140,7 +140,8 @@ type Runner struct {
 	// resume attempt against a nil artifactStore that needs to restore a
 	// node with downstream consumers fails loudly rather than silently
 	// substituting empty data).
-	artifactStore ArtifactStore
+	artifactStore   ArtifactStore
+	flightSQLWorker NativeFlightSQLRunner
 
 	// spillThreshold is the estimated encoded size at or above which a
 	// node's output is written to the artifact store instead of being held
@@ -225,6 +226,12 @@ type nodeExecutionResult struct {
 	// real types (#363). Nil is the normal answer -- most nodes cannot
 	// say, and a consumer that gets nothing infers, as it always did.
 	outputSchema columnSchema
+}
+
+// NativeFlightSQLRunner is the isolated child boundary used by saved Flight
+// SQL source connections. It is intentionally narrower than a general worker.
+type NativeFlightSQLRunner interface {
+	RunFlightSQL(context.Context, NativeFlightSQLRequest) (NativeFlightSQLResponse, error)
 }
 
 // nodeRowCount is what a completed node reports as its row count.

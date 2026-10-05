@@ -471,10 +471,18 @@ export interface Connection {
   /** "encrypted://********" when stored by Brokoli; env://, vault:// or k8s:// refs come back verbatim. */
   password_ref?: string
   extra_ref?: string
+  /** Verified native ADBC artifact selected for Flight SQL. */
+  driver_identity?: DriverIdentity
   /** 0 means unlimited. */
   max_concurrent?: number
   created_at?: string
   updated_at?: string
+}
+
+export interface DriverIdentity {
+  name: string
+  version: string
+  library_sha256: string
 }
 
 export interface ConnectionTypeMeta {
@@ -500,6 +508,12 @@ export interface User {
 export interface Capabilities {
   /** Node types the server refuses (BROKOLI_DISABLED_NODE_TYPES). Always present on servers that support the setting. */
   disabled_node_types?: string[]
+  /** Native ADBC artifacts discovered by the server. `not_wired` never implies executable support. */
+  native_adbc_drivers?: {
+    status: 'not_wired'
+    reason: string
+    installed: { name: string; version: string; os: string; arch: string; entrypoint: string; library_sha256: string }[]
+  }
   [key: string]: unknown
 }
 

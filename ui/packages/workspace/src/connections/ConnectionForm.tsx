@@ -1,9 +1,9 @@
 import { useMemo, useState, type FormEvent } from 'react'
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Database, Globe, HardDrive, Plug, PlugZap } from 'lucide-react'
-import { connectionApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
+import { connectionApi, systemApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
-import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, SegmentedControl, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
+import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, SegmentedControl, Select, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
 import { CATEGORY_LABEL, DEFAULT_PORT, DRIVER_OPTIONS, USABLE_BY_NODES, externalSecret, formFields, groupTypes } from './catalog'
 import { EMPTY_REF, SecretRefPicker } from '../secret-stores/SecretRefPicker'
 import { composeSecretRef, isSecretRef, parseSecretRef, secretRefProblem, setExtraReference, type SecretRefParts } from '../secret-stores/reference'
@@ -29,10 +29,15 @@ type Draft = {
   extra: string
   s3_endpoint: string
   s3_use_path_style: boolean
+  driver_identity: string
   max_concurrent: string
 }
 
 const CONN_ID = /^[a-z0-9_-]+$/
+
+function driverIdentityKey(identity?: Connection['driver_identity']) {
+  return identity ? `${identity.name}\u0000${identity.version}\u0000${identity.library_sha256}` : ''
+}
 
 function draftFrom(c?: Connection, type = ''): Draft {
   let s3Endpoint = ''
@@ -60,6 +65,7 @@ function draftFrom(c?: Connection, type = ''): Draft {
     extra: '',
     s3_endpoint: s3Endpoint,
     s3_use_path_style: s3UsePathStyle,
+    driver_identity: driverIdentityKey(c?.driver_identity),
     max_concurrent: c?.max_concurrent ? String(c.max_concurrent) : '',
   }
 }
@@ -114,6 +120,22 @@ export function ConnectionForm({
   const passwordSecret = isSecretRef(saved?.password_ref) ? null : externalSecret(saved?.password_ref)
   const extraSecret = externalSecret(saved?.extra_ref)
   const storedRefIsSecret = isSecretRef(saved?.password_ref)
+
+  const capabilities = useQuery({
+    queryKey: ['capabilities'],
+    queryFn: systemApi.capabilities,
+    enabled: draft.type === 'flightsql',
+    staleTime: Infinity,
+    gcTime: Infinity,
+    retry: false,
+    refetchOnWindowFocus: false,
+  })
+  const flightSQLDrivers = (capabilities.data?.native_adbc_drivers?.installed ?? []).filter((driver) =>
+    driver.name.toLowerCase().replaceAll(/[^a-z0-9]/g, '').includes('flightsql'),
+  )
+  const selectedFlightSQLDriver = flightSQLDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
+  const flightSQLSaveBlocked = draft.type === 'flightsql' && (capabilities.isPending || !selectedFlightSQLDriver)
+  const flightSQLTestBlocked = draft.type === 'flightsql'
   const [extraRefKey, setExtraRefKey] = useState('')
   const [extraRef, setExtraRef] = useState<SecretRefParts>(EMPTY_REF)
   const [extraRefOpen, setExtraRefOpen] = useState(false)
@@ -165,6 +187,13 @@ export function ConnectionForm({
       login: draft.login,
       max_concurrent: draft.max_concurrent ? Number(draft.max_concurrent) : 0,
     }
+    if (draft.type === 'flightsql' && selectedFlightSQLDriver) {
+      body.driver_identity = {
+        name: selectedFlightSQLDriver.name,
+        version: selectedFlightSQLDriver.version,
+        library_sha256: selectedFlightSQLDriver.library_sha256,
+      }
+    }
     Object.assign(body, passwordFields(draft.password_source, draft.password_ref, draft.password, saved?.password_ref, Boolean(passwordSecret)))
     if (draft.type === 's3' && !extraSecret) {
       let extra: Record<string, unknown> = {}
@@ -214,7 +243,7 @@ export function ConnectionForm({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (invalid || busy) return
+    if (invalid || busy || flightSQLSaveBlocked) return
     const result = await save()
     if (result && existing) onClose()
   }
@@ -274,8 +303,8 @@ export function ConnectionForm({
             <Button
               icon={<PlugZap size={15} aria-hidden="true" />}
               loading={busy === 'test'}
-              disabled={Boolean(busy) || (dirty && (invalid || !canEdit))}
-              title={dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
+              disabled={Boolean(busy) || flightSQLTestBlocked || (dirty && (invalid || !canEdit))}
+              title={flightSQLTestBlocked ? 'Flight SQL testing is pending native worker support' : dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
               onClick={async () => {
                 const target = dirty ? await save() : saved
                 if (target) await runTest(target)
@@ -289,7 +318,7 @@ export function ConnectionForm({
             {editing && !dirty ? 'Close' : 'Cancel'}
           </Button>
           {canEdit && (
-            <Button variant="primary" type="submit" form="ws-connection-form" loading={busy === 'save'} disabled={invalid || (editing && !dirty)}>
+            <Button variant="primary" type="submit" form="ws-connection-form" loading={busy === 'save'} disabled={invalid || flightSQLSaveBlocked || (editing && !dirty)}>
               {editing ? 'Save changes' : 'Create connection'}
             </Button>
           )}
@@ -307,6 +336,38 @@ export function ConnectionForm({
             <Callout tone="warning" title="Pipelines cannot use this type yet">
               The engine has no driver for {meta?.label ?? draft.type}, so database, file and API nodes will not accept it. You can still store it for reference.
             </Callout>
+          )}
+          {draft.type === 'postgres' && (
+            <Callout tone="info" title="PostgreSQL driver">
+              The standard driver remains in use for PostgreSQL.
+            </Callout>
+          )}
+          {draft.type === 'flightsql' && (
+            <>
+              <Callout tone="warning" title="Native worker support pending">
+                Connection execution and testing are pending native worker support. You can save the selected driver identity now, but pipelines cannot execute it yet.
+              </Callout>
+              {capabilities.isPending ? (
+                <Callout tone="info" title="Checking installed Flight SQL drivers">
+                  Loading native ADBC driver discovery from this server.
+                </Callout>
+              ) : !flightSQLDrivers.length ? (
+                <Callout tone="danger" title="Flight SQL driver required">
+                  No installed Flight SQL driver was discovered on this server. Install one before saving or testing this connection.
+                </Callout>
+              ) : (
+                <Field label="Flight SQL driver" required hint="The selected installed driver identity is saved with this connection.">
+                  <Select value={draft.driver_identity} onChange={(e) => set({ driver_identity: e.target.value })}>
+                    <option value="">Choose an installed Flight SQL driver</option>
+                    {flightSQLDrivers.map((driver) => (
+                      <option key={driverIdentityKey(driver)} value={driverIdentityKey(driver)}>
+                        {driver.name} {driver.version} ({driver.library_sha256})
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              )}
+            </>
           )}
           <Field label="Connection ID" required error={problems.conn_id} hint={editing ? 'Pipelines refer to the connection by this ID, so it cannot change.' : 'Nodes refer to the connection by this ID.'}>
             <Input mono value={draft.conn_id} disabled={editing} placeholder={`my_${draft.type || 'connection'}`} onChange={(e) => set({ conn_id: e.target.value.toLowerCase() })} autoFocus={!editing} />

@@ -380,6 +380,13 @@ type JobQueue interface {
 	Close() error
 }
 
+// CapabilityJobQueue optionally selects only jobs whose requirements are a
+// subset of workerCapabilities. Workers fall back to JobQueue.Dequeue when a
+// queue implementation does not support capability-aware placement.
+type CapabilityJobQueue interface {
+	DequeueForCapabilities(workerCapabilities []string) (RunJob, error)
+}
+
 // JobQueueRenewer is an optional JobQueue capability (check via type
 // assertion, same pattern as store's optional capability interfaces):
 // keeping a claimed job's transport-level claim from being treated as

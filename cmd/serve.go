@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
@@ -154,6 +155,11 @@ var serveCmd = &cobra.Command{
 		warnIfSQLiteMultiInstanceRisk(dbPath, RunMode)
 
 		eng := engine.NewEngine(s)
+		// Flight SQL is only executed in this one-shot child, which may load an
+		// optional native ADBC library without contaminating the server process.
+		eng.NativeFlightSQLWorker = engine.NativeWorkerLauncher{}
+		workerCapabilities := nativeADBCWorkerCapabilities()
+		workerCapabilityList := capabilityList(workerCapabilities)
 		// Registered after s.Close so it runs before it (defers are LIFO):
 		// the engine's background goroutines — trigger-mode dependency
 		// fan-out in particular — write through the store, so they must be
@@ -555,6 +561,11 @@ var serveCmd = &cobra.Command{
 				}
 				resultCh := make(chan dequeueResult, 1)
 				go func() {
+					if capabilityQueue, ok := Extensions.JobQueue.(extensions.CapabilityJobQueue); ok {
+						job, err := capabilityQueue.DequeueForCapabilities(workerCapabilityList)
+						resultCh <- dequeueResult{job, err}
+						return
+					}
 					job, err := Extensions.JobQueue.Dequeue()
 					resultCh <- dequeueResult{job, err}
 				}()
@@ -596,6 +607,15 @@ var serveCmd = &cobra.Command{
 						}
 					}
 					continue // empty job (timeout) or invalid delivery
+				}
+				if missing := missingNativeADBCCapability(job.RequiredCapabilities, workerCapabilities); missing != "" {
+					<-workerSlots
+					err := fmt.Errorf("worker does not advertise required capability %q", missing)
+					log.Printf("Worker: refusing job %s: %v", job.ID, err)
+					if settleErr := Extensions.JobQueue.Fail(job.ID, err); settleErr != nil {
+						log.Printf("Worker: fail incompatible job %s: %v", job.ID, settleErr)
+					}
+					continue
 				}
 
 				// ADR-017 instance dispatch: a WorkOrder-bearing job's
@@ -729,6 +749,55 @@ func defaultDatabasePath() string {
 		return value
 	}
 	return "./brokoli.db"
+}
+
+func nativeADBCWorkerCapabilities() map[string]struct{} {
+	capabilities := make(map[string]struct{})
+	if !engine.NativeFlightSQLWorkerEnabled() {
+		return capabilities
+	}
+	manager, err := drivers.NewManager(drivers.DefaultDir())
+	if err != nil {
+		log.Printf("Worker: native driver inventory unavailable: %v", err)
+		return capabilities
+	}
+	for _, manifest := range manager.List() {
+		identity := drivers.DriverIdentity{Name: manifest.Name, Version: manifest.Version, LibrarySHA256: manifest.LibrarySHA256}
+		for _, capability := range mustNativeADBCCapabilities(manager, identity) {
+			capabilities[capability] = struct{}{}
+		}
+	}
+	return capabilities
+}
+
+func mustNativeADBCCapabilities(manager *drivers.Manager, identity drivers.DriverIdentity) []string {
+	capabilities, err := manager.RequiredCapabilities(identity)
+	if err != nil {
+		return nil
+	}
+	return capabilities
+}
+
+// missingNativeADBCCapability only governs native driver placement. Other
+// capability namespaces remain the responsibility of the queue implementation.
+func missingNativeADBCCapability(required []string, advertised map[string]struct{}) string {
+	for _, capability := range required {
+		if !strings.HasPrefix(capability, drivers.NativeADBCCapability) {
+			continue
+		}
+		if _, ok := advertised[capability]; !ok {
+			return capability
+		}
+	}
+	return ""
+}
+
+func capabilityList(capabilities map[string]struct{}) []string {
+	result := make([]string, 0, len(capabilities))
+	for capability := range capabilities {
+		result = append(result, capability)
+	}
+	return result
 }
 
 // loadEncryptionKey returns the key that encrypts stored credentials, or

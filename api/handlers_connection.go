@@ -429,6 +429,12 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
+	// Flight SQL identity and worker availability are checked before touching
+	// credential references, just as the engine does for a run.
+	if err := h.creds.ValidateConnection(c); err != nil {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
+		return
+	}
 
 	// Resolve the credentials the way a run does (#752). This used to
 	// decrypt Password and Extra directly, so a connection whose
@@ -817,6 +823,9 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 		{"type": "sqlite", "label": "SQLite", "category": "database", "icon": "connSqlite",
 			"description": "Zero-configuration embedded database in a single file",
 			"fields":      []string{"host"}},
+		{"type": "flightsql", "label": "Flight SQL", "category": "database", "icon": "connGeneric",
+			"description": "Apache Arrow Flight SQL endpoint. Execution is pending native worker support",
+			"fields":      []string{"host", "port", "login", "password"}},
 		// Cloud Storage
 		{"type": "s3", "label": "Amazon S3", "category": "storage", "icon": "connS3",
 			"description": "AWS object storage — buckets of files at any scale",

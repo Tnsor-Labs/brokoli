@@ -101,6 +101,11 @@ func TestBuildURI(t *testing.T) {
 				Extra: `{"location":"EU","billing_project":"billing-prod","credentials":"must-not-leak"}`},
 			want: "bigquery://analytics-prod/events?billing_project=billing-prod&location=EU",
 		},
+		{
+			name: "flight sql uses its native gRPC URI",
+			conn: Connection{Type: ConnTypeFlightSQL, Host: "flight.example.com", Schema: "catalog"},
+			want: "grpc+tcp://flight.example.com:32010/catalog",
+		},
 	}
 
 	for _, tt := range tests {
@@ -151,7 +156,7 @@ func TestBuildURIEscapesCredentials(t *testing.T) {
 func TestBuildsURICoversTheCatalog(t *testing.T) {
 	withURI := []ConnectionType{
 		ConnTypePostgres, ConnTypeRedshift, ConnTypeMySQL, ConnTypeSQLite, ConnTypeMSSQL, ConnTypeClickHouse,
-		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeDatabricks, ConnTypeBigQuery, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
+		ConnTypeMSSQL, ConnTypeOracle, ConnTypeSnowflake, ConnTypeDatabricks, ConnTypeBigQuery, ConnTypeFlightSQL, ConnTypeHTTP, ConnTypeSFTP, ConnTypeS3,
 	}
 	withoutURI := []ConnectionType{
 		ConnTypeAzureBlob, ConnTypeGCS, ConnTypeGeneric,

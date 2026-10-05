@@ -7,6 +7,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
@@ -45,6 +46,48 @@ var codeRuntimeState = struct {
 	sync.RWMutex
 	nodePath string
 }{}
+
+const nativeADBCDriverReason = "Native ADBC drivers are installed artifacts only; connection execution and testing do not use them."
+
+type nativeADBCDriver struct {
+	Name          string `json:"name"`
+	Version       string `json:"version"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	Entrypoint    string `json:"entrypoint"`
+	LibrarySHA256 string `json:"library_sha256"`
+}
+
+type nativeADBCDriverStatus struct {
+	Status    string             `json:"status"`
+	Reason    string             `json:"reason"`
+	Installed []nativeADBCDriver `json:"installed"`
+}
+
+// nativeADBCDrivers intentionally reports discovery only. Installed native
+// libraries are not loaded or selected by any connection path.
+func nativeADBCDrivers() nativeADBCDriverStatus {
+	status := nativeADBCDriverStatus{
+		Status:    "not_wired",
+		Reason:    nativeADBCDriverReason,
+		Installed: []nativeADBCDriver{},
+	}
+	manager, err := drivers.NewManager(drivers.DefaultDir())
+	if err != nil {
+		return status
+	}
+	for _, manifest := range manager.List() {
+		status.Installed = append(status.Installed, nativeADBCDriver{
+			Name:          manifest.Name,
+			Version:       manifest.Version,
+			OS:            manifest.OS,
+			Arch:          manifest.Arch,
+			Entrypoint:    manifest.Entrypoint,
+			LibrarySHA256: manifest.LibrarySHA256,
+		})
+	}
+	return status
+}
 
 // SetCodeRuntime records the runtime resolution performed by the server at
 // startup. Capabilities must describe the process that will execute a node,
@@ -92,6 +135,7 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		"node_capabilities":                  []string{models.CapabilitySource, models.CapabilitySink, models.CapabilityCompute, models.CapabilityDatasetOutput},
 		"node_type_capabilities":             nodeTypeCapabilities,
 		"node_type_interfaces":               models.NodeTypeInterfaces,
+		"native_adbc_drivers":                nativeADBCDrivers(),
 		// Node types this deployment refuses (engine.DisabledNodeTypesEnv),
 		// so a client can leave them out rather than fail validation.
 		"disabled_node_types": engine.DisabledNodeTypes(),

@@ -186,6 +186,7 @@ func (s *SQLiteStore) migrate() error {
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN password_ref TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN extra_ref TEXT NOT NULL DEFAULT ''`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 0`)
+	s.db.Exec(`ALTER TABLE connections ADD COLUMN driver_identity TEXT NOT NULL DEFAULT ''`)
 	// Migrate legacy encrypted values: copy password_enc → password_ref
 	// with encrypted:// prefix so the resolver chain handles them.
 	s.db.Exec(`UPDATE connections SET password_ref = 'encrypted://' || password_enc WHERE password_enc != '' AND password_ref = ''`)
@@ -2542,19 +2543,23 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 	if extraRef == "" && extraEnc != "" {
 		extraRef = "encrypted://" + extraEnc
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at, max_concurrent)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	driverIdentity, err := connectionDriverIdentity(c)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(
+		`INSERT INTO connections (id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, workspace_id, created_at, updated_at, max_concurrent, driver_identity)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef, wsID,
-		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent,
+		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity,
 	)
 	return err
 }
 
 func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 	row := s.db.QueryRow(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id, driver_identity
 		 FROM connections WHERE conn_id = ?`, connID,
 	)
 	return scanConnection(row)
@@ -2562,7 +2567,7 @@ func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 
 func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
 		 FROM connections ORDER BY conn_id`,
 	)
 	if err != nil {
@@ -2573,13 +2578,16 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
-		var createdAt, updatedAt string
+		var createdAt, updatedAt, driverIdentity string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
+			return nil, err
+		}
 		conns = append(conns, c)
 	}
 	return conns, nil
@@ -2587,7 +2595,7 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 
 func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error) {
 	rows, err := s.db.Query(
-		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
 		 FROM connections WHERE workspace_id = ? ORDER BY conn_id`, workspaceID,
 	)
 	if err != nil {
@@ -2597,13 +2605,16 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 	var conns []models.Connection
 	for rows.Next() {
 		var c models.Connection
-		var createdAt, updatedAt string
+		var createdAt, updatedAt, driverIdentity string
 		if err := rows.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent); err != nil {
+			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
 			return nil, err
 		}
 		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
+			return nil, err
+		}
 		conns = append(conns, c)
 	}
 	return conns, nil
@@ -2620,12 +2631,16 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 	if extraRef == "" && extraEnc != "" {
 		extraRef = "encrypted://" + extraEnc
 	}
+	driverIdentity, err := connectionDriverIdentity(c)
+	if err != nil {
+		return err
+	}
 	result, err := s.db.Exec(
-		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?, max_concurrent=?
+		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?, max_concurrent=?, driver_identity=?
 		 WHERE conn_id = ?`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef,
-		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, c.ConnID,
+		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity, c.ConnID,
 	)
 	if err != nil {
 		return err
@@ -2651,13 +2666,16 @@ func (s *SQLiteStore) DeleteConnection(connID string) error {
 
 func scanConnection(row *sql.Row) (*models.Connection, error) {
 	var c models.Connection
-	var createdAt, updatedAt string
+	var createdAt, updatedAt, driverIdentity string
 	if err := row.Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
-		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &c.WorkspaceID); err != nil {
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &c.WorkspaceID, &driverIdentity); err != nil {
 		return nil, err
 	}
 	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 	c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
+		return nil, err
+	}
 	return &c, nil
 }
 

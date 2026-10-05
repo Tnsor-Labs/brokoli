@@ -156,6 +156,38 @@ func TestInMemoryJobQueue_FIFO(t *testing.T) {
 	}
 }
 
+func TestInMemoryJobQueue_DequeueForCapabilitiesLeavesIncompatibleJobsPending(t *testing.T) {
+	q := newInMemoryJobQueue()
+	if err := q.Enqueue(RunJob{ID: "gpu", RequiredCapabilities: []string{"gpu"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.Enqueue(RunJob{ID: "cpu"}); err != nil {
+		t.Fatal(err)
+	}
+
+	job, err := q.DequeueForCapabilities([]string{"cpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID != "cpu" {
+		t.Fatalf("dequeued %q, want compatible cpu job", job.ID)
+	}
+	if err := q.Ack(job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if q.Len() != 1 {
+		t.Fatalf("pending jobs = %d, want incompatible job retained", q.Len())
+	}
+
+	job, err = q.DequeueForCapabilities([]string{"gpu"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ID != "gpu" {
+		t.Fatalf("dequeued %q, want gpu", job.ID)
+	}
+}
+
 func TestInMemoryJobQueue_IdempotentEnqueue(t *testing.T) {
 	q := newInMemoryJobQueue()
 	job := RunJob{ID: "same", PipelineID: "pipe", RunID: "run"}

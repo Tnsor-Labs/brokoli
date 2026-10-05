@@ -341,6 +341,9 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 	if query == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
+	if _, ok := node.Config["native_flightsql_library"].(string); ok {
+		return nodeExecutionResult{}, fmt.Errorf("Flight SQL source_db requires reference-passing and an isolated native worker; it is never executed through database/sql")
+	}
 
 	query, args, err := r.bindNodeSQL(uri, query)
 	if err != nil {
