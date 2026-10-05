@@ -112,6 +112,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-042](./042-bigquery-native-backend.md) | Native BigQuery backend | Proposed |
 | [ADR-043](./043-arrow-native-database-migration.md) | Arrow-native database migration transport | Proposed |
 | [ADR-044](./044-composable-runtime-and-feature-distribution.md) | Composable runtime and feature distribution | Proposed |
+| [ADR-045](./045-optional-native-worker-capabilities.md) | Optional native worker capabilities | Proposed |
 
 ## How to add a new ADR
 

@@ -1,4 +1,4 @@
-# ADR-043: Optional native worker capabilities
+# ADR-045: Optional native worker capabilities
 
 **Status:** proposed
 **Date:** 2026-10-04
