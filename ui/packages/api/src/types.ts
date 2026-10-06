@@ -471,7 +471,7 @@ export interface Connection {
   /** "encrypted://********" when stored by Brokoli; env://, vault:// or k8s:// refs come back verbatim. */
   password_ref?: string
   extra_ref?: string
-  /** Verified native ADBC artifact selected for Flight SQL. */
+  /** Verified native ADBC artifact selected for this connection. */
   driver_identity?: DriverIdentity
   /** 0 means unlimited. */
   max_concurrent?: number
@@ -508,13 +508,58 @@ export interface User {
 export interface Capabilities {
   /** Node types the server refuses (BROKOLI_DISABLED_NODE_TYPES). Always present on servers that support the setting. */
   disabled_node_types?: string[]
-  /** Native ADBC artifacts discovered by the server. `not_wired` never implies executable support. */
+  /** Native ADBC artifacts discovered by the server and isolated worker state. */
   native_adbc_drivers?: {
-    status: 'not_wired'
+	status: 'native_worker_enabled' | 'native_worker_unavailable'
     reason: string
     installed: { name: string; version: string; os: string; arch: string; entrypoint: string; library_sha256: string }[]
   }
   [key: string]: unknown
+}
+
+export interface DriverCatalogEntry {
+  name: string
+	 display_name?: string
+	 description?: string
+	 icon?: string
+	 icon_url?: string
+	 license?: string
+  homepage?: string
+	 docs_url?: string
+	 lifecycle?: 'supported' | 'deprecated' | 'revoked'
+	 adbc_version?: string
+	 min_brokoli?: string
+	 advisories?: DriverAdvisory[]
+  version: string
+  os: string
+  arch: string
+  sha256: string
+  installed: boolean
+	available: boolean
+}
+
+export interface DriverAdvisory {
+	 id: string
+	 severity: string
+	 summary: string
+	 fixed_in?: string
+	 published_at?: string
+}
+
+export interface DriverCatalog {
+	configured: boolean
+  version: number
+  platform: { os: string; arch: string }
+  drivers: DriverCatalogEntry[]
+}
+
+export interface InstalledDriver {
+  name: string
+  version: string
+  os: string
+  arch: string
+  entrypoint: string
+  library_sha256: string
 }
 
 export interface SystemInfo {

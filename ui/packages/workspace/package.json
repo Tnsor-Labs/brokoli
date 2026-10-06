@@ -11,6 +11,7 @@
     "@brokoli/auth": "*",
     "@brokoli/ui": "*",
     "lucide-react": "^1.45.0",
+    "react-markdown": "^10.1.0",
     "simple-icons": "^16.31.0"
   },
   "peerDependencies": {
