@@ -460,10 +460,10 @@
   height: 100%;
   padding: 3px;
   border-radius: inherit;
-  background: #fff;
+  background: var(--bk-color-brand-tile-light);
   object-fit: contain;
 }
 .driver-icon--flightsql,
 .driver-icon--trino {
-  background: #151515;
+  background: var(--bk-color-brand-tile-dark);
 }
