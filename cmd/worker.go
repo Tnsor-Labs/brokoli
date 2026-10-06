@@ -20,7 +20,7 @@ var workerTaskCmd = &cobra.Command{
 	Hidden: true,
 	Args:   cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
-		return engine.RunNativeFlightSQLWorker(cmd.Context(), os.Stdin, os.Stdout)
+		return engine.RunNativeADBCWorker(cmd.Context(), os.Stdin, os.Stdout)
 	},
 }
 

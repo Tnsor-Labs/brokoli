@@ -47,7 +47,7 @@ var codeRuntimeState = struct {
 	nodePath string
 }{}
 
-const nativeADBCDriverReason = "Native ADBC drivers are installed artifacts only; connection execution and testing do not use them."
+const nativeADBCDriverReason = "Pinned native ADBC sources execute in an isolated worker and publish Arrow IPC artifacts; connection tests remain unavailable."
 
 type nativeADBCDriver struct {
 	Name          string `json:"name"`
@@ -64,13 +64,14 @@ type nativeADBCDriverStatus struct {
 	Installed []nativeADBCDriver `json:"installed"`
 }
 
-// nativeADBCDrivers intentionally reports discovery only. Installed native
-// libraries are not loaded or selected by any connection path.
 func nativeADBCDrivers() nativeADBCDriverStatus {
 	status := nativeADBCDriverStatus{
-		Status:    "not_wired",
+		Status:    "native_worker_unavailable",
 		Reason:    nativeADBCDriverReason,
 		Installed: []nativeADBCDriver{},
+	}
+	if engine.NativeADBCWorkerEnabled() {
+		status.Status = "native_worker_enabled"
 	}
 	manager, err := drivers.NewManager(drivers.DefaultDir())
 	if err != nil {

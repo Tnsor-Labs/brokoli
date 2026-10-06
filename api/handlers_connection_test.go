@@ -137,7 +137,7 @@ func TestFlightSQLConnectionTestReportsIdentityGateBeforeCredentials(t *testing.
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d: %s", w.Code, http.StatusOK, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "isolated native worker execution is not enabled") || strings.Contains(w.Body.String(), "unsupported scheme") {
+	if !strings.Contains(w.Body.String(), "isolated native worker") || strings.Contains(w.Body.String(), "unsupported scheme") {
 		t.Fatalf("connection test response = %s, want pre-credential worker gate", w.Body.String())
 	}
 }

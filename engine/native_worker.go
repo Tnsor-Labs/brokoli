@@ -25,15 +25,21 @@ type NativeWorkerLauncher struct {
 // RunFlightSQL writes one request to a fresh child and atomically publishes its
 // verified IPC artifact to request.OutputPath.
 func (l NativeWorkerLauncher) RunFlightSQL(ctx context.Context, request NativeFlightSQLRequest) (NativeFlightSQLResponse, error) {
+	return l.RunNativeADBC(ctx, request.nativeADBCRequest())
+}
+
+// RunNativeADBC writes one generic ADBC request to a fresh child and atomically
+// publishes its verified IPC artifact to request.OutputPath.
+func (l NativeWorkerLauncher) RunNativeADBC(ctx context.Context, request NativeADBCRequest) (NativeADBCResponse, error) {
 	if request.OutputPath == "" {
-		return NativeFlightSQLResponse{}, errors.New("native worker output path is required")
+		return NativeADBCResponse{}, errors.New("native worker output path is required")
 	}
 	executable := l.Executable
 	if executable == "" {
 		var err error
 		executable, err = os.Executable()
 		if err != nil {
-			return NativeFlightSQLResponse{}, fmt.Errorf("locate native worker executable: %w", err)
+			return NativeADBCResponse{}, fmt.Errorf("locate native worker executable: %w", err)
 		}
 	}
 	args := l.Args
@@ -42,53 +48,53 @@ func (l NativeWorkerLauncher) RunFlightSQL(ctx context.Context, request NativeFl
 	}
 	tempDir, err := os.MkdirTemp("", "brokoli-native-worker-")
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("create native worker directory: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("create native worker directory: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 	outputPath := filepath.Join(tempDir, "output.arrow")
 	destinationPath := request.OutputPath
 	request.OutputPath = outputPath
 	if err := request.validate(); err != nil {
-		return NativeFlightSQLResponse{}, err
+		return NativeADBCResponse{}, err
 	}
 	cmd := exec.CommandContext(ctx, executable, args...) // #nosec G204 -- executable and child arguments are trusted worker configuration.
 	cmd.Env = append(os.Environ(), l.Env...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("open native worker input: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("open native worker input: %w", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("open native worker output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("open native worker output: %w", err)
 	}
 	if err := cmd.Start(); err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("start native worker: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("start native worker: %w", err)
 	}
 	if err := json.NewEncoder(stdin).Encode(request); err != nil {
 		stdin.Close()
 		cmd.Wait()
-		return NativeFlightSQLResponse{}, fmt.Errorf("write native worker request: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("write native worker request: %w", err)
 	}
 	if err := stdin.Close(); err != nil {
 		cmd.Wait()
-		return NativeFlightSQLResponse{}, fmt.Errorf("close native worker input: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("close native worker input: %w", err)
 	}
-	response, responseErr := readNativeFlightSQLResponse(stdout)
+	response, responseErr := readNativeADBCResponse(stdout)
 	waitErr := cmd.Wait()
 	if responseErr != nil {
-		return NativeFlightSQLResponse{}, responseErr
+		return NativeADBCResponse{}, responseErr
 	}
 	if waitErr != nil {
-		return NativeFlightSQLResponse{}, errors.New("native worker exited unsuccessfully")
+		return NativeADBCResponse{}, errors.New("native worker exited unsuccessfully")
 	}
 	if response.Error != "" {
-		return NativeFlightSQLResponse{}, errors.New("native worker failed")
+		return NativeADBCResponse{}, errors.New("native worker failed")
 	}
 	if err := verifyNativeWorkerOutput(outputPath, response); err != nil {
-		return NativeFlightSQLResponse{}, err
+		return NativeADBCResponse{}, err
 	}
 	if err := copyNativeWorkerOutput(outputPath, destinationPath); err != nil {
-		return NativeFlightSQLResponse{}, err
+		return NativeADBCResponse{}, err
 	}
 	return response, nil
 }
@@ -100,14 +106,27 @@ func RunNativeFlightSQLWorker(ctx context.Context, in io.Reader, out io.Writer) 
 	if err != nil {
 		return writeNativeFlightSQLResponse(out, NativeFlightSQLResponse{Error: "invalid request"})
 	}
-	response, err := runNativeFlightSQLWorker(ctx, request)
+	response, err := runNativeADBCWorker(ctx, request.nativeADBCRequest())
 	if err != nil {
-		response = NativeFlightSQLResponse{Error: "native Flight SQL execution failed"}
+		response = NativeADBCResponse{Error: "native Flight SQL execution failed"}
 	}
 	return writeNativeFlightSQLResponse(out, response)
 }
 
-func verifyNativeWorkerOutput(path string, response NativeFlightSQLResponse) error {
+// RunNativeADBCWorker serves exactly one generic ADBC request and response.
+func RunNativeADBCWorker(ctx context.Context, in io.Reader, out io.Writer) error {
+	request, err := readNativeADBCRequest(in)
+	if err != nil {
+		return writeNativeADBCResponse(out, NativeADBCResponse{Error: "invalid request"})
+	}
+	response, err := runNativeADBCWorker(ctx, request)
+	if err != nil {
+		response = NativeADBCResponse{Error: "native ADBC execution failed"}
+	}
+	return writeNativeADBCResponse(out, response)
+}
+
+func verifyNativeWorkerOutput(path string, response NativeADBCResponse) error {
 	if response.OutputSize < 0 || len(response.OutputSHA256) != sha256.Size*2 {
 		return errors.New("native worker returned invalid output metadata")
 	}

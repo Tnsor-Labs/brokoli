@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +18,25 @@ func TestNativeWorkerProtocolRejectsMultipleRequests(t *testing.T) {
 	_, err := readNativeFlightSQLRequest(strings.NewReader(`{"library":"driver","uri":"uri","query":"query","output_path":"out"} {}`))
 	if err == nil {
 		t.Fatal("readNativeFlightSQLRequest accepted multiple JSON values")
+	}
+}
+
+func TestNativeADBCRequestRequiresEntrypointAndBoundsOptions(t *testing.T) {
+	request := NativeADBCRequest{Library: "driver", Entrypoint: "init", URI: "uri", Query: "query", OutputPath: "out", Options: map[string]string{"x": "y"}}
+	if err := request.validate(); err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	request.Entrypoint = ""
+	if err := request.validate(); err == nil {
+		t.Fatal("missing entrypoint accepted")
+	}
+	request.Entrypoint = "init"
+	request.Options = make(map[string]string, nativeWorkerMaxOptions+1)
+	for i := 0; i <= nativeWorkerMaxOptions; i++ {
+		request.Options[fmt.Sprintf("option-%d", i)] = "value"
+	}
+	if err := request.validate(); err == nil {
+		t.Fatal("too many options accepted")
 	}
 }
 

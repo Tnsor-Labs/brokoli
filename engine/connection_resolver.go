@@ -42,6 +42,13 @@ type ConnectionResolver struct {
 // identity validation but this process cannot execute native drivers.
 var ErrNativeWorkerUnavailable = errors.New("isolated native worker execution is not enabled")
 
+// ErrFlightSQLConnectionTestUnsupported reports that this server cannot test a
+// Flight SQL connection in place. The driver only loads inside the isolated
+// native child, so the honest answer is that a run is the test; reporting a
+// driver's connection failure from a process that never loaded the driver
+// would be fiction.
+var ErrFlightSQLConnectionTestUnsupported = errors.New("a Flight SQL connection is verified by running a pipeline: its driver loads only inside the isolated native worker")
+
 // SetTokenSource sets where connections authenticating by OIDC get their
 // tokens. A nil pointer inside a non-nil interface is treated as none, so a
 // caller can pass a constructor's nil result through unchanged.
@@ -68,13 +75,13 @@ func NewConnectionResolver(s store.Store, sec *secrets.Chain) *ConnectionResolve
 	return &ConnectionResolver{store: s, secrets: sec, pools: newConnectionPools()}
 }
 
-// SetDriverManager sets the verified native-driver inventory used for Flight
-// SQL preflight. It is primarily useful to wire an isolated worker inventory.
+// SetDriverManager sets the verified native-driver inventory used for native
+// ADBC preflight. It is primarily useful to wire an isolated worker inventory.
 func (cr *ConnectionResolver) SetDriverManager(manager *drivers.Manager) { cr.driverManager = manager }
 
 // ValidateConnection checks gates that must run before any credential is read.
 func (cr *ConnectionResolver) ValidateConnection(conn *models.Connection) error {
-	if conn == nil || conn.Type != models.ConnTypeFlightSQL {
+	if conn == nil || !nativeADBCConnection(conn) {
 		return nil
 	}
 	manager := cr.driverManager
@@ -82,23 +89,37 @@ func (cr *ConnectionResolver) ValidateConnection(conn *models.Connection) error 
 		var err error
 		manager, err = drivers.NewManager(drivers.DefaultDir())
 		if err != nil {
-			return fmt.Errorf("Flight SQL driver inventory: %w", err)
+			return fmt.Errorf("native ADBC driver inventory: %w", err)
 		}
 	}
 	if conn.DriverIdentity == nil {
 		// RequiredCapabilities owns canonical identity validation, including
 		// the missing identity case; never broaden this into a name-only match.
 		_, err := manager.RequiredCapabilities(drivers.DriverIdentity{})
-		return fmt.Errorf("Flight SQL driver identity: %w", err)
+		return fmt.Errorf("native ADBC driver identity: %w", err)
 	}
 	if _, err := manager.RequiredCapabilities(*conn.DriverIdentity); err != nil {
-		return fmt.Errorf("Flight SQL driver identity: %w", err)
+		return fmt.Errorf("native ADBC driver identity: %w", err)
 	}
 	return nil
 }
 
+// nativeADBCConnectionType is intentionally a short allowlist. Existing
+// database/sql connection types do not become native-driver capable merely by
+// carrying a DriverIdentity.
+func nativeADBCConnectionType(kind models.ConnectionType) bool {
+	return kind == models.ConnTypeFlightSQL || kind == models.ConnTypePostgres || kind == models.ConnTypeSQLite
+}
+
+// Flight SQL has no legacy database/sql execution path, so it always requires
+// a pin. PostgreSQL and SQLite remain legacy unless an operator explicitly
+// pins them to a native ADBC artifact.
+func nativeADBCConnection(conn *models.Connection) bool {
+	return conn != nil && nativeADBCConnectionType(conn.Type) && (conn.Type == models.ConnTypeFlightSQL || conn.DriverIdentity != nil)
+}
+
 // PipelineRequiredCapabilities returns the exact native-driver tags required
-// by saved Flight SQL sources. This happens before a queued run is published,
+// by saved native ADBC sources. This happens before a queued run is published,
 // so a scheduler can place it only on a worker with the pinned driver.
 func (cr *ConnectionResolver) PipelineRequiredCapabilities(pipe *models.Pipeline) ([]string, error) {
 	if cr == nil || pipe == nil {
@@ -116,9 +137,9 @@ func (cr *ConnectionResolver) PipelineRequiredCapabilities(pipe *models.Pipeline
 		}
 		conn, err := cr.store.GetConnection(connID)
 		if err != nil {
-			return nil, fmt.Errorf("Flight SQL connection %q: %w", connID, err)
+			return nil, fmt.Errorf("native ADBC connection %q: %w", connID, err)
 		}
-		if conn.Type != models.ConnTypeFlightSQL {
+		if !nativeADBCConnection(conn) {
 			continue
 		}
 		if err := cr.ValidateConnection(conn); err != nil {
@@ -282,13 +303,14 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 
 	switch nodeType {
 	case models.NodeTypeSourceDB, models.NodeTypeSinkDB:
-		if conn.Type == models.ConnTypeFlightSQL {
-			// This marker is only injected for a saved, identity-validated
-			// connection. The runner uses it to keep Flight SQL out of database/sql.
-			manifest := managerFor(cr).Get(conn.DriverIdentity.Name)
+		if nodeType == models.NodeTypeSourceDB && nativeADBCConnection(conn) {
+			// These markers are only injected for a saved, identity-validated
+			// connection. The runner keeps native ADBC out of database/sql.
+			manifest := managerFor(cr).GetIdentity(*conn.DriverIdentity)
 			resolved["uri"] = conn.BuildURI()
-			resolved["native_flightsql_library"] = manifest.LibraryPath()
-			resolved["native_flightsql_headers"] = flightSQLHeaders(conn, extra)
+			resolved["native_adbc_library"] = manifest.LibraryPath()
+			resolved["native_adbc_entrypoint"] = manifest.Entrypoint
+			resolved["native_adbc_options"] = nativeADBCOptions(conn, extra)
 			break
 		}
 		// A connection type with no engine driver has no URI to inject. Leaving
@@ -341,6 +363,25 @@ func flightSQLHeaders(conn *models.Connection, extra map[string]interface{}) map
 		}
 	}
 	return headers
+}
+
+// nativeADBCOptions carries only string driver options. The worker enforces
+// bounds again at its process boundary before passing them to drivermgr.
+func nativeADBCOptions(conn *models.Connection, extra map[string]interface{}) map[string]string {
+	options := make(map[string]string)
+	if raw, ok := extra["adbc_options"].(map[string]interface{}); ok {
+		for name, value := range raw {
+			if text, ok := value.(string); ok {
+				options[name] = text
+			}
+		}
+	}
+	if conn.Type == models.ConnTypeFlightSQL {
+		for name, value := range flightSQLHeaders(conn, extra) {
+			options["adbc.flight.sql.rpc.call_header."+name] = value
+		}
+	}
+	return options
 }
 
 // resolveAPIConnectionFields injects a connection's base URL, merged headers,

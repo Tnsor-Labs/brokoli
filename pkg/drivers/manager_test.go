@@ -3,9 +3,12 @@ package drivers
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,7 +29,7 @@ func TestInstallListAndRemove(t *testing.T) {
 	if installed.Name != "adbc-postgresql" {
 		t.Fatalf("installed %q", installed.Name)
 	}
-	if got := mgr.Get("adbc-postgresql"); got == nil || got.LibraryPath() != filepath.Join(dir, "adbc-postgresql", "lib", "driver.so") {
+	if got := mgr.Get("adbc-postgresql"); got == nil || got.LibraryPath() != filepath.Join(dir, "adbc-postgresql", "1.0.0", installed.LibrarySHA256, "lib", "driver.so") {
 		t.Fatalf("Get() = %#v", got)
 	}
 	if got := mgr.List(); len(got) != 1 || got[0].Name != "adbc-postgresql" {
@@ -164,4 +167,20 @@ func stringsOf(s string, n int) string {
 		b[i] = s[0]
 	}
 	return string(b)
+}
+
+func TestInstallFromCatalogRejectsUnavailablePlatform(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"version":1,"drivers":[{"name":"flightsql","version":"1.0.0","os":"other","arch":"other","archive_url":"https://example.invalid/driver.tar.gz","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}`))
+	}))
+	defer server.Close()
+	t.Setenv(IndexEnvVar, server.URL)
+
+	manager, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.InstallFromCatalog(context.Background(), "flightsql"); err == nil {
+		t.Fatal("installed unavailable platform driver")
+	}
 }

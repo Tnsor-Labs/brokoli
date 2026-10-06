@@ -17,11 +17,13 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/ipc"
 )
 
-const nativeFlightSQLEntrypoint = "AdbcDriverFlightSQLInit"
-
 // NativeFlightSQLWorkerEnabled reports whether this binary can load the
 // optional ADBC driver in its isolated child process.
 func NativeFlightSQLWorkerEnabled() bool { return true }
+
+// NativeADBCWorkerEnabled reports whether this binary can load a manifest
+// selected ADBC driver in its isolated child process.
+func NativeADBCWorkerEnabled() bool { return true }
 
 // ConsumeNativeFlightSQL executes query through the native Flight SQL ADBC
 // driver. Its reader is valid only for the duration of consume.
@@ -52,14 +54,24 @@ func ConsumeNativeFlightSQL(ctx context.Context, library, uri, query string, hea
 }
 
 func withNativeFlightSQLReader(ctx context.Context, library, uri, query string, headers map[string]string, consume func(array.RecordReader) error) (err error) {
-	options := map[string]string{
-		"driver":          library,
-		"entrypoint":      nativeFlightSQLEntrypoint,
-		adbc.OptionKeyURI: uri,
-	}
+	options := make(map[string]string, len(headers))
 	for name, value := range headers {
 		options["adbc.flight.sql.rpc.call_header."+name] = value
 	}
+	return withNativeADBCReader(ctx, NativeADBCRequest{Library: library, Entrypoint: nativeFlightSQLEntrypoint, URI: uri, Query: query, Options: options}, consume)
+}
+
+// withNativeADBCReader loads only the manifest-selected library and entrypoint
+// through drivermgr; it deliberately has no database/sql fallback.
+func withNativeADBCReader(ctx context.Context, request NativeADBCRequest, consume func(array.RecordReader) error) (err error) {
+	options := make(map[string]string, len(request.Options)+3)
+	for name, value := range request.Options {
+		options[name] = value
+	}
+	// These are selected from the verified manifest, never caller options.
+	options["driver"] = request.Library
+	options["entrypoint"] = request.Entrypoint
+	options[adbc.OptionKeyURI] = request.URI
 
 	var driver drivermgr.Driver
 	db, err := driver.NewDatabase(options)
@@ -77,7 +89,7 @@ func withNativeFlightSQLReader(ctx context.Context, library, uri, query string, 
 		return fmt.Errorf("create native Flight SQL statement: %w", err)
 	}
 	defer func() { err = errors.Join(err, stmt.Close()) }()
-	if err := stmt.SetSqlQuery(query); err != nil {
+	if err := stmt.SetSqlQuery(request.Query); err != nil {
 		return fmt.Errorf("set native Flight SQL query: %w", err)
 	}
 
@@ -118,14 +130,14 @@ func StreamNativeFlightSQLToArrowIPC(ctx context.Context, library, uri, query st
 	return rows, err
 }
 
-func runNativeFlightSQLWorker(ctx context.Context, request NativeFlightSQLRequest) (NativeFlightSQLResponse, error) {
+func runNativeADBCWorker(ctx context.Context, request NativeADBCRequest) (NativeADBCResponse, error) {
 	f, err := os.OpenFile(request.OutputPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("create Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("create Arrow IPC output: %w", err)
 	}
 	rows := int64(0)
 	writer := (*ipc.Writer)(nil)
-	err = withNativeFlightSQLReader(ctx, request.Library, request.URI, request.Query, request.Headers, func(reader array.RecordReader) error {
+	err = withNativeADBCReader(ctx, request, func(reader array.RecordReader) error {
 		writer = ipc.NewWriter(f, ipc.WithSchema(reader.Schema()))
 		for reader.Next() {
 			if err := ctx.Err(); err != nil {
@@ -143,35 +155,39 @@ func runNativeFlightSQLWorker(ctx context.Context, request NativeFlightSQLReques
 	})
 	if err != nil {
 		f.Close()
-		return NativeFlightSQLResponse{}, err
+		return NativeADBCResponse{}, err
 	}
 	if writer == nil {
 		f.Close()
-		return NativeFlightSQLResponse{}, errors.New("native Flight SQL returned no schema")
+		return NativeADBCResponse{}, errors.New("native ADBC driver returned no schema")
 	}
 	if err := writer.Close(); err != nil {
 		f.Close()
-		return NativeFlightSQLResponse{}, fmt.Errorf("close Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("close Arrow IPC output: %w", err)
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return NativeFlightSQLResponse{}, fmt.Errorf("sync Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("sync Arrow IPC output: %w", err)
 	}
 	if err := f.Close(); err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("close Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("close Arrow IPC output: %w", err)
 	}
 	f, err = os.Open(request.OutputPath)
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("open Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("open Arrow IPC output: %w", err)
 	}
 	defer f.Close()
 	info, err := f.Stat()
 	if err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("stat Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("stat Arrow IPC output: %w", err)
 	}
 	sum := sha256.New()
 	if _, err := io.Copy(sum, f); err != nil {
-		return NativeFlightSQLResponse{}, fmt.Errorf("checksum Arrow IPC output: %w", err)
+		return NativeADBCResponse{}, fmt.Errorf("checksum Arrow IPC output: %w", err)
 	}
-	return NativeFlightSQLResponse{Rows: rows, OutputSize: info.Size(), OutputSHA256: hex.EncodeToString(sum.Sum(nil))}, nil
+	return NativeADBCResponse{Rows: rows, OutputSize: info.Size(), OutputSHA256: hex.EncodeToString(sum.Sum(nil))}, nil
+}
+
+func runNativeFlightSQLWorker(ctx context.Context, request NativeFlightSQLRequest) (NativeFlightSQLResponse, error) {
+	return runNativeADBCWorker(ctx, request.nativeADBCRequest())
 }

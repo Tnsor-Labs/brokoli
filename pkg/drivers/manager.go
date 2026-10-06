@@ -59,10 +59,25 @@ func (m *Manager) LoadAll() error {
 		if !entry.IsDir() {
 			continue
 		}
-		manifest, err := LoadManifest(filepath.Join(m.dir, entry.Name()))
-		if err == nil && manifest.Name == entry.Name() {
-			if _, duplicate := loaded[manifest.Name]; !duplicate {
-				loaded[manifest.Name] = manifest
+		root := filepath.Join(m.dir, entry.Name())
+		if manifest, err := LoadManifest(root); err == nil && manifest.Name == entry.Name() {
+			loaded[manifestKey(manifest)] = manifest // Legacy name-only installation.
+			continue
+		}
+		versions, _ := os.ReadDir(root)
+		for _, version := range versions {
+			if !version.IsDir() {
+				continue
+			}
+			digests, _ := os.ReadDir(filepath.Join(root, version.Name()))
+			for _, digest := range digests {
+				if !digest.IsDir() {
+					continue
+				}
+				manifest, err := LoadManifest(filepath.Join(root, version.Name(), digest.Name()))
+				if err == nil {
+					loaded[manifestKey(manifest)] = manifest
+				}
 			}
 		}
 	}
@@ -75,11 +90,28 @@ func (m *Manager) List() []*Manifest {
 	for _, manifest := range m.manifests {
 		out = append(out, manifest)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].Version > out[j].Version
+	})
 	return out
 }
 
-func (m *Manager) Get(name string) *Manifest { return m.manifests[name] }
+func (m *Manager) Get(name string) *Manifest {
+	for _, manifest := range m.List() {
+		if manifest.Name == name {
+			return manifest
+		}
+	}
+	return nil
+}
+
+// GetIdentity returns exactly the artifact selected by a saved connection.
+func (m *Manager) GetIdentity(identity DriverIdentity) *Manifest {
+	return m.manifests[manifestKeyIdentity(identity)]
+}
 
 func (m *Manager) Remove(name string) error {
 	if m.Get(name) == nil {
@@ -89,6 +121,38 @@ func (m *Manager) Remove(name string) error {
 		return fmt.Errorf("remove driver: %w", err)
 	}
 	return m.LoadAll()
+}
+
+// RemoveIdentity removes one exact installed version without affecting other
+// releases of the same driver.
+func (m *Manager) RemoveIdentity(identity DriverIdentity) error {
+	manifest := m.GetIdentity(identity)
+	if manifest == nil {
+		return fmt.Errorf("driver %q version %q is not installed", identity.Name, identity.Version)
+	}
+	if err := os.RemoveAll(manifest.Dir()); err != nil {
+		return fmt.Errorf("remove driver: %w", err)
+	}
+	return m.LoadAll()
+}
+
+// RemoveVersion removes one installed version. It refuses an ambiguous request
+// when distinct library builds share a version string; callers must then use
+// RemoveIdentity with the persisted connection identity.
+func (m *Manager) RemoveVersion(name, version string) error {
+	var matches []*Manifest
+	for _, manifest := range m.List() {
+		if manifest.Name == name && manifest.Version == version {
+			matches = append(matches, manifest)
+		}
+	}
+	if len(matches) == 0 {
+		return fmt.Errorf("driver %q version %q is not installed", name, version)
+	}
+	if len(matches) != 1 {
+		return fmt.Errorf("driver %q version %q is ambiguous; remove by exact identity", name, version)
+	}
+	return m.RemoveIdentity(DriverIdentity{Name: matches[0].Name, Version: matches[0].Version, LibrarySHA256: matches[0].LibrarySHA256})
 }
 
 // InstallArchive verifies caller-provided archive integrity, extracts into a
@@ -129,10 +193,13 @@ func (m *Manager) InstallArchive(archivePath, expectedArchiveSHA256 string) (*Ma
 	if err != nil {
 		return nil, err
 	}
-	dest := filepath.Join(m.dir, manifest.Name)
+	dest := filepath.Join(m.dir, manifest.Name, manifest.Version, strings.ToLower(manifest.LibrarySHA256))
 	if _, err := os.Lstat(dest); err == nil {
 		return nil, fmt.Errorf("driver %q is already installed", manifest.Name)
 	} else if !os.IsNotExist(err) {
+		return nil, err
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
 		return nil, err
 	}
 	if err := os.Rename(stage, dest); err != nil {
@@ -142,7 +209,7 @@ func (m *Manager) InstallArchive(archivePath, expectedArchiveSHA256 string) (*Ma
 	if err != nil {
 		return nil, err
 	}
-	m.manifests[installed.Name] = installed
+	m.manifests[manifestKey(installed)] = installed
 	return installed, nil
 }
 
@@ -158,3 +225,10 @@ func InstallArchive(archivePath, destRoot, expectedArchiveSHA256 string) (*Manif
 
 // ArchiveSHA256 returns the lowercase SHA-256 digest of an archive.
 func ArchiveSHA256(path string) (string, error) { return fileSHA256(path) }
+
+func manifestKey(manifest *Manifest) string {
+	return manifestKeyIdentity(DriverIdentity{Name: manifest.Name, Version: manifest.Version, LibrarySHA256: manifest.LibrarySHA256})
+}
+func manifestKeyIdentity(identity DriverIdentity) string {
+	return identity.Name + "\x00" + identity.Version + "\x00" + strings.ToLower(identity.LibrarySHA256)
+}

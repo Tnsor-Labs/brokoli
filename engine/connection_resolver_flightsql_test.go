@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"testing"
 
@@ -88,5 +89,63 @@ func TestFlightSQLResolverRejectsMissingOrMismatchedIdentity(t *testing.T) {
 				t.Fatalf("credential resolver calls = %d, want 0", credentials.calls)
 			}
 		})
+	}
+}
+
+func TestDatabaseResolverUsesNativeADBCOnlyWhenPinned(t *testing.T) {
+	manager, identity := installedFlightSQLManager(t)
+	for _, tc := range []struct {
+		name string
+		conn *models.Connection
+	}{
+		{"postgres", &models.Connection{ConnID: "postgres", Type: models.ConnTypePostgres, Host: "db.example.com", Schema: "analytics", DriverIdentity: identity, Extra: `{"adbc_options":{"adbc.postgresql.read_only":"true"}}`}},
+		{"sqlite", &models.Connection{ConnID: "sqlite", Type: models.ConnTypeSQLite, Host: "/data/app.db", DriverIdentity: identity}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := NewConnectionResolver(&oneConnStore{conn: tc.conn}, nil)
+			resolver.SetDriverManager(manager)
+			resolved, err := resolver.Resolve(map[string]interface{}{"conn_id": tc.conn.ConnID}, models.NodeTypeSourceDB)
+			if err != nil {
+				t.Fatalf("Resolve() error = %v", err)
+			}
+			if got, _ := resolved["native_adbc_entrypoint"].(string); got != "AdbcDriverFlightSQLInit" {
+				t.Fatalf("entrypoint = %q", got)
+			}
+			if tc.conn.Type == models.ConnTypePostgres {
+				if got, _ := resolved["native_adbc_options"].(map[string]string); got["adbc.postgresql.read_only"] != "true" {
+					t.Fatalf("options = %#v", got)
+				}
+			}
+
+			tc.conn.DriverIdentity = nil
+			resolved, err = resolver.Resolve(map[string]interface{}{"conn_id": tc.conn.ConnID}, models.NodeTypeSourceDB)
+			if err != nil {
+				t.Fatalf("legacy Resolve() error = %v", err)
+			}
+			if _, ok := resolved["native_adbc_library"]; ok {
+				t.Fatalf("unpinned %s was routed to native ADBC", tc.name)
+			}
+			if tc.conn.Type == models.ConnTypeSQLite && resolved["uri"] != "/data/app.db" {
+				t.Fatalf("unpinned SQLite URI = %q, want file path", resolved["uri"])
+			}
+		})
+	}
+}
+
+func TestSQLiteNativeADBCSourceRequiresPinnedDriverCapability(t *testing.T) {
+	manager, identity := installedFlightSQLManager(t)
+	resolver := NewConnectionResolver(&oneConnStore{conn: &models.Connection{ConnID: "sqlite", Type: models.ConnTypeSQLite, Host: "/data/app.db", DriverIdentity: identity}}, nil)
+	resolver.SetDriverManager(manager)
+
+	capabilities, err := resolver.PipelineRequiredCapabilities(&models.Pipeline{Nodes: []models.Node{{Type: models.NodeTypeSourceDB, Config: map[string]interface{}{"conn_id": "sqlite"}}}})
+	if err != nil {
+		t.Fatalf("PipelineRequiredCapabilities() error = %v", err)
+	}
+	want, err := manager.RequiredCapabilities(*identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(capabilities, want) {
+		t.Fatalf("capabilities = %v, want %v", capabilities, want)
 	}
 }

@@ -305,6 +305,11 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Utilities
 		r.Post("/test-connection", rh.TestConnection)
+		dh := NewDriverHandler(s)
+		r.Get("/drivers/catalog", dh.Catalog)
+		r.Get("/drivers/catalog/{name}/{version}/docs", dh.Documentation)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/drivers/catalog/{name}/install", dh.Install)
+		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/drivers/{name}", dh.Remove)
 		r.Get("/system/info", systemInfo(s, e))
 		r.Get("/capabilities", CapabilitiesHandler)
 		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s, e))

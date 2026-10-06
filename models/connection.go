@@ -52,7 +52,7 @@ type Connection struct {
 	Extra       string         `json:"extra,omitempty"`        // resolved plaintext (in-memory only, never persisted)
 	PasswordRef string         `json:"password_ref,omitempty"` // credential ref: env://VAR, vault://path#key, k8s://ns/secret/key, encrypted://...
 	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
-	// DriverIdentity pins the verified native ADBC artifact Flight SQL needs.
+	// DriverIdentity pins the verified native ADBC artifact used by this connection.
 	// It is metadata, not a credential, and is safe to persist and return.
 	DriverIdentity *drivers.DriverIdentity `json:"driver_identity,omitempty"`
 	// MaxConcurrent bounds how many node executions may hold this
