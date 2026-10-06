@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 )
 
 // ConnectionType identifies the kind of external system.
@@ -54,7 +52,7 @@ type Connection struct {
 	ExtraRef    string         `json:"extra_ref,omitempty"`    // credential ref for extra/type-specific fields
 	// DriverIdentity pins the verified native ADBC artifact used by this connection.
 	// It is metadata, not a credential, and is safe to persist and return.
-	DriverIdentity *drivers.DriverIdentity `json:"driver_identity,omitempty"`
+	DriverIdentity *DriverIdentity `json:"driver_identity,omitempty"`
 	// MaxConcurrent bounds how many node executions may hold this
 	// connection at once (#398, Airflow-pools shape): a node resolving
 	// this conn_id acquires a slot for the duration of its execution,
