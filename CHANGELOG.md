@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-10-06
+
+### Fixed
+
+- **System roles now follow the code on every start** (#801) -- @hc12r.
+  The admin, editor, operator and viewer roles were written to the database
+  only on the first run, so an existing deployment kept the permissions of
+  the version it was installed with. A permission added since --
+  `secret_stores.manage` (v0.17.0) or `drivers.manage` -- was held by no
+  stored role: a permission check reading the stored role refused it to
+  admins, and the UI hid the matching controls. Every start now adds any
+  missing system role and brings each one's permissions to the code's
+  definition. Custom roles are untouched.
+
 ## [0.17.0] - 2026-10-06
 
 Native ADBC drivers: a `source_db` node can read through a native driver --
