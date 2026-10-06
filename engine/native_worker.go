@@ -56,7 +56,9 @@ type NativeWorkerLauncher struct {
 // stderr is kept for an error report.
 const nativeWorkerOutputTail = 8 << 10
 
-const nativeWorkerPassEnv = "BROKOLI_NATIVE_PASS_ENV"
+// nativeWorkerExtraEnvVar names the operator's list of further variables
+// the worker may see, as BROKOLI_CODE_PASS_ENV does for code nodes.
+const nativeWorkerExtraEnvVar = "BROKOLI_NATIVE_PASS_ENV"
 
 // RunNativeADBC implements NativeADBCRunner.
 func (l NativeWorkerLauncher) RunNativeADBC(ctx context.Context, request NativeADBCRequest, out io.Writer) (NativeADBCResult, error) {
@@ -150,7 +152,7 @@ func (l NativeWorkerLauncher) RunNativeADBC(ctx context.Context, request NativeA
 }
 
 func (l NativeWorkerLauncher) env() []string {
-	env := codeexec.AllowlistedEnv(nativeWorkerPassEnv,
+	env := codeexec.AllowlistedEnv(nativeWorkerExtraEnvVar,
 		// TLS trust and Kerberos configuration are how a driver reaches a
 		// database securely; they are paths, not credentials.
 		"SSL_CERT_FILE", "SSL_CERT_DIR", "KRB5_CONFIG",
@@ -242,25 +244,26 @@ func atStage(stage string, err error) error {
 	return &nativeStageError{stage: stage, err: err}
 }
 
-// nativeWorkerLimits are the child's resource ceilings. Zero is unlimited.
+// nativeWorkerLimits are the child's resource ceilings, in the units
+// setrlimit takes. Zero is unlimited.
 type nativeWorkerLimits struct {
-	MemoryMB   int
-	CPUSeconds int
-	OpenFiles  int
+	MemoryBytes uint64
+	CPUSeconds  uint64
+	OpenFiles   uint64
 }
 
 func nativeWorkerLimitsFromEnv() nativeWorkerLimits {
-	read := func(name string) int {
-		n, err := strconv.Atoi(os.Getenv(name))
-		if err != nil || n < 0 {
+	read := func(name string) uint64 {
+		n, err := strconv.ParseUint(os.Getenv(name), 10, 32)
+		if err != nil {
 			return 0
 		}
 		return n
 	}
 	limits := nativeWorkerLimits{
-		MemoryMB:   read("BROKOLI_NATIVE_MEMORY_MB"),
-		CPUSeconds: read("BROKOLI_NATIVE_CPU_SECONDS"),
-		OpenFiles:  read("BROKOLI_NATIVE_OPEN_FILES"),
+		MemoryBytes: read("BROKOLI_NATIVE_MEMORY_MB") << 20,
+		CPUSeconds:  read("BROKOLI_NATIVE_CPU_SECONDS"),
+		OpenFiles:   read("BROKOLI_NATIVE_OPEN_FILES"),
 	}
 	if limits.OpenFiles == 0 {
 		limits.OpenFiles = 1024

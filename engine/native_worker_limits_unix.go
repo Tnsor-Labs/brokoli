@@ -21,11 +21,11 @@ func applyNativeWorkerLimits(limits nativeWorkerLimits) error {
 		}
 		return nil
 	}
-	if err := set(unix.RLIMIT_AS, "memory", uint64(limits.MemoryMB)<<20); err != nil {
+	if err := set(unix.RLIMIT_AS, "memory", limits.MemoryBytes); err != nil {
 		return err
 	}
-	if err := set(unix.RLIMIT_CPU, "cpu", uint64(limits.CPUSeconds)); err != nil {
+	if err := set(unix.RLIMIT_CPU, "cpu", limits.CPUSeconds); err != nil {
 		return err
 	}
-	return set(unix.RLIMIT_NOFILE, "open files", uint64(limits.OpenFiles))
+	return set(unix.RLIMIT_NOFILE, "open files", limits.OpenFiles)
 }
