@@ -380,11 +380,14 @@ type JobQueue interface {
 	Close() error
 }
 
-// CapabilityJobQueue optionally selects only jobs whose requirements are a
-// subset of workerCapabilities. Workers fall back to JobQueue.Dequeue when a
-// queue implementation does not support capability-aware placement.
+// CapabilityJobQueue is an optional JobQueue capability: claim only a job
+// whose RequiredCapabilities are all among the worker's. advertised is called
+// each time a job is considered, not once, so a worker that gains a
+// capability while waiting (a driver installed) is offered matching jobs
+// without reconnecting. Workers fall back to Dequeue on a queue without it,
+// and return a job they cannot run with Fail.
 type CapabilityJobQueue interface {
-	DequeueForCapabilities(workerCapabilities []string) (RunJob, error)
+	DequeueForCapabilities(advertised func() []string) (RunJob, error)
 }
 
 // JobQueueRenewer is an optional JobQueue capability (check via type

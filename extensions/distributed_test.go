@@ -165,7 +165,7 @@ func TestInMemoryJobQueue_DequeueForCapabilitiesLeavesIncompatibleJobsPending(t 
 		t.Fatal(err)
 	}
 
-	job, err := q.DequeueForCapabilities([]string{"cpu"})
+	job, err := q.DequeueForCapabilities(func() []string { return []string{"cpu"} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,12 +179,85 @@ func TestInMemoryJobQueue_DequeueForCapabilitiesLeavesIncompatibleJobsPending(t 
 		t.Fatalf("pending jobs = %d, want incompatible job retained", q.Len())
 	}
 
-	job, err = q.DequeueForCapabilities([]string{"gpu"})
+	job, err = q.DequeueForCapabilities(func() []string { return []string{"gpu"} })
 	if err != nil {
 		t.Fatal(err)
 	}
 	if job.ID != "gpu" {
 		t.Fatalf("dequeued %q, want gpu", job.ID)
+	}
+}
+
+// Two workers wait: one can run the job, one cannot. A single wake-up that
+// reached only the wrong one would leave the job pending until some other
+// enqueue happened along.
+func TestInMemoryJobQueue_CapabilityWaitersAllWake(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		q := newInMemoryJobQueue()
+		got := make(chan RunJob, 1)
+		for _, have := range [][]string{{"cpu"}, {"gpu"}} {
+			have := have
+			go func() {
+				job, err := q.DequeueForCapabilities(func() []string { return have })
+				if err == nil {
+					got <- job
+				}
+			}()
+		}
+		time.Sleep(5 * time.Millisecond) // let both block
+		if err := q.Enqueue(RunJob{ID: "gpu-job", RequiredCapabilities: []string{"gpu"}}); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case job := <-got:
+			if job.ID != "gpu-job" {
+				t.Fatalf("dequeued %q", job.ID)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("iteration %d: the capable waiter never woke", i)
+		}
+		_ = q.Close()
+	}
+}
+
+// A worker that gains a capability while it waits (a driver installed) is
+// offered matching jobs without reconnecting.
+func TestInMemoryJobQueue_CapabilitiesAreReadPerAttempt(t *testing.T) {
+	q := newInMemoryJobQueue()
+	var mu sync.Mutex
+	have := []string{}
+	got := make(chan RunJob, 1)
+	go func() {
+		job, err := q.DequeueForCapabilities(func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			return append([]string(nil), have...)
+		})
+		if err == nil {
+			got <- job
+		}
+	}()
+	if err := q.Enqueue(RunJob{ID: "native", RequiredCapabilities: []string{"native-adbc:flightsql"}}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case job := <-got:
+		t.Fatalf("dequeued %q before the capability existed", job.ID)
+	case <-time.After(50 * time.Millisecond):
+	}
+	mu.Lock()
+	have = []string{"native-adbc:flightsql"}
+	mu.Unlock()
+	if err := q.Enqueue(RunJob{ID: "other"}); err != nil { // any queue activity re-evaluates
+		t.Fatal(err)
+	}
+	select {
+	case job := <-got:
+		if job.ID != "native" && job.ID != "other" {
+			t.Fatalf("dequeued %q", job.ID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a waiter that gained the capability was never offered a job")
 	}
 }
 

@@ -11,6 +11,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Tnsor-Labs/brokoli/engine"
+	"github.com/Tnsor-Labs/brokoli/models"
 )
 
 // TestCapabilitiesHandler exercises GET /api/capabilities directly (the
@@ -159,10 +162,13 @@ func TestCapabilitiesHandler(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesReportInstalledNativeADBCDriversWithWorkerState(t *testing.T) {
+// The capabilities document is public. It says whether native drivers can
+// run here, and never which builds are installed: exact versions of the
+// native code a server loads are for signed-in users (GET /api/drivers).
+func TestCapabilitiesReportNativeWorkerStateWithoutListingBuilds(t *testing.T) {
 	driverDir := t.TempDir()
 	t.Setenv("BROKOLI_DRIVER_DIR", driverDir)
-	installCapabilityTestDriver(t, driverDir, "flightsql")
+	installTestDriverBuild(t, driverDir, "flightsql")
 
 	rec := httptest.NewRecorder()
 	CapabilitiesHandler(rec, httptest.NewRequest(http.MethodGet, "/api/capabilities", nil))
@@ -170,56 +176,36 @@ func TestCapabilitiesReportInstalledNativeADBCDriversWithWorkerState(t *testing.
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatal(err)
 	}
-
-	var status struct {
-		Status    string `json:"status"`
-		Reason    string `json:"reason"`
-		Installed []struct {
-			Name       string `json:"name"`
-			Version    string `json:"version"`
-			OS         string `json:"os"`
-			Arch       string `json:"arch"`
-			Entrypoint string `json:"entrypoint"`
-			Library    string `json:"library"`
-			Digest     string `json:"library_sha256"`
-		} `json:"installed"`
-	}
+	var status map[string]json.RawMessage
 	if err := json.Unmarshal(body["native_adbc_drivers"], &status); err != nil {
 		t.Fatalf("decode native ADBC status: %v", err)
 	}
-	if status.Status != "native_worker_unavailable" || status.Reason != nativeADBCDriverReason {
-		t.Fatalf("native ADBC status = %#v", status)
+	var state string
+	_ = json.Unmarshal(status["status"], &state)
+	if want := map[bool]string{true: "native_worker_enabled", false: "native_worker_unavailable"}[engine.NativeADBCWorkerEnabled()]; state != want {
+		t.Fatalf("status = %q, want %q", state, want)
 	}
-	if len(status.Installed) != 1 {
-		t.Fatalf("installed drivers = %#v", status.Installed)
-	}
-	driver := status.Installed[0]
-	if driver.Name != "flightsql" || driver.Version != "1.0.0" || driver.OS != runtime.GOOS || driver.Arch != runtime.GOARCH || driver.Entrypoint != "AdbcDriverInit" {
-		t.Fatalf("driver = %#v", driver)
-	}
-	if driver.Library != "" {
-		t.Fatalf("driver exposed library path: %#v", driver)
-	}
-	if driver.Digest == "" {
-		t.Fatalf("driver omitted library digest: %#v", driver)
+	if _, listed := status["installed"]; listed || strings.Contains(rec.Body.String(), "flightsql") {
+		t.Fatalf("public capabilities list installed driver builds: %s", body["native_adbc_drivers"])
 	}
 }
 
-func installCapabilityTestDriver(t *testing.T, driverDir, name string) {
+// installTestDriverBuild writes one driver build in the manager's layout.
+func installTestDriverBuild(t *testing.T, driverDir, name string) models.DriverIdentity {
 	t.Helper()
-	dir := filepath.Join(driverDir, name)
-	if err := os.Mkdir(dir, 0o750); err != nil {
+	library := []byte("native library")
+	digest := fmt.Sprintf("%x", sha256.Sum256(library))
+	dir := filepath.Join(driverDir, name, "1.0.0", digest)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	library := []byte("native library")
 	if err := os.WriteFile(filepath.Join(dir, "driver.so"), library, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	digest := sha256.Sum256(library)
 	manifest := map[string]string{
 		"name": name, "version": "1.0.0", "os": runtime.GOOS, "arch": runtime.GOARCH,
 		"library": "driver.so", "entrypoint": "AdbcDriverInit",
-		"library_sha256": fmt.Sprintf("%x", digest), "archive_sha256": strings.Repeat("0", 64),
+		"library_sha256": digest, "archive_sha256": strings.Repeat("0", 64),
 	}
 	raw, err := json.Marshal(manifest)
 	if err != nil {
@@ -228,6 +214,7 @@ func installCapabilityTestDriver(t *testing.T, driverDir, name string) {
 	if err := os.WriteFile(filepath.Join(dir, "manifest.json"), raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	return models.DriverIdentity{Name: name, Version: "1.0.0", LibrarySHA256: digest}
 }
 
 func TestCapabilitiesAdvertiseTypeScriptOnlyWhenNodeResolves(t *testing.T) {

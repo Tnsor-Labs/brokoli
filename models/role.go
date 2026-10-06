@@ -65,6 +65,14 @@ const (
 	// this to a stricter rule than editing a connection: a store opens a
 	// door into the customer's secret manager.
 	PermSecretStoresManage Permission = "secret_stores.manage"
+
+	// Native drivers: installing and removing native ADBC driver builds.
+	// Not scoped to a workspace or an organization: a driver is native
+	// code installed on the host, loaded by every worker there for every
+	// workspace's runs. It belongs to whoever operates the deployment, and
+	// no built-in role but admin holds it. A distribution with tenants maps
+	// it to its platform operators, never to a tenant's administrators.
+	PermDriversManage Permission = "drivers.manage"
 )
 
 // AllPermissions returns all available permissions.
@@ -80,6 +88,7 @@ func AllPermissions() []Permission {
 		PermGitSyncView, PermGitSyncPull, PermGitSyncPush,
 		PermTemplatesManage,
 		PermSecretStoresManage,
+		PermDriversManage,
 	}
 }
 
@@ -129,6 +138,7 @@ func AllPermissionInfos() []PermissionInfo {
 		{PermGitSyncPush, "Git Sync", "Push to git"},
 		{PermTemplatesManage, "Templates", "Create, edit, and delete pipeline templates"},
 		{PermSecretStoresManage, "Connections", "Create, edit, and delete secret stores"},
+		{PermDriversManage, "Settings", "Install and remove native database drivers on this server (affects every workspace)"},
 	}
 }
 

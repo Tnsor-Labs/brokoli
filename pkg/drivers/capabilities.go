@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
 )
@@ -119,4 +120,23 @@ func (m *Manager) Advertised() []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// MissingCapability returns the first native-driver tag in required that
+// advertised lacks, or "". Tags in other namespaces are the queue's to
+// judge and are ignored.
+func MissingCapability(required, advertised []string) string {
+	have := make(map[string]struct{}, len(advertised))
+	for _, tag := range advertised {
+		have[tag] = struct{}{}
+	}
+	for _, tag := range required {
+		if tag != NativeADBCCapability && !strings.HasPrefix(tag, NativeADBCCapability+":") {
+			continue
+		}
+		if _, ok := have[tag]; !ok {
+			return tag
+		}
+	}
+	return ""
 }

@@ -333,6 +333,15 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 }
 
 func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult, error) {
+	if native, err := r.nativeSourceRequest(r.ctx, node); err != nil {
+		return nodeExecutionResult{}, err
+	} else if native != nil {
+		maxRows := 0
+		if r.dryRun {
+			maxRows = r.dryRunMaxRows
+		}
+		return r.runNativeSource(r.ctx, node, native, attempt, maxRows)
+	}
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -340,12 +349,6 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 	}
 	if query == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
-	}
-	if _, ok := node.Config["native_adbc_library"].(string); ok {
-		return nodeExecutionResult{}, fmt.Errorf("native ADBC source_db requires reference-passing and an isolated native worker; it is never executed through database/sql")
-	}
-	if _, ok := node.Config["native_flightsql_library"].(string); ok {
-		return nodeExecutionResult{}, fmt.Errorf("native ADBC source_db requires reference-passing and an isolated native worker; it is never executed through database/sql")
 	}
 
 	query, args, err := r.bindNodeSQL(uri, query)

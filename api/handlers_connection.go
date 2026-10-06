@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
@@ -36,6 +38,10 @@ type ConnectionHandler struct {
 	// creds resolves a connection's credential references for the test,
 	// with the same chain a run resolves them with (#752).
 	creds *engine.ConnectionResolver
+	// nativeWorker returns the isolated worker that tests a connection read
+	// through a native driver; nil, or a nil result, means there is none.
+	// A function, because the server wires its worker after routes exist.
+	nativeWorker func() engine.NativeADBCRunner
 	// tokens is the deployment's OIDC token source, for connections that
 	// authenticate by workload identity federation. Nil when there is none.
 	tokens identity.TokenSource
@@ -249,6 +255,10 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
+	if msg := driverIdentityError(&c); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if msg := h.secretRefErrors(&c, c.WorkspaceID); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)
 		return
@@ -310,9 +320,26 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var c models.Connection
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxConnectionBodyBytes))
+	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	var c models.Connection
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &c); err != nil || json.Unmarshal(body, &fields) != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	// The pinned driver build changes only when the request says so. A
+	// client that predates the field, or simply did not send it, must not
+	// unpin the connection and silently move its runs to another driver;
+	// an explicit null unpins it.
+	if _, sent := fields["driver_identity"]; !sent {
+		c.DriverIdentity = existing.DriverIdentity
+	}
+	if msg := driverIdentityError(&c); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 
@@ -429,17 +456,12 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
-	// Flight SQL identity and worker availability are checked before touching
-	// credential references, just as the engine does for a run.
-	if err := h.creds.ValidateConnection(c); err != nil {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
-		return
-	}
-	// A Flight SQL driver exists only as a pinned artifact that the isolated
-	// native child loads. This process cannot open the connection, so it must
-	// not resolve credentials and report a driver's failure it never observed.
-	if c.Type == models.ConnTypeFlightSQL {
-		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": engine.ErrFlightSQLConnectionTestUnsupported.Error()})
+	// A connection read through a native driver is tested through one: the
+	// isolated worker loads the pinned build and runs a trivial query, as
+	// a run would. Testing it through database/sql would test a different
+	// driver from the one its runs use.
+	if engine.IsNativeADBCConnection(c) {
+		writeJSON(w, http.StatusOK, h.testNative(r.Context(), c))
 		return
 	}
 
@@ -869,6 +891,64 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 // already stored is not checked again: the form echoes stored references on
 // every save, and renaming a connection must not fail because the rules
 // changed after its reference was saved.
+// maxConnectionBodyBytes bounds a connection create or update request.
+const maxConnectionBodyBytes = 1 << 20
+
+// driverIdentityError checks a connection's pinned native driver build, if
+// any, and normalizes it. It checks the identity's shape and where it may be
+// used, not that the build is installed here: the server saving a
+// connection is not necessarily a worker that will run it, and the worker
+// that does reports a missing build.
+func driverIdentityError(c *models.Connection) string {
+	if c.DriverIdentity == nil {
+		if c.Type == models.ConnTypeFlightSQL {
+			return "a Flight SQL connection is read through a native driver and must name the installed build it uses (driver_identity)"
+		}
+		return ""
+	}
+	if !drivers.ValidIdentity(*c.DriverIdentity) {
+		return "driver_identity must name a driver build: its name, version and library_sha256 (the SHA-256 of the installed library)"
+	}
+	if !engine.IsNativeADBCConnection(c) {
+		return fmt.Sprintf("driver_identity applies to Flight SQL, PostgreSQL and SQLite connections, not %s", c.Type)
+	}
+	normalized := c.DriverIdentity.Normalized()
+	c.DriverIdentity = &normalized
+	return ""
+}
+
+// nativeTestTimeout covers starting the worker, loading the driver and one
+// round trip; a driver load alone can take a second or two.
+const nativeTestTimeout = 30 * time.Second
+
+func (h *ConnectionHandler) testNative(ctx context.Context, c *models.Connection) map[string]interface{} {
+	fail := func(err error) map[string]interface{} {
+		return map[string]interface{}{"success": false, "error": err.Error()}
+	}
+	var worker engine.NativeADBCRunner
+	if h.nativeWorker != nil {
+		worker = h.nativeWorker()
+	}
+	if worker == nil {
+		return fail(fmt.Errorf("this server has no isolated native worker configured, so it cannot test a connection that reads through a native driver"))
+	}
+	ctx, cancel := context.WithTimeout(ctx, nativeTestTimeout)
+	defer cancel()
+	conn := *c
+	request, err := h.creds.NativeRequest(ctx, &conn, secrets.Scope{WorkspaceID: conn.WorkspaceID})
+	if err != nil {
+		return fail(err)
+	}
+	request.Query = "SELECT 1"
+	if _, err := worker.RunNativeADBC(ctx, *request, io.Discard); err != nil {
+		return fail(err)
+	}
+	return map[string]interface{}{
+		"success": true,
+		"message": fmt.Sprintf("Connected successfully through native driver %s %s", request.Driver.Name, request.Driver.Version),
+	}
+}
+
 func refErrors(c, existing *models.Connection) string {
 	var storedPassword, storedExtra string
 	if existing != nil {

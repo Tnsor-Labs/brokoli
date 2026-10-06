@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -155,11 +156,10 @@ var serveCmd = &cobra.Command{
 		warnIfSQLiteMultiInstanceRisk(dbPath, RunMode)
 
 		eng := engine.NewEngine(s)
-		// Flight SQL is only executed in this one-shot child, which may load an
-		// optional native ADBC library without contaminating the server process.
-		eng.NativeFlightSQLWorker = engine.NativeWorkerLauncher{}
-		workerCapabilities := nativeADBCWorkerCapabilities()
-		workerCapabilityList := capabilityList(workerCapabilities)
+		// Native ADBC drivers load only in a one-shot `worker task` child of
+		// this executable, so a faulty C driver cannot take the server down.
+		eng.NativeADBCWorker = engine.NativeWorkerLauncher{DriverDir: drivers.DefaultDir()}
+		nativeCapabilities := newNativeCapabilities()
 		// Registered after s.Close so it runs before it (defers are LIFO):
 		// the engine's background goroutines — trigger-mode dependency
 		// fan-out in particular — write through the store, so they must be
@@ -562,7 +562,7 @@ var serveCmd = &cobra.Command{
 				resultCh := make(chan dequeueResult, 1)
 				go func() {
 					if capabilityQueue, ok := Extensions.JobQueue.(extensions.CapabilityJobQueue); ok {
-						job, err := capabilityQueue.DequeueForCapabilities(workerCapabilityList)
+						job, err := capabilityQueue.DequeueForCapabilities(nativeCapabilities.advertised)
 						resultCh <- dequeueResult{job, err}
 						return
 					}
@@ -608,12 +608,22 @@ var serveCmd = &cobra.Command{
 					}
 					continue // empty job (timeout) or invalid delivery
 				}
-				if missing := missingNativeADBCCapability(job.RequiredCapabilities, workerCapabilities); missing != "" {
+				if missing := drivers.MissingCapability(job.RequiredCapabilities, nativeCapabilities.advertised()); missing != "" {
 					<-workerSlots
 					err := fmt.Errorf("worker does not advertise required capability %q", missing)
-					log.Printf("Worker: refusing job %s: %v", job.ID, err)
+					log.Printf("Worker: returning job %s to the queue: %v", job.ID, err)
+					// Fail releases the job back to the queue for a worker
+					// that has the driver. A queue that cannot route by
+					// capability may hand it straight back; pause so that is
+					// a slow retry, not a hot loop.
 					if settleErr := Extensions.JobQueue.Fail(job.ID, err); settleErr != nil {
-						log.Printf("Worker: fail incompatible job %s: %v", job.ID, settleErr)
+						log.Printf("Worker: release incompatible job %s: %v", job.ID, settleErr)
+					}
+					select {
+					case sig := <-quit:
+						shutdownDraining(sig)
+						return nil
+					case <-time.After(incompatibleJobBackoff):
 					}
 					continue
 				}
@@ -751,53 +761,42 @@ func defaultDatabasePath() string {
 	return "./brokoli.db"
 }
 
-func nativeADBCWorkerCapabilities() map[string]struct{} {
-	capabilities := make(map[string]struct{})
-	if !engine.NativeADBCWorkerEnabled() {
-		return capabilities
-	}
-	manager, err := drivers.NewManager(drivers.DefaultDir())
-	if err != nil {
-		log.Printf("Worker: native driver inventory unavailable: %v", err)
-		return capabilities
-	}
-	for _, manifest := range manager.List() {
-		identity := drivers.DriverIdentity{Name: manifest.Name, Version: manifest.Version, LibrarySHA256: manifest.LibrarySHA256}
-		for _, capability := range mustNativeADBCCapabilities(manager, identity) {
-			capabilities[capability] = struct{}{}
-		}
-	}
-	return capabilities
+// incompatibleJobBackoff is how long a worker waits after returning a job it
+// lacks a native driver for, before asking the queue for another.
+const incompatibleJobBackoff = 2 * time.Second
+
+// nativeCapabilities is the native-driver capability set this worker
+// advertises, read from the shared driver inventory so an install through
+// the API is advertised without a restart. An install by another process
+// (the drivers CLI) is picked up by a rescan at most every
+// nativeRescanInterval.
+type nativeCapabilitySource struct {
+	mu       sync.Mutex
+	lastScan time.Time
 }
 
-func mustNativeADBCCapabilities(manager *drivers.Manager, identity drivers.DriverIdentity) []string {
-	capabilities, err := manager.RequiredCapabilities(identity)
-	if err != nil {
+const nativeRescanInterval = 30 * time.Second
+
+func newNativeCapabilities() *nativeCapabilitySource { return &nativeCapabilitySource{} }
+
+func (n *nativeCapabilitySource) advertised() []string {
+	if !engine.NativeADBCWorkerEnabled() {
 		return nil
 	}
-	return capabilities
-}
-
-// missingNativeADBCCapability only governs native driver placement. Other
-// capability namespaces remain the responsibility of the queue implementation.
-func missingNativeADBCCapability(required []string, advertised map[string]struct{}) string {
-	for _, capability := range required {
-		if !strings.HasPrefix(capability, drivers.NativeADBCCapability) {
-			continue
-		}
-		if _, ok := advertised[capability]; !ok {
-			return capability
+	manager, err := drivers.Shared(drivers.DefaultDir())
+	if err != nil {
+		log.Printf("Worker: native driver inventory unavailable: %v", err)
+		return nil
+	}
+	n.mu.Lock()
+	if time.Since(n.lastScan) > nativeRescanInterval {
+		n.lastScan = time.Now()
+		if err := manager.LoadAll(); err != nil {
+			log.Printf("Worker: rescan native drivers: %v", err)
 		}
 	}
-	return ""
-}
-
-func capabilityList(capabilities map[string]struct{}) []string {
-	result := make([]string, 0, len(capabilities))
-	for capability := range capabilities {
-		result = append(result, capability)
-	}
-	return result
+	n.mu.Unlock()
+	return manager.Advertised()
 }
 
 // loadEncryptionKey returns the key that encrypts stored credentials, or

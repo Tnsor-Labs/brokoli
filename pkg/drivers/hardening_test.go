@@ -287,3 +287,16 @@ func TestLoadIdentityRefusesABuildFiledUnderAnotherIdentity(t *testing.T) {
 		t.Fatalf("a misfiled build is listed: %+v", mgr.List())
 	}
 }
+
+func TestMissingCapabilityJudgesOnlyNativeDriverTags(t *testing.T) {
+	have := []string{"native-adbc", "native-adbc:flightsql"}
+	if got := MissingCapability([]string{"task-runtime-v1", "native-adbc", "native-adbc:flightsql"}, have); got != "" {
+		t.Fatalf("MissingCapability = %q, want none (other namespaces are the queue's)", got)
+	}
+	if got := MissingCapability([]string{"native-adbc:postgresql"}, have); got != "native-adbc:postgresql" {
+		t.Fatalf("MissingCapability = %q", got)
+	}
+	if got := MissingCapability([]string{"native-adbcx"}, nil); got != "" {
+		t.Fatalf("a look-alike namespace was judged: %q", got)
+	}
+}
