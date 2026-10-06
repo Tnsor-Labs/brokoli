@@ -292,7 +292,9 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 	// Parse decrypted extra into a map
 	var extra map[string]interface{}
 	if conn.Extra != "" {
-		json.Unmarshal([]byte(conn.Extra), &extra)
+		if err := json.Unmarshal([]byte(conn.Extra), &extra); err != nil {
+			return config, fmt.Errorf("parse connection extra: %w", err)
+		}
 	}
 
 	// Inject connection fields based on node type

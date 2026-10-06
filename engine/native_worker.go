@@ -71,12 +71,12 @@ func (l NativeWorkerLauncher) RunNativeADBC(ctx context.Context, request NativeA
 		return NativeADBCResponse{}, fmt.Errorf("start native worker: %w", err)
 	}
 	if err := json.NewEncoder(stdin).Encode(request); err != nil {
-		stdin.Close()
-		cmd.Wait()
+		_ = stdin.Close() // The original write error is more useful to callers.
+		_ = cmd.Wait()    // The worker is being discarded after a failed request write.
 		return NativeADBCResponse{}, fmt.Errorf("write native worker request: %w", err)
 	}
 	if err := stdin.Close(); err != nil {
-		cmd.Wait()
+		_ = cmd.Wait() // The input-close failure is more useful to callers.
 		return NativeADBCResponse{}, fmt.Errorf("close native worker input: %w", err)
 	}
 	response, responseErr := readNativeADBCResponse(stdout)
@@ -130,6 +130,7 @@ func verifyNativeWorkerOutput(path string, response NativeADBCResponse) error {
 	if response.OutputSize < 0 || len(response.OutputSHA256) != sha256.Size*2 {
 		return errors.New("native worker returned invalid output metadata")
 	}
+	// #nosec G304 -- path is created by the parent with os.CreateTemp and is never client input.
 	f, err := os.Open(path)
 	if err != nil {
 		return errors.New("native worker output is unavailable")
@@ -147,6 +148,7 @@ func verifyNativeWorkerOutput(path string, response NativeADBCResponse) error {
 }
 
 func copyNativeWorkerOutput(source, destination string) error {
+	// #nosec G304 -- source is the parent-created, digest-verified worker output.
 	in, err := os.Open(source)
 	if err != nil {
 		return errors.New("native worker output is unavailable")
@@ -157,9 +159,9 @@ func copyNativeWorkerOutput(source, destination string) error {
 		return fmt.Errorf("create native worker destination: %w", err)
 	}
 	tempPath := out.Name()
-	defer os.Remove(tempPath)
+	defer func() { _ = os.Remove(tempPath) }()
 	if err := out.Chmod(0o600); err != nil {
-		out.Close()
+		_ = out.Close() // The chmod failure is more useful to callers.
 		return fmt.Errorf("set native worker destination permissions: %w", err)
 	}
 	_, copyErr := io.Copy(out, in)

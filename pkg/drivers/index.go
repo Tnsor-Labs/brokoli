@@ -13,6 +13,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
 
 const (
@@ -50,7 +52,7 @@ func Documentation(ctx context.Context, name, version string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		response, err := (&http.Client{Timeout: indexTimeout}).Do(req)
+		response, err := netguard.Outbound().Client(indexTimeout).Do(req)
 		if err != nil {
 			return "", fmt.Errorf("fetch documentation: %w", err)
 		}
@@ -108,10 +110,10 @@ func (m *Manager) InstallFromCatalogVersion(ctx context.Context, name, version s
 	}
 	archivePath := archive.Name()
 	if err := archive.Close(); err != nil {
-		os.Remove(archivePath)
+		_ = os.Remove(archivePath) // Best-effort cleanup after a failed temporary-file close.
 		return nil, err
 	}
-	defer os.Remove(archivePath)
+	defer func() { _ = os.Remove(archivePath) }()
 	if err := DownloadArchive(ctx, entry.ArchiveURL, entry.SHA256, archivePath, maxCatalogArchiveBytes); err != nil {
 		return nil, err
 	}
@@ -172,7 +174,7 @@ func FetchIndex(ctx context.Context, url string) (*Index, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build driver index request: %w", err)
 	}
-	client := &http.Client{Timeout: indexTimeout}
+	client := netguard.Outbound().Client(indexTimeout)
 	resp, err := client.Do(req) // #nosec G107 -- URL is explicitly operator-configured
 	if err != nil {
 		return nil, fmt.Errorf("fetch driver index: %w", err)
@@ -211,7 +213,7 @@ func DownloadArchive(ctx context.Context, url, expectedSHA256, destPath string, 
 	if err != nil {
 		return fmt.Errorf("build driver archive request: %w", err)
 	}
-	client := &http.Client{Timeout: downloadTimeout}
+	client := netguard.Outbound().Client(downloadTimeout)
 	resp, err := client.Do(req) // #nosec G107 -- URL comes from operator-selected catalog
 	if err != nil {
 		return fmt.Errorf("download driver archive: %w", err)
