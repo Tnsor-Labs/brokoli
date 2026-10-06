@@ -21,7 +21,7 @@ export {
   authApi,
   claimsToUser,
   connectionApi,
-	 driverApi,
+  driverApi,
   downloadText,
   notificationApi,
   observeApi,
