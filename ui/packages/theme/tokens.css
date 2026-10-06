@@ -30,6 +30,8 @@
   --bk-color-surface: #111315;
   --bk-color-surface-raised: #15181b;
   --bk-color-surface-overlay: #1c2024;
+  --bk-color-brand-tile-light: #ffffff;
+  --bk-color-brand-tile-dark: #151515;
   --bk-color-hover: rgba(242, 241, 237, 0.045);
   --bk-color-pressed: rgba(242, 241, 237, 0.08);
   --bk-color-scrim: rgba(3, 4, 5, 0.72);
@@ -153,6 +155,8 @@
   --bk-color-surface: #ffffff;
   --bk-color-surface-raised: #f8f8f6;
   --bk-color-surface-overlay: #ffffff;
+  --bk-color-brand-tile-light: #ffffff;
+  --bk-color-brand-tile-dark: #151515;
   --bk-color-hover: rgba(19, 21, 23, 0.045);
   --bk-color-pressed: rgba(19, 21, 23, 0.08);
   --bk-color-scrim: rgba(19, 21, 23, 0.36);
