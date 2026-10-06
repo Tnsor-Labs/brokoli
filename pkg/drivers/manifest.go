@@ -4,6 +4,7 @@ package drivers
 
 import (
 	"bytes"
+	"errors"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -41,8 +42,11 @@ func (m *Manifest) Validate() error {
 	if !driverNameRE.MatchString(m.Name) {
 		return fmt.Errorf("invalid driver name %q", m.Name)
 	}
-	if strings.TrimSpace(m.Version) == "" {
-		return fmt.Errorf("version is required")
+	// The version becomes a directory name under the driver root and a
+	// colon-delimited capability tag, so it is held to the same shape as
+	// the name: "../../x" must never reach filepath.Join.
+	if !versionRE.MatchString(m.Version) {
+		return fmt.Errorf("invalid driver version %q", m.Version)
 	}
 	if m.OS == "" || m.Arch == "" {
 		return fmt.Errorf("os and arch are required")
@@ -65,7 +69,25 @@ func (m *Manifest) Validate() error {
 // LoadManifest strictly parses an installed manifest and verifies the library
 // remains inside its directory and still has the recorded digest.
 func LoadManifest(dir string) (*Manifest, error) {
-	raw, err := os.ReadFile(filepath.Join(dir, manifestFile))
+	m, err := parseManifest(dir)
+	if err != nil {
+		return nil, err
+	}
+	got, err := fileSHA256(m.LibraryPath())
+	if err != nil {
+		return nil, fmt.Errorf("hash driver library: %w", err)
+	}
+	if !strings.EqualFold(got, m.LibrarySHA256) {
+		return nil, fmt.Errorf("driver library digest mismatch")
+	}
+	return m, nil
+}
+
+// parseManifest is LoadManifest without hashing the library. Unknown fields
+// are refused: a manifest describes native code about to be loaded, and a
+// field this build does not understand may be one it should have obeyed.
+func parseManifest(dir string) (*Manifest, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, manifestFile)) // #nosec G304 -- dir is a manager-owned driver directory
 	if err != nil {
 		return nil, fmt.Errorf("read driver manifest: %w", err)
 	}
@@ -89,13 +111,6 @@ func LoadManifest(dir string) (*Manifest, error) {
 	if err := m.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid driver manifest: %w", err)
 	}
-	got, err := fileSHA256(m.LibraryPath())
-	if err != nil {
-		return nil, fmt.Errorf("hash driver library: %w", err)
-	}
-	if !strings.EqualFold(got, m.LibrarySHA256) {
-		return nil, fmt.Errorf("driver library digest mismatch")
-	}
 	return &m, nil
 }
 
@@ -103,7 +118,7 @@ func safeRelativePath(path string) bool {
 	if path == "" || filepath.IsAbs(path) || strings.Contains(path, "\\") {
 		return false
 	}
-	return path == filepath.ToSlash(filepath.Clean(path)) && path != "." && !strings.HasPrefix(path, "../")
+	return path == filepath.ToSlash(filepath.Clean(path)) && path != "." && path != ".." && !strings.HasPrefix(path, "../")
 }
 
 func sha256Hex(s string) bool {
@@ -127,4 +142,46 @@ func fileSHA256(path string) (string, error) {
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
-var driverNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+var (
+	driverNameRE = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
+	// versionRE admits semantic versions with pre-release and build
+	// suffixes and nothing that can act as a path separator or traversal.
+	versionRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$`)
+)
+
+// identityPath is where an exact identity is installed under root. Every
+// component is validated first, so the join cannot leave root.
+func identityPath(root string, identity DriverIdentity) (string, bool) {
+	if !ValidIdentity(identity) {
+		return "", false
+	}
+	n := identity.Normalized()
+	return filepath.Join(root, n.Name, n.Version, n.LibrarySHA256), true
+}
+
+// LoadIdentity loads and fully verifies exactly the build identity names
+// from root. It hashes the library, so the bytes about to be loaded are the
+// bytes that were pinned; the isolated worker calls it immediately before it
+// hands the library to the driver manager.
+func LoadIdentity(root string, identity DriverIdentity) (*Manifest, error) {
+	dir, ok := identityPath(root, identity)
+	if !ok {
+		return nil, &CapabilityError{Err: ErrInvalidDriverRequest, Identity: identity}
+	}
+	if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+		return nil, &CapabilityError{Err: ErrDriverNotInstalled, Identity: identity}
+	}
+	m, err := LoadManifest(dir)
+	if err != nil {
+		return nil, err
+	}
+	if m.Identity().Key() != identity.Key() {
+		return nil, &CapabilityError{Err: ErrDriverIdentityMismatch, Identity: identity}
+	}
+	return m, nil
+}
+
+// Identity is the pin a connection stores for this build.
+func (m *Manifest) Identity() DriverIdentity {
+	return DriverIdentity{Name: m.Name, Version: m.Version, LibrarySHA256: strings.ToLower(m.LibrarySHA256)}
+}
