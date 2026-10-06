@@ -53,11 +53,14 @@ func (m *Manager) RequiredCapabilities(identity DriverIdentity) ([]string, error
 		return nil, &CapabilityError{Err: ErrInvalidDriverRequest, Identity: identity}
 	}
 
-	manifest := m.Get(identity.Name)
-	if manifest == nil {
+	if m.Get(identity.Name) == nil {
 		return nil, &CapabilityError{Err: ErrDriverNotInstalled, Identity: identity}
 	}
-	if manifest.Version != identity.Version || !strings.EqualFold(manifest.LibrarySHA256, identity.LibrarySHA256) {
+	manifest := m.GetIdentity(identity)
+	if manifest == nil {
+		// The driver is installed but not this build. Naming the difference
+		// matters: "not installed" sends an operator to install the driver,
+		// while a mismatch means the pinned build is absent or was replaced.
 		return nil, &CapabilityError{Err: ErrDriverIdentityMismatch, Identity: identity}
 	}
 

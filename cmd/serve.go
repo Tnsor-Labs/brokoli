@@ -753,7 +753,7 @@ func defaultDatabasePath() string {
 
 func nativeADBCWorkerCapabilities() map[string]struct{} {
 	capabilities := make(map[string]struct{})
-	if !engine.NativeFlightSQLWorkerEnabled() {
+	if !engine.NativeADBCWorkerEnabled() {
 		return capabilities
 	}
 	manager, err := drivers.NewManager(drivers.DefaultDir())

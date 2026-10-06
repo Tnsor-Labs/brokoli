@@ -159,7 +159,7 @@ func TestCapabilitiesHandler(t *testing.T) {
 	}
 }
 
-func TestCapabilitiesReportInstalledNativeADBCDriversAsNotWired(t *testing.T) {
+func TestCapabilitiesReportInstalledNativeADBCDriversWithWorkerState(t *testing.T) {
 	driverDir := t.TempDir()
 	t.Setenv("BROKOLI_DRIVER_DIR", driverDir)
 	installCapabilityTestDriver(t, driverDir, "flightsql")
@@ -187,7 +187,7 @@ func TestCapabilitiesReportInstalledNativeADBCDriversAsNotWired(t *testing.T) {
 	if err := json.Unmarshal(body["native_adbc_drivers"], &status); err != nil {
 		t.Fatalf("decode native ADBC status: %v", err)
 	}
-	if status.Status != "not_wired" || status.Reason != nativeADBCDriverReason {
+	if status.Status != "native_worker_unavailable" || status.Reason != nativeADBCDriverReason {
 		t.Fatalf("native ADBC status = %#v", status)
 	}
 	if len(status.Installed) != 1 {

@@ -435,6 +435,13 @@ func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": err.Error()})
 		return
 	}
+	// A Flight SQL driver exists only as a pinned artifact that the isolated
+	// native child loads. This process cannot open the connection, so it must
+	// not resolve credentials and report a driver's failure it never observed.
+	if c.Type == models.ConnTypeFlightSQL {
+		writeJSON(w, http.StatusOK, map[string]interface{}{"success": false, "error": engine.ErrFlightSQLConnectionTestUnsupported.Error()})
+		return
+	}
 
 	// Resolve the credentials the way a run does (#752). This used to
 	// decrypt Password and Extra directly, so a connection whose
@@ -824,7 +831,7 @@ func ConnectionTypes(w http.ResponseWriter, r *http.Request) {
 			"description": "Zero-configuration embedded database in a single file",
 			"fields":      []string{"host"}},
 		{"type": "flightsql", "label": "Flight SQL", "category": "database", "icon": "connGeneric",
-			"description": "Apache Arrow Flight SQL endpoint. Execution is pending native worker support",
+			"description": "Apache Arrow Flight SQL endpoint. Sources execute through the isolated native worker",
 			"fields":      []string{"host", "port", "login", "password"}},
 		// Cloud Storage
 		{"type": "s3", "label": "Amazon S3", "category": "storage", "icon": "connS3",

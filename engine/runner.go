@@ -140,8 +140,8 @@ type Runner struct {
 	// resume attempt against a nil artifactStore that needs to restore a
 	// node with downstream consumers fails loudly rather than silently
 	// substituting empty data).
-	artifactStore   ArtifactStore
-	flightSQLWorker NativeFlightSQLRunner
+	artifactStore    ArtifactStore
+	nativeADBCWorker NativeADBCRunner
 
 	// spillThreshold is the estimated encoded size at or above which a
 	// node's output is written to the artifact store instead of being held
@@ -232,6 +232,11 @@ type nodeExecutionResult struct {
 // SQL source connections. It is intentionally narrower than a general worker.
 type NativeFlightSQLRunner interface {
 	RunFlightSQL(context.Context, NativeFlightSQLRequest) (NativeFlightSQLResponse, error)
+}
+
+// NativeADBCRunner is the generic isolated native-driver worker boundary.
+type NativeADBCRunner interface {
+	RunNativeADBC(context.Context, NativeADBCRequest) (NativeADBCResponse, error)
 }
 
 // nodeRowCount is what a completed node reports as its row count.
