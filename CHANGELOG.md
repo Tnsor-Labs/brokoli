@@ -11,6 +11,86 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-10-06
+
+Native ADBC drivers: a `source_db` node can read through a native driver --
+Flight SQL always, PostgreSQL and SQLite when a connection is pinned to one --
+inside an isolated, short-lived worker process. Partitioned `migrate` runs key
+ranges in parallel. Secret store changes have their own permission. **Two
+changes need attention before upgrading**; they are listed first.
+
+### Changed -- read before upgrading
+
+- **Changing a secret store takes `secret_stores.manage`** (#792) -- @hc12r.
+  Creating, editing and deleting stores used to take the connection
+  permissions; viewing and testing still do. The built-in editor and admin
+  roles hold it, so nothing changes for them; a custom role that managed
+  stores needs it added.
+- **New permission `drivers.manage`** (#799) -- @hc12r. Installing and
+  removing native drivers takes it, and only the built-in admin role holds
+  it: a driver is native code every worker on the host loads, for every
+  workspace. A distribution with tenants should map it to its platform
+  operators, never to a tenant's administrators.
+
+### Added
+
+- **Native ADBC drivers** (#799) -- @hc12r. Driver builds are installed
+  into the driver directory (`BROKOLI_DRIVER_DIR`) from an archive and its
+  digest (`brokoli drivers install <archive> --sha256 ...`) or from a
+  curated catalog (`brokoli drivers install <name> --catalog`, or the new
+  Drivers page). A connection pins one exact build by its library digest
+  (`driver_identity`); a run reads through that build in a fresh
+  `worker task` child that looks the identity up and verifies the library
+  immediately before loading it, then streams Arrow straight into the
+  artifact store. Works on the streaming path, the batch path and dry
+  runs; Test runs `SELECT 1` through the pinned driver. New connection type
+  `flightsql`. Runs are routed by `native-adbc:*` capability tags to
+  workers that have the build. See `docs/native-drivers.md`.
+  - Loading a driver needs a binary built with cgo and `-tags adbc`. **The
+    standard release binaries cannot run native drivers**; they can manage
+    drivers and pinned connections, and say so where it matters.
+  - There is **no default catalog**: catalog installs are available once an
+    operator sets `BROKOLI_DRIVER_INDEX`, since the catalog is not signed.
+  - The worker gets an allowlisted environment, never the server's
+    (`BROKOLI_NATIVE_PASS_ENV` widens it), and limits itself with
+    `BROKOLI_NATIVE_MEMORY_MB`, `BROKOLI_NATIVE_CPU_SECONDS` and
+    `BROKOLI_NATIVE_OPEN_FILES`. A Flight SQL host is checked against the
+    outbound policy before the driver is given it.
+  - Run parameters (`${param.x}`) in a native source's query are refused
+    for now rather than sent as literal text.
+- **Partitioned `migrate`** (#793) -- @hc12r. A `partition` setting
+  (`column`, `strategy` numeric or date, `boundaries`, `max_parallel`)
+  splits a migrate into key ranges run in parallel, each with durable
+  status. It requires `mode: upsert` with the partition column among
+  `key_columns`, so a retried partition cannot duplicate rows. Postgres to
+  Postgres on the same endpoint merges server-side through a staging table;
+  across databases it streams in bounded batches. Measured at about 2.25x
+  (same endpoint, 8 partitions) and 2.47x (separate databases, 4
+  partitions) a single stream.
+- ADR-044 (Arrow transport and a composable runtime) and ADR-045 (optional
+  native worker capabilities), both proposed (#796, #797) -- @hc12r.
+
+### Fixed
+
+- **A secret variable read without an encryption key is still reported
+  secret** (#792) -- @hc12r. A worker without the key returned the stored
+  value flagged as a plain variable, so it could reach logs unmasked.
+
+### For code embedding the engine
+
+- `extensions.CapabilityJobQueue.DequeueForCapabilities(advertised func() []string)`
+  is a new optional queue capability; the worker reads its capabilities
+  each time a job is considered. The in-memory queue implements it.
+- `extensions.WorkOrder.Migrate` (`MigrateWorkOrder`) carries one migrate
+  partition, as connection references, never credentials (#793).
+- `Engine.NativeADBCWorker` runs native sources; `NativeWorkerLauncher` is
+  the isolated implementation. An embedder whose binary does not register
+  core's `worker task` command sets its `Executable`.
+- `codeexec.AllowlistedEnv(passVar, extra...)` is the environment filter
+  code nodes and the native worker share.
+- `models.DriverIdentity` and `models.Connection.DriverIdentity` are new;
+  connections gained a `driver_identity` column (added automatically).
+
 ## [0.16.0] - 2026-10-03
 
 Secret stores (ADR-041): a workspace can keep its credentials in its own
