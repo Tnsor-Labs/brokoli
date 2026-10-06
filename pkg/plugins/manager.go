@@ -496,12 +496,12 @@ func sortManifestsByName(m []*Manifest) {
 // manifest.json file inside a plugin directory. Kept here so the CLI
 // and integration tests share one code path.
 func WriteManifest(dir string, m *Manifest) error {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	buf, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, "manifest.json"), buf, 0o644)
+	return os.WriteFile(filepath.Join(dir, "manifest.json"), buf, 0o600)
 }
