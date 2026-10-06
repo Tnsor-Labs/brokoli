@@ -218,3 +218,13 @@ func TestNativeWorkerHelperProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestNativeWorkerLimitsFromEnv(t *testing.T) {
+	t.Setenv("BROKOLI_NATIVE_MEMORY_MB", "512")
+	t.Setenv("BROKOLI_NATIVE_CPU_SECONDS", "-3")
+	t.Setenv("BROKOLI_NATIVE_OPEN_FILES", "")
+	got := nativeWorkerLimitsFromEnv()
+	if got.MemoryBytes != 512<<20 || got.CPUSeconds != 0 || got.OpenFiles != 1024 {
+		t.Fatalf("limits = %+v", got)
+	}
+}
