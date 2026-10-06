@@ -205,7 +205,10 @@ func (q *inMemoryJobQueue) Enqueue(job RunJob) error {
 	}
 	q.known[job.ID] = job
 	q.pending = append(q.pending, job)
-	q.ready.Signal()
+	// Broadcast, not Signal: a capability-aware waiter that cannot take
+	// this job would consume a single wake-up and leave a waiter that
+	// can asleep.
+	q.ready.Broadcast()
 	return nil
 }
 
@@ -224,10 +227,14 @@ func (q *inMemoryJobQueue) Dequeue() (RunJob, error) {
 	return job, nil
 }
 
-func (q *inMemoryJobQueue) DequeueForCapabilities(workerCapabilities []string) (RunJob, error) {
+func (q *inMemoryJobQueue) DequeueForCapabilities(advertised func() []string) (RunJob, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for {
+		var workerCapabilities []string
+		if advertised != nil {
+			workerCapabilities = advertised()
+		}
 		for index, job := range q.pending {
 			if !jobCapabilitiesMatch(job.RequiredCapabilities, workerCapabilities) {
 				continue
@@ -272,7 +279,10 @@ func (q *inMemoryJobQueue) Fail(jobID string, _ error) error {
 	}
 	delete(q.processing, jobID)
 	q.pending = append(q.pending, job)
-	q.ready.Signal()
+	// Broadcast, not Signal: a capability-aware waiter that cannot take
+	// this job would consume a single wake-up and leave a waiter that
+	// can asleep.
+	q.ready.Broadcast()
 	return nil
 }
 

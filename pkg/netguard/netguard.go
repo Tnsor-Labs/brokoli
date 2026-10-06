@@ -293,6 +293,38 @@ func (p Policy) checkHost(host string) error {
 	return nil
 }
 
+// CheckHost reports whether this policy allows every address host resolves
+// to. It is for clients whose connections this process cannot intercept,
+// such as a native driver doing its own networking in a child process:
+// they cannot dial through DialContext, so the check runs before handing
+// the host over. Every resolved address must pass, because such a client
+// may dial any of them.
+//
+// This is weaker than DialContext: the client resolves the name again, so a
+// DNS answer that changes between the check and the connection is not
+// caught. Prefer DialContext wherever the dial can be routed through it.
+func (p Policy) CheckHost(ctx context.Context, host string) error {
+	if err := p.checkHost(host); err != nil {
+		return err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return p.checkIP(ip)
+	}
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return err
+	}
+	if len(ips) == 0 {
+		return fmt.Errorf("%w: no addresses resolved for %s", ErrBlockedTarget, host)
+	}
+	for _, ipAddr := range ips {
+		if err := p.checkIP(ipAddr.IP); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // DialContext connects to addr only if this policy allows the address it
 // resolves to, and dials that exact checked IP.
 //

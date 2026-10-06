@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -9,17 +10,20 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 )
 
-// drivers command group manages locally installed native ADBC driver files.
-// It intentionally accepts only operator-supplied archives: a network catalog
-// install path must wait for a curated, signed catalog.
+// drivers command group manages locally installed native ADBC driver builds:
+// from an operator-supplied archive and its digest, or from the curated
+// catalog the operator configured (BROKOLI_DRIVER_INDEX), the same one the
+// server's Drivers page installs from.
 var driversCmd = &cobra.Command{
 	Use:   "drivers",
 	Short: "Manage installed native ADBC drivers",
 	Long: `Drivers provide native ADBC database connectivity outside the core binary.
 
 Drivers live in ~/.brokoli/drivers/ by default (override with the
-BROKOLI_DRIVER_DIR environment variable). Install archives explicitly with a
-SHA-256 digest; catalog installation is not available.`,
+BROKOLI_DRIVER_DIR environment variable). Install an archive with its SHA-256
+digest, or a release from the curated catalog named by BROKOLI_DRIVER_INDEX.
+The catalog is not signed yet, so there is no default one: configuring it is
+deciding to trust the native code it lists.`,
 }
 
 var driversListCmd = &cobra.Command{
@@ -34,6 +38,7 @@ var driversListCmd = &cobra.Command{
 		if len(installed) == 0 {
 			fmt.Printf("No drivers installed in %s\n", mgr.Dir())
 			fmt.Println("Install one with: brokoli drivers install <archive> --sha256 <digest>")
+			fmt.Println("                or brokoli drivers install <name> --catalog")
 			return nil
 		}
 		fmt.Printf("Driver directory: %s\n\n", mgr.Dir())
@@ -46,15 +51,36 @@ var driversListCmd = &cobra.Command{
 }
 
 var driversInstallCmd = &cobra.Command{
-	Use:   "install <archive> --sha256 <digest>",
-	Short: "Install a native ADBC driver from a local archive",
-	Long: `Install a native ADBC driver archive into the Brokoli driver directory.
+	Use:   "install (<archive> --sha256 <digest> | <name> --catalog [--version <v>])",
+	Short: "Install a native ADBC driver from an archive or the catalog",
+	Long: `Install a native ADBC driver build into the Brokoli driver directory.
 
-The archive SHA-256 digest is required and verified before extraction. Network
-or catalog installation is intentionally unavailable until a curated, signed
-catalog exists.`,
+From an archive: the archive's SHA-256 digest is required and verified before
+extraction.
+
+From the catalog (--catalog): the release is looked up in the catalog named by
+BROKOLI_DRIVER_INDEX, downloaded, checked against the digest the catalog lists,
+and refused unless its manifest names the same driver and version.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		fromCatalog, _ := cmd.Flags().GetBool("catalog")
+		if fromCatalog {
+			version, _ := cmd.Flags().GetString("version")
+			manager, err := drivers.NewManager(drivers.DefaultDir())
+			if err != nil {
+				return err
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			installed, err := manager.InstallFromCatalogVersion(ctx, args[0], version)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("Installed driver %s %s at %s\n", installed.Name, installed.Version, installed.Dir())
+			return nil
+		}
 		digest, err := cmd.Flags().GetString("sha256")
 		if err != nil {
 			return err
@@ -73,7 +99,12 @@ var driversRemoveCmd = &cobra.Command{
 	Use:     "remove <name>",
 	Aliases: []string{"uninstall", "rm"},
 	Short:   "Remove an installed native ADBC driver",
-	Args:    cobra.ExactArgs(1),
+	Long: `Remove every installed build of a native ADBC driver.
+
+Unlike removal through the server, this does not check which connections are
+pinned to the driver: it has no access to them. Runs using a pinned connection
+fail until the build is installed again.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		mgr, err := drivers.NewManager(drivers.DefaultDir())
 		if err != nil {
@@ -117,7 +148,9 @@ var driversInspectCmd = &cobra.Command{
 
 func init() {
 	driversInstallCmd.Flags().String("sha256", "", "SHA-256 digest of the driver archive")
-	_ = driversInstallCmd.MarkFlagRequired("sha256")
+	driversInstallCmd.Flags().Bool("catalog", false, "install the named release from the catalog in BROKOLI_DRIVER_INDEX")
+	driversInstallCmd.Flags().String("version", "", "with --catalog, the exact version (default: newest installable)")
+	driversInstallCmd.MarkFlagsMutuallyExclusive("sha256", "catalog")
 	driversCmd.AddCommand(driversListCmd)
 	driversCmd.AddCommand(driversInstallCmd)
 	driversCmd.AddCommand(driversRemoveCmd)

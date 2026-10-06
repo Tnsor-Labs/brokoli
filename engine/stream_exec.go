@@ -909,6 +909,11 @@ func (r *Runner) runSourceFileStreamed(ctx context.Context, node models.Node, ou
 }
 
 func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outputs *nodeOutputs, attempt int) (nodeExecutionResult, error) {
+	if native, err := r.nativeSourceRequest(ctx, node); err != nil {
+		return nodeExecutionResult{}, err
+	} else if native != nil {
+		return r.runNativeSourceStreamed(ctx, node, outputs, native, attempt)
+	}
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
 	if uri == "" {
@@ -917,30 +922,6 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	if query == "" {
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
-	if library, ok := node.Config["native_adbc_library"].(string); ok {
-		entrypoint, _ := node.Config["native_adbc_entrypoint"].(string)
-		options, _ := node.Config["native_adbc_options"].(map[string]string)
-		r.recordExecutedSQL(node.ID, attempt, query)
-		ref, err := runNativeADBCSource(ctx, r.nativeADBCWorker, outputs, NativeADBCRequest{Library: library, Entrypoint: entrypoint, URI: uri, Query: query, Options: options})
-		if err != nil {
-			return nodeExecutionResult{}, err
-		}
-		r.log(node.ID, models.LogLevelInfo, "Streamed %d rows, %d columns from native ADBC by reference as Arrow IPC (never materialized)", ref.RowCount, len(ref.Columns))
-		return nodeExecutionResult{outputRef: ref}, nil
-	}
-	// Legacy saved configs used Flight-specific markers. Keep them as an input
-	// adapter while newly resolved connections use the generic markers above.
-	if library, ok := node.Config["native_flightsql_library"].(string); ok {
-		headers, _ := node.Config["native_flightsql_headers"].(map[string]string)
-		options := NativeFlightSQLRequest{Library: library, URI: uri, Query: query, Headers: headers}.nativeADBCRequest().Options
-		r.recordExecutedSQL(node.ID, attempt, query)
-		ref, err := runNativeADBCSource(ctx, r.nativeADBCWorker, outputs, NativeADBCRequest{Library: library, Entrypoint: nativeFlightSQLEntrypoint, URI: uri, Query: query, Options: options})
-		if err != nil {
-			return nodeExecutionResult{}, err
-		}
-		return nodeExecutionResult{outputRef: ref}, nil
-	}
-
 	if isBigQueryURI(uri) {
 		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")
 	}

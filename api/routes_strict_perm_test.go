@@ -48,6 +48,9 @@ func TestRequireStrictPerm_EditorDenied_AdminAllowed(t *testing.T) {
 		{"system purge", http.MethodPost, "/api/system/purge"},
 		{"notification settings update", http.MethodPut, "/api/settings/notifications"},
 		{"notification settings delete", http.MethodDelete, "/api/settings/notifications"},
+		// A native driver is code loaded by every worker on the host.
+		{"native driver install", http.MethodPost, "/api/drivers/catalog/flightsql/install"},
+		{"native driver remove", http.MethodDelete, "/api/drivers/flightsql"},
 	}
 
 	for _, tc := range cases {

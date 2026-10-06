@@ -228,17 +228,6 @@ type nodeExecutionResult struct {
 	outputSchema columnSchema
 }
 
-// NativeFlightSQLRunner is the isolated child boundary used by saved Flight
-// SQL source connections. It is intentionally narrower than a general worker.
-type NativeFlightSQLRunner interface {
-	RunFlightSQL(context.Context, NativeFlightSQLRequest) (NativeFlightSQLResponse, error)
-}
-
-// NativeADBCRunner is the generic isolated native-driver worker boundary.
-type NativeADBCRunner interface {
-	RunNativeADBC(context.Context, NativeADBCRequest) (NativeADBCResponse, error)
-}
-
 // nodeRowCount is what a completed node reports as its row count.
 //
 // Order matters. A terminal node — every sink — produces no dataset, so

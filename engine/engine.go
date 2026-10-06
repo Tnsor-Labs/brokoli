@@ -85,11 +85,9 @@ type Engine struct {
 	// (or ./brokoli-artifacts); assign a different implementation the same
 	// way VarStore/ConnResolver are overridden after NewEngine.
 	ArtifactStore ArtifactStore
-	// NativeFlightSQLWorker enables local, isolated-child execution for saved
-	// Flight SQL source_db connections. Nil refuses those connections clearly.
-	NativeFlightSQLWorker NativeFlightSQLRunner
-	// NativeADBCWorker is the generic worker used by pinned native ADBC sources.
-	// NativeFlightSQLWorker remains for existing callers.
+	// NativeADBCWorker runs source_db queries for connections pinned to a
+	// native ADBC driver, each in an isolated child process. Nil refuses
+	// those connections with an error saying so.
 	NativeADBCWorker NativeADBCRunner
 
 	// DataCapIssuer mints the data-plane capabilities a remotely
@@ -694,11 +692,6 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 
 func (e *Engine) configureRunner(r *Runner) *Runner {
 	r.nativeADBCWorker = e.NativeADBCWorker
-	if r.nativeADBCWorker == nil {
-		if legacy, ok := e.NativeFlightSQLWorker.(NativeADBCRunner); ok {
-			r.nativeADBCWorker = legacy
-		}
-	}
 	return r
 }
 

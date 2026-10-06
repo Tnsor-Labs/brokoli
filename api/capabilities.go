@@ -7,7 +7,6 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
-	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
@@ -47,47 +46,22 @@ var codeRuntimeState = struct {
 	nodePath string
 }{}
 
-const nativeADBCDriverReason = "Pinned native ADBC sources execute in an isolated worker and publish Arrow IPC artifacts; connection tests remain unavailable."
-
-type nativeADBCDriver struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	OS            string `json:"os"`
-	Arch          string `json:"arch"`
-	Entrypoint    string `json:"entrypoint"`
-	LibrarySHA256 string `json:"library_sha256"`
-}
-
+// nativeADBCDriverStatus says whether this server's worker can run native
+// ADBC drivers at all. The installed builds are deliberately not listed:
+// this document is public, and the exact versions of the native code a
+// server loads are not for anyone who asks. GET /api/drivers lists them to
+// signed-in users.
 type nativeADBCDriverStatus struct {
-	Status    string             `json:"status"`
-	Reason    string             `json:"reason"`
-	Installed []nativeADBCDriver `json:"installed"`
+	Status string `json:"status"`
+	Reason string `json:"reason"`
 }
 
 func nativeADBCDrivers() nativeADBCDriverStatus {
-	status := nativeADBCDriverStatus{
-		Status:    "native_worker_unavailable",
-		Reason:    nativeADBCDriverReason,
-		Installed: []nativeADBCDriver{},
-	}
 	if engine.NativeADBCWorkerEnabled() {
-		status.Status = "native_worker_enabled"
+		return nativeADBCDriverStatus{Status: "native_worker_enabled",
+			Reason: "Connections pinned to an installed native ADBC driver are read in an isolated worker process."}
 	}
-	manager, err := drivers.NewManager(drivers.DefaultDir())
-	if err != nil {
-		return status
-	}
-	for _, manifest := range manager.List() {
-		status.Installed = append(status.Installed, nativeADBCDriver{
-			Name:          manifest.Name,
-			Version:       manifest.Version,
-			OS:            manifest.OS,
-			Arch:          manifest.Arch,
-			Entrypoint:    manifest.Entrypoint,
-			LibrarySHA256: manifest.LibrarySHA256,
-		})
-	}
-	return status
+	return nativeADBCDriverStatus{Status: "native_worker_unavailable", Reason: engine.ErrNativeADBCUnavailable.Error()}
 }
 
 // SetCodeRuntime records the runtime resolution performed by the server at

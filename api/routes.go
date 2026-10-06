@@ -49,6 +49,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	if e != nil && e.ConnResolver != nil {
 		ch.tokens = e.ConnResolver.TokenSource()
 	}
+	if e != nil {
+		ch.nativeWorker = func() engine.NativeADBCRunner { return e.NativeADBCWorker }
+	}
 	// ADR-041: secret stores, and secret:// references in connections.
 	ssh := &SecretStoreHandler{store: s, crypto: cc}
 	if ss, ok := s.(store.SecretStoreStore); ok {
@@ -305,11 +308,14 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Utilities
 		r.Post("/test-connection", rh.TestConnection)
+		// Native drivers are host-wide: browsing is open to any signed-in
+		// user, changing them takes drivers.manage (see its definition).
 		dh := NewDriverHandler(s)
+		r.Get("/drivers", dh.Installed)
 		r.Get("/drivers/catalog", dh.Catalog)
 		r.Get("/drivers/catalog/{name}/{version}/docs", dh.Documentation)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/drivers/catalog/{name}/install", dh.Install)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/drivers/{name}", dh.Remove)
+		r.With(requireStrictPerm(models.PermDriversManage)).Post("/drivers/catalog/{name}/install", dh.Install)
+		r.With(requireStrictPerm(models.PermDriversManage)).Delete("/drivers/{name}", dh.Remove)
 		r.Get("/system/info", systemInfo(s, e))
 		r.Get("/capabilities", CapabilitiesHandler)
 		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/system/purge", systemPurge(s, e))

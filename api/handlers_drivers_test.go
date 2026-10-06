@@ -16,6 +16,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
+	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
@@ -75,6 +76,7 @@ func TestDriverCatalogHandlerFiltersToCurrentPlatform(t *testing.T) {
 	}))
 	defer index.Close()
 	t.Setenv("BROKOLI_DRIVER_INDEX", index.URL)
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
 	t.Setenv("BROKOLI_DRIVER_DIR", t.TempDir())
 
 	recorder := httptest.NewRecorder()
@@ -103,6 +105,7 @@ func TestDriverCatalogReportsInstalledMatchingRelease(t *testing.T) {
 	}))
 	defer index.Close()
 	t.Setenv("BROKOLI_DRIVER_INDEX", index.URL)
+	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
 	t.Setenv("BROKOLI_DRIVER_DIR", driverDir)
 
 	recorder := httptest.NewRecorder()
@@ -131,7 +134,7 @@ func TestDriverRemoveRefusesWhileConnectionsArePinned(t *testing.T) {
 	}
 	t.Setenv("BROKOLI_DRIVER_DIR", driverDir)
 
-	pinned := drivers.DriverIdentity{Name: installed.Name, Version: installed.Version, LibrarySHA256: installed.LibrarySHA256}
+	pinned := installed.Identity()
 	connections, err := store.NewSQLiteStore(t.TempDir() + "/connections.db")
 	if err != nil {
 		t.Fatal(err)

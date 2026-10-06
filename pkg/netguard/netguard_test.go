@@ -153,3 +153,18 @@ func TestClient_DialContextValidatesTheResolvedIPNotJustTheHostname(t *testing.T
 		t.Fatal("expected a direct dial to 127.0.0.1 to be blocked by IP, regardless of hostname")
 	}
 }
+
+func TestCheckHostRefusesBlockedAddressesAndAllowsPublicOnes(t *testing.T) {
+	ctx := context.Background()
+	for _, host := range []string{"127.0.0.1", "169.254.169.254", "10.1.2.3", "localhost", "metadata.google.internal"} {
+		if err := Default.CheckHost(ctx, host); err == nil {
+			t.Errorf("CheckHost(%q) allowed a blocked target", host)
+		}
+	}
+	if err := Default.CheckHost(ctx, "93.184.216.34"); err != nil {
+		t.Errorf("CheckHost refused a public address: %v", err)
+	}
+	if err := (Policy{AllowLoopback: true}).CheckHost(ctx, "127.0.0.1"); err != nil {
+		t.Errorf("CheckHost ignored AllowLoopback: %v", err)
+	}
+}

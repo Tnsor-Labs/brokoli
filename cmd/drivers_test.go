@@ -27,3 +27,14 @@ func TestDriversOnlyExposeLocalManagementCommands(t *testing.T) {
 		t.Fatalf("missing drivers commands: %v", want)
 	}
 }
+
+func TestDriversCatalogInstallNeedsAConfiguredCatalog(t *testing.T) {
+	t.Setenv("BROKOLI_DRIVER_INDEX", "")
+	t.Setenv("BROKOLI_DRIVER_DIR", t.TempDir())
+	_ = driversInstallCmd.Flags().Set("catalog", "true")
+	t.Cleanup(func() { _ = driversInstallCmd.Flags().Set("catalog", "false") })
+	err := driversInstallCmd.RunE(driversInstallCmd, []string{"flightsql"})
+	if err == nil || !strings.Contains(err.Error(), "BROKOLI_DRIVER_INDEX") {
+		t.Fatalf("catalog install without a catalog error = %v", err)
+	}
+}
