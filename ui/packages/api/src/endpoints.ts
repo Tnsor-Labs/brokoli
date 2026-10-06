@@ -23,6 +23,8 @@ import type {
   LineageGraph,
   NodeStats,
   Connection,
+  DriverCatalog,
+  InstalledDriver,
   ConnectionTestResult,
   ConnectionTypeMeta,
   ConnectionUsage,
@@ -268,6 +270,13 @@ export const systemApi = {
   capabilities: () => request<Capabilities>('/capabilities', { retries: 0 }),
   /** Deletes runs older than `days`; on a single-organisation server that is every run on the server. */
   purge: (days: number) => request<{ deleted: number; days: number; org_id?: string }>('/system/purge', { json: { days }, timeout: 0 }),
+}
+
+export const driverApi = {
+  catalog: () => request<DriverCatalog>('/drivers/catalog', { retries: 0, timeout: 25_000 }),
+  install: (name: string, version?: string) => request<InstalledDriver>(`/drivers/catalog/${enc(name)}/install${version ? `?version=${encodeURIComponent(version)}` : ''}`, { method: 'POST', timeout: 0 }),
+  remove: (name: string, version?: string) => request<void>(`/drivers/${enc(name)}${version ? `?version=${encodeURIComponent(version)}` : ''}`, { method: 'DELETE' }),
+	 documentation: (name: string, version: string) => request<{ markdown: string }>(`/drivers/catalog/${enc(name)}/${enc(version)}/docs`, { retries: 0 }).then((response) => response.markdown),
 }
 
 export const userApi = {

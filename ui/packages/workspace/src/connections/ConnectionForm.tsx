@@ -1,4 +1,5 @@
 import { useMemo, useState, type FormEvent } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Database, Globe, HardDrive, Plug, PlugZap } from 'lucide-react'
 import { connectionApi, systemApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
@@ -29,6 +30,7 @@ type Draft = {
   extra: string
   s3_endpoint: string
   s3_use_path_style: boolean
+  use_native_driver: boolean
   driver_identity: string
   max_concurrent: string
 }
@@ -65,6 +67,7 @@ function draftFrom(c?: Connection, type = ''): Draft {
     extra: '',
     s3_endpoint: s3Endpoint,
     s3_use_path_style: s3UsePathStyle,
+    use_native_driver: c?.type === 'flightsql' || type === 'flightsql' || Boolean(c?.driver_identity),
     driver_identity: driverIdentityKey(c?.driver_identity),
     max_concurrent: c?.max_concurrent ? String(c.max_concurrent) : '',
   }
@@ -124,18 +127,24 @@ export function ConnectionForm({
   const capabilities = useQuery({
     queryKey: ['capabilities'],
     queryFn: systemApi.capabilities,
-    enabled: draft.type === 'flightsql',
+    enabled: draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite',
     staleTime: Infinity,
     gcTime: Infinity,
     retry: false,
     refetchOnWindowFocus: false,
   })
-  const flightSQLDrivers = (capabilities.data?.native_adbc_drivers?.installed ?? []).filter((driver) =>
-    driver.name.toLowerCase().replaceAll(/[^a-z0-9]/g, '').includes('flightsql'),
-  )
-  const selectedFlightSQLDriver = flightSQLDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
-  const flightSQLSaveBlocked = draft.type === 'flightsql' && (capabilities.isPending || !selectedFlightSQLDriver)
-  const flightSQLTestBlocked = draft.type === 'flightsql'
+  const nativeDriverType = draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite' ? draft.type : null
+  const nativeDriverLabel = nativeDriverType === 'flightsql' ? 'Flight SQL' : nativeDriverType === 'sqlite' ? 'SQLite' : 'PostgreSQL'
+  const nativeDrivers = (capabilities.data?.native_adbc_drivers?.installed ?? []).filter((driver) => {
+    const name = driver.name.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
+    if (nativeDriverType === 'flightsql') return name.includes('flightsql')
+    if (nativeDriverType === 'sqlite') return name.includes('sqlite')
+    return name.includes('postgres') || name.includes('postgresql')
+  })
+  const selectedNativeDriver = nativeDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
+  const nativeDriverRequired = draft.type === 'flightsql' || draft.use_native_driver
+  const nativeDriverSaveBlocked = nativeDriverRequired && (capabilities.isPending || !selectedNativeDriver)
+  const nativeDriverTestBlocked = nativeDriverRequired
   const [extraRefKey, setExtraRefKey] = useState('')
   const [extraRef, setExtraRef] = useState<SecretRefParts>(EMPTY_REF)
   const [extraRefOpen, setExtraRefOpen] = useState(false)
@@ -187,11 +196,11 @@ export function ConnectionForm({
       login: draft.login,
       max_concurrent: draft.max_concurrent ? Number(draft.max_concurrent) : 0,
     }
-    if (draft.type === 'flightsql' && selectedFlightSQLDriver) {
+    if (nativeDriverRequired && selectedNativeDriver) {
       body.driver_identity = {
-        name: selectedFlightSQLDriver.name,
-        version: selectedFlightSQLDriver.version,
-        library_sha256: selectedFlightSQLDriver.library_sha256,
+        name: selectedNativeDriver.name,
+        version: selectedNativeDriver.version,
+        library_sha256: selectedNativeDriver.library_sha256,
       }
     }
     Object.assign(body, passwordFields(draft.password_source, draft.password_ref, draft.password, saved?.password_ref, Boolean(passwordSecret)))
@@ -243,7 +252,7 @@ export function ConnectionForm({
 
   const submit = async (e: FormEvent) => {
     e.preventDefault()
-    if (invalid || busy || flightSQLSaveBlocked) return
+    if (invalid || busy || nativeDriverSaveBlocked) return
     const result = await save()
     if (result && existing) onClose()
   }
@@ -303,8 +312,8 @@ export function ConnectionForm({
             <Button
               icon={<PlugZap size={15} aria-hidden="true" />}
               loading={busy === 'test'}
-              disabled={Boolean(busy) || flightSQLTestBlocked || (dirty && (invalid || !canEdit))}
-              title={flightSQLTestBlocked ? 'Flight SQL testing is pending native worker support' : dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
+              disabled={Boolean(busy) || nativeDriverTestBlocked || (dirty && (invalid || !canEdit))}
+              title={nativeDriverTestBlocked ? 'Native ADBC connection tests are unavailable; pipelines execute through the isolated native worker' : dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
               onClick={async () => {
                 const target = dirty ? await save() : saved
                 if (target) await runTest(target)
@@ -318,7 +327,7 @@ export function ConnectionForm({
             {editing && !dirty ? 'Close' : 'Cancel'}
           </Button>
           {canEdit && (
-            <Button variant="primary" type="submit" form="ws-connection-form" loading={busy === 'save'} disabled={invalid || flightSQLSaveBlocked || (editing && !dirty)}>
+            <Button variant="primary" type="submit" form="ws-connection-form" loading={busy === 'save'} disabled={invalid || nativeDriverSaveBlocked || (editing && !dirty)}>
               {editing ? 'Save changes' : 'Create connection'}
             </Button>
           )}
@@ -337,35 +346,49 @@ export function ConnectionForm({
               The engine has no driver for {meta?.label ?? draft.type}, so database, file and API nodes will not accept it. You can still store it for reference.
             </Callout>
           )}
-          {draft.type === 'postgres' && (
-            <Callout tone="info" title="PostgreSQL driver">
-              The standard driver remains in use for PostgreSQL.
+          {(draft.type === 'postgres' || draft.type === 'sqlite') && (
+            <Callout tone="info" title={`${nativeDriverLabel} driver`}>
+              The standard {nativeDriverLabel} driver remains in use unless you explicitly select an installed native ADBC driver below.
             </Callout>
           )}
-          {draft.type === 'flightsql' && (
+          {nativeDriverType && (
             <>
-              <Callout tone="warning" title="Native worker support pending">
-                Connection execution and testing are pending native worker support. You can save the selected driver identity now, but pipelines cannot execute it yet.
-              </Callout>
-              {capabilities.isPending ? (
-                <Callout tone="info" title="Checking installed Flight SQL drivers">
-                  Loading native ADBC driver discovery from this server.
+              {draft.type === 'flightsql' && (
+                <Callout tone="info" title="Isolated native execution">
+                  Flight SQL pipeline sources execute through the isolated native worker and store Arrow IPC artifacts by reference. Connection tests are not available from this process.
                 </Callout>
-              ) : !flightSQLDrivers.length ? (
-                <Callout tone="danger" title="Flight SQL driver required">
-                  No installed Flight SQL driver was discovered on this server. Install one before saving or testing this connection.
-                </Callout>
-              ) : (
-                <Field label="Flight SQL driver" required hint="The selected installed driver identity is saved with this connection.">
-                  <Select value={draft.driver_identity} onChange={(e) => set({ driver_identity: e.target.value })}>
-                    <option value="">Choose an installed Flight SQL driver</option>
-                    {flightSQLDrivers.map((driver) => (
-                      <option key={driverIdentityKey(driver)} value={driverIdentityKey(driver)}>
-                        {driver.name} {driver.version} ({driver.library_sha256})
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
+              )}
+              {(draft.type === 'postgres' || draft.type === 'sqlite') && (
+                <Checkbox
+                  label="Use an installed native ADBC driver"
+                  description={`Pins this connection to one installed ${nativeDriverLabel} driver. Leave unchecked to use the standard ${nativeDriverLabel} driver.`}
+                  checked={draft.use_native_driver}
+                  onChange={(e) => set({ use_native_driver: e.target.checked, driver_identity: e.target.checked ? draft.driver_identity : '' })}
+                />
+              )}
+              {nativeDriverRequired && (
+                <>
+                  {capabilities.isPending ? (
+                    <Callout tone="info" title={`Checking installed ${nativeDriverLabel} drivers`}>
+                      Loading native ADBC driver discovery from this server.
+                    </Callout>
+                  ) : !nativeDrivers.length ? (
+                    <Callout tone="danger" title="Native ADBC driver required">
+                      No installed {nativeDriverLabel} driver was discovered on this server. <Link to="/drivers">Browse managed drivers</Link> before saving this connection.
+                    </Callout>
+                  ) : (
+                    <Field label={`${nativeDriverLabel} driver`} required hint="The selected installed driver identity is saved with this connection.">
+                      <Select value={draft.driver_identity} onChange={(e) => set({ driver_identity: e.target.value })}>
+                        <option value="">Choose an installed {nativeDriverLabel} driver</option>
+                        {nativeDrivers.map((driver) => (
+                          <option key={driverIdentityKey(driver)} value={driverIdentityKey(driver)}>
+                            {driver.name} {driver.version} ({driver.library_sha256})
+                          </option>
+                        ))}
+                      </Select>
+                    </Field>
+                  )}
+                </>
               )}
             </>
           )}
