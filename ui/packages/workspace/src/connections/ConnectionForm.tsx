@@ -2,7 +2,7 @@ import { useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Database, Globe, HardDrive, Plug, PlugZap } from 'lucide-react'
-import { connectionApi, systemApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
+import { connectionApi, driverApi, type Connection, type ConnectionTestResult, type ConnectionTypeMeta } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import { Badge, Button, Callout, Checkbox, Field, Input, Modal, SearchInput, SegmentedControl, Select, Textarea, cx, errorMessage, useToast } from '@brokoli/ui'
 import { CATEGORY_LABEL, DEFAULT_PORT, DRIVER_OPTIONS, USABLE_BY_NODES, externalSecret, formFields, groupTypes } from './catalog'
@@ -124,18 +124,16 @@ export function ConnectionForm({
   const extraSecret = externalSecret(saved?.extra_ref)
   const storedRefIsSecret = isSecretRef(saved?.password_ref)
 
-  const capabilities = useQuery({
-    queryKey: ['capabilities'],
-    queryFn: systemApi.capabilities,
-    enabled: draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite',
-    staleTime: Infinity,
-    gcTime: Infinity,
+  const nativeDriverType = draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite' ? draft.type : null
+  const installedDrivers = useQuery({
+    queryKey: ['drivers', 'installed'],
+    queryFn: driverApi.installed,
+    enabled: nativeDriverType !== null,
     retry: false,
     refetchOnWindowFocus: false,
   })
-  const nativeDriverType = draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite' ? draft.type : null
   const nativeDriverLabel = nativeDriverType === 'flightsql' ? 'Flight SQL' : nativeDriverType === 'sqlite' ? 'SQLite' : 'PostgreSQL'
-  const nativeDrivers = (capabilities.data?.native_adbc_drivers?.installed ?? []).filter((driver) => {
+  const nativeDrivers = (installedDrivers.data?.drivers ?? []).filter((driver) => {
     const name = driver.name.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
     if (nativeDriverType === 'flightsql') return name.includes('flightsql')
     if (nativeDriverType === 'sqlite') return name.includes('sqlite')
@@ -143,8 +141,10 @@ export function ConnectionForm({
   })
   const selectedNativeDriver = nativeDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
   const nativeDriverRequired = draft.type === 'flightsql' || draft.use_native_driver
-  const nativeDriverSaveBlocked = nativeDriverRequired && (capabilities.isPending || !selectedNativeDriver)
-  const nativeDriverTestBlocked = nativeDriverRequired
+  const nativeDriverSaveBlocked = nativeDriverRequired && (installedDrivers.isPending || !selectedNativeDriver)
+  // The test runs through the native driver, so it needs a server that can
+  // load one; the save does not, since another worker may run the connection.
+  const nativeDriverTestBlocked = nativeDriverRequired && installedDrivers.data?.native_worker_enabled === false
   const [extraRefKey, setExtraRefKey] = useState('')
   const [extraRef, setExtraRef] = useState<SecretRefParts>(EMPTY_REF)
   const [extraRefOpen, setExtraRefOpen] = useState(false)
@@ -202,6 +202,9 @@ export function ConnectionForm({
         version: selectedNativeDriver.version,
         library_sha256: selectedNativeDriver.library_sha256,
       }
+    } else if (saved?.driver_identity) {
+      // Leaving the field out keeps the server's pin; unpinning is explicit.
+      body.driver_identity = null
     }
     Object.assign(body, passwordFields(draft.password_source, draft.password_ref, draft.password, saved?.password_ref, Boolean(passwordSecret)))
     if (draft.type === 's3' && !extraSecret) {
@@ -313,7 +316,7 @@ export function ConnectionForm({
               icon={<PlugZap size={15} aria-hidden="true" />}
               loading={busy === 'test'}
               disabled={Boolean(busy) || nativeDriverTestBlocked || (dirty && (invalid || !canEdit))}
-              title={nativeDriverTestBlocked ? 'Native ADBC connection tests are unavailable; pipelines execute through the isolated native worker' : dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
+              title={nativeDriverTestBlocked ? 'This server cannot load native drivers, so it cannot test this connection; a worker that can will run it' : dirty ? 'Saves your changes, then tests the saved connection' : 'Tests the saved connection from the server'}
               onClick={async () => {
                 const target = dirty ? await save() : saved
                 if (target) await runTest(target)
@@ -354,8 +357,8 @@ export function ConnectionForm({
           {nativeDriverType && (
             <>
               {draft.type === 'flightsql' && (
-                <Callout tone="info" title="Isolated native execution">
-                  Flight SQL pipeline sources execute through the isolated native worker and store Arrow IPC artifacts by reference. Connection tests are not available from this process.
+                <Callout tone="info" title="Read through a native driver">
+                  Flight SQL sources run the driver selected below in an isolated worker process and store their results as Arrow. Test runs <code>SELECT 1</code> through the same driver.
                 </Callout>
               )}
               {(draft.type === 'postgres' || draft.type === 'sqlite') && (
@@ -368,9 +371,9 @@ export function ConnectionForm({
               )}
               {nativeDriverRequired && (
                 <>
-                  {capabilities.isPending ? (
+                  {installedDrivers.isPending ? (
                     <Callout tone="info" title={`Checking installed ${nativeDriverLabel} drivers`}>
-                      Loading native ADBC driver discovery from this server.
+                      Loading the native drivers installed on this server.
                     </Callout>
                   ) : !nativeDrivers.length ? (
                     <Callout tone="danger" title="Native ADBC driver required">

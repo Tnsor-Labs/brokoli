@@ -471,8 +471,8 @@ export interface Connection {
   /** "encrypted://********" when stored by Brokoli; env://, vault:// or k8s:// refs come back verbatim. */
   password_ref?: string
   extra_ref?: string
-  /** Verified native ADBC artifact selected for this connection. */
-  driver_identity?: DriverIdentity
+  /** The native ADBC driver build this connection is pinned to. Send null to unpin; leave it out to keep the current pin. */
+  driver_identity?: DriverIdentity | null
   /** 0 means unlimited. */
   max_concurrent?: number
   created_at?: string
@@ -508,11 +508,10 @@ export interface User {
 export interface Capabilities {
   /** Node types the server refuses (BROKOLI_DISABLED_NODE_TYPES). Always present on servers that support the setting. */
   disabled_node_types?: string[]
-  /** Native ADBC artifacts discovered by the server and isolated worker state. */
+  /** Whether this server can run native ADBC drivers. Installed builds are listed by driverApi.installed, behind sign-in. */
   native_adbc_drivers?: {
-	status: 'native_worker_enabled' | 'native_worker_unavailable'
+    status: 'native_worker_enabled' | 'native_worker_unavailable'
     reason: string
-    installed: { name: string; version: string; os: string; arch: string; entrypoint: string; library_sha256: string }[]
   }
   [key: string]: unknown
 }
@@ -547,10 +546,17 @@ export interface DriverAdvisory {
 }
 
 export interface DriverCatalog {
-	configured: boolean
+  configured: boolean
+  /** False when this server's build cannot load native drivers at all. */
+  native_worker_enabled: boolean
   version: number
   platform: { os: string; arch: string }
   drivers: DriverCatalogEntry[]
+}
+
+export interface InstalledDrivers {
+  native_worker_enabled: boolean
+  drivers: InstalledDriver[]
 }
 
 export interface InstalledDriver {
