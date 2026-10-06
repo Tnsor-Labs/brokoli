@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"reflect"
 	"strings"
 	"time"
@@ -70,14 +71,28 @@ func (s *PostgresStore) migrate() error {
 		permissions JSONB NOT NULL DEFAULT '[]', is_system BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 
-	// Seed default roles on first run
-	var roleCount int
-	s.db.QueryRow("SELECT COUNT(*) FROM roles").Scan(&roleCount)
-	if roleCount == 0 {
-		for _, role := range models.DefaultRoles() {
-			permsJSON, _ := json.Marshal(role.Permissions)
-			s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,NOW())",
-				role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem)
+	// System roles are defined in code (models.DefaultRoles) and cannot be
+	// edited through the API, so the stored rows are a copy of that
+	// definition, not a source of truth. They used to be written only on the
+	// first run, which left every existing deployment on the permission set
+	// of the version it was installed with: a permission added later (secret
+	// store management, driver management) was held by nobody, and a check
+	// that read the stored role refused it to admins. Every start now inserts
+	// any missing system role and brings each one to the code's definition.
+	// Custom roles are left alone.
+	for _, role := range models.DefaultRoles() {
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
+			continue
+		}
+		if _, err := s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
+			role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem, time.Now().UTC()); err != nil {
+			log.Printf("store: seed system role %s: %v", role.ID, err)
+		}
+		if _, err := s.db.Exec("UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=TRUE",
+			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
+			log.Printf("store: reconcile system role %s: %v", role.ID, err)
 		}
 	}
 
