@@ -166,6 +166,16 @@ func arrowValue(col arrow.Array, i int) (interface{}, error) {
 			scale = t.Scale
 		}
 		return decimal128String(c.Value(i), scale), nil
+	// The narrower and wider decimal widths, rendered the same exact way.
+	// A native driver picks the width from the column's precision -- the
+	// MySQL driver returns DECIMAL(10,2) as decimal64 -- and refusing
+	// them failed a run that had read its rows correctly.
+	case *array.Decimal32:
+		return decimal128String(unscaledInt(int64(c.Value(i))), decimalScale(col.DataType())), nil
+	case *array.Decimal64:
+		return decimal128String(unscaledInt(int64(c.Value(i))), decimalScale(col.DataType())), nil
+	case *array.Decimal256:
+		return decimal128String(c.Value(i), decimalScale(col.DataType())), nil
 	default:
 		return nil, fmt.Errorf("arrow column type %s is not supported by this server's reader (use %s instead)", col.DataType(), CodecNDJSON)
 	}
@@ -190,6 +200,19 @@ func numericValue(f float64) interface{} {
 		return i
 	}
 	return f
+}
+
+// unscaledInt adapts a narrow decimal's integer to decimal128String.
+type unscaledInt int64
+
+func (u unscaledInt) BigInt() *big.Int { return big.NewInt(int64(u)) }
+
+// decimalScale is a decimal column's scale, whatever its width.
+func decimalScale(t arrow.DataType) int32 {
+	if d, ok := t.(arrow.DecimalType); ok {
+		return d.GetScale()
+	}
+	return 0
 }
 
 // decimal128String renders an Arrow decimal exactly, as the canonical

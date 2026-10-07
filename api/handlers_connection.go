@@ -910,7 +910,26 @@ func driverIdentityError(c *models.Connection) string {
 		return "driver_identity must name a driver build: its name, version and library_sha256 (the SHA-256 of the installed library)"
 	}
 	if !engine.IsNativeADBCConnection(c) {
-		return fmt.Sprintf("driver_identity applies to Flight SQL, PostgreSQL and SQLite connections, not %s", c.Type)
+		kinds := drivers.NativeConnectionTypes()
+		names := make([]string, len(kinds))
+		for i, k := range kinds {
+			names[i] = string(k)
+		}
+		return fmt.Sprintf("driver_identity applies to %s connections, not %s", strings.Join(names, ", "), c.Type)
+	}
+	if !drivers.Serves(c.DriverIdentity.Name, c.Type) {
+		usable := drivers.UsableBy(c.DriverIdentity.Name)
+		if len(usable) == 0 {
+			return fmt.Sprintf("driver %q cannot be used by any connection yet", c.DriverIdentity.Name)
+		}
+		names := make([]string, len(usable))
+		for i, k := range usable {
+			names[i] = string(k)
+		}
+		return fmt.Sprintf("driver %q does not serve %s connections; it serves %s", c.DriverIdentity.Name, c.Type, strings.Join(names, ", "))
+	}
+	if problem := c.NativeADBCProblem(); problem != "" {
+		return problem
 	}
 	normalized := c.DriverIdentity.Normalized()
 	c.DriverIdentity = &normalized

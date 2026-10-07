@@ -535,6 +535,8 @@ export interface DriverCatalogEntry {
   sha256: string
   installed: boolean
 	available: boolean
+  /** Connection types that can read through this driver; empty when none can yet. */
+  usable_by: string[]
 }
 
 export interface DriverAdvisory {
@@ -566,6 +568,8 @@ export interface InstalledDriver {
   arch: string
   entrypoint: string
   library_sha256: string
+  /** Connection types that can read through this driver; empty when none can yet. */
+  usable_by: string[]
 }
 
 export interface SystemInfo {
