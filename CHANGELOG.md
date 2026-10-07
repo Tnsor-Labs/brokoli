@@ -11,6 +11,38 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-10-07
+
+MySQL and ClickHouse connections can read through native ADBC drivers, and
+a driver says which connection types can use it.
+
+### Added
+
+- **MySQL and ClickHouse connections can be pinned to a native driver**
+  (#805) -- @hc12r. A `source_db` node reading such a connection runs
+  through the pinned build in the isolated worker, as Flight SQL,
+  PostgreSQL and SQLite already do.
+  - MySQL uses the `mysql` driver: `mysql://host:port/schema`, with the
+    connection's driver options as query parameters and credentials passed
+    as options, never in the URI.
+  - ClickHouse uses the `clickhouse` driver, which speaks ClickHouse's HTTP
+    interface: `http://host:8123/`, or `https://host:8443/` when the
+    connection sets `"secure": true`. A pin on the native-protocol ports
+    9000/9440 is refused, saying why.
+  See `docs/native-drivers.md`.
+- **Which connection types can use a driver** (#805) -- @hc12r. The
+  driver APIs report `usable_by`, and saving a connection pinned to a driver
+  that does not serve its type is refused (the run checks again). The
+  Drivers page shows it, and no longer offers to install a driver no
+  connection can use yet; the connection form chooses drivers by it.
+
+### Fixed
+
+- **Arrow decimals other than 128-bit decode** (#805) -- @hc12r. Only
+  `decimal128` was read; a `decimal32`, `decimal64` or `decimal256` column,
+  which the MySQL driver returns for `DECIMAL(10,2)`, failed the run after
+  its rows were read. All four widths decode exactly.
+
 ## [0.17.2] - 2026-10-07
 
 ### Fixed
