@@ -60,8 +60,9 @@ const (
 	PermTemplatesManage Permission = "templates.manage"
 
 	// Secret stores (ADR-041): creating, changing and deleting a
-	// workspace's connections to its secret managers. Viewing and testing
-	// a store take the connection permissions. A distribution may hold
+	// workspace's connections to its secret managers. Viewing a store takes
+	// no permission beyond workspace membership, as viewing a connection
+	// does; testing one takes connections.test. A distribution may hold
 	// this to a stricter rule than editing a connection: a store opens a
 	// door into the customer's secret manager.
 	PermSecretStoresManage Permission = "secret_stores.manage"

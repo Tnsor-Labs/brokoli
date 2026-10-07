@@ -258,6 +258,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// Secret stores: viewing and testing take the connection
 		// permissions; changing a store takes secret_stores.manage, which
 		// editors hold by default and a distribution may restrict further.
+		// Reading stores is open to signed-in members of the workspace, as
+		// reading connections is: a store's settings are where secrets
+		// live, never a secret. Changing one takes secret_stores.manage;
+		// testing one, connections.test.
 		r.Get("/secret-stores/providers", ssh.Providers)
 		r.Get("/secret-stores", ssh.List)
 		r.With(requirePerm(models.PermSecretStoresManage)).Post("/secret-stores", ssh.Create)

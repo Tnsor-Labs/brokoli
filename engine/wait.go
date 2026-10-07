@@ -134,6 +134,11 @@ var waitHTTPClient = func() *http.Client {
 func waitConditionMet(ctx context.Context, st waitStore, run *models.Run, c waitCondition) (bool, error) {
 	switch c.Type {
 	case "file_exists":
+		// Held to the data directories every file node is, or a wait
+		// would probe paths anywhere on the worker's filesystem.
+		if err := common.PathAllowed(c.Path); err != nil {
+			return false, fmt.Errorf("wait file_exists: %w", err)
+		}
 		matches, err := filepath.Glob(c.Path)
 		if err != nil {
 			return false, fmt.Errorf("wait glob %q: %w", c.Path, err)
@@ -166,6 +171,14 @@ func waitConditionMet(ctx context.Context, st waitStore, run *models.Run, c wait
 		}
 		return !time.Now().UTC().Before(run.DataIntervalEnd.Add(off)), nil
 	case "pipeline":
+		// Only a pipeline in the waiting run's own organization. Answered
+		// as "not found" either way, so a wait cannot be used to learn
+		// whether another organization's pipeline exists or how its last
+		// run ended.
+		target, err := st.GetPipeline(c.PipelineID)
+		if err != nil || target == nil || run == nil || !sameOrg(target.OrgID, run.OrgID) {
+			return false, fmt.Errorf("wait pipeline %q: pipeline not found", c.PipelineID)
+		}
 		runs, err := st.ListRunsByPipeline(c.PipelineID, 1)
 		if err != nil {
 			return false, fmt.Errorf("wait pipeline %q: %w", c.PipelineID, err)
@@ -179,6 +192,7 @@ func waitConditionMet(ctx context.Context, st waitStore, run *models.Run, c wait
 // waitStore is the sliver of store.Store wait evaluation needs.
 type waitStore interface {
 	ListRunsByPipeline(pipelineID string, limit int) ([]models.Run, error)
+	GetPipeline(id string) (*models.Pipeline, error)
 }
 
 // runWait is the wait node's handler: evaluate once; met passes the input
@@ -357,4 +371,16 @@ func (e *Engine) TimeoutParkedRun(w models.ParkedWait, now time.Time) {
 	})
 	e.eventCh <- models.Event{Type: models.EventRunFailed, RunID: w.RunID, PipelineID: w.PipelineID, Status: models.RunStatusFailed, Error: msg}
 	common.SLog().Warn("parked run timed out", common.RunAttr(w.RunID), "node", w.NodeID, "error", msg)
+}
+
+// sameOrg compares organization IDs, treating the empty ID and "default"
+// as the single-tenant default organization they both mean.
+func sameOrg(a, b string) bool {
+	norm := func(s string) string {
+		if s == "" {
+			return "default"
+		}
+		return s
+	}
+	return norm(a) == norm(b)
 }

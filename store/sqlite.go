@@ -1298,6 +1298,18 @@ func (s *SQLiteStore) FailWaitingRun(runID string, finishedAt time.Time, errMsg 
 	return n == 1, wrapStoreErr("FailWaitingRun", runID, err)
 }
 
+func (s *SQLiteStore) CancelWaitingRun(runID string, finishedAt time.Time) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=?, finished_at=?, error=? WHERE id=? AND status=?`,
+		string(models.RunStatusCancelled), formatTimePtr(&finishedAt), "cancelled by user", runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("CancelWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("CancelWaitingRun", runID, err)
+}
+
 func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE runs SET status=?, started_at=?, trace_id=? WHERE id=? AND pipeline_id=? AND status=?`,

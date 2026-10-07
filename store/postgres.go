@@ -1156,6 +1156,18 @@ func (s *PostgresStore) FailWaitingRun(runID string, finishedAt time.Time, errMs
 	return n == 1, wrapStoreErr("FailWaitingRun", runID, err)
 }
 
+func (s *PostgresStore) CancelWaitingRun(runID string, finishedAt time.Time) (bool, error) {
+	result, err := s.db.Exec(
+		`UPDATE runs SET status=$1, finished_at=$2, error=$3 WHERE id=$4 AND status=$5`,
+		string(models.RunStatusCancelled), finishedAt.UTC(), "cancelled by user", runID, string(models.RunStatusWaiting),
+	)
+	if err != nil {
+		return false, wrapStoreErr("CancelWaitingRun", runID, err)
+	}
+	n, err := result.RowsAffected()
+	return n == 1, wrapStoreErr("CancelWaitingRun", runID, err)
+}
+
 func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time.Time, traceID string) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE runs SET status=$1, started_at=$2, trace_id=$3 WHERE id=$4 AND pipeline_id=$5 AND status=$6`,
