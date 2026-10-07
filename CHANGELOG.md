@@ -11,6 +11,17 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.17.2] - 2026-10-07
+
+### Fixed
+
+- **A native source no longer warns that it has no driver** (#803) --
+  @hc12r. A `source_db` node reading a connection through a native ADBC
+  driver logged, on every successful run, that its connection type "has no
+  database driver in this build" and that "the run will fail". Such a
+  connection is read through its pinned driver; the warning is now only
+  given for a type that genuinely has none.
+
 ## [0.17.1] - 2026-10-06
 
 ### Fixed
