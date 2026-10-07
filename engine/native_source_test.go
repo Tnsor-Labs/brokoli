@@ -345,3 +345,26 @@ func TestUnpinnedDatabaseConnectionIsNotNative(t *testing.T) {
 		}
 	}
 }
+
+// A native source used to log, on every successful run, that its
+// connection type "has no database driver in this build" and "the run
+// will fail". It is read through its driver, and nothing is wrong.
+func TestNativeConnectionResolvesWithoutTheNoDriverWarning(t *testing.T) {
+	identity := testDriverIdentity
+	resolver := NewConnectionResolver(&oneConnStore{conn: &models.Connection{ConnID: "flight", Type: models.ConnTypeFlightSQL, Host: "x", DriverIdentity: &identity}}, nil)
+	_, warnings, err := resolver.ResolveWithWarnings(map[string]interface{}{"conn_id": "flight"}, models.NodeTypeSourceDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range warnings {
+		if strings.Contains(w, "no database driver") {
+			t.Fatalf("native connection warned: %s", w)
+		}
+	}
+	// A type with genuinely no driver still warns.
+	resolver = NewConnectionResolver(&oneConnStore{conn: &models.Connection{ConnID: "gen", Type: models.ConnTypeGeneric, Host: "x"}}, nil)
+	_, warnings, _ = resolver.ResolveWithWarnings(map[string]interface{}{"conn_id": "gen"}, models.NodeTypeSourceDB)
+	if len(warnings) == 0 {
+		t.Fatal("a connection with no driver no longer warns")
+	}
+}
