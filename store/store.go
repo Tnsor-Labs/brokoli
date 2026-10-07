@@ -69,6 +69,18 @@ type PendingRunCanceller interface {
 	CancelPendingRun(runID string, finishedAt time.Time) (cancelled bool, err error)
 }
 
+// WaitingRunCanceller is an optional store capability (type-assert): cancel
+// a run parked at a wait node. A parked run has no Runner to deliver a
+// cancel to, and the cancel-intent flag is only honoured by a Runner, so
+// without this a waiting run could not be cancelled at all. Conditional on
+// status waiting, the mirror of ClaimWaitingRun: exactly one of "the
+// watcher wakes it" and "cancel marks it cancelled" wins.
+type WaitingRunCanceller interface {
+	// CancelWaitingRun transitions runID from waiting to cancelled. Returns
+	// false with a nil error when the run was not waiting.
+	CancelWaitingRun(runID string, finishedAt time.Time) (cancelled bool, err error)
+}
+
 // RunCancelRequester is an optional store capability (type-assert, same
 // pattern as PendingRunClaimer): durably record that cancellation of a run
 // was requested, before any of the acting halves of a cancel (local ctx

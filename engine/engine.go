@@ -520,6 +520,45 @@ func (e *Engine) CancelRun(runID string) error {
 		}
 	}
 
+	// Case 2b: the run is parked at a wait node. Nothing executes it, so
+	// neither a local cancel nor a broadcast reaches anything, and the
+	// cancel-intent flag above is only honoured by a Runner. Cancel it with
+	// a compare-and-swap against waiting, as the watcher's wake claims it;
+	// losing means it woke in between and is now running.
+	if run.Status == models.RunStatusWaiting {
+		if canceller, ok := e.store.(store.WaitingRunCanceller); ok {
+			now := time.Now().UTC()
+			cancelled, cErr := canceller.CancelWaitingRun(runID, now)
+			if cErr != nil {
+				return fmt.Errorf("cancel waiting run %s: %w", runID, cErr)
+			}
+			if cancelled {
+				_, _ = e.store.DeleteParkedWait(runID) // the park is moot; a stale row is ignored by the watcher anyway
+				e.appendEvent(&models.RunEvent{
+					RunID:     runID,
+					EventType: models.RunEventCancelled,
+					Payload: models.RunEventPayload{
+						Status:     models.RunStatusCancelled,
+						FinishedAt: &now,
+						Error:      "cancelled by user",
+					},
+				})
+				e.emitCancelledEvent(runID, run.PipelineID, "")
+				return nil
+			}
+			// It woke: record the intent now that it is running, so its
+			// Runner stops at the next wave boundary.
+			if requester, ok := e.store.(store.RunCancelRequester); ok {
+				if persisted, rErr := requester.RequestRunCancel(runID); rErr == nil && persisted {
+					intentPersisted = true
+				}
+			}
+			if e.cancelLocalRun(runID) {
+				return nil
+			}
+		}
+	}
+
 	// Case 3: the run executes in another engine instance. Broadcast when
 	// a broadcaster is configured; the owning instance's CancelRelayedRun
 	// does the actual cancel (and, post-#203, finalizes the run as

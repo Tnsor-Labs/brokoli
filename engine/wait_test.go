@@ -302,3 +302,108 @@ func TestThousandParkedWaitsHoldNothing(t *testing.T) {
 			before, after, budget, n)
 	}
 }
+
+// A file_exists wait is held to the data directories, like every file
+// node; it used to probe any path on the worker's filesystem.
+func TestWaitFileExistsIsHeldToTheDataDirectories(t *testing.T) {
+	_, eng, dir := waitTestEngine(t)
+	t.Setenv("BROKOLI_DATA_DIRS", dir)
+	st := eng.store
+	outside := "/etc/hostname"
+	if _, err := os.Stat(outside); err != nil {
+		outside = "/etc/passwd"
+	}
+	mkWaitPipeline(t, st, dir, "outside", outside, nil)
+	run, err := eng.RunPipeline("outside")
+	if err == nil && run.Status != models.RunStatusFailed {
+		t.Fatalf("a wait on %s outside the data directories ran: status %s", outside, run.Status)
+	}
+	if run != nil && !strings.Contains(run.Error, "outside allowed directories") {
+		t.Fatalf("run error = %q, want the data-directory refusal", run.Error)
+	}
+
+	// Control: a path inside them still works.
+	gate := filepath.Join(dir, "ready.flag")
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mkWaitPipeline(t, st, dir, "inside", gate, nil)
+	if run, err := eng.RunPipeline("inside"); err != nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("wait inside the data directories: run %v, err %v", run, err)
+	}
+}
+
+// A pipeline wait only sees pipelines of the waiting run's organization;
+// it used to report another organization's pipeline status.
+func TestWaitPipelineConditionStaysInsideTheOrganization(t *testing.T) {
+	st, eng, dir := waitTestEngine(t)
+	upstream := func(id, org string) {
+		now := time.Now().UTC()
+		if err := st.CreatePipeline(&models.Pipeline{ID: id, Name: id, Enabled: true, OrgID: org, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		if err := st.CreateRun(&models.Run{ID: "run-" + id, PipelineID: id, OrgID: org, Status: models.RunStatusSuccess, StartedAt: &now}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	upstream("theirs", "org-other")
+	upstream("ours", "org-acme")
+	waiter := func(id, target string) *models.Run {
+		csv := filepath.Join(dir, "in-"+id+".csv")
+		if err := os.WriteFile(csv, []byte("id\n1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		now := time.Now().UTC()
+		if err := st.CreatePipeline(&models.Pipeline{ID: id, Name: id, Enabled: true, OrgID: "org-acme",
+			Nodes: []models.Node{
+				{ID: "src", Type: models.NodeTypeSourceFile, Name: "S", Config: map[string]interface{}{"path": csv, "format": "csv"}},
+				{ID: "gate", Type: models.NodeTypeWait, Name: "G", Config: map[string]interface{}{"condition": "pipeline", "pipeline_id": target}},
+			},
+			Edges: []models.Edge{{From: "src", To: "gate"}}, CreatedAt: now, UpdatedAt: now}); err != nil {
+			t.Fatal(err)
+		}
+		run, _ := eng.RunPipeline(id)
+		return run
+	}
+	if run := waiter("wait-theirs", "theirs"); run == nil || run.Status != models.RunStatusFailed || !strings.Contains(run.Error, "pipeline not found") {
+		t.Fatalf("waiting on another organization's pipeline: %+v, want failed with not found", run)
+	}
+	if run := waiter("wait-ours", "ours"); run == nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("waiting on our own succeeded pipeline: %+v, want success", run)
+	}
+}
+
+// A parked run can be cancelled. It has no Runner to deliver a cancel to,
+// so it used to stay waiting until it woke or timed out.
+func TestCancellingAParkedRun(t *testing.T) {
+	st, eng, dir := waitTestEngine(t)
+	gate := filepath.Join(dir, "never.flag")
+	mkWaitPipeline(t, st, dir, "cancel-me", gate, map[string]interface{}{"poll_interval": "50ms"})
+	run, err := eng.RunPipeline("cancel-me")
+	if err != nil || run.Status != models.RunStatusWaiting {
+		t.Fatalf("run = %+v, err %v; want waiting", run, err)
+	}
+	if err := eng.CancelRun(run.ID); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	got, err := st.GetRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != models.RunStatusCancelled {
+		t.Fatalf("status after cancel = %s, want cancelled", got.Status)
+	}
+	if n, _ := st.CountParkedWaits(); n != 0 {
+		t.Fatalf("park left behind after cancel: %d", n)
+	}
+	// The condition coming true afterwards must not resurrect it.
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	NewScheduler(eng, st, &fakeLeaderElector{leader: true}).pollParkedWaits()
+	eng.bg.Wait()
+	if got, _ := st.GetRun(run.ID); got.Status != models.RunStatusCancelled {
+		t.Fatalf("cancelled run changed to %s after its condition came true", got.Status)
+	}
+}
