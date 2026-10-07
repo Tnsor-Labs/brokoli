@@ -50,21 +50,34 @@ type catalogDriver struct {
 	SHA256      string             `json:"sha256"`
 	Installed   bool               `json:"installed"`
 	Available   bool               `json:"available"`
+	// UsableBy lists the connection types that can read through this
+	// driver; empty when none can yet.
+	UsableBy []string `json:"usable_by"`
 }
 
 // installedDriver is one installed build: what a connection pins.
 type installedDriver struct {
-	Name          string `json:"name"`
-	Version       string `json:"version"`
-	OS            string `json:"os"`
-	Arch          string `json:"arch"`
-	Entrypoint    string `json:"entrypoint"`
-	LibrarySHA256 string `json:"library_sha256"`
+	Name          string   `json:"name"`
+	Version       string   `json:"version"`
+	OS            string   `json:"os"`
+	Arch          string   `json:"arch"`
+	Entrypoint    string   `json:"entrypoint"`
+	LibrarySHA256 string   `json:"library_sha256"`
+	UsableBy      []string `json:"usable_by"`
+}
+
+// usableBy is drivers.UsableBy as strings, never nil, for the API.
+func usableBy(name string) []string {
+	out := []string{}
+	for _, k := range drivers.UsableBy(name) {
+		out = append(out, string(k))
+	}
+	return out
 }
 
 func toInstalledDriver(manifest *drivers.Manifest) installedDriver {
 	return installedDriver{Name: manifest.Name, Version: manifest.Version, OS: manifest.OS, Arch: manifest.Arch,
-		Entrypoint: manifest.Entrypoint, LibrarySHA256: manifest.Identity().LibrarySHA256}
+		Entrypoint: manifest.Entrypoint, LibrarySHA256: manifest.Identity().LibrarySHA256, UsableBy: usableBy(manifest.Name)}
 }
 
 func installedDrivers(manager *drivers.Manager) []installedDriver {
@@ -137,7 +150,7 @@ func (h *DriverHandler) Catalog(w http.ResponseWriter, r *http.Request) {
 			Name: entry.Name, DisplayName: entry.DisplayName, Description: entry.Description, Icon: entry.Icon, IconURL: entry.IconURL, License: entry.License, Homepage: entry.Homepage,
 			DocsURL: entry.DocsURL, Lifecycle: entry.Lifecycle, ADBCVersion: entry.ADBCVersion, MinBrokoli: entry.MinBrokoli, Advisories: entry.Advisories,
 			Version: entry.Version, OS: entry.OS, Arch: entry.Arch, SHA256: entry.SHA256,
-			Installed: installed, Available: entry.Installable(),
+			Installed: installed, Available: entry.Installable(), UsableBy: usableBy(entry.Name),
 		})
 		listed[entry.Name+"\x00"+entry.Version] = true
 	}
@@ -165,7 +178,7 @@ func (h *DriverHandler) Catalog(w http.ResponseWriter, r *http.Request) {
 }
 
 func installedEntry(manifest *drivers.Manifest) catalogDriver {
-	return catalogDriver{Name: manifest.Name, Version: manifest.Version, OS: manifest.OS, Arch: manifest.Arch, SHA256: manifest.ArchiveSHA256, Installed: true}
+	return catalogDriver{Name: manifest.Name, Version: manifest.Version, OS: manifest.OS, Arch: manifest.Arch, SHA256: manifest.ArchiveSHA256, Installed: true, UsableBy: usableBy(manifest.Name)}
 }
 
 // driverErrorStatus maps a driver operation's failure to an HTTP status: an

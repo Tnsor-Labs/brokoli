@@ -124,21 +124,20 @@ export function ConnectionForm({
   const extraSecret = externalSecret(saved?.extra_ref)
   const storedRefIsSecret = isSecretRef(saved?.password_ref)
 
-  const nativeDriverType = draft.type === 'flightsql' || draft.type === 'postgres' || draft.type === 'sqlite' ? draft.type : null
+  // Which installed drivers can serve this connection comes from the server
+  // (usable_by), the same mapping it validates a pin against: a type offers
+  // a native driver exactly when one installed here serves it. Flight SQL
+  // has no other driver, so it always does.
   const installedDrivers = useQuery({
     queryKey: ['drivers', 'installed'],
     queryFn: driverApi.installed,
-    enabled: nativeDriverType !== null,
+    enabled: Boolean(draft.type),
     retry: false,
     refetchOnWindowFocus: false,
   })
-  const nativeDriverLabel = nativeDriverType === 'flightsql' ? 'Flight SQL' : nativeDriverType === 'sqlite' ? 'SQLite' : 'PostgreSQL'
-  const nativeDrivers = (installedDrivers.data?.drivers ?? []).filter((driver) => {
-    const name = driver.name.toLowerCase().replaceAll(/[^a-z0-9]/g, '')
-    if (nativeDriverType === 'flightsql') return name.includes('flightsql')
-    if (nativeDriverType === 'sqlite') return name.includes('sqlite')
-    return name.includes('postgres') || name.includes('postgresql')
-  })
+  const nativeDrivers = (installedDrivers.data?.drivers ?? []).filter((driver) => (driver.usable_by ?? []).includes(draft.type))
+  const nativeDriverType = draft.type === 'flightsql' || nativeDrivers.length > 0 || Boolean(saved?.driver_identity) ? draft.type : null
+  const nativeDriverLabel = meta?.label ?? draft.type
   const selectedNativeDriver = nativeDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
   const nativeDriverRequired = draft.type === 'flightsql' || draft.use_native_driver
   const nativeDriverSaveBlocked = nativeDriverRequired && (installedDrivers.isPending || !selectedNativeDriver)
@@ -349,9 +348,14 @@ export function ConnectionForm({
               The engine has no driver for {meta?.label ?? draft.type}, so database, file and API nodes will not accept it. You can still store it for reference.
             </Callout>
           )}
-          {(draft.type === 'postgres' || draft.type === 'sqlite') && (
+          {nativeDriverType && draft.type !== 'flightsql' && (
             <Callout tone="info" title={`${nativeDriverLabel} driver`}>
               The standard {nativeDriverLabel} driver remains in use unless you explicitly select an installed native ADBC driver below.
+            </Callout>
+          )}
+          {draft.type === 'clickhouse' && draft.use_native_driver && (
+            <Callout tone="info" title="ClickHouse over HTTP">
+              The native ClickHouse driver uses the HTTP interface: port 8123, or 8443 with <code>&quot;secure&quot;: true</code>. Port 9000 is the native protocol the standard driver uses.
             </Callout>
           )}
           {nativeDriverType && (
@@ -361,7 +365,7 @@ export function ConnectionForm({
                   Flight SQL sources run the driver selected below in an isolated worker process and store their results as Arrow. Test runs <code>SELECT 1</code> through the same driver.
                 </Callout>
               )}
-              {(draft.type === 'postgres' || draft.type === 'sqlite') && (
+              {draft.type !== 'flightsql' && (
                 <Checkbox
                   label="Use an installed native ADBC driver"
                   description={`Pins this connection to one installed ${nativeDriverLabel} driver. Leave unchecked to use the standard ${nativeDriverLabel} driver.`}

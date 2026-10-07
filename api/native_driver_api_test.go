@@ -302,3 +302,73 @@ func TestNativeConnectionTestRunsThroughTheWorker(t *testing.T) {
 		t.Fatalf("failing test = %s", rec.Body.String())
 	}
 }
+
+// A pin must name a driver that serves the connection's type: a MySQL
+// connection pinned to the PostgreSQL driver, or to a driver no connection
+// can use yet, is refused with the reason, as is a ClickHouse pin on the
+// native TCP port the HTTP-based driver cannot speak.
+func TestConnectionPinMustNameADriverForItsType(t *testing.T) {
+	s := newDriverTestStore(t)
+	r := connectionRouter(NewConnectionHandler(s, nil))
+	pin := func(name string) models.DriverIdentity {
+		return models.DriverIdentity{Name: name, Version: "1.0.0", LibrarySHA256: strings.Repeat("ab", 32)}
+	}
+	for name, tc := range map[string]struct {
+		body map[string]interface{}
+		want string
+	}{
+		"mysql on the postgresql driver": {map[string]interface{}{"conn_id": "m1", "type": "mysql", "host": "db", "driver_identity": pin("postgresql")}, "does not serve mysql"},
+		"a driver nothing can use yet":   {map[string]interface{}{"conn_id": "d1", "type": "mysql", "host": "db", "driver_identity": pin("duckdb")}, "cannot be used by any connection"},
+		"clickhouse native TCP port":     {map[string]interface{}{"conn_id": "c1", "type": "clickhouse", "host": "ch", "port": 9000, "driver_identity": pin("clickhouse")}, "HTTP interface"},
+		"mysql on the mysql driver":      {map[string]interface{}{"conn_id": "m2", "type": "mysql", "host": "db", "driver_identity": pin("mysql")}, ""},
+		"clickhouse on its HTTP port":    {map[string]interface{}{"conn_id": "c2", "type": "clickhouse", "host": "ch", "port": 8123, "driver_identity": pin("clickhouse")}, ""},
+	} {
+		rec := sendJSON(t, r, http.MethodPost, "/connections", tc.body)
+		if tc.want == "" {
+			if rec.Code != http.StatusCreated {
+				t.Errorf("%s: status %d %s", name, rec.Code, rec.Body.String())
+			}
+			continue
+		}
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), tc.want) {
+			t.Errorf("%s: status %d %s, want 400 mentioning %q", name, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}
+
+// Both driver listings say which connection types can use each driver, and
+// an empty list (not null) for one nothing can use yet.
+func TestDriverListingsSayWhoCanUseEachDriver(t *testing.T) {
+	driverDir := t.TempDir()
+	installTestDriverBuild(t, driverDir, "mysql")
+	installTestDriverBuild(t, driverDir, "duckdb")
+	manager, err := drivers.NewManager(driverDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	(&DriverHandler{manager: manager}).Installed(rec, httptest.NewRequest(http.MethodGet, "/api/drivers", nil))
+	var body struct {
+		Drivers []struct {
+			Name     string   `json:"name"`
+			UsableBy []string `json:"usable_by"`
+		} `json:"drivers"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, d := range body.Drivers {
+		got[d.Name] = strings.Join(d.UsableBy, ",")
+	}
+	if got["mysql"] != "mysql" || got["duckdb"] != "" || !strings.Contains(rec.Body.String(), `"usable_by":[]`) {
+		t.Fatalf("usable_by = %v; body %s", got, rec.Body.String())
+	}
+
+	t.Setenv(drivers.IndexEnvVar, "")
+	rec = httptest.NewRecorder()
+	(&DriverHandler{manager: manager}).Catalog(rec, httptest.NewRequest(http.MethodGet, "/api/drivers/catalog", nil))
+	if !strings.Contains(rec.Body.String(), `"name":"mysql"`) || !strings.Contains(rec.Body.String(), `"usable_by":["mysql"]`) {
+		t.Fatalf("catalog listing lacks usable_by: %s", rec.Body.String())
+	}
+}

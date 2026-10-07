@@ -22,11 +22,19 @@ but cannot take the server down.
 
 ## What is supported
 
-| Connection type | Reads through a native driver |
-| --- | --- |
-| **Flight SQL** (`flightsql`) | Always. Flight SQL has no other path, so a Flight SQL connection must be pinned to a driver build. |
-| **PostgreSQL** (`postgres`) | Only when the connection is pinned to a driver build. Unpinned, it keeps the built-in Go driver. |
-| **SQLite** (`sqlite`) | Only when pinned, as for PostgreSQL. |
+| Connection type | Driver (catalog name) | Reads through a native driver |
+| --- | --- | --- |
+| **Flight SQL** (`flightsql`) | `flightsql` | Always. Flight SQL has no other path, so a Flight SQL connection must be pinned to a driver build. |
+| **PostgreSQL** (`postgres`) | `postgresql` | Only when the connection is pinned to a driver build. Unpinned, it keeps the built-in Go driver. |
+| **SQLite** (`sqlite`) | `sqlite` | Only when pinned, as for PostgreSQL. |
+| **MySQL** (`mysql`) | `mysql` | Only when pinned. See [MySQL connections](#mysql-connections). |
+| **ClickHouse** (`clickhouse`) | `clickhouse` | Only when pinned, and over ClickHouse's HTTP interface. See [ClickHouse connections](#clickhouse-connections). |
+
+A driver serves only the connection types in this table. The catalog lists
+others (Trino, DuckDB, Snowflake, Databricks, BigQuery): they install and
+load, but no connection can be pinned to them yet. The Drivers page and both
+driver APIs say so (`usable_by`), and saving a connection pinned to a driver
+that does not serve its type is refused.
 
 | Operation | Status |
 | --- | --- |
@@ -34,7 +42,7 @@ but cannot take the server down.
 | Dry run (preview) | Supported; the query is stopped once the sample has arrived |
 | **Test connection** | Supported: runs `SELECT 1` through the pinned driver, in the same isolated worker a run uses |
 | Run parameters (`${param.x}`) in the query | Refused with an error; see [below](#run-parameters) |
-| `sink_db`, `migrate`, and other nodes | A pinned PostgreSQL or SQLite connection uses its built-in Go driver there. A Flight SQL connection is refused by any node but `source_db`. |
+| `sink_db`, `migrate`, and other nodes | A pinned PostgreSQL, SQLite, MySQL or ClickHouse connection uses its built-in Go driver there. A Flight SQL connection is refused by any node but `source_db`. |
 
 ## Builds that can run native drivers
 
@@ -212,8 +220,11 @@ When a connection is saved:
 
 - a Flight SQL connection without `driver_identity` is refused;
 - an identity that is incomplete or malformed is refused;
-- `driver_identity` on any other type than Flight SQL, PostgreSQL or SQLite
-  is refused.
+- `driver_identity` on a type no driver serves is refused, and so is a pin
+  to a driver that does not serve the connection's type (a MySQL connection
+  pinned to the `postgresql` driver, say);
+- a ClickHouse connection pinned on its native TCP port (9000, 9440) is
+  refused: the native driver uses the HTTP interface.
 
 Whether the build is installed is **not** checked on save, because the
 server saving a connection need not be a worker that runs it. The worker
@@ -265,6 +276,37 @@ Extra settings:
 For a pinned PostgreSQL or SQLite connection, the URI is the one the
 connection always builds, and `adbc_options` in its extra settings are passed
 to the driver the same way.
+
+## MySQL connections
+
+The `mysql` driver is the ADBC Driver Foundry's MySQL driver; it also serves
+MariaDB. A pinned MySQL connection is given to it as:
+
+| Driver input | From the connection |
+| --- | --- |
+| `uri` | `mysql://<host>:<port>/<schema>?<driver options>`; port defaults to 3306 |
+| `username`, `password` options | Login and password. Never in the URI. |
+| URI query parameters | The connection's MySQL driver options from its extra settings (`tls`, `charset`, `collation`, `parseTime`, `loc`, `timeout`, `readTimeout`, `writeTimeout`, `interpolateParams`, `maxAllowedPacket`, `clientFoundRows`), which the driver hands to the Go MySQL driver unchanged |
+
+`DECIMAL` columns arrive exactly, as decimal strings, whatever width the
+driver chooses for them.
+
+## ClickHouse connections
+
+The `clickhouse` driver is ClickHouse's own ADBC driver. It talks to the
+**HTTP interface**, not the native TCP protocol the built-in driver uses, so
+a pinned ClickHouse connection's port must be the HTTP port:
+
+| Driver input | From the connection |
+| --- | --- |
+| `uri` | `http://<host>:<port>/` (port defaults to 8123), or with `"secure": true` in the extra settings `https://<host>:<port>/` (port defaults to 8443) |
+| `?database=` | The connection's schema |
+| `username`, `password` options | Login and password. Never in the URI. |
+
+Saving a pinned ClickHouse connection on port 9000 or 9440 (the native
+protocol) is refused with that reason. The built-in driver's options
+`dial_timeout`, `read_timeout` and `compress` are not passed: the native
+driver would send them to the server as ClickHouse settings.
 
 ## How a run reads through a driver
 
@@ -346,7 +388,7 @@ the token in the run log.
   `BROKOLI_OUTBOUND_ALLOW_CIDRS`, `BROKOLI_OUTBOUND_ALLOW_PRIVATE` or
   `BROKOLI_OUTBOUND_ALLOW_LOOPBACK`. The driver resolves the name again when
   it connects, so a DNS answer that changes in between is not caught. Pinned
-  PostgreSQL and SQLite connections keep the policy their built-in drivers
+  PostgreSQL, SQLite, MySQL and ClickHouse connections keep the policy their built-in drivers
   have.
 - **Installed builds are not public.** `GET /api/capabilities` is readable
   without signing in and says only whether native drivers can run; the
@@ -387,8 +429,8 @@ waits two seconds before asking for another.
 
 | Method and path | Permission | Does |
 | --- | --- | --- |
-| `GET /api/drivers` | signed in | The builds installed on this server, with each `library_sha256`, and whether this build can run them (`native_worker_enabled`). |
-| `GET /api/drivers/catalog` | signed in | The catalog's releases for this platform, marked `installed`, plus installed builds the catalog does not list. `configured` is false without `BROKOLI_DRIVER_INDEX`. |
+| `GET /api/drivers` | signed in | The builds installed on this server, with each `library_sha256` and `usable_by` (the connection types that can use it), and whether this build can run them (`native_worker_enabled`). |
+| `GET /api/drivers/catalog` | signed in | The catalog's releases for this platform, marked `installed` and with `usable_by`, plus installed builds the catalog does not list. `configured` is false without `BROKOLI_DRIVER_INDEX`. |
 | `GET /api/drivers/catalog/{name}/{version}/docs` | signed in | The release's documentation, as Markdown. |
 | `POST /api/drivers/catalog/{name}/install[?version=]` | `drivers.manage` | Installs a catalog release: `201` with the installed build, `404` if the catalog has no such release for this platform, `409` if no catalog is configured, `502` if the catalog or archive could not be fetched or did not match its digest, `422` if the archive is invalid. |
 | `DELETE /api/drivers/{name}[?version=]` | `drivers.manage` | Removes every build of the driver, or of one version: `204`, `404` if not installed, `409` if connections are pinned to it. |

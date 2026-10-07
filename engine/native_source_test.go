@@ -33,10 +33,17 @@ func (r *countingCredentialResolver) Resolve(context.Context, secrets.Scope, str
 // and returns the manager and the build's identity.
 func installTestDriver(t *testing.T) (*drivers.Manager, models.DriverIdentity) {
 	t.Helper()
+	return installNamedTestDriver(t, "flightsql")
+}
+
+// installNamedTestDriver is installTestDriver for a driver of another name,
+// for connection types the flightsql driver does not serve.
+func installNamedTestDriver(t *testing.T, name string) (*drivers.Manager, models.DriverIdentity) {
+	t.Helper()
 	root := t.TempDir()
 	library := []byte("native driver library")
 	sum := sha256.Sum256(library)
-	identity := models.DriverIdentity{Name: "flightsql", Version: "1.0.0", LibrarySHA256: hex.EncodeToString(sum[:])}
+	identity := models.DriverIdentity{Name: name, Version: "1.0.0", LibrarySHA256: hex.EncodeToString(sum[:])}
 	dir := filepath.Join(root, identity.Name, identity.Version, identity.LibrarySHA256)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
@@ -157,7 +164,7 @@ func TestPinnedConnectionRunsThroughTheNativeWorkerOnBothPaths(t *testing.T) {
 		name := map[bool]string{true: "streamed", false: "materialized"}[streaming]
 		t.Run(name, func(t *testing.T) {
 			withNativeWorkerAvailable(t)
-			manager, identity := installTestDriver(t)
+			manager, identity := installNamedTestDriver(t, "postgresql")
 			eng, s := newExecCtxTestEngine(t)
 			eng.ConnResolver.SetDriverManager(manager)
 			worker := &recordingNativeWorker{rows: 3}
@@ -197,7 +204,7 @@ func TestPinnedConnectionRunsThroughTheNativeWorkerOnBothPaths(t *testing.T) {
 // and the materialized path refused native connections.
 func TestDryRunReadsANativeSourceAndStopsAtTheSample(t *testing.T) {
 	withNativeWorkerAvailable(t)
-	manager, identity := installTestDriver(t)
+	manager, identity := installNamedTestDriver(t, "postgresql")
 	eng, s := newExecCtxTestEngine(t)
 	eng.ConnResolver.SetDriverManager(manager)
 	worker := &recordingNativeWorker{rows: 50}
@@ -225,7 +232,7 @@ func TestDryRunReadsANativeSourceAndStopsAtTheSample(t *testing.T) {
 
 func TestNativeSourceRefusesRunParameters(t *testing.T) {
 	withNativeWorkerAvailable(t)
-	manager, identity := installTestDriver(t)
+	manager, identity := installNamedTestDriver(t, "postgresql")
 	eng, s := newExecCtxTestEngine(t)
 	eng.ConnResolver.SetDriverManager(manager)
 	worker := &recordingNativeWorker{rows: 1}
@@ -366,5 +373,75 @@ func TestNativeConnectionResolvesWithoutTheNoDriverWarning(t *testing.T) {
 	_, warnings, _ = resolver.ResolveWithWarnings(map[string]interface{}{"conn_id": "gen"}, models.NodeTypeSourceDB)
 	if len(warnings) == 0 {
 		t.Fatal("a connection with no driver no longer warns")
+	}
+}
+
+// A pinned MySQL or ClickHouse connection reaches the worker in the shape
+// its driver expects: the URI without credentials, the credentials as the
+// standard username and password options (the connection's own, whatever
+// adbc_options says), and every credential collected for scrubbing.
+func TestNativeRequestForMySQLAndClickHouse(t *testing.T) {
+	withNativeWorkerAvailable(t)
+	for _, tc := range []struct {
+		name    string
+		conn    *models.Connection
+		wantURI string
+	}{
+		{"mysql", &models.Connection{ConnID: "m", Type: models.ConnTypeMySQL, Host: "93.184.216.34", Schema: "app", Login: "loader",
+			Extra: `{"tls":"true","adbc_options":{"username":"intruder"}}`}, "mysql://93.184.216.34:3306/app?tls=true"},
+		{"clickhouse", &models.Connection{ConnID: "c", Type: models.ConnTypeClickHouse, Host: "93.184.216.34", Schema: "analytics", Login: "loader",
+			Extra: `{"compress":"true"}`}, "http://93.184.216.34:8123/?database=analytics"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			manager, identity := installNamedTestDriver(t, tc.name)
+			tc.conn.DriverIdentity = &identity
+			tc.conn.PasswordRef = "count://password"
+			resolver := NewConnectionResolver(&oneConnStore{conn: tc.conn}, secrets.NewChain(nil, &countingCredentialResolver{}))
+			resolver.SetDriverManager(manager)
+			request, err := resolver.NativeSource(context.Background(), map[string]interface{}{"conn_id": tc.conn.ConnID}, secrets.Scope{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if request.URI != tc.wantURI {
+				t.Errorf("URI = %q, want %q", request.URI, tc.wantURI)
+			}
+			if request.Options["username"] != "loader" || request.Options["password"] != "secret-password-value" {
+				t.Errorf("credentials = %q/%q", request.Options["username"], request.Options["password"])
+			}
+			if strings.Contains(request.URI, "secret-password-value") {
+				t.Errorf("password in the URI: %q", request.URI)
+			}
+			if got := scrubSecrets("driver said: secret-password-value", request.secrets); strings.Contains(got, "secret-password-value") {
+				t.Errorf("password survives scrubbing: %q", got)
+			}
+		})
+	}
+}
+
+// A pin to a driver for another kind of server is refused before anything
+// is read or loaded, even when it reached the store without the save-time
+// check.
+func TestNativeSourceRefusesADriverForAnotherType(t *testing.T) {
+	withNativeWorkerAvailable(t)
+	manager, identity := installNamedTestDriver(t, "postgresql")
+	credentials := &countingCredentialResolver{}
+	conn := &models.Connection{ConnID: "m", Type: models.ConnTypeMySQL, Host: "93.184.216.34", DriverIdentity: &identity, PasswordRef: "count://password"}
+	resolver := NewConnectionResolver(&oneConnStore{conn: conn}, secrets.NewChain(nil, credentials))
+	resolver.SetDriverManager(manager)
+	_, err := resolver.NativeSource(context.Background(), map[string]interface{}{"conn_id": "m"}, secrets.Scope{})
+	if err == nil || !strings.Contains(err.Error(), "does not serve mysql") {
+		t.Fatalf("error = %v, want a refusal naming the mismatch", err)
+	}
+	if credentials.calls != 0 {
+		t.Fatal("credentials were read for a mismatched driver")
+	}
+}
+
+// An unpinned MySQL or ClickHouse connection keeps its Go driver.
+func TestUnpinnedMySQLAndClickHouseAreNotNative(t *testing.T) {
+	for _, kind := range []models.ConnectionType{models.ConnTypeMySQL, models.ConnTypeClickHouse} {
+		if IsNativeADBCConnection(&models.Connection{Type: kind, Host: "h"}) {
+			t.Errorf("unpinned %s is native", kind)
+		}
 	}
 }

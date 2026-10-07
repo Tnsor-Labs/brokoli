@@ -48,16 +48,22 @@ func SetNativeWorkerAvailableForTesting(available bool) (restore func()) {
 	return func() { nativeWorkerAvailable = previous }
 }
 
-// nativeADBCConnectionType is intentionally a short allowlist. Existing
-// database/sql connection types do not become native-driver capable merely by
-// carrying a DriverIdentity.
+// nativeADBCConnectionType reports whether some native driver serves this
+// connection type. The allowlist is drivers.UsableBy's: a type becomes
+// native-capable only when a driver is deliberately mapped to it there, not
+// merely by carrying a DriverIdentity.
 func nativeADBCConnectionType(kind models.ConnectionType) bool {
-	return kind == models.ConnTypeFlightSQL || kind == models.ConnTypePostgres || kind == models.ConnTypeSQLite
+	for _, k := range drivers.NativeConnectionTypes() {
+		if k == kind {
+			return true
+		}
+	}
+	return false
 }
 
 // IsNativeADBCConnection reports whether a source_db node reading conn goes
 // through a native driver. Flight SQL has no other path, so it always does;
-// PostgreSQL and SQLite do only when pinned to a driver build.
+// every other native-capable type does only when pinned to a driver build.
 func IsNativeADBCConnection(conn *models.Connection) bool {
 	return conn != nil && nativeADBCConnectionType(conn.Type) && (conn.Type == models.ConnTypeFlightSQL || conn.DriverIdentity != nil)
 }
@@ -71,6 +77,15 @@ func (cr *ConnectionResolver) ValidateNativeConnection(conn *models.Connection) 
 	}
 	if conn.DriverIdentity == nil {
 		return ErrNativeDriverNotPinned
+	}
+	// A pin can predate the check made when a connection is saved, or be
+	// written straight to the store; a driver for another kind of server is
+	// refused here before anything is loaded.
+	if !drivers.Serves(conn.DriverIdentity.Name, conn.Type) {
+		return fmt.Errorf("native ADBC driver %q does not serve %s connections", conn.DriverIdentity.Name, conn.Type)
+	}
+	if problem := conn.NativeADBCProblem(); problem != "" {
+		return errors.New(problem)
 	}
 	if !nativeWorkerAvailable() {
 		return ErrNativeADBCUnavailable
@@ -183,7 +198,19 @@ func (cr *ConnectionResolver) NativeRequest(ctx context.Context, conn *models.Co
 		}
 	}
 	options := nativeADBCOptions(conn, extra)
-	uri := conn.BuildURI()
+	endpoint, err := conn.NativeADBCEndpoint()
+	if err != nil {
+		return nil, err
+	}
+	uri := endpoint.URI
+	// The connection's own credentials are set last, so an adbc_options
+	// entry in its extra settings cannot replace the login it declares.
+	if endpoint.Username != "" {
+		options["username"] = endpoint.Username
+	}
+	if endpoint.Password != "" {
+		options["password"] = endpoint.Password
+	}
 	request := &NativeADBCRequest{Driver: conn.DriverIdentity.Normalized(), URI: uri, Options: options}
 	request.secrets = append(sortedOptionValues(options), conn.Password)
 	if u, err := url.Parse(uri); err == nil && u.User != nil {
