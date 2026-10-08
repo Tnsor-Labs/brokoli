@@ -230,7 +230,7 @@ Set `conn_id` on a `source_file` node the same way:
 ```
 
 The reader is chosen by the file's extension, exactly as for a local
-file: `.csv`, `.json`, `.xml`, `.xlsx` and `.xls`. CSV is streamed.
+file: `.csv`, `.json`, `.xml` and `.xlsx` (a legacy binary `.xls` workbook is refused with a message to save it as `.xlsx`). CSV is streamed.
 
 The file is first downloaded, then read. Files larger than the
 connection's `max_download_bytes` (10 GiB by default) are refused, both
