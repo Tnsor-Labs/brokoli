@@ -38,9 +38,15 @@ func TestGetLoader(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "Excel file (xls)",
-			filePath: "test.xls",
+			name:     "Excel file, upper-case extension",
+			filePath: "REPORT.XLSX",
 			wantType: &ExcelLoader{},
+			wantErr:  false,
+		},
+		{
+			name:     "CSV file, upper-case extension",
+			filePath: "DATA.CSV",
+			wantType: &CSVLoader{},
 			wantErr:  false,
 		},
 		{

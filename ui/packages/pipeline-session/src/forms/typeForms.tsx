@@ -163,11 +163,11 @@ function SourceFile({ ctx }: TypeFormProps) {
           remote
             ? [
                 location?.where,
-                'The format comes from the extension: .csv, .json, .xml, .xlsx or .xls.',
+                'The format comes from the extension: .csv, .json, .xml or .xlsx.',
               ]
                 .filter(Boolean)
                 .join(' ')
-            : "The format comes from the extension: .csv, .json, .xml, .xlsx or .xls. The path must be inside the server's data directories."
+            : "The format comes from the extension: .csv, .json, .xml or .xlsx. The path must be inside the server's data directories."
         }
       />
       <LegacyKeyNotice ctx={ctx} name="format">
