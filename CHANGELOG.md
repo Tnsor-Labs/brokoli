@@ -11,6 +11,19 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.2] - 2026-10-08
+
+### Security
+
+- **excelize past three HIGH advisories** (#809) -- @hc12r. Three
+  advisories were published on 2026-10-08 against
+  `github.com/xuri/excelize/v2` v2.11.0, which the Excel loader reads
+  workbooks with: an integer overflow in column-name parsing
+  (GHSA-c85p-xxjj-2r75), an unbounded spin count when decrypting an
+  agile-encrypted workbook, and an unbounded `<col max>` attribute, all
+  reachable from a workbook a pipeline reads. No release contains the fixes
+  yet; this pins upstream commit `696050f`, which has all three.
+
 ## [0.18.1] - 2026-10-08
 
 ### Fixed
