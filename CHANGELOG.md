@@ -11,6 +11,30 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-10-08
+
+### Fixed
+
+- **A `pipeline` wait stays inside its organization** (#807) -- @hc12r.
+  The target pipeline must belong to the waiting run's organization;
+  otherwise the wait fails with "pipeline not found", as for a pipeline
+  that does not exist. It used to report the latest run status of any
+  pipeline by ID.
+- **A `file_exists` wait is held to the data directories** (#807) --
+  @hc12r, as every file node is (`BROKOLI_DATA_DIRS`). It used to check
+  any path on the worker.
+- **A waiting run can be cancelled** (#807) -- @hc12r. A run parked at a
+  wait node used to stay waiting until it woke or timed out: the cancel API
+  answered 404, or 200 with no effect where cancels are broadcast. It is
+  now cancelled and its park removed; if it woke at the same moment, the
+  cancel is applied to it as a running run.
+
+### For code embedding the engine
+
+- `store.WaitingRunCanceller` is a new optional store capability
+  (`CancelWaitingRun`); the built-in SQLite and Postgres stores implement
+  it. A store without it keeps the previous behaviour.
+
 ## [0.18.0] - 2026-10-07
 
 MySQL and ClickHouse connections can read through native ADBC drivers, and
