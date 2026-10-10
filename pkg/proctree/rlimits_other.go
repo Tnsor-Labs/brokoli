@@ -18,3 +18,12 @@ func ApplyRlimits(_ int, _ Rlimits) error { return nil }
 func ApplyAddressSpaceLimit(_ int, _ uint64) error {
 	return errors.New("address-space limits are Linux-only")
 }
+
+// ShellLimitPrelude sets no limits on other platforms, as ApplyRlimits; an
+// address-space limit is refused, as ApplyAddressSpaceLimit refuses it.
+func ShellLimitPrelude(_ Rlimits, addressSpaceBytes uint64) (string, error) {
+	if addressSpaceBytes > 0 {
+		return "", errors.New("address-space limits are Linux-only")
+	}
+	return "", nil
+}

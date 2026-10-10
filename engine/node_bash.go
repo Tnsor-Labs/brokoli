@@ -3,6 +3,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -83,10 +84,35 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		r.logBashLine(node.ID, models.LogLevelInfo, "bash stderr", line, logged)
 	}}
 
-	newCmd := func() *exec.Cmd {
+	memory := r.planBashMemory(node, limits.MemoryMB)
+	defer memory.close()
+
+	// The limits are set by the shell on itself before the command runs
+	// (#818). Set from outside after Start, a command that forks at once
+	// -- any pipeline -- ran its children without them. Built per command:
+	// a refused cgroup placement switches memory to address space.
+	newCmd := func() (*exec.Cmd, error) {
+		addressSpace := uint64(0)
+		if memory.addressSpace {
+			addressSpace = uint64(max(memory.limitMB, 0)) * 1024 * 1024
+		}
+		prelude, err := proctree.ShellLimitPrelude(proctree.Rlimits{
+			CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
+			FileSizeBytes: uint64(max(limits.FileSizeMB, 0)) * 1024 * 1024,
+			OpenFiles:     uint64(max(limits.OpenFiles, 0)),
+		}, addressSpace)
+		if err != nil {
+			return nil, fmt.Errorf("apply bash limits: %w", err)
+		}
+		args := []string{"-o", "pipefail", "-c", command}
+		if prelude != "" {
+			// exec keeps the PID, so the process group and the cgroup
+			// placement are the command's own.
+			args = []string{"-c", prelude + `exec "$0" -o pipefail -c "$1"`, bash, command}
+		}
 		// #nosec G204 -- running the pipeline author's command is this node's
 		// purpose; it is documented as trusted-worker execution.
-		cmd := exec.CommandContext(ctx, bash, "-o", "pipefail", "-c", command)
+		cmd := exec.CommandContext(ctx, bash, args...)
 		cmd.Dir = workingDir
 		cmd.Env = append(codeexec.WorkerEnv(), "BROKOLI_NODE_ID="+node.ID)
 		if r.run != nil {
@@ -102,12 +128,13 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		cmd.WaitDelay = bashTermGrace
 		cmd.Stdout = stdout
 		cmd.Stderr = stderr
-		return cmd
+		return cmd, nil
 	}
 
-	memory := r.planBashMemory(node, limits.MemoryMB)
-	defer memory.close()
-	cmd := newCmd()
+	cmd, err := newCmd()
+	if err != nil {
+		return nil, err
+	}
 	memory.place(cmd)
 	if err := cmd.Start(); err != nil {
 		if memory.cgroup == nil {
@@ -117,23 +144,12 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		// needs write access up to the common ancestor of its old and new
 		// cgroups); fall back as if no cgroup were available.
 		memory.fallBack(r, node, fmt.Errorf("start inside %s: %w", memory.parent, err))
-		cmd = newCmd()
+		if cmd, err = newCmd(); err != nil {
+			return nil, err
+		}
 		if err := cmd.Start(); err != nil {
 			return nil, fmt.Errorf("start bash: %w", err)
 		}
-	}
-	limitErr := proctree.ApplyRlimits(cmd.Process.Pid, proctree.Rlimits{
-		CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
-		FileSizeBytes: uint64(max(limits.FileSizeMB, 0)) * 1024 * 1024,
-		OpenFiles:     uint64(max(limits.OpenFiles, 0)),
-	})
-	if limitErr == nil && memory.addressSpace {
-		limitErr = proctree.ApplyAddressSpaceLimit(cmd.Process.Pid, uint64(max(memory.limitMB, 0))*1024*1024)
-	}
-	if limitErr != nil {
-		_ = proctree.KillProcessTree(cmd.Process)
-		_ = cmd.Wait()
-		return nil, fmt.Errorf("apply bash limits: %w", limitErr)
 	}
 	waitErr := cmd.Wait()
 	// Whatever the command left running in the background is part of
@@ -154,6 +170,11 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		return nil, fmt.Errorf("bash command exceeded the memory limit (%d MiB): raise max_memory_mb on the node or the server default", memory.limitMB)
 	}
 	if waitErr != nil {
+		// The prelude could not set a limit, so the command never ran.
+		var exitErr *exec.ExitError
+		if errors.As(waitErr, &exitErr) && exitErr.ExitCode() == 125 && strings.Contains(stderr.tailText(), "brokoli: could not apply the") {
+			return nil, fmt.Errorf("apply bash limits: %s", stderr.tailText())
+		}
 		if memory.addressSpace && bashOutOfMemory(stderr.tailText()) {
 			return nil, fmt.Errorf("bash command exceeded the memory limit (%d MiB, enforced as address space): "+
 				"raise max_memory_mb on the node\nstderr: %s", memory.limitMB, stderr.tailText())

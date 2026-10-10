@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -196,5 +197,45 @@ func TestBashOutOfMemorySignatures(t *testing.T) {
 	}
 	if bashOutOfMemory("permission denied") {
 		t.Error("an unrelated failure was taken for a memory breach")
+	}
+}
+
+// The limits are on the shell before the command runs (#818). Applied to
+// the PID after Start, a pipeline's children could fork first and keep no
+// limits at all; one CI run allocated 300 MB under a 100 MiB cap that way.
+// A child forked as the command's very first act must see every limit.
+func TestBashLimitsAreInheritedByAChildForkedAtOnce(t *testing.T) {
+	requireLinuxLimits(t)
+	noCgroup(t)
+	logs, err := bashMemoryNode(t, "cat /proc/self/limits | cat", map[string]interface{}{
+		"max_memory_mb": float64(200), "max_cpu_seconds": float64(7),
+	})
+	if err != nil {
+		t.Fatalf("runBash: %v", err)
+	}
+	out := strings.Join(logs, "\n")
+	for _, want := range []*regexp.Regexp{
+		regexp.MustCompile(`Max cpu time\s+7\s+7\s+seconds`),
+		regexp.MustCompile(`Max address space\s+209715200\s+209715200\s+bytes`),
+	} {
+		if !want.MatchString(out) {
+			t.Errorf("the forked child's limits do not match %s:\n%s", want, out)
+		}
+	}
+}
+
+// A limit the prelude cannot set stops the node before the command runs,
+// and says so rather than reporting the command as failed.
+func TestBashLimitPreludeFailureIsReportedAsSuch(t *testing.T) {
+	requireLinuxLimits(t)
+	noCgroup(t)
+	_, err := bashMemoryNode(t, "echo 'brokoli: could not apply the CPU limit' >&2; exit 125", nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "apply bash limits: brokoli: could not apply the CPU limit") {
+		t.Fatalf("err = %v, want it reported as a limits failure", err)
+	}
+	// Control: any other failing exit is the command's own.
+	_, err = bashMemoryNode(t, "echo nope >&2; exit 3", nil)
+	if err == nil || !strings.HasPrefix(err.Error(), "bash command failed") {
+		t.Fatalf("err = %v, want the command's own failure", err)
 	}
 }
