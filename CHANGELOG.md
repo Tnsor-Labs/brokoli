@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.6] - 2026-10-10
+
+### Security
+
+- **Bash node limits hold for every process the command starts** (#819,
+  closes #818) -- @hc12r. The CPU, file-size and open-files limits, and the
+  address-space limit a node asks for without a cgroup, were set on the
+  shell after it had started. A command that forks at once, as any pipeline
+  does, could start children before they landed, and those children ran
+  with no limits (a CI run allocated 300 MB under a 100 MiB cap). The shell
+  now sets the limits on itself before the command runs, clamped to the
+  server's own limits as before; a limit it cannot set stops the node and
+  says so. Linux only, as before: other platforms apply none of these
+  limits.
+
 ## [0.18.5] - 2026-10-10
 
 ### Fixed
