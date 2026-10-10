@@ -443,3 +443,29 @@ func TestCancellingAParkedRun(t *testing.T) {
 		t.Fatalf("cancelled run changed to %s after its condition came true", got.Status)
 	}
 }
+
+// pipelineLookup is a waitStore whose GetPipeline fails with err.
+type pipelineLookup struct{ err error }
+
+func (p pipelineLookup) GetPipeline(string) (*models.Pipeline, error) { return nil, p.err }
+func (p pipelineLookup) ListRunsByPipeline(string, int) ([]models.Run, error) {
+	return nil, fmt.Errorf("ListRunsByPipeline must not be reached")
+}
+
+// A process whose store cannot look pipelines up (a worker on an
+// HTTP-backed store) says so. It used to answer "pipeline not found",
+// which sent the author to check an ID that was fine.
+func TestWaitPipelineConditionSaysWhenThisProcessCannotCheckIt(t *testing.T) {
+	run := &models.Run{ID: "r1", OrgID: "org-acme"}
+	cond := waitCondition{Type: "pipeline", PipelineID: "upstream"}
+
+	_, err := waitConditionMet(t.Context(), pipelineLookup{err: fmt.Errorf("apistore: GetPipeline not supported on worker: %w", store.ErrUnsupported)}, run, cond)
+	if err == nil || !strings.Contains(err.Error(), "cannot check a pipeline condition") || strings.Contains(err.Error(), "not found") {
+		t.Fatalf("unsupported lookup: err = %v, want a capability message, not 'not found'", err)
+	}
+	// Control: a store that can look and does not find it still says not found.
+	_, err = waitConditionMet(t.Context(), pipelineLookup{err: fmt.Errorf("sql: no rows in result set")}, run, cond)
+	if err == nil || !strings.Contains(err.Error(), "pipeline not found") {
+		t.Fatalf("missing pipeline: err = %v, want not found", err)
+	}
+}

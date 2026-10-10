@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // Deferrable waits (#399): a wait node that has not started yet is the
@@ -176,6 +178,12 @@ func waitConditionMet(ctx context.Context, st waitStore, run *models.Run, c wait
 		// whether another organization's pipeline exists or how its last
 		// run ended.
 		target, err := st.GetPipeline(c.PipelineID)
+		if errors.Is(err, store.ErrUnsupported) {
+			// A store that cannot look pipelines up says nothing about
+			// whether this one exists, so saying so leaks nothing; calling
+			// it "not found" sent the author to check an ID that was fine.
+			return false, fmt.Errorf("wait pipeline %q: this process cannot check a pipeline condition: %w", c.PipelineID, err)
+		}
 		if err != nil || target == nil || run == nil || !sameOrg(target.OrgID, run.OrgID) {
 			return false, fmt.Errorf("wait pipeline %q: pipeline not found", c.PipelineID)
 		}

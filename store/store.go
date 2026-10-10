@@ -127,6 +127,18 @@ type RunCancelRequester interface {
 // check for it before doing so.
 var ErrUnsupported = errors.New("operation not supported by this store")
 
+// ErrCredentialsUnresolved marks a connection lookup that found the
+// connection but could not resolve its credentials: a store that resolves
+// on another process's behalf (a control plane answering a worker) and
+// whose reference or decryption failed there. The error's text carries the
+// reason.
+//
+// It is neither "absent" nor ErrUnsupported. A caller that treats a missing
+// connection as recoverable, because a node may carry inline fields, must
+// not treat this one so: the node would run without the credentials it
+// names and fail somewhere that no longer says why.
+var ErrCredentialsUnresolved = errors.New("connection credentials could not be resolved")
+
 type ExecutionAttemptStore interface {
 	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
 	// an attempt inside an existing transaction (via WithTx), so it commits

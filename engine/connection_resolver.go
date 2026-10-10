@@ -146,6 +146,14 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 	}
 
 	conn, err := cr.store.GetConnection(connID)
+	if errors.Is(err, store.ErrCredentialsUnresolved) {
+		// The connection exists; its credentials could not be resolved
+		// where the store resolves them. Stop the node with that reason,
+		// as resolveCredentials does for a local reference (#751).
+		// Falling through to "not found" ran the node without them, and
+		// it failed later on a missing uri.
+		return config, fmt.Errorf("connection %q: %w", connID, err)
+	}
 	if err != nil {
 		// "this store cannot look connections up" and "there is no such
 		// connection" are different facts and were wearing the same
