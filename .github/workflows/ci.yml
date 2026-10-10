@@ -38,7 +38,7 @@ jobs:
           # Matches go.mod's own toolchain directive. When these differ,
           # Go downloads the toolchain go.mod asks for on top of the one
           # setup-go installed -- once per job, every run.
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Check formatting
         run: |
@@ -169,7 +169,7 @@ jobs:
           # Matches go.mod's own toolchain directive. When these differ,
           # Go downloads the toolchain go.mod asks for on top of the one
           # setup-go installed -- once per job, every run.
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -330,7 +330,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -374,7 +374,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test S3 file round trip
         run: go test -v -count=1 ./engine -run '^TestS3File(RoundTripMinIO|NodesRoundTripThroughRunner)$'
@@ -401,7 +401,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test the azure_blob file transport
         run: go test -v -count=1 ./engine -run '^TestAzureBlob'
@@ -437,7 +437,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test Oracle reads and refusals
         run: go test -v -count=1 ./engine -run '^TestOracle'
@@ -482,7 +482,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test the vault secret-store provider
         run: go test -v -count=1 ./pkg/secretstore/... ./engine -run Vault
@@ -523,7 +523,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test the BigQuery backend
         run: go test -v -count=1 ./engine -run '^TestBigQuery'
@@ -560,7 +560,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test the gcs file transport
         run: go test -v -count=1 ./engine -run '^TestGCS'
@@ -598,7 +598,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Test the AWS providers
         run: |
@@ -625,7 +625,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Build the engine tests
         run: go test -c -o "$RUNNER_TEMP/engine.test" ./engine
@@ -657,7 +657,7 @@ jobs:
           # Matches go.mod's own toolchain directive. When these differ,
           # Go downloads the toolchain go.mod asks for on top of the one
           # setup-go installed -- once per job, every run.
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Set up Node.js
         uses: actions/setup-node@v4

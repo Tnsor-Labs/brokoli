@@ -73,7 +73,7 @@ Beyond that:
 
 | Tool | Version | Why |
 | --- | --- | --- |
-| Go | 1.25 or newer (`go.mod` pins the toolchain to 1.26.6) | the engine, API and CLI |
+| Go | 1.25 or newer (`go.mod` pins the toolchain to 1.26.9) | the engine, API and CLI |
 | Node.js | v20 — the version CI pins | the Svelte UI |
 | Docker | any recent version | Postgres and MySQL for the live tests |
 | Python 3 | 3.9 or newer | code nodes, the Python task harness, and the SDK |
