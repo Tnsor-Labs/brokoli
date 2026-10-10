@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.5] - 2026-10-10
+
+### Fixed
+
+- **A node stops with the reason when its connection's credentials cannot
+  be resolved by the store** (#816) -- @hc12r. A store that resolves
+  connections on the caller's behalf can find a connection and fail to
+  resolve its credentials (for example an `env://` reference not allowed
+  where it is resolved). The resolver read that as a missing connection,
+  logged a warning, and ran the node without credentials, so it failed
+  later with "source_db node requires 'uri' config". A store now marks the
+  case with `store.ErrCredentialsUnresolved`, and the node fails with the
+  store's reason.
+- **A `pipeline` wait says when it cannot be checked** (#816) -- @hc12r.
+  Where the store cannot look pipelines up, the wait answered "pipeline not
+  found" since v0.18.1, for an upstream that existed. It now says the
+  process cannot check the condition. A missing pipeline, or one in another
+  organization, still reads "not found".
+
 ## [0.18.4] - 2026-10-10
 
 ### Security
