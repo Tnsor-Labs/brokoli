@@ -11,6 +11,37 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.3] - 2026-10-10
+
+### Security
+
+- **Go 1.26.9 and `golang.org/x/net` v0.60.0** (#812) -- @hc12r. Thirteen
+  standard-library advisories (GO-2026-6599 to GO-2026-6617) in the
+  net/http HTTP/1 and HTTP/2 server and client, html/template, crypto/tls,
+  net/textproto and os, five of them also in `golang.org/x/net`. Release
+  binaries and images are built with the fixed toolchain. The vulnerability
+  allowlist is empty: the excelize advisory it waived is no longer reported.
+
+### Fixed
+
+- **Legacy `.xls` workbooks are refused with a clear message** (#811) --
+  @hc12r. The Excel reader handles `.xlsx` only; a binary `.xls`
+  (Excel 97-2003) or password-protected workbook used to fail with
+  "unsupported workbook file format". It is now recognised by its signature
+  and refused with a message to save it as `.xlsx`. A file that is `.xlsx`
+  inside but named `.xls` still reads.
+- **File extensions match without case** (#811) -- @hc12r. `DATA.CSV` or
+  `REPORT.XLSX` failed as unsupported on the batch path while the streaming
+  path accepted them, so the same file ran or failed depending on whether
+  the run streamed. An unsupported or missing extension now names the
+  supported formats.
+- **Cancelling a run right after it parks** (#811) -- @hc12r. A cancel sent
+  in the moment between a run parking at a wait node and its runner
+  unregistering was reported as delivered while the run stayed `waiting`;
+  a cancel in the same moment after a run finished reported success. Both
+  now take the store-side path: the waiting run is cancelled, the finished
+  one reports that it already completed.
+
 ## [0.18.2] - 2026-10-08
 
 ### Security
