@@ -598,9 +598,19 @@ func (e *Engine) cancelLocalRun(runID string) bool {
 	if !ok {
 		return false
 	}
+	// A Runner stays in the active map for a moment after Execute returns:
+	// the caller hears the result before the goroutine's deferred
+	// unregister runs. A run that has parked or finished in that window has
+	// nothing left to cancel here, so leave it to the store-side cases. A
+	// missing row is still cancelled: the Runner registers before it
+	// creates the run.
+	run, err := e.store.GetRun(runID)
+	if err == nil && (run.Status == models.RunStatusWaiting || isTerminalRunStatus(run.Status)) {
+		return false
+	}
 	runner.Cancel()
 	// Update run status
-	run, err := e.store.GetRun(runID)
+	run, err = e.store.GetRun(runID)
 	if err == nil && run.Status == models.RunStatusRunning {
 		now := time.Now()
 		run.Status = models.RunStatusCancelled

@@ -373,6 +373,42 @@ func TestWaitPipelineConditionStaysInsideTheOrganization(t *testing.T) {
 	}
 }
 
+// RunPipeline hands back a parked run before its goroutine unregisters the
+// Runner, so a cancel sent at once can find that finished Runner still in
+// the active map. It must not be taken for a live one: the cancel would be
+// reported as delivered and the run would stay waiting.
+func TestCancellingAParkedRunWhileItsRunnerIsStillRegistered(t *testing.T) {
+	st, eng, dir := waitTestEngine(t)
+	mkWaitPipeline(t, st, dir, "cancel-race", filepath.Join(dir, "never.flag"), map[string]interface{}{"poll_interval": "50ms"})
+	run, err := eng.RunPipeline("cancel-race")
+	if err != nil || run.Status != models.RunStatusWaiting {
+		t.Fatalf("run = %+v, err %v; want waiting", run, err)
+	}
+	pipe, err := st.GetPipeline("cancel-race")
+	if err != nil {
+		t.Fatal(err)
+	}
+	eng.mu.Lock()
+	eng.active[run.ID] = &Runner{pipe: pipe}
+	eng.mu.Unlock()
+	defer func() {
+		eng.mu.Lock()
+		delete(eng.active, run.ID)
+		eng.mu.Unlock()
+	}()
+	if err := eng.CancelRun(run.ID); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	if got, _ := st.GetRun(run.ID); got.Status != models.RunStatusCancelled {
+		t.Fatalf("status after cancel = %s, want cancelled", got.Status)
+	}
+	// The same window after a run finished: report it as completed, not
+	// as a cancel delivered.
+	if err := eng.CancelRun(run.ID); err == nil {
+		t.Fatal("cancelling a cancelled run with a stale Runner registered succeeded, want already completed")
+	}
+}
+
 // A parked run can be cancelled. It has no Runner to deliver a cancel to,
 // so it used to stay waiting until it woke or timed out.
 func TestCancellingAParkedRun(t *testing.T) {
