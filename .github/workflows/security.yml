@@ -56,7 +56,7 @@ jobs:
           # Matches go.mod's own toolchain directive. When these differ,
           # Go downloads the toolchain go.mod asks for on top of the one
           # setup-go installed -- once per job, every run.
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       - name: Gosec (static analysis)
         uses: securego/gosec@master
@@ -141,7 +141,7 @@ jobs:
           # Matches go.mod's own toolchain directive. When these differ,
           # Go downloads the toolchain go.mod asks for on top of the one
           # setup-go installed -- once per job, every run.
-          go-version: "1.26.6"
+          go-version: "1.26.9"
 
       # The gate's own tests run first: this job previously reported
       # "No forbidden licenses found" on every run while inspecting zero
