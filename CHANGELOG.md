@@ -11,6 +11,19 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.4] - 2026-10-10
+
+### Security
+
+- **excelize past six more HIGH advisories** (#814) -- @hc12r.
+  CVE-2026-107211 to -107216, all reachable from a workbook a pipeline
+  reads: an unchecked pivot-cache field index, an unbounded row number in
+  `Rows.Columns`, a nil dereference in `GetSlicers`, panics in `Decrypt` on
+  a malformed OLE container, an attacker-sized allocation in `extractPart`,
+  and mutually-referencing array formulas. No release contains the fixes
+  yet; this pins upstream commit `6258dce`. Go's vulnerability database
+  does not list them yet, so `govulncheck` does not report them.
+
 ## [0.18.3] - 2026-10-10
 
 ### Security
