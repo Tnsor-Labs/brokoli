@@ -4,6 +4,7 @@ package proctree
 
 import (
 	"fmt"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -70,4 +71,52 @@ func ApplyAddressSpaceLimit(pid int, limitBytes uint64) error {
 		return fmt.Errorf("apply address-space rlimit: %w", err)
 	}
 	return nil
+}
+
+// ShellLimitPrelude is a bash prelude that sets limits on the shell itself,
+// before it runs anything else, so every process the command starts
+// inherits them from its first instruction.
+//
+// Applying them from outside after the shell has started (ApplyRlimits on
+// its PID) leaves a window in which the command can fork: a pipeline's
+// children are created at once and keep the values they were forked with.
+// The prelude clamps each value to this process's own limits, which the
+// shell inherits, exactly as ApplyRlimits clamps to the target's, so an
+// unprivileged shell can always apply it. addressSpaceBytes, when not zero,
+// also sets RLIMIT_AS (see ApplyAddressSpaceLimit for why that is opt-in).
+// The empty string means there is nothing to set.
+func ShellLimitPrelude(limits Rlimits, addressSpaceBytes uint64) (string, error) {
+	var b strings.Builder
+	for _, item := range []struct {
+		name     string
+		flag     string
+		resource int
+		value    uint64
+		unit     uint64 // bytes per ulimit unit; 1 for counts and seconds
+	}{
+		{"CPU", "-t", unix.RLIMIT_CPU, limits.CPUSeconds, 1},
+		{"file size", "-f", unix.RLIMIT_FSIZE, limits.FileSizeBytes, 1024},
+		{"open files", "-n", unix.RLIMIT_NOFILE, limits.OpenFiles, 1},
+		{"address space", "-v", unix.RLIMIT_AS, addressSpaceBytes, 1024},
+	} {
+		if item.value == 0 {
+			continue
+		}
+		var inherited unix.Rlimit
+		if err := unix.Getrlimit(item.resource, &inherited); err != nil {
+			return "", fmt.Errorf("read %s rlimit: %w", item.name, err)
+		}
+		soft, hard := min(item.value, inherited.Cur), min(item.value, inherited.Max)
+		soft = min(soft, hard)
+		// Soft first: lowering the hard limit below the current soft one
+		// is refused.
+		fmt.Fprintf(&b, "ulimit -S %s %d && ulimit -H %s %d || { echo 'brokoli: could not apply the %s limit' >&2; exit 125; }\n",
+			item.flag, soft/item.unit, item.flag, hard/item.unit, item.name)
+	}
+	if b.Len() == 0 {
+		return "", nil
+	}
+	// POSIX mode counts -f and -v in 512-byte blocks; POSIXLY_CORRECT in
+	// the environment would switch it on.
+	return "set +o posix\n" + b.String(), nil
 }
