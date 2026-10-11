@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.9] - 2026-10-11
+
+### Added
+
+- **Managed native drivers** (#825) -- @hc12r. `BROKOLI_MANAGED_DRIVERS`
+  declares the driver set by exact identity (name, version, library
+  sha256). A deployment that sets it is managed: `GET /api/drivers` and
+  `/api/drivers/catalog` list the declared set whatever the answering
+  process has installed, install and remove through the API return `403`
+  for every caller, and `serve --mode worker` installs every declared
+  build it lacks from `BROKOLI_DRIVER_INDEX` at startup, checks each
+  library against its declared digest, and does not start without them.
+  Any non-empty value is managed, even one that does not parse.
+  `/api/capabilities` reports `native_adbc_drivers.managed`; the Drivers
+  page then lists the provided drivers with nothing to install or remove.
+  `Manager.EnsureManaged` and `InstallFromCatalogAt` take the index URL
+  explicitly.
+
 ## [0.18.8] - 2026-10-11
 
 ### Added
