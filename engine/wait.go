@@ -380,6 +380,17 @@ func (e *Engine) WakeParkedRun(runID string) (*models.Run, error) {
 		Payload:   models.RunEventPayload{Status: models.RunStatusRunning},
 	})
 
+	if e.WakeHandoff != nil {
+		handled, err := e.WakeHandoff(run)
+		if err != nil {
+			return e.failAcceptedRun(run, fmt.Errorf("hand off woken run: %w", err))
+		}
+		if handled {
+			common.SLog().Info("parked run woken and handed off", common.RunAttr(runID))
+			return run, nil
+		}
+	}
+
 	pipe, err := e.resolvePipelineForRun(run.PipelineID, run.PipelineVersion)
 	if err != nil {
 		return nil, fmt.Errorf("resolve pipeline for wake: %w", err)

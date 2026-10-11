@@ -98,6 +98,15 @@ type Engine struct {
 	// may have neither. The cost is that the run keeps its slot while it
 	// waits.
 	WaitInPlace bool
+	// WakeHandoff, when set, is offered every run the parked-wait watcher
+	// wakes, after the run is claimed (waiting to running) and before this
+	// process would execute it. Returning true means the hook has taken
+	// the run -- typically handed it to whatever executes it, after
+	// ParkBeforeDispatch had parked it -- and it does not run here. False
+	// means not the hook's run: it continues here as usual. An error fails
+	// the run, which would otherwise be left running with nothing
+	// executing it.
+	WakeHandoff func(run *models.Run) (handled bool, err error)
 
 	// DataCapIssuer mints the data-plane capabilities a remotely
 	// dispatched task presents to fetch input too large to inline
