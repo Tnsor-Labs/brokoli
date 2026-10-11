@@ -445,6 +445,12 @@ var serveCmd = &cobra.Command{
 				return fmt.Errorf("worker mode requires a job queue (set BROKOLI_REDIS_URL)")
 			}
 
+			// The platform's driver set, before the first run is taken: a
+			// run pinned to one of them must find it here.
+			if err := ensureManagedDrivers(context.Background()); err != nil {
+				return fmt.Errorf("managed native drivers: %w", err)
+			}
+
 			// Say what this worker holds, at the top of its log.
 			//
 			// This mode connects straight to the database, and where the
@@ -1181,4 +1187,40 @@ func AnnounceWorkerTrustAssumptions() {
 	}
 	log.Printf("Worker: this is safe only where the worker is inside the same trust boundary")
 	log.Printf("Worker: as the control plane. Do not run it anywhere you would not run the database.")
+}
+
+// managedDriversTimeout bounds installing the managed set at startup.
+const managedDriversTimeout = 10 * time.Minute
+
+// ensureManagedDrivers installs the platform's declared driver set
+// (drivers.ManagedEnvVar) from the configured catalog. A build already
+// installed costs nothing; one that cannot be installed, or whose library
+// is not the declared one, stops the worker, which must not take runs
+// pinned to a driver it does not have. A build that cannot load native
+// drivers installs none and advertises none, so such runs are not routed
+// to it.
+func ensureManagedDrivers(ctx context.Context) error {
+	if !drivers.Managed() {
+		return nil
+	}
+	set, err := drivers.ManagedDrivers()
+	if err != nil {
+		return err
+	}
+	if !engine.NativeADBCWorkerEnabled() {
+		log.Printf("Worker: the platform manages %d native driver(s), but this build cannot load native drivers; installing none", len(set))
+		return nil
+	}
+	manager, err := drivers.Shared(drivers.DefaultDir())
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, managedDriversTimeout)
+	defer cancel()
+	start := time.Now()
+	if err := manager.EnsureManaged(ctx, drivers.IndexURL(), set); err != nil {
+		return err
+	}
+	log.Printf("Worker: %d managed native driver(s) ready (%s)", len(set), time.Since(start).Round(time.Millisecond))
+	return nil
 }

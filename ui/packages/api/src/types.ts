@@ -549,6 +549,8 @@ export interface DriverAdvisory {
 
 export interface DriverCatalog {
   configured: boolean
+  /** The platform manages the drivers: these are the ones it provides, and none is installed or removed here. */
+  managed?: boolean
   /** False when this server's build cannot load native drivers at all. */
   native_worker_enabled: boolean
   version: number
@@ -558,6 +560,8 @@ export interface DriverCatalog {
 
 export interface InstalledDrivers {
   native_worker_enabled: boolean
+  /** The platform manages the drivers: these are the ones its workers provide. */
+  managed?: boolean
   drivers: InstalledDriver[]
 }
 

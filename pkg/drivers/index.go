@@ -103,7 +103,14 @@ func (m *Manager) InstallFromCatalog(ctx context.Context, name string) (*Manifes
 // listed them under the right name, so an entry for one driver cannot
 // install another.
 func (m *Manager) InstallFromCatalogVersion(ctx context.Context, name, version string) (*Manifest, error) {
-	indexURL := IndexURL()
+	return m.InstallFromCatalogAt(ctx, IndexURL(), name, version)
+}
+
+// InstallFromCatalogAt is InstallFromCatalogVersion from the catalog at
+// indexURL rather than the one this process is configured with: a worker
+// installing the set its control plane manages is told where that set
+// comes from.
+func (m *Manager) InstallFromCatalogAt(ctx context.Context, indexURL, name, version string) (*Manifest, error) {
 	if indexURL == "" {
 		return nil, ErrCatalogNotConfigured
 	}

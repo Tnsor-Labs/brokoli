@@ -10,6 +10,7 @@ but cannot take the server down.
 - [Builds that can run native drivers](#builds-that-can-run-native-drivers)
 - [Installing a driver](#installing-a-driver)
 - [The driver catalog](#the-driver-catalog)
+- [Managed drivers](#managed-drivers)
 - [Pinning a connection to a driver](#pinning-a-connection-to-a-driver)
 - [Flight SQL connections](#flight-sql-connections)
 - [How a run reads through a driver](#how-a-run-reads-through-a-driver)
@@ -189,6 +190,47 @@ decision for the operator, not the binary.
 - Browsing the catalog and its documentation uses a copy at most five
   minutes old. An install always reads it fresh, so a release revoked
   minutes ago is not installed from a cached copy.
+
+## Managed drivers
+
+A deployment can let its operator decide which drivers exist, instead of
+whoever has `drivers.manage`. Set `BROKOLI_MANAGED_DRIVERS` on every
+process to the set, by exact identity:
+
+```json
+[
+  {"name": "flightsql", "version": "1.12.0", "library_sha256": "2c9ead4e46ce85223d152bd1b9aae33823c1de5bd20a5b2a888b4b75024d2d4e"},
+  {"name": "postgresql", "version": "1.12.0", "library_sha256": "091b8393ee73160f1be19115fb958df525ad85fc45bb408871c51fcdd77c0ffb"}
+]
+```
+
+`library_sha256` is the installed library's digest, the one a connection
+pins, not the archive's. With the set declared:
+
+- **The API lists the set.** `GET /api/drivers` and `GET /api/drivers/catalog`
+  return the declared builds, whatever is installed on the process that
+  answers, so a server with no drivers of its own still offers them for
+  pinning. The catalog is not fetched; there is nothing to browse.
+- **Nothing is installed or removed through the API.**
+  `POST /api/drivers/catalog/{name}/install` and `DELETE /api/drivers/{name}`
+  return `403`, for every caller.
+- **Workers install the set when they start.** A worker (`serve --mode
+  worker`) on a build that can run native drivers installs every declared
+  build it does not have from `BROKOLI_DRIVER_INDEX`, checks each library
+  against its declared digest, and does not start if one is missing or
+  different. A build already installed is not fetched again. A build that
+  cannot run native drivers installs none and advertises none, so runs
+  pinned to one are not routed to it.
+- **The UI follows.** `/api/capabilities` reports
+  `native_adbc_drivers.managed`, and the Drivers page then lists the
+  provided drivers with nothing to install or remove.
+
+Any non-empty value makes the deployment managed, including one that does
+not parse: a mistake in the value must not reopen the API to installs. An
+unparseable set is reported by the endpoints that read it and stops a
+worker from starting.
+
+The command line (`brokoli drivers install`) is not affected.
 
 ## Pinning a connection to a driver
 
@@ -420,6 +462,7 @@ waits two seconds before asking for another.
 | --- | --- | --- |
 | `BROKOLI_DRIVER_DIR` | `$XDG_DATA_HOME/brokoli/drivers`, else `~/.brokoli/drivers` | Where driver builds are installed and looked up. |
 | `BROKOLI_DRIVER_INDEX` | none | URL of the driver catalog. Without it, catalog installs are unavailable. |
+| `BROKOLI_MANAGED_DRIVERS` | none | The [managed](#managed-drivers) driver set, a JSON array of identities. When set, the API lists it and refuses installs and removals, and workers install it at startup. |
 | `BROKOLI_NATIVE_PASS_ENV` | none | Further environment variables the native worker may see; `*` for all. |
 | `BROKOLI_NATIVE_MEMORY_MB` | unlimited | Address-space limit of each native worker. |
 | `BROKOLI_NATIVE_CPU_SECONDS` | unlimited | CPU-time limit of each native worker. |

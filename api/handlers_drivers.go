@@ -80,6 +80,18 @@ func toInstalledDriver(manifest *drivers.Manifest) installedDriver {
 		Entrypoint: manifest.Entrypoint, LibrarySHA256: manifest.Identity().LibrarySHA256, UsableBy: usableBy(manifest.Name)}
 }
 
+// managedDrivers lists a managed set the way installedDrivers lists this
+// host's builds: what a connection may pin. The builds are on the workers,
+// which install them at startup; this process need not have them.
+func managedDrivers(set drivers.ManagedSet) []installedDriver {
+	out := make([]installedDriver, 0, len(set))
+	for _, identity := range set {
+		out = append(out, installedDriver{Name: identity.Name, Version: identity.Version, OS: runtime.GOOS, Arch: runtime.GOARCH,
+			LibrarySHA256: identity.LibrarySHA256, UsableBy: usableBy(identity.Name)})
+	}
+	return out
+}
+
 func installedDrivers(manager *drivers.Manager) []installedDriver {
 	out := []installedDriver{}
 	for _, manifest := range manager.List() {
@@ -98,8 +110,22 @@ func (h *DriverHandler) Installed(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "load installed drivers: "+err.Error())
 		return
 	}
+	if drivers.Managed() {
+		set, err := drivers.ManagedDrivers()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "managed drivers: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"native_worker_enabled": engine.NativeADBCWorkerEnabled(),
+			"managed":               true,
+			"drivers":               managedDrivers(set),
+		})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]interface{}{
 		"native_worker_enabled": engine.NativeADBCWorkerEnabled(),
+		"managed":               false,
 		"drivers":               installedDrivers(manager),
 	})
 }
@@ -115,13 +141,30 @@ func (h *DriverHandler) Catalog(w http.ResponseWriter, r *http.Request) {
 	}
 	platform := map[string]string{"os": runtime.GOOS, "arch": runtime.GOARCH}
 
+	// On a managed deployment there is nothing to browse: the installed
+	// builds are the platform's choice, and nothing can be installed
+	// from here. The catalog is not fetched at all.
+	if drivers.Managed() {
+		set, err := drivers.ManagedDrivers()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "managed drivers: "+err.Error())
+			return
+		}
+		entries := make([]catalogDriver, 0, len(set))
+		for _, identity := range set {
+			entries = append(entries, catalogDriver{Name: identity.Name, Version: identity.Version,
+				OS: runtime.GOOS, Arch: runtime.GOARCH, Installed: true, UsableBy: usableBy(identity.Name)})
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{"configured": false, "managed": true, "native_worker_enabled": engine.NativeADBCWorkerEnabled(), "platform": platform, "drivers": entries})
+		return
+	}
 	index, err := drivers.CachedIndex(r.Context())
 	if errors.Is(err, drivers.ErrCatalogNotConfigured) {
 		entries := make([]catalogDriver, 0)
 		for _, manifest := range manager.List() {
 			entries = append(entries, installedEntry(manifest))
 		}
-		writeJSON(w, http.StatusOK, map[string]interface{}{"configured": false, "native_worker_enabled": engine.NativeADBCWorkerEnabled(), "platform": platform, "drivers": entries})
+		writeJSON(w, http.StatusOK, map[string]interface{}{"configured": false, "managed": false, "native_worker_enabled": engine.NativeADBCWorkerEnabled(), "platform": platform, "drivers": entries})
 		return
 	}
 	if err != nil {
@@ -199,6 +242,10 @@ func driverErrorStatus(err error) int {
 // Install installs a named, platform-compatible catalog release. It accepts no
 // archive URL or digest from the caller.
 func (h *DriverHandler) Install(w http.ResponseWriter, r *http.Request) {
+	if drivers.Managed() {
+		writeError(w, http.StatusForbidden, drivers.ErrManaged.Error())
+		return
+	}
 	manager, err := h.drivers()
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load installed drivers: "+err.Error())
@@ -227,6 +274,10 @@ func (h *DriverHandler) Documentation(w http.ResponseWriter, r *http.Request) {
 // pipelines failing at run time with a driver error instead of a clear
 // statement made now, at the moment of the destructive action.
 func (h *DriverHandler) Remove(w http.ResponseWriter, r *http.Request) {
+	if drivers.Managed() {
+		writeError(w, http.StatusForbidden, drivers.ErrManaged.Error())
+		return
+	}
 	name := chi.URLParam(r, "name")
 	version := r.URL.Query().Get("version")
 	manager, err := h.drivers()

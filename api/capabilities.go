@@ -7,6 +7,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
+	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
 )
 
@@ -54,14 +55,18 @@ var codeRuntimeState = struct {
 type nativeADBCDriverStatus struct {
 	Status string `json:"status"`
 	Reason string `json:"reason"`
+	// Managed: the platform declares the driver set (pkg/drivers
+	// ManagedEnvVar); nothing is installed through the API.
+	Managed bool `json:"managed"`
 }
 
 func nativeADBCDrivers() nativeADBCDriverStatus {
 	if engine.NativeADBCWorkerEnabled() {
 		return nativeADBCDriverStatus{Status: "native_worker_enabled",
-			Reason: "Connections pinned to an installed native ADBC driver are read in an isolated worker process."}
+			Reason:  "Connections pinned to an installed native ADBC driver are read in an isolated worker process.",
+			Managed: drivers.Managed()}
 	}
-	return nativeADBCDriverStatus{Status: "native_worker_unavailable", Reason: engine.ErrNativeADBCUnavailable.Error()}
+	return nativeADBCDriverStatus{Status: "native_worker_unavailable", Reason: engine.ErrNativeADBCUnavailable.Error(), Managed: drivers.Managed()}
 }
 
 // SetCodeRuntime records the runtime resolution performed by the server at

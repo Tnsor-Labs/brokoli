@@ -138,6 +138,8 @@ export function ConnectionForm({
   const nativeDrivers = (installedDrivers.data?.drivers ?? []).filter((driver) => (driver.usable_by ?? []).includes(draft.type))
   const nativeDriverType = draft.type === 'flightsql' || nativeDrivers.length > 0 || Boolean(saved?.driver_identity) ? draft.type : null
   const nativeDriverLabel = meta?.label ?? draft.type
+  // Managed: the drivers are the platform's, on its workers, not this server's.
+  const driversManaged = Boolean(installedDrivers.data?.managed)
   const selectedNativeDriver = nativeDrivers.find((driver) => driverIdentityKey(driver) === draft.driver_identity)
   const nativeDriverRequired = draft.type === 'flightsql' || draft.use_native_driver
   const nativeDriverSaveBlocked = nativeDriverRequired && (installedDrivers.isPending || !selectedNativeDriver)
@@ -377,11 +379,13 @@ export function ConnectionForm({
                 <>
                   {installedDrivers.isPending ? (
                     <Callout tone="info" title={`Checking installed ${nativeDriverLabel} drivers`}>
-                      Loading the native drivers installed on this server.
+                      {driversManaged ? 'Loading the native drivers your platform provides.' : 'Loading the native drivers installed on this server.'}
                     </Callout>
                   ) : !nativeDrivers.length ? (
                     <Callout tone="danger" title="Native ADBC driver required">
-                      No installed {nativeDriverLabel} driver was discovered on this server. <Link to="/drivers">Browse managed drivers</Link> before saving this connection.
+                      {driversManaged
+                        ? <>Your platform provides no {nativeDriverLabel} driver, so this connection cannot be saved with one. <Link to="/drivers">See the provided drivers</Link>.</>
+                        : <>No installed {nativeDriverLabel} driver was discovered on this server. <Link to="/drivers">Browse managed drivers</Link> before saving this connection.</>}
                     </Callout>
                   ) : (
                     <Field label={`${nativeDriverLabel} driver`} required hint="The selected installed driver identity is saved with this connection.">
