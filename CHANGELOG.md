@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.7] - 2026-10-11
+
+### Added
+
+- **Waits can wait in place where a run cannot park** (#821) -- @hc12r.
+  `Engine.WaitInPlace` makes an unmet wait keep checking its condition in
+  the process running it, every `poll_interval`, until it is met, the run is
+  cancelled or `timeout` passes, ending with the parked wait's timeout
+  message. It is for a process that executes runs for another process's
+  store, which cannot park a run; the run keeps its slot while it waits.
+  Off by default. A wait node's attempt timeout covers the wait's own
+  `timeout` in this mode, and a retried wait keeps its first deadline.
+- **`PipelineWaitChecker`** (#821) -- @hc12r. A store that cannot look
+  pipelines up can answer a `pipeline` wait itself; "pipeline not found"
+  still covers both a missing pipeline and another organization's.
+- **`RunOptions.RunID`** (#821) -- @hc12r. Creates the run with a given
+  ID, so a process running a run another process created can cancel it by
+  that ID.
+
 ## [0.18.6] - 2026-10-10
 
 ### Security
