@@ -469,3 +469,260 @@ func TestWaitPipelineConditionSaysWhenThisProcessCannotCheckIt(t *testing.T) {
 		t.Fatalf("missing pipeline: err = %v, want not found", err)
 	}
 }
+
+// waitInPlaceEngine is waitTestEngine with Engine.WaitInPlace set, the
+// mode for a process that cannot park.
+func waitInPlaceEngine(t *testing.T) (*store.SQLiteStore, *Engine, string) {
+	t.Helper()
+	st, eng, dir := waitTestEngine(t)
+	eng.WaitInPlace = true
+	return st, eng, dir
+}
+
+// awaitRunStatus polls the stored run until it reaches want.
+func awaitRunStatus(t *testing.T, st store.Store, runID string, want models.RunStatus) *models.Run {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		got, err := st.GetRun(runID)
+		if err == nil && got.Status == want {
+			return got
+		}
+		if time.Now().After(deadline) {
+			status, msg := models.RunStatus("missing"), ""
+			if got != nil {
+				status, msg = got.Status, got.Error
+			}
+			t.Fatalf("run %s is %s (err %q), want %s", runID, status, msg, want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A process that cannot park keeps the run and checks the condition
+// itself: the run never leaves running, nothing is parked, and it
+// finishes once the condition comes true, upstream output intact.
+func TestWaitInPlaceKeepsTheRunAndFinishesWhenTheConditionComesTrue(t *testing.T) {
+	st, eng, dir := waitInPlaceEngine(t)
+	gate := filepath.Join(dir, "ready.flag")
+	mkWaitPipeline(t, st, dir, "wip", gate, map[string]interface{}{"poll_interval": "50ms"})
+
+	runID, err := eng.RunPipelineAsync("wip")
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusRunning)
+	time.Sleep(200 * time.Millisecond) // several polls with the gate shut
+	if got, _ := st.GetRun(runID); got.Status != models.RunStatusRunning {
+		t.Fatalf("run is %s while waiting in place, want running", got.Status)
+	}
+	if n, _ := st.CountParkedWaits(); n != 0 {
+		t.Fatalf("parked waits = %d, want 0: this process waits in place", n)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "out-wip.csv")); err == nil {
+		t.Fatal("sink ran before the gate opened")
+	}
+
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusSuccess)
+	out, err := os.ReadFile(filepath.Join(dir, "out-wip.csv"))
+	if err != nil || !strings.Contains(string(out), "7") {
+		t.Fatalf("sink output = %q (err %v), want the upstream row", out, err)
+	}
+}
+
+// The in-place wait ends on its deadline with the parked wait's message.
+func TestWaitInPlaceTimesOutWithTheParkedWaitMessage(t *testing.T) {
+	st, eng, dir := waitInPlaceEngine(t)
+	mkWaitPipeline(t, st, dir, "wto", filepath.Join(dir, "never.flag"),
+		map[string]interface{}{"poll_interval": "50ms", "timeout": "300ms"})
+
+	start := time.Now()
+	run, _ := eng.RunPipeline("wto") // a failed run returns its error too
+	if run == nil {
+		t.Fatal("no run returned")
+	}
+	got := awaitRunStatus(t, st, run.ID, models.RunStatusFailed)
+	if !strings.Contains(got.Error, "wait node gate timed out: condition file_exists not met by") {
+		t.Fatalf("run error = %q, want the wait timeout message", got.Error)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond || took > 5*time.Second {
+		t.Fatalf("timed out after %s, want about the 300ms timeout", took)
+	}
+}
+
+// A retried wait keeps its first attempt's deadline: retrying must not
+// restart the clock, or max_retries would multiply the timeout.
+func TestWaitInPlaceRetryKeepsTheFirstDeadline(t *testing.T) {
+	st, eng, dir := waitInPlaceEngine(t)
+	mkWaitPipeline(t, st, dir, "wrt", filepath.Join(dir, "never.flag"),
+		map[string]interface{}{"poll_interval": "50ms", "timeout": "400ms", "max_retries": float64(3),
+			"retry_delay": float64(10), "retry_backoff": "fixed"})
+
+	run, _ := eng.RunPipeline("wrt")
+	if run == nil {
+		t.Fatal("no run returned")
+	}
+	got := awaitRunStatus(t, st, run.ID, models.RunStatusFailed)
+	// Each attempt's own duration, not the run's: the run's setup and
+	// teardown are slow under the race detector and say nothing here.
+	retries := 0
+	for _, nr := range got.NodeRuns {
+		if nr.NodeID != "gate" || nr.Attempt == 0 {
+			continue
+		}
+		retries++
+		if nr.DurationMs >= 350 {
+			t.Fatalf("retry %d waited %dms of a 400ms wait whose deadline had passed: the retry restarted the clock", nr.Attempt, nr.DurationMs)
+		}
+	}
+	if retries != 3 {
+		t.Fatalf("gate retries recorded = %d, want 3", retries)
+	}
+}
+
+// Cancelling a run that waits in place stops the wait and the run ends
+// cancelled, not failed.
+func TestWaitInPlaceStopsWhenTheRunIsCancelled(t *testing.T) {
+	st, eng, dir := waitInPlaceEngine(t)
+	mkWaitPipeline(t, st, dir, "wcx", filepath.Join(dir, "never.flag"),
+		map[string]interface{}{"poll_interval": "50ms"})
+
+	runID, err := eng.RunPipelineAsync("wcx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusRunning)
+	time.Sleep(100 * time.Millisecond)
+	if err := eng.CancelRun(runID); err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusCancelled)
+	awaitNoActiveRuns(t, eng)
+	awaitNoWaitLoop(t)
+}
+
+// awaitNoWaitLoop fails if an in-place wait loop is still running: the
+// run reporting cancelled is not enough, the loop must have stopped too
+// rather than polling on for the rest of its timeout.
+func awaitNoWaitLoop(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if !strings.Contains(string(buf[:n]), "waitInPlaceUntilMet") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("an in-place wait loop is still running after its run ended")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// pipelineChecker is a waitStore that answers pipeline waits itself and
+// cannot look pipelines up.
+type pipelineChecker struct {
+	pipelineLookup
+	met, found bool
+	err        error
+}
+
+func (p pipelineChecker) PipelineWaitMet(string) (bool, bool, error) { return p.met, p.found, p.err }
+
+// A store that answers pipeline waits itself is asked instead of being
+// made to look pipelines up, and "not found" keeps its single meaning.
+func TestWaitPipelineConditionAsksAStoreThatAnswersItItself(t *testing.T) {
+	run := &models.Run{ID: "r1", OrgID: "org-acme"}
+	cond := waitCondition{Type: "pipeline", PipelineID: "upstream"}
+	cannot := pipelineLookup{err: fmt.Errorf("GetPipeline must not be reached: %w", store.ErrUnsupported)}
+
+	met, err := waitConditionMet(t.Context(), pipelineChecker{pipelineLookup: cannot, met: true, found: true}, run, cond)
+	if err != nil || !met {
+		t.Fatalf("met upstream: met=%v err=%v, want met", met, err)
+	}
+	met, err = waitConditionMet(t.Context(), pipelineChecker{pipelineLookup: cannot, met: false, found: true}, run, cond)
+	if err != nil || met {
+		t.Fatalf("unmet upstream: met=%v err=%v, want not met, no error", met, err)
+	}
+	_, err = waitConditionMet(t.Context(), pipelineChecker{pipelineLookup: cannot, found: false}, run, cond)
+	if err == nil || !strings.Contains(err.Error(), "pipeline not found") {
+		t.Fatalf("missing upstream: err = %v, want pipeline not found", err)
+	}
+	_, err = waitConditionMet(t.Context(), pipelineChecker{pipelineLookup: cannot, err: fmt.Errorf("control plane unreachable")}, run, cond)
+	if err == nil || !strings.Contains(err.Error(), "control plane unreachable") || strings.Contains(err.Error(), "not found") {
+		t.Fatalf("checker error: err = %v, want it passed through, not 'not found'", err)
+	}
+}
+
+// An in-place wait may outlast the default node attempt timeout: it ends
+// on its own deadline. It was first cut off at the attempt default (30
+// minutes), shrunk here so the test can see it.
+func TestWaitInPlaceIsNotCutOffByTheDefaultNodeTimeout(t *testing.T) {
+	old := defaultNodeTimeout
+	defaultNodeTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { defaultNodeTimeout = old })
+
+	st, eng, dir := waitInPlaceEngine(t)
+	gate := filepath.Join(dir, "late.flag")
+	mkWaitPipeline(t, st, dir, "wlong", gate, map[string]interface{}{"poll_interval": "50ms", "timeout": "5s"})
+	// Only the wait may rely on the shrunk default: the source and sink
+	// get their own attempt timeout, or a slow machine times them out.
+	p, err := st.GetPipeline("wlong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range p.Nodes {
+		if p.Nodes[i].Type != models.NodeTypeWait {
+			p.Nodes[i].Config["timeout"] = float64(60)
+		}
+	}
+	if err := st.UpdatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+
+	runID, err := eng.RunPipelineAsync("wlong")
+	if err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusRunning)
+	time.Sleep(600 * time.Millisecond) // three default attempt timeouts
+	if err := os.WriteFile(gate, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusSuccess)
+}
+
+// A run created with RunOptions.RunID carries that ID and can be
+// cancelled by it while it waits in place: what a process executing a
+// run that another process created needs to honour that process's
+// cancel.
+func TestARunWithAGivenIDCanBeCancelledByItWhileWaitingInPlace(t *testing.T) {
+	st, eng, dir := waitInPlaceEngine(t)
+	mkWaitPipeline(t, st, dir, "wid", filepath.Join(dir, "never.flag"),
+		map[string]interface{}{"poll_interval": "50ms"})
+
+	const runID = "run-created-elsewhere"
+	done := make(chan *models.Run, 1)
+	go func() {
+		run, _ := eng.RunPipelineOpts("wid", RunOptions{RunID: runID})
+		done <- run
+	}()
+	awaitRunStatus(t, st, runID, models.RunStatusRunning)
+	if err := eng.CancelRun(runID); err != nil {
+		t.Fatalf("cancel by the given ID: %v", err)
+	}
+	select {
+	case run := <-done:
+		if run == nil || run.ID != runID {
+			t.Fatalf("returned run = %+v, want ID %s", run, runID)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the run did not stop after its cancel")
+	}
+	awaitRunStatus(t, st, runID, models.RunStatusCancelled)
+	awaitNoWaitLoop(t)
+}

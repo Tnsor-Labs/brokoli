@@ -177,6 +177,16 @@ func waitConditionMet(ctx context.Context, st waitStore, run *models.Run, c wait
 		// as "not found" either way, so a wait cannot be used to learn
 		// whether another organization's pipeline exists or how its last
 		// run ended.
+		if checker, ok := st.(PipelineWaitChecker); ok {
+			met, found, err := checker.PipelineWaitMet(c.PipelineID)
+			if err != nil {
+				return false, fmt.Errorf("wait pipeline %q: %w", c.PipelineID, err)
+			}
+			if !found {
+				return false, fmt.Errorf("wait pipeline %q: pipeline not found", c.PipelineID)
+			}
+			return met, nil
+		}
 		target, err := st.GetPipeline(c.PipelineID)
 		if errors.Is(err, store.ErrUnsupported) {
 			// A store that cannot look pipelines up says nothing about
@@ -204,25 +214,91 @@ type waitStore interface {
 }
 
 // runWait is the wait node's handler: evaluate once; met passes the input
-// through untouched (a wait is a gate, not a transform), unmet parks.
-func (r *Runner) runWait(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+// through untouched (a wait is a gate, not a transform), unmet parks, or
+// with Engine.WaitInPlace keeps checking in this process.
+func (r *Runner) runWait(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	cond, poll, timeout, err := parseWaitCondition(node)
 	if err != nil {
 		return nil, err
 	}
-	met, err := waitConditionMet(r.ctx, r.store, r.run, cond)
+	deadline := time.Now().UTC().Add(timeout)
+	if first, loaded := r.waitDeadlines.LoadOrStore(node.ID, deadline); loaded {
+		deadline = first.(time.Time)
+	}
+	met, err := waitConditionMet(ctx, r.store, r.run, cond)
 	if err != nil {
 		return nil, err
 	}
 	if met {
 		return input, nil
 	}
+	if r.waitInPlace {
+		return r.waitInPlaceUntilMet(ctx, node, cond, poll, deadline, input)
+	}
 	return nil, &WaitParkError{
 		NodeID:    node.ID,
 		Condition: cond,
 		Poll:      poll,
-		Deadline:  time.Now().UTC().Add(timeout),
+		Deadline:  deadline,
 	}
+}
+
+// waitInPlaceUntilMet is the wait for a process that cannot park
+// (Engine.WaitInPlace): check every poll interval until the condition is
+// met, the run is cancelled or the deadline passes. It ends the way a
+// parked wait does -- the same evaluation, a failed check treated as "not
+// yet" the way the watcher treats it, and the same timeout message -- so
+// where a run executes does not change what a wait means.
+func (r *Runner) waitInPlaceUntilMet(ctx context.Context, node models.Node, cond waitCondition, poll time.Duration, deadline time.Time, input *common.DataSet) (*common.DataSet, error) {
+	r.log(node.ID, models.LogLevelInfo,
+		"Waiting in place: condition %q not met; checking every %s until %s (this run keeps its slot while it waits)",
+		cond.Type, poll, deadline.Format(time.RFC3339))
+	lastCheckErr := ""
+	for {
+		sleep := poll
+		if left := time.Until(deadline); left < sleep {
+			sleep = left
+		}
+		if sleep > 0 {
+			timer := time.NewTimer(sleep)
+			select {
+			case <-ctx.Done():
+				// The run was cancelled or the attempt ended; the runner
+				// reports which. Returning is what matters: this loop
+				// must not outlive the attempt it belongs to.
+				timer.Stop()
+				return nil, ctx.Err()
+			case <-timer.C:
+			}
+		}
+		met, err := waitConditionMet(ctx, r.store, r.run, cond)
+		// A check that keeps failing the same way is logged once, not
+		// once per poll for the hours a wait can last.
+		if err != nil && err.Error() != lastCheckErr {
+			r.log(node.ID, models.LogLevelWarning, "Wait condition check failed; treating as not met: %v", err)
+		}
+		lastCheckErr = ""
+		if err != nil {
+			lastCheckErr = err.Error()
+		}
+		if met {
+			r.log(node.ID, models.LogLevelInfo, "Wait condition %q met", cond.Type)
+			return input, nil
+		}
+		if !time.Now().Before(deadline) {
+			return nil, fmt.Errorf("wait node %s timed out: condition %s not met by %s",
+				node.ID, cond.Type, deadline.Format(time.RFC3339))
+		}
+	}
+}
+
+// PipelineWaitChecker is optionally implemented by a store that cannot
+// look pipelines up itself but can answer a pipeline wait for the run it
+// serves, such as one that executes runs for another process's store.
+// found is false for a pipeline that does not exist and for one in
+// another organization; a wait must not be able to tell the two apart.
+type PipelineWaitChecker interface {
+	PipelineWaitMet(pipelineID string) (met, found bool, err error)
 }
 
 // parkRun finalizes a run as parked (#399): the ParkedWait row FIRST --

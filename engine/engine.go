@@ -89,6 +89,15 @@ type Engine struct {
 	// native ADBC driver, each in an isolated child process. Nil refuses
 	// those connections with an error saying so.
 	NativeADBCWorker NativeADBCRunner
+	// WaitInPlace makes a wait node whose condition is not met yet keep
+	// checking it in this process, every poll interval until it is met,
+	// the run is cancelled or the wait times out, instead of parking the
+	// run. Parking needs a store that can hold the parked run and a
+	// watcher that wakes it where the run's earlier outputs can be
+	// restored; a process that executes runs for another process's store
+	// may have neither. The cost is that the run keeps its slot while it
+	// waits.
+	WaitInPlace bool
 
 	// DataCapIssuer mints the data-plane capabilities a remotely
 	// dispatched task presents to fetch input too large to inline
@@ -729,6 +738,11 @@ type RunOptions struct {
 	// validated against the pipeline's declarations. Nil for a pipeline
 	// that declares none.
 	TypedParams map[string]interface{}
+	// RunID is the ID the run is created with, instead of a generated
+	// one, for a process executing a run another process already
+	// created and refers to by that ID. RunPipelineOpts only; the run
+	// can then be cancelled here by that ID.
+	RunID string
 }
 
 func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*models.Run, error) {
@@ -741,6 +755,7 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 
 func (e *Engine) configureRunner(r *Runner) *Runner {
 	r.nativeADBCWorker = e.NativeADBCWorker
+	r.waitInPlace = e.WaitInPlace
 	return r
 }
 
@@ -851,6 +866,9 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 
 	// Pre-generate run ID so we can register the runner for cancellation
 	runID := common.NewID()
+	if opts.RunID != "" {
+		runID = opts.RunID
+	}
 	runner.preRunID = runID
 	e.mu.Lock()
 	e.active[runID] = runner

@@ -143,6 +143,12 @@ type Runner struct {
 	artifactStore    ArtifactStore
 	nativeADBCWorker NativeADBCRunner
 
+	// waitInPlace and waitDeadlines: see Engine.WaitInPlace. The deadline
+	// is kept per node so a retried wait keeps the deadline its first
+	// attempt set instead of starting the clock again.
+	waitInPlace   bool
+	waitDeadlines sync.Map // node ID -> time.Time
+
 	// spillThreshold is the estimated encoded size at or above which a
 	// node's output is written to the artifact store instead of being held
 	// in memory for the rest of the run (Tnsor-Labs/brokoli#38). Zero uses
@@ -723,6 +729,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	return r.run, nil
 }
 
+// defaultNodeTimeout bounds one node attempt that sets no numeric
+// "timeout". A var so a test can shrink it.
+var defaultNodeTimeout = 30 * time.Minute
+
 func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates []edgeResolution, readyAt time.Time) (*bool, error) {
 	// Skip nodes that already succeeded (resume mode). Restore the node's
 	// real durable output into the outputs map so downstream nodes see the
@@ -951,9 +961,17 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 	// explicit config, no per-node-type auto-retry defaults) and the
 	// existing 60s cap exactly.
 	retryCfg := RetryConfig{BackoffType: backoffType, BackoffBase: baseDelay, BackoffMax: 60 * time.Second}
-	nodeTimeout := 30 * time.Minute
+	nodeTimeout := defaultNodeTimeout
 	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
 		nodeTimeout = time.Duration(t) * time.Second
+	}
+	if node.Type == models.NodeTypeWait && r.waitInPlace {
+		// A wait in place ends on its own deadline. Its "timeout" is the
+		// wait's duration string, not this numeric attempt timeout, so
+		// without this every in-place wait was cut off at the default.
+		if _, poll, waitTimeout, err := parseWaitCondition(node); err == nil {
+			nodeTimeout = waitTimeout + poll + time.Minute
+		}
 	}
 
 	type nodeResult struct {
@@ -2024,7 +2042,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeBash:
 		return outputExecutionResult(r.runBash(ctx, node, input))
 	case models.NodeTypeWait:
-		return outputExecutionResult(r.runWait(node, input))
+		return outputExecutionResult(r.runWait(ctx, node, input))
 	case models.NodeTypeUnion:
 		return outputExecutionResult(r.runUnion(node, allInputs))
 	case models.NodeTypeDatasetMap:
