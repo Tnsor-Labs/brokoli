@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.8] - 2026-10-11
+
+### Added
+
+- **Park before dispatch** (#822) -- @hc12r.
+  `Engine.ParkBeforeDispatch(run, pipe, params)` checks a pipeline's wait
+  nodes that have nothing upstream (`file_exists` excepted) on the
+  dispatching process, before the run is handed to another, and parks the
+  run on the first unmet one, so it holds no slot anywhere while it waits.
+  Config is resolved as a runner resolves it; a failing check fails the
+  run, as a runner's first check does.
+- **`Engine.WakeHandoff`** (#822) -- @hc12r. Offered every run the
+  parked-wait watcher wakes, after the claim: taking it means it does not
+  run here, declining lets it run here as before, an error fails it.
+
 ## [0.18.7] - 2026-10-11
 
 ### Added
