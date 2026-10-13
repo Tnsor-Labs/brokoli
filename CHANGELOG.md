@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.11] - 2026-10-14
+
+### Changed
+
+- **`RequestIdentityFunc` can resolve a request's permissions** (#830) --
+  @hc12r. The hook now returns an `IdentityRefinement`: the claims and a
+  refusal as before, and optionally the request's permissions. When it
+  resolves them, `PermissionChecker.HasPermission`, the open-source
+  permission gate and `/api/auth/me/permissions` read them instead of
+  looking the role claim up in the roles table, whose one namespace for
+  the whole instance had no room for roles defined per organization. An
+  empty, non-nil list grants nothing; with none, the role claim decides
+  as before. `api.RequestPermissions` exposes the list. The hook's
+  signature changes; it was added in 0.18.10.
+
 ## [0.18.10] - 2026-10-13
 
 ### Added
