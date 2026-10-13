@@ -2751,8 +2751,15 @@ func (s *PostgresStore) CreateAPIToken(t *models.APIToken) error {
 }
 func (s *PostgresStore) GetAPITokenByHash(hash string) (*models.APIToken, error) {
 	var t models.APIToken
+	// last_used_at is NULL until the token is first used, and the first
+	// use is the first lookup: scanning it straight into a time.Time
+	// failed there, so no token ever authenticated.
+	var lastUsed sql.NullTime
 	err := s.db.QueryRow(`SELECT id,name,token_hash,workspace_id,user_id,role,expires_at,created_at,last_used_at FROM api_tokens WHERE token_hash=$1`, hash).
-		Scan(&t.ID, &t.Name, &t.TokenHash, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt, &t.LastUsedAt)
+		Scan(&t.ID, &t.Name, &t.TokenHash, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt, &lastUsed)
+	if lastUsed.Valid {
+		t.LastUsedAt = lastUsed.Time
+	}
 	return &t, err
 }
 func (s *PostgresStore) ListAPITokens(workspaceID string) ([]models.APIToken, error) {
