@@ -131,10 +131,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				writeJSON(w, http.StatusOK, []models.Permission{})
 				return
 			}
-			role, _ := (*mapClaims)["role"].(string)
-			wsID := GetWorkspaceID(req)
-			perms := pc.GetUserPermissions(role, wsID)
-			writeJSON(w, http.StatusOK, perms)
+			writeJSON(w, http.StatusOK, pc.requestPermissions(req, mapClaims))
 		})
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))

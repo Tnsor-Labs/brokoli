@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"net/http"
 
+	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -16,14 +18,38 @@ import (
 // application that keeps memberships of its own uses this to answer from
 // them on every request instead of from the token.
 //
-// It returns the claims the rest of the request sees, which may be the
-// same claims or new ones; every permission check and handler reads those.
-// A non-zero status refuses the request with that status and message
-// instead, before any handler runs.
-//
 // Requests without an identity never reach it: anonymous and open-mode
 // requests are unaffected.
-var RequestIdentityFunc func(r *http.Request, claims *jwt.MapClaims) (refined *jwt.MapClaims, status int, message string)
+var RequestIdentityFunc func(r *http.Request, claims *jwt.MapClaims) IdentityRefinement
+
+// IdentityRefinement is what RequestIdentityFunc answers for one request.
+type IdentityRefinement struct {
+	// Claims the rest of the request sees, which every permission check
+	// and handler reads. Nil keeps the request's own.
+	Claims *jwt.MapClaims
+
+	// Permissions, when not nil, are the request's permissions: every
+	// permission check reads them instead of looking the role claim up in
+	// the store. An application whose roles the store does not hold, such
+	// as roles defined per organization, resolves them itself and answers
+	// here. An empty, non-nil list grants nothing.
+	Permissions []models.Permission
+
+	// Status, when not zero, refuses the request with Status and Message
+	// before any handler runs.
+	Status  int
+	Message string
+}
+
+type requestPermissionsKey struct{}
+
+// RequestPermissions returns the permissions RequestIdentityFunc resolved
+// for this request, and false when it resolved none, in which case the
+// role claim decides.
+func RequestPermissions(r *http.Request) ([]models.Permission, bool) {
+	perms, ok := r.Context().Value(requestPermissionsKey{}).([]models.Permission)
+	return perms, ok
+}
 
 // RequestIdentity applies RequestIdentityFunc. It is installed after
 // WorkspaceMiddleware, because the identity it refines includes the
@@ -36,14 +62,18 @@ func RequestIdentity(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		refined, status, message := hook(r, claims)
-		if status != 0 {
-			writeJSON(w, status, map[string]string{"error": message})
+		refined := hook(r, claims)
+		if refined.Status != 0 {
+			writeJSON(w, refined.Status, map[string]string{"error": refined.Message})
 			return
 		}
-		if refined != nil && refined != claims {
-			r = r.WithContext(contextWithClaims(r.Context(), refined))
+		ctx := r.Context()
+		if refined.Claims != nil && refined.Claims != claims {
+			ctx = contextWithClaims(ctx, refined.Claims)
 		}
-		next.ServeHTTP(w, r)
+		if refined.Permissions != nil {
+			ctx = context.WithValue(ctx, requestPermissionsKey{}, refined.Permissions)
+		}
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

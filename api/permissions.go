@@ -48,15 +48,23 @@ func (pc *PermissionChecker) HasPermission(r *http.Request, perm models.Permissi
 	if !ok || mapClaims == nil {
 		return false
 	}
-	role, _ := (*mapClaims)["role"].(string)
-	wsID := GetWorkspaceID(r)
-	perms := pc.GetUserPermissions(role, wsID)
-	for _, p := range perms {
+	for _, p := range pc.requestPermissions(r, mapClaims) {
 		if p == perm {
 			return true
 		}
 	}
 	return false
+}
+
+// requestPermissions returns what the request may do: the permissions
+// RequestIdentityFunc resolved for it when it resolved any, otherwise those
+// of the role its claims carry.
+func (pc *PermissionChecker) requestPermissions(r *http.Request, claims *jwt.MapClaims) []models.Permission {
+	if perms, ok := RequestPermissions(r); ok {
+		return perms
+	}
+	role, _ := (*claims)["role"].(string)
+	return pc.GetUserPermissions(role, GetWorkspaceID(r))
 }
 
 // RequirePermission returns middleware that checks for a specific permission.

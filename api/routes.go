@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
@@ -547,8 +548,14 @@ func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) htt
 				writeError(w, http.StatusUnauthorized, "authentication required")
 				return
 			}
-			role, _ := (*mc)["role"].(string)
-			if !roleAllows(role, perm) {
+			allowed := false
+			if perms, resolved := RequestPermissions(r); resolved {
+				allowed = slices.Contains(perms, perm)
+			} else {
+				role, _ := (*mc)["role"].(string)
+				allowed = roleAllows(role, perm)
+			}
+			if !allowed {
 				writeError(w, http.StatusForbidden, "insufficient permissions")
 				return
 			}
