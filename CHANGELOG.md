@@ -11,6 +11,26 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.10] - 2026-10-13
+
+### Added
+
+- **`RequestIdentityFunc`** (#827) -- @hc12r. An embedding application
+  can refine the identity of every request that carries one, after its
+  organization and workspace are resolved and before any handler runs:
+  return the claims the rest of the request sees, or refuse it with a
+  status and message. Every permission check and handler reads the
+  returned claims, so memberships kept by the application take effect on
+  the next request instead of when the token expires. Unset, nothing
+  changes; anonymous and open-mode requests never reach it.
+
+### Fixed
+
+- **API tokens on Postgres** (#828) -- @hc12r. `GetAPITokenByHash`
+  scanned the nullable `last_used_at` into a `time.Time`, and nothing sets
+  that column, so on Postgres every API token was refused with
+  `401 invalid token`. SQLite was unaffected.
+
 ## [0.18.9] - 2026-10-11
 
 ### Added
