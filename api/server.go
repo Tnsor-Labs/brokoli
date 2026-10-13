@@ -58,6 +58,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	}
 	// Workspace ownership depends on the identity populated by JWTAuth.
 	r.Use(WorkspaceMiddleware)
+	// And the identity an embedding application refines depends on both.
+	r.Use(RequestIdentity)
 
 	// Observability endpoints (outside /api, no auth required)
 	r.Get("/health", HealthHandler(s))
