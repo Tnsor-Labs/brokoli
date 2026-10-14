@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.12] - 2026-10-14
+
+### Changed
+
+- **Template curation asks for `templates.manage`** (#832) -- @hc12r.
+  Creating, changing and deleting pipeline templates was gated on the
+  role claim being `admin` or `superadmin` and nothing else. Templates
+  are shared by the whole instance, so these routes now go through the
+  same strict permission gate as plugin install, system purge and native
+  drivers. Without a permission extension nothing changes: only `admin`
+  and `superadmin` may curate templates. With one, the extension decides
+  who holds `templates.manage`; a role named `admin` is no longer enough
+  on its own. Listing templates still needs no permission.
+
 ## [0.18.11] - 2026-10-14
 
 ### Changed
