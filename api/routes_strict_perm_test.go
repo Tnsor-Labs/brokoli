@@ -51,6 +51,10 @@ func TestRequireStrictPerm_EditorDenied_AdminAllowed(t *testing.T) {
 		// A native driver is code loaded by every worker on the host.
 		{"native driver install", http.MethodPost, "/api/drivers/catalog/flightsql/install"},
 		{"native driver remove", http.MethodDelete, "/api/drivers/flightsql"},
+		// Templates are shared by the whole instance.
+		{"template create", http.MethodPost, "/api/templates"},
+		{"template update", http.MethodPut, "/api/templates/hello-world"},
+		{"template delete", http.MethodDelete, "/api/templates/hello-world"},
 	}
 
 	for _, tc := range cases {

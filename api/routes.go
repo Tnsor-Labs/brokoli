@@ -90,9 +90,8 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 	// edits but not for operations with host-wide blast radius: plugin
 	// install runs arbitrary code in this process, system/purge mass-
 	// deletes run history, and notification config controls where
-	// outbound alerts go. requireAdmin already exists for exactly this
-	// reason (see its doc comment / the templates routes above) -- this
-	// extends the same treatment to the other operations that needed it.
+	// outbound alerts go. Template curation is here too: templates are
+	// shared by the whole instance.
 	requireStrictPerm := func(perm models.Permission) func(http.Handler) http.Handler {
 		if ext != nil && ext.Team != nil && ext.Team.Enabled() {
 			if mw := ext.Team.PermissionMiddleware(string(perm)); mw != nil {
@@ -110,13 +109,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Pipeline templates offered at pipeline-creation time
 		// (store.Store's pipeline_templates table, seeded from
-		// pkg/templates.Builtin). Listing requires no permission; curation
-		// is admin-only (requireAdmin, not requirePerm — see its doc
-		// comment for why) since templates are global, not per-org.
+		// pkg/templates.Builtin). Listing requires no permission. Curation
+		// asks for templates.manage through requireStrictPerm: templates are
+		// global, not per-org, so the open-source answer is admin only, and a
+		// distribution with real RBAC decides who holds the permission rather
+		// than whoever carries a role named "admin".
 		r.Get("/templates", th.List)
-		r.With(requireAdmin).Post("/templates", th.Create)
-		r.With(requireAdmin).Put("/templates/{id}", th.Update)
-		r.With(requireAdmin).Delete("/templates/{id}", th.Delete)
+		r.With(requireStrictPerm(models.PermTemplatesManage)).Post("/templates", th.Create)
+		r.With(requireStrictPerm(models.PermTemplatesManage)).Put("/templates/{id}", th.Update)
+		r.With(requireStrictPerm(models.PermTemplatesManage)).Delete("/templates/{id}", th.Delete)
 
 		// Pipelines
 		r.Get("/pipelines", ph.List)
@@ -615,14 +616,12 @@ func isWritePermission(perm string) bool {
 }
 
 // requireAdmin gates a route to the "admin"/"superadmin" role only,
-// matching /api/auth/admin-reset-password's existing inline check.
-// Needed in addition to requirePerm(models.PermTemplatesManage):
-// requirePerm's open-source fallback only blocks the "viewer" role from
-// write permissions (see isWritePermission above) — it does not enforce
-// true role-exclusivity in community mode, only the enterprise Team
-// extension's real RBAC does that. Template curation is meant to be
-// admin-only in every edition, so it needs its own explicit check
-// rather than relying on requirePerm alone.
+// matching /api/auth/admin-reset-password's existing inline check. It is
+// requireStrictPerm's open-source fallback: requirePerm's fallback only
+// blocks the "viewer" role from write permissions (see isWritePermission
+// above), which is too loose for operations with host-wide blast radius.
+// It reads the role claim alone, so it is only the answer where no
+// permission system is installed.
 func requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		claims, _ := r.Context().Value("claims").(*jwt.MapClaims)

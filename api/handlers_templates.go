@@ -16,8 +16,8 @@ import (
 // (store.Store's pipeline_templates table, seeded from
 // pkg/templates.Builtin) offered when creating a new pipeline. Listing
 // requires no permission (any authenticated user); create/update/delete
-// require the admin role (see requireAdmin in routes.go) — templates are
-// global and admin-curated, not per-org/per-workspace.
+// require templates.manage (see the templates routes in routes.go) —
+// templates are global and admin-curated, not per-org/per-workspace.
 type TemplateHandler struct {
 	store store.Store
 }
