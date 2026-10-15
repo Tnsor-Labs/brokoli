@@ -123,7 +123,7 @@ func detectDriver(uri string) (string, string, error) {
 	switch {
 	case strings.HasSuffix(uri, ".db") || strings.HasSuffix(uri, ".sqlite"):
 		// A filename, not a scheme: nothing to claim.
-		return "sqlite", uri, nil
+		return "sqlite", dbdialect.SQLiteDSN(uri), nil
 	default:
 		// A scheme nothing claims is refused by that name (#383). It
 		// used to fall through to pgx, so bigquery://

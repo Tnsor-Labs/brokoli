@@ -1,7 +1,9 @@
 package dbdialect
 
 import (
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -97,7 +99,45 @@ func (clickhouse) URIClaims() []URIClaim {
 }
 
 func (sqlited) URIClaims() []URIClaim {
-	return []URIClaim{{Scheme: "sqlite", Driver: "sqlite", Dialect: "sqlite", DSN: stripScheme("sqlite")}}
+	strip := stripScheme("sqlite")
+	return []URIClaim{{Scheme: "sqlite", Driver: "sqlite", Dialect: "sqlite",
+		DSN: func(uri string) string { return SQLiteDSN(strip(uri)) }}}
+}
+
+// SQLiteBusyTimeoutMS is how long a SQLite connection waits for another
+// writer's lock before failing with SQLITE_BUSY. SQLite's own default is 0,
+// so without it two writers to one file -- the parallel ranges of a
+// partitioned migrate (#834) -- fail the moment they overlap. Same value the
+// metadata store opens its own database with.
+const SQLiteBusyTimeoutMS = 5000
+
+// SQLiteDSN adds a busy timeout to a SQLite DSN that does not set one. A DSN
+// that already names busy_timeout keeps its own value, and one whose query
+// does not parse is returned unchanged for the driver to reject as before.
+// Nothing else is added: journal mode, for one, persists in the user's file.
+func SQLiteDSN(dsn string) string {
+	query := ""
+	if i := strings.IndexByte(dsn, '?'); i >= 0 {
+		query = dsn[i+1:]
+	}
+	q, err := url.ParseQuery(query)
+	if err != nil {
+		return dsn
+	}
+	// The driver matches pragmas this way when it orders them.
+	for _, v := range q["_pragma"] {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(v)), "busy_timeout") {
+			return dsn
+		}
+	}
+	sep := "?"
+	if strings.Contains(dsn, "?") {
+		sep = "&"
+		if strings.HasSuffix(dsn, "?") || strings.HasSuffix(dsn, "&") {
+			sep = ""
+		}
+	}
+	return dsn + sep + "_pragma=busy_timeout(" + strconv.Itoa(SQLiteBusyTimeoutMS) + ")"
 }
 
 func (sqlserver) URIClaims() []URIClaim {

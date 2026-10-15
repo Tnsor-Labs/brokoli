@@ -47,7 +47,8 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 	}
 
 	// The DSN transformations, exact: redshift rewrites the scheme,
-	// mysql and sqlite strip theirs, the rest pass the URI through.
+	// mysql and sqlite strip theirs (sqlite adding a busy timeout), the rest
+	// pass the URI through.
 	byScheme := map[string]URIClaim{}
 	for _, c := range got {
 		byScheme[c.Scheme] = c
@@ -58,7 +59,7 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 	if dsn := byScheme["mysql"].DSN("mysql://u:p@tcp(h)/db"); dsn != "u:p@tcp(h)/db" {
 		t.Errorf("mysql DSN = %q", dsn)
 	}
-	if dsn := byScheme["sqlite"].DSN("sqlite:///tmp/x.db"); dsn != "/tmp/x.db" {
+	if dsn := byScheme["sqlite"].DSN("sqlite:///tmp/x.db"); dsn != "/tmp/x.db?_pragma=busy_timeout(5000)" {
 		t.Errorf("sqlite DSN = %q", dsn)
 	}
 	for _, passthrough := range []string{"postgres", "postgresql", "clickhouse", "sqlserver", "mssql", "oracle", "databricks"} {
@@ -68,6 +69,31 @@ func TestAllURIClaimsCoverage(t *testing.T) {
 	}
 	if dsn := byScheme["snowflake"].DSN("snowflake://u:p@account/db/schema?warehouse=WH"); dsn != "u:p@account/db/schema?warehouse=WH" {
 		t.Errorf("snowflake DSN = %q", dsn)
+	}
+}
+
+// A SQLite DSN gets a busy timeout unless it already sets one (#834); the
+// rest of the DSN is left as the user wrote it.
+func TestSQLiteDSN(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"/tmp/x.db", "/tmp/x.db?_pragma=busy_timeout(5000)"},
+		{"file:/tmp/x.db?mode=ro", "file:/tmp/x.db?mode=ro&_pragma=busy_timeout(5000)"},
+		{"/tmp/x.db?", "/tmp/x.db?_pragma=busy_timeout(5000)"},
+		{"/tmp/x.db?mode=ro&", "/tmp/x.db?mode=ro&_pragma=busy_timeout(5000)"},
+		{":memory:", ":memory:?_pragma=busy_timeout(5000)"},
+		// The user's own timeout wins, however it is spelled.
+		{"/tmp/x.db?_pragma=busy_timeout(100)", "/tmp/x.db?_pragma=busy_timeout(100)"},
+		{"/tmp/x.db?_pragma=%20BUSY_TIMEOUT%3D100", "/tmp/x.db?_pragma=%20BUSY_TIMEOUT%3D100"},
+		{"/tmp/x.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(0)", "/tmp/x.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(0)"},
+		// Other pragmas are kept and the timeout added beside them.
+		{"/tmp/x.db?_pragma=foreign_keys(1)", "/tmp/x.db?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)"},
+		// A query the driver cannot parse is not touched: it fails there
+		// exactly as it did.
+		{"/tmp/x.db?a=%zz", "/tmp/x.db?a=%zz"},
+	} {
+		if got := SQLiteDSN(tc.in); got != tc.want {
+			t.Errorf("SQLiteDSN(%q) = %q, want %q", tc.in, got, tc.want)
+		}
 	}
 }
 

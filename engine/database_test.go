@@ -22,8 +22,9 @@ func TestDetectDriverSchemeMapping(t *testing.T) {
 		{"snowflake://user:pass@account/db/schema?warehouse=WH", "brokoli-snowflake", "user:pass@account/db/schema?warehouse=WH"},
 		{"databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh", "brokoli-databricks", "databricks://token:p%40ss@workspace:443/sql/1.0/warehouses/wh"},
 		{"mysql://user:pass@host:3306/db", "mysql", "user:pass@host:3306/db"},
-		{"sqlite://test.db", "sqlite", "test.db"},
-		{"test.db", "sqlite", "test.db"},
+		// Both SQLite forms get a busy timeout (#834).
+		{"sqlite://test.db", "sqlite", "test.db?_pragma=busy_timeout(5000)"},
+		{"test.db", "sqlite", "test.db?_pragma=busy_timeout(5000)"},
 		{"sqlserver://user:pass@host:1433?database=db", "sqlserver", "sqlserver://user:pass@host:1433?database=db"},
 		{"mssql://user:pass@host:1433?database=db", "sqlserver", "mssql://user:pass@host:1433?database=db"},
 		// go-ora needs the scheme: stripped, it cannot find the port.
