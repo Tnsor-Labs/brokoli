@@ -2,7 +2,9 @@ package store
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"database/sql/driver"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -34,17 +36,89 @@ func NewPostgresStore(uri string) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	if err := db.Ping(); err != nil {
+	if err := waitForPostgres(db, postgresStartWait); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
 	s := &PostgresStore{db: db}
-	if err := s.migrate(); err != nil {
+	if err := s.migrateExclusively(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return s, nil
+}
+
+// postgresStartWait is how long opening a store waits for a server that is
+// not accepting connections yet. Every process of an installation starts
+// together, Postgres among them, and exiting on the first refused
+// connection turned that ordinary moment into a restart per process.
+const postgresStartWait = 60 * time.Second
+
+// waitForPostgres pings until the server answers. Only a refused or
+// unreachable connection is waited out; anything else, such as a wrong
+// password or an unknown database, fails at once.
+func waitForPostgres(db *sql.DB, wait time.Duration) error {
+	deadline := time.Now().Add(wait)
+	logged := false
+	for {
+		err := db.Ping()
+		if err == nil || !postgresNotUpYet(err) || time.Now().After(deadline) {
+			return err
+		}
+		if !logged {
+			log.Printf("waiting up to %s for Postgres to accept connections: %v", wait, err)
+			logged = true
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func postgresNotUpYet(err error) bool {
+	msg := err.Error()
+	for _, s := range []string{"connection refused", "no such host", "server is starting up", "the database system is starting up", "i/o timeout"} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// migrationLockKey names the advisory lock migrations hold. Any constant
+// works; this one spells "brokoli".
+const migrationLockKey int64 = 0x62726f6b6f6c69
+
+// migrateExclusively runs the migrations while holding a session advisory
+// lock, so processes that open one database together migrate it one at a
+// time; the rest wait and then find every object in place.
+//
+// Without it, concurrent CREATE ... IF NOT EXISTS statements fail on
+// Postgres's own catalog (pg_type_typname_nsp_index for a table,
+// pg_class_relname_nsp_index for an index), and concurrent seeders insert
+// the same row: a first install of five processes restarted fourteen times.
+//
+// The lock lives on one dedicated connection and ends with it, so a process
+// that dies mid-migration releases it. A session lock needs a direct
+// connection or session pooling; a transaction-pooling proxy cannot hold it.
+func (s *PostgresStore) migrateExclusively() error {
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("migration lock connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_lock($1)`, migrationLockKey); err != nil {
+		return fmt.Errorf("take migration lock: %w", err)
+	}
+	defer func() {
+		if _, err := conn.ExecContext(ctx, `SELECT pg_advisory_unlock($1)`, migrationLockKey); err != nil {
+			// The connection would go back to the pool still holding the
+			// lock, and every other process would wait on it forever.
+			// Discard it instead: closing the session releases the lock.
+			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		}
+	}()
+	return s.migrate()
 }
 
 func (s *PostgresStore) migrate() error {
@@ -141,7 +215,7 @@ func (s *PostgresStore) migrate() error {
 	// created before the old one is dropped, so uniqueness never lapses.
 	// On a single-tenant server every organization is "", and nothing
 	// changes.
-	if err := s.ensureIndex("idx_pipeline_org_pid", `CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
 		return fmt.Errorf("create idx_pipeline_org_pid: %w", err)
 	}
 	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_pid`)
@@ -182,7 +256,7 @@ func (s *PostgresStore) migrate() error {
 	// conn_id is unique within a workspace, not across the server (see the
 	// SQLite store's scopeConnectionIDsToWorkspaces). The per-workspace
 	// index is created before the server-wide constraint and index go.
-	if err := s.ensureIndex("idx_connections_ws_conn_id", `CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
 		return fmt.Errorf("create idx_connections_ws_conn_id: %w", err)
 	}
 	s.db.Exec(`ALTER TABLE connections DROP CONSTRAINT IF EXISTS connections_conn_id_key`)
@@ -3392,23 +3466,4 @@ func (s *PostgresStore) ListPhysicalInstances(runID string) ([]models.PhysicalIn
 		out = append(out, in)
 	}
 	return out, nil
-}
-
-// ensureIndex runs a CREATE INDEX IF NOT EXISTS that the server must have.
-// Two replicas starting together run it at the same moment, and Postgres
-// can then fail the slower one on its catalog's own unique index
-// (pg_class_relname_nsp_index) even with IF NOT EXISTS: the other replica
-// created it a moment earlier. That replica exited and restarted. What
-// matters is that the index exists afterwards, so a failure is an error
-// only if it still does not.
-func (s *PostgresStore) ensureIndex(name, stmt string) error {
-	_, err := s.db.Exec(stmt)
-	if err == nil {
-		return nil
-	}
-	var exists bool
-	if qerr := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1)`, name).Scan(&exists); qerr == nil && exists {
-		return nil
-	}
-	return err
 }

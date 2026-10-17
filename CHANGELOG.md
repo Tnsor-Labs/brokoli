@@ -13,13 +13,20 @@ reconstruct from git archaeology.
 
 ### Fixed
 
-- **Several instances starting at once no longer fail the index
-  migrations** (#849) -- @hc12r. On Postgres, when more than one instance
-  opened the same database together for the first time after upgrading to
-  0.18.17, two of them could race to create the same new per-tenant index.
-  The loser exited with `duplicate key value violates unique constraint
-  "pg_class_relname_nsp_index"` and restarted. An index-creation error is
-  now ignored when the index exists afterwards.
+- **Instances starting together no longer crash migrating one database**
+  (#849, #852) -- @hc12r. On Postgres, the processes of an installation
+  that start at the same time all migrated the database at once. A first
+  install restarted repeatedly before settling (five processes, fourteen
+  restarts in a rehearsal), failing on `duplicate key value violates unique
+  constraint "pg_type_typname_nsp_index"` or on two processes seeding the
+  same template, and an upgrade adding an index could fail the same way.
+  Migrations now run one process at a time under a Postgres advisory lock;
+  the others wait, then find everything in place. They need a direct
+  connection or session pooling, not a transaction-pooling proxy.
+- **Starting before Postgres accepts connections no longer exits** (#852)
+  -- @hc12r. A refused connection is retried for up to 60 seconds, so
+  processes that start alongside their database wait for it instead of
+  restarting. A wrong password or database name still fails at once.
 
 ## [0.18.17] - 2026-10-17
 
