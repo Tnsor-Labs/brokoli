@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Several instances starting at once no longer fail the index
+  migrations** (#849) -- @hc12r. On Postgres, when more than one instance
+  opened the same database together for the first time after upgrading to
+  0.18.17, two of them could race to create the same new per-tenant index.
+  The loser exited with `duplicate key value violates unique constraint
+  "pg_class_relname_nsp_index"` and restarted. An index-creation error is
+  now ignored when the index exists afterwards.
+
 ## [0.18.17] - 2026-10-17
 
 ### Changed
