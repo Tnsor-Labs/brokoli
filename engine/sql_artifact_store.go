@@ -15,6 +15,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // SQLArtifactStore implements ArtifactStore against the same SQL database
@@ -80,7 +81,14 @@ func NewSQLArtifactStore(db *sql.DB, dialect string, spillDir string) (*SQLArtif
 		// Configured separately, and absent by default: see SharedBlobs.
 		sharedBlobs: sharedBlobStoreFromEnv(),
 	}
-	if err := s.ensureSchema(); err != nil {
+	// Every process creates this schema at startup; on Postgres they take
+	// turns under the store's migration lock rather than racing on the
+	// catalog (store.WithMigrationLock).
+	ensure := s.ensureSchema
+	if dialect == "postgres" {
+		ensure = func() error { return store.WithMigrationLock(db, s.ensureSchema) }
+	}
+	if err := ensure(); err != nil {
 		return nil, fmt.Errorf("sql artifact store: %w", err)
 	}
 	return s, nil

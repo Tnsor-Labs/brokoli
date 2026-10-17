@@ -138,7 +138,9 @@ func (us *UserStore) q(query string) string {
 
 // NewUserStore creates a user store and ensures the table exists.
 func NewUserStore(db *sql.DB) (*UserStore, error) {
-	_, err := db.Exec(`
+	us := &UserStore{db: db, dialect: detectUserStoreDialect(db)}
+	createTable := func() error {
+		_, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS users (
 			id TEXT PRIMARY KEY,
 			username TEXT UNIQUE NOT NULL,
@@ -147,19 +149,31 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 			created_at TEXT NOT NULL
 		)
 	`)
-	if err != nil {
-		return nil, fmt.Errorf("create users table: %w", err)
+		if err != nil {
+			return fmt.Errorf("create users table: %w", err)
+		}
+
+		// Additive columns for installs whose users table predates them.
+		// Both dialects error on a duplicate column and both are fine to
+		// ignore: this runs on every boot, so "already exists" is the
+		// normal case, not a failure.
+		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
+		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
+		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`)
+		return nil
 	}
-
-	// Additive columns for installs whose users table predates them.
-	// Both dialects error on a duplicate column and both are fine to
-	// ignore: this runs on every boot, so "already exists" is the
-	// normal case, not a failure.
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
-	_, _ = db.Exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`)
-
-	us := &UserStore{db: db, dialect: detectUserStoreDialect(db)}
+	// Every process creates this table at startup; on Postgres they take
+	// turns under the store's migration lock rather than racing on the
+	// catalog (store.WithMigrationLock).
+	var err error
+	if us.dialect == "postgres" {
+		err = store.WithMigrationLock(db, createTable)
+	} else {
+		err = createTable()
+	}
+	if err != nil {
+		return nil, err
+	}
 
 	// login_attempts is deliberately not created here. The store layer
 	// already owns that table and creates it correctly for both dialects
