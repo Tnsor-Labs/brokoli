@@ -111,7 +111,17 @@ func (s *SQLiteStore) migrate() error {
 	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN parameters TEXT NOT NULL DEFAULT '{}'`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("add pipelines.parameters: %w", err)
 	}
-	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
+	// pipeline_id is unique within an organization, not across the whole
+	// server: unique everywhere, one tenant's create answered 409 for a
+	// name another tenant used, which told it that name existed and let it
+	// claim names before their owners did. The per-organization index is
+	// created before the old one is dropped, so uniqueness never lapses.
+	// On a single-tenant server every organization is "", and nothing
+	// changes.
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
+		return fmt.Errorf("create idx_pipeline_org_pid: %w", err)
+	}
+	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_pid`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE variables ADD COLUMN workspace_id TEXT NOT NULL DEFAULT 'default'`)
 
@@ -1015,6 +1025,20 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 		return wrapStoreErr("UpdatePipeline", p.ID, err)
 	}
 	return wrapStoreErr("UpdatePipeline", p.ID, checkRowsAffected(result, "pipeline", p.ID))
+}
+
+// GetPipelineByPipelineIDInOrg finds a pipeline by its pipeline_id within
+// one organization, where pipeline_id is unique.
+func (s *SQLiteStore) GetPipelineByPipelineIDInOrg(orgID, pipelineID string) (*models.Pipeline, error) {
+	row := s.db.QueryRow(
+		`SELECT id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters, draft
+		 FROM pipelines WHERE org_id = ? AND pipeline_id = ?`, orgID, pipelineID,
+	)
+	p, err := scanPipeline(row)
+	if err != nil {
+		return nil, wrapStoreErr("GetPipelineByPipelineIDInOrg", pipelineID, err)
+	}
+	return p, nil
 }
 
 func (s *SQLiteStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
