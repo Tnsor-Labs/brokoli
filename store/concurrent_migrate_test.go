@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -121,5 +122,44 @@ func TestWaitForPostgres(t *testing.T) {
 	}
 	if waited := time.Since(start); waited > 5*time.Second {
 		t.Errorf("waited %s on a wrong password, want an immediate failure", waited)
+	}
+}
+
+// Code built on this module runs its own startup migrations under the same
+// lock. Processes with separate connection pools must take turns: no two
+// critical sections overlap.
+func TestWithMigrationLockSerializesProcesses(t *testing.T) {
+	base := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
+	if base == "" {
+		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
+	}
+	var inside, overlaps, ran atomic.Int32
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		db, err := sql.Open("pgx", base)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			err := WithMigrationLock(db, func() error {
+				if inside.Add(1) > 1 {
+					overlaps.Add(1)
+				}
+				time.Sleep(50 * time.Millisecond)
+				inside.Add(-1)
+				ran.Add(1)
+				return nil
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if ran.Load() != 6 || overlaps.Load() != 0 {
+		t.Fatalf("ran %d of 6, %d overlapping", ran.Load(), overlaps.Load())
 	}
 }

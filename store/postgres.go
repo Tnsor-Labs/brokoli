@@ -88,9 +88,16 @@ func postgresNotUpYet(err error) bool {
 // works; this one spells "brokoli".
 const migrationLockKey int64 = 0x62726f6b6f6c69
 
-// migrateExclusively runs the migrations while holding a session advisory
-// lock, so processes that open one database together migrate it one at a
-// time; the rest wait and then find every object in place.
+// migrateExclusively runs the migrations under WithMigrationLock.
+func (s *PostgresStore) migrateExclusively() error {
+	return WithMigrationLock(s.db, s.migrate)
+}
+
+// WithMigrationLock runs fn while holding a Postgres session advisory lock,
+// so processes that open one database together migrate it one at a time;
+// the rest wait and then find every object in place. Every schema change a
+// process makes at startup belongs inside it, including those of code
+// built on this module, which share the lock by calling this.
 //
 // Without it, concurrent CREATE ... IF NOT EXISTS statements fail on
 // Postgres's own catalog (pg_type_typname_nsp_index for a table,
@@ -98,11 +105,13 @@ const migrationLockKey int64 = 0x62726f6b6f6c69
 // the same row: a first install of five processes restarted fourteen times.
 //
 // The lock lives on one dedicated connection and ends with it, so a process
-// that dies mid-migration releases it. A session lock needs a direct
-// connection or session pooling; a transaction-pooling proxy cannot hold it.
-func (s *PostgresStore) migrateExclusively() error {
+// that dies mid-migration releases it. The lock is not reentrant across
+// calls that each take a new connection, so fn must not call it again. A
+// session lock needs a direct connection or session pooling; a
+// transaction-pooling proxy cannot hold it.
+func WithMigrationLock(db *sql.DB, fn func() error) error {
 	ctx := context.Background()
-	conn, err := s.db.Conn(ctx)
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("migration lock connection: %w", err)
 	}
@@ -118,7 +127,7 @@ func (s *PostgresStore) migrateExclusively() error {
 			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
 		}
 	}()
-	return s.migrate()
+	return fn()
 }
 
 func (s *PostgresStore) migrate() error {
