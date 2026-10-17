@@ -234,22 +234,12 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	c.CreatedAt = now
 	c.UpdatedAt = now
 
-	// Resolve workspace: if not set, use the user's actual workspace
-	if c.WorkspaceID == "" || c.WorkspaceID == "default" {
-		orgID := GetOrgIDFromRequest(r)
-		if orgID != "" && UserWorkspaceResolverFunc != nil {
-			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-				if sub, ok := (*claims)["sub"].(string); ok {
-					if userWS := UserWorkspaceResolverFunc(sub); len(userWS) > 0 {
-						c.WorkspaceID = userWS[0]
-					}
-				}
-			}
-		}
-		if c.WorkspaceID == "" {
-			c.WorkspaceID = GetWorkspaceID(r)
-		}
+	ws, ok := writeWorkspace(r, c.WorkspaceID)
+	if !ok {
+		writeError(w, http.StatusForbidden, "workspace_id must be the workspace this request acts in")
+		return
 	}
+	c.WorkspaceID = ws
 
 	if msg := refErrors(&c, nil); msg != "" {
 		writeError(w, http.StatusBadRequest, msg)

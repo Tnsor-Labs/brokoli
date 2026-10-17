@@ -205,6 +205,31 @@ func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
 	return owned[0], true
 }
 
+// writeWorkspace resolves the workspace a create writes into. A body that
+// names none, or "default", gets the caller's own workspace in an
+// organization (the request's otherwise), as before. A body that names one
+// must name the workspace this request was authorized for: the permission
+// that let the write through was checked there, and a workspace_id from
+// the body is otherwise a way to write into somebody else's. ok is false
+// when it names any other.
+func writeWorkspace(r *http.Request, bodyWS string) (wsID string, ok bool) {
+	if bodyWS != "" && bodyWS != models.DefaultWorkspaceID {
+		if GetOrgIDFromRequest(r) == "" {
+			return bodyWS, true
+		}
+		current, ok := effectiveWorkspace(r)
+		return bodyWS, ok && current == bodyWS
+	}
+	if GetOrgIDFromRequest(r) != "" && UserWorkspaceResolverFunc != nil {
+		if sub := getUserIDFromRequest(r); sub != "" {
+			if owned := UserWorkspaceResolverFunc(sub); len(owned) > 0 {
+				return owned[0], true
+			}
+		}
+	}
+	return GetWorkspaceID(r), true
+}
+
 // GetWorkspaceID returns the workspace ID from the request context.
 func GetWorkspaceID(r *http.Request) string {
 	if ws, ok := r.Context().Value(workspaceKey).(string); ok && ws != "" {

@@ -147,6 +147,16 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// PUT /variables/{key} names the variable in its path. The body used to
+	// win silently, so a request authorized for one key wrote another.
+	if urlKey := chi.URLParam(r, "key"); urlKey != "" {
+		if v.Key == "" {
+			v.Key = urlKey
+		} else if v.Key != urlKey {
+			writeError(w, http.StatusBadRequest, "key in the body does not match the key in the path")
+			return
+		}
+	}
 	if v.Key == "" {
 		writeError(w, http.StatusBadRequest, "key is required")
 		return
@@ -160,22 +170,12 @@ func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 
 	now := time.Now()
 
-	// Resolve workspace for the variable
-	if v.WorkspaceID == "" || v.WorkspaceID == "default" {
-		orgID := GetOrgIDFromRequest(r)
-		if orgID != "" && UserWorkspaceResolverFunc != nil {
-			if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-				if sub, ok := (*claims)["sub"].(string); ok {
-					if userWS := UserWorkspaceResolverFunc(sub); len(userWS) > 0 {
-						v.WorkspaceID = userWS[0]
-					}
-				}
-			}
-		}
-		if v.WorkspaceID == "" {
-			v.WorkspaceID = GetWorkspaceID(r)
-		}
+	ws, ok := writeWorkspace(r, v.WorkspaceID)
+	if !ok {
+		writeError(w, http.StatusForbidden, "workspace_id must be the workspace this request acts in")
+		return
 	}
+	v.WorkspaceID = ws
 
 	// Check if update (preserve created_at)
 	//
