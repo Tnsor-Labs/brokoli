@@ -652,8 +652,12 @@ func (e *Engine) cancelLocalRun(runID string) bool {
 // name is resolved best-effort from the store — the ID is always present,
 // and consumers already tolerate an empty name (deleted pipelines).
 func (e *Engine) emitCancelledEvent(runID, pipelineID, name string) {
-	if name == "" {
-		if pipe, err := e.store.GetPipeline(pipelineID); err == nil && pipe != nil {
+	// The organization rides on every run event: consumers scope by it, and
+	// one without it reads as nobody's run.
+	orgID := ""
+	if pipe, err := e.store.GetPipeline(pipelineID); err == nil && pipe != nil {
+		orgID = pipe.OrgID
+		if name == "" {
 			name = pipe.Name
 		}
 	}
@@ -662,6 +666,7 @@ func (e *Engine) emitCancelledEvent(runID, pipelineID, name string) {
 		RunID:        runID,
 		PipelineID:   pipelineID,
 		PipelineName: name,
+		OrgID:        orgID,
 		Status:       models.RunStatusCancelled,
 		Error:        "cancelled by user",
 	}

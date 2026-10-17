@@ -45,6 +45,20 @@ func NewRunHandler(s store.Store, e *engine.Engine) *RunHandler {
 	return &RunHandler{store: s, engine: e}
 }
 
+// pipelineInOrg reports whether the caller's organization may reach the
+// pipeline. Anything short of a pipeline it can see is false: a missing
+// one, another organization's, and one the store could not read alike.
+// The checks it replaces ran only when the read succeeded, so a failed read
+// skipped them, and "missing" and "another organization's" got different
+// answers, which says which ids exist elsewhere.
+func pipelineInOrg(s store.Store, r *http.Request, pipelineID string) bool {
+	p, err := s.GetPipeline(pipelineID)
+	if err != nil || p == nil {
+		return false
+	}
+	return ValidateOrgAccess(r, p.OrgID)
+}
+
 // validateRunAccess checks that a run's pipeline belongs to the user's org.
 func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
 	run, err := h.store.GetRun(runID)
@@ -62,11 +76,9 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
 	// Verify pipeline belongs to user's org
-	if p, err := h.store.GetPipeline(pipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, pipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 
 	// Parse optional params from request body. Params is the legacy untyped
@@ -149,11 +161,9 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
 	// Verify pipeline belongs to user's org
-	if p, err := h.store.GetPipeline(pipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, pipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 
 	q := r.URL.Query()
@@ -261,11 +271,9 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Verify run's pipeline belongs to user's org
-	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, run.PipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 	run.PopulateError()
 	if run.Error != "" {
@@ -293,11 +301,9 @@ func (h *RunHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
-	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, run.PipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 	pp, ok := h.store.(store.PhysicalPlanStore)
 	if !ok {
@@ -326,11 +332,9 @@ func (h *RunHandler) GetInstances(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "run not found")
 		return
 	}
-	if p, err := h.store.GetPipeline(run.PipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, run.PipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 	// Prefer the durable per-instance record (#90 M3); fall back to
 	// projecting from node_runs for runs that predate it or stores
@@ -465,11 +469,9 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 	// runs (h.engine.Backfill below), so this is not just a read-scoping
 	// check: without it, a caller in a different org could trigger real
 	// execution against this pipeline's live connections.
-	if p, err := h.store.GetPipeline(pipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, pipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 
 	// Interval-native since ADR-028: start/end as RFC3339, enumerated
@@ -678,11 +680,9 @@ func (h *RunHandler) NodeStats(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
 	// Verify pipeline belongs to user's org
-	if p, err := h.store.GetPipeline(pipelineID); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
+	if !pipelineInOrg(h.store, r, pipelineID) {
+		DenyOrgAccess(w)
+		return
 	}
 
 	numRuns := 10

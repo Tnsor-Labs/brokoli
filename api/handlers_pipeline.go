@@ -463,7 +463,7 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Load the org adjacency once and compute direct + transitive dependents from it.
-	summaries, err := h.store.ListPipelineDepsByOrg(existing.OrgID)
+	summaries, err := h.store.ListPipelineDepsByOrg(depsScope(r, existing.OrgID))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load dependents: "+err.Error())
 		return
@@ -660,17 +660,31 @@ func stripDependencyInPlace(p *models.Pipeline, depID string) {
 	p.DependencyRules = newRules
 }
 
+// depsScope is the organization whose pipelines a dependency lookup for
+// this pipeline may see. The store reads an empty organization as "every
+// pipeline", which is right on a single-tenant server; for a caller acting
+// in an organization, a legacy pipeline with no organization of its own is
+// looked at within the caller's, or deleting one would list -- and with
+// resolve=cascade delete -- dependents from every organization.
+func depsScope(r *http.Request, pipelineOrg string) string {
+	if pipelineOrg == "" {
+		return GetOrgIDFromRequest(r)
+	}
+	return pipelineOrg
+}
+
 func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if p, err := h.store.GetPipeline(id); err == nil {
-		if !ValidateOrgAccess(r, p.OrgID) {
-			DenyOrgAccess(w)
-			return
-		}
-		if !userOwnsWorkspace(r, p.WorkspaceID) {
-			denyWorkspaceAccess(w)
-			return
-		}
+	// A failed read is refused like another organization's pipeline: the
+	// check used to run only when the read succeeded.
+	p, err := h.store.GetPipeline(id)
+	if err != nil || p == nil || !ValidateOrgAccess(r, p.OrgID) {
+		DenyOrgAccess(w)
+		return
+	}
+	if !userOwnsWorkspace(r, p.WorkspaceID) {
+		denyWorkspaceAccess(w)
+		return
 	}
 	versions, err := h.store.ListPipelineVersions(id)
 	if err != nil {

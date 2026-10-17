@@ -342,7 +342,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 			r.With(RequireFeature("gitsync")).Get("/git/config", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, ext.GitSync.Config())
 			})
-			r.With(RequireFeature("gitsync")).Get("/git/status", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("gitsync"), requirePerm(models.PermGitSyncView)).Get("/git/status", func(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusOK, ext.GitSync.Status())
 			})
 			r.With(requirePerm(models.PermGitSyncPull)).Post("/git/pull", func(w http.ResponseWriter, r *http.Request) {
@@ -357,6 +357,19 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 			})
 			r.With(requirePerm(models.PermGitSyncPush)).Post("/git/push/{id}", func(w http.ResponseWriter, r *http.Request) {
 				id := chi.URLParam(r, "id")
+				// Push exports the named pipeline into the repository. It
+				// took the id as given, so a caller could commit another
+				// organization's pipeline definition. The push names a
+				// pipeline by id or by pipeline_id; either must be one the
+				// caller's organization can see.
+				p, err := s.GetPipeline(id)
+				if err != nil || p == nil {
+					p, err = s.GetPipelineByPipelineID(id)
+				}
+				if err != nil || p == nil || !ValidateOrgAccess(r, p.OrgID) {
+					DenyOrgAccess(w)
+					return
+				}
 				if err := ext.GitSync.Push(id); err != nil {
 					writeError(w, http.StatusInternalServerError, err.Error())
 					return

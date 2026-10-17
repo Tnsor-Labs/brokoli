@@ -464,7 +464,11 @@ func (e *Engine) TimeoutParkedRun(w models.ParkedWait, now time.Time) {
 		EventType: models.RunEventTerminal,
 		Payload:   models.RunEventPayload{Status: models.RunStatusFailed, FinishedAt: &now, Error: msg},
 	})
-	e.eventCh <- models.Event{Type: models.EventRunFailed, RunID: w.RunID, PipelineID: w.PipelineID, Status: models.RunStatusFailed, Error: msg}
+	timedOut := models.Event{Type: models.EventRunFailed, RunID: w.RunID, PipelineID: w.PipelineID, Status: models.RunStatusFailed, Error: msg}
+	if pipe, err := e.store.GetPipeline(w.PipelineID); err == nil && pipe != nil {
+		timedOut.OrgID, timedOut.PipelineName = pipe.OrgID, pipe.Name
+	}
+	e.eventCh <- timedOut
 	common.SLog().Warn("parked run timed out", common.RunAttr(w.RunID), "node", w.NodeID, "error", msg)
 }
 

@@ -277,7 +277,7 @@ func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
 			DenyOrgAccess(w)
 			return
 		}
-		summaries, err := s.ListPipelineDepsByOrg(p.OrgID)
+		summaries, err := s.ListPipelineDepsByOrg(depsScope(r, p.OrgID))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return

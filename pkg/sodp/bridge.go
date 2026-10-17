@@ -83,6 +83,24 @@ func Bridge(srv *Server, events <-chan BridgeEvent) <-chan struct{} {
 	return done
 }
 
+// withRunIdentity adds what the event knows about whose run this is. Only
+// run.started used to record the organization, so a run whose start this
+// replica never saw -- it restarted, or the start went to another one --
+// was stored with no organization: invisible to its owner, and readable by
+// sessions that accept runs without one.
+func withRunIdentity(ev BridgeEvent, fields map[string]any) map[string]any {
+	if ev.OrgID != "" {
+		fields["org_id"] = ev.OrgID
+	}
+	if ev.PipelineID != "" {
+		fields["pipeline_id"] = ev.PipelineID
+	}
+	if ev.PipelineName != "" {
+		fields["pipeline_name"] = ev.PipelineName
+	}
+	return fields
+}
+
 func bridgeEvent(srv *Server, ev BridgeEvent) {
 	runKey := "runs." + ev.RunID
 
@@ -98,10 +116,10 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 
 	case "run.completed":
 		current, _ := srv.State.Get(runKey)
-		merged := mergeValues(current, map[string]any{
+		merged := mergeValues(current, withRunIdentity(ev, map[string]any{
 			"status":      "success",
 			"finished_at": ev.Timestamp.Format(time.RFC3339),
-		})
+		}))
 		srv.Mutate(runKey, merged)
 
 	case "run.failed":
@@ -110,11 +128,11 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 		if status == "" {
 			status = "failed"
 		}
-		merged := mergeValues(current, map[string]any{
+		merged := mergeValues(current, withRunIdentity(ev, map[string]any{
 			"status":      status,
 			"error":       ev.Error,
 			"finished_at": ev.Timestamp.Format(time.RFC3339),
-		})
+		}))
 		srv.Mutate(runKey, merged)
 
 	case "node.started":

@@ -505,3 +505,25 @@ func TestCreateEndpointAndCapabilityStoreAgree(t *testing.T) {
 		t.Errorf("round trip returned %q", got)
 	}
 }
+
+// Every refusal of a capability reads like a missing attempt. The
+// verifier's own message ("malformed capability", a signature failure)
+// came back only when the attempt existed, which answered the probe a
+// missing attempt's generic answer is there to prevent.
+func TestBlobRefusalsDoNotSayWhetherTheAttemptExists(t *testing.T) {
+	rig := newBlobRig(t, 7)
+	other, err := datacap.NewIssuer([]byte("ffffffffffffffffffffffffffffffff"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	forged, err := other.Issue(readCap("obj"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, token := range map[string]string{"malformed": "not-a-capability", "foreign key": forged} {
+		rec := rig.do(t, http.MethodGet, "obj", token, "org-1", nil)
+		if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "capability does not grant this operation" {
+			t.Errorf("%s token: %d %q, want 403 with the generic refusal", name, rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+	}
+}

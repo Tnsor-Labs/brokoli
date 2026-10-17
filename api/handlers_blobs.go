@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -202,13 +203,20 @@ func (h *BlobHandler) authorizeObject(w http.ResponseWriter, r *http.Request, di
 		ObjectID:          objectID,
 	})
 	if err != nil {
-		status := http.StatusForbidden
 		if errors.Is(err, datacap.ErrExpired) {
 			// Distinguished because it is the one denial worth retrying
-			// after re-issue, rather than a bug or an attack.
-			status = http.StatusUnauthorized
+			// after re-issue, rather than a bug or an attack. Only a
+			// capability this server signed can expire, so saying so tells
+			// a prober nothing.
+			http.Error(w, "capability expired", http.StatusUnauthorized)
+			return nil, false
 		}
-		http.Error(w, err.Error(), status)
+		// Every other refusal reads like a missing attempt, above. The
+		// verifier's own message ("malformed capability", ...) came back
+		// only when the attempt existed, which is the probe that answer
+		// was there to prevent.
+		log.Printf("blob capability refused for run %s node %s attempt %d: %v", runID, nodeID, attempt, err)
+		http.Error(w, "capability does not grant this operation", http.StatusForbidden)
 		return nil, false
 	}
 
