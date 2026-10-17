@@ -211,7 +211,8 @@ func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
 // must name the workspace this request was authorized for: the permission
 // that let the write through was checked there, and a workspace_id from
 // the body is otherwise a way to write into somebody else's. ok is false
-// when it names any other.
+// when it names any other, and when an organization member belongs to no
+// workspace at all.
 func writeWorkspace(r *http.Request, bodyWS string) (wsID string, ok bool) {
 	if bodyWS != "" && bodyWS != models.DefaultWorkspaceID {
 		if GetOrgIDFromRequest(r) == "" {
@@ -221,11 +222,18 @@ func writeWorkspace(r *http.Request, bodyWS string) (wsID string, ok bool) {
 		return bodyWS, ok && current == bodyWS
 	}
 	if GetOrgIDFromRequest(r) != "" && UserWorkspaceResolverFunc != nil {
-		if sub := getUserIDFromRequest(r); sub != "" {
-			if owned := UserWorkspaceResolverFunc(sub); len(owned) > 0 {
-				return owned[0], true
-			}
+		sub := getUserIDFromRequest(r)
+		if sub == "" {
+			return "", false
 		}
+		owned := UserWorkspaceResolverFunc(sub)
+		if len(owned) == 0 {
+			// Someone in an organization but in none of its workspaces has
+			// nowhere to write. Falling back to "default" put the write in
+			// whichever organization owns that workspace.
+			return "", false
+		}
+		return owned[0], true
 	}
 	return GetWorkspaceID(r), true
 }

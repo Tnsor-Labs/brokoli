@@ -98,3 +98,31 @@ func TestConnectionCreateRefusesAnotherWorkspace(t *testing.T) {
 		}
 	}
 }
+
+// A member of an organization who belongs to none of its workspaces has
+// nowhere to write. The fallback used to be "default", which is some
+// organization's workspace.
+func TestCreateWithNoWorkspaceIsRefused(t *testing.T) {
+	multiTenant(t, map[string][]string{"alice": {wsAlpha}})
+	h, _, s := secretHandler(t)
+	raw, _ := json.Marshal(map[string]string{"key": "stray", "value": "v"})
+	rec := httptest.NewRecorder()
+	h.Set(rec, request("POST", "/api/variables", "", "nobody", "", raw))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("a member with no workspace: status %d, want 403", rec.Code)
+	}
+	if v, err := s.GetVariable("default", "stray"); err == nil && v != nil {
+		t.Errorf("the write landed in the default workspace")
+	}
+
+	ch, cs := connRoundTripEnv(t)
+	raw, _ = json.Marshal(map[string]interface{}{"conn_id": "stray", "type": "postgres", "host": "h", "port": 5432})
+	rec = httptest.NewRecorder()
+	ch.Create(rec, request("POST", "/api/connections", "", "nobody", "", raw))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("connection by a member with no workspace: status %d, want 403", rec.Code)
+	}
+	if c, err := cs.GetConnection("stray"); err == nil && c != nil {
+		t.Errorf("the connection landed in workspace %q", c.WorkspaceID)
+	}
+}
