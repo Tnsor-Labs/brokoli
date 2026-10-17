@@ -23,7 +23,7 @@ export function PluginsPage() {
   const [installing, setInstalling] = useState<Set<string>>(new Set())
   const [removing, setRemoving] = useState<Plugin | null>(null)
   const file = useRef<HTMLInputElement>(null)
-  const canManage = session.can('settings.edit')
+  const canManage = session.can('plugins.manage')
   const unavailable = disabled(installed.error)
   const byName = new Map((installed.data ?? []).map((p) => [p.name, p]))
 

@@ -74,6 +74,18 @@ const (
 	// no built-in role but admin holds it. A distribution with tenants maps
 	// it to its platform operators, never to a tenant's administrators.
 	PermDriversManage Permission = "drivers.manage"
+
+	// Plugins: installing and removing plugin packages. Like a driver, a
+	// plugin is code on the host, run for every workspace that uses its
+	// node types, and removing one breaks every pipeline that does. It was
+	// gated on settings.edit, which a distribution with tenants hands to
+	// each tenant's administrators. Same rule as drivers.manage.
+	PermPluginsManage Permission = "plugins.manage"
+
+	// Notification channels: the Slack and Teams webhooks this server
+	// posts to. They are settings of the whole server, not of a workspace,
+	// so reading them is gated too: they carry the webhook's secret part.
+	PermNotificationsManage Permission = "notifications.manage"
 )
 
 // AllPermissions returns all available permissions.
@@ -90,6 +102,8 @@ func AllPermissions() []Permission {
 		PermTemplatesManage,
 		PermSecretStoresManage,
 		PermDriversManage,
+		PermPluginsManage,
+		PermNotificationsManage,
 	}
 }
 
@@ -140,6 +154,8 @@ func AllPermissionInfos() []PermissionInfo {
 		{PermTemplatesManage, "Templates", "Create, edit, and delete pipeline templates"},
 		{PermSecretStoresManage, "Connections", "Create, edit, and delete secret stores"},
 		{PermDriversManage, "Settings", "Install and remove native database drivers on this server (affects every workspace)"},
+		{PermPluginsManage, "Settings", "Install and remove plugins on this server (affects every workspace)"},
+		{PermNotificationsManage, "Settings", "View and change this server's notification channels (affects every workspace)"},
 	}
 }
 

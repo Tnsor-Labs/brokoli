@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -859,9 +860,10 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if p.ID == "" {
-		p.ID = common.NewID()
-	}
+	// Always a new id, as Create does. Keeping one from the document let
+	// an import collide with an existing pipeline anywhere on the server,
+	// and the store error that came back said whether that id existed.
+	p.ID = common.NewID()
 	now := time.Now().UTC()
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = now
@@ -901,7 +903,10 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.CreatePipeline(p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		// The store's text names constraints and other rows; it is for
+		// the log, not for the caller.
+		log.Printf("import pipeline: %v", err)
+		writeError(w, http.StatusInternalServerError, "could not save the imported pipeline")
 		return
 	}
 	writeJSON(w, http.StatusCreated, p)

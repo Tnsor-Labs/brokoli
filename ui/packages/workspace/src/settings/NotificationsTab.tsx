@@ -14,7 +14,10 @@ import { Badge, Button, Callout, ConfirmDialog, Field, Input, Spinner, errorMess
 export function NotificationsTab() {
   const session = useSession()
   const toast = useToast()
-  const settings = useQuery({ queryKey: ['settings', 'notifications'], queryFn: notificationApi.get })
+  // The channels belong to the whole server, and reading them takes the
+  // same permission as changing them: they carry the webhooks' secret part.
+  const canEdit = session.can('notifications.manage')
+  const settings = useQuery({ queryKey: ['settings', 'notifications'], queryFn: notificationApi.get, enabled: canEdit })
   const [channel, setChannel] = useState('')
   const [botName, setBotName] = useState('')
   const [slackUrl, setSlackUrl] = useState('')
@@ -22,7 +25,6 @@ export function NotificationsTab() {
   const [busy, setBusy] = useState<'slack' | 'teams' | 'test' | null>(null)
   const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null)
   const [clearing, setClearing] = useState(false)
-  const canEdit = session.can('settings.edit')
 
   useEffect(() => {
     if (!settings.data) return
@@ -30,6 +32,8 @@ export function NotificationsTab() {
     setBotName(settings.data.username || 'Brokoli')
   }, [settings.data])
 
+  if (!canEdit)
+    return <Callout title="Managed by the server's administrators">Notification channels apply to this whole server. Viewing and changing them takes the notifications.manage permission.</Callout>
   if (settings.isPending)
     return (
       <p className="ws-inline">

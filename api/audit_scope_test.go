@@ -2,11 +2,17 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
+
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
+	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 )
 
 // Who may read one audit entry.
@@ -62,6 +68,55 @@ func TestWithoutTenantsEveryEntryIsVisible(t *testing.T) {
 	for _, e := range []extensions.AuditEntry{entryFor(""), entryFor("org-1")} {
 		if !auditEntryVisibleTo(auditRequest(""), e) {
 			t.Errorf("entry %+v hidden from a deployment with no tenants", e)
+		}
+	}
+}
+
+type fixedAudit struct{ entries []extensions.AuditEntry }
+
+func (fixedAudit) Log(extensions.AuditEntry) error { return nil }
+func (f fixedAudit) Query(extensions.AuditFilter) ([]extensions.AuditEntry, error) {
+	return f.entries, nil
+}
+
+// Listing answers the same question as fetching one entry: another
+// organization's entries are not the caller's to see, and both ask for
+// audit.view.
+func TestAuditListShowsOnlyTheCallersOrganization(t *testing.T) {
+	audit := fixedAudit{entries: []extensions.AuditEntry{
+		{ID: "mine", Action: "delete", Metadata: map[string]interface{}{"org_id": "org-1"}},
+		{ID: "theirs", Action: "delete", Metadata: map[string]interface{}{"org_id": "org-2"}},
+	}}
+	s := newOrgCheckStore(t)
+	e := engine.NewEngine(s)
+	t.Cleanup(func() { _ = e.Close(context.Background()) })
+
+	r := chi.NewRouter()
+	RegisterRoutes(r, s, e, sodp.NewServer(), nil, &extensions.Registry{Audit: audit}, nil)
+	req := reqAsRole(http.MethodGet, "/api/audit", "admin")
+	req = req.WithContext(context.WithValue(req.Context(), OrgIDContextKey{}, "org-1"))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET /api/audit: %d %s", rec.Code, rec.Body.String())
+	}
+	var got []struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "mine" {
+		t.Errorf("listed %+v, want only the caller's organization's entry", got)
+	}
+
+	refusing := chi.NewRouter()
+	RegisterRoutes(refusing, s, e, sodp.NewServer(), nil, &extensions.Registry{Audit: audit, Team: refuseOneTeam{refuse: string(models.PermAuditView)}}, nil)
+	for _, path := range []string{"/api/audit", "/api/audit/mine"} {
+		rec := httptest.NewRecorder()
+		refusing.ServeHTTP(rec, reqAsRole(http.MethodGet, path, "admin"))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("GET %s without audit.view: %d, want 403", path, rec.Code)
 		}
 	}
 }

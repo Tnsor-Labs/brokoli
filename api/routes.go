@@ -147,9 +147,9 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// digest). Node types hot-reload on install/remove.
 		r.Get("/plugins", plugh.List)
 		r.Get("/plugins/index", plugh.Index)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins/index/{name}", plugh.InstallByName)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/plugins", plugh.Install)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/plugins/{name}", plugh.Remove)
+		r.With(requireStrictPerm(models.PermPluginsManage)).Post("/plugins/index/{name}", plugh.InstallByName)
+		r.With(requireStrictPerm(models.PermPluginsManage)).Post("/plugins", plugh.Install)
+		r.With(requireStrictPerm(models.PermPluginsManage)).Delete("/plugins/{name}", plugh.Remove)
 		r.Get("/plugins/{name}/archive", plugh.Archive)
 		r.With(requirePerm(models.PermPipelinesCreate)).Post("/pipelines/import", ph.Import)
 
@@ -294,10 +294,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Notifications / Slack config
 		nh := NewNotificationSettingsHandler(s, ext)
-		r.Get("/settings/notifications", nh.Get)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Put("/settings/notifications", nh.Update)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Post("/settings/notifications/test", nh.Test)
-		r.With(requireStrictPerm(models.PermSettingsEdit)).Delete("/settings/notifications", nh.Delete)
+		r.With(requireStrictPerm(models.PermNotificationsManage)).Get("/settings/notifications", nh.Get)
+		r.With(requireStrictPerm(models.PermNotificationsManage)).Put("/settings/notifications", nh.Update)
+		r.With(requireStrictPerm(models.PermNotificationsManage)).Post("/settings/notifications/test", nh.Test)
+		r.With(requireStrictPerm(models.PermNotificationsManage)).Delete("/settings/notifications", nh.Delete)
 
 		// Pipeline list with last run status (single query)
 		r.Get("/pipelines/summary", pipelineSummaryHandler(s))
@@ -313,7 +313,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/search", searchHandler(s))
 
 		// Utilities
-		r.Post("/test-connection", rh.TestConnection)
+		r.With(requirePerm(models.PermConnectionsTest)).Post("/test-connection", rh.TestConnection)
 		// Native drivers are host-wide: browsing is open to any signed-in
 		// user, changing them takes drivers.manage (see its definition).
 		dh := NewDriverHandler(s)
@@ -369,7 +369,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 
 		// Enterprise: Audit log API (requires "audit" feature)
 		if ext != nil && ext.Audit != nil {
-			r.With(RequireFeature("audit")).Get("/audit", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("audit"), requirePerm(models.PermAuditView)).Get("/audit", func(w http.ResponseWriter, r *http.Request) {
 				filter := extensions.AuditFilter{Limit: 500}
 				if u := r.URL.Query().Get("user_id"); u != "" {
 					filter.UserID = u
@@ -385,9 +385,15 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 					writeError(w, http.StatusInternalServerError, err.Error())
 					return
 				}
-				if entries == nil {
-					entries = []extensions.AuditEntry{}
+				// The same rule as fetching one entry: an entry from
+				// another organization is not this caller's to list.
+				visible := make([]extensions.AuditEntry, 0, len(entries))
+				for _, e := range entries {
+					if auditEntryVisibleTo(r, e) {
+						visible = append(visible, e)
+					}
 				}
+				entries = visible
 				if r.URL.Query().Get("detail") != "true" {
 					type AuditSummary struct {
 						ID         string `json:"id"`
@@ -421,7 +427,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 			// user could read any entry among the newest 500 by knowing
 			// or guessing its id -- including the acting user and the
 			// before/after values of a change they cannot otherwise see.
-			r.With(RequireFeature("audit")).Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
+			r.With(RequireFeature("audit"), requirePerm(models.PermAuditView)).Get("/audit/{id}", func(w http.ResponseWriter, r *http.Request) {
 				id := chi.URLParam(r, "id")
 				entries, err := ext.Audit.Query(extensions.AuditFilter{Limit: 500})
 				if err != nil {
@@ -647,9 +653,11 @@ func systemPurge(s store.Store, e *engine.Engine) http.HandlerFunc {
 			req.Days = 30
 		}
 
-		// Scope purge by org if available (multi-tenant isolation)
+		// Scope purge by org whenever there is one. An organization whose
+		// id is "default" is still one organization: treating that id as
+		// "no organization" purged every tenant's runs for its members.
 		orgID := GetOrgIDFromRequest(r)
-		if orgID != "" && orgID != "default" {
+		if orgID != "" {
 			runIDs, err := s.ListRunIDsOlderThanByOrg(req.Days, orgID)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
