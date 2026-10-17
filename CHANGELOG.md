@@ -11,6 +11,40 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.14] - 2026-10-17
+
+### Security
+
+- **No admin creates or resets an account above its own role** (#837) --
+  @hc12r. `POST /api/auth/users` accepted role `superadmin` from any
+  caller holding role `admin`; only a superadmin may create one now, and
+  anyone else gets 403 with no account created. `POST
+  /api/auth/admin-reset-password` no longer lets an admin reset a
+  superadmin's password, and in multi-tenant mode, with the new
+  `UserOrganizationsFunc` hook set, resets only a user whose every
+  organization is the caller's current one (it compared primary
+  organizations only).
+- **Variables and connections are created only in the request's own
+  workspace** (#838) -- @hc12r. `POST /api/variables`, `PUT
+  /api/variables/{key}` and `POST /api/connections` honoured a
+  `workspace_id` from the body as given; a named one must now be the
+  workspace the request was authorized for (403 otherwise), and an
+  organization member who belongs to no workspace can no longer create
+  into `default`. `PUT /api/variables/{key}` also wrote the body's key,
+  ignoring the path; the two must match.
+- **Server-wide operations ask for permissions of their own** (#839) --
+  @hc12r. Plugin install and remove take the new `plugins.manage`, and the
+  notification channels (read and write) take the new
+  `notifications.manage`, instead of `settings.edit`. The built-in admin
+  role holds both; custom roles that relied on `settings.edit` for these
+  need the new permission. Also: `POST /api/system/purge` is scoped to the
+  caller's organization whenever there is one (an organization whose id
+  is `default` purged every tenant's runs); `POST /api/test-connection`
+  takes `connections.test`; `POST /api/pipelines/import` always assigns a
+  new id and logs store errors instead of returning them; `GET /api/audit`
+  and `/api/audit/{id}` take `audit.view`, and the list keeps only the
+  caller's organization's entries.
+
 ## [0.18.13] - 2026-10-17
 
 ### Fixed
