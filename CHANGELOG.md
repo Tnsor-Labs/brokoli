@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.15] - 2026-10-17
+
+### Security
+
+- **Scope checks fail closed and answer alike** (#840) -- @hc12r. Run and
+  pipeline routes checked the caller's organization only when the pipeline
+  could be read, so a failed read skipped the check, and a missing
+  pipeline answered differently from another organization's. They now
+  refuse anything short of a pipeline the caller can see, with the same
+  404. `POST /api/git/push/{id}` exports only a pipeline the caller's
+  organization can see, and `GET /api/git/status` takes `gitsync.view`.
+  Dependency lookups for a pipeline with no organization are scoped to the
+  caller's organization. Blob capability refusals no longer say whether
+  the attempt exists. Finished-run events keep their organization in the
+  live state, and the cancel and wait-timeout events carry one.
+
+### Fixed
+
+- **The installer test no longer reports a phantom install** (#842) --
+  @hc12r. The harness reused install directories through `$RANDOM`, so a
+  refusal check could find an earlier run's binary.
+
 ## [0.18.14] - 2026-10-17
 
 ### Security
