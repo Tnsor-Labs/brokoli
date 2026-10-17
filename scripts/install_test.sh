@@ -137,7 +137,11 @@ make_release() {
 # BIN on PATH and records its exit status, output, and install dir.
 run_install() {
     local shell=$1 bin=$2 fix=$3 version=${4-$VERSION}
-    INST="$WORK/inst.$RANDOM"
+    # A fresh directory every run. It was "$WORK/inst.$RANDOM", and
+    # $RANDOM repeats: a refusal check that drew the number of an earlier
+    # successful install found that run's binary and reported "a binary was
+    # installed anyway" for an installer that had installed nothing.
+    INST=$(mktemp -d "$WORK/inst.XXXXXX")
     set +e
     OUT=$(env -i PATH="$bin" HOME="$WORK/home" FIXTURE="$fix" STUB_LATEST="$VERSION" \
         ${version:+BROKOLI_VERSION="$version"} BROKOLI_INSTALL_DIR="$INST" BROKOLI_NO_SETUP=1 \
