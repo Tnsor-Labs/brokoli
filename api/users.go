@@ -702,6 +702,7 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 			writeError(w, http.StatusServiceUnavailable, "cannot verify system state; try again")
 			return
 		}
+		var callerRole string
 		if userCount > 0 {
 			claims := r.Context().Value("claims")
 			if claims == nil {
@@ -709,7 +710,7 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 				return
 			}
 			mc := claims.(*jwt.MapClaims)
-			callerRole, _ := (*mc)["role"].(string)
+			callerRole, _ = (*mc)["role"].(string)
 			if callerRole != "admin" && callerRole != "superadmin" {
 				writeError(w, http.StatusForbidden, "admin role required to create users")
 				return
@@ -719,6 +720,15 @@ func CreateUserHandler(us *UserStore) http.HandlerFunc {
 		role := Role(req.Role)
 		if role != RoleSuperAdmin && role != RoleAdmin && role != RoleEditor && role != RoleViewer {
 			role = RoleViewer
+		}
+		// No caller grants more than it holds. superadmin is above admin:
+		// it operates the whole instance, every tenant included, so an
+		// admin creating one would be an admin promoting itself. Refused
+		// rather than quietly downgraded, so a caller that asked for it
+		// learns it did not get it.
+		if role == RoleSuperAdmin && userCount > 0 && callerRole != "superadmin" {
+			writeError(w, http.StatusForbidden, "only a superadmin can create a superadmin")
+			return
 		}
 
 		// First user must be admin (prevent creating viewer-only accounts during setup)

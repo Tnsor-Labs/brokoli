@@ -71,6 +71,13 @@ type OrgIDContextKey struct{}
 // Set by enterprise platform to include org_id in JWT claims.
 var OrgResolverFunc func(userID string) string
 
+// UserOrganizationsFunc lists every organization a user belongs to. When
+// set, an admin may reset the password only of a user whose sole
+// organization is the admin's current one: an account that is also in
+// another organization is not that admin's to take over. When nil, the
+// primary organizations from OrgResolverFunc are compared instead.
+var UserOrganizationsFunc func(userID string) ([]string, error)
+
 // FeatureGateFunc checks if the requesting user's plan includes a feature.
 // Set by enterprise. Returns true if allowed, false if blocked.
 // When nil (community edition), all features are allowed.

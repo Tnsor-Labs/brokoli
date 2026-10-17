@@ -180,13 +180,9 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				writeError(w, http.StatusBadRequest, "invalid JSON")
 				return
 			}
-			// Validate org ownership: admin can only reset passwords for users in their own org
-			if OrgResolverFunc != nil {
-				callerID, _ := (*claims)["sub"].(string)
-				callerOrg := OrgResolverFunc(callerID)
-				targetOrg := OrgResolverFunc(req.UserID)
-				if callerOrg != targetOrg && role != "superadmin" {
-					writeError(w, http.StatusForbidden, "cannot reset password for users outside your organization")
+			if role != "superadmin" {
+				if msg := resetPasswordRefusal(r, userStore, req.UserID); msg != "" {
+					writeError(w, http.StatusForbidden, msg)
 					return
 				}
 			}
@@ -524,4 +520,45 @@ func (w *cookieResponseWriter) WriteHeader(code int) {
 func (w *cookieResponseWriter) Write(b []byte) (int, error) {
 	w.body = append(w.body, b...)
 	return len(b), nil
+}
+
+// resetPasswordRefusal says why an admin (not a superadmin) may not reset
+// targetID's password, or "" when it may. Setting someone's password is
+// taking over their account, everywhere it reaches, so the admin has to
+// hold authority over all of it.
+func resetPasswordRefusal(r *http.Request, users *UserStore, targetID string) string {
+	target, err := users.GetUserByID(targetID)
+	if err != nil {
+		return "cannot reset password for users outside your organization"
+	}
+	// No admin outranks a superadmin, whatever organization it is in.
+	if target.Role == RoleSuperAdmin {
+		return "only a superadmin can reset a superadmin's password"
+	}
+	if OrgResolverFunc == nil {
+		return ""
+	}
+	callerOrg := GetOrgIDFromRequest(r)
+	if callerOrg == "" {
+		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
+			callerID, _ := (*claims)["sub"].(string)
+			callerOrg = OrgResolverFunc(callerID)
+		}
+	}
+	if UserOrganizationsFunc == nil {
+		if callerOrg == "" || OrgResolverFunc(targetID) != callerOrg {
+			return "cannot reset password for users outside your organization"
+		}
+		return ""
+	}
+	orgs, err := UserOrganizationsFunc(targetID)
+	if err != nil || len(orgs) == 0 {
+		return "cannot reset password for users outside your organization"
+	}
+	for _, org := range orgs {
+		if org != callerOrg {
+			return "cannot reset password for a user who also belongs to another organization"
+		}
+	}
+	return ""
 }
