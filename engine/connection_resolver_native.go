@@ -122,7 +122,7 @@ func (cr *ConnectionResolver) PipelineRequiredCapabilities(pipe *models.Pipeline
 		if connID == "" {
 			continue
 		}
-		conn, err := cr.store.GetConnection(connID)
+		conn, err := cr.lookup(connID, pipe.WorkspaceID)
 		if err != nil {
 			// The node runs without a stored connection or reports the
 			// missing one itself; neither needs a native worker.
@@ -159,7 +159,7 @@ func (cr *ConnectionResolver) NativeSource(ctx context.Context, config map[strin
 	if connID == "" {
 		return nil, nil
 	}
-	conn, err := cr.store.GetConnection(connID)
+	conn, err := cr.lookup(connID, scope.WorkspaceID)
 	if err != nil || conn == nil || !sameWorkspace(conn, scope.WorkspaceID) || !IsNativeADBCConnection(conn) {
 		// Resolve already reported a missing or foreign connection to the
 		// node's log; such a node is not a native source.

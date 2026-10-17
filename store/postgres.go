@@ -155,7 +155,7 @@ func (s *PostgresStore) migrate() error {
 	// Connections table
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS connections (
 		id TEXT PRIMARY KEY,
-		conn_id TEXT NOT NULL UNIQUE,
+		conn_id TEXT NOT NULL,
 		type TEXT NOT NULL,
 		description TEXT NOT NULL DEFAULT '',
 		host TEXT NOT NULL DEFAULT '',
@@ -169,7 +169,14 @@ func (s *PostgresStore) migrate() error {
 		workspace_id TEXT NOT NULL DEFAULT 'default',
 		org_id TEXT NOT NULL DEFAULT 'default'
 	)`)
-	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_conn_id ON connections(conn_id)`)
+	// conn_id is unique within a workspace, not across the server (see the
+	// SQLite store's scopeConnectionIDsToWorkspaces). The per-workspace
+	// index is created before the server-wide constraint and index go.
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
+		return fmt.Errorf("create idx_connections_ws_conn_id: %w", err)
+	}
+	s.db.Exec(`ALTER TABLE connections DROP CONSTRAINT IF EXISTS connections_conn_id_key`)
+	s.db.Exec(`DROP INDEX IF EXISTS idx_connections_conn_id`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_org ON connections(org_id)`)
 	s.db.Exec(`ALTER TABLE connections ADD COLUMN IF NOT EXISTS workspace_id TEXT NOT NULL DEFAULT 'default'`)
@@ -2175,6 +2182,25 @@ func (s *PostgresStore) GetConnection(connID string) (*models.Connection, error)
 	return &c, nil
 }
 
+// GetConnectionIn finds a connection by conn_id within one workspace, where
+// conn_id is unique.
+func (s *PostgresStore) GetConnectionIn(workspaceID, connID string) (*models.Connection, error) {
+	var c models.Connection
+	var driverIdentity string
+	err := s.db.QueryRow(
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id, driver_identity
+		 FROM connections WHERE workspace_id = $1 AND conn_id = $2`, workspaceID, connID,
+	).Scan(&c.ID, &c.ConnID, &c.Type, &c.Description, &c.Host, &c.Port, &c.Schema, &c.Login,
+		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &c.CreatedAt, &c.UpdatedAt, &c.MaxConcurrent, &c.WorkspaceID, &driverIdentity)
+	if err != nil {
+		return nil, err
+	}
+	if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
 func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
 		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
@@ -2218,9 +2244,9 @@ func (s *PostgresStore) UpdateConnection(c *models.Connection) error {
 	}
 	result, err := s.db.Exec(
 		`UPDATE connections SET type=$1, description=$2, host=$3, port=$4, schema_name=$5, login=$6, password_enc=$7, extra_enc=$8, password_ref=$9, extra_ref=$10, updated_at=$11, max_concurrent=$13, driver_identity=$14
-		 WHERE conn_id = $12`,
+		 WHERE conn_id = $12 AND ($15 = '' OR workspace_id = $15)`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
-		passEnc, extraEnc, passRef, extraRef, c.UpdatedAt, c.ConnID, c.MaxConcurrent, driverIdentity,
+		passEnc, extraEnc, passRef, extraRef, c.UpdatedAt, c.ConnID, c.MaxConcurrent, driverIdentity, c.WorkspaceID,
 	)
 	if err != nil {
 		return err
@@ -2228,6 +2254,19 @@ func (s *PostgresStore) UpdateConnection(c *models.Connection) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("connection not found: %s", c.ConnID)
+	}
+	return nil
+}
+
+// DeleteConnectionIn removes one workspace's connection.
+func (s *PostgresStore) DeleteConnectionIn(workspaceID, connID string) error {
+	result, err := s.db.Exec(`DELETE FROM connections WHERE workspace_id = $1 AND conn_id = $2`, workspaceID, connID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("connection not found: %s", connID)
 	}
 	return nil
 }

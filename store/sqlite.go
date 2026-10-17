@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"reflect"
+	"regexp"
 	"strings"
 	"time"
 
@@ -507,8 +508,57 @@ func (s *SQLiteStore) migrate() error {
 	if err := s.secretStores().migrate(); err != nil {
 		return err
 	}
+	if err := s.scopeConnectionIDsToWorkspaces(); err != nil {
+		return fmt.Errorf("scope conn_id to workspaces: %w", err)
+	}
 
 	return nil
+}
+
+// scopeConnectionIDsToWorkspaces makes conn_id unique within a workspace
+// rather than across the server. Unique everywhere, one tenant's create was
+// refused for a name another tenant used -- telling it the name existed,
+// and letting it claim names first.
+//
+// Older databases declared the column UNIQUE inline, which SQLite cannot
+// drop, so such a table is rebuilt once: same columns and rows, without the
+// constraint. The per-workspace index is created before anything is
+// dropped.
+func (s *SQLiteStore) scopeConnectionIDsToWorkspaces() error {
+	var ddl string
+	if err := s.db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='connections'`).Scan(&ddl); err != nil {
+		return err
+	}
+	inlineUnique := regexp.MustCompile(`(?i)conn_id\s+TEXT\s+NOT\s+NULL\s+UNIQUE`)
+	if inlineUnique.MatchString(ddl) {
+		rebuilt := inlineUnique.ReplaceAllString(ddl, "conn_id TEXT NOT NULL")
+		rebuilt = strings.Replace(rebuilt, "connections", "connections_rebuild", 1)
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		for _, stmt := range []string{
+			`DROP TABLE IF EXISTS connections_rebuild`,
+			rebuilt,
+			`INSERT INTO connections_rebuild SELECT * FROM connections`,
+			`DROP TABLE connections`,
+			`ALTER TABLE connections_rebuild RENAME TO connections`,
+		} {
+			if _, err := tx.Exec(stmt); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("rebuild connections: %w", err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
+		return err
+	}
+	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_connections_workspace ON connections(workspace_id)`)
+	_, err := s.db.Exec(`DROP INDEX IF EXISTS idx_connections_conn_id`)
+	return err
 }
 
 // hasColumn reports whether table has a column named column, via SQLite's
@@ -2592,6 +2642,16 @@ func (s *SQLiteStore) GetConnection(connID string) (*models.Connection, error) {
 	return scanConnection(row)
 }
 
+// GetConnectionIn finds a connection by conn_id within one workspace, where
+// conn_id is unique.
+func (s *SQLiteStore) GetConnectionIn(workspaceID, connID string) (*models.Connection, error) {
+	row := s.db.QueryRow(
+		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, workspace_id, driver_identity
+		 FROM connections WHERE workspace_id = ? AND conn_id = ?`, workspaceID, connID,
+	)
+	return scanConnection(row)
+}
+
 func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 	rows, err := s.db.Query(
 		`SELECT id, conn_id, type, description, host, port, schema_name, login, password_enc, extra_enc, password_ref, extra_ref, created_at, updated_at, max_concurrent, driver_identity
@@ -2662,12 +2722,14 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 	if err != nil {
 		return err
 	}
+	// The connection is identified by conn_id within its workspace. One
+	// with no workspace set is a legacy caller, matched by conn_id alone.
 	result, err := s.db.Exec(
 		`UPDATE connections SET type=?, description=?, host=?, port=?, schema_name=?, login=?, password_enc=?, extra_enc=?, password_ref=?, extra_ref=?, updated_at=?, max_concurrent=?, driver_identity=?
-		 WHERE conn_id = ?`,
+		 WHERE conn_id = ? AND (? = '' OR workspace_id = ?)`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef,
-		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity, c.ConnID,
+		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity, c.ConnID, c.WorkspaceID, c.WorkspaceID,
 	)
 	if err != nil {
 		return err
@@ -2675,6 +2737,19 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 	n, _ := result.RowsAffected()
 	if n == 0 {
 		return fmt.Errorf("connection not found: %s", c.ConnID)
+	}
+	return nil
+}
+
+// DeleteConnectionIn removes one workspace's connection.
+func (s *SQLiteStore) DeleteConnectionIn(workspaceID, connID string) error {
+	result, err := s.db.Exec("DELETE FROM connections WHERE workspace_id = ? AND conn_id = ?", workspaceID, connID)
+	if err != nil {
+		return err
+	}
+	n, _ := result.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("connection not found: %s", connID)
 	}
 	return nil
 }

@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -121,6 +122,23 @@ func (cr *ConnectionResolver) ResolveScoped(config map[string]interface{}, nodeT
 // An unknown workspace on either side is not a refusal: a runner with no
 // pipeline, or a store that does not carry workspaces, has nothing to
 // compare, and refusing would break it rather than protect anything.
+// lookup finds conn_id in the workspace a run belongs to. conn_id is
+// unique only within a workspace, so a lookup with a workspace is scoped to
+// it; one without (a single-tenant run) matches conn_id alone.
+//
+// A scoped miss reads as notInWorkspace whether the name exists elsewhere
+// or nowhere, so the answer says nothing about other workspaces.
+func (cr *ConnectionResolver) lookup(connID, workspaceID string) (*models.Connection, error) {
+	if workspaceID != "" {
+		c, err := cr.store.GetConnectionIn(workspaceID, connID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf(notInWorkspace, connID)
+		}
+		return c, err
+	}
+	return cr.store.GetConnection(connID)
+}
+
 func sameWorkspace(conn *models.Connection, workspaceID string) bool {
 	return workspaceID == "" || conn.WorkspaceID == "" || conn.WorkspaceID == workspaceID
 }
@@ -145,7 +163,7 @@ func (cr *ConnectionResolver) resolve(config map[string]interface{}, nodeType mo
 		return config, nil
 	}
 
-	conn, err := cr.store.GetConnection(connID)
+	conn, err := cr.lookup(connID, workspaceID)
 	if errors.Is(err, store.ErrCredentialsUnresolved) {
 		// The connection exists; its credentials could not be resolved
 		// where the store resolves them. Stop the node with that reason,
@@ -443,7 +461,7 @@ func (cr *ConnectionResolver) ResolveConnectionScoped(connID string, scope secre
 	if connID == "" {
 		return nil, fmt.Errorf("no conn_id given")
 	}
-	conn, err := cr.store.GetConnection(connID)
+	conn, err := cr.lookup(connID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("conn_id %q not found: %w", connID, err)
 	}

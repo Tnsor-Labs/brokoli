@@ -12,9 +12,8 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
-// conn_id is unique across the whole store, so before this a pipeline in
-// one workspace could name another workspace's connection and run with
-// its credentials. A run now resolves a conn_id only within its own
+// A pipeline in one workspace could name another workspace's connection and
+// run with its credentials. A run now resolves a conn_id only within its own
 // pipeline's workspace.
 
 func twoWorkspaceStore(t *testing.T) *store.SQLiteStore {
@@ -162,5 +161,34 @@ func TestADatabaseNodeCannotUseAnotherWorkspacesConnection(t *testing.T) {
 	}
 	if strings.Contains(all.String(), "b.example") {
 		t.Fatalf("the run reached for another workspace's host:\n%s", all.String())
+	}
+}
+
+// conn_id is unique only within a workspace, so two workspaces can each
+// have a "warehouse". Each run gets its own workspace's: a lookup by name
+// alone could return the other's row, which the workspace check then
+// refused, leaving a workspace unable to use its own connection.
+func TestEachWorkspaceResolvesItsOwnConnectionOfACommonName(t *testing.T) {
+	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "shared-name.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	for _, c := range []models.Connection{
+		{ID: "a", ConnID: "warehouse", Type: models.ConnTypePostgres, Host: "a.example", Port: 5432, Schema: "db", Login: "u", Password: "pa", WorkspaceID: "ws-a"},
+		{ID: "b", ConnID: "warehouse", Type: models.ConnTypePostgres, Host: "b.example", Port: 5432, Schema: "db", Login: "u", Password: "pb", WorkspaceID: "ws-b"},
+	} {
+		c := c
+		c.CreatedAt, c.UpdatedAt = time.Now().UTC(), time.Now().UTC()
+		if err := st.CreateConnection(&c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cr := NewConnectionResolver(st, nil)
+	for ws, host := range map[string]string{"ws-a": "a.example", "ws-b": "b.example"} {
+		c, err := cr.ResolveConnectionIn("warehouse", ws)
+		if err != nil || c.Host != host {
+			t.Errorf("%s resolves warehouse: %+v (%v), want host %s", ws, c, err, host)
+		}
 	}
 }

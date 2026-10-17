@@ -549,12 +549,17 @@ type VersionStore interface {
 // ConnectionStore persists saved connections.
 type ConnectionStore interface {
 	CreateConnection(c *models.Connection) error
+	// GetConnection matches conn_id on its own. conn_id is unique only
+	// within a workspace, so with several workspaces it may match any of
+	// them; GetConnectionIn is the scoped lookup.
 	GetConnection(connID string) (*models.Connection, error)
+	GetConnectionIn(workspaceID, connID string) (*models.Connection, error)
 	ListConnections() ([]models.Connection, error)
 	ListConnectionsByWorkspace(workspaceID string) ([]models.Connection, error)
 	ListConnectionsByWorkspacePaged(workspaceID string, limit, offset int) ([]models.Connection, int, error)
 	UpdateConnection(c *models.Connection) error
 	DeleteConnection(connID string) error
+	DeleteConnectionIn(workspaceID, connID string) error
 }
 
 // VariableStore persists pipeline variables.

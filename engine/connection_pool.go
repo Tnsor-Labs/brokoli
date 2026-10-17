@@ -114,7 +114,14 @@ func (p *connectionPools) Release(pool string) {
 //     budget that silently doesn't limit is a disabled control, and this
 //     codebase has been bitten by exactly that shape before.
 func (r *Runner) acquireConnectionSlot(node models.Node, pool string, explicit bool, attempt int) (func(), error) {
-	conn, err := r.connResolver.store.GetConnection(pool)
+	// The pool is a connection of this pipeline's workspace, and its budget
+	// is that connection's: keyed by name alone, two tenants' connections
+	// of the same name shared one budget, and one read the other's limit.
+	workspaceID := ""
+	if r.pipe != nil {
+		workspaceID = r.pipe.WorkspaceID
+	}
+	conn, err := r.connResolver.lookup(pool, workspaceID)
 	if err != nil {
 		if explicit {
 			return nil, fmt.Errorf(
@@ -126,11 +133,12 @@ func (r *Runner) acquireConnectionSlot(node models.Node, pool string, explicit b
 	if conn.MaxConcurrent <= 0 {
 		return func() {}, nil
 	}
-	if err := r.connResolver.pools.Acquire(r.ctx, pool, conn.MaxConcurrent, func(inUse, limit int) {
+	key := workspaceID + "/" + pool
+	if err := r.connResolver.pools.Acquire(r.ctx, key, conn.MaxConcurrent, func(inUse, limit int) {
 		r.log(node.ID, models.LogLevelInfo,
 			"waiting for connection pool %q (%d/%d in use)", pool, inUse, limit)
 	}); err != nil {
 		return nil, fmt.Errorf("wait for connection pool %q (attempt %d): %w", pool, attempt, err)
 	}
-	return func() { r.connResolver.pools.Release(pool) }, nil
+	return func() { r.connResolver.pools.Release(key) }, nil
 }

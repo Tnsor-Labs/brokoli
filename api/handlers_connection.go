@@ -28,7 +28,6 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
 	_ "github.com/go-sql-driver/mysql"
-	"github.com/golang-jwt/jwt/v5"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -118,34 +117,38 @@ func (h *ConnectionHandler) secretRefErrors(c *models.Connection, workspaceID st
 	return ""
 }
 
-// validateConnectionAccess checks if a connection exists in the user's org-scoped connection set.
-func (h *ConnectionHandler) validateConnectionAccess(r *http.Request, connID string) bool {
-	orgID := GetOrgIDFromRequest(r)
-	if orgID == "" {
-		return true // community edition
+// findConnection returns the connection conn_id names for this caller.
+//
+// conn_id is unique within a workspace, not across the server, so in an
+// organization it is looked for in the caller's own workspaces -- the one
+// the request acts in first -- and is not found anywhere else. Without an
+// organization (a single-tenant server) it is matched alone.
+func (h *ConnectionHandler) findConnection(r *http.Request, connID string) (*models.Connection, bool) {
+	if GetOrgIDFromRequest(r) == "" {
+		c, err := h.store.GetConnection(connID)
+		return c, err == nil && c != nil
 	}
-	// Get user's actual workspaces (not the spoofable header)
 	var userWSIDs []string
 	if UserWorkspaceResolverFunc != nil {
-		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-			if sub, ok := (*claims)["sub"].(string); ok {
-				userWSIDs = UserWorkspaceResolverFunc(sub)
-			}
+		if sub := getUserIDFromRequest(r); sub != "" {
+			userWSIDs = UserWorkspaceResolverFunc(sub)
 		}
 	}
-	if len(userWSIDs) == 0 {
-		return false // org user with no workspaces = no connections
-	}
-	// Check each of the user's workspaces for the connection
-	for _, wsID := range userWSIDs {
-		conns, _ := h.store.ListConnectionsByWorkspace(wsID)
-		for _, c := range conns {
-			if c.ConnID == connID {
-				return true
-			}
+	current, _ := effectiveWorkspace(r)
+	ordered := make([]string, 0, len(userWSIDs))
+	for _, ws := range userWSIDs {
+		if ws == current {
+			ordered = append([]string{ws}, ordered...)
+		} else {
+			ordered = append(ordered, ws)
 		}
 	}
-	return false
+	for _, ws := range ordered {
+		if c, err := h.store.GetConnectionIn(ws, connID); err == nil && c != nil {
+			return c, true
+		}
+	}
+	return nil, false
 }
 
 func NewConnectionHandler(s store.Store, c *crypto.Config) *ConnectionHandler {
@@ -193,13 +196,8 @@ func (h *ConnectionHandler) List(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Get(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
-	c, err := h.store.GetConnection(connID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "connection not found")
-		return
-	}
-	// Verify connection belongs to user's workspace scope
-	if !h.validateConnectionAccess(r, connID) {
+	c, ok := h.findConnection(r, connID)
+	if !ok {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -300,12 +298,8 @@ func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
-	if !h.validateConnectionAccess(r, connID) {
-		writeError(w, http.StatusNotFound, "connection not found")
-		return
-	}
-	existing, err := h.store.GetConnection(connID)
-	if err != nil {
+	existing, ok := h.findConnection(r, connID)
+	if !ok {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -408,6 +402,8 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 		c.ExtraRef = existing.ExtraRef
 	}
 
+	// The connection is the one found above, in its own workspace.
+	c.WorkspaceID = existing.WorkspaceID
 	if err := h.store.UpdateConnection(&c); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -423,11 +419,12 @@ func (h *ConnectionHandler) Update(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
-	if !h.validateConnectionAccess(r, connID) {
+	existing, ok := h.findConnection(r, connID)
+	if !ok {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
-	if err := h.store.DeleteConnection(connID); err != nil {
+	if err := h.store.DeleteConnectionIn(existing.WorkspaceID, connID); err != nil {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}
@@ -437,12 +434,8 @@ func (h *ConnectionHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Test(w http.ResponseWriter, r *http.Request) {
 	connID := chi.URLParam(r, "connId")
-	if !h.validateConnectionAccess(r, connID) {
-		writeError(w, http.StatusNotFound, "connection not found")
-		return
-	}
-	c, err := h.store.GetConnection(connID)
-	if err != nil {
+	c, ok := h.findConnection(r, connID)
+	if !ok {
 		writeError(w, http.StatusNotFound, "connection not found")
 		return
 	}

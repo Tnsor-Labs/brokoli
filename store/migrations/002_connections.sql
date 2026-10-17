@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS connections (
     id TEXT PRIMARY KEY,
-    conn_id TEXT NOT NULL UNIQUE,
+    conn_id TEXT NOT NULL,
     type TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     host TEXT NOT NULL DEFAULT '',
@@ -13,4 +13,3 @@ CREATE TABLE IF NOT EXISTS connections (
     updated_at TEXT NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_conn_id ON connections(conn_id);
