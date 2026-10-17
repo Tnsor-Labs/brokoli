@@ -11,6 +11,24 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.17] - 2026-10-17
+
+### Changed
+
+- **`pipeline_id` is unique within an organization** (#846) -- @hc12r.
+  It was unique across the whole server, so in a multi-tenant deployment
+  one tenant's create was refused for a name another tenant used. The
+  unique index is now `(org_id, pipeline_id)`; opening a database creates
+  it before dropping the old one. `GetPipelineByPipelineIDInOrg` looks one
+  up within an organization. Single-tenant servers behave as before.
+- **`conn_id` is unique within a workspace** (#847) -- @hc12r. Same issue
+  for connections. Uniqueness is now `(workspace_id, conn_id)`: Postgres
+  drops the inline constraint, and SQLite rebuilds an older `connections`
+  table once, keeping every row. The store gains `GetConnectionIn` and
+  `DeleteConnectionIn`; runs resolve a `conn_id` in their pipeline's
+  workspace; connection pool budgets are keyed by workspace and name; the
+  connection routes act on the connection in the caller's own workspace.
+
 ## [0.18.16] - 2026-10-17
 
 ### Security
