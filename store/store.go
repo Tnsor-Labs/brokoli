@@ -399,7 +399,11 @@ type PipelineStore interface {
 	DeletePipeline(id string) error
 	// DeletePipelineTx runs inside an existing transaction; for atomic cascade deletes.
 	DeletePipelineTx(tx *sql.Tx, id string) error
+	// GetPipelineByPipelineID matches pipeline_id on its own. pipeline_id
+	// is unique only within an organization, so with tenants it may match
+	// any of several; scope it with GetPipelineByPipelineIDInOrg.
 	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
+	GetPipelineByPipelineIDInOrg(orgID, pipelineID string) (*models.Pipeline, error)
 	// PipelinesDependingOn returns pipelines that list the given id in DependsOn or DependencyRules.
 	// NOTE: returns raw cross-org matches; callers are responsible for org filtering when relevant.
 	// Prefer ListPipelineDepsByOrg for graph walks — it avoids loading nodes/edges/params blobs.
@@ -920,7 +924,10 @@ func isPipelineIDConflict(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	if strings.Contains(msg, "idx_pipeline_pid") {
+	// idx_pipeline_org_pid is the per-organization index; idx_pipeline_pid
+	// the server-wide one it replaced, still present until a database has
+	// been opened by this version.
+	if strings.Contains(msg, "idx_pipeline_org_pid") || strings.Contains(msg, "idx_pipeline_pid") {
 		return true
 	}
 	return strings.Contains(msg, "UNIQUE constraint failed") &&

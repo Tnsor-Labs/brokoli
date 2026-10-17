@@ -134,7 +134,17 @@ func (s *PostgresStore) migrate() error {
 	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS parameters TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return fmt.Errorf("add pipelines.parameters: %w", err)
 	}
-	s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`)
+	// pipeline_id is unique within an organization, not across the whole
+	// server: unique everywhere, one tenant's create answered 409 for a
+	// name another tenant used, which told it that name existed and let it
+	// claim names before their owners did. The per-organization index is
+	// created before the old one is dropped, so uniqueness never lapses.
+	// On a single-tenant server every organization is "", and nothing
+	// changes.
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
+		return fmt.Errorf("create idx_pipeline_org_pid: %w", err)
+	}
+	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_pid`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
 
 	// Dead letter queue
@@ -846,6 +856,14 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 		return fmt.Errorf("pipeline not found: %s", p.ID)
 	}
 	return nil
+}
+
+// GetPipelineByPipelineIDInOrg finds a pipeline by its pipeline_id within
+// one organization, where pipeline_id is unique.
+func (s *PostgresStore) GetPipelineByPipelineIDInOrg(orgID, pipelineID string) (*models.Pipeline, error) {
+	return s.scanPipelineRow(s.db.QueryRow(
+		`SELECT `+pipelineColumns+` FROM pipelines WHERE org_id = $1 AND pipeline_id = $2`, orgID, pipelineID,
+	))
 }
 
 func (s *PostgresStore) GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error) {
