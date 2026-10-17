@@ -141,7 +141,7 @@ func (s *PostgresStore) migrate() error {
 	// created before the old one is dropped, so uniqueness never lapses.
 	// On a single-tenant server every organization is "", and nothing
 	// changes.
-	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
+	if err := s.ensureIndex("idx_pipeline_org_pid", `CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
 		return fmt.Errorf("create idx_pipeline_org_pid: %w", err)
 	}
 	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_pid`)
@@ -182,7 +182,7 @@ func (s *PostgresStore) migrate() error {
 	// conn_id is unique within a workspace, not across the server (see the
 	// SQLite store's scopeConnectionIDsToWorkspaces). The per-workspace
 	// index is created before the server-wide constraint and index go.
-	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
+	if err := s.ensureIndex("idx_connections_ws_conn_id", `CREATE UNIQUE INDEX IF NOT EXISTS idx_connections_ws_conn_id ON connections(workspace_id, conn_id)`); err != nil {
 		return fmt.Errorf("create idx_connections_ws_conn_id: %w", err)
 	}
 	s.db.Exec(`ALTER TABLE connections DROP CONSTRAINT IF EXISTS connections_conn_id_key`)
@@ -3392,4 +3392,23 @@ func (s *PostgresStore) ListPhysicalInstances(runID string) ([]models.PhysicalIn
 		out = append(out, in)
 	}
 	return out, nil
+}
+
+// ensureIndex runs a CREATE INDEX IF NOT EXISTS that the server must have.
+// Two replicas starting together run it at the same moment, and Postgres
+// can then fail the slower one on its catalog's own unique index
+// (pg_class_relname_nsp_index) even with IF NOT EXISTS: the other replica
+// created it a moment earlier. That replica exited and restarted. What
+// matters is that the index exists afterwards, so a failure is an error
+// only if it still does not.
+func (s *PostgresStore) ensureIndex(name, stmt string) error {
+	_, err := s.db.Exec(stmt)
+	if err == nil {
+		return nil
+	}
+	var exists bool
+	if qerr := s.db.QueryRow(`SELECT EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname = current_schema() AND indexname = $1)`, name).Scan(&exists); qerr == nil && exists {
+		return nil
+	}
+	return err
 }
