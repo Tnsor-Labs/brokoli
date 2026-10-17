@@ -11,6 +11,15 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.16] - 2026-10-17
+
+### Security
+
+- **`./uploads` is no longer served without sign-in** (#844) -- @hc12r.
+  `GET /uploads/{filename}` served any file in `./uploads` to anyone: the
+  route sat outside `/api`, so no authentication ran, and nothing tied a
+  file to its owner. Core writes nothing there; the route is removed.
+
 ## [0.18.15] - 2026-10-17
 
 ### Security
