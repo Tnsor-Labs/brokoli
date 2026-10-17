@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.18.13] - 2026-10-17
+
+### Fixed
+
+- **SQLite connections wait for a busy writer instead of failing** (#835,
+  fixes #834) -- @hc12r. A `sqlite://` URI or a bare `.db`/`.sqlite` path
+  was opened with SQLite's default busy timeout of 0, so a writer that
+  found the file locked failed at once with `database is locked
+  (SQLITE_BUSY)`. A partitioned migrate into one SQLite file, whose ranges
+  write in parallel, failed this way on most runs (4 of 10 succeeded at
+  `max_parallel` 6). Both forms now get `_pragma=busy_timeout(5000)`, the
+  value the metadata store already uses, unless the URI sets its own
+  `busy_timeout`. Nothing else about the database is changed.
+
 ## [0.18.12] - 2026-10-14
 
 ### Changed
