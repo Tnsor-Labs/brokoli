@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -219,17 +218,6 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
 		})
 	}
-
-	// Serve uploaded files (ticket attachments)
-	r.Get("/uploads/{filename}", func(w http.ResponseWriter, r *http.Request) {
-		filename := chi.URLParam(r, "filename")
-		filePath := filepath.Join("./uploads", filepath.Base(filename))
-		if _, err := os.Stat(filePath); os.IsNotExist(err) {
-			http.NotFound(w, r)
-			return
-		}
-		http.ServeFile(w, r, filePath)
-	})
 
 	// Serve embedded UI (or fallback)
 	if uiFS != nil {
