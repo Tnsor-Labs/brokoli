@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Queued jobs that are not pipeline runs** -- @hc12r. `RunJob` has a
+  `Kind`; empty is a pipeline run, as every job was before. A distribution
+  registers a handler per kind in `Registry.JobHandlers`, and a worker
+  runs a job of that kind with it, in a worker slot, renewing its claim
+  as a run does: acknowledged when the handler returns nil, returned to
+  the queue when it returns an error. A job whose kind the worker has no
+  handler for goes back to the queue for one that does.
+
 ### Fixed
 
 - **Rollback refuses Git-managed pipelines** (#854) -- @hc12r. Editing a

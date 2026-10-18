@@ -605,7 +605,7 @@ var serveCmd = &cobra.Command{
 					time.Sleep(time.Second)
 					continue
 				}
-				if job.PipelineID == "" && job.WorkOrder == nil {
+				if job.PipelineID == "" && job.WorkOrder == nil && job.Kind == "" {
 					<-workerSlots
 					if job.ID != "" {
 						if settleErr := Extensions.JobQueue.Ack(job.ID); settleErr != nil {
@@ -631,6 +631,33 @@ var serveCmd = &cobra.Command{
 						return nil
 					case <-time.After(incompatibleJobBackoff):
 					}
+					continue
+				}
+
+				// A job of a registered kind is not a pipeline run: its handler
+				// runs it, and the run checks below do not apply.
+				if job.Kind != "" {
+					handler := Extensions.JobHandlers[job.Kind]
+					if handler == nil {
+						<-workerSlots
+						err := fmt.Errorf("worker has no handler for job kind %q", job.Kind)
+						log.Printf("Worker: returning job %s to the queue: %v", job.ID, err)
+						if settleErr := Extensions.JobQueue.Fail(job.ID, err); settleErr != nil {
+							log.Printf("Worker: release job %s: %v", job.ID, settleErr)
+						}
+						select {
+						case sig := <-quit:
+							shutdownDraining(sig)
+							return nil
+						case <-time.After(incompatibleJobBackoff):
+						}
+						continue
+					}
+					log.Printf("Worker: executing %s job %s", job.Kind, job.ID)
+					go func(j extensions.RunJob) {
+						defer func() { <-workerSlots }()
+						runKindJob(context.Background(), Extensions.JobQueue, handler, j)
+					}(job)
 					continue
 				}
 
@@ -770,6 +797,41 @@ func defaultDatabasePath() string {
 // incompatibleJobBackoff is how long a worker waits after returning a job it
 // lacks a native driver for, before asking the queue for another.
 const incompatibleJobBackoff = 2 * time.Second
+
+// runKindJob runs one job of a registered kind and settles it: acknowledged
+// when the handler returns nil, returned to the queue when it cannot handle
+// the job. Its claim is renewed while it runs, as a pipeline run's is.
+func runKindJob(ctx context.Context, queue extensions.JobQueue, handler extensions.JobHandler, job extensions.RunJob) {
+	stopRenewing := func() {}
+	if renewer, ok := queue.(extensions.JobQueueRenewer); ok {
+		renewCtx, cancelRenew := context.WithCancel(ctx)
+		renewed := make(chan struct{})
+		go func() {
+			defer close(renewed)
+			renewJobClaim(renewCtx, renewer, job.ID)
+		}()
+		stopRenewing = func() {
+			cancelRenew()
+			<-renewed
+		}
+	}
+	err := handler(ctx, job)
+	// Renewal stops, and has stopped, before the job is settled: a renewal
+	// after settling would touch a claim that is no longer ours.
+	stopRenewing()
+	if err != nil {
+		log.Printf("Worker: %s job %s could not be handled: %v", job.Kind, job.ID, err)
+		if settleErr := queue.Fail(job.ID, err); settleErr != nil {
+			log.Printf("Worker: fail %s job %s: %v", job.Kind, job.ID, settleErr)
+		}
+		return
+	}
+	if settleErr := queue.Ack(job.ID); settleErr != nil {
+		log.Printf("Worker: ack %s job %s: %v", job.Kind, job.ID, settleErr)
+		return
+	}
+	log.Printf("Worker: completed %s job %s", job.Kind, job.ID)
+}
 
 // nativeCapabilities is the native-driver capability set this worker
 // advertises, read from the shared driver inventory so an install through
@@ -965,7 +1027,7 @@ func instanceDispatchEnabled() bool {
 // interval well under any reasonable visibility timeout, not derived
 // from one: this queue has no way to know what timeout another
 // JobQueueRenewer implementation might use.
-const jobClaimRenewInterval = 10 * time.Second
+var jobClaimRenewInterval = 10 * time.Second
 
 // renewJobClaim periodically renews jobID's transport-level claim until
 // ctx is cancelled — call cancel once the job's own processing returns,

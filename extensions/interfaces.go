@@ -465,7 +465,13 @@ type RunCancelBroadcaster interface {
 // models.ExecutionAttempt's doc comment. A future node-level dispatch path
 // populates all four from the models.ExecutionAttempt it claims.
 type RunJob struct {
-	ID         string            `json:"id"`
+	ID string `json:"id"`
+	// Kind names a job that is not a pipeline run. Empty is a pipeline
+	// run, which every job was before kinds existed. A worker hands any
+	// other kind to the handler registered for it in Registry.JobHandlers;
+	// the run fields (PipelineID, RunID, WorkOrder) do not apply to it, and
+	// it carries its own input in Params.
+	Kind       string            `json:"kind,omitempty"`
 	PipelineID string            `json:"pipeline_id"`
 	RunID      string            `json:"run_id"`
 	OrgID      string            `json:"org_id"`
@@ -765,3 +771,13 @@ type OpenLineageEmitter interface {
 	EmitRunComplete(pipelineID, pipelineName, runID string, durationMs int64, inputs, outputs []LineageDataset) error
 	EmitRunFail(pipelineID, pipelineName, runID string, err string, inputs, outputs []LineageDataset) error
 }
+
+// JobHandler runs one job of a kind a distribution registers in
+// Registry.JobHandlers.
+//
+// A nil error acknowledges the job, which settles it for good: a handler
+// reports its own outcome, failure included, wherever its kind keeps it.
+// An error means the job could not be handled at all (its input could not
+// be fetched, say) and returns it to the queue for another delivery,
+// bounded by the queue's delivery limit.
+type JobHandler func(ctx context.Context, job RunJob) error
