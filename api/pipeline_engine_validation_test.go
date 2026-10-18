@@ -427,3 +427,50 @@ func TestPipelinePlanEndpoint(t *testing.T) {
 		t.Fatalf("plan static count wrong: %s", body)
 	}
 }
+
+// A git-managed pipeline is changed through its repository, never by a
+// rollback here; a UI pipeline's rollback keeps working (control).
+func TestPipelineRollbackRefusesGitManagedPipelines(t *testing.T) {
+	for _, tc := range []struct {
+		source string
+		want   int
+	}{{models.PipelineSourceGit, http.StatusForbidden}, {models.PipelineSourceUI, http.StatusOK}} {
+		t.Run(tc.source, func(t *testing.T) {
+			s := newOrgCheckStore(t)
+			now := time.Now().UTC()
+			node := func(path string) []models.Node {
+				return []models.Node{{ID: "source", Type: models.NodeTypeSourceFile, Name: "Source", Config: map[string]interface{}{"path": path}}}
+			}
+			current := &models.Pipeline{ID: "p-" + tc.source, Name: "Current", Source: tc.source,
+				Nodes: node("/tmp/current.csv"), Edges: []models.Edge{}, CreatedAt: now, UpdatedAt: now}
+			if err := s.CreatePipeline(current); err != nil {
+				t.Fatal(err)
+			}
+			older := *current
+			older.Name = "Older"
+			older.Nodes = node("/tmp/older.csv")
+			if _, err := s.SavePipelineVersion(current.ID, string(mustMarshalPipeline(&older)), "older"); err != nil {
+				t.Fatal(err)
+			}
+			before, _ := s.ListPipelineVersions(current.ID)
+
+			h := NewPipelineHandler(s, nil)
+			rec := servePipelineHandler(t, http.MethodPost, "/pipelines/{id}/rollback", "/pipelines/"+current.ID+"/rollback", []byte(`{"version":1}`), h.Rollback)
+			if rec.Code != tc.want {
+				t.Fatalf("status=%d body=%s, want %d", rec.Code, rec.Body.String(), tc.want)
+			}
+			stored, err := s.GetPipeline(current.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			after, _ := s.ListPipelineVersions(current.ID)
+			if tc.want == http.StatusForbidden {
+				if stored.Name != "Current" || len(after) != len(before) || !strings.Contains(rec.Body.String(), "managed by Git") {
+					t.Fatalf("a refused rollback changed the pipeline or its history: name=%q versions %d -> %d", stored.Name, len(before), len(after))
+				}
+			} else if stored.Name != "Older" {
+				t.Fatalf("the UI pipeline's rollback did not apply: name=%q", stored.Name)
+			}
+		})
+	}
+}

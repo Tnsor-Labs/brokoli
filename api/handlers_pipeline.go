@@ -713,6 +713,14 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
+	// A git-managed pipeline's definition is its repository's. Rolling it
+	// back here would leave the running pipeline different from what the
+	// repository says, exactly as an edit would (Update refuses those for
+	// the same reason), and the next sync would silently undo it.
+	if existing.Source == models.PipelineSourceGit {
+		writeError(w, http.StatusForbidden, "This pipeline is managed by Git. Revert the change in your repository.")
+		return
+	}
 
 	var req struct {
 		Version int `json:"version"`
