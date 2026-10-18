@@ -36,7 +36,7 @@ func NewPostgresStore(uri string) (*PostgresStore, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	if err := waitForPostgres(db, postgresStartWait); err != nil {
+	if err := WaitForPostgres(db, PostgresStartWait); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
@@ -49,16 +49,19 @@ func NewPostgresStore(uri string) (*PostgresStore, error) {
 	return s, nil
 }
 
-// postgresStartWait is how long opening a store waits for a server that is
+// PostgresStartWait is how long opening a store waits for a server that is
 // not accepting connections yet. Every process of an installation starts
 // together, Postgres among them, and exiting on the first refused
 // connection turned that ordinary moment into a restart per process.
-const postgresStartWait = 60 * time.Second
+const PostgresStartWait = 60 * time.Second
 
-// waitForPostgres pings until the server answers. Only a refused or
+// WaitForPostgres pings until the server answers. Only a refused or
 // unreachable connection is waited out; anything else, such as a wrong
-// password or an unknown database, fails at once.
-func waitForPostgres(db *sql.DB, wait time.Duration) error {
+// password or an unknown database, fails at once. Code that opens its own
+// pool to the database at startup should wait the same way: a component
+// that pinged once and gave up came up without its feature while the rest
+// of the process waited and started.
+func WaitForPostgres(db *sql.DB, wait time.Duration) error {
 	deadline := time.Now().Add(wait)
 	logged := false
 	for {

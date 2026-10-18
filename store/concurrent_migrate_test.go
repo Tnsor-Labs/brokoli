@@ -95,7 +95,7 @@ func TestWaitForPostgres(t *testing.T) {
 	}
 	defer refused.Close()
 	start := time.Now()
-	if err := waitForPostgres(refused, 2*time.Second); err == nil {
+	if err := WaitForPostgres(refused, 2*time.Second); err == nil {
 		t.Fatal("a server that never comes up must still fail")
 	}
 	if waited := time.Since(start); waited < 2*time.Second {
@@ -117,7 +117,7 @@ func TestWaitForPostgres(t *testing.T) {
 	}
 	defer wrong.Close()
 	start = time.Now()
-	if err := waitForPostgres(wrong, 30*time.Second); err == nil {
+	if err := WaitForPostgres(wrong, 30*time.Second); err == nil {
 		t.Fatal("a wrong password must fail")
 	}
 	if waited := time.Since(start); waited > 5*time.Second {
