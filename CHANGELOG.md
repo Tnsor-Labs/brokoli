@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Signed webhook paths a distribution can register** -- @hc12r.
+  `api.RegisterSignedWebhookPath(path)` exempts one exact POST path from
+  session and API-key authentication, for a route whose handler verifies
+  the request itself (a webhook signed with a shared secret). Matched like
+  the built-in webhook exemptions: the exact string the router dispatches
+  on, so no prefix, trailing segment, encoded separator or other method
+  passes.
+
 ### Changed
 
 - **`pipeline_id` is unique within a workspace, not an organization**

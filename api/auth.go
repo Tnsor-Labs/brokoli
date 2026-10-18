@@ -57,6 +57,9 @@ func isWebhookTriggerRequest(r *http.Request) bool {
 	if path == "" {
 		path = r.URL.Path
 	}
+	if isSignedWebhookPath(path) {
+		return true
+	}
 	segments := strings.Split(strings.Trim(path, "/"), "/")
 	switch len(segments) {
 	case 3:
@@ -260,4 +263,29 @@ func APIKeyAuth(auth *AuthConfig) func(http.Handler) http.Handler {
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
+}
+
+// Signed webhook paths a distribution serves: POST routes whose request
+// authenticates itself (a webhook signed with a shared secret, checked by
+// the handler), so the session and API-key middlewares let them through.
+// An exact path, compared with the same string the router dispatches on:
+// no prefix, no encoded variant, no other method.
+var (
+	signedWebhookMu    sync.RWMutex
+	signedWebhookPaths = map[string]bool{}
+)
+
+// RegisterSignedWebhookPath exempts one exact POST path from session and
+// API-key authentication. Only for a route whose handler verifies the
+// request itself before acting on it.
+func RegisterSignedWebhookPath(path string) {
+	signedWebhookMu.Lock()
+	defer signedWebhookMu.Unlock()
+	signedWebhookPaths[path] = true
+}
+
+func isSignedWebhookPath(path string) bool {
+	signedWebhookMu.RLock()
+	defer signedWebhookMu.RUnlock()
+	return signedWebhookPaths[path]
 }
