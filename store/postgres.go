@@ -220,16 +220,16 @@ func (s *PostgresStore) migrate() error {
 	if _, err := s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS parameters TEXT NOT NULL DEFAULT '{}'`); err != nil {
 		return fmt.Errorf("add pipelines.parameters: %w", err)
 	}
-	// pipeline_id is unique within an organization, not across the whole
-	// server: unique everywhere, one tenant's create answered 409 for a
-	// name another tenant used, which told it that name existed and let it
-	// claim names before their owners did. The per-organization index is
-	// created before the old one is dropped, so uniqueness never lapses.
-	// On a single-tenant server every organization is "", and nothing
-	// changes.
-	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
-		return fmt.Errorf("create idx_pipeline_org_pid: %w", err)
+	// pipeline_id is unique within a workspace. It was unique server-wide,
+	// which let one tenant's create answer 409 for a name another tenant
+	// used; then within an organization, which stopped a staging workspace
+	// holding the same pipelines as production. Each narrower index is
+	// created before the wider ones are dropped, so uniqueness never lapses,
+	// and data valid under a wider index is valid under a narrower one.
+	if _, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_ws_pid ON pipelines(org_id, workspace_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
+		return fmt.Errorf("create idx_pipeline_ws_pid: %w", err)
 	}
+	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_org_pid`)
 	s.db.Exec(`DROP INDEX IF EXISTS idx_pipeline_pid`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
 
@@ -944,11 +944,26 @@ func (s *PostgresStore) UpdatePipeline(p *models.Pipeline) error {
 	return nil
 }
 
-// GetPipelineByPipelineIDInOrg finds a pipeline by its pipeline_id within
-// one organization, where pipeline_id is unique.
+// GetPipelineByPipelineIDInOrg finds the organization's pipeline with this
+// pipeline_id, or ErrAmbiguousPipelineID when more than one workspace has one.
 func (s *PostgresStore) GetPipelineByPipelineIDInOrg(orgID, pipelineID string) (*models.Pipeline, error) {
+	var n int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pipelines WHERE org_id = $1 AND pipeline_id = $2`, orgID, pipelineID).Scan(&n); err != nil {
+		return nil, err
+	}
+	if n > 1 {
+		return nil, ErrAmbiguousPipelineID
+	}
 	return s.scanPipelineRow(s.db.QueryRow(
 		`SELECT `+pipelineColumns+` FROM pipelines WHERE org_id = $1 AND pipeline_id = $2`, orgID, pipelineID,
+	))
+}
+
+// GetPipelineByPipelineIDInWorkspace finds the pipeline with this
+// pipeline_id in one workspace of an organization, where it is unique.
+func (s *PostgresStore) GetPipelineByPipelineIDInWorkspace(orgID, workspaceID, pipelineID string) (*models.Pipeline, error) {
+	return s.scanPipelineRow(s.db.QueryRow(
+		`SELECT `+pipelineColumns+` FROM pipelines WHERE org_id = $1 AND workspace_id = $2 AND pipeline_id = $3`, orgID, workspaceID, pipelineID,
 	))
 }
 

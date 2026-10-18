@@ -400,10 +400,16 @@ type PipelineStore interface {
 	// DeletePipelineTx runs inside an existing transaction; for atomic cascade deletes.
 	DeletePipelineTx(tx *sql.Tx, id string) error
 	// GetPipelineByPipelineID matches pipeline_id on its own. pipeline_id
-	// is unique only within an organization, so with tenants it may match
-	// any of several; scope it with GetPipelineByPipelineIDInOrg.
+	// is unique only within a workspace, so it may match any of several;
+	// scope it with GetPipelineByPipelineIDInWorkspace.
 	GetPipelineByPipelineID(pipelineID string) (*models.Pipeline, error)
+	// GetPipelineByPipelineIDInOrg finds the organization's pipeline with
+	// this pipeline_id. Two workspaces may each have one, and then it
+	// answers ErrAmbiguousPipelineID rather than picking either.
 	GetPipelineByPipelineIDInOrg(orgID, pipelineID string) (*models.Pipeline, error)
+	// GetPipelineByPipelineIDInWorkspace finds the pipeline with this
+	// pipeline_id in one workspace, where it is unique.
+	GetPipelineByPipelineIDInWorkspace(orgID, workspaceID, pipelineID string) (*models.Pipeline, error)
 	// PipelinesDependingOn returns pipelines that list the given id in DependsOn or DependencyRules.
 	// NOTE: returns raw cross-org matches; callers are responsible for org filtering when relevant.
 	// Prefer ListPipelineDepsByOrg for graph walks — it avoids loading nodes/edges/params blobs.
@@ -914,6 +920,11 @@ var ErrDuplicateScheduledRun = errors.New("a scheduled run for this pipeline and
 // precondition failure the caller can act on rather than a server fault.
 var ErrDuplicatePipelineID = errors.New("a pipeline with this pipeline_id already exists")
 
+// ErrAmbiguousPipelineID is an organization-wide lookup by pipeline_id
+// that matches pipelines in more than one workspace: pipeline_id is unique
+// within a workspace, so the caller must say which one.
+var ErrAmbiguousPipelineID = errors.New("more than one workspace has a pipeline with this pipeline_id")
+
 // isPipelineIDConflict recognises the unique-index violation behind
 // ErrDuplicatePipelineID on either backend, the same way
 // isScheduledIntervalConflict does for its own index. Postgres names the
@@ -924,10 +935,10 @@ func isPipelineIDConflict(err error) bool {
 		return false
 	}
 	msg := err.Error()
-	// idx_pipeline_org_pid is the per-organization index; idx_pipeline_pid
-	// the server-wide one it replaced, still present until a database has
-	// been opened by this version.
-	if strings.Contains(msg, "idx_pipeline_org_pid") || strings.Contains(msg, "idx_pipeline_pid") {
+	// idx_pipeline_ws_pid is the per-workspace index; idx_pipeline_org_pid
+	// and idx_pipeline_pid the per-organization and server-wide ones before
+	// it, still present until a database has been opened by this version.
+	if strings.Contains(msg, "idx_pipeline_ws_pid") || strings.Contains(msg, "idx_pipeline_org_pid") || strings.Contains(msg, "idx_pipeline_pid") {
 		return true
 	}
 	return strings.Contains(msg, "UNIQUE constraint failed") &&

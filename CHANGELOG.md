@@ -11,6 +11,19 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Changed
+
+- **`pipeline_id` is unique within a workspace, not an organization**
+  -- @hc12r. Two workspaces of one organization can each have an
+  `orders`, so a staging workspace can hold the same pipelines as
+  production. The per-workspace index is created before the
+  per-organization one is dropped, so uniqueness never lapses, and
+  existing data is valid under it. `GetPipelineByPipelineIDInWorkspace`
+  is the lookup to use; `GetPipelineByPipelineIDInOrg` now answers
+  `ErrAmbiguousPipelineID` when more than one workspace has the id,
+  rather than returning either. The git push route looks in the caller's
+  workspace first.
+
 ### Added
 
 - **Queued jobs that are not pipeline runs** -- @hc12r. `RunJob` has a

@@ -364,7 +364,13 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				// caller's organization can see.
 				p, err := s.GetPipeline(id)
 				if err != nil || p == nil {
-					p, err = s.GetPipelineByPipelineIDInOrg(GetOrgIDFromRequest(r), id)
+					// pipeline_id is unique within a workspace: look in the
+					// caller's first, then organization-wide, which answers
+					// only when exactly one workspace has it.
+					p, err = s.GetPipelineByPipelineIDInWorkspace(GetOrgIDFromRequest(r), GetWorkspaceID(r), id)
+					if err != nil || p == nil {
+						p, err = s.GetPipelineByPipelineIDInOrg(GetOrgIDFromRequest(r), id)
+					}
 				}
 				if err != nil || p == nil || !ValidateOrgAccess(r, p.OrgID) {
 					DenyOrgAccess(w)
