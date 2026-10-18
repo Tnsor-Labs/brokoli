@@ -27,7 +27,7 @@ reconstruct from git archaeology.
   -- @hc12r. A refused connection is retried for up to 60 seconds, so
   processes that start alongside their database wait for it instead of
   restarting. A wrong password or database name still fails at once.
-  The wait is exported as `store.WaitForPostgres` (#NNN), so code that
+  The wait is exported as `store.WaitForPostgres` (#853), so code that
   opens its own pool at startup waits the same way instead of coming up
   without its feature.
 
