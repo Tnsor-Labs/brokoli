@@ -13,7 +13,7 @@ reconstruct from git archaeology.
 
 ### Fixed
 
-- **Rollback refuses Git-managed pipelines** (#NNN) -- @hc12r. Editing a
+- **Rollback refuses Git-managed pipelines** (#854) -- @hc12r. Editing a
   pipeline whose source is Git was already refused, but rolling it back to
   an earlier version was not: the pipeline then ran something its
   repository did not say, until the next sync silently undid it. A
