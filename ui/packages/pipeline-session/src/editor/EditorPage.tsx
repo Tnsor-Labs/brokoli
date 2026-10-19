@@ -32,9 +32,30 @@ import {
   Undo2,
   Workflow,
 } from 'lucide-react'
-import { ApiError, downloadText, pipelineApi, type DryRunResponse, type NodeIssue, type Pipeline, type PipelineEdge } from '@brokoli/api'
+import {
+  ApiError,
+  downloadText,
+  pipelineApi,
+  type DryRunResponse,
+  type NodeIssue,
+  type Pipeline,
+  type PipelineEdge,
+} from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
-import { Button, Callout, ConfirmDialog, IconButton, Kbd, Menu, Modal, PageLoading, cx, errorMessage, formatRelative, useToast } from '@brokoli/ui'
+import {
+  Button,
+  Callout,
+  ConfirmDialog,
+  IconButton,
+  Kbd,
+  Menu,
+  Modal,
+  PageLoading,
+  cx,
+  errorMessage,
+  formatRelative,
+  useToast,
+} from '@brokoli/ui'
 import { disabledNodeMessage, useDisabledNodeTypes } from '../capabilities'
 import { catalogEntry } from '../catalog'
 import {
@@ -58,6 +79,7 @@ import { PreviewPanel } from '../panels/PreviewPanel'
 import { SchedulePopover } from '../panels/SchedulePopover'
 import { SettingsDrawer } from '../panels/SettingsDrawer'
 import { VersionsPanel } from '../panels/VersionsPanel'
+import { editMode } from './editMode'
 import { useDocument } from './useDocument'
 import '../graph.css'
 import './editor.css'
@@ -68,10 +90,34 @@ const pipelineKey = (id: string) => ['pipeline', id] as const
 type Selection = { kind: 'node' | 'edge'; id: string } | null
 type Side = 'inspector' | 'versions'
 
-export function PipelineEditorPage({ pipelineId }: { pipelineId: string }) {
+/**
+ * How an application saves a pipeline managed in Git, when it has a way
+ * to: for instance by proposing the edit to the pipeline's repository.
+ * Without one, such a pipeline is read only in the editor.
+ */
+export interface GitSave {
+  /** The save button's label, e.g. "Propose change". */
+  label: string
+  /** What the editor says about saving, shown while editing. */
+  hint: string
+  /**
+   * Saves the edited pipeline. Resolves with what to tell the person; the
+   * editor then goes back to the pipeline as it is, since the change is
+   * not applied by saving. Rejects with the reason it was not saved.
+   */
+  save: (pipelineId: string, pipeline: Pipeline) => Promise<{ title: string; body?: string }>
+}
+
+export function PipelineEditorPage({
+  pipelineId,
+  gitSave,
+}: {
+  pipelineId: string
+  gitSave?: GitSave
+}) {
   return (
     <ReactFlowProvider>
-      <Editor pipelineId={pipelineId} />
+      <Editor pipelineId={pipelineId} gitSave={gitSave} />
     </ReactFlowProvider>
   )
 }
@@ -81,22 +127,34 @@ function isTyping(target: EventTarget | null) {
   return Boolean(el?.closest('input, textarea, select, [contenteditable="true"], .cm-editor'))
 }
 
-function Editor({ pipelineId }: { pipelineId: string }) {
+function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave }) {
   const session = useSession()
   const toast = useToast()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const flow = useReactFlow()
   const canvasRef = useRef<HTMLDivElement>(null)
-  const loaded = useQuery({ queryKey: pipelineKey(pipelineId), queryFn: () => pipelineApi.get(pipelineId), staleTime: Infinity, refetchOnWindowFocus: false })
-  const { doc, docRef, change, undo, redo, reset, saved, revision, dirty, canUndo, canRedo } = useDocument(loaded.data)
+  const loaded = useQuery({
+    queryKey: pipelineKey(pipelineId),
+    queryFn: () => pipelineApi.get(pipelineId),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  })
+  const { doc, docRef, change, undo, redo, reset, saved, revision, dirty, canUndo, canRedo } =
+    useDocument(loaded.data)
   const disabledTypes = useDisabledNodeTypes()
 
   const [selection, setSelection] = useState<Selection>(null)
   const [side, setSide] = useState<Side>('inspector')
   const [issues, setIssues] = useState<Record<string, NodeIssue>>({})
-  const [busy, setBusy] = useState<null | 'save' | 'publish' | 'run' | 'preview' | 'validate' | 'clone'>(null)
-  const [banner, setBanner] = useState<{ tone: 'danger' | 'warning' | 'success'; title: string; body?: string } | null>(null)
+  const [busy, setBusy] = useState<
+    null | 'save' | 'publish' | 'run' | 'preview' | 'validate' | 'clone'
+  >(null)
+  const [banner, setBanner] = useState<{
+    tone: 'danger' | 'warning' | 'success'
+    title: string
+    body?: string
+  } | null>(null)
   const [preview, setPreview] = useState<DryRunResponse | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showCode, setShowCode] = useState(false)
@@ -105,13 +163,15 @@ function Editor({ pipelineId }: { pipelineId: string }) {
   const [flowNodes, setFlowNodes] = useState<FlowNode[]>([])
 
   const pipeline = doc?.pipeline
-  const readonlyReason = !pipeline
-    ? ''
-    : pipeline.source === 'git'
-      ? 'This pipeline is managed in Git. Change it in its repository; edits here cannot be saved.'
-      : !session.can('pipelines.edit')
-        ? 'Your role can view this pipeline but not change it.'
-        : ''
+  // Saving a pipeline managed in Git hands the edit to the application
+  // (gitSave); nothing is written here.
+  const { readonlyReason, viaGit } = pipeline
+    ? editMode({
+        managedInGit: pipeline.source === 'git',
+        canEdit: session.can('pipelines.edit'),
+        hasGitSave: Boolean(gitSave),
+      })
+    : { readonlyReason: '', viaGit: false }
   const readonly = Boolean(readonlyReason)
 
   // Warn before closing the tab or reloading with unsaved work.
@@ -123,7 +183,10 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [dirty])
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname)
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      dirty && currentLocation.pathname !== nextLocation.pathname,
+  )
 
   const nodeById = useMemo(() => new Map((doc?.nodes ?? []).map((n) => [n.id, n])), [doc?.nodes])
   const issueFor = useCallback(
@@ -151,14 +214,25 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       const byId = new Map(prev.map((n) => [n.id, n]))
       return doc.nodes.map((node) => {
         const previous = byId.get(node.id)
-        const data = { node, issue: issueFor(node.id), readonly, disabled: disabledTypes.has(node.type) }
+        const data = {
+          node,
+          issue: issueFor(node.id),
+          readonly,
+          disabled: disabledTypes.has(node.type),
+        }
         const selected = selection?.kind === 'node' && selection.id === node.id
-        return previous ? { ...previous, position: node.position, data, selected } : { id: node.id, type: 'brokoli' as const, position: node.position, data, selected }
+        return previous
+          ? { ...previous, position: node.position, data, selected }
+          : { id: node.id, type: 'brokoli' as const, position: node.position, data, selected }
       })
     })
   }, [doc, issueFor, selection, readonly, disabledTypes])
 
-  const flowEdges = useMemo(() => toFlowEdges(doc?.edges ?? [], undefined, selection?.kind === 'edge' ? selection.id : null), [doc?.edges, selection])
+  const flowEdges = useMemo(
+    () =>
+      toFlowEdges(doc?.edges ?? [], undefined, selection?.kind === 'edge' ? selection.id : null),
+    [doc?.edges, selection],
+  )
 
   const selectedNode = selection?.kind === 'node' ? (nodeById.get(selection.id) ?? null) : null
 
@@ -181,10 +255,22 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     let position = at
     if (!position) {
       const rect = canvasRef.current?.getBoundingClientRect()
-      const centre = rect ? flow.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 }) : undefined
-      position = nextFreePosition(doc.nodes, centre && { x: centre.x - NODE_WIDTH / 2, y: centre.y - NODE_HEIGHT / 2 })
+      const centre = rect
+        ? flow.screenToFlowPosition({
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+          })
+        : undefined
+      position = nextFreePosition(
+        doc.nodes,
+        centre && { x: centre.x - NODE_WIDTH / 2, y: centre.y - NODE_HEIGHT / 2 },
+      )
     }
-    const node = createNode(type, position, doc.nodes.map((n) => n.id))
+    const node = createNode(
+      type,
+      position,
+      doc.nodes.map((n) => n.id),
+    )
     change((d) => ({ ...d, nodes: [...d.nodes, node] }))
     setSelection({ kind: 'node', id: node.id })
     setSide('inspector')
@@ -194,7 +280,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     if (!selection || readonly) return
     if (selection.kind === 'node') {
       const id = selection.id
-      change((d) => ({ ...d, nodes: d.nodes.filter((n) => n.id !== id), edges: d.edges.filter((e) => e.from !== id && e.to !== id) }))
+      change((d) => ({
+        ...d,
+        nodes: d.nodes.filter((n) => n.id !== id),
+        edges: d.edges.filter((e) => e.from !== id && e.to !== id),
+      }))
       dropIssue(id)
     } else {
       const index = flowEdges.find((e) => e.id === selection.id)?.data?.index
@@ -206,7 +296,10 @@ function Editor({ pipelineId }: { pipelineId: string }) {
 
   const duplicateSelected = () => {
     if (!selectedNode || readonly || !doc) return
-    const copy = duplicateNode(selectedNode, doc.nodes.map((n) => n.id))
+    const copy = duplicateNode(
+      selectedNode,
+      doc.nodes.map((n) => n.id),
+    )
     change((d) => ({ ...d, nodes: [...d.nodes, copy] }))
     setSelection({ kind: 'node', id: copy.id })
   }
@@ -217,7 +310,8 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     if (!doc || readonly || !c.source || !c.target) return
     const problem = connectionProblem(doc.nodes, doc.edges, c.source, c.target)
     if (problem) return toast.warning('Not connected', problem)
-    if (nodeById.get(c.source)?.type === 'condition') return setBranch({ from: c.source, to: c.target })
+    if (nodeById.get(c.source)?.type === 'condition')
+      return setBranch({ from: c.source, to: c.target })
     addEdge({ from: c.source, to: c.target })
   }
 
@@ -230,7 +324,9 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           ...d,
           nodes: d.nodes.map((n) => {
             const m = moved.find((c) => c.type === 'position' && c.id === n.id)
-            return m && m.type === 'position' && m.position ? { ...n, position: { x: Math.round(m.position.x), y: Math.round(m.position.y) } } : n
+            return m && m.type === 'position' && m.position
+              ? { ...n, position: { x: Math.round(m.position.x), y: Math.round(m.position.y) } }
+              : n
           }),
         }),
         false,
@@ -248,10 +344,13 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     requestAnimationFrame(() => void flow.fitView({ padding: 0.2, duration: 300 }))
   }
 
-  const updatePipeline = (patch: Partial<Pipeline>) => change((d) => ({ ...d, pipeline: { ...d.pipeline, ...patch } }), false)
+  const updatePipeline = (patch: Partial<Pipeline>) =>
+    change((d) => ({ ...d, pipeline: { ...d.pipeline, ...patch } }), false)
 
   // ---- server operations ---------------------------------------------------
-  const save = async (options: { quiet?: boolean; draft?: boolean } = {}): Promise<Pipeline | null> => {
+  const save = async (
+    options: { quiet?: boolean; draft?: boolean } = {},
+  ): Promise<Pipeline | null> => {
     const current = docRef.current
     if (!current || readonly) return null
     let payload: Pipeline
@@ -262,6 +361,16 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       return null
     }
     if (options.draft !== undefined) payload = { ...payload, draft: options.draft }
+    if (viaGit && gitSave) {
+      try {
+        const told = await gitSave.save(pipelineId, payload)
+        if (loaded.data) reset(loaded.data)
+        setBanner({ tone: 'success', title: told.title, body: told.body })
+      } catch (e) {
+        setBanner({ tone: 'danger', title: 'The change was not proposed', body: errorMessage(e) })
+      }
+      return null
+    }
     const at = revision.current
     try {
       const server = await pipelineApi.update(pipelineId, payload)
@@ -272,7 +381,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       if (!options.quiet) toast.success('Pipeline saved')
       return server
     } catch (e) {
-      setBanner({ tone: 'danger', title: options.draft === false ? 'Not published yet' : 'The pipeline was not saved', body: errorMessage(e) })
+      setBanner({
+        tone: 'danger',
+        title: options.draft === false ? 'Not published yet' : 'The pipeline was not saved',
+        body: errorMessage(e),
+      })
       return null
     }
   }
@@ -286,14 +399,28 @@ function Editor({ pipelineId }: { pipelineId: string }) {
     }
   }
 
-  const ensureSaved = async () => (dirty ? Boolean(await save({ quiet: true })) : true)
+  const ensureSaved = async () => {
+    if (!dirty) return true
+    if (viaGit) {
+      // Running, previewing or validating uses the pipeline as deployed:
+      // an edit of a Git-managed pipeline is not saved by doing them.
+      setBanner({
+        tone: 'warning',
+        title: 'Your edits are not part of the deployed pipeline',
+        body: `${gitSave?.label ?? 'Save'} them, or undo them, first.`,
+      })
+      return false
+    }
+    return Boolean(await save({ quiet: true }))
+  }
 
   const onSave = () => void withBusy('save', () => save())
 
   const publish = () =>
     withBusy('publish', async () => {
       const server = await save({ quiet: true, draft: false })
-      if (server) toast.success('Published', 'The pipeline can run now, and its schedule is active.')
+      if (server)
+        toast.success('Published', 'The pipeline can run now, and its schedule is active.')
     })
 
   const runNow = () =>
@@ -302,7 +429,9 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       try {
         const run = await pipelineApi.run(pipelineId)
         toast.success('Run started', `Run ${run.id.slice(0, 8)} is ${run.status}.`)
-        navigate(`/pipelines/${encodeURIComponent(pipelineId)}/runs?run=${encodeURIComponent(run.id)}`)
+        navigate(
+          `/pipelines/${encodeURIComponent(pipelineId)}/runs?run=${encodeURIComponent(run.id)}`,
+        )
       } catch (e) {
         setBanner({ tone: 'danger', title: 'The run did not start', body: errorMessage(e) })
       }
@@ -316,7 +445,12 @@ function Editor({ pipelineId }: { pipelineId: string }) {
         setIssues(Object.fromEntries(list.map((i) => [i.node_id, i])))
         const errors = list.filter((i) => i.errors?.length).length
         if (!list.length) setBanner({ tone: 'success', title: 'Every node passed validation' })
-        else setBanner({ tone: errors ? 'danger' : 'warning', title: `${list.length} node${list.length === 1 ? '' : 's'} need${list.length === 1 ? 's' : ''} attention`, body: 'Nodes with problems are marked on the canvas; select one to see the details.' })
+        else
+          setBanner({
+            tone: errors ? 'danger' : 'warning',
+            title: `${list.length} node${list.length === 1 ? '' : 's'} need${list.length === 1 ? 's' : ''} attention`,
+            body: 'Nodes with problems are marked on the canvas; select one to see the details.',
+          })
       } catch (e) {
         setBanner({ tone: 'danger', title: 'Validation could not run', body: errorMessage(e) })
       }
@@ -334,14 +468,18 @@ function Editor({ pipelineId }: { pipelineId: string }) {
 
   const clone = () =>
     withBusy('clone', async () => {
-      if (dirty && !(await save({ quiet: true }))) return
+      if (dirty && !viaGit && !(await save({ quiet: true }))) return
       try {
         const copy = await pipelineApi.clone(pipelineId)
         void queryClient.invalidateQueries({ queryKey: ['pipelines', 'summary'] })
         toast.success(`Duplicated as "${copy.name}"`)
         navigate(`/pipelines/${encodeURIComponent(copy.id)}/edit`)
       } catch (e) {
-        setBanner({ tone: 'danger', title: 'The pipeline was not duplicated', body: errorMessage(e) })
+        setBanner({
+          tone: 'danger',
+          title: 'The pipeline was not duplicated',
+          body: errorMessage(e),
+        })
       }
     })
 
@@ -355,8 +493,24 @@ function Editor({ pipelineId }: { pipelineId: string }) {
   }
 
   // ---- keyboard ------------------------------------------------------------
-  const keys = useRef({ save: onSave, undo, redo, removeSelection, duplicateSelected, readonly, selection })
-  keys.current = { save: onSave, undo, redo, removeSelection, duplicateSelected, readonly, selection }
+  const keys = useRef({
+    save: onSave,
+    undo,
+    redo,
+    removeSelection,
+    duplicateSelected,
+    readonly,
+    selection,
+  })
+  keys.current = {
+    save: onSave,
+    undo,
+    redo,
+    removeSelection,
+    duplicateSelected,
+    readonly,
+    selection,
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey
@@ -393,7 +547,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       <div className="ps-editor-error">
         <Callout
           tone="danger"
-          title={loaded.error instanceof ApiError && loaded.error.status === 404 ? 'This pipeline does not exist' : 'The pipeline could not be loaded'}
+          title={
+            loaded.error instanceof ApiError && loaded.error.status === 404
+              ? 'This pipeline does not exist'
+              : 'The pipeline could not be loaded'
+          }
           action={<Button onClick={() => navigate('/pipelines')}>Back to pipelines</Button>}
         >
           {errorMessage(loaded.error)}
@@ -404,7 +562,14 @@ function Editor({ pipelineId }: { pipelineId: string }) {
 
   const issueCount = Object.keys(issues).length
   const nodeNames = Object.fromEntries(doc.nodes.map((n) => [n.id, n.name]))
-  const saveState = busy === 'save' ? 'Saving' : dirty ? 'Unsaved changes' : pipeline.updated_at ? `Saved ${formatRelative(pipeline.updated_at)}` : 'Saved'
+  const saveState =
+    busy === 'save'
+      ? 'Saving'
+      : dirty
+        ? 'Unsaved changes'
+        : pipeline.updated_at
+          ? `Saved ${formatRelative(pipeline.updated_at)}`
+          : 'Saved'
 
   const onDrop = (e: DragEvent) => {
     const type = e.dataTransfer.getData(PALETTE_MIME)
@@ -421,7 +586,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           <nav className="ps-crumbs" aria-label="Breadcrumb">
             <Link to="/pipelines">Pipelines</Link>
             <span aria-hidden="true">/</span>
-            <Link to={`/pipelines/${encodeURIComponent(pipelineId)}/runs`} className="ps-crumb-name" title={pipeline.name}>
+            <Link
+              to={`/pipelines/${encodeURIComponent(pipelineId)}/runs`}
+              className="ps-crumb-name"
+              title={pipeline.name}
+            >
               {pipeline.name}
             </Link>
           </nav>
@@ -429,6 +598,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           {readonly && (
             <span className="ps-pill" title={readonlyReason}>
               <Lock size={12} aria-hidden="true" /> Read only
+            </span>
+          )}
+          {viaGit && (
+            <span className="ps-pill" title={gitSave?.hint}>
+              Git
             </span>
           )}
           <span className={cx('ps-save-state', dirty && 'is-dirty')} role="status">
@@ -446,11 +620,22 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           <IconButton label="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo || readonly}>
             <Redo2 size={16} aria-hidden="true" />
           </IconButton>
-          <IconButton label="Arrange nodes automatically" onClick={layout} disabled={readonly || !doc.nodes.length}>
+          <IconButton
+            label="Arrange nodes automatically"
+            onClick={layout}
+            disabled={readonly || !doc.nodes.length}
+          >
             <LayoutGrid size={16} aria-hidden="true" />
           </IconButton>
           <span className="ps-divider" aria-hidden="true" />
-          <Button size="sm" variant="ghost" icon={<CheckCheck size={15} aria-hidden="true" />} onClick={validate} loading={busy === 'validate'} disabled={readonly && dirty}>
+          <Button
+            size="sm"
+            variant="ghost"
+            icon={<CheckCheck size={15} aria-hidden="true" />}
+            onClick={validate}
+            loading={busy === 'validate'}
+            disabled={readonly && dirty}
+          >
             Validate
           </Button>
           <Button
@@ -467,29 +652,88 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           <Menu
             label="More actions"
             items={[
-              { id: 'runs', label: 'View runs', icon: <Workflow size={15} />, onSelect: () => navigate(`/pipelines/${encodeURIComponent(pipelineId)}/runs`) },
-              { id: 'settings', label: 'Pipeline settings', icon: <Settings2 size={15} />, onSelect: () => setShowSettings(true) },
-              { id: 'versions', label: 'Version history', icon: <History size={15} />, onSelect: () => setSide('versions') },
-              { id: 'code', label: 'View as YAML or JSON', icon: <Code2 size={15} />, onSelect: () => setShowCode(true) },
+              {
+                id: 'runs',
+                label: 'View runs',
+                icon: <Workflow size={15} />,
+                onSelect: () => navigate(`/pipelines/${encodeURIComponent(pipelineId)}/runs`),
+              },
+              {
+                id: 'settings',
+                label: 'Pipeline settings',
+                icon: <Settings2 size={15} />,
+                onSelect: () => setShowSettings(true),
+              },
+              {
+                id: 'versions',
+                label: 'Version history',
+                icon: <History size={15} />,
+                onSelect: () => setSide('versions'),
+              },
+              {
+                id: 'code',
+                label: 'View as YAML or JSON',
+                icon: <Code2 size={15} />,
+                onSelect: () => setShowCode(true),
+              },
               'separator',
-              ...(session.can('pipelines.edit') ? [{ id: 'clone', label: 'Duplicate pipeline', icon: <Copy size={15} />, onSelect: () => (dirty ? setConfirmClone(true) : void clone()) }] : []),
-              ...(session.can('pipelines.export') ? [{ id: 'export', label: 'Download saved YAML', icon: <Download size={15} />, onSelect: () => void downloadExport() }] : []),
+              ...(session.can('pipelines.edit')
+                ? [
+                    {
+                      id: 'clone',
+                      label: 'Duplicate pipeline',
+                      icon: <Copy size={15} />,
+                      onSelect: () => (dirty ? setConfirmClone(true) : void clone()),
+                    },
+                  ]
+                : []),
+              ...(session.can('pipelines.export')
+                ? [
+                    {
+                      id: 'export',
+                      label: 'Download saved YAML',
+                      icon: <Download size={15} />,
+                      onSelect: () => void downloadExport(),
+                    },
+                  ]
+                : []),
             ]}
           />
           <span className="ps-divider" aria-hidden="true" />
           {!readonly && (
-            <Button size="sm" variant={dirty ? 'primary' : 'secondary'} onClick={onSave} loading={busy === 'save'} title="Save (Ctrl+S)">
-              Save
+            <Button
+              size="sm"
+              variant={dirty ? 'primary' : 'secondary'}
+              onClick={onSave}
+              loading={busy === 'save'}
+              disabled={viaGit && !dirty}
+              title={viaGit ? `${gitSave?.label} (Ctrl+S)` : 'Save (Ctrl+S)'}
+            >
+              {viaGit ? gitSave?.label : 'Save'}
             </Button>
           )}
           {pipeline.draft
             ? !readonly && (
-                <Button size="sm" variant="primary" icon={<Rocket size={14} aria-hidden="true" />} onClick={() => void publish()} loading={busy === 'publish'} title="Validate the pipeline fully and make it runnable">
+                <Button
+                  size="sm"
+                  variant="primary"
+                  icon={<Rocket size={14} aria-hidden="true" />}
+                  onClick={() => void publish()}
+                  loading={busy === 'publish'}
+                  title="Validate the pipeline fully and make it runnable"
+                >
                   Publish
                 </Button>
               )
             : session.can('pipelines.run') && (
-                <Button size="sm" variant="primary" icon={<Play size={14} aria-hidden="true" />} onClick={() => void runNow()} loading={busy === 'run'} title={dirty ? 'Save and run' : 'Run now'}>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  icon={<Play size={14} aria-hidden="true" />}
+                  onClick={() => void runNow()}
+                  loading={busy === 'run'}
+                  title={dirty ? 'Save and run' : 'Run now'}
+                >
                   Run
                 </Button>
               )}
@@ -497,9 +741,14 @@ function Editor({ pipelineId }: { pipelineId: string }) {
       </header>
 
       {readonly && <div className="ps-readonly">{readonlyReason}</div>}
+      {viaGit && <div className="ps-readonly">{gitSave?.hint}</div>}
       {banner && (
         <div className="ps-banner">
-          <Callout tone={banner.tone === 'success' ? 'success' : banner.tone} title={banner.title} onDismiss={() => setBanner(null)}>
+          <Callout
+            tone={banner.tone === 'success' ? 'success' : banner.tone}
+            title={banner.title}
+            onDismiss={() => setBanner(null)}
+          >
             {banner.body && <span className="ps-banner-body">{banner.body}</span>}
           </Callout>
         </div>
@@ -528,7 +777,12 @@ function Editor({ pipelineId }: { pipelineId: string }) {
 
       <div className="ps-workspace">
         {!readonly && <Palette onAdd={(type) => addNode(type)} hidden={disabledTypes} />}
-        <div className="ps-canvas" ref={canvasRef} onDragOver={(e) => e.dataTransfer.types.includes(PALETTE_MIME) && e.preventDefault()} onDrop={onDrop}>
+        <div
+          className="ps-canvas"
+          ref={canvasRef}
+          onDragOver={(e) => e.dataTransfer.types.includes(PALETTE_MIME) && e.preventDefault()}
+          onDrop={onDrop}
+        >
           <ReactFlow
             nodes={flowNodes}
             edges={flowEdges}
@@ -536,7 +790,11 @@ function Editor({ pipelineId }: { pipelineId: string }) {
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
-            isValidConnection={(c) => !doc || !c.source || !c.target ? false : !connectionProblem(doc.nodes, doc.edges, c.source, c.target)}
+            isValidConnection={(c) =>
+              !doc || !c.source || !c.target
+                ? false
+                : !connectionProblem(doc.nodes, doc.edges, c.source, c.target)
+            }
             onNodeDragStart={() => !readonly && change((d) => d)}
             onNodeClick={(_, n) => {
               setSelection({ kind: 'node', id: n.id })
@@ -564,13 +822,18 @@ function Editor({ pipelineId }: { pipelineId: string }) {
               zoomable
               style={{ width: 168, height: 104 }}
               nodeBorderRadius={6}
-              nodeClassName={(n) => `ps-mini-${catalogEntry((n.data as { node: { type: string } }).node.type).family}`}
+              nodeClassName={(n) =>
+                `ps-mini-${catalogEntry((n.data as { node: { type: string } }).node.type).family}`
+              }
             />
           </ReactFlow>
           {!doc.nodes.length && (
             <div className="ps-canvas-empty">
               <strong>Start by adding a source</strong>
-              <span>Drag a node from the library onto the canvas, or click it to add it here. Connect nodes by dragging from a node's right edge to another node's left edge.</span>
+              <span>
+                Drag a node from the library onto the canvas, or click it to add it here. Connect
+                nodes by dragging from a node's right edge to another node's left edge.
+              </span>
             </div>
           )}
           {selection?.kind === 'edge' && !readonly && (
@@ -603,21 +866,39 @@ function Editor({ pipelineId }: { pipelineId: string }) {
               issue={issueFor(selectedNode.id)}
               readonly={readonly}
               onChange={(updated, historyKey) => {
-                change((d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === updated.id ? updated : n)) }), historyKey)
+                change(
+                  (d) => ({ ...d, nodes: d.nodes.map((n) => (n.id === updated.id ? updated : n)) }),
+                  historyKey,
+                )
                 dropIssue(updated.id)
               }}
               onDelete={removeSelection}
               onDuplicate={duplicateSelected}
             />
           ) : (
-            <Overview pipeline={pipeline} nodes={doc.nodes} edges={doc.edges} issues={issueCount} onSettings={() => setShowSettings(true)} />
+            <Overview
+              pipeline={pipeline}
+              nodes={doc.nodes}
+              edges={doc.edges}
+              issues={issueCount}
+              onSettings={() => setShowSettings(true)}
+            />
           )}
         </aside>
       </div>
 
-      {preview && <PreviewPanel result={preview} nodeNames={nodeNames} onClose={() => setPreview(null)} />}
+      {preview && (
+        <PreviewPanel result={preview} nodeNames={nodeNames} onClose={() => setPreview(null)} />
+      )}
 
-      {showSettings && <SettingsDrawer pipeline={pipeline} readonly={readonly} onChange={updatePipeline} onClose={() => setShowSettings(false)} />}
+      {showSettings && (
+        <SettingsDrawer
+          pipeline={pipeline}
+          readonly={readonly}
+          onChange={updatePipeline}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
       {showCode && (
         <CodeViewModal
           payload={(() => {
@@ -644,12 +925,21 @@ function Editor({ pipelineId }: { pipelineId: string }) {
           }
         >
           <div className="ps-branch-choice">
-            <button type="button" className="is-true" data-autofocus onClick={() => (addEdge({ ...branch, condition: true }), setBranch(null))}>
+            <button
+              type="button"
+              className="is-true"
+              data-autofocus
+              onClick={() => (addEdge({ ...branch, condition: true }), setBranch(null))}
+            >
               <GitBranch size={16} aria-hidden="true" />
               <strong>True</strong>
               <span>Runs when the condition holds</span>
             </button>
-            <button type="button" className="is-false" onClick={() => (addEdge({ ...branch, condition: false }), setBranch(null))}>
+            <button
+              type="button"
+              className="is-false"
+              onClick={() => (addEdge({ ...branch, condition: false }), setBranch(null))}
+            >
               <GitBranch size={16} aria-hidden="true" />
               <strong>False</strong>
               <span>Runs when it does not</span>
@@ -667,7 +957,10 @@ function Editor({ pipelineId }: { pipelineId: string }) {
             await clone()
           }}
         >
-          <p>The copy is made from the saved pipeline. Your unsaved changes are saved first so the copy includes them.</p>
+          <p>
+            The copy is made from the saved pipeline. Your unsaved changes are saved first so the
+            copy includes them.
+          </p>
         </ConfirmDialog>
       )}
       {blocker.state === 'blocked' && (

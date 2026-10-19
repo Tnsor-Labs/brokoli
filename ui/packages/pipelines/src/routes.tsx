@@ -1,12 +1,17 @@
 import { lazy, Suspense, type ReactNode } from 'react'
 import { Navigate, useParams, type RouteObject } from 'react-router-dom'
+import type { GitSave } from '@brokoli/pipeline-session'
 import { PageLoading } from '@brokoli/ui'
 import { PipelinesPage } from './list/PipelinesPage'
 
 const RunsPage = lazy(() => import('./runs/RunsPage').then((m) => ({ default: m.RunsPage })))
 const GridPage = lazy(() => import('./grid/GridPage').then((m) => ({ default: m.GridPage })))
-const FullTimelinePage = lazy(() => import('./runs/FullTimelinePage').then((m) => ({ default: m.FullTimelinePage })))
-const EditorPage = lazy(() => import('@brokoli/pipeline-session').then((m) => ({ default: m.PipelineEditorPage })))
+const FullTimelinePage = lazy(() =>
+  import('./runs/FullTimelinePage').then((m) => ({ default: m.FullTimelinePage })),
+)
+const EditorPage = lazy(() =>
+  import('@brokoli/pipeline-session').then((m) => ({ default: m.PipelineEditorPage })),
+)
 
 function Deferred({ children, label }: { children: ReactNode; label: string }) {
   return <Suspense fallback={<PageLoading label={label} />}>{children}</Suspense>
@@ -30,12 +35,22 @@ function RunKeyed({ render }: { render: (id: string, runId: string) => ReactNode
  * `pipelineExtra` lets an application add its own content to the runs page
  * header for a pipeline (the Enterprise app puts the owner and team there);
  * the shared code only renders whatever node it is handed, so it stays
- * unaware of enterprise concepts.
+ * unaware of enterprise concepts. `gitSave` lets it save a pipeline managed
+ * in Git from the editor, which is otherwise read only for one.
  */
-export function pipelineRoutes(opts: { pipelineExtra?: (pipelineId: string) => ReactNode } = {}): RouteObject[] {
+export function pipelineRoutes(
+  opts: { pipelineExtra?: (pipelineId: string) => ReactNode; gitSave?: GitSave } = {},
+): RouteObject[] {
   return [
     { path: 'pipelines', element: <PipelinesPage /> },
-    { path: 'pipelines/:id', element: <Keyed render={(id) => <Navigate to={`/pipelines/${encodeURIComponent(id)}/runs`} replace />} /> },
+    {
+      path: 'pipelines/:id',
+      element: (
+        <Keyed
+          render={(id) => <Navigate to={`/pipelines/${encodeURIComponent(id)}/runs`} replace />}
+        />
+      ),
+    },
     {
       path: 'pipelines/:id/runs',
       element: (
@@ -78,7 +93,7 @@ export function pipelineRoutes(opts: { pipelineExtra?: (pipelineId: string) => R
         <Keyed
           render={(id) => (
             <Deferred label="Loading editor">
-              <EditorPage key={id} pipelineId={id} />
+              <EditorPage key={id} pipelineId={id} gitSave={opts.gitSave} />
             </Deferred>
           )}
         />
