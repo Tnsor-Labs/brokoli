@@ -211,3 +211,30 @@
 .ps-graph .ps-handle.react-flow__handle {
   opacity: 0;
 }
+
+/* A change request's review graph: what the change adds, changes and removes. */
+.ps-node.is-diff-added {
+  border-color: var(--bk-color-success);
+  box-shadow: 0 0 0 2px var(--bk-color-success-soft);
+}
+.ps-node.is-diff-changed {
+  border-color: var(--bk-color-warning);
+  box-shadow: 0 0 0 2px var(--bk-color-warning-soft);
+}
+.ps-node.is-diff-removed {
+  border-style: dashed;
+  border-color: var(--bk-color-danger);
+  opacity: 0.6;
+}
+.ps-node.is-diff-removed strong {
+  text-decoration: line-through;
+}
+.react-flow__edge.is-diff-added path.react-flow__edge-path {
+  stroke: var(--bk-color-success);
+  stroke-width: 2;
+}
+.react-flow__edge.is-diff-removed path.react-flow__edge-path {
+  stroke: var(--bk-color-danger);
+  stroke-dasharray: 5 4;
+  opacity: 0.7;
+}

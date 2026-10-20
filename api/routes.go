@@ -147,7 +147,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 			if cs, err := NewChangeRequestStore(db); err != nil {
 				log.Printf("change requests unavailable: %v", err)
 			} else {
-				registerChangeRequestRoutes(r, ph, cs, agentPC, requirePerm)
+				registerChangeRequestRoutes(r, ph, e, cs, agentPC, requirePerm)
 			}
 		}
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)

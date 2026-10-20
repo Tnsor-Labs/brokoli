@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -401,5 +404,80 @@ func TestChangeRequestsStayInTheirOrganization(t *testing.T) {
 	}
 	if code, _, _ := b.do(http.MethodGet, "/api/pipelines/"+p.ID+"/changes", b.tokens["ada"], ""); code != http.StatusNotFound {
 		t.Fatalf("listed another organization's requests: %d", code)
+	}
+}
+
+// A person tests a change request: the current and proposed pipelines are
+// previewed side by side, nothing is written, no run is recorded, and an
+// agent cannot start it.
+func TestTestingAChangeRequest(t *testing.T) {
+	b := newAgentBed(t)
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "orders.csv"), filepath.Join(dir, "out.csv")
+	if err := os.WriteFile(in, []byte("id,price,qty\n1,10,2\n2,20,3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b.seedPipeline(&models.Pipeline{
+		ID: "p-calc", Name: "calc", Enabled: true, WorkspaceID: models.DefaultWorkspaceID,
+		Nodes: []models.Node{
+			{ID: "src", Type: "source_file", Name: "Orders", Config: map[string]interface{}{"path": in, "format": "csv"}},
+			{ID: "tf", Type: "transform", Name: "Totals", Config: map[string]interface{}{"rules": []interface{}{}}},
+			{ID: "dst", Type: "sink_file", Name: "Save", Config: map[string]interface{}{"path": out, "format": "csv"}},
+		},
+		Edges: []models.Edge{{From: "src", To: "tf"}, {From: "tf", To: "dst"}},
+	})
+	id := b.pipelineID("calc")
+	_, agent := b.agent("triage-bot", "", "ada", "ada", true)
+	def := b.edited(id, func(p *models.Pipeline) {
+		p.Nodes[1].Config["rules"] = []interface{}{map[string]interface{}{"type": "add_column", "name": "total", "expression": "price * qty"}}
+	})
+	code, cr, raw := b.propose(agent, id, def, "Add the order total")
+	if code != http.StatusCreated {
+		t.Fatalf("propose: %d %s", code, raw)
+	}
+	path := "/api/pipelines/" + id + "/changes/" + cr["id"].(string) + "/test"
+
+	if code, _, raw := b.do(http.MethodPost, path, agent, ""); code != http.StatusForbidden || !strings.Contains(raw, "a person") {
+		t.Fatalf("an agent tested its change: %d %s", code, raw)
+	}
+	if code, _, _ := b.do(http.MethodPost, path, b.tokens["vic"], ""); code != http.StatusForbidden {
+		t.Fatalf("a viewer tested a change: %d", code)
+	}
+	code, _, raw = b.do(http.MethodPost, path, b.tokens["eve"], `{"rows":5}`)
+	if code != http.StatusOK {
+		t.Fatalf("test: %d %s", code, raw)
+	}
+	var res struct {
+		Current, Proposed engine.Preview
+	}
+	if err := json.Unmarshal([]byte(raw), &res); err != nil {
+		t.Fatal(err)
+	}
+	node := func(pv engine.Preview, id string) engine.PreviewNode {
+		for _, n := range pv.Nodes {
+			if n.NodeID == id {
+				return n
+			}
+		}
+		t.Fatalf("no node %s in %+v", id, pv)
+		return engine.PreviewNode{}
+	}
+	if tf := node(res.Current, "tf"); len(tf.Rows) != 2 || tf.Rows[0]["total"] != nil {
+		t.Fatalf("current totals = %+v", tf)
+	}
+	if tf := node(res.Proposed, "tf"); len(tf.Rows) != 2 || tf.Rows[0]["total"] == nil {
+		t.Fatalf("proposed totals = %+v", tf)
+	}
+	if d := node(res.Proposed, "dst"); d.Status != engine.PreviewHeld {
+		t.Fatalf("sink = %+v, want held", d)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("testing a change wrote the sink")
+	}
+	if runs, _ := b.s.ListRunsByPipeline(id, 10); len(runs) != 0 {
+		t.Fatalf("testing a change left %d runs", len(runs))
+	}
+	if p, _ := b.s.GetPipeline(id); len(p.Nodes[1].Config["rules"].([]interface{})) != 0 {
+		t.Fatal("testing a change changed the pipeline")
 	}
 }

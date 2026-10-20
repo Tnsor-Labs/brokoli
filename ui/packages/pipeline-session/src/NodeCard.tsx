@@ -13,12 +13,14 @@ export type NodeCardData = {
   readonly?: boolean
   /** The server refuses this node type (BROKOLI_DISABLED_NODE_TYPES): it cannot run here. */
   disabled?: boolean
+  /** What a change request does to this node (its review graph). */
+  mark?: 'added' | 'changed' | 'removed'
 }
 
 export type FlowNode = Node<NodeCardData, 'brokoli'>
 
 export function NodeCard({ data, selected }: NodeProps<FlowNode>) {
-  const { node, status, issue, disabled } = data
+  const { node, status, issue, disabled, mark } = data
   const entry = catalogEntry(node.type)
   const ports = portsFor(node)
   const meta = status ? statusMeta(status) : null
@@ -32,6 +34,7 @@ export function NodeCard({ data, selected }: NodeProps<FlowNode>) {
         meta && `bk-tone-${meta.tone}`,
         meta && 'has-status',
         disabled && 'is-disabled-type',
+        mark && `is-diff-${mark}`,
       )}
       style={{ ['--family' as string]: FAMILY_COLOR[entry.family] }}
       title={issue ? issue.messages.join('\n') : undefined}
@@ -42,7 +45,7 @@ export function NodeCard({ data, selected }: NodeProps<FlowNode>) {
       </span>
       <span className="ps-node-text">
         <strong>{node.name || entry.label}</strong>
-        <small>{disabled ? `${kind} · disabled` : kind}</small>
+        <small>{disabled ? `${kind} · disabled` : mark ? `${kind} · ${mark}` : kind}</small>
       </span>
       {meta && (
         <span className={cx('ps-node-status', meta.pulse && 'is-live')} title={meta.label} aria-label={meta.label}>

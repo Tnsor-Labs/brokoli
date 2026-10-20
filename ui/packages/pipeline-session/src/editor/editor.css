@@ -101,6 +101,20 @@
   color: var(--bk-color-text-secondary);
   font-size: var(--bk-text-sm);
 }
+.ps-proposals {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--bk-color-border);
+  background: var(--bk-color-warning-soft);
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-sm);
+}
+.ps-proposals a {
+  color: var(--bk-color-text);
+  font-weight: 600;
+}
 .ps-banner {
   padding: 10px 14px 0;
 }

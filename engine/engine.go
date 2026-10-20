@@ -1547,17 +1547,24 @@ func isTerminalRunStatus(status models.RunStatus) bool {
 // DryRun executes a pipeline with only the first N rows and returns node previews.
 // Does not persist a real run — useful for editor preview.
 func (e *Engine) DryRun(p *models.Pipeline, maxRows int) (map[string]*DryRunNodeResult, error) {
-	if maxRows <= 0 {
-		maxRows = 10
+	// A preview (preview.go): it leaves no run behind and writes nothing
+	// outside Brokoli. It used to execute the pipeline as a run, sinks
+	// and hooks included, so previewing a pipeline overwrote its outputs
+	// with the preview's rows.
+	pv, err := e.PreviewPipeline(context.Background(), p, maxRows)
+	if err != nil {
+		return nil, err
 	}
-
-	runner := e.configureRunner(NewRunner(e.store, e.eventCh, p, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
-	runner.dryRun = true
-	runner.dryRunMaxRows = maxRows
-
-	_, err := runner.Execute()
+	results := make(map[string]*DryRunNodeResult, len(pv.Nodes))
+	for _, n := range pv.Nodes {
+		results[n.NodeID] = &DryRunNodeResult{NodeID: n.NodeID, Name: n.Name, Status: n.Status,
+			Columns: n.Columns, Rows: n.Rows, Error: n.Error, Reason: n.Reason}
+	}
 	// Return partial previews alongside the execution error.
-	return runner.dryRunResults, err
+	if pv.Error != "" {
+		return results, errors.New(pv.Error)
+	}
+	return results, nil
 }
 
 // DryRunNodeResult contains the preview data for one node.
@@ -1568,6 +1575,9 @@ type DryRunNodeResult struct {
 	Columns []string                 `json:"columns"`
 	Rows    []map[string]interface{} `json:"rows"`
 	Error   string                   `json:"error,omitempty"`
+	// Reason says why the preview did not run the node (status "held" or
+	// "not_run").
+	Reason string `json:"reason,omitempty"`
 }
 
 // reusableOutcomes walks a run's lineage (ResumedFromRunID chain) and

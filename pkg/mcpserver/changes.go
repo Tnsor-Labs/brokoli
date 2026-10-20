@@ -16,7 +16,7 @@ type proposeIn struct {
 	Pipeline    string         `json:"pipeline" jsonschema:"the pipeline's id"`
 	Definition  map[string]any `json:"definition" jsonschema:"the whole pipeline as it should be (the IR, as get_pipeline returns it, with your changes)"`
 	Title       string         `json:"title" jsonschema:"what the change does, in a line, for the person deciding"`
-	Description string         `json:"description,omitempty" jsonschema:"why, and anything the person deciding should check"`
+	Description string         `json:"description,omitempty" jsonschema:"Markdown, shown rendered to the person deciding: why the change is needed, what it does node by node, what to expect in the data, and anything they should check. Use short sections, lists and code blocks; the diff itself is shown next to it, so do not repeat it"`
 }
 
 // proposes changes nothing that runs, but records something.
@@ -25,7 +25,7 @@ var proposes = &mcp.ToolAnnotations{Title: "Propose a change", ReadOnlyHint: fal
 
 func addProposeChange(s *mcp.Server, c Caller) {
 	mcp.AddTool(s, &mcp.Tool{Name: "propose_change", Title: "Propose a change", Annotations: proposes,
-		Description: "Proposes a new version of a pipeline as a change request. Nothing that runs changes: a person reviews the diff and the validation, and applies or declines it. Send the whole definition as it should be (start from get_pipeline), check it first with validate_pipeline, and give it a title that says what it does. Answers the request with its diff and validation."},
+		Description: "Proposes a new version of a pipeline as a change request. Nothing that runs changes: a person reviews the diff and the validation, and applies or declines it. Send the whole definition as it should be (start from get_pipeline), check it first with validate_pipeline, and give it a title that says what it does and a Markdown description. The person can test it (a preview of the current and proposed pipelines on a few rows) before applying it. Answers the request with its diff and validation."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in proposeIn) (*mcp.CallToolResult, any, error) {
 			if in.Pipeline == "" || in.Definition == nil || in.Title == "" {
 				return nil, nil, errors.New("give the pipeline's id, the whole definition as it should be, and a title")

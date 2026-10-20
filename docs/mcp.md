@@ -92,6 +92,14 @@ Every tool but `propose_change` is marked read only. `propose_change`
 changes nothing that runs, but records a change request, and is marked
 accordingly, so a client that asks before changing anything asks there.
 
+Its `description` is Markdown, rendered on the change's review page: the
+tool asks the agent for why the change is needed, what it does step by
+step, what to expect in the data, and what the person should check, in
+short sections. The diff is shown next to it, so the description does
+not repeat it. The person can then test the change on a few rows before
+applying it; an agent cannot start a test, since a test runs the
+proposed code.
+
 ### `explain_run`
 
 The tool to start with when a run failed. It gathers what a person reads

@@ -17,18 +17,27 @@ export function PipelineGraph({
   statuses,
   selected,
   onSelect,
+  marks,
+  edgeMarks,
 }: {
   nodes: PipelineNode[]
   edges: PipelineEdge[]
   statuses?: Record<string, string>
   selected?: string | null
   onSelect?: (nodeId: string) => void
+  /** What a change request does to each node, for its review graph. */
+  marks?: Record<string, 'added' | 'changed' | 'removed'>
+  /** The same for edges, keyed "from->to". */
+  edgeMarks?: Record<string, 'added' | 'removed'>
 }) {
   // A pipeline stored without a layout (built from code before the server
   // laid such pipelines out) is drawn laid out rather than stacked.
   const placed = useMemo(() => arrangeStacked(nodes, edges), [nodes, edges])
-  const flowNodes = useMemo(() => toFlowNodes(placed, (n) => ({ status: statuses?.[n.id], readonly: true }), selected), [placed, statuses, selected])
-  const flowEdges = useMemo(() => toFlowEdges(edges, statuses), [edges, statuses])
+  const flowNodes = useMemo(
+    () => toFlowNodes(placed, (n) => ({ status: statuses?.[n.id], readonly: true, mark: marks?.[n.id] }), selected),
+    [placed, statuses, selected, marks],
+  )
+  const flowEdges = useMemo(() => toFlowEdges(edges, statuses, undefined, edgeMarks), [edges, statuses, edgeMarks])
   return (
     <ReactFlowProvider>
       <div className="ps-graph">

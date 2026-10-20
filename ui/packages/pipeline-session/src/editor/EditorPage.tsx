@@ -22,6 +22,7 @@ import {
   Download,
   Eye,
   GitBranch,
+  GitPullRequestArrow,
   History,
   LayoutGrid,
   Lock,
@@ -742,6 +743,7 @@ function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave
         </div>
       </header>
 
+      <ProposedChanges pipelineId={pipelineId} />
       {readonly && <div className="ps-readonly">{readonlyReason}</div>}
       {viaGit && <div className="ps-readonly">{gitSave?.hint}</div>}
       {banner && (
@@ -977,6 +979,38 @@ function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave
           <p>{pipeline.name} has changes that are not saved. Leaving discards them.</p>
         </ConfirmDialog>
       )}
+    </div>
+  )
+}
+
+/*
+ * The pipeline's open change requests (ADR-046), so whoever edits it knows a
+ * proposal is waiting: an edit saved now makes it out of date.
+ */
+function ProposedChanges({ pipelineId }: { pipelineId: string }) {
+  const open = useQuery({
+    queryKey: ['pipeline', pipelineId, 'changes', 'open'],
+    queryFn: () => pipelineApi.changes(pipelineId, 'open'),
+  })
+  const list = open.data ?? []
+  if (!list.length) return null
+  const first = list[0]
+  const to = (id: string) => `/pipelines/${encodeURIComponent(pipelineId)}/changes/${encodeURIComponent(id)}`
+  return (
+    <div className="ps-proposals" role="status">
+      <GitPullRequestArrow size={14} aria-hidden="true" />
+      <span>
+        {list.length === 1 ? (
+          <>
+            A change is proposed: <Link to={to(first.id)}>{first.title}</Link>.
+          </>
+        ) : (
+          <>
+            {list.length} changes are proposed; the newest is <Link to={to(first.id)}>{first.title}</Link>.
+          </>
+        )}{' '}
+        Saving an edit here makes {list.length === 1 ? 'it' : 'them'} out of date.
+      </span>
     </div>
   )
 }

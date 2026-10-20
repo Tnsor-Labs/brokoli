@@ -13,6 +13,18 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **A review page for each change request, and testing a change before
+  applying it** -- @hc12r. A proposed change opens on its own page
+  (`/pipelines/{id}/changes/{changeId}`, linked from the pipeline's page
+  and from the editor): its description rendered as Markdown; a card per
+  node it adds, changes or removes, with scripts and SQL as line diffs;
+  the pipeline's graph with what changes marked; and a **Test** that
+  previews the current and proposed pipelines side by side on 10 rows,
+  showing step by step the columns, row counts and values that differ.
+  `POST /api/pipelines/{id}/changes/{changeId}/test` answers both
+  previews. A test runs the proposed code, so only a person with
+  `pipelines.run` starts one; an agent is refused. `propose_change` tells
+  agents the description is Markdown and what to put in it.
 - **`/api/auth/me` names the workspace** -- @hc12r. The answer adds
   `workspace_id`, and `workspace_name` when it is known: the workspace
   the request acts in. The MCP server says it in its instructions ("You
@@ -121,6 +133,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Preview wrote through output nodes and recorded a run** (#595) --
+  @hc12r. The editor's Preview (`POST /api/pipelines/{id}/dry-run`) ran
+  the pipeline as a run: a `sink_file` overwrote its file with the
+  preview's rows, other outputs and notifications acted, hooks were
+  called, and a run was left in the pipeline's history. A preview now
+  runs in a scratch store that is thrown away, holds back every step that
+  may act outside Brokoli (outputs, `notify`, `migrate`, `bash`, `dbt`,
+  `task`, `wait`, and nodes declaring the `sink` capability) and what
+  follows it, reporting them as `held` and `not_run` with the reason, and
+  calls no hook. Steps run in the server's own process, and a preview
+  stops after 90 seconds.
 - **A worker waits out an unreachable native driver catalog instead of
   exiting** (#869) -- @hc12r. Installing the managed driver set tried each
   download once, so a DNS or network blip while a worker started made it

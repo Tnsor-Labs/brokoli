@@ -6,6 +6,9 @@ import { PipelinesPage } from './list/PipelinesPage'
 
 const RunsPage = lazy(() => import('./runs/RunsPage').then((m) => ({ default: m.RunsPage })))
 const GridPage = lazy(() => import('./grid/GridPage').then((m) => ({ default: m.GridPage })))
+const ChangeReviewPage = lazy(() =>
+  import('./changes/ChangeReviewPage').then((m) => ({ default: m.ChangeReviewPage })),
+)
 const FullTimelinePage = lazy(() =>
   import('./runs/FullTimelinePage').then((m) => ({ default: m.FullTimelinePage })),
 )
@@ -21,6 +24,11 @@ function Deferred({ children, label }: { children: ReactNode; label: string }) {
 function Keyed({ render }: { render: (id: string) => ReactNode }) {
   const { id = '' } = useParams()
   return <>{render(id)}</>
+}
+
+function ChangeKeyed({ render }: { render: (id: string, changeId: string) => ReactNode }) {
+  const { id = '', changeId = '' } = useParams()
+  return <>{render(id, changeId)}</>
 }
 
 function RunKeyed({ render }: { render: (id: string, runId: string) => ReactNode }) {
@@ -70,6 +78,18 @@ export function pipelineRoutes(
           render={(id, runId) => (
             <Deferred label="Loading timeline">
               <FullTimelinePage key={`${id}/${runId}`} pipelineId={id} runId={runId} />
+            </Deferred>
+          )}
+        />
+      ),
+    },
+    {
+      path: 'pipelines/:id/changes/:changeId',
+      element: (
+        <ChangeKeyed
+          render={(id, changeId) => (
+            <Deferred label="Loading the change">
+              <ChangeReviewPage key={`${id}/${changeId}`} pipelineId={id} changeId={changeId} />
             </Deferred>
           )}
         />

@@ -26,8 +26,14 @@ export function toFlowNodes(
 
 export type FlowEdgeData = { index: number; condition?: boolean }
 
-export function toFlowEdges(edges: PipelineEdge[], statuses?: Record<string, string>, selected?: string | null): Edge<FlowEdgeData>[] {
+export function toFlowEdges(
+  edges: PipelineEdge[],
+  statuses?: Record<string, string>,
+  selected?: string | null,
+  marks?: Record<string, 'added' | 'removed'>,
+): Edge<FlowEdgeData>[] {
   return edges.map((e, index) => {
+    const mark = marks?.[`${e.from}->${e.to}`]
     const id = edgeId(e, index)
     const flowing = statuses && statuses[e.from] && ['success', 'completed', 'succeeded'].includes(statuses[e.from]) && statuses[e.to] === 'running'
     return {
@@ -40,7 +46,10 @@ export function toFlowEdges(edges: PipelineEdge[], statuses?: Record<string, str
       markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16 },
       data: { index, condition: e.condition },
       label: e.condition === undefined ? undefined : e.condition ? 'true' : 'false',
-      className: e.condition === false ? 'is-false-branch' : e.condition === true ? 'is-true-branch' : undefined,
+      className:
+        [e.condition === false ? 'is-false-branch' : e.condition === true ? 'is-true-branch' : '', mark ? `is-diff-${mark}` : '']
+          .filter(Boolean)
+          .join(' ') || undefined,
       labelBgPadding: [6, 3] as [number, number],
       labelBgBorderRadius: 4,
     }

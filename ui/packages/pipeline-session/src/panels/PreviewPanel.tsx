@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { X } from 'lucide-react'
 import type { DryRunResponse } from '@brokoli/api'
-import { Callout, IconButton, StatusBadge, cx } from '@brokoli/ui'
+import { Badge, Callout, IconButton, StatusBadge, cx } from '@brokoli/ui'
 
 function cell(value: unknown) {
   if (value === null || value === undefined) return <span className="bk-null">null</span>
@@ -10,10 +10,10 @@ function cell(value: unknown) {
 }
 
 /*
- * Dry-run output. The server executes the saved pipeline on at most 10 rows
- * per node and returns each node's output, status and error. The engine
- * has no dry-run guard in its node handlers, so output nodes run too: the
- * panel says that plainly.
+ * Preview output. The server runs the saved pipeline on at most 10 rows per
+ * node in a scratch store and returns each node's output, status and error.
+ * Nodes that may write outside Brokoli (outputs, notifications, shell, dbt)
+ * are held back, as is what follows them, and no run is recorded.
  */
 export function PreviewPanel({ result, nodeNames, onClose }: { result: DryRunResponse; nodeNames: Record<string, string>; onClose: () => void }) {
   const entries = Object.values(result.results ?? {})
@@ -27,8 +27,8 @@ export function PreviewPanel({ result, nodeNames, onClose }: { result: DryRunRes
         <div>
           <h3>Preview</h3>
           <p>
-            The saved pipeline, run on up to 10 rows per node. Output nodes run too, so files, tables and APIs they point at receive those rows, and the server records the
-            preview in the run history (Tnsor-Labs/brokoli#595).
+            The saved pipeline, run on up to 10 rows per node. Nothing is written: output nodes and others that act outside Brokoli are held back, and no run is
+            recorded.
           </p>
         </div>
         <IconButton label="Close preview" onClick={onClose}>
@@ -48,7 +48,11 @@ export function PreviewPanel({ result, nodeNames, onClose }: { result: DryRunRes
             {entries.map((r) => (
               <button key={r.node_id} type="button" role="tab" aria-selected={r.node_id === active} className={cx(r.node_id === active && 'is-active')} onClick={() => setActive(r.node_id)}>
                 <span>{nodeNames[r.node_id] ?? r.name ?? r.node_id}</span>
-                <StatusBadge status={r.error ? 'failed' : r.status} />
+                {r.status === 'held' || r.status === 'not_run' ? (
+                  <Badge tone="neutral">{r.status === 'held' ? 'held' : 'not run'}</Badge>
+                ) : (
+                  <StatusBadge status={r.error ? 'failed' : r.status} />
+                )}
                 <small className="bk-mono">{r.rows?.length ?? 0}</small>
               </button>
             ))}
@@ -56,6 +60,9 @@ export function PreviewPanel({ result, nodeNames, onClose }: { result: DryRunRes
           <div className="ps-preview-content">
             {current?.error && <Callout tone="danger">{current.error}</Callout>}
             {current?.status === 'skipped' && <p className="ps-form-note">Skipped: this node is on a branch that did not match.</p>}
+            {(current?.status === 'held' || current?.status === 'not_run') && (
+              <p className="ps-form-note">{current.reason}.</p>
+            )}
             {columns.length > 0 ? (
               <div className="bk-data-table">
                 <table>
@@ -80,7 +87,10 @@ export function PreviewPanel({ result, nodeNames, onClose }: { result: DryRunRes
                 </table>
               </div>
             ) : (
-              !current?.error && current?.status !== 'skipped' && <p className="ps-form-note">This node produced no columns.</p>
+              !current?.error &&
+              current?.status !== 'skipped' &&
+              current?.status !== 'held' &&
+              current?.status !== 'not_run' && <p className="ps-form-note">This node produced no columns.</p>
             )}
           </div>
         </div>

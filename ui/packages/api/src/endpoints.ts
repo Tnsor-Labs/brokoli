@@ -11,6 +11,7 @@ import {
 import type {
   Capabilities,
   ChangeRequest,
+  ChangeTest,
   AuthClaims,
   AuthMethods,
   AuthUser,
@@ -180,6 +181,8 @@ export const pipelineApi = {
   change: (id: string, changeId: string) => request<ChangeRequest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}`),
   propose: (id: string, pipeline: unknown, title: string, description?: string) =>
     request<ChangeRequest>(`/pipelines/${enc(id)}/changes`, { json: { pipeline, title, description } }),
+  testChange: (id: string, changeId: string, rows = 10) =>
+    request<ChangeTest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/test`, { json: { rows }, timeout: 0, retries: 0 }),
   applyChange: (id: string, changeId: string) =>
     request<{ pipeline: Pipeline; version: number }>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/apply`, { method: 'POST' }),
   declineChange: (id: string, changeId: string, reason?: string) =>

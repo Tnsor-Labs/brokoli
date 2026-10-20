@@ -164,6 +164,9 @@ func RequestTimeout(seconds int) func(http.Handler) http.Handler {
 			// Skip long-running endpoints (dry-run, backfill, run trigger)
 			if strings.Contains(r.URL.Path, "/dry-run") ||
 				strings.Contains(r.URL.Path, "/backfill") ||
+				// Testing a change request is two previews, bounded by
+				// engine.PreviewTimeout.
+				(strings.Contains(r.URL.Path, "/changes/") && strings.HasSuffix(r.URL.Path, "/test") && r.Method == "POST") ||
 				(strings.Contains(r.URL.Path, "/run") && r.Method == "POST") {
 				next.ServeHTTP(w, r)
 				return

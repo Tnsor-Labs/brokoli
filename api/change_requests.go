@@ -447,19 +447,21 @@ func keepLayout(current, proposed *models.Pipeline) {
 // store, scheduler and executors.
 type changeRequestsAPI struct {
 	ph *PipelineHandler
+	e  *engine.Engine
 	cs *ChangeRequestStore
 	pc *PermissionChecker
 }
 
-func registerChangeRequestRoutes(r chi.Router, ph *PipelineHandler, cs *ChangeRequestStore, pc *PermissionChecker,
+func registerChangeRequestRoutes(r chi.Router, ph *PipelineHandler, e *engine.Engine, cs *ChangeRequestStore, pc *PermissionChecker,
 	requirePerm func(models.Permission) func(http.Handler) http.Handler) {
 	changeRequests = cs
-	h := &changeRequestsAPI{ph: ph, cs: cs, pc: pc}
+	h := &changeRequestsAPI{ph: ph, e: e, cs: cs, pc: pc}
 	r.With(requirePerm(models.PermPipelinesPropose)).Post("/pipelines/{id}/changes", h.create)
 	r.Get("/pipelines/{id}/changes", h.list)
 	r.Get("/pipelines/{id}/changes/{changeId}", h.get)
 	r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/changes/{changeId}/apply", h.apply)
 	r.Post("/pipelines/{id}/changes/{changeId}/decline", h.decline)
+	r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/changes/{changeId}/test", h.test)
 }
 
 // pipeline is the pipeline in the path when the caller may reach it.
@@ -723,4 +725,71 @@ func (h *changeRequestsAPI) decline(w http.ResponseWriter, r *http.Request) {
 	}
 	AuditLog(r, "decline_change", "pipeline", p.ID, nil, map[string]interface{}{"change_request": cr.ID})
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// changeTests bounds the change-request tests running at once: each is two
+// previews, which run in this process.
+var changeTests = make(chan struct{}, 2)
+
+// test previews the current pipeline and the proposed one on a few rows,
+// so a person can see what the change does to the data before applying
+// it. Nothing is written outside Brokoli and no run is recorded (see
+// engine.PreviewPipeline). The proposal's code runs, which is why only a
+// person starts a test, never an agent.
+func (h *changeRequestsAPI) test(w http.ResponseWriter, r *http.Request) {
+	p, ok := h.pipeline(w, r)
+	if !ok {
+		return
+	}
+	if _, _, kind, _ := who(r); kind == UserKindAgent {
+		writeError(w, http.StatusForbidden, "an agent cannot test a change request: testing runs the proposed code, so a person starts it")
+		return
+	}
+	if h.e == nil {
+		writeError(w, http.StatusServiceUnavailable, "this server cannot run previews")
+		return
+	}
+	cr, err := h.cs.get(p.ID, chi.URLParam(r, "changeId"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, ErrChangeNotFound.Error())
+		return
+	}
+	if !cr.Validation.Valid {
+		writeError(w, http.StatusConflict, "the proposed pipeline is not valid, so it cannot be tested")
+		return
+	}
+	select {
+	case changeTests <- struct{}{}:
+		defer func() { <-changeTests }()
+	default:
+		writeError(w, http.StatusTooManyRequests, "other tests are running; try again in a moment")
+		return
+	}
+	var req struct {
+		Rows int `json:"rows"`
+	}
+	_ = json.NewDecoder(io.LimitReader(r.Body, 4<<10)).Decode(&req)
+	if req.Rows <= 0 || req.Rows > 50 {
+		req.Rows = 10
+	}
+	// Both at once, so the test takes as long as the slower preview.
+	var current *engine.Preview
+	var currentErr error
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		current, currentErr = h.e.PreviewPipeline(r.Context(), p, req.Rows)
+	}()
+	proposed, err := h.e.PreviewPipeline(r.Context(), cr.Proposed, req.Rows)
+	<-done
+	if currentErr != nil {
+		writeError(w, http.StatusInternalServerError, "the current pipeline could not be previewed: "+currentErr.Error())
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "the proposed pipeline could not be previewed: "+err.Error())
+		return
+	}
+	AuditLog(r, "test_change", "pipeline", p.ID, nil, map[string]interface{}{"change_request": cr.ID})
+	writeJSON(w, http.StatusOK, map[string]interface{}{"rows": req.Rows, "current": current, "proposed": proposed})
 }

@@ -1569,6 +1569,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		nr.Status = models.RunStatusFailed
 		nr.DurationMs = duration
 		nr.Error = r.redact(err.Error())
+		if r.dryRun {
+			// A preview shows the failure on the node; the last attempt's
+			// error is the one that stands.
+			if r.dryRunResults == nil {
+				r.dryRunResults = make(map[string]*DryRunNodeResult)
+			}
+			r.dryRunResults[node.ID] = &DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusFailed), Error: nr.Error}
+		}
 		if !r.dryRun {
 			// If we can't durably record that this attempt failed, don't
 			// keep retrying against a store we can no longer trust to

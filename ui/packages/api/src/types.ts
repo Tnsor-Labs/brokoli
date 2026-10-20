@@ -223,6 +223,8 @@ export interface DryRunNodeResult {
   columns: string[] | null
   rows: Record<string, unknown>[] | null
   error?: string
+  /** Why a preview did not run the node (status "held" or "not_run"). */
+  reason?: string
 }
 
 export interface DryRunResponse {
@@ -934,4 +936,29 @@ export interface ChangeRequest {
   decided_at?: string
   reason?: string
   applied_version?: number
+}
+
+/**
+ * A preview of a pipeline: every node, what it produced on a few rows, and
+ * the nodes it held back (they may write outside Brokoli) or did not run.
+ */
+export interface PipelinePreview {
+  nodes: {
+    node_id: string
+    name: string
+    type: string
+    status: 'success' | 'failed' | 'skipped' | 'held' | 'not_run' | (string & {})
+    columns?: string[] | null
+    rows?: Record<string, unknown>[] | null
+    error?: string
+    reason?: string
+  }[]
+  error?: string
+}
+
+/** POST /api/pipelines/{id}/changes/{changeId}/test: the current and proposed pipelines, previewed. */
+export interface ChangeTest {
+  rows: number
+  current: PipelinePreview
+  proposed: PipelinePreview
 }

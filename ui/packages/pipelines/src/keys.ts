@@ -20,6 +20,7 @@ export const paths = {
   runs: (id: string, runId?: string) => `/pipelines/${encodeURIComponent(id)}/runs${runId ? `?run=${encodeURIComponent(runId)}` : ''}`,
   editor: (id: string) => `/pipelines/${encodeURIComponent(id)}/edit`,
   grid: (id: string) => `/pipelines/${encodeURIComponent(id)}/grid`,
+  change: (id: string, changeId: string) => `/pipelines/${encodeURIComponent(id)}/changes/${encodeURIComponent(changeId)}`,
   timeline: (id: string, runId: string) => `/pipelines/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/gantt`,
 }
 

@@ -983,26 +983,39 @@
 .bk-change + .bk-change {
   border-top: 1px solid var(--bk-color-border);
 }
-.bk-change-body {
-  padding: 0 18px 16px 44px;
-}
-.bk-change-diff,
-.bk-change-errors {
-  margin: 8px 0;
-  padding-left: 18px;
-  font-size: var(--bk-text-sm);
-  overflow-wrap: anywhere;
-}
-.bk-change-errors {
-  color: var(--bk-color-danger);
-}
-.bk-change-actions {
+.bk-change-link {
   display: flex;
-  justify-content: flex-end;
   align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+  gap: 12px;
+  padding: 12px 18px;
+  color: inherit;
+  text-decoration: none;
+  transition: background var(--bk-duration-fast) var(--bk-ease);
 }
-.bk-change-actions small {
-  margin-right: auto;
+.bk-change-link:hover {
+  background: var(--bk-color-hover);
+}
+.bk-change-link:focus-visible {
+  outline: 2px solid var(--bk-color-accent);
+  outline-offset: -2px;
+}
+.bk-change-icon {
+  flex: none;
+  color: var(--bk-color-text-muted);
+}
+.bk-change-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.bk-change-text small {
+  color: var(--bk-color-text-muted);
+}
+.bk-change-review {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--bk-color-accent);
+  font-size: var(--bk-text-sm);
+  white-space: nowrap;
 }
