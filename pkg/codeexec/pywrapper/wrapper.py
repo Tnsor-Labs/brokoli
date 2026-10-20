@@ -334,6 +334,16 @@ parameters = json.loads(os.environ.get("BROKED_TASK_PARAMS", "{}"))
 # emitted output is the first emitted row's own key order (Python dicts
 # preserve insertion order); output_data is ignored once emit() is used.
 _emit_state = {"f": None, "count": 0, "cols": None, "mode": False}
+
+# A preview keeps the first rows of each step, so a script that emits stops
+# once it has emitted them (the server sets this in a preview only). A
+# BaseException, so a script's own `except Exception` does not swallow it.
+class _BrokoliPreviewHasRows(BaseException):
+    pass
+try:
+    _preview_rows = int(config.get("_brokoli_preview_rows") or 0)
+except (TypeError, ValueError):
+    _preview_rows = 0
 def begin_emit(columns=None):
     """Declare emit-mode output explicitly. Optional before emit() when at
     least one row will be emitted — but a filter that might match nothing
@@ -357,6 +367,8 @@ def emit(row):
         except AttributeError:
             _emit_state["cols"] = []
     _emit_state["count"] += 1
+    if _preview_rows and _emit_state["count"] >= _preview_rows:
+        raise _BrokoliPreviewHasRows()
 
 # Output defaults to passthrough
 output_data = {"columns": columns, "rows": rows}
@@ -365,7 +377,10 @@ _script_path = os.environ.get("BROKED_SCRIPT", "")
 if _script_path:
     with open(_script_path) as _f:
         _brokoli_user_source = _f.read()
-    exec(compile(_brokoli_user_source, "<code-node>", "exec"))
+    try:
+        exec(compile(_brokoli_user_source, "<code-node>", "exec"))
+    except _BrokoliPreviewHasRows:
+        pass
 
 # Write output
 if _emit_state["mode"]:

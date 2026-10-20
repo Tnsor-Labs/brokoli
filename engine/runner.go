@@ -1907,6 +1907,9 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	if err := nodeTypeDisabledError(node.Type); err != nil {
 		return nodeExecutionResult{}, err
 	}
+	if r.dryRun {
+		node = previewNode(node, r.dryRunMaxRows)
+	}
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1976,6 +1979,25 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	}
 	if !IsBuiltInNodeType(node.Type) {
 		return nodeExecutionResult{}, fmt.Errorf("unsupported node type %q", node.Type)
+	}
+
+	// A preview's sources stop once they have the rows it keeps
+	// (preview_sources.go).
+	if r.dryRun {
+		switch node.Type {
+		case models.NodeTypeSourceFile:
+			if ds, ok, err := r.previewSourceFile(ctx, node); ok {
+				return outputExecutionResult(ds, err)
+			}
+		case models.NodeTypeSourceDB:
+			if res, ok, err := r.previewSourceDB(ctx, node, attempt); ok {
+				return res, err
+			}
+		case models.NodeTypeCode:
+			if res, ok, err := r.previewCode(ctx, node, input); ok {
+				return res, err
+			}
+		}
 	}
 
 	switch node.Type {

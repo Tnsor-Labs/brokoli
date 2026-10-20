@@ -60,11 +60,15 @@ editor's **Preview** previews a saved one, and leaves nothing behind:
 - **Nothing is recorded.** The preview runs in a scratch store that is
   thrown away: no run in the pipeline's history, no event, log or alert,
   and the pipeline's hooks are not called.
-- **Sources and code run.** Sources read their input in full and the
-  preview keeps the first rows, so a large source takes as long as it
-  takes to read; a preview stops after 90 seconds. Code steps run as
-  proposed, in the same sandbox as a run and with the pipeline's
-  connections and secrets.
+- **Sources stop at the first rows.** A CSV file is read until it has
+  them; a database query streams and is cancelled once it has them (a
+  native driver stops at them too); a paginated API stops fetching pages;
+  a Python step that `emit()`s rows stops once it has emitted them. What
+  cannot stop early is read whole: a JSON or Parquet file, a BigQuery
+  query, a script that builds `output_data` as a list. A preview stops
+  after 90 seconds.
+- **Code runs.** Code steps run as proposed, in the same sandbox as a run
+  and with the pipeline's connections and secrets.
 
 Because a test runs the proposed code, **only a person starts one**, with
 permission to run the pipeline (`pipelines.run`), after the page warns
@@ -193,6 +197,4 @@ there. `rows` is between 1 and 50 (10 by default).
   it and propose again.
 - **Testing from an agent** before proposing: a test runs the proposed
   code, so a person starts it.
-- **Sources read in full** during a test: a source that could stop after
-  the first rows would make tests of large pipelines fast.
 - **Opening a proposal in the editor** to adjust it before applying.

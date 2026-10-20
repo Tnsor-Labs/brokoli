@@ -133,6 +133,15 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A preview read every row of its sources to keep ten** -- @hc12r. The
+  editor's Preview and a change request's test held a whole source in the
+  server's memory: previewing a pipeline over millions of rows took as
+  long as a run and could exhaust the server. Sources now stop at the
+  rows a preview keeps: a CSV is read until it has them, a database query
+  is cancelled once it has them, a paginated API stops fetching pages, and
+  a Python step that `emit()`s stops once it has emitted them. Such a step
+  could not be previewed at all before ("emit() requires file-mode
+  output"); it now runs as a streamed run does.
 - **Preview wrote through output nodes and recorded a run** (#595) --
   @hc12r. The editor's Preview (`POST /api/pipelines/{id}/dry-run`) ran
   the pipeline as a run: a `sink_file` overwrote its file with the
