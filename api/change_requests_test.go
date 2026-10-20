@@ -529,3 +529,39 @@ func TestTheWorkspacesChangeRequests(t *testing.T) {
 		t.Fatalf("a bad status: %d", code)
 	}
 }
+
+// A distribution records where a request went once it knows (a pull
+// request opened later), and its outcome; a settled request's delivery
+// does not change.
+func TestADistributionRecordsDeliveryAndOutcome(t *testing.T) {
+	b := newAgentBed(t)
+	p := ordersPipeline()
+	if err := b.s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	cr := &ChangeRequest{ID: "cr-1", PipelineID: p.ID, Title: "t", Status: ChangeOpen, Proposed: p,
+		Validation: ChangeValidation{Valid: true, Errors: []string{}}, CreatedAt: time.Now().UTC()}
+	if err := changeRequests.create(cr); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetChangeRequestDelivery("cr-1", &ChangeDelivery{Kind: "pull_request", URL: "https://example.invalid/pr/7", Ref: "prop-1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := changeRequests.get(p.ID, "cr-1")
+	if got.Delivery == nil || got.Delivery.URL != "https://example.invalid/pr/7" {
+		t.Fatalf("delivery = %+v", got.Delivery)
+	}
+	if err := SetChangeRequestOutcome("cr-1", true, "GitHub", "merged on GitHub"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetChangeRequestDelivery("cr-1", &ChangeDelivery{Kind: "pull_request", URL: "https://example.invalid/other"}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ = changeRequests.get(p.ID, "cr-1")
+	if got.Status != ChangeApplied || got.Delivery.URL != "https://example.invalid/pr/7" || got.Reason != "merged on GitHub" {
+		t.Fatalf("settled request = %+v", got)
+	}
+	if err := SetChangeRequestDelivery("nope", &ChangeDelivery{}); err == nil {
+		t.Fatal("a missing request took a delivery")
+	}
+}

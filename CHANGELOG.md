@@ -13,6 +13,12 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`api.SetChangeRequestDelivery`** -- @hc12r. A distribution that
+  delivers a change request elsewhere (a pull request opened after the
+  request is recorded) records where it went once it knows; only an open
+  request's delivery changes. With `SetChangeRequestOutcome`, a delivered
+  request shows its link on the review page and settles when it is merged
+  or closed there.
 - **A shorter sidebar, and Home** -- @hc12r. The community sidebar goes
   from eleven items to seven, grouped by what a person is doing: Home and
   Pipelines; Observe (Dashboard, Lineage); Connect (Connections, Secrets &

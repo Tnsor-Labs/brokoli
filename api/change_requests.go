@@ -290,6 +290,23 @@ func SetChangeRequestOutcome(id string, applied bool, by, reason string) error {
 	return err
 }
 
+// SetChangeRequestDelivery records where a change request was delivered
+// once the distribution knows it: a pull request opened after the request
+// was recorded, say. Only an open request's delivery changes.
+func SetChangeRequestDelivery(id string, d *ChangeDelivery) error {
+	if changeRequests == nil {
+		return errors.New("change requests are not set up")
+	}
+	cr, err := scanChange(changeRequests.db.QueryRow(changeRequests.q(`SELECT `+changeColumns+` FROM change_requests WHERE id = ?`), id))
+	if err != nil {
+		return err
+	}
+	if cr.Status != ChangeOpen {
+		return nil
+	}
+	return changeRequests.setDelivery(id, d)
+}
+
 // --- the diff
 
 // FieldChange is one field of a pipeline or node, before and after.
