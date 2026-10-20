@@ -109,7 +109,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 		})
 		// Self-service signup is registered by enterprise platform provider
-		r.Get("/api/auth/me", MeHandler())
+		r.Get("/api/auth/me", MeHandler(s))
 		r.Post("/api/auth/session", func(w http.ResponseWriter, req *http.Request) {
 			authHeader := req.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {

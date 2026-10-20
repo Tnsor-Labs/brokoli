@@ -102,7 +102,8 @@ func TestAnAgentActsWithItsOwnTokenAndRole(t *testing.T) {
 
 	// Who it is.
 	code, me, raw := b.do(http.MethodGet, "/api/auth/me", token, "")
-	if code != http.StatusOK || me["sub"] != id || me["username"] != "triage-bot" || me["kind"] != "agent" || me["on_behalf_of"] != "ada" {
+	if code != http.StatusOK || me["sub"] != id || me["username"] != "triage-bot" || me["kind"] != "agent" || me["on_behalf_of"] != "ada" ||
+		me["workspace_id"] != models.DefaultWorkspaceID {
 		t.Fatalf("me = %d %s", code, raw)
 	}
 	// The agent role, within its owner's.
@@ -370,7 +371,7 @@ func TestAnAgentOverMCP(t *testing.T) {
 		t.Fatalf("tools = %s", got)
 	}
 	init := cs.InitializeResult()
-	if init == nil || !strings.HasPrefix(init.Instructions, "You act in Brokoli as agent triage-bot, on behalf of ada.") {
+	if init == nil || !strings.HasPrefix(init.Instructions, "You act in Brokoli as agent triage-bot, on behalf of ada, in the workspace \"Default\" (id default).") {
 		t.Fatalf("instructions = %+v", init)
 	}
 }

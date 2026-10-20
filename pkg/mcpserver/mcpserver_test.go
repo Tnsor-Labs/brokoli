@@ -282,3 +282,21 @@ func TestExplainNamesOnlyTheFailingNodesAndTheLatestEarlierSuccess(t *testing.T)
 		t.Fatalf("summary = %s", ex.Summary)
 	}
 }
+
+// The instructions name the workspace the tools act in: an agent may not
+// list workspaces, so this is how it can tell which one it is in.
+func TestInstructionsNameTheWorkspace(t *testing.T) {
+	for _, c := range []struct {
+		who  Identity
+		want string
+	}{
+		{Identity{Subject: "u1", Username: "ada"}, "You act in Brokoli as ada.\n\n"},
+		{Identity{Subject: "a1", Username: "bot", Kind: "agent", WorkspaceID: "w1"}, "You act in Brokoli as agent bot, in the workspace w1.\n\n"},
+		{Identity{Subject: "a1", Username: "bot", Kind: "agent", OnBehalfOf: "ada", WorkspaceID: "w1", WorkspaceName: "Data \"Platform\""},
+			"You act in Brokoli as agent bot, on behalf of ada, in the workspace \"Data \\\"Platform\\\"\" (id w1).\n\n"},
+	} {
+		if got := c.who.instructions(); got != c.want {
+			t.Errorf("instructions() = %q, want %q", got, c.want)
+		}
+	}
+}

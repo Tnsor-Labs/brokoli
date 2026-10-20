@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -59,6 +60,9 @@ type Identity struct {
 	Username   string `json:"username"`
 	Kind       string `json:"kind"`
 	OnBehalfOf string `json:"on_behalf_of"`
+	// The workspace the connection acts in.
+	WorkspaceID   string `json:"workspace_id"`
+	WorkspaceName string `json:"workspace_name"`
 }
 
 // StaticKey reports whether the identity is the server's static API key:
@@ -85,7 +89,18 @@ func (i Identity) instructions() string {
 	case i.StaticKey():
 		return "WARNING: you are connected with the server's static API key, which is an administrator. Ask the person to give you an agent token instead (see docs/mcp.md).\n\n"
 	}
-	return "You act in Brokoli as " + i.Describe() + ".\n\n"
+	return "You act in Brokoli as " + i.Describe() + i.workspace() + ".\n\n"
+}
+
+// workspace names the workspace the tools act in, for the instructions.
+func (i Identity) workspace() string {
+	switch {
+	case i.WorkspaceID == "":
+		return ""
+	case i.WorkspaceName != "":
+		return ", in the workspace " + strconv.Quote(i.WorkspaceName) + " (id " + i.WorkspaceID + ")"
+	}
+	return ", in the workspace " + i.WorkspaceID
 }
 
 // Who asks the API who the caller is. Empty when it cannot tell.

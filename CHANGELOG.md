@@ -13,6 +13,12 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`/api/auth/me` names the workspace** -- @hc12r. The answer adds
+  `workspace_id`, and `workspace_name` when it is known: the workspace
+  the request acts in. The MCP server says it in its instructions ("You
+  act in Brokoli as agent triage-bot, on behalf of ada, in the workspace
+  "Data Platform" (id ...)"), since an agent acts in one workspace and
+  may not list workspaces, and could not tell which one it was in.
 - **`api.AgentHooks`** -- @hc12r. A distribution takes part in agent
   identities: `Created` (an error disables the agent again and is the
   answer, with `AgentHookError`'s status), `Updated`, `Disabled`, and

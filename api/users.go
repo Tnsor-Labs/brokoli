@@ -642,14 +642,34 @@ func LoginHandler(us *UserStore) http.HandlerFunc {
 	}
 }
 
-func MeHandler() http.HandlerFunc {
+// MeHandler answers who the caller is: the claims of its credential, plus
+// the workspace the request acts in (workspace_id, and workspace_name when
+// the store knows it). An agent acts in one workspace and may not list
+// workspaces, so this is how it learns which one it is in.
+func MeHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		claims := r.Context().Value("claims")
 		if claims == nil {
 			writeError(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
-		writeJSON(w, http.StatusOK, claims)
+		mc, ok := claims.(*jwt.MapClaims)
+		if !ok || mc == nil {
+			writeJSON(w, http.StatusOK, claims)
+			return
+		}
+		out := make(map[string]any, len(*mc)+2)
+		for k, v := range *mc {
+			out[k] = v
+		}
+		wsID := GetWorkspaceID(r)
+		out["workspace_id"] = wsID
+		if s != nil {
+			if ws, err := s.GetWorkspace(wsID); err == nil && ws != nil && ws.Name != "" {
+				out["workspace_name"] = ws.Name
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
