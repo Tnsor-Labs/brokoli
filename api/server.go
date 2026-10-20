@@ -221,34 +221,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 
 	// Serve embedded UI (or fallback)
 	if uiFS != nil {
-		r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
-			// Try serving the exact file path
-			path := req.URL.Path
-			if path == "/" {
-				path = "/index.html"
-			}
-
-			// Check if file exists in embedded FS
-			f, err := uiFS.Open(path[1:]) // strip leading /
-			if err == nil {
-				f.Close()
-				// Cache static assets (JS/CSS have content hashes in filenames)
-				if strings.HasPrefix(path, "/assets/") {
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-				}
-				http.FileServerFS(uiFS).ServeHTTP(w, req)
-				return
-			}
-
-			// SPA fallback: serve index.html for any unknown path
-			indexData, err := fs.ReadFile(uiFS, "index.html")
-			if err != nil {
-				http.NotFound(w, req)
-				return
-			}
-			w.Header().Set("Content-Type", "text/html")
-			w.Write(indexData)
-		})
+		r.Get("/*", uiHandler(uiFS))
 	} else {
 		r.Get("/*", func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
@@ -257,6 +230,45 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	}
 
 	return &Server{router: r, port: port, sodp: sodpSrv, ext: ext, evictDone: evictDone}
+}
+
+// uiHandler serves the UI bundle: a file that exists as itself, and
+// index.html for any other path, so the client-side router can take it.
+//
+// Except under /assets/: those are the build's hashed script and style
+// files, and one that is not there belongs to another build. A tab opened
+// before a deploy asks for its old files; answering with index.html (200,
+// text/html) made the browser report "error loading dynamically imported
+// module" instead of a missing file, and taught nothing to retry. They get
+// a 404, never cached, so the page can tell and load the new version.
+func uiHandler(uiFS fs.FS) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		path := req.URL.Path
+		if path == "/" {
+			path = "/index.html"
+		}
+		if f, err := uiFS.Open(path[1:]); err == nil {
+			f.Close()
+			// Hashed file names: a file's content never changes.
+			if strings.HasPrefix(path, "/assets/") {
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+			}
+			http.FileServerFS(uiFS).ServeHTTP(w, req)
+			return
+		}
+		if strings.HasPrefix(path, "/assets/") {
+			w.Header().Set("Cache-Control", "no-store")
+			http.NotFound(w, req)
+			return
+		}
+		indexData, err := fs.ReadFile(uiFS, "index.html")
+		if err != nil {
+			http.NotFound(w, req)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write(indexData)
+	}
 }
 
 // NewMinimalServer creates a lightweight HTTP server exposing only the

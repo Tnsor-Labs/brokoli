@@ -46,6 +46,19 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A tab opened before an upgrade gets the new version instead of a
+  developer error** -- @hc12r. Pages are loaded on demand, and a tab
+  opened before an upgrade asks for files of the old build. The server
+  answered a missing file under `/assets/` with the application page
+  (200, `text/html`), so the browser failed with "error loading
+  dynamically imported module" and React Router showed its developer
+  screen. Missing assets now get a 404 (never cached), and a page that
+  fails to render shows `ErrorScreen` from `@brokoli/ui`: for a module of
+  an earlier build it reloads once to get the new one (not again within
+  30 seconds, so a broken build cannot loop), otherwise it says what
+  failed and offers a reload. The community application uses it on every
+  route, inside the shell where the shell rendered.
+
 - **The editor draws a pipeline compiled from code laid out, and moving
   nodes no longer leaves a Git-managed pipeline "unsaved"** -- @hc12r. A
   pipeline deployed from code arrives with every node at one position;
