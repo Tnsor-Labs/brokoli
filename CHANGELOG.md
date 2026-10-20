@@ -106,6 +106,14 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A worker waits out an unreachable native driver catalog instead of
+  exiting** (#869) -- @hc12r. Installing the managed driver set tried each
+  download once, so a DNS or network blip while a worker started made it
+  exit and restart. A failure to reach the catalog is now retried with
+  backoff (2 seconds, doubling to 30) until the install's own deadline;
+  a digest mismatch or a release not in the catalog still stops it at
+  once, and a worker missing a declared driver still takes no jobs.
+
 - **Pipelines built from code are laid out instead of stacked** -- @hc12r.
   The canonical IR a repository deploys leaves node positions out on
   purpose (layout is not a change to the pipeline), so such pipelines

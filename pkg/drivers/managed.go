@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
+	"time"
 )
 
 // Managed drivers: a deployment whose native drivers the platform manages
@@ -73,14 +75,15 @@ func ParseManagedSet(raw string) (ManagedSet, error) {
 // EnsureManaged installs every build of set that is not installed yet,
 // from the catalog at indexURL, and checks each against its declared
 // library digest. A build already installed is left alone, so a restart
-// costs nothing. The first failure stops it: a worker missing a declared
-// driver must not start serving runs.
+// costs nothing. An unreachable catalog is retried until ctx ends; any
+// other failure stops it at once: a worker missing a declared driver must
+// not start serving runs.
 func (m *Manager) EnsureManaged(ctx context.Context, indexURL string, set ManagedSet) error {
 	for _, identity := range set {
 		if m.GetIdentity(identity) != nil {
 			continue
 		}
-		installed, err := m.InstallFromCatalogAt(ctx, indexURL, identity.Name, identity.Version)
+		installed, err := m.installRetrying(ctx, indexURL, identity)
 		if err != nil {
 			return fmt.Errorf("install managed driver %s %s: %w", identity.Name, identity.Version, err)
 		}
@@ -90,4 +93,34 @@ func (m *Manager) EnsureManaged(ctx context.Context, indexURL string, set Manage
 		}
 	}
 	return nil
+}
+
+// Retrying an unreachable catalog: the first wait, and the longest.
+var (
+	catalogRetryFirst = 2 * time.Second
+	catalogRetryMax   = 30 * time.Second
+)
+
+// installRetrying installs identity from the catalog, trying again while
+// the catalog cannot be reached (ErrCatalogUnavailable: DNS, the network,
+// the host answering 5xx) until ctx ends. A worker starting during a brief
+// outage then waits it out instead of exiting and restarting; anything
+// else (a digest mismatch, a release not in the catalog) fails at once.
+func (m *Manager) installRetrying(ctx context.Context, indexURL string, identity DriverIdentity) (*Manifest, error) {
+	wait := catalogRetryFirst
+	for attempt := 1; ; attempt++ {
+		installed, err := m.InstallFromCatalogAt(ctx, indexURL, identity.Name, identity.Version)
+		if err == nil || !errors.Is(err, ErrCatalogUnavailable) {
+			return installed, err
+		}
+		log.Printf("native drivers: %s %s: %v; trying again in %s (attempt %d)", identity.Name, identity.Version, err, wait, attempt)
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("%w (gave up after %d attempts: %v)", err, attempt, ctx.Err())
+		case <-time.After(wait):
+		}
+		if wait *= 2; wait > catalogRetryMax {
+			wait = catalogRetryMax
+		}
+	}
 }

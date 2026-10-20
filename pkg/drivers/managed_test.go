@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 )
@@ -120,5 +122,64 @@ func TestEnsureManagedRefusesABuildThatIsNotTheDeclaredOne(t *testing.T) {
 	err = mgr.EnsureManaged(context.Background(), indexURL, set)
 	if err == nil || !strings.Contains(err.Error(), "but the platform declares") {
 		t.Fatalf("EnsureManaged error = %v, want a declared-digest mismatch", err)
+	}
+}
+
+// An unreachable catalog is waited out: the install retries until the
+// catalog answers, and gives up only when its deadline ends. A failure
+// that is not about reaching the catalog is not retried.
+func TestEnsureManagedWaitsOutAnUnreachableCatalog(t *testing.T) {
+	prevFirst, prevMax := catalogRetryFirst, catalogRetryMax
+	catalogRetryFirst, catalogRetryMax = time.Millisecond, 4*time.Millisecond
+	t.Cleanup(func() { catalogRetryFirst, catalogRetryMax = prevFirst, prevMax })
+
+	contents := []byte("library")
+	indexURL, hits := managedCatalog(t, contents)
+	set := ManagedSet{{Name: "flightsql", Version: "1.0.0", LibrarySHA256: libraryDigest(contents)}}
+
+	// The index fails three times (as DNS or the host would), then answers.
+	var failures int32 = 3
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&failures, -1) >= 0 {
+			http.Error(w, "unavailable", http.StatusBadGateway)
+			return
+		}
+		http.Redirect(w, r, indexURL, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(flaky.Close)
+	mgr, err := NewManager(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.EnsureManaged(context.Background(), flaky.URL, set); err != nil {
+		t.Fatalf("EnsureManaged after a brief outage: %v", err)
+	}
+	if mgr.GetIdentity(set[0]) == nil || atomic.LoadInt32(hits) == 0 {
+		t.Fatal("not installed once the catalog answered")
+	}
+
+	// Down for good: gives up at the deadline, saying it kept trying.
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+	other, _ := NewManager(t.TempDir())
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	err = other.EnsureManaged(ctx, down.URL, set)
+	if !errors.Is(err, ErrCatalogUnavailable) || !strings.Contains(err.Error(), "gave up after") {
+		t.Fatalf("a catalog down for good: %v", err)
+	}
+
+	// Not in the catalog: refused at once, not retried.
+	var asked int32
+	empty := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&asked, 1)
+		fmt.Fprint(w, `{"version":1,"drivers":[]}`)
+	}))
+	t.Cleanup(empty.Close)
+	third, _ := NewManager(t.TempDir())
+	if err := third.EnsureManaged(context.Background(), empty.URL, set); !errors.Is(err, ErrNotInCatalog) || atomic.LoadInt32(&asked) != 1 {
+		t.Fatalf("not in the catalog: %v after %d request(s)", err, asked)
 	}
 }
