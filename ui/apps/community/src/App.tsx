@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Navigate, Outlet, RouterProvider, createHashRouter, useRouteError } from 'react-router-dom'
+import { HomePage } from './home/HomePage'
 import { LoginRoute, RequireAuth, SessionProvider } from '@brokoli/auth'
 import { observeRoutes } from '@brokoli/observe'
 import { pipelineRoutes } from '@brokoli/pipelines'
@@ -24,7 +25,7 @@ const router = createHashRouter([
     element: <Outlet />,
     errorElement: <RouteError />,
     children: [
-      { path: '/login', element: <LoginRoute defaultPath="/dashboard" /> },
+      { path: '/login', element: <LoginRoute defaultPath="/home" /> },
       {
         element: <RequireAuth />,
         children: [
@@ -34,7 +35,8 @@ const router = createHashRouter([
               {
                 errorElement: <RouteError />,
                 children: [
-                  { index: true, element: <Navigate to="/dashboard" replace /> },
+                  { index: true, element: <Navigate to="/home" replace /> },
+                  { path: 'home', element: <HomePage /> },
                   ...pipelineRoutes(),
                   ...workspaceRoutes(),
                   ...observeRoutes(),

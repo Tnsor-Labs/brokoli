@@ -13,6 +13,18 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **A shorter sidebar, and Home** -- @hc12r. The community sidebar goes
+  from eleven items to seven, grouped by what a person is doing: Home and
+  Pipelines; Observe (Dashboard, Lineage); Connect (Connections, Secrets &
+  variables, Integrations); with Settings and Help at the bottom. Pages
+  that belong together share one item and a tab strip (Dashboard and
+  Schedule; Lineage and Pipeline dependencies; Variables and Secret
+  stores; Plugins and Drivers), each keeping its own address, so links
+  keep working. Home, where sign-in now lands, lists what needs you: the
+  pipelines whose latest run failed and the changes waiting for a
+  decision, counted next to Home in the sidebar. Search still finds every
+  page by its own name, with the shortcut letters it had. The tab strip
+  is a shared component (`SectionTabs` in `@brokoli/shell`).
 - **`GET /api/changes`: the workspace's change requests** -- @hc12r.
   Across its pipelines, newest first (at most 100), each with
   `pipeline_name`, filtered by `status`; only pipelines the caller may see.

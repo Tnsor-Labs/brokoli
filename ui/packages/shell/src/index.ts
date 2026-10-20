@@ -1,3 +1,6 @@
 export { ShellOverlays, SidebarSearch, SidebarStatus } from './Sidebar'
 export { openOverlay } from './overlay'
 export type { ShellAction, ShellPage } from './commands'
+export { SectionTabs } from './SectionTabs'
+export { itemActive, sectionFor } from './sections'
+export type { Section, SectionTab } from './sections'

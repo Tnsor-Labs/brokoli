@@ -341,3 +341,53 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* Section tabs: pages that share one sidebar item */
+.bk-section-tabs {
+  border-bottom: 1px solid var(--bk-color-border);
+  background: var(--bk-color-canvas);
+}
+.bk-section-tabs-in {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  /* The page's own side padding, so the tabs line up with its header. */
+  padding: 10px clamp(18px, 4vw, 44px) 0;
+}
+.bk-section-tabs-label {
+  width: 100%;
+  margin-bottom: 2px;
+  color: var(--bk-color-text-muted);
+  font-family: var(--bk-font-mono);
+  font-size: var(--bk-text-2xs);
+  letter-spacing: var(--bk-tracking-eyebrow);
+  text-transform: uppercase;
+}
+.bk-section-tab {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 0 12px;
+  border-bottom: 2px solid transparent;
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-sm);
+  text-decoration: none;
+  transition: color var(--bk-duration-fast) var(--bk-ease);
+}
+.bk-section-tabs-in .bk-section-tab:first-of-type {
+  margin-left: -12px;
+}
+.bk-section-tab:hover {
+  color: var(--bk-color-text);
+}
+.bk-section-tab.is-active {
+  border-bottom-color: var(--bk-color-accent);
+  color: var(--bk-color-text);
+  font-weight: 600;
+}
+.bk-section-tab:focus-visible {
+  outline: 2px solid var(--bk-color-accent);
+  outline-offset: -2px;
+  border-radius: var(--bk-radius-xs);
+}
