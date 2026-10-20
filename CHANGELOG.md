@@ -46,6 +46,16 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **The editor draws a pipeline compiled from code laid out, and moving
+  nodes no longer leaves a Git-managed pipeline "unsaved"** -- @hc12r. A
+  pipeline deployed from code arrives with every node at one position;
+  the editor drew them on top of each other, and laying them out to see
+  them counted as an edit, so after saving through `gitSave` the editor
+  still said "Unsaved changes". Stacked nodes are now laid out as part of
+  loading, and for a pipeline saved through `gitSave` (whose layout is
+  not saved anywhere) moving or laying out nodes does not count as a
+  change.
+
 - **Rollback refuses Git-managed pipelines** (#854) -- @hc12r. Editing a
   pipeline whose source is Git was already refused, but rolling it back to
   an earlier version was not: the pipeline then ran something its

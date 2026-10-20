@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Pipeline, PipelineEdge, PipelineNode } from '@brokoli/api'
+import { arrangeStacked } from '../document'
 
 export type Doc = { pipeline: Pipeline; nodes: PipelineNode[]; edges: PipelineEdge[] }
 type Snapshot = { nodes: PipelineNode[]; edges: PipelineEdge[] }
@@ -16,6 +17,10 @@ type Snapshot = { nodes: PipelineNode[]; edges: PipelineEdge[] }
  *   the same scope as the previous editor.
  * - `dirty` compares the revision now with the revision at the last
  *   successful save, so edits made while a save is in flight stay dirty.
+ * - A change marked `view` (moving nodes when the layout is not saved, as
+ *   for a pipeline managed in Git) leaves a clean document clean.
+ * - A loaded pipeline whose nodes are all stacked at one position is laid
+ *   out as part of loading (arrangeStacked), not as an edit.
  */
 export function useDocument(initial: Pipeline | undefined) {
   const [doc, setDoc] = useState<Doc | null>(null)
@@ -23,6 +28,7 @@ export function useDocument(initial: Pipeline | undefined) {
   const revision = useRef(0)
   const [rev, setRev] = useState(0)
   const [savedRev, setSavedRev] = useState(0)
+  const savedRevRef = useRef(0)
   const undoStack = useRef<Snapshot[]>([])
   const redoStack = useRef<Snapshot[]>([])
   const lastKey = useRef<{ key: string; at: number } | null>(null)
@@ -34,8 +40,14 @@ export function useDocument(initial: Pipeline | undefined) {
     setRev(revision.current)
   }
 
+  const markSaved = (at: number) => {
+    savedRevRef.current = at
+    setSavedRev(at)
+  }
+
   const reset = useCallback((p: Pipeline) => {
-    const next = { pipeline: p, nodes: p.nodes ?? [], edges: p.edges ?? [] }
+    const edges = p.edges ?? []
+    const next = { pipeline: p, nodes: arrangeStacked(p.nodes ?? [], edges), edges }
     docRef.current = next
     setDoc(next)
     undoStack.current = []
@@ -43,16 +55,17 @@ export function useDocument(initial: Pipeline | undefined) {
     lastKey.current = null
     revision.current++
     setRev(revision.current)
-    setSavedRev(revision.current)
+    markSaved(revision.current)
   }, [])
 
   useEffect(() => {
     if (initial && !docRef.current) reset(initial)
   }, [initial, reset])
 
-  const change = useCallback((fn: (d: Doc) => Doc, history: boolean | string = true) => {
+  const change = useCallback((fn: (d: Doc) => Doc, history: boolean | string = true, view = false) => {
     const current = docRef.current
     if (!current) return
+    const clean = revision.current === savedRevRef.current
     if (history) {
       const now = Date.now()
       const coalesce = typeof history === 'string' && lastKey.current?.key === history && now - lastKey.current.at < 1200
@@ -63,6 +76,7 @@ export function useDocument(initial: Pipeline | undefined) {
       lastKey.current = typeof history === 'string' ? { key: history, at: now } : null
     }
     commit(fn(current))
+    if (view && clean) markSaved(revision.current)
   }, [])
 
   const step = useCallback((from: typeof undoStack, to: typeof undoStack) => {
@@ -91,7 +105,7 @@ export function useDocument(initial: Pipeline | undefined) {
       docRef.current = next
       setDoc(next)
     }
-    setSavedRev(revisionAtSave)
+    markSaved(revisionAtSave)
   }, [])
 
   return {

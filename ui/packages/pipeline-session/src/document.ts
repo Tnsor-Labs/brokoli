@@ -417,6 +417,22 @@ export function autoLayout(nodes: PipelineNode[], edges: PipelineEdge[]): Pipeli
 }
 
 /**
+ * The pipeline's nodes laid out when they are stacked: several nodes, all at
+ * one position. A pipeline compiled from code (deployed from a repository,
+ * say) carries no layout, so every node arrives at the origin and the
+ * editor would draw them on top of each other. Laying them out here, as
+ * part of loading, keeps that from counting as an edit.
+ */
+export function arrangeStacked(nodes: PipelineNode[], edges: PipelineEdge[]): PipelineNode[] {
+  if (nodes.length < 2) return nodes
+  const [first] = nodes
+  const stacked = nodes.every(
+    (n) => n.position?.x === first.position?.x && n.position?.y === first.position?.y,
+  )
+  return stacked ? autoLayout(nodes, edges) : nodes
+}
+
+/**
  * Where to put a node added by clicking the palette: the anchor (the centre
  * of the view) if it is free, otherwise the nearest free slot below and then
  * to the right of it. Without this, two clicks stacked two nodes exactly on

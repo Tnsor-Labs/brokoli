@@ -330,6 +330,8 @@ function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave
           }),
         }),
         false,
+        // A Git-managed pipeline's layout is not saved: moving nodes is not an edit.
+        viaGit,
       )
   }
 
@@ -340,7 +342,7 @@ function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave
 
   const layout = () => {
     if (!doc || readonly) return
-    change((d) => ({ ...d, nodes: autoLayout(d.nodes, d.edges) }))
+    change((d) => ({ ...d, nodes: autoLayout(d.nodes, d.edges) }), !viaGit, viaGit)
     requestAnimationFrame(() => void flow.fitView({ padding: 0.2, duration: 300 }))
   }
 
@@ -795,7 +797,7 @@ function Editor({ pipelineId, gitSave }: { pipelineId: string; gitSave?: GitSave
                 ? false
                 : !connectionProblem(doc.nodes, doc.edges, c.source, c.target)
             }
-            onNodeDragStart={() => !readonly && change((d) => d)}
+            onNodeDragStart={() => !readonly && change((d) => d, !viaGit, viaGit)}
             onNodeClick={(_, n) => {
               setSelection({ kind: 'node', id: n.id })
               setSide('inspector')

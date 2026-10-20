@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { Pipeline, PipelineEdge, PipelineNode } from '@brokoli/api'
 import { catalogEntry, portsFor } from './catalog'
 import {
+  arrangeStacked,
   autoLayout,
   buildSavePayload,
   connectionProblem,
@@ -351,5 +352,18 @@ describe('auto layout', () => {
       { from: 'b', to: 'a' },
     ])
     expect(out[0].position).toEqual({ x: 5, y: 7 })
+  })
+})
+
+describe('arrangeStacked', () => {
+  it('lays out nodes that all share one position', () => {
+    const out = arrangeStacked([node('a', 'source_db'), node('b', 'transform')], [{ from: 'a', to: 'b' }])
+    expect(out[1].position.x).toBeGreaterThan(out[0].position.x)
+  })
+  it('leaves a single node and spread nodes alone', () => {
+    const one = [node('a', 'source_db')]
+    expect(arrangeStacked(one, [])).toBe(one)
+    const spread = [node('a', 'source_db'), node('b', 'transform', { position: { x: 0, y: 200 } })]
+    expect(arrangeStacked(spread, [])).toBe(spread)
   })
 })
