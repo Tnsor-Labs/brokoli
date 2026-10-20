@@ -35,6 +35,8 @@ type RunAttribution struct {
 	// TokenName identifies an API token or work-pool credential without
 	// naming the secret. Never the token itself.
 	TokenName string `json:"token_name,omitempty"`
+	// OnBehalfOf names the person an agent acted for, when its token says.
+	OnBehalfOf string `json:"on_behalf_of,omitempty"`
 }
 
 // RunTriggerKind is the closed set of things that start a run.
@@ -48,6 +50,9 @@ const (
 	RunTriggerKindBackfill   RunTriggerKind = "backfill"
 	RunTriggerKindAPIToken   RunTriggerKind = "api_token"
 	RunTriggerKindRetry      RunTriggerKind = "retry"
+	// RunTriggerKindAgent is an agent identity (ADR-046): UserID and
+	// UserName are the agent's, OnBehalfOf the person it acted for.
+	RunTriggerKindAgent RunTriggerKind = "agent"
 )
 
 // ValidRunTriggerKind reports whether kind is one this build knows.
@@ -58,7 +63,7 @@ func ValidRunTriggerKind(kind RunTriggerKind) bool {
 	switch kind {
 	case RunTriggerKindUser, RunTriggerKindSchedule, RunTriggerKindWebhook,
 		RunTriggerKindDependency, RunTriggerKindBackfill,
-		RunTriggerKindAPIToken, RunTriggerKindRetry:
+		RunTriggerKindAPIToken, RunTriggerKindRetry, RunTriggerKindAgent:
 		return true
 	}
 	return false

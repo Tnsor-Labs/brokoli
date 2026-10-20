@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -22,8 +23,14 @@ type Permitted func(permission string) bool
 // New is an MCP server whose tools act through c, listing only the tools
 // permitted allows.
 func New(c Caller, permitted Permitted, version string) *mcp.Server {
+	return NewAs(c, permitted, version, Identity{})
+}
+
+// NewAs is New for a known caller: the instructions say who the agent acts
+// as, and warn when that is the server's administrator key.
+func NewAs(c Caller, permitted Permitted, version string, who Identity) *mcp.Server {
 	s := mcp.NewServer(&mcp.Implementation{Name: "brokoli", Title: "Brokoli", Version: version}, &mcp.ServerOptions{
-		Instructions: instructions,
+		Instructions: who.instructions() + instructions,
 	})
 	for _, t := range tools() {
 		if permitted == nil || permitted(t.permission) {
@@ -36,6 +43,48 @@ func New(c Caller, permitted Permitted, version string) *mcp.Server {
 const instructions = `Brokoli runs data pipelines. Use these tools to see the pipelines you may see, their definitions (the pipeline IR), their runs and logs, and the lineage between their datasets, and to validate a pipeline definition without saving it.
 
 To find out why a run failed, start with explain_run: it gathers the failing node, its error, the relevant log lines and what changed since the last successful run. Lists are paginated and long text is cut; every result says how to get more. Credentials are never shown.`
+
+// Identity is who the MCP client acts as, from /api/auth/me.
+type Identity struct {
+	Subject    string `json:"sub"`
+	Username   string `json:"username"`
+	Kind       string `json:"kind"`
+	OnBehalfOf string `json:"on_behalf_of"`
+}
+
+// StaticKey reports whether the identity is the server's static API key:
+// an administrator, which ADR-046 says not to give an agent.
+func (i Identity) StaticKey() bool { return strings.HasPrefix(i.Subject, "apikey:") }
+
+// Describe is the identity in a few words.
+func (i Identity) Describe() string {
+	switch {
+	case i.StaticKey():
+		return "the server's static API key (an administrator)"
+	case i.Kind == "agent" && i.OnBehalfOf != "":
+		return "agent " + i.Username + ", on behalf of " + i.OnBehalfOf
+	case i.Kind == "agent":
+		return "agent " + i.Username
+	}
+	return i.Username
+}
+
+func (i Identity) instructions() string {
+	switch {
+	case i.Subject == "":
+		return ""
+	case i.StaticKey():
+		return "WARNING: you are connected with the server's static API key, which is an administrator. Ask the person to give you an agent token instead (see docs/mcp.md).\n\n"
+	}
+	return "You act in Brokoli as " + i.Describe() + ".\n\n"
+}
+
+// Who asks the API who the caller is. Empty when it cannot tell.
+func Who(ctx context.Context, c Caller) Identity {
+	var i Identity
+	_ = get(ctx, c, "/api/auth/me", &i)
+	return i
+}
 
 // Permissions asks the API which permissions the caller holds, in the
 // workspace of the request. A server without accounts (no sign-in at all)
@@ -63,7 +112,7 @@ func Permissions(ctx context.Context, c Caller) Permitted {
 func HTTPHandler(router http.Handler, version string) http.Handler {
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
 		c := NewRouterCaller(router, r)
-		return New(c, Permissions(r.Context(), c), version)
+		return NewAs(c, Permissions(r.Context(), c), version, Who(r.Context(), c))
 	}, &mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 }
 
@@ -71,5 +120,5 @@ func HTTPHandler(router http.Handler, version string) http.Handler {
 // `brokoli mcp`) until the client disconnects or ctx ends. The caller's
 // permissions are read once, when it starts.
 func Serve(ctx context.Context, c Caller, version string, t mcp.Transport) error {
-	return New(c, Permissions(ctx, c), version).Run(ctx, t)
+	return NewAs(c, Permissions(ctx, c), version, Who(ctx, c)).Run(ctx, t)
 }

@@ -50,10 +50,15 @@ func createRunAttributionTable(db *sql.DB, dialect string) {
 		user_id TEXT NOT NULL DEFAULT '',
 		user_name TEXT NOT NULL DEFAULT '',
 		token_name TEXT NOT NULL DEFAULT '',
+		on_behalf_of TEXT NOT NULL DEFAULT '',
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE
 	)`)
 	_, _ = db.Exec(`CREATE INDEX IF NOT EXISTS idx_run_attribution_user ON run_attribution(user_id)`)
 	addRunAttributionForeignKey(db, dialect)
+	// The person an agent acted for (ADR-046). After the rebuild above,
+	// which keeps the original columns; "already exists" is the normal
+	// case on every boot.
+	_, _ = db.Exec(`ALTER TABLE run_attribution ADD COLUMN on_behalf_of TEXT NOT NULL DEFAULT ''`)
 }
 
 // addRunAttributionForeignKey retrofits the cascade onto a table created
@@ -139,10 +144,10 @@ func setRunAttribution(db *sql.DB, dialect, runID string, a *models.RunAttributi
 		return fmt.Errorf("set run attribution %s: unknown kind %q", runID, a.Kind)
 	}
 	query := rewritePlaceholders(dialect,
-		`INSERT INTO run_attribution (run_id, kind, user_id, user_name, token_name) VALUES (?,?,?,?,?)
+		`INSERT INTO run_attribution (run_id, kind, user_id, user_name, token_name, on_behalf_of) VALUES (?,?,?,?,?,?)
 		 ON CONFLICT(run_id) DO UPDATE SET kind=excluded.kind, user_id=excluded.user_id,
-		   user_name=excluded.user_name, token_name=excluded.token_name`)
-	if _, err := db.Exec(query, runID, string(a.Kind), a.UserID, a.UserName, a.TokenName); err != nil {
+		   user_name=excluded.user_name, token_name=excluded.token_name, on_behalf_of=excluded.on_behalf_of`)
+	if _, err := db.Exec(query, runID, string(a.Kind), a.UserID, a.UserName, a.TokenName, a.OnBehalfOf); err != nil {
 		return fmt.Errorf("set run attribution %s: %w", runID, err)
 	}
 	return nil
@@ -164,7 +169,7 @@ func getRunAttribution(db *sql.DB, dialect string, runIDs []string) (map[string]
 		args[i] = id
 	}
 	query := rewritePlaceholders(dialect,
-		`SELECT run_id, kind, user_id, user_name, token_name FROM run_attribution WHERE run_id IN (`+
+		`SELECT run_id, kind, user_id, user_name, token_name, on_behalf_of FROM run_attribution WHERE run_id IN (`+
 			strings.Join(placeholders, ",")+`)`)
 	rows, err := db.Query(query, args...)
 	if err != nil {
@@ -175,7 +180,7 @@ func getRunAttribution(db *sql.DB, dialect string, runIDs []string) (map[string]
 		var runID string
 		var a models.RunAttribution
 		var kind string
-		if err := rows.Scan(&runID, &kind, &a.UserID, &a.UserName, &a.TokenName); err != nil {
+		if err := rows.Scan(&runID, &kind, &a.UserID, &a.UserName, &a.TokenName, &a.OnBehalfOf); err != nil {
 			return nil, err
 		}
 		a.Kind = models.RunTriggerKind(kind)

@@ -56,6 +56,18 @@ func AuditLog(r *http.Request, action, resource, resourceID string, before, afte
 	if orgID := auditOrgID(r, userID); orgID != "" {
 		entry.Metadata = map[string]interface{}{"org_id": orgID}
 	}
+	// An agent's action says it was an agent, whose, and for whom.
+	if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok && isAgentClaims(claims) {
+		if entry.Metadata == nil {
+			entry.Metadata = map[string]interface{}{}
+		}
+		entry.Metadata["actor_kind"] = UserKindAgent
+		for _, k := range []string{"owner_id", "on_behalf_of", "token_name"} {
+			if v, _ := (*claims)[k].(string); v != "" {
+				entry.Metadata[k] = v
+			}
+		}
+	}
 	auditLogger.Log(entry)
 }
 

@@ -133,6 +133,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			}
 			writeJSON(w, http.StatusOK, pc.requestPermissions(req, mapClaims))
 		})
+		// Agent identities (ADR-046 phase 2).
+		registerAgentRoutes(r, userStore, pc)
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))
 		r.Get("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {

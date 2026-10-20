@@ -160,7 +160,8 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`)
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`)
-		return nil
+		// Agent identities (ADR-046): agents are users of kind "agent".
+		return us.migrateAgents()
 	}
 	// Every process creates this table at startup; on Postgres they take
 	// turns under the store's migration lock rather than racing on the
@@ -298,12 +299,12 @@ func (us *UserStore) Authenticate(username, password string) (*User, error) {
 	var hash, createdAt string
 
 	err := us.db.QueryRow(
-		us.q(`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = ?`), username,
+		us.q(`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = ? AND kind <> 'agent'`), username,
 	).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &hash, &u.Role, &createdAt)
 	if err != nil {
 		// Try Postgres
 		err = us.db.QueryRow(
-			`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = $1`, username,
+			`SELECT id, username, display_name, email, avatar_url, password_hash, role, created_at FROM users WHERE username = $1 AND kind <> 'agent'`, username,
 		).Scan(&u.ID, &u.Username, &u.DisplayName, &u.Email, &u.AvatarURL, &hash, &u.Role, &createdAt)
 	}
 	if err != nil {
@@ -424,7 +425,7 @@ func (us *UserStore) SetProfile(userID, displayName, email string) error {
 }
 
 func (us *UserStore) ListUsers() ([]User, error) {
-	rows, err := us.db.Query(`SELECT id, username, display_name, email, avatar_url, role, created_at FROM users ORDER BY created_at`)
+	rows, err := us.db.Query(`SELECT id, username, display_name, email, avatar_url, role, created_at FROM users WHERE kind <> 'agent' ORDER BY created_at`)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +450,7 @@ func (us *UserStore) ListUsersByOrg(orgID string) ([]User, error) {
 		`SELECT u.id, u.username, u.display_name, u.email, u.avatar_url, u.role, u.created_at
 		 FROM users u
 		 INNER JOIN org_members om ON u.id = om.user_id
-		 WHERE om.org_id = $1
+		 WHERE om.org_id = $1 AND u.kind <> 'agent'
 		 ORDER BY u.created_at`, orgID)
 	if err != nil {
 		return nil, err
@@ -966,6 +967,11 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				}
 				if token != "" {
 					claims, parseErr := ParseToken(token)
+					if strings.HasPrefix(token, AgentTokenPrefix) {
+						if agentClaims, ok := us.ResolveAgentToken(token); ok {
+							claims, parseErr = agentClaims, nil
+						}
+					}
 					if parseErr != nil && BearerTokenResolverFunc != nil {
 						if resolved, ok := BearerTokenResolverFunc(token); ok && resolved != nil {
 							claims, parseErr = resolved, nil
@@ -1008,6 +1014,21 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 			}
 
 			bearer := strings.TrimPrefix(authHeader, "Bearer ")
+			// An agent token is looked up, not parsed: it is opaque and
+			// revocable (ADR-046).
+			if strings.HasPrefix(bearer, AgentTokenPrefix) {
+				agentClaims, ok := us.ResolveAgentToken(bearer)
+				if !ok {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid, expired or revoked agent token"})
+					return
+				}
+				ctx := contextWithClaims(r.Context(), agentClaims)
+				if orgID, _ := (*agentClaims)["org_id"].(string); orgID != "" {
+					ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+				}
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			claims, err := ParseToken(bearer)
 			if err != nil {
 				if BearerTokenResolverFunc != nil {

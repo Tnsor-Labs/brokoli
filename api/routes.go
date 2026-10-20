@@ -71,6 +71,10 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		auditLogger = ext.Audit
 	}
 
+	// An agent's permissions are its role's, narrowed to its owner's
+	// (ADR-046); the role-name fallback below cannot express that.
+	agentPC := NewPermissionChecker(s)
+
 	// Permission check - enterprise team features provide full RBAC;
 	// fallback enforces basic role-based checks for open source.
 	requirePerm := func(perm models.Permission) func(http.Handler) http.Handler {
@@ -79,7 +83,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 				return mw.(func(http.Handler) http.Handler)
 			}
 		}
-		return fallbackPermissionMiddleware(perm)
+		return fallbackPermissionMiddlewareWith(perm, agentPC)
 	}
 
 	// requireStrictPerm behaves exactly like requirePerm in Enterprise
@@ -542,6 +546,13 @@ func systemInfo(s store.Store, e *engine.Engine) http.HandlerFunc {
 // that can only be exercised by standing up the whole router is a gate
 // whose refusals nobody checks.
 func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) http.Handler {
+	return fallbackPermissionMiddlewareWith(perm, nil)
+}
+
+// fallbackPermissionMiddlewareWith is fallbackPermissionMiddleware that
+// decides for an agent (ADR-046) by pc: its role's permissions narrowed to
+// its owner's. Without pc an agent is refused.
+func fallbackPermissionMiddlewareWith(perm models.Permission, pc *PermissionChecker) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			claims := r.Context().Value("claims")
@@ -575,7 +586,9 @@ func fallbackPermissionMiddleware(perm models.Permission) func(http.Handler) htt
 				return
 			}
 			allowed := false
-			if perms, resolved := RequestPermissions(r); resolved {
+			if isAgentClaims(mc) {
+				allowed = pc != nil && slices.Contains(pc.requestPermissions(r, mc), perm)
+			} else if perms, resolved := RequestPermissions(r); resolved {
 				allowed = slices.Contains(perms, perm)
 			} else {
 				role, _ := (*mc)["role"].(string)

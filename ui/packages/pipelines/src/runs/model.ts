@@ -52,6 +52,10 @@ export function triggeredByLabel(t: RunAttribution | null | undefined): string |
   if (!t) return null
   if (t.kind === 'user') return t.user_name || 'a user'
   if (t.kind === 'api_token') return t.token_name ? `${t.token_name} (API token)` : 'an API token'
+  if (t.kind === 'agent') {
+    const agent = t.user_name ? `agent ${t.user_name}` : 'an agent'
+    return t.on_behalf_of ? `${agent}, for ${t.on_behalf_of}` : agent
+  }
   return TRIGGER_KIND_LABEL[t.kind] ?? t.kind
 }
 

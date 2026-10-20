@@ -279,6 +279,7 @@ export type RunTriggerKind =
   | 'backfill'
   | 'api_token'
   | 'retry'
+  | 'agent'
   | (string & {})
 
 /** Who or what started a run, recorded when the run is triggered. */
@@ -288,6 +289,8 @@ export interface RunAttribution {
   user_name?: string
   /** Names an API token or work-pool credential, never the secret itself. */
   token_name?: string
+  /** For an agent (ADR-046): the person it acted for, when its token says. */
+  on_behalf_of?: string
 }
 
 export interface Run {

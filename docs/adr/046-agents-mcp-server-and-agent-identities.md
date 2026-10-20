@@ -267,3 +267,20 @@ Phases, each usable on its own:
   for `brokoli mcp`. Stateless Streamable HTTP; tools listed by
   `/api/auth/me/permissions`. The 401 carries no protected-resource
   metadata yet: that comes with OAuth in phase 5.
+- **Phase 2** (`api/agents.go`, `api/agents_handlers.go`, `cmd/agents.go`,
+  docs/agents.md): agents are rows of the users table with kind `agent`,
+  owner and a password hash nothing matches; tokens are opaque (`bka_` +
+  32 random bytes), stored as SHA-256 in `agent_tokens`, and resolved in
+  `JWTAuth` before JWT parsing. ADR-021's session model is not built, so
+  agent tokens have their own table rather than sharing one with people's
+  sessions. The owner's role travels in the claims and is read on every
+  request, so the intersection follows the owner. Core decides route
+  permissions two ways: `PermissionChecker` reads the roles table, while
+  the open-source route fallback (`roleAllows`) knows only admin, editor
+  and viewer by name and refuses every other role. An agent is decided
+  by the former, through the fallback too, since its permissions are a
+  computed set no role name describes. (The same split leaves a person
+  with the operator or a custom role refused by routes that
+  `/api/auth/me/permissions` says they may use; that is a separate,
+  pre-existing issue.) Core has no users page, so agents are managed with
+  the API and the CLI; a UI comes with the distribution that has one.

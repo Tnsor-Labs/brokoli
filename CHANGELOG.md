@@ -13,6 +13,22 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Agent identities** (ADR-046 phase 2) -- @hc12r. An agent is an
+  account for an AI agent: a role (the new built-in `agent` role by
+  default: view pipelines and runs, run pipelines; never `admin`), an
+  owner, and tokens of its own (`bka_...`, stored as a hash, 90 days by
+  default and at most 365, revocable one by one, last use recorded). Its
+  permissions are its role's intersected with its owner's on every
+  request, never including reading secrets or managing users, roles,
+  members or tokens. It cannot sign in or manage agents. Runs it starts
+  are attributed to it (`triggered_by.kind` `agent`, with `on_behalf_of`
+  when its owner issued the token for themselves) and audit entries carry
+  `actor_kind`, `owner_id`, `on_behalf_of` and `token_name`. Managed with
+  `/api/agents` and `brokoli agents`; agents are not listed among users.
+  Over MCP the agent is told who it acts as, and is warned (as is
+  `brokoli mcp`) when it uses the server's static API key. See
+  `docs/agents.md`.
+
 - **Brokoli for AI agents over MCP** (ADR-046 phase 1) -- @hc12r.
   `brokoli mcp` serves the Model Context Protocol on stdio for an agent
   client on your machine, acting on a server with the credential `brokoli

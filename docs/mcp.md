@@ -9,10 +9,10 @@ run failed.
 The agent acts **as you** (or as the account whose credential it has), and
 sees exactly what that account may see. It never sees a credential.
 
-This is phase 1 of [ADR-046](adr/046-agents-mcp-server-and-agent-identities.md):
-the tools read and validate; they do not change anything. Agent accounts
-of their own, change requests and tools that run pipelines come in later
-phases.
+This is [ADR-046](adr/046-agents-mcp-server-and-agent-identities.md):
+the tools read and validate; they do not change anything. Agents have
+accounts of their own ([agents.md](agents.md)); change requests and tools
+that run pipelines come in later phases.
 
 ## Two ways to connect
 
@@ -147,14 +147,21 @@ never receives a result too large for its context by accident.
 Brokoli`, `not permitted: ...`, `not found: run not found`, or the
 validation errors of a definition.
 
-## Credentials for agents today
+## Credentials for agents
 
-Until agent accounts arrive (ADR-046 phase 2), give an agent the
-credential of an account with the least role that does the job: a
-**viewer** sees pipelines, runs and lineage, which is all the phase 1
-tools need. Do not give an agent the server's static API key (`brk_...`,
-`--api-key`): it is an administrator, and over MCP it would be offered
-everything the tools reach.
+Give an agent an **agent identity** of its own ([agents.md](agents.md)):
+an account with a role (by default `agent`: see pipelines, runs and
+lineage, and run pipelines), an owner it is never above, and its own
+tokens that expire and can be revoked. Pass its token as `--api-key` or
+`BROKOLI_TOKEN` to `brokoli mcp`, or as the bearer token to `/api/mcp`.
+The agent is told who it acts as ("You act in Brokoli as agent
+triage-bot, on behalf of ada"), and `brokoli mcp` prints the same on
+standard error.
+
+Do not give an agent the server's static API key (`brk_...`,
+`--api-key` on the server): it is an administrator. When it is used,
+the MCP server's instructions start with a warning to the agent, and
+`brokoli mcp` warns on standard error.
 
 ## Troubleshooting
 

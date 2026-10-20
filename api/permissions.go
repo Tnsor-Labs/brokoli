@@ -60,11 +60,22 @@ func (pc *PermissionChecker) HasPermission(r *http.Request, perm models.Permissi
 // RequestIdentityFunc resolved for it when it resolved any, otherwise those
 // of the role its claims carry.
 func (pc *PermissionChecker) requestPermissions(r *http.Request, claims *jwt.MapClaims) []models.Permission {
-	if perms, ok := RequestPermissions(r); ok {
-		return perms
+	perms, ok := RequestPermissions(r)
+	if !ok {
+		role, _ := (*claims)["role"].(string)
+		perms = pc.GetUserPermissions(role, GetWorkspaceID(r))
 	}
-	role, _ := (*claims)["role"].(string)
-	return pc.GetUserPermissions(role, GetWorkspaceID(r))
+	// An agent (ADR-046) holds what its role grants and its owner holds,
+	// never more than the person answering for it.
+	if isAgentClaims(claims) {
+		ownerRole, _ := (*claims)["owner_role"].(string)
+		owner := models.AllPermissions()
+		if ownerRole != string(RoleSuperAdmin) {
+			owner = pc.GetUserPermissions(ownerRole, GetWorkspaceID(r))
+		}
+		perms = agentPermissions(perms, owner)
+	}
+	return perms
 }
 
 // RequirePermission returns middleware that checks for a specific permission.

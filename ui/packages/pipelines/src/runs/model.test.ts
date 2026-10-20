@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import type { PipelineEdge } from '@brokoli/api'
-import { canRerunStatus, descendantClosure } from './model'
+import { canRerunStatus, descendantClosure, triggeredByLabel } from './model'
 
-const edges = (...pairs: [string, string][]): PipelineEdge[] => pairs.map(([from, to]) => ({ from, to }))
+const edges = (...pairs: [string, string][]): PipelineEdge[] =>
+  pairs.map(([from, to]) => ({ from, to }))
 const set = (...ids: string[]) => new Set(ids)
 
 describe('descendantClosure', () => {
@@ -35,9 +36,22 @@ describe('descendantClosure', () => {
 
 describe('canRerunStatus', () => {
   it('accepts settled runs', () => {
-    for (const s of ['success', 'failed', 'cancelled', 'SUCCESS']) expect(canRerunStatus(s)).toBe(true)
+    for (const s of ['success', 'failed', 'cancelled', 'SUCCESS'])
+      expect(canRerunStatus(s)).toBe(true)
   })
   it('refuses in-flight or never-executed runs', () => {
-    for (const s of ['running', 'pending', 'waiting', 'blocked', 'skipped', '', null, undefined]) expect(canRerunStatus(s)).toBe(false)
+    for (const s of ['running', 'pending', 'waiting', 'blocked', 'skipped', '', null, undefined])
+      expect(canRerunStatus(s)).toBe(false)
+  })
+})
+
+describe('triggeredByLabel', () => {
+  it('names an agent, and the person it acted for', () => {
+    expect(triggeredByLabel({ kind: 'agent', user_name: 'triage-bot', on_behalf_of: 'Ada' })).toBe(
+      'agent triage-bot, for Ada',
+    )
+    expect(triggeredByLabel({ kind: 'agent', user_name: 'triage-bot' })).toBe('agent triage-bot')
+    expect(triggeredByLabel({ kind: 'agent' })).toBe('an agent')
+    expect(triggeredByLabel({ kind: 'user', user_name: 'Ada' })).toBe('Ada')
   })
 })

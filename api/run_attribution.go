@@ -47,5 +47,11 @@ func runAttributionFromRequest(r *http.Request) *models.RunAttribution {
 		a.Kind = models.RunTriggerKindAPIToken
 		a.TokenName = tokenName
 	}
+	// An agent identity (ADR-046) is named as itself, with the person it
+	// acted for when its token says.
+	if isAgentClaims(claims) {
+		a.Kind = models.RunTriggerKindAgent
+		a.OnBehalfOf, _ = (*claims)["on_behalf_of"].(string)
+	}
 	return a
 }

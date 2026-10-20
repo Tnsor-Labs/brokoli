@@ -209,11 +209,21 @@ func DefaultRoles() []Role {
 		PermGitSyncView,
 	}
 
+	// Agent (ADR-046): what an AI agent needs to see and to try things.
+	// Never secrets, never people or roles; the agent identity code
+	// withholds those whatever role an agent is given.
+	agentPerms := []Permission{
+		PermPipelinesView,
+		PermRunsView,
+		PermPipelinesRun,
+	}
+
 	return []Role{
 		{ID: "admin", Name: "Admin", Description: "Full access to all features", Permissions: all, IsSystem: true},
 		{ID: "editor", Name: "Editor", Description: "Create, edit, and run pipelines", Permissions: editorPerms, IsSystem: true},
 		{ID: "operator", Name: "Operator", Description: "Run and monitor pipelines", Permissions: operatorPerms, IsSystem: true},
 		{ID: "viewer", Name: "Viewer", Description: "Read-only access", Permissions: viewerPerms, IsSystem: true},
+		{ID: "agent", Name: "Agent", Description: "An AI agent: see pipelines, runs and lineage, and run pipelines", Permissions: agentPerms, IsSystem: true},
 	}
 }
 

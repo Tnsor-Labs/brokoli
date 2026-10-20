@@ -155,8 +155,18 @@ func TestAnOldTableIsMigratedAndItsOrphansCleared(t *testing.T) {
 		}
 	}
 	// A row whose run does exist, to prove the migration copies rather
-	// than just empties.
-	seedRunWithAttribution(t, s, "real-run", "p1", time.Now().UTC())
+	// than just empties. Written as the code of that time wrote it: the
+	// legacy table has none of the columns added since.
+	started := time.Now().UTC()
+	if err := s.CreatePipeline(&models.Pipeline{ID: "p1", Name: "p1", CreatedAt: started, UpdatedAt: started}); err != nil {
+		t.Fatalf("create pipeline: %v", err)
+	}
+	if err := s.CreateRun(&models.Run{ID: "real-run", PipelineID: "p1", Status: models.RunStatusSuccess, StartedAt: &started}); err != nil {
+		t.Fatalf("create run: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO run_attribution (run_id, kind, user_id, user_name) VALUES ('real-run', 'user', 'u1', 'someone')`); err != nil {
+		t.Fatalf("legacy attribution: %v", err)
+	}
 	if got := attributionRowCount(t, s); got != 2 {
 		t.Fatalf("legacy table holds %d row(s), want 2", got)
 	}
@@ -178,6 +188,16 @@ func TestAnOldTableIsMigratedAndItsOrphansCleared(t *testing.T) {
 	}
 	if _, ok := attrib["real-run"]; !ok {
 		t.Error("the migration dropped a row whose run still exists")
+	}
+	// The columns added since are there after the upgrade: an agent's
+	// "on behalf of" (ADR-046) round-trips on the migrated table.
+	if err := s2.SetRunAttribution("real-run", &models.RunAttribution{
+		Kind: models.RunTriggerKindAgent, UserID: "a1", UserName: "bot", OnBehalfOf: "Ada",
+	}); err != nil {
+		t.Fatalf("attribution on the migrated table: %v", err)
+	}
+	if got, _ := s2.GetRunAttribution([]string{"real-run"}); got["real-run"].OnBehalfOf != "Ada" {
+		t.Errorf("on behalf of = %+v", got["real-run"])
 	}
 
 	// And the constraint is now real, tested by deleting rather than by

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -38,18 +37,17 @@ See docs/mcp.md.`,
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 		// Say who the agent will act as, on stderr: stdout is the protocol.
-		status, data, err := caller.Do(ctx, http.MethodGet, "/api/auth/me", nil)
+		status, _, err := caller.Do(ctx, http.MethodGet, "/api/auth/me", nil)
 		switch {
 		case err != nil:
 			return err
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
 			return fmt.Errorf("not signed in to %s: run 'brokoli login', or pass --api-key", server)
-		case status == http.StatusOK:
-			var me struct {
-				Username string `json:"username"`
-			}
-			_ = json.Unmarshal(data, &me)
-			fmt.Fprintf(os.Stderr, "brokoli mcp: serving %s as %s\n", server, me.Username)
+		}
+		who := mcpserver.Who(ctx, caller)
+		fmt.Fprintf(os.Stderr, "brokoli mcp: serving %s as %s\n", server, who.Describe())
+		if who.StaticKey() {
+			fmt.Fprintln(os.Stderr, "brokoli mcp: WARNING: this is the server's static API key, an administrator; give the agent an agent token instead (brokoli agents token create)")
 		}
 		return mcpserver.Serve(ctx, caller, rootCmd.Version, &mcp.StdioTransport{})
 	},
