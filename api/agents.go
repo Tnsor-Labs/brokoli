@@ -29,6 +29,14 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// AgentIdentitiesEnabled turns agent identities on (the default). A
+// distribution whose tenancy agents do not yet take part in sets it to
+// false before serving: then /api/agents answers 404 and no agent token
+// authenticates. An agent belongs to no organization in core, and a
+// multi-tenant distribution must not let one act until it binds agents to
+// one.
+var AgentIdentitiesEnabled = true
+
 // AgentTokenPrefix starts every agent token, so a token is recognizable in
 // a log or a leaked file, and the middleware knows to look it up.
 const AgentTokenPrefix = "bka_"
@@ -307,7 +315,7 @@ const lastUsedEvery = time.Minute
 // ResolveAgentToken returns the claims for an agent token, or false when
 // it is not a live token of an enabled agent whose owner still exists.
 func (us *UserStore) ResolveAgentToken(token string) (*jwt.MapClaims, bool) {
-	if !strings.HasPrefix(token, AgentTokenPrefix) {
+	if !AgentIdentitiesEnabled || !strings.HasPrefix(token, AgentTokenPrefix) {
 		return nil, false
 	}
 	var tokenID, tokenName, expires, revoked, used string

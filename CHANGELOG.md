@@ -13,6 +13,10 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`api.AgentIdentitiesEnabled`** -- @hc12r. A distribution whose
+  tenancy agents do not take part in yet sets it to false: `/api/agents`
+  then answers 404 and no agent token authenticates. Agents belong to no
+  organization in core.
 - **Change requests** (ADR-046 phase 3) -- @hc12r. A proposed new
   version of a pipeline that does not run until a person applies it:
   `POST /api/pipelines/{id}/changes` records the whole definition, the

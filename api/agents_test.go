@@ -468,3 +468,23 @@ func TestAgentStoreOnBothDialects(t *testing.T) {
 		run(t, st.RawDB().(*sql.DB))
 	})
 }
+
+// A distribution can turn agent identities off: no agents API, and an
+// existing agent's token stops working.
+func TestAgentIdentitiesCanBeTurnedOff(t *testing.T) {
+	b := newAgentBed(t)
+	id, token := b.agent("bot", "", "ada", "ada", false)
+	AgentIdentitiesEnabled = false
+	t.Cleanup(func() { AgentIdentitiesEnabled = true })
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", token, ""); code != http.StatusUnauthorized {
+		t.Fatalf("an agent token with agents off: %d", code)
+	}
+	for _, path := range []string{"/api/agents", "/api/agents/" + id + "/tokens"} {
+		if code, _, _ := b.do(http.MethodGet, path, b.tokens["ada"], ""); code != http.StatusNotFound {
+			t.Fatalf("%s with agents off: %d", path, code)
+		}
+	}
+	if code, _, _ := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"new"}`); code != http.StatusNotFound {
+		t.Fatalf("creating an agent with agents off: %d", code)
+	}
+}

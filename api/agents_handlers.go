@@ -45,6 +45,10 @@ func registerAgentRoutes(r chi.Router, users *UserStore, pc *PermissionChecker) 
 
 // caller is the person making the request, or an answer already written.
 func (h *agentsAPI) caller(w http.ResponseWriter, r *http.Request) (id string, admin, ok bool) {
+	if !AgentIdentitiesEnabled {
+		writeError(w, http.StatusNotFound, "agent identities are not available on this server")
+		return "", false, false
+	}
 	claims, _ := r.Context().Value("claims").(*jwt.MapClaims)
 	if claims == nil {
 		writeError(w, http.StatusUnauthorized, "authentication required")
