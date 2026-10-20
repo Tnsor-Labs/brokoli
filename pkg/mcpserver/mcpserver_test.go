@@ -187,10 +187,16 @@ type fakeAPI struct {
 
 func (f *fakeAPI) Do(_ context.Context, _ string, path string, _ any) (int, []byte, error) {
 	f.asked = append(f.asked, path)
-	for prefix, body := range f.answers {
-		if strings.HasPrefix(path, prefix) {
-			return http.StatusOK, []byte(body), nil
+	// The longest prefix that matches, so /api/pipelines/p does not answer
+	// for /api/pipelines/p/runs (map order is random).
+	best := ""
+	for prefix := range f.answers {
+		if strings.HasPrefix(path, prefix) && len(prefix) > len(best) {
+			best = prefix
 		}
+	}
+	if best != "" {
+		return http.StatusOK, []byte(f.answers[best]), nil
 	}
 	return http.StatusNotFound, []byte(`{"error":"no such thing"}`), nil
 }
