@@ -94,6 +94,18 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Pipelines built from code are laid out instead of stacked** -- @hc12r.
+  The canonical IR a repository deploys leaves node positions out on
+  purpose (layout is not a change to the pipeline), so such pipelines
+  were stored with every node at the origin and drawn on top of each
+  other everywhere but the editor. A pipeline whose nodes all sit at one
+  position is now laid out when created or saved
+  (`engine.ArrangeStacked`, for distributions that store pipelines
+  themselves too), and the runs page's graph lays out one already stored
+  that way. Positions no longer count as a graph change, so pausing or
+  renaming an old pipeline still skips full validation when only its
+  layout moved.
+
 - **A tab opened before an upgrade gets the new version instead of a
   developer error** -- @hc12r. Pages are loaded on demand, and a tab
   opened before an upgrade asks for files of the old build. The server

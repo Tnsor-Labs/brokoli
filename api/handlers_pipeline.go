@@ -196,6 +196,8 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := *decoded
+	// A pipeline built from code arrives without a layout.
+	engine.ArrangeStacked(&p)
 
 	if err := p.Validate(); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -318,12 +320,23 @@ func decodePipelineStrict(r io.Reader) (*models.Pipeline, error) {
 // nodes, edges, and IR version — byte-identical to the stored pipeline.
 // Node/edge JSON encoding is deterministic (Go sorts map keys), so marshal
 // equality is a faithful structural comparison.
+func withoutPositions(nodes []models.Node) []models.Node {
+	out := make([]models.Node, len(nodes))
+	for i, n := range nodes {
+		n.Position = models.Position{}
+		out[i] = n
+	}
+	return out
+}
+
 func graphUnchanged(existing, updated *models.Pipeline) bool {
 	if existing.IRVersion != updated.IRVersion {
 		return false
 	}
-	existingNodes, err1 := json.Marshal(existing.Nodes)
-	updatedNodes, err2 := json.Marshal(updated.Nodes)
+	// Canvas positions are layout, not the graph: a save that only lays
+	// nodes out (ArrangeStacked) leaves the graph unchanged.
+	existingNodes, err1 := json.Marshal(withoutPositions(existing.Nodes))
+	updatedNodes, err2 := json.Marshal(withoutPositions(updated.Nodes))
 	existingEdges, err3 := json.Marshal(existing.Edges)
 	updatedEdges, err4 := json.Marshal(updated.Edges)
 	if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
@@ -389,6 +402,8 @@ func (h *PipelineHandler) saveUpdate(r *http.Request, existing, decoded *models.
 	if p.Edges == nil {
 		p.Edges = []models.Edge{}
 	}
+	// A pipeline built from code arrives without a layout.
+	engine.ArrangeStacked(&p)
 
 	if err := p.Validate(); err != nil {
 		return nil, http.StatusBadRequest, err.Error()

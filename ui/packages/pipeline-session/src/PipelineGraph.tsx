@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { Background, BackgroundVariant, Controls, ReactFlow, ReactFlowProvider } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import type { PipelineEdge, PipelineNode } from '@brokoli/api'
+import { arrangeStacked } from './document'
 import { nodeTypes } from './NodeCard'
 import { toFlowEdges, toFlowNodes } from './flow'
 import './graph.css'
@@ -23,7 +24,10 @@ export function PipelineGraph({
   selected?: string | null
   onSelect?: (nodeId: string) => void
 }) {
-  const flowNodes = useMemo(() => toFlowNodes(nodes, (n) => ({ status: statuses?.[n.id], readonly: true }), selected), [nodes, statuses, selected])
+  // A pipeline stored without a layout (built from code before the server
+  // laid such pipelines out) is drawn laid out rather than stacked.
+  const placed = useMemo(() => arrangeStacked(nodes, edges), [nodes, edges])
+  const flowNodes = useMemo(() => toFlowNodes(placed, (n) => ({ status: statuses?.[n.id], readonly: true }), selected), [placed, statuses, selected])
   const flowEdges = useMemo(() => toFlowEdges(edges, statuses), [edges, statuses])
   return (
     <ReactFlowProvider>
