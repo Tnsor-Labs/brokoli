@@ -117,6 +117,12 @@ When the last successful run had the same pipeline version, the summary
 says the cause is likely outside the definition: its data, a source, a
 connection or the worker.
 
+A distribution can add tools and add to `explain_run`
+(`mcpserver.Register`): its tools follow the same rules (listed by
+permission, calls through the same routes, redacted, bounded), and what it
+adds to an explanation appears under `context`, for instance where the
+pipeline was deployed from or the change behind the failing version.
+
 ## What an agent can and cannot see
 
 **Your permissions, no more.** Each tool call is a request to Brokoli's own

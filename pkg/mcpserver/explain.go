@@ -36,15 +36,16 @@ type version struct {
 }
 
 type explanation struct {
-	Summary    string    `json:"summary"`
-	Run        *run      `json:"run"`
-	Pipeline   string    `json:"pipeline,omitempty"`
-	Failures   []failure `json:"failures,omitempty"`
-	ErrorLogs  []logLine `json:"error_logs,omitempty"`
-	LastGood   *run      `json:"last_successful_run,omitempty"`
-	Changes    []version `json:"changes_since_last_success,omitempty"`
-	Unanswered []string  `json:"could_not_check,omitempty"`
-	Next       []string  `json:"next_steps,omitempty"`
+	Summary    string         `json:"summary"`
+	Run        *run           `json:"run"`
+	Pipeline   string         `json:"pipeline,omitempty"`
+	Failures   []failure      `json:"failures,omitempty"`
+	ErrorLogs  []logLine      `json:"error_logs,omitempty"`
+	LastGood   *run           `json:"last_successful_run,omitempty"`
+	Changes    []version      `json:"changes_since_last_success,omitempty"`
+	Context    map[string]any `json:"context,omitempty"`
+	Unanswered []string       `json:"could_not_check,omitempty"`
+	Next       []string       `json:"next_steps,omitempty"`
 }
 
 func addExplainRun(s *mcp.Server, c Caller) {
@@ -133,6 +134,24 @@ func explainRun(ctx context.Context, c Caller, id string) (*explanation, error) 
 			if len(ex.Changes) > explainVersions {
 				ex.Changes = ex.Changes[:explainVersions]
 			}
+		}
+	}
+
+	// What a distribution knows about the run, under its own names.
+	for _, e := range registered() {
+		if e.Explain == nil {
+			continue
+		}
+		extra, err := e.Explain(ctx, c, RunInfo{ID: r.ID, PipelineID: r.PipelineID, Status: r.Status, PipelineVersion: r.PipelineVersion})
+		if err != nil {
+			ex.Unanswered = append(ex.Unanswered, e.Name+": "+err.Error())
+			continue
+		}
+		for k, v := range extra {
+			if ex.Context == nil {
+				ex.Context = map[string]any{}
+			}
+			ex.Context[k] = v
 		}
 	}
 

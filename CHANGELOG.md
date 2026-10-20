@@ -13,6 +13,13 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **MCP extensions for distributions** -- @hc12r. `mcpserver.Register`
+  adds a distribution's tools (listed by the permission each needs,
+  answering through the same caller, redacted and bounded like core's,
+  with `AddReadTool`, `Get` and `Esc`) and facts to `explain_run`, which
+  appear under `context`; a failing one is reported in `could_not_check`
+  instead of failing the explanation.
+
 - **`api.AgentIdentitiesEnabled`** -- @hc12r. A distribution whose
   tenancy agents do not take part in yet sets it to false: `/api/agents`
   then answers 404 and no agent token authenticates. Agents belong to no

@@ -37,6 +37,13 @@ func NewAs(c Caller, permitted Permitted, version string, who Identity) *mcp.Ser
 			t.add(s, c)
 		}
 	}
+	for _, e := range registered() {
+		for _, t := range e.Tools {
+			if permitted == nil || permitted(t.Permission) {
+				t.Add(s, c)
+			}
+		}
+	}
 	return s
 }
 
