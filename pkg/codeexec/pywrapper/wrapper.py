@@ -340,8 +340,9 @@ _emit_state = {"f": None, "count": 0, "cols": None, "mode": False}
 # BaseException, so a script's own `except Exception` does not swallow it.
 class _BrokoliPreviewHasRows(BaseException):
     pass
+# config may be None (a step with no settings), so read it defensively.
 try:
-    _preview_rows = int(config.get("_brokoli_preview_rows") or 0)
+    _preview_rows = int((config if isinstance(config, dict) else {}).get("_brokoli_preview_rows") or 0)
 except (TypeError, ValueError):
     _preview_rows = 0
 def begin_emit(columns=None):
