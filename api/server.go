@@ -17,6 +17,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/mcpserver"
 	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/go-chi/chi/v5"
@@ -218,6 +219,12 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			writeJSON(w, http.StatusOK, map[string]string{"status": "password changed"})
 		})
 	}
+
+	// Agents (ADR-046): MCP over Streamable HTTP. Every tool is a request
+	// to this router, as the MCP request's sender, so the routes above and
+	// their middleware decide what an agent may do; /api/mcp itself is
+	// authenticated like any API path.
+	r.Handle("/api/mcp", mcpserver.HTTPHandler(r, buildVersion))
 
 	// Serve embedded UI (or fallback)
 	if uiFS != nil {

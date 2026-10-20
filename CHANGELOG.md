@@ -13,6 +13,23 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Brokoli for AI agents over MCP** (ADR-046 phase 1) -- @hc12r.
+  `brokoli mcp` serves the Model Context Protocol on stdio for an agent
+  client on your machine, acting on a server with the credential `brokoli
+  login` stored (or `--api-key` / `BROKOLI_TOKEN`); `POST /api/mcp` serves
+  it over Streamable HTTP (stateless, JSON) from the server. Eight read-only
+  tools: `list_pipelines`, `get_pipeline`, `validate_pipeline`,
+  `get_lineage`, `list_runs`, `get_run`, `get_run_logs` and `explain_run`,
+  which answers why a run failed in one result (the failing nodes with
+  their errors and last log lines, the run's error lines, the last
+  successful run before it and the pipeline versions saved since). Every
+  tool is a call to the REST API as the caller, through the same router
+  and permission checks, so an agent sees what its account sees; tools
+  the caller lacks the permission for are not listed. Every result is
+  redacted (credentials by name, URL passwords, bearer and basic
+  credentials in text) and bounded (pages of at most 100, at most 1,000
+  log lines, long text cut). See `docs/mcp.md`.
+
 - **Signed webhook paths a distribution can register** -- @hc12r.
   `api.RegisterSignedWebhookPath(path)` exempts one exact POST path from
   session and API-key authentication, for a route whose handler verifies

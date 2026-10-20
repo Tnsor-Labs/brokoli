@@ -57,7 +57,7 @@ person's session; and an agent's change to a published pipeline is a
   (desktop assistants, IDEs). It talks to a Brokoli server with the
   credential `brokoli auth login` already stores (ADR-021), or an agent
   token (section 2) from `BROKOLI_TOKEN`.
-- **Streamable HTTP**, `POST /mcp` on the API server: for hosted agents.
+- **Streamable HTTP**, `POST /api/mcp` on the API server: for hosted agents.
   Authenticated like every other API request, by an agent token or a
   session; unauthenticated requests get a 401 with the protected-resource
   metadata MCP clients use to find how to sign in.
@@ -237,7 +237,7 @@ so for an agent it is the only way.
 
 Phases, each usable on its own:
 
-1. **Read-only MCP.** `brokoli mcp` (stdio) and `POST /mcp`; the read tools
+1. **Read-only MCP.** `brokoli mcp` (stdio) and `POST /api/mcp`; the read tools
    (`list_pipelines`, `get_pipeline`, `validate_pipeline`, `list_runs`,
    `get_run`, `get_run_logs`, `get_lineage`) and `explain_run`; bounded
    output and redaction; the permission-parity test; docs with a
@@ -254,3 +254,16 @@ Phases, each usable on its own:
    extension point for distributions.
 5. **Remote sign-in.** OAuth for the HTTP transport, so a hosted client can
    connect without a pasted token.
+
+## Implementation notes
+
+- **Phase 1** (`pkg/mcpserver`, `cmd/mcp.go`, docs/mcp.md): the endpoint is
+  `/api/mcp` rather than `/mcp`, so the API's authentication middleware
+  refuses an unauthenticated request before any MCP processing, as for
+  every `/api` path. Tools reach the REST API through a `Caller`: in
+  process through the server's router for `/api/mcp` (a fresh context per
+  sub-request, so it is authenticated from the forwarded headers alone and
+  the router does not resume the outer request's routing state), over HTTP
+  for `brokoli mcp`. Stateless Streamable HTTP; tools listed by
+  `/api/auth/me/permissions`. The 401 carries no protected-resource
+  metadata yet: that comes with OAuth in phase 5.
