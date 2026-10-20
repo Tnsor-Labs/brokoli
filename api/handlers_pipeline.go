@@ -360,6 +360,20 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	p, status, msg := h.saveUpdate(r, existing, decoded, "")
+	if status != http.StatusOK {
+		writeError(w, status, msg)
+		return
+	}
+	writeJSON(w, http.StatusOK, p)
+}
+
+// saveUpdate replaces existing with decoded, as an edit does: identity
+// kept, validated, stored, versioned with message, the scheduler synced and
+// the change audited. A change request applied (ADR-046) goes through here
+// too, so it is exactly a save. It answers the saved pipeline, or a status
+// other than 200 and why.
+func (h *PipelineHandler) saveUpdate(r *http.Request, existing, decoded *models.Pipeline, message string) (*models.Pipeline, int, string) {
 	p := *decoded
 
 	p.ID = existing.ID
@@ -377,18 +391,15 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := p.Validate(); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, http.StatusBadRequest, err.Error()
 	}
 
 	if err := validateDependencyOrgScope(h.store, &p); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, http.StatusBadRequest, err.Error()
 	}
 
 	if err := engine.DetectDependencyCycle(h.store, &p); err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+		return nil, http.StatusBadRequest, err.Error()
 	}
 	// Executable validation gates graph changes, not operational metadata.
 	// A pipeline persisted before validation became fail-closed must remain
@@ -404,8 +415,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	publishing := existing.Draft && !p.Draft
 	if publishing || (!p.Draft && !graphUnchanged(existing, &p)) {
 		if ve := engine.ValidatePipeline(&p, h.executors...); ve.HasErrors() {
-			writeError(w, http.StatusBadRequest, ve.Error())
-			return
+			return nil, http.StatusBadRequest, ve.Error()
 		}
 	}
 
@@ -414,19 +424,16 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	// someone ticked a box; Enabled already exists for "stop running
 	// this", and says so on the row.
 	if !existing.Draft && p.Draft {
-		writeError(w, http.StatusBadRequest,
-			"a published pipeline cannot be returned to draft; disable it instead")
-		return
+		return nil, http.StatusBadRequest, "a published pipeline cannot be returned to draft; disable it instead"
 	}
 
 	if err := h.store.UpdatePipeline(&p); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return nil, http.StatusInternalServerError, err.Error()
 	}
 
 	// Auto-save version snapshot
 	snapshot, _ := json.Marshal(p)
-	h.store.SavePipelineVersion(p.ID, string(snapshot), "")
+	h.store.SavePipelineVersion(p.ID, string(snapshot), message)
 
 	// Sync scheduler
 	if h.sched != nil {
@@ -434,7 +441,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 	}
 
 	AuditLog(r, "update", "pipeline", p.ID, map[string]interface{}{"name": existing.Name}, map[string]interface{}{"name": p.Name, "nodes": len(p.Nodes)})
-	writeJSON(w, http.StatusOK, p)
+	return &p, http.StatusOK, ""
 }
 
 func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {

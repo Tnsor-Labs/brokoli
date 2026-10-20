@@ -10,9 +10,10 @@ The agent acts **as you** (or as the account whose credential it has), and
 sees exactly what that account may see. It never sees a credential.
 
 This is [ADR-046](adr/046-agents-mcp-server-and-agent-identities.md):
-the tools read and validate; they do not change anything. Agents have
-accounts of their own ([agents.md](agents.md)); change requests and tools
-that run pipelines come in later phases.
+the tools read, validate, and propose changes that a person applies
+([change-requests.md](change-requests.md)). Agents have accounts of their
+own ([agents.md](agents.md)). Tools that run pipelines come in a later
+phase.
 
 ## Two ways to connect
 
@@ -84,9 +85,12 @@ processing, like every `/api` path.
 | `get_run` | one run with every node's status, rows, duration, attempt and error | `runs.view` |
 | `get_run_logs` | a run's log lines, for one node or level if asked; the last lines unless an `offset` is given | `runs.view` |
 | `explain_run` | what happened and why, in one answer (below) | `runs.view` |
+| `list_change_requests` | a pipeline's change requests: title, status, whether an open one is out of date, its validation, who proposed and who decided | `pipelines.view` |
+| `propose_change` | proposes a new version of a pipeline as a change request a person applies ([change-requests.md](change-requests.md)) | `pipelines.propose` |
 
-Every tool is marked read only, so a client that asks before changing
-anything will not ask for these.
+Every tool but `propose_change` is marked read only. `propose_change`
+changes nothing that runs, but records a change request, and is marked
+accordingly, so a client that asks before changing anything asks there.
 
 ### `explain_run`
 

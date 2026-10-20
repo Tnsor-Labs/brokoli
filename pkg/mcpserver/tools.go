@@ -62,6 +62,8 @@ func tools() []tool {
 		{permission: "runs.view", add: addGetRunLogs},
 		{permission: "runs.view", add: addExplainRun},
 		{permission: "pipelines.view", add: addGetLineage},
+		{permission: "pipelines.view", add: addListChangeRequests},
+		{permission: "pipelines.propose", add: addProposeChange},
 	}
 }
 

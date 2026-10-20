@@ -889,3 +889,49 @@ export interface SecretStoreTestResult {
 export interface NodeStats {
   nodes: Record<string, { durations: number[] | null; avg: number; p95: number }> | null
 }
+
+/* Change requests (ADR-046): a proposed version of a pipeline a person applies. */
+export interface FieldChange {
+  field: string
+  before?: unknown
+  after?: unknown
+}
+
+export interface ChangeNodeRef {
+  id: string
+  name: string
+  type: string
+}
+
+export interface PipelineDiff {
+  pipeline?: FieldChange[]
+  nodes_added?: ChangeNodeRef[]
+  nodes_removed?: ChangeNodeRef[]
+  nodes_changed?: (ChangeNodeRef & { changes: FieldChange[] })[]
+  edges_added?: PipelineEdge[]
+  edges_removed?: PipelineEdge[]
+}
+
+export interface ChangeRequest {
+  id: string
+  pipeline_id: string
+  title: string
+  description?: string
+  status: 'open' | 'applied' | 'declined'
+  /** Open, but the pipeline changed since: it cannot be applied. */
+  stale: boolean
+  base_version: number
+  validation: { valid: boolean; errors: string[] | null }
+  proposed?: Pipeline
+  diff?: PipelineDiff
+  delivery?: { kind: string; url?: string; ref?: string }
+  created_by: string
+  created_by_name: string
+  created_by_kind: 'person' | 'agent'
+  on_behalf_of?: string
+  created_at: string
+  decided_by_name?: string
+  decided_at?: string
+  reason?: string
+  applied_version?: number
+}

@@ -118,8 +118,11 @@ func detectUserStoreDialect(db *sql.DB) string {
 
 // q rewrites ? placeholders to $1, $2, ... on Postgres, and leaves them
 // alone on SQLite.
-func (us *UserStore) q(query string) string {
-	if us.dialect != "postgres" {
+func (us *UserStore) q(query string) string { return dialectQuery(us.dialect, query) }
+
+// dialectQuery rewrites ? placeholders to $1, $2, ... for Postgres.
+func dialectQuery(dialect, query string) string {
+	if dialect != "postgres" {
 		return query
 	}
 	var b strings.Builder

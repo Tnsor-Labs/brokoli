@@ -968,3 +968,41 @@
     grid-template-columns: 90px 1fr auto;
   }
 }
+
+/* Change requests (ADR-046) */
+.bk-changes-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 14px 18px 4px;
+}
+.bk-changes-head small {
+  color: var(--bk-color-text-muted);
+}
+.bk-change + .bk-change {
+  border-top: 1px solid var(--bk-color-border);
+}
+.bk-change-body {
+  padding: 0 18px 16px 44px;
+}
+.bk-change-diff,
+.bk-change-errors {
+  margin: 8px 0;
+  padding-left: 18px;
+  font-size: var(--bk-text-sm);
+  overflow-wrap: anywhere;
+}
+.bk-change-errors {
+  color: var(--bk-color-danger);
+}
+.bk-change-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.bk-change-actions small {
+  margin-right: auto;
+}

@@ -284,3 +284,18 @@ Phases, each usable on its own:
   `/api/auth/me/permissions` says they may use; that is a separate,
   pre-existing issue.) Core has no users page, so agents are managed with
   the API and the CLI; a UI comes with the distribution that has one.
+- **Phase 3** (`api/change_requests.go`, `pkg/mcpserver/changes.go`, the
+  pipeline page's `ChangeRequests`, docs/change-requests.md): requests are
+  stored whole in `change_requests` beside the pipelines (created under
+  the migration lock on Postgres); stale is computed (open and the base
+  version is no longer the latest), not stored. Applying runs the edit's
+  own save (`saveUpdate`, extracted from the update handler), so a request
+  is exactly an edit. Simplifications against the decision above: agents
+  never apply, rather than only the agent that proposed; an out-of-date
+  request cannot be refreshed, only declined and proposed again; the dry
+  run of a proposed version and opening a proposal in the editor are not
+  built (the dry run endpoint works on saved pipelines). The new
+  `pipelines.propose` permission is in the admin, editor, operator and
+  agent roles. A proposal made without canvas positions (as over MCP)
+  keeps the current positions of the nodes it keeps; found live, since
+  `get_pipeline` leaves positions out.

@@ -165,8 +165,9 @@ func toolNames(t *testing.T, cs *mcp.ClientSession) []string {
 	names := []string{}
 	for _, tl := range res.Tools { // listed in name order
 		names = append(names, tl.Name)
-		if tl.Annotations == nil || !tl.Annotations.ReadOnlyHint {
-			t.Errorf("%s is not marked read only", tl.Name)
+		// Proposing records a change request; everything else only reads.
+		if tl.Annotations == nil || tl.Annotations.ReadOnlyHint == (tl.Name == "propose_change") {
+			t.Errorf("%s is marked read only: %v", tl.Name, tl.Annotations != nil && tl.Annotations.ReadOnlyHint)
 		}
 	}
 	return names
@@ -186,7 +187,7 @@ func TestMCPServesTheRuntimeToAgentsThroughTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	want := "explain_run get_lineage get_pipeline get_run get_run_logs list_pipelines list_runs validate_pipeline"
+	want := "explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs propose_change validate_pipeline"
 	if got := toolNames(t, cs); strings.Join(got, " ") != want {
 		t.Fatalf("tools = %v", got)
 	}
@@ -264,8 +265,8 @@ func TestMCPServesTheRuntimeToAgentsThroughTheAPI(t *testing.T) {
 func TestMCPListsOnlyTheToolsTheCallerMayUse(t *testing.T) {
 	url, tokens, _ := mcpBed(t)
 	for who, want := range map[string]string{
-		"vic": "explain_run get_lineage get_pipeline get_run get_run_logs list_pipelines list_runs validate_pipeline",
-		"cat": "get_lineage get_pipeline list_pipelines validate_pipeline",
+		"vic": "explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs validate_pipeline",
+		"cat": "get_lineage get_pipeline list_change_requests list_pipelines validate_pipeline",
 	} {
 		cs, err := mcpSession(t, url, tokens[who])
 		if err != nil {
@@ -298,7 +299,7 @@ func TestMCPOverStdioActsOnAServerAsTheSignedInUser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(toolNames(t, cs), " "); got != "get_lineage get_pipeline list_pipelines validate_pipeline" {
+	if got := strings.Join(toolNames(t, cs), " "); got != "get_lineage get_pipeline list_change_requests list_pipelines validate_pipeline" {
 		t.Fatalf("tools = %s", got)
 	}
 	if p, text := callTool(t, cs, "get_pipeline", map[string]any{"pipeline": "p-orders"}); p["name"] != "Orders" || strings.Contains(text, "hunter2") {

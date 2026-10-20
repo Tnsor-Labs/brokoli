@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -139,6 +140,16 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		// and gated like any other authenticated route (#552).
 		r.Post("/schedule/preview", SchedulePreview)
 		r.Get("/pipelines/{id}/versions", ph.ListVersions)
+
+		// Change requests (ADR-046 phase 3): proposed versions a person
+		// applies. Only where the store is SQL, which it always is today.
+		if db, ok := s.RawDB().(*sql.DB); ok && db != nil {
+			if cs, err := NewChangeRequestStore(db); err != nil {
+				log.Printf("change requests unavailable: %v", err)
+			} else {
+				registerChangeRequestRoutes(r, ph, cs, agentPC, requirePerm)
+			}
+		}
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/rollback", ph.Rollback)
 		r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/clone", ph.Clone)
 		r.Post("/pipelines/{id}/validate-nodes", ph.ValidateNodes)

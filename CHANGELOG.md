@@ -13,6 +13,21 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Change requests** (ADR-046 phase 3) -- @hc12r. A proposed new
+  version of a pipeline that does not run until a person applies it:
+  `POST /api/pipelines/{id}/changes` records the whole definition, the
+  version it was made against and its validation; the diff (pipeline
+  fields, nodes added, removed and changed, connections) is computed on
+  read. Applying (`pipelines.edit`, people only) is exactly a save, with
+  the version message `change request: <title>`; a request whose pipeline
+  changed since is out of date and refused; declining takes a reason, and
+  the author can withdraw. New permission `pipelines.propose` (admin,
+  editor, operator and agent roles). The MCP tools `propose_change` and
+  `list_change_requests`; the pipeline page shows open requests with the
+  diff and Apply / Decline. Pipelines deployed from a repository take
+  requests only through a distribution's `api.ChangeRequestDeliverFunc`.
+  See `docs/change-requests.md`.
+
 - **Agent identities** (ADR-046 phase 2) -- @hc12r. An agent is an
   account for an AI agent: a role (the new built-in `agent` role by
   default: view pipelines and runs, run pipelines; never `admin`), an

@@ -10,6 +10,7 @@ import {
 } from './client'
 import type {
   Capabilities,
+  ChangeRequest,
   AuthClaims,
   AuthMethods,
   AuthUser,
@@ -173,6 +174,16 @@ export const pipelineApi = {
       (d) => d.issues ?? [],
     ),
   dryRun: (id: string) => request<DryRunResponse>(`/pipelines/${enc(id)}/dry-run`, { method: 'POST', timeout: 0 }),
+  /** Change requests (ADR-046). */
+  changes: (id: string, status?: ChangeRequest['status']) =>
+    request<ChangeRequest[] | null>(`/pipelines/${enc(id)}/changes`, { query: { status } }).then((d) => d ?? []),
+  change: (id: string, changeId: string) => request<ChangeRequest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}`),
+  propose: (id: string, pipeline: unknown, title: string, description?: string) =>
+    request<ChangeRequest>(`/pipelines/${enc(id)}/changes`, { json: { pipeline, title, description } }),
+  applyChange: (id: string, changeId: string) =>
+    request<{ pipeline: Pipeline; version: number }>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/apply`, { method: 'POST' }),
+  declineChange: (id: string, changeId: string, reason?: string) =>
+    request<void>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/decline`, { json: { reason: reason ?? '' } }),
   plan: (id: string) => request<PhysicalPlan>(`/pipelines/${enc(id)}/plan`),
   grid: (id: string, runs = 30) => request<PipelineGrid>(`/pipelines/${enc(id)}/grid`, { query: { runs } }),
   runs: (id: string) => request<Run[] | null>(`/pipelines/${enc(id)}/runs`).then((d) => d ?? []),

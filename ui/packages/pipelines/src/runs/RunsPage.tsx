@@ -25,6 +25,7 @@ import {
 import { FAILURE, SUCCESS, keys, paths } from '../keys'
 import { useNow, useRunActivity } from '../live'
 import { BackfillDialog, RunParamsDialog, backfillMessage } from './Dialogs'
+import { ChangeRequests } from './ChangeRequests'
 import { RunDetail } from './RunDetail'
 import { isActive, runDuration } from './model'
 import './runs.css'
@@ -289,6 +290,7 @@ export function RunsPage({ pipelineId, extra }: { pipelineId: string; extra?: Re
         }
       />
 
+      <ChangeRequests pipelineId={pipelineId} fromGit={pipeline.data?.source === 'git'} />
       {extra}
 
       {latest && (
