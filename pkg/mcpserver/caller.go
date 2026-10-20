@@ -187,6 +187,10 @@ func (c *HTTPCaller) Do(ctx context.Context, method, path string, body any) (int
 	}
 	client := c.Client
 	if client == nil {
+		// The person's own Brokoli server, often localhost, which the
+		// server-side outbound policy would refuse; this runs only in
+		// `brokoli mcp`, on their machine, never in the server.
+		//netguard:allow client-side CLI call to the user's configured Brokoli server
 		client = &http.Client{Timeout: 60 * time.Second}
 	}
 	resp, err := client.Do(req)
