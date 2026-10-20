@@ -299,3 +299,13 @@ Phases, each usable on its own:
   agent roles. A proposal made without canvas positions (as over MCP)
   keeps the current positions of the nodes it keeps; found live, since
   `get_pipeline` leaves positions out.
+- **Phase 4** (`pkg/mcpserver/acting.go`): `dry_run_pipeline`,
+  `trigger_run` and `cancel_run`, through the REST routes with their
+  permissions. `trigger_run` takes an optional `wait_seconds` (up to 45,
+  under the API's request timeout) and answers the run's outcome, so an
+  agent runs a pipeline and reads how it went in one call.
+  `dry_run_pipeline` previews saved pipelines only: a preview of an
+  unsaved definition runs code no person has reviewed, and a change
+  request's test, which does, is started by a person. Previews run in a
+  scratch store, write nothing and stop their sources at the rows they
+  keep. The tool-registration extension point shipped with phase 1.

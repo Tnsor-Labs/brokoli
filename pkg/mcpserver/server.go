@@ -52,6 +52,8 @@ const instructions = `Brokoli runs data pipelines. Use these tools to see the pi
 
 To change a pipeline, propose it with propose_change: the whole definition as it should be, and a title. Nothing runs differently until a person applies the change request. Validate first; say in the description why the change is needed.
 
+To see what a pipeline produces without running it, use dry_run_pipeline: it runs the steps on the first rows and writes nothing. trigger_run runs a pipeline for real (it reads and writes what the pipeline does), and with wait_seconds answers how the run went; cancel_run stops one. Run only what the person asked for or agreed to.
+
 To find out why a run failed, start with explain_run: it gathers the failing node, its error, the relevant log lines and what changed since the last successful run. Lists are paginated and long text is cut; every result says how to get more. Credentials are never shown.`
 
 // Identity is who the MCP client acts as, from /api/auth/me.

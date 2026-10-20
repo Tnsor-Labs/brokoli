@@ -87,10 +87,34 @@ processing, like every `/api` path.
 | `explain_run` | what happened and why, in one answer (below) | `runs.view` |
 | `list_change_requests` | a pipeline's change requests: title, status, whether an open one is out of date, its validation, who proposed and who decided | `pipelines.view` |
 | `propose_change` | proposes a new version of a pipeline as a change request a person applies ([change-requests.md](change-requests.md)) | `pipelines.propose` |
+| `dry_run_pipeline` | a preview of a saved pipeline: each step's columns and first 5 rows, its error, or why it was not run. Nothing is written and no run is recorded | `pipelines.run` |
+| `trigger_run` | runs a saved pipeline now, with `params` and declared `parameters`; with `wait_seconds` (up to 45) the run's outcome, otherwise its id | `pipelines.run` |
+| `cancel_run` | cancels a run that has not finished | `runs.cancel` |
 
-Every tool but `propose_change` is marked read only. `propose_change`
-changes nothing that runs, but records a change request, and is marked
-accordingly, so a client that asks before changing anything asks there.
+`propose_change`, `trigger_run` and `cancel_run` act; every other tool is
+marked read only. `propose_change` changes nothing that runs but records
+a change request; `trigger_run` runs a pipeline, which reads and writes
+what the pipeline does; `cancel_run` stops a run. They are marked so in
+their annotations (`trigger_run` and `cancel_run` as destructive), so a
+client that asks before acting asks the person there.
+
+### Running a pipeline
+
+An agent with the built-in `agent` role may preview and run pipelines
+but not cancel runs. The loop it closes: it proposes a change, a person
+applies it, and the agent runs the pipeline and checks the outcome:
+
+```
+dry_run_pipeline {"pipeline": "<id>"}                        what each step would produce, writing nothing
+trigger_run      {"pipeline": "<id>", "wait_seconds": 30}    {"run_id": "...", "finished": true, "run": {"status": "success", "node_runs": [...]}}
+explain_run      {"run": "<run_id>"}                         when it did not succeed
+```
+
+A run started this way is the agent's, recorded with whom it acts for,
+like one started from its token over the API. `dry_run_pipeline` previews
+the pipeline as it is saved: previewing a definition that is not saved
+would run code nobody has reviewed, which only a person starts (a change
+request's test).
 
 Its `description` is Markdown, rendered on the change's review page: the
 tool asks the agent for why the change is needed, what it does step by

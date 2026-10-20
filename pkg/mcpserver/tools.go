@@ -64,6 +64,9 @@ func tools() []tool {
 		{permission: "pipelines.view", add: addGetLineage},
 		{permission: "pipelines.view", add: addListChangeRequests},
 		{permission: "pipelines.propose", add: addProposeChange},
+		{permission: "pipelines.run", add: addDryRunPipeline},
+		{permission: "pipelines.run", add: addTriggerRun},
+		{permission: "runs.cancel", add: addCancelRun},
 	}
 }
 

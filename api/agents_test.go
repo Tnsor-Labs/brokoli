@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -367,7 +368,7 @@ func TestAnAgentOverMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	if got := strings.Join(toolNames(t, cs), " "); got != "explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs propose_change validate_pipeline" {
+	if got := strings.Join(toolNames(t, cs), " "); got != "dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs propose_change trigger_run validate_pipeline" {
 		t.Fatalf("tools = %s", got)
 	}
 	init := cs.InitializeResult()
@@ -550,5 +551,89 @@ func TestADistributionResolvesAnAgentsPermissions(t *testing.T) {
 	// vic is a viewer in core's terms; the distribution's answer stands.
 	if got := strings.Join(b.permissions(token), " "); got != "pipelines.edit pipelines.view" {
 		t.Fatalf("permissions = %s", got)
+	}
+}
+
+// Over MCP an agent previews a pipeline, runs it and waits for the outcome,
+// and the run is recorded as the agent's. trigger_run is marked as acting,
+// so a client asks the person first; an agent cannot cancel (its role has
+// no runs.cancel), so it is not offered cancel_run.
+func TestAnAgentRunsAPipelineOverMCP(t *testing.T) {
+	b := newAgentBed(t)
+	agentID, token := b.agent("triage-bot", "", "ada", "ada", true)
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "in.csv"), filepath.Join(dir, "out.csv")
+	if err := os.WriteFile(in, []byte("id,qty\n1,2\n2,3\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := &models.Pipeline{ID: "p-run", Name: "p-run", Enabled: true, WorkspaceID: models.DefaultWorkspaceID,
+		Nodes: []models.Node{
+			{ID: "src", Type: "source_file", Name: "In", Config: map[string]interface{}{"path": in, "format": "csv"}},
+			{ID: "dst", Type: "sink_file", Name: "Out", Config: map[string]interface{}{"path": out, "format": "csv"}},
+		},
+		Edges: []models.Edge{{From: "src", To: "dst"}}}
+	if err := b.s.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	hs := httptest.NewServer(b.srv.router)
+	defer hs.Close()
+	cs, err := mcpSession(t, hs.URL, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+
+	tools, err := cs.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range tools.Tools {
+		switch tool.Name {
+		case "trigger_run":
+			if tool.Annotations == nil || tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint == nil || !*tool.Annotations.DestructiveHint {
+				t.Errorf("trigger_run annotations = %+v; it must be marked as acting", tool.Annotations)
+			}
+		case "dry_run_pipeline":
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Errorf("dry_run_pipeline annotations = %+v; a preview writes nothing", tool.Annotations)
+			}
+		case "cancel_run":
+			t.Error("an agent without runs.cancel is offered cancel_run")
+		}
+	}
+
+	// The preview writes nothing.
+	pv, text := callTool(t, cs, "dry_run_pipeline", map[string]any{"pipeline": "p-run"})
+	if pv == nil || !strings.Contains(text, `"held"`) || !strings.Contains(text, `"qty"`) {
+		t.Fatalf("dry_run_pipeline = %s", text)
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("dry_run_pipeline wrote the sink")
+	}
+
+	// The run, waited for.
+	res, text := callTool(t, cs, "trigger_run", map[string]any{"pipeline": "p-run", "wait_seconds": 30})
+	if res == nil || res["finished"] != true {
+		t.Fatalf("trigger_run = %s", text)
+	}
+	r := res["run"].(map[string]any)
+	if r["status"] != "success" {
+		t.Fatalf("run = %s", text)
+	}
+	if _, err := os.Stat(out); err != nil {
+		t.Fatalf("the run did not write its output: %v", err)
+	}
+	// Recorded as the agent's, as the run is served.
+	rec := serve(b.srv, http.MethodGet, "/api/runs/"+res["run_id"].(string), token, "")
+	var got models.Run
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &got) != nil ||
+		got.TriggeredBy == nil || got.TriggeredBy.Kind != models.RunTriggerKindAgent || got.TriggeredBy.UserID != agentID {
+		t.Fatalf("run %d triggered by %+v", rec.Code, got.TriggeredBy)
+	}
+
+	// Without waiting: the id at once.
+	res, text = callTool(t, cs, "trigger_run", map[string]any{"pipeline": "p-run"})
+	if res == nil || res["run_id"] == "" || res["status"] != "pending" {
+		t.Fatalf("trigger_run without wait = %s", text)
 	}
 }

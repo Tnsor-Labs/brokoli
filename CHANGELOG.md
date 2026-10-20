@@ -13,6 +13,13 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Agents run pipelines over MCP** (ADR-046 phase 4) -- @hc12r.
+  `trigger_run` runs a saved pipeline, with params and declared
+  parameters, and with `wait_seconds` (up to 45) answers the run's
+  outcome; `dry_run_pipeline` previews one, writing nothing; `cancel_run`
+  stops a run (`runs.cancel`, which the `agent` role does not have). The
+  acting tools are marked as such in their annotations, so a client asks
+  the person first, and a run started this way is recorded as the agent's.
 - **A review page for each change request, and testing a change before
   applying it** -- @hc12r. A proposed change opens on its own page
   (`/pipelines/{id}/changes/{changeId}`, linked from the pipeline's page
