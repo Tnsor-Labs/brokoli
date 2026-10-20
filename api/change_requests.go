@@ -223,6 +223,33 @@ func (cs *ChangeRequestStore) list(pipelineID, status string, limit int) ([]Chan
 	return out, rows.Err()
 }
 
+// listRecent is the newest requests across pipelines, with a status if
+// given. The caller keeps those it may see.
+func (cs *ChangeRequestStore) listRecent(status string, limit int) ([]ChangeRequest, error) {
+	query := `SELECT ` + changeColumns + ` FROM change_requests`
+	args := []any{}
+	if status != "" {
+		query += ` WHERE status = ?`
+		args = append(args, status)
+	}
+	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := cs.db.Query(cs.q(query), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ChangeRequest{}
+	for rows.Next() {
+		cr, err := scanChange(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *cr)
+	}
+	return out, rows.Err()
+}
+
 // decide settles an open request once. False when it was not open.
 func (cs *ChangeRequestStore) decide(id, status, by, byName, reason string, appliedVersion int) (bool, error) {
 	res, err := cs.db.Exec(cs.q(`UPDATE change_requests SET status = ?, decided_by = ?, decided_by_name = ?, decided_at = ?,
@@ -457,6 +484,7 @@ func registerChangeRequestRoutes(r chi.Router, ph *PipelineHandler, e *engine.En
 	changeRequests = cs
 	h := &changeRequestsAPI{ph: ph, e: e, cs: cs, pc: pc}
 	r.With(requirePerm(models.PermPipelinesPropose)).Post("/pipelines/{id}/changes", h.create)
+	r.Get("/changes", h.listWorkspace)
 	r.Get("/pipelines/{id}/changes", h.list)
 	r.Get("/pipelines/{id}/changes/{changeId}", h.get)
 	r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/changes/{changeId}/apply", h.apply)
@@ -633,6 +661,58 @@ func (h *changeRequestsAPI) list(w http.ResponseWriter, r *http.Request) {
 		h.present(&list[i], p, current, false)
 	}
 	writeJSON(w, http.StatusOK, list)
+}
+
+// WorkspaceChange is a change request listed across pipelines, with its
+// pipeline's name.
+type WorkspaceChange struct {
+	ChangeRequest
+	PipelineName string `json:"pipeline_name"`
+}
+
+// listWorkspace is the change requests of the pipelines the caller may see
+// in the workspace of the request, newest first (at most 100): what a
+// person has to review, wherever it was proposed.
+func (h *changeRequestsAPI) listWorkspace(w http.ResponseWriter, r *http.Request) {
+	status := r.URL.Query().Get("status")
+	if status != "" && status != ChangeOpen && status != ChangeApplied && status != ChangeDeclined {
+		writeError(w, http.StatusBadRequest, "status is open, applied or declined")
+		return
+	}
+	recent, err := h.cs.listRecent(status, 500)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list change requests")
+		return
+	}
+	ws := GetWorkspaceID(r)
+	type seen struct {
+		p       *models.Pipeline
+		ok      bool
+		current int
+	}
+	pipelines := map[string]*seen{}
+	out := []WorkspaceChange{}
+	for i := range recent {
+		cr := recent[i]
+		s := pipelines[cr.PipelineID]
+		if s == nil {
+			s = &seen{}
+			if p, err := h.ph.store.GetPipeline(cr.PipelineID); err == nil && p != nil &&
+				p.WorkspaceID == ws && ValidateOrgAccess(r, p.OrgID) && userOwnsWorkspace(r, p.WorkspaceID) {
+				s.p, s.ok, s.current = p, true, h.currentVersion(p.ID)
+			}
+			pipelines[cr.PipelineID] = s
+		}
+		if !s.ok {
+			continue
+		}
+		h.present(&cr, s.p, s.current, false)
+		out = append(out, WorkspaceChange{ChangeRequest: cr, PipelineName: s.p.Name})
+		if len(out) == 100 {
+			break
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *changeRequestsAPI) get(w http.ResponseWriter, r *http.Request) {

@@ -13,6 +13,10 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`GET /api/changes`: the workspace's change requests** -- @hc12r.
+  Across its pipelines, newest first (at most 100), each with
+  `pipeline_name`, filtered by `status`; only pipelines the caller may see.
+  For a person's list of what to review, wherever it was proposed.
 - **Agents run pipelines over MCP** (ADR-046 phase 4) -- @hc12r.
   `trigger_run` runs a saved pipeline, with params and declared
   parameters, and with `wait_seconds` (up to 45) answers the run's

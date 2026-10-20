@@ -938,6 +938,11 @@ export interface ChangeRequest {
   applied_version?: number
 }
 
+/** GET /api/changes: a change request listed across pipelines, with its pipeline's name. */
+export interface WorkspaceChange extends ChangeRequest {
+  pipeline_name: string
+}
+
 /**
  * A preview of a pipeline: every node, what it produced on a few rows, and
  * the nodes it held back (they may write outside Brokoli) or did not run.

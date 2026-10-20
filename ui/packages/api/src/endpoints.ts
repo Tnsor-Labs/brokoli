@@ -12,6 +12,7 @@ import type {
   Capabilities,
   ChangeRequest,
   ChangeTest,
+  WorkspaceChange,
   AuthClaims,
   AuthMethods,
   AuthUser,
@@ -178,6 +179,9 @@ export const pipelineApi = {
   /** Change requests (ADR-046). */
   changes: (id: string, status?: ChangeRequest['status']) =>
     request<ChangeRequest[] | null>(`/pipelines/${enc(id)}/changes`, { query: { status } }).then((d) => d ?? []),
+  /** The workspace's change requests across its pipelines, newest first (at most 100). */
+  workspaceChanges: (status?: ChangeRequest['status']) =>
+    request<WorkspaceChange[] | null>('/changes', { query: { status } }).then((d) => d ?? []),
   change: (id: string, changeId: string) => request<ChangeRequest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}`),
   propose: (id: string, pipeline: unknown, title: string, description?: string) =>
     request<ChangeRequest>(`/pipelines/${enc(id)}/changes`, { json: { pipeline, title, description } }),

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -479,5 +480,52 @@ func TestTestingAChangeRequest(t *testing.T) {
 	}
 	if p, _ := b.s.GetPipeline(id); len(p.Nodes[1].Config["rules"].([]interface{})) != 0 {
 		t.Fatal("testing a change changed the pipeline")
+	}
+}
+
+// The workspace's change requests, across its pipelines: what a person has
+// to review, with each pipeline's name, and nothing from another
+// organization.
+func TestTheWorkspacesChangeRequests(t *testing.T) {
+	prev := OrgResolverFunc
+	OrgResolverFunc = func(string) string { return "org-a" }
+	t.Cleanup(func() { OrgResolverFunc = prev })
+	b := newAgentBed(t)
+	mine, theirs, other := ordersPipeline(), ordersPipeline(), ordersPipeline()
+	mine.OrgID = "org-a"
+	other.ID, other.PipelineID, other.Name, other.OrgID = "p-other", "other", "other", "org-a"
+	theirs.ID, theirs.PipelineID, theirs.Name, theirs.OrgID = "p-theirs", "theirs", "theirs", "org-b"
+	for _, p := range []*models.Pipeline{mine, other, theirs} {
+		if err := b.s.CreatePipeline(p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add := func(id, pipeline, status string) {
+		t.Helper()
+		cr := &ChangeRequest{ID: id, PipelineID: pipeline, Title: id, Status: status, Proposed: mine,
+			Validation: ChangeValidation{Valid: true, Errors: []string{}}, CreatedByKind: UserKindAgent,
+			CreatedByName: "triage-bot", CreatedAt: time.Now().UTC()}
+		if err := changeRequests.create(cr); err != nil {
+			t.Fatal(err)
+		}
+	}
+	add("cr-mine", mine.ID, ChangeOpen)
+	add("cr-other-declined", other.ID, ChangeDeclined)
+	add("cr-theirs", theirs.ID, ChangeOpen)
+
+	code, _, raw := b.do(http.MethodGet, "/api/changes?status=open", b.tokens["ada"], "")
+	var list []map[string]any
+	if code != http.StatusOK || json.Unmarshal([]byte(raw), &list) != nil {
+		t.Fatalf("list: %d %s", code, raw)
+	}
+	if len(list) != 1 || list[0]["id"] != "cr-mine" || list[0]["pipeline_name"] != "orders" || list[0]["proposed"] != nil {
+		t.Fatalf("open changes = %s", raw)
+	}
+	_, _, raw = b.do(http.MethodGet, "/api/changes", b.tokens["ada"], "")
+	if !strings.Contains(raw, "cr-other-declined") || strings.Contains(raw, "cr-theirs") {
+		t.Fatalf("all changes = %s", raw)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/changes?status=nope", b.tokens["ada"], ""); code != http.StatusBadRequest {
+		t.Fatalf("a bad status: %d", code)
 	}
 }

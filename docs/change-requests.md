@@ -134,6 +134,7 @@ with the reason.
 
 ```
 POST /api/pipelines/{id}/changes                       {"pipeline": {...}, "title": "...", "description": "..."}
+GET  /api/changes[?status=open|applied|declined]                the workspace's, across pipelines
 GET  /api/pipelines/{id}/changes[?status=open|applied|declined]
 GET  /api/pipelines/{id}/changes/{changeId}
 POST /api/pipelines/{id}/changes/{changeId}/test      {"rows": 10}
@@ -141,7 +142,12 @@ POST /api/pipelines/{id}/changes/{changeId}/apply
 POST /api/pipelines/{id}/changes/{changeId}/decline    {"reason": "..."}
 ```
 
-A change request (the list leaves out `proposed` and `diff`):
+`GET /api/changes` lists the change requests of the pipelines the caller
+may see in the workspace of the request, newest first, at most 100, each
+with `pipeline_name`: what a person has to review, wherever it was
+proposed.
+
+A change request (the lists leave out `proposed` and `diff`):
 
 ```json
 {
