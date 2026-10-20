@@ -66,7 +66,13 @@ func (pc *PermissionChecker) requestPermissions(r *http.Request, claims *jwt.Map
 		perms = pc.GetUserPermissions(role, GetWorkspaceID(r))
 	}
 	// An agent (ADR-046) holds what its role grants and its owner holds,
-	// never more than the person answering for it.
+	// never more than the person answering for it. Where a distribution
+	// resolved the request's permissions (RequestIdentityFunc), it has
+	// bound them to the owner already, as its own roles define them; only
+	// what no agent may hold is withheld here.
+	if isAgentClaims(claims) && ok {
+		return agentPermissions(perms, perms)
+	}
 	if isAgentClaims(claims) {
 		ownerRole, _ := (*claims)["owner_role"].(string)
 		owner := models.AllPermissions()

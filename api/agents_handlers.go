@@ -26,6 +26,46 @@ import (
 // Only people manage agents: an agent's own token is refused on every one
 // of these routes.
 
+// AgentHooks let a distribution take part in agents' lives: a
+// multi-tenant one makes an agent a member of its owner's organization when
+// it is created, keeps that membership's role in step, ends it when the
+// agent is disabled, and shows each organization only its own agents. Any
+// hook left nil does nothing.
+var AgentHooks struct {
+	// Created runs after an agent is recorded, as the person who created
+	// it; an error disables the agent again and is the answer (a refused
+	// limit, say: return an *AgentHookError to choose the status).
+	Created func(r *http.Request, a *Agent) error
+	// Updated runs after an agent's role or description changes.
+	Updated func(r *http.Request, a *Agent) error
+	// Disabled runs after an agent is disabled and its tokens revoked.
+	Disabled func(r *http.Request, a *Agent)
+	// Visible reports whether the caller may see a (beyond being its
+	// owner or managing users): an agent of another organization is not
+	// there at all.
+	Visible func(r *http.Request, a *Agent) bool
+}
+
+// AgentHookError is a hook's refusal, with the status to answer.
+type AgentHookError struct {
+	Status  int
+	Message string
+}
+
+func (e *AgentHookError) Error() string { return e.Message }
+
+func hookStatus(err error) (int, string) {
+	var he *AgentHookError
+	if errors.As(err, &he) {
+		return he.Status, he.Message
+	}
+	return http.StatusInternalServerError, err.Error()
+}
+
+func visible(r *http.Request, a *Agent) bool {
+	return AgentHooks.Visible == nil || AgentHooks.Visible(r, a)
+}
+
 type agentsAPI struct {
 	users *UserStore
 	pc    *PermissionChecker
@@ -71,7 +111,7 @@ func (h *agentsAPI) owned(w http.ResponseWriter, r *http.Request) (*Agent, strin
 		return nil, "", false, false
 	}
 	a, err := h.users.GetAgent(chi.URLParam(r, "id"))
-	if err != nil || (!admin && a.OwnerID != callerID) {
+	if err != nil || (!admin && a.OwnerID != callerID) || !visible(r, a) {
 		writeError(w, http.StatusNotFound, ErrAgentNotFound.Error())
 		return nil, "", false, false
 	}
@@ -100,7 +140,13 @@ func (h *agentsAPI) list(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not list agents")
 		return
 	}
-	writeJSON(w, http.StatusOK, agents)
+	shown := make([]Agent, 0, len(agents))
+	for i := range agents {
+		if visible(r, &agents[i]) {
+			shown = append(shown, agents[i])
+		}
+	}
+	writeJSON(w, http.StatusOK, shown)
 }
 
 // checkRole is why role cannot be an agent's, or "".
@@ -158,6 +204,14 @@ func (h *agentsAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not create the agent")
 		return
 	}
+	if AgentHooks.Created != nil {
+		if err := AgentHooks.Created(r, a); err != nil {
+			_ = h.users.DisableAgent(a.ID)
+			status, msg := hookStatus(err)
+			writeError(w, status, msg)
+			return
+		}
+	}
 	AuditLog(r, "create", "agent", a.ID, nil, map[string]interface{}{"name": a.Name, "role": a.Role, "owner_id": a.OwnerID})
 	writeJSON(w, http.StatusCreated, a)
 }
@@ -199,8 +253,15 @@ func (h *agentsAPI) update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "could not update the agent")
 		return
 	}
-	AuditLog(r, "update", "agent", a.ID, map[string]interface{}{"role": a.Role}, map[string]interface{}{"role": role})
 	updated, _ := h.users.GetAgent(a.ID)
+	if AgentHooks.Updated != nil && updated != nil {
+		if err := AgentHooks.Updated(r, updated); err != nil {
+			status, msg := hookStatus(err)
+			writeError(w, status, msg)
+			return
+		}
+	}
+	AuditLog(r, "update", "agent", a.ID, map[string]interface{}{"role": a.Role}, map[string]interface{}{"role": role})
 	writeJSON(w, http.StatusOK, updated)
 }
 
@@ -212,6 +273,9 @@ func (h *agentsAPI) disable(w http.ResponseWriter, r *http.Request) {
 	if err := h.users.DisableAgent(a.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "could not disable the agent")
 		return
+	}
+	if AgentHooks.Disabled != nil {
+		AgentHooks.Disabled(r, a)
 	}
 	AuditLog(r, "disable", "agent", a.ID, nil, map[string]interface{}{"name": a.Name})
 	w.WriteHeader(http.StatusNoContent)

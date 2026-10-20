@@ -13,6 +13,15 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`api.AgentHooks`** -- @hc12r. A distribution takes part in agent
+  identities: `Created` (an error disables the agent again and is the
+  answer, with `AgentHookError`'s status), `Updated`, `Disabled`, and
+  `Visible`, which hides agents the caller may not see from the list and
+  every per-agent route. Where a distribution resolves a request's
+  permissions (`RequestIdentityFunc`), an agent's stand as resolved, less
+  what no agent may hold: the distribution binds them to the owner in its
+  own roles.
+
 - **MCP extensions for distributions** -- @hc12r. `mcpserver.Register`
   adds a distribution's tools (listed by the permission each needs,
   answering through the same caller, redacted and bounded like core's,

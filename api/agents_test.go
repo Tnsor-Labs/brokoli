@@ -16,6 +16,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/golang-jwt/jwt/v5"
 )
 
 // Agent identities (ADR-046 phase 2), through the real server.
@@ -486,5 +487,67 @@ func TestAgentIdentitiesCanBeTurnedOff(t *testing.T) {
 	}
 	if code, _, _ := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"new"}`); code != http.StatusNotFound {
 		t.Fatalf("creating an agent with agents off: %d", code)
+	}
+}
+
+// A distribution takes part through AgentHooks: it can refuse a creation
+// (the agent is disabled again), hide another organization's agents, and
+// follow updates and disabling.
+func TestAgentHooks(t *testing.T) {
+	b := newAgentBed(t)
+	prev := AgentHooks
+	t.Cleanup(func() { AgentHooks = prev })
+	var created, updated, disabled []string
+	AgentHooks.Created = func(_ *http.Request, a *Agent) error {
+		if a.Name == "over-limit" {
+			return &AgentHookError{Status: http.StatusPaymentRequired, Message: "this plan allows 1 agent"}
+		}
+		created = append(created, a.Name)
+		return nil
+	}
+	AgentHooks.Updated = func(_ *http.Request, a *Agent) error { updated = append(updated, a.Role); return nil }
+	AgentHooks.Disabled = func(_ *http.Request, a *Agent) { disabled = append(disabled, a.Name) }
+	AgentHooks.Visible = func(_ *http.Request, a *Agent) bool { return a.Name != "elsewhere" }
+
+	id, _ := b.agent("mine", "", "ada", "ada", false)
+	if code, _, raw := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"over-limit"}`); code != http.StatusPaymentRequired || !strings.Contains(raw, "1 agent") {
+		t.Fatalf("refused creation: %d %s", code, raw)
+	}
+	if a, err := b.users.GetAgent(b.agentID("over-limit")); err != nil || !a.Disabled {
+		t.Fatalf("a refused agent stays enabled: %+v %v", a, err)
+	}
+	// Another organization's agent, as the store would hold it.
+	elsewhere, err := b.users.CreateAgent("elsewhere", "", AgentRole, b.ids["ada"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := elsewhere.ID
+	_, _, list := b.do(http.MethodGet, "/api/agents", b.tokens["ada"], "")
+	if strings.Contains(list, "elsewhere") || !strings.Contains(list, `"mine"`) {
+		t.Fatalf("list = %s", list)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/agents/"+other, b.tokens["ada"], ""); code != http.StatusNotFound {
+		t.Fatalf("an invisible agent: %d", code)
+	}
+	b.do(http.MethodPatch, "/api/agents/"+id, b.tokens["ada"], `{"role":"viewer"}`)
+	b.do(http.MethodDelete, "/api/agents/"+id, b.tokens["ada"], "")
+	if strings.Join(created, ",") != "mine" || strings.Join(updated, ",") != "viewer" || strings.Join(disabled, ",") != "mine" {
+		t.Fatalf("created %v updated %v disabled %v", created, updated, disabled)
+	}
+}
+
+// Where a distribution resolves the request's permissions, they stand for
+// an agent too (it bound them to the owner), less what no agent may hold.
+func TestADistributionResolvesAnAgentsPermissions(t *testing.T) {
+	b := newAgentBed(t)
+	_, token := b.agent("bot", "", "vic", "ada", false)
+	prev := RequestIdentityFunc
+	t.Cleanup(func() { RequestIdentityFunc = prev })
+	RequestIdentityFunc = func(_ *http.Request, _ *jwt.MapClaims) IdentityRefinement {
+		return IdentityRefinement{Permissions: []models.Permission{models.PermPipelinesView, models.PermPipelinesEdit, models.PermVariablesViewSecret}}
+	}
+	// vic is a viewer in core's terms; the distribution's answer stands.
+	if got := strings.Join(b.permissions(token), " "); got != "pipelines.edit pipelines.view" {
+		t.Fatalf("permissions = %s", got)
 	}
 }
