@@ -1,6 +1,6 @@
 # ADR-046: Agents as users of the runtime: an MCP server, agent identities and change requests
 
-**Status:** proposed
+**Status:** accepted (approved by the product owner, 2026-10-20)
 **Date:** 2026-10-20
 
 ## Context
