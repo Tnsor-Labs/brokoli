@@ -259,6 +259,13 @@ reconstruct from git archaeology.
   opens its own pool at startup waits the same way instead of coming up
   without its feature.
 
+### Security
+
+- **Go 1.26.10** -- @hc12r. GO-2026-6809: crypto/x509 did not distrust
+  compromised intermediate certificates, reachable from every outbound
+  TLS connection. The toolchain pin, CI and release builds move to the
+  fixed release.
+
 ## [0.18.17] - 2026-10-17
 
 ### Changed

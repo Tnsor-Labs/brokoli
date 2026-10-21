@@ -2,7 +2,7 @@ module github.com/Tnsor-Labs/brokoli
 
 go 1.26.0
 
-toolchain go1.26.9
+toolchain go1.26.10
 
 require (
 	cloud.google.com/go/auth v0.20.0
