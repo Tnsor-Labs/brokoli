@@ -227,7 +227,11 @@ func (us *UserStore) DisableAgent(id string) error {
 			return ErrAgentNotFound
 		}
 	}
-	_, err = us.db.Exec(us.q(`UPDATE agent_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at = ''`), now, id)
+	if _, err = us.db.Exec(us.q(`UPDATE agent_tokens SET revoked_at = ? WHERE agent_id = ? AND revoked_at = ''`), now, id); err != nil {
+		return err
+	}
+	// Connections made to act as the agent end with it.
+	_, err = us.db.Exec(us.q(`UPDATE oauth_grants SET revoked_at = ? WHERE agent_id = ? AND revoked_at = ''`), now, id)
 	return err
 }
 
@@ -346,17 +350,10 @@ func (us *UserStore) ResolveAgentToken(token string) (*jwt.MapClaims, bool) {
 	if last := parseStoredTime(used); last == nil || now.Sub(*last) >= lastUsedEvery {
 		_, _ = us.db.Exec(us.q(`UPDATE agent_tokens SET last_used_at = ? WHERE id = ?`), now.Format(time.RFC3339), tokenID)
 	}
-	claims := jwt.MapClaims{
-		"sub":        agentID,
-		"username":   agentName,
-		"role":       agentRole,
-		"kind":       UserKindAgent,
-		"owner_id":   ownerID,
-		"owner_role": ownerRole.String,
-		"token_id":   tokenID,
-		"token_name": tokenName,
-		"exp":        exp.Unix(),
-	}
+	claims := agentClaims(agentID, agentName, agentRole, ownerID, ownerRole.String)
+	claims["token_id"] = tokenID
+	claims["token_name"] = tokenName
+	claims["exp"] = exp.Unix()
 	if behalf == 1 {
 		name := ownerDisplay.String
 		if name == "" {
@@ -364,12 +361,25 @@ func (us *UserStore) ResolveAgentToken(token string) (*jwt.MapClaims, bool) {
 		}
 		claims["on_behalf_of"] = name
 	}
+	return &claims, true
+}
+
+// agentClaims is who an agent is, for any credential that acts as it.
+func agentClaims(agentID, agentName, agentRole, ownerID, ownerRole string) jwt.MapClaims {
+	claims := jwt.MapClaims{
+		"sub":        agentID,
+		"username":   agentName,
+		"role":       agentRole,
+		"kind":       UserKindAgent,
+		"owner_id":   ownerID,
+		"owner_role": ownerRole,
+	}
 	if OrgResolverFunc != nil {
 		if orgID := OrgResolverFunc(agentID); orgID != "" {
 			claims["org_id"] = orgID
 		}
 	}
-	return &claims, true
+	return claims
 }
 
 // isAgentClaims reports whether claims are an agent's.

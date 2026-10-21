@@ -22,6 +22,16 @@ reconstruct from git archaeology.
   access tokens last an hour and are renewed with rotating refresh tokens;
   a connection acts as the person who approved it and can be revoked.
   `BROKOLI_PUBLIC_URL` names the server's public address for discovery.
+- **Connect an MCP client as one of your agents, and see your connected
+  apps** (ADR-046 phase 5b) -- @hc12r. The approval page offers the
+  person's enabled agents besides themselves; a connection made as an
+  agent acts exactly as one of its tokens (its role, capped by the
+  owner's, attributed to the agent), and ends when the agent is disabled
+  or changes owner. **Settings, Connected apps** lists each connection
+  (application, identity, connected, last used) and disconnects it at
+  once (`GET /api/oauth/connections`, `DELETE /api/oauth/connections/{id}`;
+  persons only). The `ConnectedApps` component is exported from
+  `@brokoli/auth`.
 - **`api.SetChangeRequestDelivery`** -- @hc12r. A distribution that
   delivers a change request elsewhere (a pull request opened after the
   request is recorded) records where it went once it knows; only an open

@@ -9,6 +9,8 @@ import {
   type RequestOptions,
 } from './client'
 import type {
+  OAuthConnection,
+  OAuthRequestInfo,
   Capabilities,
   ChangeRequest,
   ChangeTest,
@@ -109,12 +111,18 @@ export async function resolveWorkspace(userId: string, hintIsFresh = false): Pro
 
 /** OAuth for MCP clients (ADR-046 phase 5): the approval page's two calls. */
 export const oauthApi = {
-  /** What is asking: the client's name and where it sends the browser back. */
-  request: (query: string) =>
-    request<{ client_name: string; redirect_host: string; scope: string }>(`/oauth/authorize?${query.replace(/^\?/, '')}`, { retries: 0 }),
-  /** Approve or deny; answers where to send the browser. */
-  decide: (query: string, approve: boolean) =>
-    request<{ redirect: string }>('/oauth/authorize', { json: { query: query.replace(/^\?/, ''), approve }, retries: 0 }),
+  /** What is asking: the client's name, where it sends the browser back, and the identities it may be given. */
+  request: (query: string) => request<OAuthRequestInfo>(`/oauth/authorize?${query.replace(/^\?/, '')}`, { retries: 0 }),
+  /** Approve (as the person, or as one of their agents) or deny; answers where to send the browser. */
+  decide: (query: string, approve: boolean, agentId = '') =>
+    request<{ redirect: string }>('/oauth/authorize', {
+      json: { query: query.replace(/^\?/, ''), approve, agent_id: agentId },
+      retries: 0,
+    }),
+  /** The signed-in person's connected apps. */
+  connections: () => request<{ connections: OAuthConnection[] }>('/oauth/connections').then((r) => r.connections ?? []),
+  /** End a connection: its tokens stop working at once. */
+  disconnect: (id: string) => request<void>(`/oauth/connections/${enc(id)}`, { method: 'DELETE' }),
 }
 
 export const authApi = {

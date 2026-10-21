@@ -274,3 +274,46 @@
     display: none;
   }
 }
+/* The identity an OAuth connection acts as: the person or one of their agents. */
+.bk-consent-identity {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.bk-consent-identity legend {
+  margin-bottom: 8px;
+  color: var(--bk-color-text-muted);
+  font-size: var(--bk-text-xs);
+  letter-spacing: var(--bk-tracking-eyebrow);
+  text-transform: uppercase;
+}
+.bk-consent-identity label {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-md);
+  cursor: pointer;
+  transition: border-color var(--bk-duration-fast) var(--bk-ease);
+}
+.bk-consent-identity label:hover {
+  border-color: var(--bk-color-border-strong);
+}
+.bk-consent-identity label.is-selected {
+  border-color: var(--bk-color-accent);
+  background: var(--bk-color-accent-soft);
+}
+.bk-consent-identity input {
+  margin-top: 3px;
+  accent-color: var(--bk-color-accent);
+}
+.bk-consent-identity label > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--bk-text-sm);
+}

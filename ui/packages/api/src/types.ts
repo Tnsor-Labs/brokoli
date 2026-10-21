@@ -967,3 +967,23 @@ export interface ChangeTest {
   current: PipelinePreview
   proposed: PipelinePreview
 }
+
+/** An OAuth authorization request, as the approval page shows it. */
+export interface OAuthRequestInfo {
+  client_name: string
+  redirect_host: string
+  scope: string
+  /** The person's enabled agents the connection may act as instead of them. */
+  agents: { id: string; name: string; role: string; description: string }[]
+}
+
+/** A connected app: a live OAuth grant of the signed-in person's. */
+export interface OAuthConnection {
+  id: string
+  client_id: string
+  client_name: string
+  agent_id?: string
+  agent_name?: string
+  created_at: string
+  last_used_at?: string
+}

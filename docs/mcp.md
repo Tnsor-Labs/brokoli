@@ -85,22 +85,33 @@ token is pasted anywhere.
 1. Add `https://brokoli.example.com/api/mcp` to the client as a remote MCP
    server.
 2. The client opens Brokoli's approval page. Sign in if you are not, read
-   what is asking and where it will send you back, and **Approve**.
+   what is asking and where it will send you back, choose who it connects
+   as (you, or one of your agents), and **Approve**.
 3. The client receives a one-time code and trades it for its tokens.
 
 What it gets:
 
-- **It acts as you**, with your permissions as they are on each request,
-  in your default workspace (or the one it names with `X-Workspace-ID`).
-  What it does is recorded under your name. Only a person can approve a
-  connection; an agent's token cannot.
+- **It acts as you, or as your agent.** By default it acts as you, with
+  your permissions as they are on each request, in your default workspace
+  (or the one it names with `X-Workspace-ID`), and what it does is
+  recorded under your name. If you own agents, the approval page also
+  offers them: connected as one, the client is that agent exactly as one
+  of its own tokens would be (its role, never more than yours, recorded
+  under the agent's name with you answering for it), which is the way to
+  give a chat assistant less than everything you can do. Only a person
+  can approve a connection; an agent's token cannot.
 - **Short-lived access, renewed.** An access token (`bko_...`) lasts an
   hour; the client renews it with a refresh token (`bkr_...`), which lasts
   30 days and is replaced each time it is used. Presenting a refresh token
   that was already used ends the connection, since only a stolen copy
   would do that.
-- **Revocable.** The client can revoke it (`POST /oauth/revoke`); a person
-  who is disabled or removed takes all their connections with them.
+- **Revocable.** **Settings, Connected apps** lists your connections (the
+  application, who it acts as, when it was connected and last used) and
+  disconnects any of them; its tokens stop at once. The client can revoke
+  itself (`POST /oauth/revoke`). A person who is disabled or removed takes
+  all their connections with them; disabling an agent ends the
+  connections made as it, and so does the agent passing to another
+  owner.
 
 The client's name on the approval page is the one it registered with: it
 is the client's own claim, so check where it sends you back (shown on the
@@ -120,6 +131,8 @@ The endpoints, for reference:
 | `GET /oauth/authorize` | `response_type=code`, PKCE with `code_challenge_method=S256` required; sends the browser to the approval page |
 | `POST /oauth/token` | `grant_type=authorization_code` (with `code_verifier`) or `refresh_token`, form-encoded |
 | `POST /oauth/revoke` | ends the connection a token belongs to (RFC 7009) |
+| `GET /api/oauth/connections` | the signed-in person's connections (persons only; an agent is refused) |
+| `DELETE /api/oauth/connections/{id}` | disconnect one of them |
 
 ## The tools
 

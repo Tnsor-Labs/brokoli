@@ -39,6 +39,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -78,7 +79,8 @@ func (us *UserStore) migrateOAuth() error {
 			challenge TEXT NOT NULL,
 			scope TEXT NOT NULL DEFAULT '',
 			expires_at TEXT NOT NULL,
-			used INTEGER NOT NULL DEFAULT 0
+			used INTEGER NOT NULL DEFAULT 0,
+			agent_id TEXT NOT NULL DEFAULT ''
 		)`,
 		`CREATE TABLE IF NOT EXISTS oauth_grants (
 			id TEXT PRIMARY KEY,
@@ -92,9 +94,12 @@ func (us *UserStore) migrateOAuth() error {
 			previous_refresh_hash TEXT NOT NULL DEFAULT '',
 			created_at TEXT NOT NULL,
 			last_used_at TEXT NOT NULL DEFAULT '',
-			revoked_at TEXT NOT NULL DEFAULT ''
+			revoked_at TEXT NOT NULL DEFAULT '',
+			agent_id TEXT NOT NULL DEFAULT ''
 		)`,
 		`ALTER TABLE oauth_grants ADD COLUMN previous_refresh_hash TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE oauth_codes ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE oauth_grants ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
 		`CREATE INDEX IF NOT EXISTS idx_oauth_grants_access ON oauth_grants (access_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_oauth_grants_refresh ON oauth_grants (refresh_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_oauth_grants_user ON oauth_grants (user_id)`,
@@ -198,13 +203,14 @@ func pkceS256(verifier string) string {
 }
 
 // issueOAuthCode records an approved authorization and returns its code.
-func (us *UserStore) issueOAuthCode(clientID, userID, redirectURI, challenge, scope string) (string, error) {
+// agentID, when set, is the approver's agent the connection acts as.
+func (us *UserStore) issueOAuthCode(clientID, userID, agentID, redirectURI, challenge, scope string) (string, error) {
 	code, err := oauthSecret("")
 	if err != nil {
 		return "", err
 	}
-	_, err = us.db.Exec(us.q(`INSERT INTO oauth_codes (code_hash, client_id, user_id, redirect_uri, challenge, scope, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`), oauthHash(code), clientID, userID, redirectURI, challenge, scope,
+	_, err = us.db.Exec(us.q(`INSERT INTO oauth_codes (code_hash, client_id, user_id, agent_id, redirect_uri, challenge, scope, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), oauthHash(code), clientID, userID, agentID, redirectURI, challenge, scope,
 		time.Now().UTC().Add(oauthCodeLifetime).Format(time.RFC3339))
 	return code, err
 }
@@ -212,33 +218,33 @@ func (us *UserStore) issueOAuthCode(clientID, userID, redirectURI, challenge, sc
 var errOAuthGrant = errors.New("invalid_grant")
 
 // redeemOAuthCode spends a code once, checking its client, redirect and
-// verifier, and returns who approved it.
-func (us *UserStore) redeemOAuthCode(code, clientID, redirectURI, verifier string) (userID, scope string, err error) {
+// verifier, and returns who approved it and the agent it acts as, if any.
+func (us *UserStore) redeemOAuthCode(code, clientID, redirectURI, verifier string) (userID, agentID, scope string, err error) {
 	var cClient, cUser, cRedirect, challenge, expires string
 	var used int
 	h := oauthHash(code)
-	if err := us.db.QueryRow(us.q(`SELECT client_id, user_id, redirect_uri, challenge, scope, expires_at, used FROM oauth_codes WHERE code_hash = ?`), h).
-		Scan(&cClient, &cUser, &cRedirect, &challenge, &scope, &expires, &used); err != nil {
-		return "", "", errOAuthGrant
+	if err := us.db.QueryRow(us.q(`SELECT client_id, user_id, agent_id, redirect_uri, challenge, scope, expires_at, used FROM oauth_codes WHERE code_hash = ?`), h).
+		Scan(&cClient, &cUser, &agentID, &cRedirect, &challenge, &scope, &expires, &used); err != nil {
+		return "", "", "", errOAuthGrant
 	}
 	// Spent whatever happens next: a code is good for one attempt.
 	res, err := us.db.Exec(us.q(`UPDATE oauth_codes SET used = 1 WHERE code_hash = ? AND used = 0`), h)
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 	if n, _ := res.RowsAffected(); n != 1 || used != 0 {
-		return "", "", errOAuthGrant
+		return "", "", "", errOAuthGrant
 	}
 	exp, _ := time.Parse(time.RFC3339, expires)
 	switch {
 	case !time.Now().UTC().Before(exp):
-		return "", "", errOAuthGrant
+		return "", "", "", errOAuthGrant
 	case cClient != clientID || cRedirect != redirectURI:
-		return "", "", errOAuthGrant
+		return "", "", "", errOAuthGrant
 	case verifier == "" || subtle.ConstantTimeCompare([]byte(pkceS256(verifier)), []byte(challenge)) != 1:
-		return "", "", errOAuthGrant
+		return "", "", "", errOAuthGrant
 	}
-	return cUser, scope, nil
+	return cUser, agentID, scope, nil
 }
 
 // OAuthTokens is a token endpoint answer.
@@ -259,14 +265,14 @@ func newOAuthPair() (access, refresh string, err error) {
 }
 
 // createOAuthGrant starts a grant for an approved code.
-func (us *UserStore) createOAuthGrant(clientID, userID, scope string) (*OAuthTokens, error) {
+func (us *UserStore) createOAuthGrant(clientID, userID, agentID, scope string) (*OAuthTokens, error) {
 	access, refresh, err := newOAuthPair()
 	if err != nil {
 		return nil, err
 	}
 	now := time.Now().UTC()
-	_, err = us.db.Exec(us.q(`INSERT INTO oauth_grants (id, client_id, user_id, scope, access_hash, access_expires_at, refresh_hash, refresh_expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`), generateID(), clientID, userID, scope, oauthHash(access),
+	_, err = us.db.Exec(us.q(`INSERT INTO oauth_grants (id, client_id, user_id, agent_id, scope, access_hash, access_expires_at, refresh_hash, refresh_expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), generateID(), clientID, userID, agentID, scope, oauthHash(access),
 		now.Add(oauthAccessLifetime).Format(time.RFC3339), oauthHash(refresh), now.Add(oauthRefreshLifetime).Format(time.RFC3339),
 		now.Format(time.RFC3339))
 	if err != nil {
@@ -278,9 +284,9 @@ func (us *UserStore) createOAuthGrant(clientID, userID, scope string) (*OAuthTok
 // refreshOAuthGrant replaces a grant's tokens. A refresh token is good
 // once; presenting a spent one ends the grant (a stolen copy is in use).
 func (us *UserStore) refreshOAuthGrant(refresh, clientID string) (*OAuthTokens, error) {
-	var id, gClient, userID, scope, expires, revoked string
-	if err := us.db.QueryRow(us.q(`SELECT id, client_id, user_id, scope, refresh_expires_at, revoked_at FROM oauth_grants WHERE refresh_hash = ?`),
-		oauthHash(refresh)).Scan(&id, &gClient, &userID, &scope, &expires, &revoked); err != nil {
+	var id, gClient, userID, agentID, scope, expires, revoked string
+	if err := us.db.QueryRow(us.q(`SELECT id, client_id, user_id, agent_id, scope, refresh_expires_at, revoked_at FROM oauth_grants WHERE refresh_hash = ?`),
+		oauthHash(refresh)).Scan(&id, &gClient, &userID, &agentID, &scope, &expires, &revoked); err != nil {
 		return nil, errOAuthGrant
 	}
 	exp, _ := time.Parse(time.RFC3339, expires)
@@ -289,6 +295,11 @@ func (us *UserStore) refreshOAuthGrant(refresh, clientID string) (*OAuthTokens, 
 	}
 	if _, ok := us.oauthPerson(userID); !ok {
 		return nil, errOAuthGrant
+	}
+	if agentID != "" {
+		if _, ok := us.oauthAgent(agentID, userID); !ok {
+			return nil, errOAuthGrant
+		}
 	}
 	access, next, err := newOAuthPair()
 	if err != nil {
@@ -333,15 +344,29 @@ func (us *UserStore) oauthPerson(userID string) (*User, bool) {
 	return u, true
 }
 
+// oauthAgent is the agent a grant acts as, while it is enabled and still
+// owned by the person who approved the grant.
+func (us *UserStore) oauthAgent(agentID, ownerID string) (*Agent, bool) {
+	if !AgentIdentitiesEnabled {
+		return nil, false
+	}
+	a, err := us.GetAgent(agentID)
+	if err != nil || a.Disabled || a.OwnerID != ownerID {
+		return nil, false
+	}
+	return a, true
+}
+
 // ResolveOAuthToken returns the claims for a live OAuth access token: the
-// person who approved the grant, as they are now.
+// person who approved the grant, or the agent of theirs they chose, as
+// they are now.
 func (us *UserStore) ResolveOAuthToken(token string) (*jwt.MapClaims, bool) {
 	if !strings.HasPrefix(token, OAuthAccessTokenPrefix) {
 		return nil, false
 	}
-	var id, clientID, userID, expires, revoked, used string
-	if err := us.db.QueryRow(us.q(`SELECT id, client_id, user_id, access_expires_at, revoked_at, last_used_at FROM oauth_grants WHERE access_hash = ?`),
-		oauthHash(token)).Scan(&id, &clientID, &userID, &expires, &revoked, &used); err != nil {
+	var id, clientID, userID, agentID, expires, revoked, used string
+	if err := us.db.QueryRow(us.q(`SELECT id, client_id, user_id, agent_id, access_expires_at, revoked_at, last_used_at FROM oauth_grants WHERE access_hash = ?`),
+		oauthHash(token)).Scan(&id, &clientID, &userID, &agentID, &expires, &revoked, &used); err != nil {
 		return nil, false
 	}
 	exp, err := time.Parse(time.RFC3339, expires)
@@ -353,8 +378,24 @@ func (us *UserStore) ResolveOAuthToken(token string) (*jwt.MapClaims, bool) {
 	if !ok {
 		return nil, false
 	}
+	var agent *Agent
+	if agentID != "" {
+		if agent, ok = us.oauthAgent(agentID, userID); !ok {
+			return nil, false
+		}
+	}
 	if last := parseStoredTime(used); last == nil || now.Sub(*last) >= lastUsedEvery {
 		_, _ = us.db.Exec(us.q(`UPDATE oauth_grants SET last_used_at = ? WHERE id = ?`), now.Format(time.RFC3339), id)
+	}
+	if agent != nil {
+		// The connection acts as the agent, answered for by the person who
+		// approved it, exactly as one of the agent's own tokens would.
+		claims := agentClaims(agent.ID, agent.Name, agent.Role, u.ID, string(u.Role))
+		claims["exp"] = exp.Unix()
+		claims["oauth_client_id"] = clientID
+		claims["oauth_grant_id"] = id
+		claims["token_name"] = "oauth:" + clientID
+		return &claims, true
 	}
 	claims := jwt.MapClaims{
 		"sub":             u.ID,
@@ -543,6 +584,7 @@ func oauthDecide(us *UserStore) http.HandlerFunc {
 		var body struct {
 			Query   string `json:"query"`
 			Approve bool   `json:"approve"`
+			AgentID string `json:"agent_id"`
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
 			writeError(w, http.StatusBadRequest, `send {"query": "<the authorization request's query>", "approve": true}`)
@@ -567,12 +609,21 @@ func oauthDecide(us *UserStore) http.HandlerFunc {
 			writeError(w, http.StatusForbidden, "only a person's account can approve a connection")
 			return
 		}
-		code, err := us.issueOAuthCode(c.ID, userID, req.RedirectURI, req.Challenge, req.Scope)
+		identity := map[string]any{"client": c.Name, "redirect_uri": req.RedirectURI}
+		if body.AgentID != "" {
+			a, ok := us.oauthAgent(body.AgentID, userID)
+			if !ok {
+				writeError(w, http.StatusForbidden, "the connection can act only as you or an enabled agent you own")
+				return
+			}
+			identity["agent"] = a.Name
+		}
+		code, err := us.issueOAuthCode(c.ID, userID, body.AgentID, req.RedirectURI, req.Challenge, req.Scope)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "could not approve the connection")
 			return
 		}
-		AuditLog(r, "oauth_approve", "oauth_client", c.ID, nil, map[string]any{"client": c.Name, "redirect_uri": req.RedirectURI})
+		AuditLog(r, "oauth_approve", "oauth_client", c.ID, nil, identity)
 		writeJSON(w, http.StatusOK, map[string]string{"redirect": redirectWith(req.RedirectURI, map[string]string{"code": code, "state": req.State})})
 	}
 }
@@ -587,7 +638,20 @@ func oauthRequestInfo(us *UserStore) http.HandlerFunc {
 			return
 		}
 		u, _ := url.Parse(req.RedirectURI)
-		writeJSON(w, http.StatusOK, map[string]string{"client_name": c.Name, "redirect_host": u.Host, "scope": req.Scope})
+		// The identities the person may give the connection: themselves, or
+		// one of their enabled agents.
+		agents := []map[string]string{}
+		if claims, _ := r.Context().Value("claims").(*jwt.MapClaims); claims != nil && !isAgentClaims(claims) && AgentIdentitiesEnabled {
+			userID, _ := (*claims)["sub"].(string)
+			if owned, err := us.ListAgents(userID); err == nil {
+				for _, a := range owned {
+					if !a.Disabled {
+						agents = append(agents, map[string]string{"id": a.ID, "name": a.Name, "role": a.Role, "description": a.Description})
+					}
+				}
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"client_name": c.Name, "redirect_host": u.Host, "scope": req.Scope, "agents": agents})
 	}
 }
 
@@ -607,10 +671,10 @@ func oauthToken(us *UserStore) http.HandlerFunc {
 		var err error
 		switch r.PostForm.Get("grant_type") {
 		case "authorization_code":
-			var userID, scope string
-			userID, scope, err = us.redeemOAuthCode(r.PostForm.Get("code"), clientID, r.PostForm.Get("redirect_uri"), r.PostForm.Get("code_verifier"))
+			var userID, agentID, scope string
+			userID, agentID, scope, err = us.redeemOAuthCode(r.PostForm.Get("code"), clientID, r.PostForm.Get("redirect_uri"), r.PostForm.Get("code_verifier"))
 			if err == nil {
-				tokens, err = us.createOAuthGrant(clientID, userID, scope)
+				tokens, err = us.createOAuthGrant(clientID, userID, agentID, scope)
 			}
 		case "refresh_token":
 			tokens, err = us.refreshOAuthGrant(r.PostForm.Get("refresh_token"), clientID)
@@ -653,5 +717,114 @@ func oauthRevoke(us *UserStore) http.HandlerFunc {
 func oauthAuthenticate(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == "/api/mcp" || strings.HasPrefix(r.URL.Path, "/api/mcp/") {
 		w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer resource_metadata=%q`, OAuthResourceMetadataURL(r)))
+	}
+}
+
+// --- connected apps
+
+// OAuthConnection is a live grant, as its person sees it.
+type OAuthConnection struct {
+	ID         string     `json:"id"`
+	ClientID   string     `json:"client_id"`
+	ClientName string     `json:"client_name"`
+	AgentID    string     `json:"agent_id,omitempty"`
+	AgentName  string     `json:"agent_name,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
+}
+
+// ListOAuthConnections returns userID's live grants, newest first. A grant
+// whose refresh token has expired is not live: it can never act again.
+func (us *UserStore) ListOAuthConnections(userID string) ([]OAuthConnection, error) {
+	rows, err := us.db.Query(us.q(`SELECT g.id, g.client_id, COALESCE(c.name, ''), g.agent_id, COALESCE(a.username, ''), g.created_at, g.last_used_at, g.refresh_expires_at
+		FROM oauth_grants g
+		LEFT JOIN oauth_clients c ON c.id = g.client_id
+		LEFT JOIN users a ON a.id = g.agent_id AND g.agent_id <> ''
+		WHERE g.user_id = ? AND g.revoked_at = ''
+		ORDER BY g.created_at DESC`), userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().UTC()
+	out := []OAuthConnection{}
+	for rows.Next() {
+		var c OAuthConnection
+		var created, used, refreshExpires string
+		if err := rows.Scan(&c.ID, &c.ClientID, &c.ClientName, &c.AgentID, &c.AgentName, &created, &used, &refreshExpires); err != nil {
+			return nil, err
+		}
+		if exp, err := time.Parse(time.RFC3339, refreshExpires); err != nil || !now.Before(exp) {
+			continue
+		}
+		c.CreatedAt, _ = time.Parse(time.RFC3339, created)
+		c.LastUsedAt = parseStoredTime(used)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// RevokeOAuthConnection ends one of userID's grants.
+func (us *UserStore) RevokeOAuthConnection(userID, grantID string) error {
+	res, err := us.db.Exec(us.q(`UPDATE oauth_grants SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at = ''`),
+		time.Now().UTC().Format(time.RFC3339), grantID, userID)
+	return oneRow(res, err, errOAuthConnectionNotFound)
+}
+
+var errOAuthConnectionNotFound = errors.New("no such connection")
+
+// connectionOwner is the person whose connections a caller manages: a
+// person, never an agent (an agent acting through a connection must not
+// be able to see or end the others).
+func connectionOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	claims, _ := r.Context().Value("claims").(*jwt.MapClaims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "sign in to manage your connected apps")
+		return "", false
+	}
+	if isAgentClaims(claims) {
+		writeError(w, http.StatusForbidden, "an agent cannot manage connected apps; a person does")
+		return "", false
+	}
+	userID, _ := (*claims)["sub"].(string)
+	return userID, userID != ""
+}
+
+// oauthConnections serves GET /api/oauth/connections: the caller's
+// connected apps.
+func oauthConnections(us *UserStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := connectionOwner(w, r)
+		if !ok {
+			return
+		}
+		list, err := us.ListOAuthConnections(userID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list your connected apps")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"connections": list})
+	}
+}
+
+// oauthDisconnect serves DELETE /api/oauth/connections/{id}: the app's
+// tokens stop working at once.
+func oauthDisconnect(us *UserStore) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		userID, ok := connectionOwner(w, r)
+		if !ok {
+			return
+		}
+		id := chi.URLParam(r, "id")
+		if err := us.RevokeOAuthConnection(userID, id); err != nil {
+			if errors.Is(err, errOAuthConnectionNotFound) {
+				writeError(w, http.StatusNotFound, "no such connection")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "could not disconnect the app")
+			return
+		}
+		AuditLog(r, "oauth_disconnect", "oauth_grant", id, nil, nil)
+		writeJSON(w, http.StatusOK, map[string]any{"disconnected": true})
 	}
 }

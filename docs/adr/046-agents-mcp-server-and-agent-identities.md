@@ -320,7 +320,16 @@ Phases, each usable on its own:
   the person who approved it, resolved on each request like an agent
   token, and stops when they are disabled. The approval is a JSON-only
   authenticated call, so a cross-site form cannot make a signed-in browser
-  approve; agents cannot approve. Deferred to 5b: choosing one of your
-  agents as the connection's identity, and a page listing connections to
-  revoke.
+  approve; agents cannot approve.
+- **Phase 5b** (`api/oauth.go`, `ConnectedApps` in `@brokoli/auth`,
+  Settings, Connected apps): the approval can name one of the approver's
+  enabled agents (`agent_id`); the code and the grant carry it, and the
+  access token then resolves to that agent's claims, built by the same
+  `agentClaims` as its own tokens, with the approver as owner. Every
+  request and every refresh re-checks that the agent is enabled and still
+  the approver's; disabling it also revokes its grants. A person lists
+  their live grants and revokes one (`/api/oauth/connections`); an agent
+  is refused both, so a connection cannot see or end the others. Each
+  guard was observed failing under mutation, including the two that back
+  each other up (revocation on disable, re-check on resolve).
 

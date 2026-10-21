@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
-import { oauthApi } from '@brokoli/api'
+import { oauthApi, type OAuthRequestInfo } from '@brokoli/api'
 import {
   Brand,
   Button,
@@ -18,14 +18,16 @@ import './login.css'
 /*
  * Connecting an MCP client with OAuth (ADR-046 phase 5): a client such as a
  * chat assistant's connector sent the person here to approve it. Approving
- * lets it act as them, with their permissions, until they revoke it; the
- * browser then goes back to the client with a one-time code.
+ * lets it act as them, or as one of their agents, until they revoke it;
+ * the browser then goes back to the client with a one-time code.
  */
 export function OAuthConsentPage() {
   const session = useSession()
   const { search } = useLocation()
   const { theme, toggle } = useTheme()
-  const [info, setInfo] = useState<{ client_name: string; redirect_host: string } | null>(null)
+  const [info, setInfo] = useState<OAuthRequestInfo | null>(null)
+  // '' is the person themselves; otherwise one of their agents' ids.
+  const [agentId, setAgentId] = useState('')
   const [error, setError] = useState('')
   const [busy, setBusy] = useState<null | 'approve' | 'deny'>(null)
 
@@ -39,7 +41,7 @@ export function OAuthConsentPage() {
   const decide = async (approve: boolean) => {
     setBusy(approve ? 'approve' : 'deny')
     try {
-      const res = await oauthApi.decide(search, approve)
+      const res = await oauthApi.decide(search, approve, approve ? agentId : '')
       window.location.assign(res.redirect)
     } catch (e) {
       setError(errorMessage(e))
@@ -48,6 +50,7 @@ export function OAuthConsentPage() {
   }
 
   const who = session.user?.display_name || session.user?.username || 'you'
+  const agent = info?.agents?.find((a) => a.id === agentId)
   return (
     <main className="bk-login bk-login-single">
       <section className="bk-login-panel">
@@ -81,16 +84,59 @@ export function OAuthConsentPage() {
             <Skeleton height={140} />
           ) : (
             <>
-              <p>
-                <strong>{info.client_name}</strong> will act as <strong>{who}</strong> in Brokoli,
-                with your permissions: it can see the pipelines, runs and lineage you can, and do
-                what your role allows, such as running pipelines and proposing changes. What it does
-                is recorded under your name.
-              </p>
+              {(info.agents?.length ?? 0) > 0 && (
+                <fieldset className="bk-consent-identity">
+                  <legend>Connect as</legend>
+                  <label className={agentId === '' ? 'is-selected' : undefined}>
+                    <input
+                      type="radio"
+                      name="identity"
+                      checked={agentId === ''}
+                      onChange={() => setAgentId('')}
+                    />
+                    <span>
+                      <strong>{who}</strong>
+                      <span className="bk-muted">Yourself, with your role</span>
+                    </span>
+                  </label>
+                  {info.agents.map((a) => (
+                    <label key={a.id} className={agentId === a.id ? 'is-selected' : undefined}>
+                      <input
+                        type="radio"
+                        name="identity"
+                        checked={agentId === a.id}
+                        onChange={() => setAgentId(a.id)}
+                      />
+                      <span>
+                        <strong className="bk-mono">{a.name}</strong>
+                        <span className="bk-muted">
+                          Your agent{a.role ? `, ${a.role}` : ''}
+                          {a.description ? `: ${a.description}` : ''}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </fieldset>
+              )}
+              {agent ? (
+                <p>
+                  <strong>{info.client_name}</strong> will act as your agent{' '}
+                  <strong className="bk-mono">{agent.name}</strong>, with its role and never more
+                  than yours. What it does is recorded under the agent's name, with you answering
+                  for it. Disabling the agent ends the connection.
+                </p>
+              ) : (
+                <p>
+                  <strong>{info.client_name}</strong> will act as <strong>{who}</strong> in Brokoli,
+                  with your permissions: it can see the pipelines, runs and lineage you can, and do
+                  what your role allows, such as running pipelines and proposing changes. What it
+                  does is recorded under your name.
+                </p>
+              )}
               <p className="bk-muted">
                 Approving sends you back to <span className="bk-mono">{info.redirect_host}</span>.
-                The connection lasts until you revoke it; its access is renewed every hour while it
-                is in use.
+                The connection lasts until you disconnect it in Settings, under Connected apps; its
+                access is renewed every hour while it is in use.
               </p>
               <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
                 <Button

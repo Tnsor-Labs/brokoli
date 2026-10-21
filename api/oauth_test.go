@@ -183,3 +183,154 @@ func TestAnMCPClientConnectsWithOAuth(t *testing.T) {
 		t.Fatalf("a revoked token still works: %d", code)
 	}
 }
+
+// connect registers a client and runs the whole flow as person token,
+// approving as agentID when it is set; it returns the issued tokens.
+func (b *agentBed) connect(name, token, agentID string) (clientID string, tokens map[string]any) {
+	b.t.Helper()
+	// Registered through the store: the endpoint's rate limit is not
+	// what these tests are about.
+	client, err := b.users.RegisterOAuthClient(name, []string{"http://localhost:3333/cb"})
+	if err != nil {
+		b.t.Fatal(err)
+	}
+	clientID = client.ID
+	verifier := "a-verifier-that-is-long-enough-to-be-a-real-pkce-verifier-0123"
+	query := url.Values{"response_type": {"code"}, "client_id": {clientID}, "redirect_uri": {"http://localhost:3333/cb"},
+		"code_challenge": {pkceS256(verifier)}, "code_challenge_method": {"S256"}, "state": {"s"}}
+	body, _ := json.Marshal(map[string]any{"query": query.Encode(), "approve": true, "agent_id": agentID})
+	code, res, raw := b.do(http.MethodPost, "/api/oauth/authorize", token, string(body))
+	if code != http.StatusOK {
+		b.t.Fatalf("approve: %d %s", code, raw)
+	}
+	u, _ := url.Parse(res["redirect"].(string))
+	code, tokens = b.form("/oauth/token", url.Values{"grant_type": {"authorization_code"}, "code": {u.Query().Get("code")},
+		"client_id": {clientID}, "redirect_uri": {"http://localhost:3333/cb"}, "code_verifier": {verifier}})
+	if code != http.StatusOK {
+		b.t.Fatalf("token: %d %v", code, tokens)
+	}
+	return clientID, tokens
+}
+
+func TestAnOAuthConnectionActsAsYourAgent(t *testing.T) {
+	b := newAgentBed(t)
+	adaBot, _ := b.agent("ada-bot", "viewer", "ada", "ada", false)
+	eveBot, _ := b.agent("eve-bot", "", "eve", "ada", false)
+
+	// The approval page offers the person's own enabled agents only.
+	_, client, _ := b.do(http.MethodPost, "/oauth/register", "", `{"client_name":"Claude","redirect_uris":["http://localhost:3333/cb"]}`)
+	query := url.Values{"response_type": {"code"}, "client_id": {client["client_id"].(string)}, "redirect_uri": {"http://localhost:3333/cb"},
+		"code_challenge": {pkceS256("x")}, "code_challenge_method": {"S256"}}
+	_, info, raw := b.do(http.MethodGet, "/api/oauth/authorize?"+query.Encode(), b.tokens["ada"], "")
+	agents, _ := info["agents"].([]any)
+	if len(agents) != 1 || agents[0].(map[string]any)["name"] != "ada-bot" {
+		t.Fatalf("ada's identities = %s", raw)
+	}
+
+	// Someone else's agent cannot be chosen.
+	body, _ := json.Marshal(map[string]any{"query": query.Encode(), "approve": true, "agent_id": eveBot})
+	if code, _, raw := b.do(http.MethodPost, "/api/oauth/authorize", b.tokens["ada"], string(body)); code != http.StatusForbidden {
+		t.Fatalf("ada connected as eve's agent: %d %s", code, raw)
+	}
+
+	// Connected as ada-bot, the token is the agent: its name, its role,
+	// answered for by ada.
+	clientID, tokens := b.connect("Claude", b.tokens["ada"], adaBot)
+	access := tokens["access_token"].(string)
+	code, me, raw := b.do(http.MethodGet, "/api/auth/me", access, "")
+	if code != http.StatusOK || me["username"] != "ada-bot" {
+		t.Fatalf("me as the agent: %d %s", code, raw)
+	}
+	perms := b.permissions(access)
+	for _, p := range perms {
+		if p == "pipelines.edit" || p == "settings.manage_users" {
+			t.Fatalf("the viewer agent holds %s over OAuth: %v", p, perms)
+		}
+	}
+	if len(perms) == 0 {
+		t.Fatal("the agent connection has no permissions at all")
+	}
+	// An agent cannot manage connections, even through one.
+	if code, _, _ := b.do(http.MethodGet, "/api/oauth/connections", access, ""); code != http.StatusForbidden {
+		t.Fatalf("the agent listed connections: %d", code)
+	}
+
+	// Every request re-checks the agent: handed to someone else, it no
+	// longer acts for ada's connection.
+	if _, err := b.users.db.Exec(b.users.q(`UPDATE users SET owner_id = ? WHERE id = ?`), b.ids["eve"], adaBot); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", access, ""); code != http.StatusUnauthorized {
+		t.Fatalf("the connection still acts as an agent ada no longer owns: %d", code)
+	}
+	if _, err := b.users.db.Exec(b.users.q(`UPDATE users SET owner_id = ? WHERE id = ?`), b.ids["ada"], adaBot); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", access, ""); code != http.StatusOK {
+		t.Fatalf("back with ada: %d", code)
+	}
+
+	// Disabling the agent ends the connection and its refresh.
+	if code, _, raw := b.do(http.MethodDelete, "/api/agents/"+adaBot, b.tokens["ada"], ""); code != http.StatusOK && code != http.StatusNoContent {
+		t.Fatalf("disable: %d %s", code, raw)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", access, ""); code != http.StatusUnauthorized {
+		t.Fatalf("a disabled agent's connection still works: %d", code)
+	}
+	if code, _ := b.form("/oauth/token", url.Values{"grant_type": {"refresh_token"}, "refresh_token": {tokens["refresh_token"].(string)},
+		"client_id": {clientID}}); code == http.StatusOK {
+		t.Fatal("a disabled agent's connection refreshed")
+	}
+}
+
+func TestConnectedAppsAreListedAndDisconnected(t *testing.T) {
+	b := newAgentBed(t)
+	bot, _ := b.agent("ada-bot", "", "ada", "ada", false)
+	_, mine := b.connect("Claude", b.tokens["ada"], "")
+	_, asBot := b.connect("Cursor", b.tokens["ada"], bot)
+	b.connect("Other", b.tokens["eve"], "")
+
+	code, res, raw := b.do(http.MethodGet, "/api/oauth/connections", b.tokens["ada"], "")
+	list, _ := res["connections"].([]any)
+	if code != http.StatusOK || len(list) != 2 {
+		t.Fatalf("ada's connections: %d %s", code, raw)
+	}
+	byName := map[string]map[string]any{}
+	for _, c := range list {
+		byName[c.(map[string]any)["client_name"].(string)] = c.(map[string]any)
+	}
+	if byName["Cursor"]["agent_name"] != "ada-bot" || byName["Claude"]["agent_name"] != nil {
+		t.Fatalf("identities in the list: %s", raw)
+	}
+
+	// Eve cannot end ada's connection; ada can, and its tokens stop.
+	id := byName["Claude"]["id"].(string)
+	if code, _, _ := b.do(http.MethodDelete, "/api/oauth/connections/"+id, b.tokens["eve"], ""); code != http.StatusNotFound {
+		t.Fatalf("eve disconnected ada's app: %d", code)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", mine["access_token"].(string), ""); code != http.StatusOK {
+		t.Fatalf("ada's app stopped after eve's attempt: %d", code)
+	}
+	if code, _, raw := b.do(http.MethodDelete, "/api/oauth/connections/"+id, b.tokens["ada"], ""); code != http.StatusOK {
+		t.Fatalf("disconnect: %d %s", code, raw)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", mine["access_token"].(string), ""); code != http.StatusUnauthorized {
+		t.Fatalf("a disconnected app still works: %d", code)
+	}
+	if code, _, _ := b.do(http.MethodGet, "/api/auth/me", asBot["access_token"].(string), ""); code != http.StatusOK {
+		t.Fatalf("disconnecting one app stopped another: %d", code)
+	}
+	_, res, _ = b.do(http.MethodGet, "/api/oauth/connections", b.tokens["ada"], "")
+	if list, _ := res["connections"].([]any); len(list) != 1 {
+		t.Fatalf("after disconnecting: %v", res)
+	}
+
+	// Disabling the agent ends the connections made as it.
+	if code, _, raw := b.do(http.MethodDelete, "/api/agents/"+bot, b.tokens["ada"], ""); code != http.StatusNoContent {
+		t.Fatalf("disable: %d %s", code, raw)
+	}
+	_, res, _ = b.do(http.MethodGet, "/api/oauth/connections", b.tokens["ada"], "")
+	if list, _ := res["connections"].([]any); len(list) != 0 {
+		t.Fatalf("a disabled agent's connection is still listed: %v", res)
+	}
+}

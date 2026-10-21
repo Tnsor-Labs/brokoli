@@ -122,6 +122,8 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		r.Post("/oauth/revoke", oauthRevoke(userStore))
 		r.Get("/api/oauth/authorize", oauthRequestInfo(userStore))
 		r.Post("/api/oauth/authorize", oauthDecide(userStore))
+		r.Get("/api/oauth/connections", oauthConnections(userStore))
+		r.Delete("/api/oauth/connections/{id}", oauthDisconnect(userStore))
 		r.Post("/api/auth/session", func(w http.ResponseWriter, req *http.Request) {
 			authHeader := req.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {

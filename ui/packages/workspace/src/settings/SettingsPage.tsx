@@ -2,17 +2,19 @@ import { useSearchParams } from 'react-router-dom'
 import { Page, PageHeader, Tabs } from '@brokoli/ui'
 import { AccountTab } from './AccountTab'
 import { ApiTab } from './ApiTab'
+import { AppsTab } from './AppsTab'
 import { GeneralTab } from './GeneralTab'
 import { NotificationsTab } from './NotificationsTab'
 import { UsersTab } from './UsersTab'
 import '../workspace.css'
 
-type Tab = 'general' | 'users' | 'account' | 'notifications' | 'api'
+type Tab = 'general' | 'users' | 'account' | 'notifications' | 'apps' | 'api'
 const TABS: { id: Tab; label: string }[] = [
   { id: 'general', label: 'General' },
   { id: 'users', label: 'Users' },
   { id: 'account', label: 'Your account' },
   { id: 'notifications', label: 'Notifications' },
+  { id: 'apps', label: 'Connected apps' },
   { id: 'api', label: 'API and CLI' },
 ]
 
@@ -23,13 +25,14 @@ export function SettingsPage({ initialTab }: { initialTab?: Tab }) {
   const tab = TABS.some((t) => t.id === requested) ? requested! : (initialTab ?? 'general')
   return (
     <Page>
-      <PageHeader eyebrow="Server" title="Settings" description="Server status and maintenance, people, notifications and the API." />
+      <PageHeader eyebrow="Server" title="Settings" description="Server status and maintenance, people, notifications, connected apps and the API." />
       <Tabs label="Settings sections" items={TABS} value={tab} onChange={(id) => setParams({ tab: id }, { replace: true })} />
       <div className="ws-tab-body">
         {tab === 'general' && <GeneralTab />}
         {tab === 'users' && <UsersTab />}
         {tab === 'account' && <AccountTab />}
         {tab === 'notifications' && <NotificationsTab />}
+        {tab === 'apps' && <AppsTab />}
         {tab === 'api' && <ApiTab />}
       </div>
     </Page>
