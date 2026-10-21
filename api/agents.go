@@ -146,7 +146,7 @@ func parseStoredTime(s string) *time.Time {
 }
 
 // CreateAgent makes an agent owned by ownerID, its name unique within
-// scope ('' is the whole server).
+// scope (” is the whole server).
 //
 // The name is the agent's display name. Its username is an internal
 // handle, agent-<id>: usernames are unique across the server, and an
@@ -177,7 +177,7 @@ func (us *UserStore) CreateAgent(name, description, role, ownerID, scope string)
 
 // agentNameTaken reports whether an agent in scope, enabled or disabled,
 // already has name. A disabled agent keeps its name, so what it did stays
-// unambiguous. On the whole server ('' scope) a person's username is
+// unambiguous. On the whole server (” scope) a person's username is
 // taken too, so an agent never reads as a person there.
 func (us *UserStore) agentNameTaken(name, scope string) (bool, error) {
 	var n int
