@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Navigate, Outlet, RouterProvider, createHashRouter, useRouteError } from 'react-router-dom'
 import { HomePage } from './home/HomePage'
-import { LoginRoute, RequireAuth, SessionProvider } from '@brokoli/auth'
+import { LoginRoute, OAuthConsentPage, RequireAuth, SessionProvider } from '@brokoli/auth'
 import { observeRoutes } from '@brokoli/observe'
 import { pipelineRoutes } from '@brokoli/pipelines'
 import { ErrorScreen, NotMigrated, ToastProvider } from '@brokoli/ui'
@@ -29,6 +29,8 @@ const router = createHashRouter([
       {
         element: <RequireAuth />,
         children: [
+          // Approving an MCP client's connection (OAuth), outside the shell.
+          { path: '/oauth/authorize', element: <OAuthConsentPage /> },
           {
             element: <Shell />,
             children: [

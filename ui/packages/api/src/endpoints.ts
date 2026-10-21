@@ -107,6 +107,16 @@ export async function resolveWorkspace(userId: string, hintIsFresh = false): Pro
   return list
 }
 
+/** OAuth for MCP clients (ADR-046 phase 5): the approval page's two calls. */
+export const oauthApi = {
+  /** What is asking: the client's name and where it sends the browser back. */
+  request: (query: string) =>
+    request<{ client_name: string; redirect_host: string; scope: string }>(`/oauth/authorize?${query.replace(/^\?/, '')}`, { retries: 0 }),
+  /** Approve or deny; answers where to send the browser. */
+  decide: (query: string, approve: boolean) =>
+    request<{ redirect: string }>('/oauth/authorize', { json: { query: query.replace(/^\?/, ''), approve }, retries: 0 }),
+}
+
 export const authApi = {
   setup: () => request<{ needs_setup: boolean }>('/auth/setup', { retries: 1, allowUnauthorized: true }),
   methods: () => request<AuthMethods>('/auth/methods', { retries: 1, allowUnauthorized: true }),

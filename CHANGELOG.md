@@ -13,6 +13,15 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Connect an MCP client with OAuth** (ADR-046 phase 5) -- @hc12r. A
+  hosted client that speaks the MCP authorization specification connects
+  to `/api/mcp` with only its URL: it discovers the authorization server
+  (`/.well-known/oauth-protected-resource`, `/.well-known/oauth-authorization-server`),
+  registers itself, and sends the person to Brokoli's approval page; the
+  person approves and the client gets tokens. PKCE (S256) is required;
+  access tokens last an hour and are renewed with rotating refresh tokens;
+  a connection acts as the person who approved it and can be revoked.
+  `BROKOLI_PUBLIC_URL` names the server's public address for discovery.
 - **`api.SetChangeRequestDelivery`** -- @hc12r. A distribution that
   delivers a change request elsewhere (a pull request opened after the
   request is recorded) records where it went once it knows; only an open

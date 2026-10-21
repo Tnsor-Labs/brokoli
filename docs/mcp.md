@@ -20,7 +20,7 @@ phase.
 | | For | Where it runs | Credential |
 |---|---|---|---|
 | **stdio**: `brokoli mcp` | an agent client on your machine | a process your client starts | what `brokoli login` stored, or `--api-key` / `BROKOLI_TOKEN` |
-| **HTTP**: `POST /api/mcp` | a hosted agent, or a client that speaks Streamable HTTP | the Brokoli server itself | a bearer token, like any API request |
+| **HTTP**: `POST /api/mcp` | a hosted agent, or a client that speaks Streamable HTTP | the Brokoli server itself | a bearer token, like any API request, or OAuth (below) |
 
 Both serve the same tools with the same rules.
 
@@ -71,7 +71,55 @@ The endpoint is the MCP Streamable HTTP transport in its stateless form:
 every request stands alone (no `Mcp-Session-Id`), answers are JSON, and
 any API instance can answer any request. `GET` and `DELETE` answer 405.
 Without a valid credential the request is refused with 401 before any MCP
-processing, like every `/api` path.
+processing, like every `/api` path; the 401 carries
+`WWW-Authenticate: Bearer resource_metadata="<server>/.well-known/oauth-protected-resource"`,
+which is how an OAuth-capable client finds where to sign in.
+
+### HTTP with OAuth, from a hosted client
+
+A client that supports the MCP authorization specification (a chat
+assistant's connector, say) needs only the endpoint's URL: it discovers
+the rest, registers itself, and sends you to Brokoli to approve it. No
+token is pasted anywhere.
+
+1. Add `https://brokoli.example.com/api/mcp` to the client as a remote MCP
+   server.
+2. The client opens Brokoli's approval page. Sign in if you are not, read
+   what is asking and where it will send you back, and **Approve**.
+3. The client receives a one-time code and trades it for its tokens.
+
+What it gets:
+
+- **It acts as you**, with your permissions as they are on each request,
+  in your default workspace (or the one it names with `X-Workspace-ID`).
+  What it does is recorded under your name. Only a person can approve a
+  connection; an agent's token cannot.
+- **Short-lived access, renewed.** An access token (`bko_...`) lasts an
+  hour; the client renews it with a refresh token (`bkr_...`), which lasts
+  30 days and is replaced each time it is used. Presenting a refresh token
+  that was already used ends the connection, since only a stolen copy
+  would do that.
+- **Revocable.** The client can revoke it (`POST /oauth/revoke`); a person
+  who is disabled or removed takes all their connections with them.
+
+The client's name on the approval page is the one it registered with: it
+is the client's own claim, so check where it sends you back (shown on the
+page) before approving.
+
+For a deployment behind a proxy, set `BROKOLI_PUBLIC_URL` to the address
+clients use (`https://brokoli.example.com`) so the discovery documents
+name it rather than the address the request arrived on.
+
+The endpoints, for reference:
+
+| | |
+|---|---|
+| `GET /.well-known/oauth-protected-resource` | the resource (`/api/mcp`) and its authorization server (RFC 9728) |
+| `GET /.well-known/oauth-authorization-server` | the endpoints below (RFC 8414) |
+| `POST /oauth/register` | dynamic client registration (RFC 7591); public clients only (`token_endpoint_auth_method: none`), redirect URIs https or http to localhost |
+| `GET /oauth/authorize` | `response_type=code`, PKCE with `code_challenge_method=S256` required; sends the browser to the approval page |
+| `POST /oauth/token` | `grant_type=authorization_code` (with `code_verifier`) or `refresh_token`, form-encoded |
+| `POST /oauth/revoke` | ends the connection a token belongs to (RFC 7009) |
 
 ## The tools
 

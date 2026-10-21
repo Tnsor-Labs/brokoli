@@ -309,3 +309,18 @@ Phases, each usable on its own:
   request's test, which does, is started by a person. Previews run in a
   scratch store, write nothing and stop their sources at the rows they
   keep. The tool-registration extension point shipped with phase 1.
+- **Phase 5a** (`api/oauth.go`, `OAuthConsentPage` in `@brokoli/auth`,
+  docs/mcp.md): Brokoli is the authorization server and the protected
+  resource. Discovery (RFC 9728, RFC 8414), the 401's `WWW-Authenticate`
+  on `/api/mcp`, dynamic registration of public clients only (RFC 7591;
+  https or loopback redirects), the authorization code grant with PKCE
+  S256 required, refresh with rotation (a replayed refresh token ends the
+  grant), revocation (RFC 7009). Tokens are opaque and stored hashed:
+  `bko_` access for an hour, `bkr_` refresh for 30 days. A grant acts as
+  the person who approved it, resolved on each request like an agent
+  token, and stops when they are disabled. The approval is a JSON-only
+  authenticated call, so a cross-site form cannot make a signed-in browser
+  approve; agents cannot approve. Deferred to 5b: choosing one of your
+  agents as the connection's identity, and a page listing connections to
+  revoke.
+

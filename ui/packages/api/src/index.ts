@@ -19,6 +19,7 @@ export {
 export type { Query, RequestOptions } from './client'
 export {
   authApi,
+  oauthApi,
   claimsToUser,
   connectionApi,
   driverApi,

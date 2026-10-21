@@ -164,7 +164,11 @@ func NewUserStore(db *sql.DB) (*UserStore, error) {
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN email TEXT NOT NULL DEFAULT ''`)
 		_, _ = db.Exec(`ALTER TABLE users ADD COLUMN avatar_url TEXT NOT NULL DEFAULT ''`)
 		// Agent identities (ADR-046): agents are users of kind "agent".
-		return us.migrateAgents()
+		if err := us.migrateAgents(); err != nil {
+			return err
+		}
+		// OAuth for MCP clients (ADR-046 phase 5).
+		return us.migrateOAuth()
 	}
 	// Every process creates this table at startup; on Postgres they take
 	// turns under the store's migration lock rather than racing on the
@@ -995,6 +999,11 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 							claims, parseErr = agentClaims, nil
 						}
 					}
+					if strings.HasPrefix(token, OAuthAccessTokenPrefix) {
+						if oauthClaims, ok := us.ResolveOAuthToken(token); ok {
+							claims, parseErr = oauthClaims, nil
+						}
+					}
 					if parseErr != nil && BearerTokenResolverFunc != nil {
 						if resolved, ok := BearerTokenResolverFunc(token); ok && resolved != nil {
 							claims, parseErr = resolved, nil
@@ -1031,6 +1040,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				if cookie, err := r.Cookie("brokoli_session"); err == nil && cookie.Value != "" {
 					authHeader = "Bearer " + cookie.Value
 				} else {
+					oauthAuthenticate(w, r)
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "authentication required"})
 					return
 				}
@@ -1052,6 +1062,21 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 				next.ServeHTTP(w, r.WithContext(ctx))
 				return
 			}
+			// So is an OAuth access token (ADR-046 phase 5).
+			if strings.HasPrefix(bearer, OAuthAccessTokenPrefix) {
+				oauthClaims, ok := us.ResolveOAuthToken(bearer)
+				if !ok {
+					oauthAuthenticate(w, r)
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid, expired or revoked access token"})
+					return
+				}
+				ctx := contextWithClaims(r.Context(), oauthClaims)
+				if orgID, _ := (*oauthClaims)["org_id"].(string); orgID != "" {
+					ctx = context.WithValue(ctx, OrgIDContextKey{}, orgID)
+				}
+				next.ServeHTTP(w, r.WithContext(ctx))
+				return
+			}
 			claims, err := ParseToken(bearer)
 			if err != nil {
 				if BearerTokenResolverFunc != nil {
@@ -1060,6 +1085,7 @@ func JWTAuth(us *UserStore) func(http.Handler) http.Handler {
 					}
 				}
 				if err != nil {
+					oauthAuthenticate(w, r)
 					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 					return
 				}

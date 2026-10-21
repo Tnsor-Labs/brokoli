@@ -110,6 +110,18 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		})
 		// Self-service signup is registered by enterprise platform provider
 		r.Get("/api/auth/me", MeHandler(s))
+		// OAuth for MCP clients (ADR-046 phase 5): discovery and the
+		// authorization server's endpoints sit outside /api (no session);
+		// the approval itself is an authenticated API call.
+		r.Get("/.well-known/oauth-protected-resource", oauthProtectedResource)
+		r.Get("/.well-known/oauth-protected-resource/api/mcp", oauthProtectedResource)
+		r.Get("/.well-known/oauth-authorization-server", oauthAuthorizationServer)
+		r.With(RateLimiter(2)).Post("/oauth/register", oauthRegister(userStore))
+		r.Get("/oauth/authorize", oauthAuthorize(userStore))
+		r.With(RateLimiter(10)).Post("/oauth/token", oauthToken(userStore))
+		r.Post("/oauth/revoke", oauthRevoke(userStore))
+		r.Get("/api/oauth/authorize", oauthRequestInfo(userStore))
+		r.Post("/api/oauth/authorize", oauthDecide(userStore))
 		r.Post("/api/auth/session", func(w http.ResponseWriter, req *http.Request) {
 			authHeader := req.Header.Get("Authorization")
 			if !strings.HasPrefix(authHeader, "Bearer ") {
