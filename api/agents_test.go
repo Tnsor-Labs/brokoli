@@ -390,11 +390,11 @@ func TestAgentStoreOnBothDialects(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		a, err := us.CreateAgent("bot-"+suffix, "d", AgentRole, owner.ID)
+		a, err := us.CreateAgent("bot-"+suffix, "d", AgentRole, owner.ID, "")
 		if err != nil || a.OwnerName != owner.Username || a.Role != AgentRole || a.Disabled || a.LastUsedAt != nil {
 			t.Fatalf("create = %+v, %v", a, err)
 		}
-		if _, err := us.CreateAgent("bot-"+suffix, "", AgentRole, owner.ID); !errors.Is(err, ErrUserExists) {
+		if _, err := us.CreateAgent("bot-"+suffix, "", AgentRole, owner.ID, ""); !errors.Is(err, ErrUserExists) {
 			t.Fatalf("a second agent of that name: %v", err)
 		}
 		if _, err := us.Authenticate("bot-"+suffix, "!"); err == nil {
@@ -515,11 +515,23 @@ func TestAgentHooks(t *testing.T) {
 	if code, _, raw := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"over-limit"}`); code != http.StatusPaymentRequired || !strings.Contains(raw, "1 agent") {
 		t.Fatalf("refused creation: %d %s", code, raw)
 	}
-	if a, err := b.users.GetAgent(b.agentID("over-limit")); err != nil || !a.Disabled {
-		t.Fatalf("a refused agent stays enabled: %+v %v", a, err)
+	// A refused agent is not kept: nothing remains to act, and its name is
+	// free again.
+	if all, _ := b.users.ListAgents(""); func() bool {
+		for _, a := range all {
+			if a.Name == "over-limit" {
+				return true
+			}
+		}
+		return false
+	}() {
+		t.Fatal("a refused agent was kept")
+	}
+	if taken, _ := b.users.agentNameTaken("over-limit", ""); taken {
+		t.Fatal("a refused agent's name stays taken")
 	}
 	// Another organization's agent, as the store would hold it.
-	elsewhere, err := b.users.CreateAgent("elsewhere", "", AgentRole, b.ids["ada"])
+	elsewhere, err := b.users.CreateAgent("elsewhere", "", AgentRole, b.ids["ada"], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,5 +647,64 @@ func TestAnAgentRunsAPipelineOverMCP(t *testing.T) {
 	res, text = callTool(t, cs, "trigger_run", map[string]any{"pipeline": "p-run"})
 	if res == nil || res["run_id"] == "" || res["status"] != "pending" {
 		t.Fatalf("trigger_run without wait = %s", text)
+	}
+}
+
+func TestAgentNamesAreUniquePerScope(t *testing.T) {
+	b := newAgentBed(t)
+	prev := AgentHooks
+	t.Cleanup(func() { AgentHooks = prev })
+	scope := "org-a"
+	AgentHooks.Scope = func(*http.Request) string { return scope }
+
+	// One organization's triage-bot does not stop another's, and each is
+	// called triage-bot.
+	a, _ := b.agent("triage-bot", "", "ada", "ada", false)
+	if code, _, raw := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"triage-bot"}`); code != http.StatusConflict || !strings.Contains(raw, "an agent named triage-bot") {
+		t.Fatalf("a second triage-bot in the same scope: %d %s", code, raw)
+	}
+	scope = "org-b"
+	other, _ := b.agent("triage-bot", "", "ada", "ada", false)
+	if a == other {
+		t.Fatal("the same agent twice")
+	}
+	for _, id := range []string{a, other} {
+		got, err := b.users.GetAgent(id)
+		if err != nil || got.Name != "triage-bot" {
+			t.Fatalf("agent %s: %+v %v", id, got, err)
+		}
+	}
+
+	// A disabled agent keeps its name in its scope.
+	if code, _, _ := b.do(http.MethodDelete, "/api/agents/"+other, b.tokens["ada"], ""); code != http.StatusNoContent {
+		t.Fatalf("disable: %d", code)
+	}
+	if code, _, _ := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"triage-bot"}`); code != http.StatusConflict {
+		t.Fatalf("a disabled agent's name was reused: %d", code)
+	}
+
+	// On the whole server, a person's username is taken too.
+	scope = ""
+	if code, _, raw := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"eve"}`); code != http.StatusConflict {
+		t.Fatalf("an agent named like a person: %d %s", code, raw)
+	}
+}
+
+func TestAnAgentMadeBeforeScopedNamesKeepsItsName(t *testing.T) {
+	b := newAgentBed(t)
+	id, token := b.agent("old-bot", "", "ada", "ada", false)
+	// As an agent made before scoped names was stored: its username is its
+	// name, no display name.
+	if _, err := b.users.db.Exec(b.users.q(`UPDATE users SET username = 'old-bot', display_name = '' WHERE id = ?`), id); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := b.users.GetAgent(id); err != nil || got.Name != "old-bot" {
+		t.Fatalf("legacy agent: %+v %v", got, err)
+	}
+	if code, me, raw := b.do(http.MethodGet, "/api/auth/me", token, ""); code != http.StatusOK || me["username"] != "old-bot" {
+		t.Fatalf("legacy agent's token: %d %s", code, raw)
+	}
+	if code, _, _ := b.do(http.MethodPost, "/api/agents", b.tokens["ada"], `{"name":"old-bot"}`); code != http.StatusConflict {
+		t.Fatalf("a legacy agent's name was reused: %d", code)
 	}
 }

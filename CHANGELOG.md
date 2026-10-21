@@ -188,6 +188,17 @@ reconstruct from git archaeology.
   waiting for the outcome, say) could get 404. The run is now recorded
   before the id is handed out, as the job-queue path already did.
 
+- **An agent's name is unique where it is seen, not across the server**
+  -- @hc12r. Agent names were usernames, unique server-wide, so a
+  distribution with organizations refused a second organization's
+  `triage-bot` ("an account named triage-bot exists already"), telling it
+  that another tenant had one. A new agent's name is now its display name,
+  unique within a scope a distribution sets (`AgentHooks.Scope`; the whole
+  server by default, where people's usernames are taken too), and its
+  username is an internal `agent-<id>`. Existing agents keep their names.
+  An agent refused by `AgentHooks.Created` is deleted instead of disabled,
+  so its name is not lost for good.
+
 - **A preview read every row of its sources to keep ten** -- @hc12r. The
   editor's Preview and a change request's test held a whole source in the
   server's memory: previewing a pipeline over millions of rows took as

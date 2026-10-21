@@ -107,6 +107,9 @@ func (us *UserStore) migrateAgents() error {
 	_, _ = us.db.Exec(`ALTER TABLE users ADD COLUMN owner_id TEXT NOT NULL DEFAULT ''`)
 	_, _ = us.db.Exec(`ALTER TABLE users ADD COLUMN description TEXT NOT NULL DEFAULT ''`)
 	_, _ = us.db.Exec(`ALTER TABLE users ADD COLUMN disabled_at TEXT NOT NULL DEFAULT ''`)
+	// Where an agent's name is unique (AgentHooks.Scope): '' is the whole
+	// server; a distribution with organizations scopes names to one.
+	_, _ = us.db.Exec(`ALTER TABLE users ADD COLUMN agent_scope TEXT NOT NULL DEFAULT ''`)
 	if _, err := us.db.Exec(`CREATE TABLE IF NOT EXISTS agent_tokens (
 		id TEXT PRIMARY KEY,
 		agent_id TEXT NOT NULL,
@@ -142,27 +145,67 @@ func parseStoredTime(s string) *time.Time {
 	return &t
 }
 
-// CreateAgent makes an agent owned by ownerID.
-func (us *UserStore) CreateAgent(name, description, role, ownerID string) (*Agent, error) {
+// CreateAgent makes an agent owned by ownerID, its name unique within
+// scope ('' is the whole server).
+//
+// The name is the agent's display name. Its username is an internal
+// handle, agent-<id>: usernames are unique across the server, and an
+// agent's name need only be unique where it is seen, so two
+// organizations can each have a triage-bot, and neither learns the other
+// has one. No one signs in with an agent's username.
+func (us *UserStore) CreateAgent(name, description, role, ownerID, scope string) (*Agent, error) {
 	if !agentNamePattern.MatchString(name) {
 		return nil, fmt.Errorf("an agent's name is 2 to 48 lowercase letters, digits and dashes, starting with a letter")
+	}
+	taken, err := us.agentNameTaken(name, scope)
+	if err != nil {
+		return nil, err
+	}
+	if taken {
+		return nil, ErrUserExists
 	}
 	id := generateID()
 	now := time.Now().UTC()
 	// "!" is not a bcrypt hash: no password can ever match it.
-	_, err := us.db.Exec(us.q(`INSERT INTO users (id, username, password_hash, role, created_at, kind, owner_id, description)
-		VALUES (?, ?, '!', ?, ?, ?, ?, ?)`), id, name, role, now.Format(time.RFC3339), UserKindAgent, ownerID, description)
+	_, err = us.db.Exec(us.q(`INSERT INTO users (id, username, display_name, password_hash, role, created_at, kind, owner_id, description, agent_scope)
+		VALUES (?, ?, ?, '!', ?, ?, ?, ?, ?, ?)`), id, "agent-"+id, name, role, now.Format(time.RFC3339), UserKindAgent, ownerID, description, scope)
 	if err != nil {
-		msg := strings.ToLower(err.Error())
-		if strings.Contains(msg, "unique") || strings.Contains(msg, "duplicate") {
-			return nil, ErrUserExists
-		}
 		return nil, fmt.Errorf("create agent: %w", err)
 	}
 	return us.GetAgent(id)
 }
 
-const agentColumns = `u.id, u.username, u.description, u.role, u.owner_id, COALESCE(o.username, ''), u.disabled_at, u.created_at,
+// agentNameTaken reports whether an agent in scope, enabled or disabled,
+// already has name. A disabled agent keeps its name, so what it did stays
+// unambiguous. On the whole server ('' scope) a person's username is
+// taken too, so an agent never reads as a person there.
+func (us *UserStore) agentNameTaken(name, scope string) (bool, error) {
+	var n int
+	if err := us.db.QueryRow(us.q(`SELECT COUNT(*) FROM users WHERE kind = ? AND agent_scope = ?
+		AND (display_name = ? OR (display_name = '' AND username = ?))`), UserKindAgent, scope, name, name).Scan(&n); err != nil {
+		return false, err
+	}
+	if n == 0 && scope == "" {
+		if err := us.db.QueryRow(us.q(`SELECT COUNT(*) FROM users WHERE kind <> ? AND username = ?`), UserKindAgent, name).Scan(&n); err != nil {
+			return false, err
+		}
+	}
+	return n > 0, nil
+}
+
+// discardAgent removes an agent that was refused as it was created (a
+// distribution's limit, say): it has no tokens and did nothing, and its
+// name is free again.
+func (us *UserStore) discardAgent(id string) error {
+	_, err := us.db.Exec(us.q(`DELETE FROM users WHERE id = ? AND kind = ?`), id, UserKindAgent)
+	return err
+}
+
+// agentName is an agent's name: its display name, or for an agent made
+// before names were scoped, its username.
+const agentName = `COALESCE(NULLIF(u.display_name, ''), u.username)`
+
+const agentColumns = `u.id, ` + agentName + `, u.description, u.role, u.owner_id, COALESCE(o.username, ''), u.disabled_at, u.created_at,
 	COALESCE((SELECT MAX(t.last_used_at) FROM agent_tokens t WHERE t.agent_id = u.id), '')`
 
 func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
@@ -327,7 +370,7 @@ func (us *UserStore) ResolveAgentToken(token string) (*jwt.MapClaims, bool) {
 	var agentID, agentName, agentRole, ownerID, disabled string
 	var ownerName, ownerDisplay, ownerRole, ownerKind, ownerDisabled sql.NullString
 	err := us.db.QueryRow(us.q(`SELECT t.id, t.name, t.expires_at, t.revoked_at, t.last_used_at, t.on_behalf_of,
-			a.id, a.username, a.role, a.owner_id, a.disabled_at,
+			a.id, COALESCE(NULLIF(a.display_name, ''), a.username), a.role, a.owner_id, a.disabled_at,
 			o.username, o.display_name, o.role, o.kind, o.disabled_at
 		FROM agent_tokens t
 		JOIN users a ON a.id = t.agent_id AND a.kind = 'agent'

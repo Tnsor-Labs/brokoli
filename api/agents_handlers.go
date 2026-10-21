@@ -44,6 +44,9 @@ var AgentHooks struct {
 	// owner or managing users): an agent of another organization is not
 	// there at all.
 	Visible func(r *http.Request, a *Agent) bool
+	// Scope is where a new agent's name must be unique, for the request
+	// creating it (an organization, say); unset, the whole server.
+	Scope func(r *http.Request) string
 }
 
 // AgentHookError is a hook's refusal, with the status to answer.
@@ -192,10 +195,14 @@ func (h *agentsAPI) create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "the owner must be a person with an account")
 		return
 	}
-	a, err := h.users.CreateAgent(strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), req.Role, req.OwnerID)
+	scope := ""
+	if AgentHooks.Scope != nil {
+		scope = AgentHooks.Scope(r)
+	}
+	a, err := h.users.CreateAgent(strings.TrimSpace(req.Name), strings.TrimSpace(req.Description), req.Role, req.OwnerID, scope)
 	switch {
 	case errors.Is(err, ErrUserExists):
-		writeError(w, http.StatusConflict, "an account named "+req.Name+" exists already")
+		writeError(w, http.StatusConflict, "an agent named "+req.Name+" exists already")
 		return
 	case err != nil && strings.HasPrefix(err.Error(), "an agent's name"):
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -206,7 +213,7 @@ func (h *agentsAPI) create(w http.ResponseWriter, r *http.Request) {
 	}
 	if AgentHooks.Created != nil {
 		if err := AgentHooks.Created(r, a); err != nil {
-			_ = h.users.DisableAgent(a.ID)
+			_ = h.users.discardAgent(a.ID)
 			status, msg := hookStatus(err)
 			writeError(w, status, msg)
 			return

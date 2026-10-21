@@ -736,7 +736,7 @@ type OAuthConnection struct {
 // ListOAuthConnections returns userID's live grants, newest first. A grant
 // whose refresh token has expired is not live: it can never act again.
 func (us *UserStore) ListOAuthConnections(userID string) ([]OAuthConnection, error) {
-	rows, err := us.db.Query(us.q(`SELECT g.id, g.client_id, COALESCE(c.name, ''), g.agent_id, COALESCE(a.username, ''), g.created_at, g.last_used_at, g.refresh_expires_at
+	rows, err := us.db.Query(us.q(`SELECT g.id, g.client_id, COALESCE(c.name, ''), g.agent_id, COALESCE(NULLIF(a.display_name, ''), a.username, ''), g.created_at, g.last_used_at, g.refresh_expires_at
 		FROM oauth_grants g
 		LEFT JOIN oauth_clients c ON c.id = g.client_id
 		LEFT JOIN users a ON a.id = g.agent_id AND g.agent_id <> ''

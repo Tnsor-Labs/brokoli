@@ -111,6 +111,22 @@ when its owner no longer has an account.
 
 Disabling keeps the agent, so what it did stays attributed to it.
 
+### Names
+
+An agent's name is 2 to 48 lowercase letters, digits and dashes, starting
+with a letter, and it is unique among agents, disabled ones included (a
+disabled agent keeps its name, so what it did stays unambiguous). On a
+plain server it is also unique among people's usernames, so an agent
+never reads as a person. A distribution with organizations scopes names
+to the organization (`AgentHooks.Scope`): two organizations can each have
+a `triage-bot`, and neither learns the other has one.
+
+The name is the agent's display name; its stored username is an internal
+handle (`agent-<id>`) that nobody signs in with. Agents made before names
+were scoped keep their name as their username, and keep working as they
+are. An agent refused as it is created (a plan's limit, say) is not kept,
+and its name is free again.
+
 ## The CLI
 
 ```
