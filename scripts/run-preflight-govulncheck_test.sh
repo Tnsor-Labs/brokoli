@@ -36,7 +36,24 @@ chmod +x "$work/go-offline"
 
 expect "offline install is unavailable, not a vulnerability" 2 \
   "SKIP govulncheck (tool unavailable" \
-  env PATH=/usr/bin:/bin BROKOLI_GO_BIN="$work/go-offline" bash "$script"
+  env BROKOLI_GOVULNCHECK_BIN="$work/missing-govulncheck" \
+      BROKOLI_GO_BIN="$work/go-offline" bash "$script"
+
+cat >"$work/govulncheck-wrong-version" <<'EOF'
+#!/usr/bin/env bash
+if [ "$1" = -version ]; then
+  echo 'Scanner: govulncheck@v1.7.01'
+  exit 0
+fi
+echo 'wrong-version scanner must not run' >&2
+exit 99
+EOF
+chmod +x "$work/govulncheck-wrong-version"
+
+expect "a different scanner version is rejected before scanning" 2 \
+  "SKIP govulncheck (tool unavailable" \
+  env BROKOLI_GOVULNCHECK_BIN="$work/govulncheck-wrong-version" \
+      BROKOLI_GO_BIN="$work/go-offline" bash "$script"
 
 cat >"$work/govulncheck" <<'EOF'
 #!/usr/bin/env bash
@@ -58,6 +75,22 @@ expect "a real vulnerability keeps the failing verdict" 1 \
   "FAIL     GO-2026-9999" \
   env BROKOLI_GOVULNCHECK_BIN="$work/govulncheck" \
       BROKOLI_VULN_ALLOWLIST="$work/allow.json" bash "$script"
+
+# A scan that never ran must remain a failing preflight verdict. Test the
+# small verdict helper directly so removing the failure return is caught.
+# shellcheck source=scripts/preflight-govulncheck-verdict.sh
+source scripts/preflight-govulncheck-verdict.sh
+set +e
+verdict_out=$(govulncheck_verdict 2 "$work/govulncheck.log" 2>&1)
+verdict_status=$?
+set -e
+if [ "$verdict_status" -eq 0 ] || ! grep -qF "SKIP" <<<"$verdict_out"; then
+  printf 'FAIL unavailable scan verdict: exit %s, expected nonzero and SKIP\n%s\n' \
+    "$verdict_status" "$verdict_out"
+  fail=1
+else
+  echo "ok   unavailable scan keeps preflight non-green"
+fi
 
 [ "$fail" -eq 0 ] || exit 1
 echo "preflight govulncheck tests passed"

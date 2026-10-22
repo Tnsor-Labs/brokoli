@@ -11,7 +11,7 @@ go_cmd=${BROKOLI_GO_BIN:-go}
 scanner=${BROKOLI_GOVULNCHECK_BIN:-}
 
 has_expected_version() {
-  "$1" -version 2>&1 | grep -qF "govulncheck@$version"
+  "$1" -version 2>&1 | grep -qE "govulncheck@${version}\$"
 }
 
 if [ -z "$scanner" ] && command -v govulncheck >/dev/null 2>&1; then

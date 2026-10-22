@@ -43,6 +43,9 @@ say()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 pass() { printf '\033[32mPASS\033[0m %s (%ss)\n' "$1" "$(( $(date +%s) - STAGE_START ))"; }
 fail() { printf '\033[31mFAIL\033[0m %s — see %s\n' "$1" "$2"; FAILED=1; }
 
+# shellcheck source=scripts/preflight-govulncheck-verdict.sh
+source scripts/preflight-govulncheck-verdict.sh
+
 stage() { STAGE_START=$(date +%s); say "$1"; }
 
 # ---- 1. gofmt — CI parity: UNFILTERED repo root (stricter than lint.sh) ----
@@ -381,11 +384,8 @@ set +e
 wait "$VULN_PID"
 vuln_status=$?
 set -e
-if [ "$vuln_status" -eq 2 ]; then
-  printf '\033[33mSKIP\033[0m govulncheck (scan could not run) — see %s\n' "$LOGDIR/govulncheck.log"
+if ! govulncheck_verdict "$vuln_status" "$LOGDIR/govulncheck.log"; then
   FAILED=1
-elif [ "$vuln_status" -ne 0 ]; then
-  fail govulncheck "$LOGDIR/govulncheck.log"
 fi
 wait "$LIC_PID"   || fail licenses "$LOGDIR/licenses.log"
 wait "$UI_CHECK_PID" || fail ui-checks "$LOGDIR/ui-checks.log"

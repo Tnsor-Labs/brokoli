@@ -108,7 +108,9 @@ jobs:
           if-no-files-found: error
 
       - name: Vulnerability gate self-test
-        run: bash scripts/check-vulns_test.sh
+        run: |
+          bash scripts/check-vulns_test.sh
+          bash scripts/run-preflight-govulncheck_test.sh
 
       - name: Installer checksum verification tests
         # install.sh is what users pipe into a shell; these run it offline
