@@ -44,12 +44,13 @@ if [ -n "${BROKOLI_VULN_JSON_FILE:-}" ]; then
   raw=$(cat "$BROKOLI_VULN_JSON_FILE")
   scan_status=0
 else
-  command -v govulncheck >/dev/null 2>&1 || {
+  scanner=${BROKOLI_GOVULNCHECK_BIN:-govulncheck}
+  command -v "$scanner" >/dev/null 2>&1 || {
     echo "ERROR: govulncheck is not on PATH." >&2
-    exit 1
+    exit 2
   }
   set +e
-  raw=$(govulncheck -format json ./... 2>/dev/null)
+  raw=$("$scanner" -format json ./... 2>/dev/null)
   scan_status=$?
   set -e
 fi
@@ -60,7 +61,7 @@ fi
 if [ -z "$(printf '%s' "$raw" | tr -d '[:space:]' | head -c 1)" ]; then
   echo "ERROR: govulncheck produced no output (exit $scan_status) -- the scan inspected nothing." >&2
   echo "An empty scan must never read as a clean scan; refusing to report success." >&2
-  exit 1
+  exit 2
 fi
 
 # Parse once, up front: unparseable output must fail loudly rather than
@@ -69,14 +70,14 @@ if ! printf '%s' "$raw" | jq -s . >/dev/null 2>&1; then
   echo "ERROR: govulncheck output could not be parsed as JSON (exit $scan_status)." >&2
   echo "Refusing to treat unreadable output as a clean scan. First 20 lines:" >&2
   printf '%s\n' "$raw" | head -20 >&2
-  exit 1
+  exit 2
 fi
 
 # A scan that produced no config record did not really run, whatever else
 # it printed.
 if [ "$(printf '%s' "$raw" | jq -s '[.[] | select(.config)] | length')" -eq 0 ]; then
   echo "ERROR: govulncheck output has no config record (exit $scan_status) -- this is not a scan result." >&2
-  exit 1
+  exit 2
 fi
 
 if [ ! -f "$ALLOWLIST" ]; then

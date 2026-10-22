@@ -132,15 +132,11 @@ MOD_TOOLCHAIN=$(awk '/^toolchain /{print $2}' go.mod)
 # module each time. Bump these deliberately, the same way the gosec
 # digest above is a deliberate, reviewed bump.
 GOVULNCHECK_VERSION=v1.7.0
-# `go install` honors $GOBIN when set, falling back to $GOPATH/bin
-# otherwise -- resolve the same way here rather than assuming the
-# default, so this doesn't silently look in the wrong place on a machine
-# with GOBIN customized.
-GOBIN_DIR=$(go env GOBIN)
-[ -n "$GOBIN_DIR" ] || GOBIN_DIR="$(go env GOPATH)/bin"
+# The runner prefers a matching installed binary (including a customized
+# GOBIN) and only installs when the pinned version is absent.
 (
-  GOTOOLCHAIN="${MOD_TOOLCHAIN:-auto}" go install golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION
-  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" "$GOBIN_DIR/govulncheck" ./...
+  export GOVULNCHECK_VERSION MOD_TOOLCHAIN
+  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" bash scripts/run-preflight-govulncheck.sh
 ) > "$LOGDIR/govulncheck.log" 2>&1 &
 VULN_PID=$!
 
@@ -381,7 +377,16 @@ pass build-smoke
 say "waiting on parallel security scans + UI checks"
 wait "$GOSEC_PID" || fail gosec "$LOGDIR/gosec.log"
 cat "$LOGDIR/gosec.verdict" 2>/dev/null || true
-wait "$VULN_PID"  || fail govulncheck "$LOGDIR/govulncheck.log"
+set +e
+wait "$VULN_PID"
+vuln_status=$?
+set -e
+if [ "$vuln_status" -eq 2 ]; then
+  printf '\033[33mSKIP\033[0m govulncheck (scan could not run) — see %s\n' "$LOGDIR/govulncheck.log"
+  FAILED=1
+elif [ "$vuln_status" -ne 0 ]; then
+  fail govulncheck "$LOGDIR/govulncheck.log"
+fi
 wait "$LIC_PID"   || fail licenses "$LOGDIR/licenses.log"
 wait "$UI_CHECK_PID" || fail ui-checks "$LOGDIR/ui-checks.log"
 cat "$LOGDIR/ui-checks.verdict" 2>/dev/null || true
