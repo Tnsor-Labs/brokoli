@@ -181,6 +181,13 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A run exists when its id is returned** -- @hc12r. On the in-process
+  path, `POST /api/pipelines/{id}/run` answered 202 with the run's id
+  before the run was recorded: the runner wrote it from its goroutine, so
+  a client asking for the run at once (an MCP client's `trigger_run`
+  waiting for the outcome, say) could get 404. The run is now recorded
+  before the id is handed out, as the job-queue path already did.
+
 - **A preview read every row of its sources to keep ten** -- @hc12r. The
   editor's Preview and a change request's test held a whole source in the
   server's memory: previewing a pipeline over millions of rows took as

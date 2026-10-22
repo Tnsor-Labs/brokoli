@@ -335,53 +335,23 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	defer r.reclaimTransientBlobs()
 
 	now := time.Now().UTC()
-	if r.acceptedRun != nil {
+	switch {
+	case r.acceptedRun != nil:
 		r.run = r.acceptedRun
 		r.traceID = r.run.TraceID
 		if r.run.StartedAt != nil {
 			now = *r.run.StartedAt
 		}
-	} else {
-		runID := r.preRunID
-		if runID == "" {
-			runID = common.NewID()
+	case r.run != nil:
+		// startRun already recorded it (the asynchronous path, before it
+		// answered with the run's id).
+		if r.run.StartedAt != nil {
+			now = *r.run.StartedAt
 		}
-		r.traceID = common.NewID()
-		r.run = &models.Run{
-			ID:                runID,
-			PipelineID:        r.pipe.ID,
-			Status:            models.RunStatusRunning,
-			Params:            r.params,
-			Parameters:        r.parameters,
-			StartedAt:         &now,
-			TraceID:           r.traceID,
-			PipelineVersion:   r.pipelineVersion,
-			ResumedFromRunID:  r.resumedFromRunID,
-			OrgID:             r.orgID,
-			Trigger:           r.trigger,
-			TriggeredBy:       r.triggeredBy,
-			DataIntervalStart: r.intervalStart,
-			DataIntervalEnd:   r.intervalEnd,
+	default:
+		if err := r.startRun(now); err != nil {
+			return nil, err
 		}
-		crashAt(crashPointBeforeRunCreate, "")
-		if err := r.store.CreateRun(r.run); err != nil {
-			return nil, fmt.Errorf("create run: %w", err)
-		}
-		recordRunAttribution(r.store, r.run.ID, r.triggeredBy)
-		r.appendEvent(models.RunEvent{
-			RunID:     r.run.ID,
-			EventType: models.RunEventCreated,
-			Payload: models.RunEventPayload{
-				Status:           models.RunStatusRunning,
-				PipelineID:       r.run.PipelineID,
-				StartedAt:        r.run.StartedAt,
-				TraceID:          r.run.TraceID,
-				Params:           r.run.Params,
-				PipelineVersion:  r.run.PipelineVersion,
-				ResumedFromRunID: r.run.ResumedFromRunID,
-			},
-		})
-		crashAt(crashPointAfterRunCreate, "")
 	}
 	// Persist the physical plan as-decided for this run (ADR-015, #90 M2),
 	// once the run row exists so the FK parent is present. Best-effort and
@@ -2574,4 +2544,53 @@ func (r *Runner) workspaceID() string {
 		return ""
 	}
 	return r.pipe.WorkspaceID
+}
+
+// startRun records a new run as running, with its provenance and its
+// created event. Execute calls it for a run nobody recorded yet; the
+// asynchronous path calls it before answering, so the id it hands out
+// names a run that exists (a client asking for it at once gets it, not a
+// 404).
+func (r *Runner) startRun(now time.Time) error {
+	runID := r.preRunID
+	if runID == "" {
+		runID = common.NewID()
+	}
+	r.traceID = common.NewID()
+	r.run = &models.Run{
+		ID:                runID,
+		PipelineID:        r.pipe.ID,
+		Status:            models.RunStatusRunning,
+		Params:            r.params,
+		Parameters:        r.parameters,
+		StartedAt:         &now,
+		TraceID:           r.traceID,
+		PipelineVersion:   r.pipelineVersion,
+		ResumedFromRunID:  r.resumedFromRunID,
+		OrgID:             r.orgID,
+		Trigger:           r.trigger,
+		TriggeredBy:       r.triggeredBy,
+		DataIntervalStart: r.intervalStart,
+		DataIntervalEnd:   r.intervalEnd,
+	}
+	crashAt(crashPointBeforeRunCreate, "")
+	if err := r.store.CreateRun(r.run); err != nil {
+		return fmt.Errorf("create run: %w", err)
+	}
+	recordRunAttribution(r.store, r.run.ID, r.triggeredBy)
+	r.appendEvent(models.RunEvent{
+		RunID:     r.run.ID,
+		EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{
+			Status:           models.RunStatusRunning,
+			PipelineID:       r.run.PipelineID,
+			StartedAt:        r.run.StartedAt,
+			TraceID:          r.run.TraceID,
+			Params:           r.run.Params,
+			PipelineVersion:  r.run.PipelineVersion,
+			ResumedFromRunID: r.run.ResumedFromRunID,
+		},
+	})
+	crashAt(crashPointAfterRunCreate, "")
+	return nil
 }

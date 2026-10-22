@@ -1303,6 +1303,17 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	atomic.AddInt64(&e.RunsQueueWaiting, 1)
 	e.runSem <- struct{}{}
 	atomic.AddInt64(&e.RunsQueueWaiting, -1)
+
+	// The run is recorded before the id is handed out: the caller answers
+	// with it at once (202), and a client that asks for the run right away
+	// must find it, not a 404 while the goroutine has yet to write it.
+	if err := runner.startRun(time.Now().UTC()); err != nil {
+		<-e.runSem
+		e.mu.Lock()
+		delete(e.active, runID)
+		e.mu.Unlock()
+		return "", err
+	}
 	atomic.AddInt64(&e.RunsTotal, 1)
 
 	e.bg.Add(1)
