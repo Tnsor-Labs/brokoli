@@ -127,17 +127,17 @@ expect "an entry with no reason is refused" 1 "incomplete allowlist entries"
 # --- the vacuity guards: empty and garbage output are failures ---
 : > "$WORK/scan.json"
 allowlist
-expect "an empty scan is a failure, not a clean bill" 1 "inspected nothing"
+expect "an empty scan is unavailable, not a clean bill" 2 "inspected nothing"
 
 echo "this is not json at all" > "$WORK/scan.json"
 allowlist
-expect "unparseable output is a failure" 1 "could not be parsed as JSON"
+expect "unparseable output is unavailable" 2 "could not be parsed as JSON"
 
 # Valid JSON, but not a scan: no config record means the scanner never
 # really ran, which must not read as clean.
 echo '{"finding":{"osv":"GO-1","trace":[{"module":"m"}]}}' > "$WORK/scan.json"
 allowlist
-expect "output with no config record is a failure" 1 "not a scan result"
+expect "output with no config record is unavailable" 2 "not a scan result"
 
 # --- a missing or malformed allowlist is a failure ---
 { echo "$config"; } > "$WORK/scan.json"

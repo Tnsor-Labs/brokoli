@@ -43,6 +43,9 @@ say()  { printf '\n\033[1m== %s ==\033[0m\n' "$*"; }
 pass() { printf '\033[32mPASS\033[0m %s (%ss)\n' "$1" "$(( $(date +%s) - STAGE_START ))"; }
 fail() { printf '\033[31mFAIL\033[0m %s — see %s\n' "$1" "$2"; FAILED=1; }
 
+# shellcheck source=scripts/preflight-govulncheck-verdict.sh
+source scripts/preflight-govulncheck-verdict.sh
+
 stage() { STAGE_START=$(date +%s); say "$1"; }
 
 # ---- 1. gofmt — CI parity: UNFILTERED repo root (stricter than lint.sh) ----
@@ -132,15 +135,11 @@ MOD_TOOLCHAIN=$(awk '/^toolchain /{print $2}' go.mod)
 # module each time. Bump these deliberately, the same way the gosec
 # digest above is a deliberate, reviewed bump.
 GOVULNCHECK_VERSION=v1.7.0
-# `go install` honors $GOBIN when set, falling back to $GOPATH/bin
-# otherwise -- resolve the same way here rather than assuming the
-# default, so this doesn't silently look in the wrong place on a machine
-# with GOBIN customized.
-GOBIN_DIR=$(go env GOBIN)
-[ -n "$GOBIN_DIR" ] || GOBIN_DIR="$(go env GOPATH)/bin"
+# The runner prefers a matching installed binary (including a customized
+# GOBIN) and only installs when the pinned version is absent.
 (
-  GOTOOLCHAIN="${MOD_TOOLCHAIN:-auto}" go install golang.org/x/vuln/cmd/govulncheck@$GOVULNCHECK_VERSION
-  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" "$GOBIN_DIR/govulncheck" ./...
+  export GOVULNCHECK_VERSION MOD_TOOLCHAIN
+  GOMAXPROCS="$PREFLIGHT_SCAN_PROCS" bash scripts/run-preflight-govulncheck.sh
 ) > "$LOGDIR/govulncheck.log" 2>&1 &
 VULN_PID=$!
 
@@ -381,7 +380,13 @@ pass build-smoke
 say "waiting on parallel security scans + UI checks"
 wait "$GOSEC_PID" || fail gosec "$LOGDIR/gosec.log"
 cat "$LOGDIR/gosec.verdict" 2>/dev/null || true
-wait "$VULN_PID"  || fail govulncheck "$LOGDIR/govulncheck.log"
+set +e
+wait "$VULN_PID"
+vuln_status=$?
+set -e
+if ! govulncheck_verdict "$vuln_status" "$LOGDIR/govulncheck.log"; then
+  FAILED=1
+fi
 wait "$LIC_PID"   || fail licenses "$LOGDIR/licenses.log"
 wait "$UI_CHECK_PID" || fail ui-checks "$LOGDIR/ui-checks.log"
 cat "$LOGDIR/ui-checks.verdict" 2>/dev/null || true
