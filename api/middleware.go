@@ -94,62 +94,85 @@ func rateLimitKey(r *http.Request) string {
 }
 
 func RateLimiter(requestsPerSecond int) func(http.Handler) http.Handler {
-	type visitor struct {
-		tokens    float64
-		lastCheck time.Time
-	}
-	var mu sync.Mutex
-	visitors := make(map[string]*visitor)
-	rate := float64(requestsPerSecond)
+	return newRateLimiter(requestsPerSecond, time.Now).middleware
+}
 
-	// Cleanup old visitors every minute
-	go func() {
-		for range time.Tick(time.Minute) {
-			mu.Lock()
-			for ip, v := range visitors {
-				if time.Since(v.lastCheck) > 2*time.Minute {
-					delete(visitors, ip)
+// rateLimiter is a token bucket per client address.
+//
+// Visitors idle for over two minutes are forgotten, checked at most once a
+// minute while a request is handled. A goroutine on time.Tick used to do
+// that, one per limiter and never stopped: NewServer builds four limiters,
+// so every server, and every test that built one, leaked four.
+type rateLimiter struct {
+	mu        sync.Mutex
+	visitors  map[string]*rateVisitor
+	rate      float64
+	now       func() time.Time
+	lastSweep time.Time
+}
+
+type rateVisitor struct {
+	tokens    float64
+	lastCheck time.Time
+}
+
+func newRateLimiter(requestsPerSecond int, now func() time.Time) *rateLimiter {
+	return &rateLimiter{
+		visitors:  make(map[string]*rateVisitor),
+		rate:      float64(requestsPerSecond),
+		now:       now,
+		lastSweep: now(),
+	}
+}
+
+func (rl *rateLimiter) visitorCount() int {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	return len(rl.visitors)
+}
+
+func (rl *rateLimiter) middleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Skip rate limiting for static assets and WebSocket
+		if r.URL.Path == "/health" || r.URL.Path == "/" || strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		ip := rateLimitKey(r)
+		rl.mu.Lock()
+		now := rl.now()
+		if now.Sub(rl.lastSweep) >= time.Minute {
+			for addr, v := range rl.visitors {
+				if now.Sub(v.lastCheck) > 2*time.Minute {
+					delete(rl.visitors, addr)
 				}
 			}
-			mu.Unlock()
+			rl.lastSweep = now
 		}
-	}()
+		v, exists := rl.visitors[ip]
+		if !exists {
+			v = &rateVisitor{tokens: rl.rate, lastCheck: now}
+			rl.visitors[ip] = v
+		}
+		// Refill tokens
+		elapsed := now.Sub(v.lastCheck).Seconds()
+		v.tokens += elapsed * rl.rate
+		if v.tokens > rl.rate*2 { // burst cap = 2x rate
+			v.tokens = rl.rate * 2
+		}
+		v.lastCheck = now
 
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Skip rate limiting for static assets and WebSocket
-			if r.URL.Path == "/health" || r.URL.Path == "/" || strings.ToLower(r.Header.Get("Upgrade")) == "websocket" {
-				next.ServeHTTP(w, r)
-				return
-			}
+		if v.tokens < 1 {
+			rl.mu.Unlock()
+			http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
+			return
+		}
+		v.tokens--
+		rl.mu.Unlock()
 
-			ip := rateLimitKey(r)
-			mu.Lock()
-			v, exists := visitors[ip]
-			now := time.Now()
-			if !exists {
-				v = &visitor{tokens: rate, lastCheck: now}
-				visitors[ip] = v
-			}
-			// Refill tokens
-			elapsed := now.Sub(v.lastCheck).Seconds()
-			v.tokens += elapsed * rate
-			if v.tokens > rate*2 { // burst cap = 2x rate
-				v.tokens = rate * 2
-			}
-			v.lastCheck = now
-
-			if v.tokens < 1 {
-				mu.Unlock()
-				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
-				return
-			}
-			v.tokens--
-			mu.Unlock()
-
-			next.ServeHTTP(w, r)
-		})
-	}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // RequestTimeout adds a deadline to non-WebSocket, non-streaming requests.
