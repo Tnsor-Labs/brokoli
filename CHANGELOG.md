@@ -38,6 +38,16 @@ reconstruct from git archaeology.
   call `on_node_failure`. Errors sent to hooks are redacted, as they are
   everywhere else a run's error leaves Brokoli. A failed run also logs
   "run finished" like the other outcomes.
+- **A quoted SQL name can no longer end its quotes early** -- @hc12r.
+  Brokoli wrapped table and column names in the database's quotes
+  without escaping a quote inside them, and relied on every caller
+  refusing such names first. One path did not: a migrate whose source
+  and destination are the same Postgres server quoted the column names
+  of the source query's result as they came, so a column named with a
+  double quote broke the migration's SQL, and a crafted name could have
+  added to it. Quotes inside a name are now doubled, the way each
+  database writes them, and that path checks `dest_table` and
+  `key_columns` like every other write path.
 
 ## [0.19.0] - 2026-10-24
 

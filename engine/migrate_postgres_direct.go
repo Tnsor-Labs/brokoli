@@ -16,6 +16,15 @@ import (
 // identity includes credentials, so executing the source query as the writer
 // cannot broaden its access.
 func migratePostgresSameServer(ctx context.Context, uri, query, table string, keyColumns []string, args []interface{}, disjoint bool) (int64, error) {
+	// The names the node's config gives get the check GenerateSQL applies
+	// to the same names on every other write path. The source columns
+	// come from the database and are only quoted: refusing an unusual
+	// name there would refuse a table that exists.
+	for _, id := range append([]string{table}, keyColumns...) {
+		if err := validateIdentifier(id); err != nil {
+			return 0, fmt.Errorf("invalid identifier %q: %w", id, err)
+		}
+	}
 	driver, dsn, err := DetectDriver(uri)
 	if err != nil {
 		return 0, err
