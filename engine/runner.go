@@ -1182,9 +1182,22 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			defer releaseSlot()
-			crashAt(crashPointBeforeNodeExecution, node.ID)
 			var result nodeExecutionResult
 			var e error
+			// A handler panics in this goroutine, outside the wave's
+			// recover, and an unrecovered panic in any goroutine ends the
+			// process: the server, the scheduler and every other run in
+			// it. The panic fails this attempt instead, and the result is
+			// sent from here so the select below always gets one.
+			defer func() {
+				if rec := recover(); rec != nil {
+					common.SLog().Error("node panicked", common.RunAttr(r.run.ID),
+						"node", node.ID, "panic", fmt.Sprint(rec), "stack", string(debug.Stack()))
+					result, e = nodeExecutionResult{}, fmt.Errorf("node %s panicked: %v", node.Name, rec)
+				}
+				resultCh <- nodeResult{result, e}
+			}()
+			crashAt(crashPointBeforeNodeExecution, node.ID)
 			// The plan gate is checked here, at the one point both
 			// execution paths pass through, rather than inside either of
 			// them. It used to live in runNodeLogic, which the streaming
@@ -1215,7 +1228,6 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, allInputSchemas, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
 			}
-			resultCh <- nodeResult{result, e}
 		}()
 
 		var err error

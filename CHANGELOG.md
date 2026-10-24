@@ -20,6 +20,13 @@ reconstruct from git archaeology.
   since saving relies on that key; and if adding it failed, the table was
   left with no key at all, unnoticed. The key is now changed once, in one
   transaction, and a start that cannot add it fails and says why.
+- **A node that panics fails its run instead of the process** -- @hc12r.
+  A node's handler runs in a goroutine of its own, outside the recover
+  that guards the rest of the run, so a panic in it (a bug in a node type
+  or in a distribution's executor) ended the whole process: the server,
+  the scheduler and every other run in it. The node now fails with "node
+  <name> panicked: <value>", the run fails with it, and the stack is
+  logged.
 
 ## [0.19.0] - 2026-10-24
 
