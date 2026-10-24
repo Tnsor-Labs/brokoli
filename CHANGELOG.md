@@ -67,6 +67,11 @@ reconstruct from git archaeology.
   twice. All three now compare values: numbers by value whatever type
   carries them, text only with text, and a missing value only with a
   missing value.
+- **Rate limiters no longer leak a goroutine each** -- @hc12r. Every
+  rate limiter started a cleanup goroutine that never stopped. A server
+  builds four, so code that builds servers repeatedly (tests, an
+  embedding application) leaked four per server. Idle clients are now
+  forgotten while requests are handled, with no goroutine.
 
 ## [0.19.0] - 2026-10-24
 
