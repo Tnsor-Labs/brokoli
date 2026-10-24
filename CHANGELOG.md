@@ -90,6 +90,16 @@ reconstruct from git archaeology.
   issues no data capabilities". A woken run also ignored the engine's
   native-driver and wait-in-place settings. Every run now gets its
   runner from one place.
+- **A list that fails partway through says so instead of coming back
+  short** -- @hc12r. Twenty-two store functions (connections,
+  variables, workspaces and their members, API tokens, the run calendar,
+  the dead-letter queue, physical instances) read rows until the driver
+  stopped and never asked why, so an error mid-list returned a shorter
+  list as if it were complete. They now return the error.
+- **A panic inside a store transaction no longer leaves it open** --
+  @hc12r. `WithTx` rolled back only when its function returned an error.
+  A panic left the transaction open, and on SQLite every later write
+  then failed with "database is locked".
 
 ## [0.19.0] - 2026-10-24
 
