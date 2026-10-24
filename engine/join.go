@@ -231,7 +231,7 @@ func joinValueKey(value interface{}) (string, bool) {
 	if value == nil {
 		return "", false
 	}
-	return fmt.Sprintf("%T:%#v", value, value), true
+	return valueKey(value), true
 }
 
 func mergeUnmatchedLeft(leftRow common.DataRow, rightColumns []string, rightKey, leftKey string, rightOutputNames map[string]string) common.DataRow {

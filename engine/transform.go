@@ -594,12 +594,12 @@ func compareSortKeys(a, b sortKey) int {
 func deduplicate(r TransformRule, ds *common.DataSet) error {
 	seen := make(map[string]bool)
 	var kept []common.DataRow
+	parts := make([]interface{}, len(r.Columns))
 	for _, row := range ds.Rows {
-		var parts []string
-		for _, col := range r.Columns {
-			parts = append(parts, fmt.Sprintf("%v", row[col]))
+		for i, col := range r.Columns {
+			parts[i] = row[col]
 		}
-		key := strings.Join(parts, "\x00")
+		key := valuesKey(parts)
 		if !seen[key] {
 			seen[key] = true
 			kept = append(kept, row)
@@ -682,7 +682,7 @@ func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 		seen := make(map[string]struct{})
 		for _, row := range rows {
 			if row[col] != nil {
-				seen[canonicalValueKey(row[col])] = struct{}{}
+				seen[valueKey(row[col])] = struct{}{}
 			}
 		}
 		return len(seen)
@@ -734,10 +734,6 @@ func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 	default:
 		return nil
 	}
-}
-
-func canonicalValueKey(value interface{}) string {
-	return fmt.Sprintf("%T:%#v", value, value)
 }
 
 func toAggFloat(v interface{}) (float64, bool) {

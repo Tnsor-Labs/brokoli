@@ -57,6 +57,16 @@ reconstruct from git archaeology.
   already did once data crossed a node boundary; a number with a
   fraction or exponent is still a float64. Code that embeds Brokoli and
   type-asserts these values sees `int64` where it saw `float64`.
+- **Dedup, join and count_distinct compare values, not their
+  printouts** -- @hc12r. Dedup keyed rows by printing each value, so
+  rows that were not duplicates were dropped: the number 1 and the text
+  "1" print the same, a missing value printed like the text "<nil>",
+  and a NUL inside one value could line two rows up. A join, the other
+  way round, never matched an integer id from a database with the same
+  id read as a float elsewhere, and count_distinct counted 1 and 1.0
+  twice. All three now compare values: numbers by value whatever type
+  carries them, text only with text, and a missing value only with a
+  missing value.
 
 ## [0.19.0] - 2026-10-24
 
