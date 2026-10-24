@@ -631,40 +631,16 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		return r.run, r.finalizeCancelled()
 	}
 
+	// The loop leaves with an error only once the run is cancelled, which
+	// returned above; every failure returns through failRun inside it.
+	// This keeps that true should a later change add an exit: a failure
+	// has one way out, so what a failed run does is decided in one place.
 	if runErr != nil {
 		var park *WaitParkError
 		if errors.As(runErr, &park) {
 			return r.run, r.parkRun(park)
 		}
-		r.run.Status = models.RunStatusFailed
-		r.run.FinishedAt = &finishTime
-		// The reason belongs on the run, not only in the event beside it.
-		// Without this the run persists as failed with an empty error and
-		// the only copy of the message is in run_events and the logs, so
-		// the run view has nothing to show. It is also what ProjectRun
-		// rebuilds from the terminal payload, and the row written here and
-		// the row rebuilt from events must not disagree.
-		r.run.Error = r.redact(runErr.Error())
-		if err := r.store.UpdateRun(r.run); err != nil {
-			return r.run, fmt.Errorf("persist failed run: %w", err)
-		}
-		r.appendEvent(models.RunEvent{
-			RunID:     r.run.ID,
-			EventType: models.RunEventTerminal,
-			Payload: models.RunEventPayload{
-				Status:     models.RunStatusFailed,
-				FinishedAt: r.run.FinishedAt,
-				Error:      r.run.Error,
-			},
-		})
-		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
-		r.raiseFailureAlert(runErr)
-		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
-		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
-		NotifyPipelineEvent(r.pipe, r.run, "run.failed", runErr.Error())
-		common.SLog().Warn("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
-			"status", models.RunStatusFailed, "error", runErr)
-		return r.run, runErr
+		return r.run, r.failRun(runErr)
 	}
 
 	r.run.Status = models.RunStatusSuccess
@@ -1613,6 +1589,13 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
 		common.SLog().Error("node failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(node.ID), "attempts", maxRetries+1, "error", lastErr)
+		// A node stopped by a cancel did not fail on its own; the run's
+		// cancellation is reported through on_failure instead.
+		if r.ctx.Err() == nil {
+			r.fireHook("on_node_failure", map[string]string{
+				"node_id": node.ID, "node": node.Name, "error": r.redact(lastErr.Error()),
+			})
+		}
 		return nil, fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return conditionDecision, nil
@@ -2205,8 +2188,14 @@ func (r *Runner) failRun(err error) error {
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: msg})
 	r.raiseFailureAlert(errors.New(msg))
+	// on_failure was fired only from a block after the wave loop that no
+	// failure reached, so a failed run never called it. The URL is the
+	// pipeline author's, outside Brokoli: it gets the redacted message.
+	r.fireHook("on_failure", map[string]string{"error": msg})
 	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), msg)
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", msg)
+	common.SLog().Warn("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+		"status", models.RunStatusFailed, "error", msg)
 	// Add to dead letter queue
 	if r.store != nil {
 		if dlqErr := r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", msg, ""); dlqErr != nil {

@@ -27,6 +27,17 @@ reconstruct from git archaeology.
   the scheduler and every other run in it. The node now fails with "node
   <name> panicked: <value>", the run fails with it, and the stack is
   logged.
+- **A failed run calls its `on_failure` hook, and `on_node_failure`
+  works** -- @hc12r. Every failure ended the run through a path that sent
+  the alert and the notification but not the hook; the code that called
+  `on_failure` sat after it and was never reached, so only a cancelled run
+  called it. `on_node_failure`, accepted by the pipeline IR schemas, was
+  never called at all. Now a node that fails after its retries calls
+  `on_node_failure` with `node_id`, `node` and `error`, and the failed run
+  then calls `on_failure` with `error`. A node stopped by a cancel does not
+  call `on_node_failure`. Errors sent to hooks are redacted, as they are
+  everywhere else a run's error leaves Brokoli. A failed run also logs
+  "run finished" like the other outcomes.
 
 ## [0.19.0] - 2026-10-24
 
