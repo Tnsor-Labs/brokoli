@@ -106,6 +106,11 @@ reconstruct from git archaeology.
   on. At shutdown, stopping the scheduler then waited for loops that
   had never started, so the process hung until it was killed. Stopping
   a scheduler twice also panicked. Both now return.
+- **Rate limiters no longer leak a goroutine each** -- @hc12r. Every
+  rate limiter started a cleanup goroutine that never stopped. A server
+  builds four, so code that builds servers repeatedly (tests, an
+  embedding application) leaked four per server. Idle clients are now
+  forgotten while requests are handled, with no goroutine.
 
 ## [0.19.0] - 2026-10-24
 
