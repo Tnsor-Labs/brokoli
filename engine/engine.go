@@ -767,6 +767,26 @@ func (e *Engine) RunPipeline(pipelineID string, params ...map[string]string) (*m
 	return e.RunPipelineOpts(pipelineID, opts)
 }
 
+// newRunRunner builds the Runner for a run and gives it everything the
+// engine provides to every run. Each way a run starts (RunPipelineOpts,
+// the async path, a worker's ExecuteQueuedRun, a resume, a wake) used to
+// build its own Runner and copy these fields by hand, and the copies
+// drifted: dataCapIssuer reached two of the five, so a scheduled,
+// resumed or woken run whose task node needed a data capability was
+// refused with "this server issues no data capabilities", and a woken
+// run also lost NativeADBCWorker and WaitInPlace. Engine-wide settings
+// belong here and nowhere else (TestRunnersAreBuiltInOnePlace).
+func (e *Engine) newRunRunner(pipe *models.Pipeline, requiredCapabilities ...[]string) *Runner {
+	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue, requiredCapabilities...))
+	runner.artifactStore = e.ArtifactStore
+	runner.spillThreshold = e.SpillThresholdBytes
+	runner.streamThreshold = e.StreamThresholdBytes
+	runner.checkpointStore = e.PaginationCheckpointStore
+	runner.metrics = e.newRunnerMetrics()
+	runner.dataCapIssuer = e.DataCapIssuer
+	return runner
+}
+
 func (e *Engine) configureRunner(r *Runner) *Runner {
 	r.nativeADBCWorker = e.NativeADBCWorker
 	r.waitInPlace = e.WaitInPlace
@@ -856,14 +876,9 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		return blocked, nil
 	}
 
-	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
+	runner := e.newRunRunner(pipe)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
-	runner.artifactStore = e.ArtifactStore
-	runner.spillThreshold = e.SpillThresholdBytes
-	runner.streamThreshold = e.StreamThresholdBytes
-	runner.checkpointStore = e.PaginationCheckpointStore
-	runner.metrics = e.newRunnerMetrics()
 	runner.params = opts.Params
 	runner.parameters = resolvedParams
 	runner.trigger = opts.Trigger
@@ -1277,14 +1292,9 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	}
 
 	// Default: run in-process (current behavior)
-	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue, requiredCapabilities))
+	runner := e.newRunRunner(pipe, requiredCapabilities)
 	runner.orgID = pipe.OrgID
 	runner.pipelineVersion = pipelineVersion
-	runner.artifactStore = e.ArtifactStore
-	runner.spillThreshold = e.SpillThresholdBytes
-	runner.streamThreshold = e.StreamThresholdBytes
-	runner.checkpointStore = e.PaginationCheckpointStore
-	runner.metrics = e.newRunnerMetrics()
 	if runParams != nil {
 		runner.params = runParams
 	}
@@ -1292,7 +1302,6 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 	// #241: the async path creates its run inside the runner, so the
 	// provenance has to reach it the same way the trigger does.
 	runner.triggeredBy = opts.TriggeredBy
-	runner.dataCapIssuer = e.DataCapIssuer
 
 	runner.preRunID = runID
 	e.mu.Lock()
@@ -1447,15 +1456,10 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 			Params:    params,
 		},
 	})
-	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
+	runner := e.newRunRunner(pipe)
 	runner.orgID = pipe.OrgID
 	runner.params = params
 	runner.acceptedRun = accepted
-	runner.artifactStore = e.ArtifactStore
-	runner.spillThreshold = e.SpillThresholdBytes
-	runner.streamThreshold = e.StreamThresholdBytes
-	runner.checkpointStore = e.PaginationCheckpointStore
-	runner.metrics = e.newRunnerMetrics()
 	// Without this a WORKER's runner has no issuer, so a task input over
 	// the inline row cap is refused ("this server issues no data
 	// capabilities") instead of staged by reference -- in exactly the
@@ -1463,7 +1467,6 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	// is the only thing that runs. runPipelineAsync sets it too; the two
 	// constructors must agree, which is what
 	// TestRunnerConstructorsPropagateTheSameEngineFields pins.
-	runner.dataCapIssuer = e.DataCapIssuer
 	runner.parentCtx = claimCtx
 
 	// Register the runner as active BEFORE waiting for a concurrency slot,
@@ -1898,16 +1901,12 @@ func (e *Engine) resumeRun(runID, fromNodeID string) (*models.Run, error) {
 	//
 	dropReusedOutcomes(reRun, succeeded, conditionResults, artifactSourceRunIDs)
 
-	runner := e.configureRunner(NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue))
+	runner := e.newRunRunner(pipe)
 	runner.orgID = pipe.OrgID
 	runner.skipNodes = succeeded
 	runner.conditionResults = conditionResults
 	runner.artifactSourceRunIDs = artifactSourceRunIDs
 	runner.params = oldRun.Params
-	runner.artifactStore = e.ArtifactStore
-	runner.spillThreshold = e.SpillThresholdBytes
-	runner.streamThreshold = e.StreamThresholdBytes
-	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.resumedFromRunID = oldRun.ID
 	// #241: a resume is a retry of an existing run. The person who asked
 	// for it is not known here -- ResumeRun takes only a run id -- so the
@@ -1924,7 +1923,6 @@ func (e *Engine) resumeRun(runID, fromNodeID string) (*models.Run, error) {
 	runner.intervalStart = oldRun.DataIntervalStart
 	runner.intervalEnd = oldRun.DataIntervalEnd
 	runner.pipelineVersion = newRunVersion
-	runner.metrics = e.newRunnerMetrics()
 
 	run, err := runner.Execute()
 	// Record the choice on the new run even when it went on to fail: the

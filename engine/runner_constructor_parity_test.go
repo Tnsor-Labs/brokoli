@@ -4,102 +4,112 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 )
 
-// Two functions build a Runner from an Engine: runPipelineAsyncOpts (the
-// in-process/API path) and ExecuteQueuedRun (the path a --mode worker
-// takes for every job it claims). Each copies a list of engine fields
-// onto the runner, and the lists have to agree.
+// Every run builds its Runner in newRunRunner, which gives it everything
+// the engine provides to a run. This reads the source on purpose: the
+// failure it guards against is an ABSENT assignment, which no behavioural
+// test can be written for.
 //
-// The first was called runPipelineAsync until #241 split the options out
-// of it. This test caught that itself, by finding no assignments where it
-// expected them and saying so rather than passing on an empty set -- if
-// the name moves again, that is the failure to expect.
-//
-// They did not. dataCapIssuer was added to runPipelineAsync and missed
-// on ExecuteQueuedRun, so a worker's runner had no capability issuer.
-// The visible symptom was a task input over the inline row cap being
-// refused with "this server issues no data capabilities" -- in exactly
-// the deployment where remote dispatch is the only thing that runs, and
-// nowhere else. Unit tests and CI were green throughout.
-//
-// This reads the source rather than exercising behaviour on purpose: the
-// failure is an ABSENT assignment, and no behavioural test can be
-// written for a line nobody remembered to add. It fails loudly the next
-// time someone extends one constructor and not the other.
-func TestRunnerConstructorsPropagateTheSameEngineFields(t *testing.T) {
+// History, twice over. First, dataCapIssuer was added to the async path
+// and missed on ExecuteQueuedRun, so a worker refused large task inputs
+// with "this server issues no data capabilities"; a test then compared
+// those two constructors. It did not look at the other three, and the same
+// field was missing from RunPipelineOpts (scheduled, backfill, webhook and
+// trigger runs), resumeRun and WakeParkedRun; WakeParkedRun also skipped
+// configureRunner. Comparing copies cannot keep up with new copies, so
+// there is now one copy and this test keeps it the only one.
+func TestRunnersAreBuiltInOnePlace(t *testing.T) {
 	fset := token.NewFileSet()
-	file, err := parser.ParseFile(fset, "engine.go", nil, 0)
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parse engine.go: %v", err)
+		t.Fatal(err)
 	}
-
-	// assignedFields collects `runner.<field> = e.<something>` targets in
-	// one function body.
-	assignedFields := func(fn *ast.FuncDecl) map[string]bool {
-		out := map[string]bool{}
-		ast.Inspect(fn, func(n ast.Node) bool {
-			as, ok := n.(*ast.AssignStmt)
-			if !ok || len(as.Lhs) != 1 || len(as.Rhs) != 1 {
-				return true
-			}
-			sel, ok := as.Lhs[0].(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			recv, ok := sel.X.(*ast.Ident)
-			if !ok || recv.Name != "runner" {
-				return true
-			}
-			// Only assignments sourced from the Engine: params and
-			// per-run values legitimately differ between the two paths.
-			rhs, ok := as.Rhs[0].(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			if base, ok := rhs.X.(*ast.Ident); !ok || base.Name != "e" {
-				return true
-			}
-			out[sel.Sel.Name] = true
-			return true
-		})
-		return out
-	}
-
-	bodies := map[string]map[string]bool{}
-	for _, decl := range file.Decls {
-		fn, ok := decl.(*ast.FuncDecl)
-		if !ok {
+	// preview builds a Runner over a scratch store and deliberately takes
+	// only configureRunner: a preview writes nothing, so it gets no
+	// artifact store, checkpoint store or capability issuer.
+	allowedNewRunner := map[string]bool{"newRunRunner": true, "PreviewPipeline": true}
+	var newRunnerCalls, engineCopies, issuerInHelper int
+	var problems []string
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
 			continue
 		}
-		if fn.Name.Name == "runPipelineAsyncOpts" || fn.Name.Name == "ExecuteQueuedRun" {
-			bodies[fn.Name.Name] = assignedFields(fn)
+		src, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	for _, name := range []string{"runPipelineAsyncOpts", "ExecuteQueuedRun"} {
-		if len(bodies[name]) == 0 {
-			t.Fatalf("found no `runner.X = e.Y` assignments in %s; this test is no longer looking at the right thing", name)
+		file, err := parser.ParseFile(fset, name, src, 0)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
 		}
-	}
-
-	missing := func(from, in string) []string {
-		var out []string
-		for f := range bodies[from] {
-			if !bodies[in][f] {
-				out = append(out, f)
+		for _, decl := range file.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Body == nil {
+				continue
 			}
+			ast.Inspect(fn.Body, func(n ast.Node) bool {
+				switch x := n.(type) {
+				case *ast.CallExpr:
+					if id, ok := x.Fun.(*ast.Ident); ok && id.Name == "NewRunner" {
+						newRunnerCalls++
+						if !allowedNewRunner[fn.Name.Name] {
+							problems = append(problems, fset.Position(x.Pos()).String()+": "+fn.Name.Name+" calls NewRunner; build the runner with e.newRunRunner")
+						}
+					}
+				case *ast.AssignStmt:
+					if len(x.Lhs) != 1 || len(x.Rhs) != 1 {
+						return true
+					}
+					lhs, ok := x.Lhs[0].(*ast.SelectorExpr)
+					if !ok {
+						return true
+					}
+					if recv, ok := lhs.X.(*ast.Ident); !ok || recv.Name != "runner" {
+						return true
+					}
+					if !fromEngine(x.Rhs[0]) {
+						return true
+					}
+					if fn.Name.Name == "newRunRunner" {
+						engineCopies++
+						if lhs.Sel.Name == "dataCapIssuer" {
+							issuerInHelper++
+						}
+						return true
+					}
+					problems = append(problems, fset.Position(x.Pos()).String()+": "+fn.Name.Name+" copies an engine field onto its runner (runner."+lhs.Sel.Name+"); do that in newRunRunner so every run gets it")
+				}
+				return true
+			})
 		}
-		sort.Strings(out)
-		return out
 	}
+	if newRunnerCalls == 0 || engineCopies == 0 {
+		t.Fatalf("found %d NewRunner calls and %d engine copies in newRunRunner; this test is no longer looking at the right thing", newRunnerCalls, engineCopies)
+	}
+	if issuerInHelper != 1 {
+		t.Errorf("newRunRunner sets dataCapIssuer %d times, want 1", issuerInHelper)
+	}
+	sort.Strings(problems)
+	for _, p := range problems {
+		t.Error(p)
+	}
+}
 
-	if got := missing("runPipelineAsyncOpts", "ExecuteQueuedRun"); len(got) > 0 {
-		t.Errorf("ExecuteQueuedRun (the worker path) does not propagate %v.\n"+
-			"A worker's runner would silently lack these. dataCapIssuer was exactly this bug.", got)
+// fromEngine reports whether an expression reads the engine: e.X or e.f().
+func fromEngine(expr ast.Expr) bool {
+	if call, ok := expr.(*ast.CallExpr); ok {
+		expr = call.Fun
 	}
-	if got := missing("ExecuteQueuedRun", "runPipelineAsyncOpts"); len(got) > 0 {
-		t.Errorf("runPipelineAsyncOpts does not propagate %v, which ExecuteQueuedRun does", got)
+	sel, ok := expr.(*ast.SelectorExpr)
+	if !ok {
+		return false
 	}
+	base, ok := sel.X.(*ast.Ident)
+	return ok && base.Name == "e"
 }

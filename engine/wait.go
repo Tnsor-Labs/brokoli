@@ -405,21 +405,16 @@ func (e *Engine) WakeParkedRun(runID string) (*models.Run, error) {
 		return nil, fmt.Errorf("wake: %w", err)
 	}
 
-	runner := NewRunner(e.store, e.eventCh, pipe, e.VarStore, e.ConnResolver, e.Executors, e.Notifier, e.InstanceID, e.InstanceJobQueue)
+	runner := e.newRunRunner(pipe)
 	runner.orgID = pipe.OrgID
 	runner.params = full.Params
 	runner.acceptedRun = full
 	runner.skipNodes = succeeded
 	runner.conditionResults = conditionResults
 	runner.artifactSourceRunIDs = artifactSourceRunIDs
-	runner.artifactStore = e.ArtifactStore
-	runner.spillThreshold = e.SpillThresholdBytes
-	runner.streamThreshold = e.StreamThresholdBytes
-	runner.checkpointStore = e.PaginationCheckpointStore
 	runner.pipelineVersion = full.PipelineVersion
 	runner.intervalStart = full.DataIntervalStart
 	runner.intervalEnd = full.DataIntervalEnd
-	runner.metrics = e.newRunnerMetrics()
 
 	e.mu.Lock()
 	e.active[runID] = runner

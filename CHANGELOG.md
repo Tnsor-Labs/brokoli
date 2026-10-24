@@ -80,6 +80,16 @@ reconstruct from git archaeology.
   the metrics endpoint read the same fields plainly. It now reads them
   through `Engine.Metrics()`, a snapshot taken atomically, which code
   embedding Brokoli should use too.
+- **Scheduled, resumed and woken runs can stage task data** -- @hc12r.
+  Each way a run starts built its runner separately and copied the
+  engine's settings by hand, and the copies drifted. Only runs started
+  through the API or by a worker could issue the data capabilities a
+  remote task node needs for inputs over the inline row cap or for
+  stored outputs. Scheduled, backfill, webhook and trigger runs,
+  resumes, and runs woken from a wait were refused with "this server
+  issues no data capabilities". A woken run also ignored the engine's
+  native-driver and wait-in-place settings. Every run now gets its
+  runner from one place.
 
 ## [0.19.0] - 2026-10-24
 
