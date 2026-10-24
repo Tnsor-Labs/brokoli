@@ -6,7 +6,7 @@ import { observeApi, pipelineApi, schedulerApi, type DashboardStats, type Pipeli
 import { keys, paths, useLiveConnected, useNow, useThrottledActivity } from '@brokoli/pipelines'
 import { Button, Callout, Dot, IconButton, Page, PageHeader, Skeleton, errorMessage, formatDateTime, formatNumber, formatRelative } from '@brokoli/ui'
 import { HeatmapGrid } from '../calendar/Heatmap'
-import { buildHeatmap } from '../calendar/heatmap'
+import { buildHeatmap } from '../calendar/heatmapData'
 import { Stat, rateTone } from '../Stat'
 import { DeadLetters } from './DeadLetters'
 import { FleetTable, nextLabel } from './FleetTable'

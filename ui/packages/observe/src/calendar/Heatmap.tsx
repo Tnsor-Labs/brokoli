@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { cx } from '@brokoli/ui'
-import { formatUtcDay, moveIndex, type HeatCell, type Heatmap } from './heatmap'
+import { formatUtcDay, moveIndex, type HeatCell, type Heatmap } from './heatmapData'
 
 export function describeDay(c: HeatCell) {
   if (!c.total) return `${formatUtcDay(c.time)}: no runs`

@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { Check, Copy, Database, ShieldAlert } from 'lucide-react'
 import type { RunEvent } from '@brokoli/api'
 import { EmptyState, IconButton, cx, useToast } from '@brokoli/ui'
-import { classifyStatement, groupQueries, statementReason } from './queries'
+import { classifyStatement, groupQueries, statementReason } from './runQueries'
 import { highlightSql } from './sqlHighlight'
 
 /**
