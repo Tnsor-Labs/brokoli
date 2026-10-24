@@ -100,6 +100,12 @@ reconstruct from git archaeology.
   @hc12r. `WithTx` rolled back only when its function returned an error.
   A panic left the transaction open, and on SQLite every later write
   then failed with "database is locked".
+- **A server whose scheduler failed to start shuts down instead of
+  hanging** -- @hc12r. When the scheduler could not start (its first
+  read of the pipelines failed), the server logged a warning and carried
+  on. At shutdown, stopping the scheduler then waited for loops that
+  had never started, so the process hung until it was killed. Stopping
+  a scheduler twice also panicked. Both now return.
 
 ## [0.19.0] - 2026-10-24
 
