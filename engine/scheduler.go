@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -48,6 +49,11 @@ type Scheduler struct {
 	reclaimDone chan struct{}
 	syncDone    chan struct{}
 	waitDone    chan struct{}
+
+	// loopsStarted records that Start launched the three loops Stop waits
+	// for; stopOnce makes Stop safe to call more than once.
+	loopsStarted atomic.Bool
+	stopOnce     sync.Once
 }
 
 // NewScheduler creates a scheduler that uses the given engine to run
@@ -109,6 +115,7 @@ func (s *Scheduler) Start() error {
 	s.catchUpMissedRuns(pipelines)
 
 	s.cron.Start()
+	s.loopsStarted.Store(true)
 	go s.runReclaimSweep()
 	go s.runScheduleSync()
 	go s.runWaitWatcher()
@@ -471,8 +478,22 @@ func (s *Scheduler) catchUpPerInterval(p models.Pipeline, sched cron.Schedule) {
 }
 
 // Stop gracefully stops the scheduler.
+//
+// Stop returns when called after a Start that failed, and when called
+// again. serve logs a failed Start and carries on with Stop deferred;
+// Stop used to wait for loops that failed Start never launched, so
+// shutdown hung until the process was killed, and a second Stop panicked
+// closing a closed channel.
 func (s *Scheduler) Stop() {
+	s.stopOnce.Do(s.stop)
+}
+
+func (s *Scheduler) stop() {
 	close(s.stopReclaim)
+	if !s.loopsStarted.Load() {
+		<-s.cron.Stop().Done()
+		return
+	}
 	<-s.reclaimDone // wait for the sweep goroutine to actually exit
 	// The sync loop shares the stop channel but was never joined, and an
 	// unjoined goroutine outliving Stop is exactly how the -race suite
