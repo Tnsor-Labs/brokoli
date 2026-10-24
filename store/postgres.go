@@ -296,13 +296,9 @@ func (s *PostgresStore) migrate() error {
 		workspace_id TEXT NOT NULL DEFAULT 'default'
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
-	// Widen the variables key from (key) to (workspace_id, key). See
-	// SQLiteStore.scopeVariablesToWorkspace for why this cannot collide
-	// and why there is deliberately no collision check. Postgres can
-	// alter the constraint in place, so no table rebuild is needed.
-	s.db.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`)
-	s.db.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`)
-	s.db.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`)
+	if err := s.scopeVariablesToWorkspace(); err != nil {
+		return fmt.Errorf("scope variables to workspace: %w", err)
+	}
 
 	// Workspaces + related tables
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
@@ -669,6 +665,52 @@ func (s *PostgresStore) hasColumn(table, column string) (bool, error) {
 		table, column,
 	).Scan(&exists)
 	return exists, err
+}
+
+// scopeVariablesToWorkspace widens the variables key from (key) to
+// (workspace_id, key). See SQLiteStore.scopeVariablesToWorkspace for why
+// this cannot collide and why there is deliberately no collision check.
+// Postgres can alter the constraint in place, so no table rebuild is
+// needed.
+//
+// It used to run on every start, unguarded and with its errors ignored:
+// each start dropped the key and added it again. A process still serving
+// during a rolling deploy then failed SetVariable, whose ON CONFLICT
+// needs the key, and an ADD that failed left the table with no key at all.
+// It now runs once, in one transaction, and reports a failure.
+func (s *PostgresStore) scopeVariablesToWorkspace() (retErr error) {
+	var cols string
+	err := s.db.QueryRow(`SELECT COALESCE(string_agg(a.attname, ',' ORDER BY k.n), '')
+		FROM pg_constraint c
+		CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, n)
+		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+		WHERE c.conrelid = 'variables'::regclass AND c.contype = 'p'`).Scan(&cols)
+	if err != nil {
+		return fmt.Errorf("read the variables key: %w", err)
+	}
+	if cols == "workspace_id,key" {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`); err != nil {
+		return fmt.Errorf("move unscoped variables to the default workspace: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`); err != nil {
+		return fmt.Errorf("drop the old key: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`); err != nil {
+		return fmt.Errorf("add the new key: %w", err)
+	}
+	return tx.Commit()
 }
 
 // widenExecutionAttemptsPrimaryKey widens execution_attempts from

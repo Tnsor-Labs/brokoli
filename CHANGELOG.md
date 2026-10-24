@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Starting a Postgres installation no longer rebuilds the variables
+  key** -- @hc12r. Every start dropped the `variables` primary key and
+  added it again, as two statements with their errors ignored. While one
+  process started, another still serving could fail to save a variable,
+  since saving relies on that key; and if adding it failed, the table was
+  left with no key at all, unnoticed. The key is now changed once, in one
+  transaction, and a start that cannot add it fails and says why.
+
 ## [0.19.0] - 2026-10-24
 
 Brokoli becomes a runtime for AI agents as well as people (ADR-046): an
