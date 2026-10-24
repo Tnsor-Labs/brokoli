@@ -67,6 +67,12 @@ reconstruct from git archaeology.
   twice. All three now compare values: numbers by value whatever type
   carries them, text only with text, and a missing value only with a
   missing value.
+- **A server whose scheduler failed to start shuts down instead of
+  hanging** -- @hc12r. When the scheduler could not start (its first
+  read of the pipelines failed), the server logged a warning and carried
+  on. At shutdown, stopping the scheduler then waited for loops that
+  had never started, so the process hung until it was killed. Stopping
+  a scheduler twice also panicked. Both now return.
 
 ## [0.19.0] - 2026-10-24
 
