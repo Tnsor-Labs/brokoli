@@ -11,8 +11,94 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-10-24
+
+Brokoli becomes a runtime for AI agents as well as people (ADR-046): an
+MCP server in every binary, agent identities with their own tokens and a
+role capped by their owner's, change requests an agent proposes and a
+person applies, and MCP clients that connect with OAuth. Also previews
+that read only the rows they show, and migrations safe for several
+instances starting at once.
+
+### Changed
+
+These can change what an existing deployment does.
+
+- **Upgrading from 0.18** -- @hc12r. Migrations run automatically on
+  start. On Postgres they now take an advisory lock, so the database URL
+  must be a direct connection or session pooling, not a
+  transaction-pooling proxy. The built-in `admin`, `editor` and
+  `operator` roles gain `pipelines.propose`, and a new built-in `agent`
+  role exists; custom roles are unchanged. The editor's Preview no longer
+  writes through outputs or records a run, a Git-managed pipeline can no
+  longer be rolled back from Brokoli (403), and a missing file under
+  `/assets/` is a 404 instead of the application page. Each is described
+  below.
+- **`pipeline_id` is unique within a workspace, not an organization**
+  -- @hc12r. Two workspaces of one organization can each have an
+  `orders`, so a staging workspace can hold the same pipelines as
+  production. The per-workspace index is created before the
+  per-organization one is dropped, so uniqueness never lapses, and
+  existing data is valid under it. `GetPipelineByPipelineIDInWorkspace`
+  is the lookup to use; `GetPipelineByPipelineIDInOrg` now answers
+  `ErrAmbiguousPipelineID` when more than one workspace has the id,
+  rather than returning either. The git push route looks in the caller's
+  workspace first.
+
 ### Added
 
+- **Brokoli for AI agents over MCP** (ADR-046 phase 1) -- @hc12r.
+  `brokoli mcp` serves the Model Context Protocol on stdio for an agent
+  client on your machine, acting on a server with the credential `brokoli
+  login` stored (or `--api-key` / `BROKOLI_TOKEN`); `POST /api/mcp` serves
+  it over Streamable HTTP (stateless, JSON) from the server. Eight read-only
+  tools: `list_pipelines`, `get_pipeline`, `validate_pipeline`,
+  `get_lineage`, `list_runs`, `get_run`, `get_run_logs` and `explain_run`,
+  which answers why a run failed in one result (the failing nodes with
+  their errors and last log lines, the run's error lines, the last
+  successful run before it and the pipeline versions saved since). Every
+  tool is a call to the REST API as the caller, through the same router
+  and permission checks, so an agent sees what its account sees; tools
+  the caller lacks the permission for are not listed. Every result is
+  redacted (credentials by name, URL passwords, bearer and basic
+  credentials in text) and bounded (pages of at most 100, at most 1,000
+  log lines, long text cut). See `docs/mcp.md`.
+- **Agent identities** (ADR-046 phase 2) -- @hc12r. An agent is an
+  account for an AI agent: a role (the new built-in `agent` role by
+  default: view pipelines and runs, run pipelines; never `admin`), an
+  owner, and tokens of its own (`bka_...`, stored as a hash, 90 days by
+  default and at most 365, revocable one by one, last use recorded). Its
+  permissions are its role's intersected with its owner's on every
+  request, never including reading secrets or managing users, roles,
+  members or tokens. It cannot sign in or manage agents. Runs it starts
+  are attributed to it (`triggered_by.kind` `agent`, with `on_behalf_of`
+  when its owner issued the token for themselves) and audit entries carry
+  `actor_kind`, `owner_id`, `on_behalf_of` and `token_name`. Managed with
+  `/api/agents` and `brokoli agents`; agents are not listed among users.
+  Over MCP the agent is told who it acts as, and is warned (as is
+  `brokoli mcp`) when it uses the server's static API key. See
+  `docs/agents.md`.
+- **Change requests** (ADR-046 phase 3) -- @hc12r. A proposed new
+  version of a pipeline that does not run until a person applies it:
+  `POST /api/pipelines/{id}/changes` records the whole definition, the
+  version it was made against and its validation; the diff (pipeline
+  fields, nodes added, removed and changed, connections) is computed on
+  read. Applying (`pipelines.edit`, people only) is exactly a save, with
+  the version message `change request: <title>`; a request whose pipeline
+  changed since is out of date and refused; declining takes a reason, and
+  the author can withdraw. New permission `pipelines.propose` (admin,
+  editor, operator and agent roles). The MCP tools `propose_change` and
+  `list_change_requests`; the pipeline page shows open requests with the
+  diff and Apply / Decline. Pipelines deployed from a repository take
+  requests only through a distribution's `api.ChangeRequestDeliverFunc`.
+  See `docs/change-requests.md`.
+- **Agents run pipelines over MCP** (ADR-046 phase 4) -- @hc12r.
+  `trigger_run` runs a saved pipeline, with params and declared
+  parameters, and with `wait_seconds` (up to 45) answers the run's
+  outcome; `dry_run_pipeline` previews one, writing nothing; `cancel_run`
+  stops a run (`runs.cancel`, which the `agent` role does not have). The
+  acting tools are marked as such in their annotations, so a client asks
+  the person first, and a run started this way is recorded as the agent's.
 - **Connect an MCP client with OAuth** (ADR-046 phase 5) -- @hc12r. A
   hosted client that speaks the MCP authorization specification connects
   to `/api/mcp` with only its URL: it discovers the authorization server
@@ -32,35 +118,6 @@ reconstruct from git archaeology.
   once (`GET /api/oauth/connections`, `DELETE /api/oauth/connections/{id}`;
   persons only). The `ConnectedApps` component is exported from
   `@brokoli/auth`.
-- **`api.SetChangeRequestDelivery`** -- @hc12r. A distribution that
-  delivers a change request elsewhere (a pull request opened after the
-  request is recorded) records where it went once it knows; only an open
-  request's delivery changes. With `SetChangeRequestOutcome`, a delivered
-  request shows its link on the review page and settles when it is merged
-  or closed there.
-- **A shorter sidebar, and Home** -- @hc12r. The community sidebar goes
-  from eleven items to seven, grouped by what a person is doing: Home and
-  Pipelines; Observe (Dashboard, Lineage); Connect (Connections, Secrets &
-  variables, Integrations); with Settings and Help at the bottom. Pages
-  that belong together share one item and a tab strip (Dashboard and
-  Schedule; Lineage and Pipeline dependencies; Variables and Secret
-  stores; Plugins and Drivers), each keeping its own address, so links
-  keep working. Home, where sign-in now lands, lists what needs you: the
-  pipelines whose latest run failed and the changes waiting for a
-  decision, counted next to Home in the sidebar. Search still finds every
-  page by its own name, with the shortcut letters it had. The tab strip
-  is a shared component (`SectionTabs` in `@brokoli/shell`).
-- **`GET /api/changes`: the workspace's change requests** -- @hc12r.
-  Across its pipelines, newest first (at most 100), each with
-  `pipeline_name`, filtered by `status`; only pipelines the caller may see.
-  For a person's list of what to review, wherever it was proposed.
-- **Agents run pipelines over MCP** (ADR-046 phase 4) -- @hc12r.
-  `trigger_run` runs a saved pipeline, with params and declared
-  parameters, and with `wait_seconds` (up to 45) answers the run's
-  outcome; `dry_run_pipeline` previews one, writing nothing; `cancel_run`
-  stops a run (`runs.cancel`, which the `agent` role does not have). The
-  acting tools are marked as such in their annotations, so a client asks
-  the person first, and a run started this way is recorded as the agent's.
 - **A review page for each change request, and testing a change before
   applying it** -- @hc12r. A proposed change opens on its own page
   (`/pipelines/{id}/changes/{changeId}`, linked from the pipeline's page
@@ -73,12 +130,28 @@ reconstruct from git archaeology.
   previews. A test runs the proposed code, so only a person with
   `pipelines.run` starts one; an agent is refused. `propose_change` tells
   agents the description is Markdown and what to put in it.
+- **`GET /api/changes`: the workspace's change requests** -- @hc12r.
+  Across its pipelines, newest first (at most 100), each with
+  `pipeline_name`, filtered by `status`; only pipelines the caller may see.
+  For a person's list of what to review, wherever it was proposed.
 - **`/api/auth/me` names the workspace** -- @hc12r. The answer adds
   `workspace_id`, and `workspace_name` when it is known: the workspace
   the request acts in. The MCP server says it in its instructions ("You
   act in Brokoli as agent triage-bot, on behalf of ada, in the workspace
   "Data Platform" (id ...)"), since an agent acts in one workspace and
   may not list workspaces, and could not tell which one it was in.
+- **A shorter sidebar, and Home** -- @hc12r. The community sidebar goes
+  from eleven items to seven, grouped by what a person is doing: Home and
+  Pipelines; Observe (Dashboard, Lineage); Connect (Connections, Secrets &
+  variables, Integrations); with Settings and Help at the bottom. Pages
+  that belong together share one item and a tab strip (Dashboard and
+  Schedule; Lineage and Pipeline dependencies; Variables and Secret
+  stores; Plugins and Drivers), each keeping its own address, so links
+  keep working. Home, where sign-in now lands, lists what needs you: the
+  pipelines whose latest run failed and the changes waiting for a
+  decision, counted next to Home in the sidebar. Search still finds every
+  page by its own name, with the shortcut letters it had. The tab strip
+  is a shared component (`SectionTabs` in `@brokoli/shell`).
 - **`api.AgentHooks`** -- @hc12r. A distribution takes part in agent
   identities: `Created` (an error disables the agent again and is the
   answer, with `AgentHookError`'s status), `Updated`, `Disabled`, and
@@ -87,67 +160,22 @@ reconstruct from git archaeology.
   permissions (`RequestIdentityFunc`), an agent's stand as resolved, less
   what no agent may hold: the distribution binds them to the owner in its
   own roles.
-
+- **`api.AgentIdentitiesEnabled`** -- @hc12r. A distribution whose
+  tenancy agents do not take part in yet sets it to false: `/api/agents`
+  then answers 404 and no agent token authenticates. Agents belong to no
+  organization in core.
 - **MCP extensions for distributions** -- @hc12r. `mcpserver.Register`
   adds a distribution's tools (listed by the permission each needs,
   answering through the same caller, redacted and bounded like core's,
   with `AddReadTool`, `Get` and `Esc`) and facts to `explain_run`, which
   appear under `context`; a failing one is reported in `could_not_check`
   instead of failing the explanation.
-
-- **`api.AgentIdentitiesEnabled`** -- @hc12r. A distribution whose
-  tenancy agents do not take part in yet sets it to false: `/api/agents`
-  then answers 404 and no agent token authenticates. Agents belong to no
-  organization in core.
-
-- **Change requests** (ADR-046 phase 3) -- @hc12r. A proposed new
-  version of a pipeline that does not run until a person applies it:
-  `POST /api/pipelines/{id}/changes` records the whole definition, the
-  version it was made against and its validation; the diff (pipeline
-  fields, nodes added, removed and changed, connections) is computed on
-  read. Applying (`pipelines.edit`, people only) is exactly a save, with
-  the version message `change request: <title>`; a request whose pipeline
-  changed since is out of date and refused; declining takes a reason, and
-  the author can withdraw. New permission `pipelines.propose` (admin,
-  editor, operator and agent roles). The MCP tools `propose_change` and
-  `list_change_requests`; the pipeline page shows open requests with the
-  diff and Apply / Decline. Pipelines deployed from a repository take
-  requests only through a distribution's `api.ChangeRequestDeliverFunc`.
-  See `docs/change-requests.md`.
-
-- **Agent identities** (ADR-046 phase 2) -- @hc12r. An agent is an
-  account for an AI agent: a role (the new built-in `agent` role by
-  default: view pipelines and runs, run pipelines; never `admin`), an
-  owner, and tokens of its own (`bka_...`, stored as a hash, 90 days by
-  default and at most 365, revocable one by one, last use recorded). Its
-  permissions are its role's intersected with its owner's on every
-  request, never including reading secrets or managing users, roles,
-  members or tokens. It cannot sign in or manage agents. Runs it starts
-  are attributed to it (`triggered_by.kind` `agent`, with `on_behalf_of`
-  when its owner issued the token for themselves) and audit entries carry
-  `actor_kind`, `owner_id`, `on_behalf_of` and `token_name`. Managed with
-  `/api/agents` and `brokoli agents`; agents are not listed among users.
-  Over MCP the agent is told who it acts as, and is warned (as is
-  `brokoli mcp`) when it uses the server's static API key. See
-  `docs/agents.md`.
-
-- **Brokoli for AI agents over MCP** (ADR-046 phase 1) -- @hc12r.
-  `brokoli mcp` serves the Model Context Protocol on stdio for an agent
-  client on your machine, acting on a server with the credential `brokoli
-  login` stored (or `--api-key` / `BROKOLI_TOKEN`); `POST /api/mcp` serves
-  it over Streamable HTTP (stateless, JSON) from the server. Eight read-only
-  tools: `list_pipelines`, `get_pipeline`, `validate_pipeline`,
-  `get_lineage`, `list_runs`, `get_run`, `get_run_logs` and `explain_run`,
-  which answers why a run failed in one result (the failing nodes with
-  their errors and last log lines, the run's error lines, the last
-  successful run before it and the pipeline versions saved since). Every
-  tool is a call to the REST API as the caller, through the same router
-  and permission checks, so an agent sees what its account sees; tools
-  the caller lacks the permission for are not listed. Every result is
-  redacted (credentials by name, URL passwords, bearer and basic
-  credentials in text) and bounded (pages of at most 100, at most 1,000
-  log lines, long text cut). See `docs/mcp.md`.
-
+- **`api.SetChangeRequestDelivery`** -- @hc12r. A distribution that
+  delivers a change request elsewhere (a pull request opened after the
+  request is recorded) records where it went once it knows; only an open
+  request's delivery changes. With `SetChangeRequestOutcome`, a delivered
+  request shows its link on the review page and settles when it is merged
+  or closed there.
 - **Signed webhook paths a distribution can register** -- @hc12r.
   `api.RegisterSignedWebhookPath(path)` exempts one exact POST path from
   session and API-key authentication, for a route whose handler verifies
@@ -155,22 +183,6 @@ reconstruct from git archaeology.
   the built-in webhook exemptions: the exact string the router dispatches
   on, so no prefix, trailing segment, encoded separator or other method
   passes.
-
-### Changed
-
-- **`pipeline_id` is unique within a workspace, not an organization**
-  -- @hc12r. Two workspaces of one organization can each have an
-  `orders`, so a staging workspace can hold the same pipelines as
-  production. The per-workspace index is created before the
-  per-organization one is dropped, so uniqueness never lapses, and
-  existing data is valid under it. `GetPipelineByPipelineIDInWorkspace`
-  is the lookup to use; `GetPipelineByPipelineIDInOrg` now answers
-  `ErrAmbiguousPipelineID` when more than one workspace has the id,
-  rather than returning either. The git push route looks in the caller's
-  workspace first.
-
-### Added
-
 - **Queued jobs that are not pipeline runs** -- @hc12r. `RunJob` has a
   `Kind`; empty is a pipeline run, as every job was before. A distribution
   registers a handler per kind in `Registry.JobHandlers`, and a worker
@@ -187,7 +199,6 @@ reconstruct from git archaeology.
   a client asking for the run at once (an MCP client's `trigger_run`
   waiting for the outcome, say) could get 404. The run is now recorded
   before the id is handed out, as the job-queue path already did.
-
 - **An agent's name is unique where it is seen, not across the server**
   -- @hc12r. Agent names were usernames, unique server-wide, so a
   distribution with organizations refused a second organization's
@@ -198,7 +209,6 @@ reconstruct from git archaeology.
   username is an internal `agent-<id>`. Existing agents keep their names.
   An agent refused by `AgentHooks.Created` is deleted instead of disabled,
   so its name is not lost for good.
-
 - **A preview read every row of its sources to keep ten** -- @hc12r. The
   editor's Preview and a change request's test held a whole source in the
   server's memory: previewing a pipeline over millions of rows took as
@@ -226,7 +236,6 @@ reconstruct from git archaeology.
   backoff (2 seconds, doubling to 30) until the install's own deadline;
   a digest mismatch or a release not in the catalog still stops it at
   once, and a worker missing a declared driver still takes no jobs.
-
 - **Pipelines built from code are laid out instead of stacked** -- @hc12r.
   The canonical IR a repository deploys leaves node positions out on
   purpose (layout is not a change to the pipeline), so such pipelines
@@ -238,7 +247,6 @@ reconstruct from git archaeology.
   that way. Positions no longer count as a graph change, so pausing or
   renaming an old pipeline still skips full validation when only its
   layout moved.
-
 - **A tab opened before an upgrade gets the new version instead of a
   developer error** -- @hc12r. Pages are loaded on demand, and a tab
   opened before an upgrade asks for files of the old build. The server
@@ -251,7 +259,6 @@ reconstruct from git archaeology.
   30 seconds, so a broken build cannot loop), otherwise it says what
   failed and offers a reload. The community application uses it on every
   route, inside the shell where the shell rendered.
-
 - **The editor draws a pipeline compiled from code laid out, and moving
   nodes no longer leaves a Git-managed pipeline "unsaved"** -- @hc12r. A
   pipeline deployed from code arrives with every node at one position;
@@ -261,14 +268,12 @@ reconstruct from git archaeology.
   loading, and for a pipeline saved through `gitSave` (whose layout is
   not saved anywhere) moving or laying out nodes does not count as a
   change.
-
 - **Rollback refuses Git-managed pipelines** (#854) -- @hc12r. Editing a
   pipeline whose source is Git was already refused, but rolling it back to
   an earlier version was not: the pipeline then ran something its
   repository did not say, until the next sync silently undid it. A
   rollback now returns 403 with the same advice as an edit, to revert the
   change in the repository.
-
 - **Instances starting together no longer crash migrating one database**
   (#849, #852) -- @hc12r. On Postgres, the processes of an installation
   that start at the same time all migrated the database at once. A first
