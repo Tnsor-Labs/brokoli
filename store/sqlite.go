@@ -727,8 +727,11 @@ func (s *SQLiteStore) WithTx(fn func(*sql.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	// Deferred so a panic in fn rolls back too: it used to leave the
+	// transaction open, and on SQLite every later write then failed with
+	// "database is locked". After Commit this is a no-op.
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return tx.Commit()
@@ -765,6 +768,9 @@ func (s *SQLiteStore) ListDLQ(pipelineID string, includeResolved bool, limit int
 		}
 		e.Resolved = resolved != 0
 		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -2722,6 +2728,9 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 		}
 		conns = append(conns, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return conns, nil
 }
 
@@ -2748,6 +2757,9 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 			return nil, err
 		}
 		conns = append(conns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return conns, nil
 }
@@ -2864,6 +2876,9 @@ func (s *SQLiteStore) ListWorkspaces() ([]models.Workspace, error) {
 		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		ws = append(ws, w)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ws, nil
 }
 
@@ -2912,6 +2927,9 @@ func (s *SQLiteStore) ListWorkspaceMembers(workspaceID string) ([]models.Workspa
 		m.JoinedAt, _ = time.Parse(timeFormat, joinedAt)
 		members = append(members, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return members, nil
 }
 
@@ -2935,6 +2953,9 @@ func (s *SQLiteStore) GetUserWorkspaces(userID string) ([]models.Workspace, erro
 		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		ws = append(ws, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ws, nil
 }
@@ -2988,6 +3009,9 @@ func (s *SQLiteStore) ListAPITokens(workspaceID string) ([]models.APIToken, erro
 		}
 		tokens = append(tokens, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return tokens, nil
 }
 
@@ -3023,6 +3047,9 @@ func (s *SQLiteStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 		}
 		result = append(result, d)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -3051,6 +3078,9 @@ func (s *SQLiteStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay
 			return nil, err
 		}
 		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -3109,6 +3139,9 @@ func (s *SQLiteStore) ListVariables() ([]models.Variable, error) {
 		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		vars = append(vars, v)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return vars, nil
 }
 
@@ -3130,6 +3163,9 @@ func (s *SQLiteStore) ListVariablesByWorkspace(workspaceID string) ([]models.Var
 		v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		vars = append(vars, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -3738,6 +3774,9 @@ func (s *SQLiteStore) ListPhysicalInstances(runID string) ([]models.PhysicalInst
 		in.Status = models.RunStatus(status)
 		in.StartedAt = parseTimePtr(startedAt)
 		out = append(out, in)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

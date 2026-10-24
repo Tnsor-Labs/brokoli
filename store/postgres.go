@@ -782,8 +782,11 @@ func (s *PostgresStore) WithTx(fn func(*sql.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	// Deferred so a panic in fn rolls back too: it used to leave the
+	// transaction open, and on SQLite every later write then failed with
+	// "database is locked". After Commit this is a no-op.
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return tx.Commit()
@@ -818,6 +821,9 @@ func (s *PostgresStore) ListDLQ(pipelineID string, includeResolved bool, limit i
 			return nil, err
 		}
 		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -2263,6 +2269,9 @@ func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 		}
 		result = append(result, d)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -2292,6 +2301,9 @@ func (s *PostgresStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarD
 			return nil, err
 		}
 		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -2384,6 +2396,9 @@ func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 			return nil, err
 		}
 		conns = append(conns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return conns, nil
 }
@@ -2489,6 +2504,9 @@ func (s *PostgresStore) ListVariables() ([]models.Variable, error) {
 			return nil, err
 		}
 		vars = append(vars, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -2901,6 +2919,9 @@ func (s *PostgresStore) ListWorkspaces() ([]models.Workspace, error) {
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
 		ws = append(ws, w)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ws, nil
 }
 func (s *PostgresStore) DeleteWorkspace(id string) error {
@@ -2928,6 +2949,9 @@ func (s *PostgresStore) ListWorkspaceMembers(workspaceID string) ([]models.Works
 		rows.Scan(&m.WorkspaceID, &m.UserID, &m.Username, &m.Role, &m.JoinedAt)
 		ms = append(ms, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ms, nil
 }
 func (s *PostgresStore) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
@@ -2941,6 +2965,9 @@ func (s *PostgresStore) GetUserWorkspaces(userID string) ([]models.Workspace, er
 		var w models.Workspace
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
 		ws = append(ws, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ws, nil
 }
@@ -2973,6 +3000,9 @@ func (s *PostgresStore) ListAPITokens(workspaceID string) ([]models.APIToken, er
 		var t models.APIToken
 		rows.Scan(&t.ID, &t.Name, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt)
 		ts = append(ts, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ts, nil
 }
@@ -3533,6 +3563,9 @@ func (s *PostgresStore) ListPhysicalInstances(runID string) ([]models.PhysicalIn
 			in.StartedAt = &t
 		}
 		out = append(out, in)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }
