@@ -369,8 +369,8 @@ func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[str
 }
 
 func scalarDataSet(responseBody []byte, valuePath string) (*common.DataSet, error) {
-	var root interface{}
-	if err := json.Unmarshal(responseBody, &root); err != nil {
+	root, err := common.DecodeJSONValue(responseBody)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 	value, ok := common.ExtractPath(root, valuePath)
@@ -696,8 +696,7 @@ func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, 
 		if endFlagPath == "" {
 			return false
 		}
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, endFlagPath); ok {
 				endFlag, _ := v.(bool)
 				return endFlag
@@ -757,8 +756,7 @@ func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions
 		if totalPagesPath == "" {
 			return -1
 		}
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, totalPagesPath); ok {
 				if n, ok := toFloat(v); ok {
 					return int(n)
@@ -841,8 +839,7 @@ func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, 
 		}
 
 		nextCursor := ""
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, cursorPath); ok {
 				nextCursor = stringifyScalar(v)
 			}
@@ -884,8 +881,7 @@ func (f *RESTFetcher) paginateNextLink(source string, baseOptions RequestOptions
 		}
 
 		next := ""
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, nextPath); ok {
 				next = stringifyScalar(v)
 			}
@@ -1043,6 +1039,8 @@ func toFloat(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
 		return n, true
+	case int64:
+		return float64(n), true
 	case int:
 		return float64(n), true
 	case json.Number:

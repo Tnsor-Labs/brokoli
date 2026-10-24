@@ -259,7 +259,7 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	}
 	for _, row := range output.Rows {
 		for k, v := range row {
-			row[k] = normalizeJSONNumbers(v)
+			row[k] = common.NormalizeJSONNumbers(v)
 		}
 	}
 

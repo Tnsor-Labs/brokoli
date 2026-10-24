@@ -48,6 +48,15 @@ reconstruct from git archaeology.
   added to it. Quotes inside a name are now doubled, the way each
   database writes them, and that path checks `dest_table` and
   `key_columns` like every other write path.
+- **Integers from REST sources, JSON files and code nodes stay exact**
+  -- @hc12r. These paths decoded every number as a float64, so an id
+  above 2^53 arrived changed (9007199254740993 became
+  9007199254740992). A numeric pagination cursor was also sent back
+  formatted as a float: 1234567 went out as `1.234567e+06`, so the next
+  page was never found. An integer now decodes to an exact int64, as it
+  already did once data crossed a node boundary; a number with a
+  fraction or exponent is still a float64. Code that embeds Brokoli and
+  type-asserts these values sees `int64` where it saw `float64`.
 
 ## [0.19.0] - 2026-10-24
 

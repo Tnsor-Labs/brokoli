@@ -96,6 +96,8 @@ func extractIDs(t *testing.T, rows []common.DataRow) []int {
 		switch v := row["id"].(type) {
 		case float64:
 			ids[i] = int(v)
+		case int64:
+			ids[i] = int(v)
 		case int:
 			ids[i] = v
 		default:

@@ -31,7 +31,7 @@ func TestCodeNode_TypeScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TypeScript execution failed: %v\nstderr: %s", err, stderr)
 	}
-	if len(result.Rows) != 1 || result.Rows[0]["id"] != float64(6) || !strings.Contains(stderr, "typescript ran") {
+	if len(result.Rows) != 1 || result.Rows[0]["id"] != int64(6) || !strings.Contains(stderr, "typescript ran") {
 		t.Fatalf("TypeScript result wrong: result=%+v stderr=%q", result, stderr)
 	}
 }

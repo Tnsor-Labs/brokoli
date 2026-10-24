@@ -1,12 +1,15 @@
 package codeexec
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 // Request is one code-node execution against the pool. Exactly one
@@ -234,9 +237,19 @@ func (p *Pool) exchange(w *Worker, msg ExecMsg, req Request, meta ExecMeta) (out
 				req.ProgressHandler(progress.Percent, progress.Message)
 			}
 		case FrameResult:
+			// UseNumber, then int64 for integers: plain Unmarshal made every
+			// number in the inline rows a float64, changing ids above 2^53,
+			// where the one-shot path keeps them exact.
 			var result ResultMsg
-			if err := json.Unmarshal(payload, &result); err != nil {
+			dec := json.NewDecoder(bytes.NewReader(payload))
+			dec.UseNumber()
+			if err := dec.Decode(&result); err != nil {
 				return failFatal(fmt.Errorf("malformed result frame: %w", err))
+			}
+			for _, row := range result.Output.Rows {
+				for k, v := range row {
+					row[k] = common.NormalizeJSONNumbers(v)
+				}
 			}
 			out.result = &Result{
 				Columns:     result.Output.Columns,

@@ -165,7 +165,7 @@ func TestExecuteInstanceWorkOrder_FetchesSourceAPIPage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteInstanceWorkOrder: %v", err)
 	}
-	if len(result.Rows) != 1 || result.Rows[0]["id"] != float64(5) {
+	if len(result.Rows) != 1 || result.Rows[0]["id"] != int64(5) {
 		t.Fatalf("result = %+v, want one API row", result)
 	}
 }

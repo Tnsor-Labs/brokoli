@@ -1067,8 +1067,8 @@ func manifestFilePaths(manifest *taskbundlev2.Manifest) []string {
 // numeric contract for task output, however it was declared, is what
 // #479 and #496 were both about.
 func normalizeTaskOutputNumbers(out taskOutputPort) taskOutputPort {
-	out.Value = normalizeJSONNumbers(out.Value)
-	out.ItemKey = normalizeJSONNumbers(out.ItemKey)
+	out.Value = common.NormalizeJSONNumbers(out.Value)
+	out.ItemKey = common.NormalizeJSONNumbers(out.ItemKey)
 	for i, item := range out.Items {
 		out.Items[i] = normalizeTaskOutputNumbers(item)
 	}
