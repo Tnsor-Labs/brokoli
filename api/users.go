@@ -13,6 +13,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Tnsor-Labs/brokoli/store"
 	"time"
@@ -513,32 +514,61 @@ func (us *UserStore) UserCount() int {
 
 // --- JWT ---
 
-var jwtSecret []byte
+// jwtSecret is the HS256 key that signs session tokens. It is set once,
+// on first use or by InitJWTSecret, and never replaced: requests used to
+// initialise it on first use with no lock, so concurrent first requests
+// raced on it, and with no configured secret each could generate its own,
+// leaving tokens signed under one unverifiable under another. Replacing it
+// later would also orphan the datacap key derived from it.
+var (
+	jwtSecretMu sync.RWMutex
+	jwtSecret   []byte
+)
 
+// InitJWTSecret loads the signing secret if it is not loaded yet: from
+// BROKOLI_JWT_SECRET, else from .brokoli-jwt-secret, else a new random one
+// persisted there so tokens survive restarts.
 func InitJWTSecret() {
-	// Try to load persisted secret from env or file
-	if s := os.Getenv("BROKOLI_JWT_SECRET"); s != "" {
-		jwtSecret = []byte(s)
+	jwtSecretMu.Lock()
+	defer jwtSecretMu.Unlock()
+	if jwtSecret != nil {
 		return
+	}
+	jwtSecret = loadJWTSecret()
+}
+
+// jwtKey returns the signing secret, loading it on first use.
+func jwtKey() []byte {
+	jwtSecretMu.RLock()
+	key := jwtSecret
+	jwtSecretMu.RUnlock()
+	if key != nil {
+		return key
+	}
+	InitJWTSecret()
+	jwtSecretMu.RLock()
+	defer jwtSecretMu.RUnlock()
+	return jwtSecret
+}
+
+func loadJWTSecret() []byte {
+	if s := os.Getenv("BROKOLI_JWT_SECRET"); s != "" {
+		return []byte(s)
 	}
 	// Try to read from file next to the binary
 	if data, err := os.ReadFile(".brokoli-jwt-secret"); err == nil && len(data) >= 32 {
-		jwtSecret = data[:32]
-		return
+		return data[:32]
 	}
 	// Generate and persist so tokens survive restarts
 	b := make([]byte, 32)
 	rand.Read(b)
-	jwtSecret = b
 	if err := os.WriteFile(".brokoli-jwt-secret", b, 0600); err != nil {
 		log.Printf("WARNING: failed to persist JWT secret: %v", err)
 	}
+	return b
 }
 
 func GenerateToken(user *User) (string, error) {
-	if jwtSecret == nil {
-		InitJWTSecret()
-	}
 	claims := jwt.MapClaims{
 		"sub":      user.ID,
 		"username": user.Username,
@@ -562,26 +592,28 @@ func GenerateToken(user *User) (string, error) {
 		}
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
+	return token.SignedString(jwtKey())
 }
 
 // SignToken signs arbitrary JWT claims with the server's secret.
 // Used by enterprise handlers (e.g. Impersonate) that build custom tokens.
 func SignToken(claims jwt.MapClaims) (string, error) {
-	if jwtSecret == nil {
-		InitJWTSecret()
-	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString(jwtSecret)
+	return token.SignedString(jwtKey())
 }
 
 func ParseToken(tokenStr string) (*jwt.MapClaims, error) {
-	if jwtSecret == nil {
+	jwtSecretMu.RLock()
+	key := jwtSecret
+	jwtSecretMu.RUnlock()
+	if key == nil {
 		return nil, fmt.Errorf("JWT not initialized")
 	}
+	// Only HS256: the key is a shared secret, and a token naming another
+	// algorithm is not one this server signed.
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (interface{}, error) {
-		return jwtSecret, nil
-	})
+		return key, nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil || !token.Valid {
 		return nil, fmt.Errorf("invalid token")
 	}

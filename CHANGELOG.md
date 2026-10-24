@@ -67,6 +67,19 @@ reconstruct from git archaeology.
   twice. All three now compare values: numbers by value whatever type
   carries them, text only with text, and a missing value only with a
   missing value.
+- **Concurrent first requests no longer race on the session-token
+  secret** -- @hc12r. The secret that signs session tokens was loaded on
+  first use with no lock. Requests arriving together raced on it, and
+  with no `BROKOLI_JWT_SECRET` and no secret file each could generate
+  its own, so a token signed under one failed to verify under another.
+  Starting the server again in the same process could also replace it
+  and invalidate tokens already issued. It is now loaded once and kept,
+  and a token is accepted only when signed with HS256.
+- **Reading `/metrics` during runs is no longer a data race** -- @hc12r.
+  The engine counts runs, attempts and events with atomic updates, and
+  the metrics endpoint read the same fields plainly. It now reads them
+  through `Engine.Metrics()`, a snapshot taken atomically, which code
+  embedding Brokoli should use too.
 
 ## [0.19.0] - 2026-10-24
 
