@@ -472,7 +472,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 		// Check if cancelled
 		if r.ctx.Err() != nil {
-			runErr = fmt.Errorf("pipeline cancelled")
+			runErr = ErrRunCancelled
 			break
 		}
 
@@ -565,7 +565,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 				// Check cancellation before starting node
 				if r.ctx.Err() != nil {
-					nodeErr = fmt.Errorf("pipeline cancelled")
+					nodeErr = ErrRunCancelled
 					return
 				}
 
@@ -1232,7 +1232,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			}
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
-				err = fmt.Errorf("pipeline cancelled")
+				err = ErrRunCancelled
 			} else {
 				err = fmt.Errorf("node timed out after %s", nodeTimeout)
 			}
@@ -2149,7 +2149,7 @@ func (r *Runner) finalizeCancelled() error {
 	r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
 	common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
 		"status", models.RunStatusCancelled)
-	return fmt.Errorf("pipeline cancelled")
+	return ErrRunCancelled
 }
 
 func (r *Runner) failRun(err error) error {

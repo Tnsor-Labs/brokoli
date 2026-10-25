@@ -46,6 +46,7 @@ func TestPrometheusHandlerReportsEventAndAttemptMetrics(t *testing.T) {
 	eng.AttemptsFailed = 2
 	eng.AttemptsRetried = 1
 	eng.RunsQueueWaiting = 5
+	eng.RunsCancelled = 4
 
 	metrics := NewMetrics()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -66,6 +67,7 @@ func TestPrometheusHandlerReportsEventAndAttemptMetrics(t *testing.T) {
 		"brokoli_node_attempts_failed_total 2\n",
 		"brokoli_node_attempts_retried_total 1\n",
 		"brokoli_runs_queue_waiting 5\n",
+		"brokoli_pipeline_runs_cancelled 4\n",
 	}
 	for _, want := range wantLines {
 		if !strings.Contains(body, want) {

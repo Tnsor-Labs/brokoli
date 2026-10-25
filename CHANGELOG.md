@@ -111,6 +111,13 @@ reconstruct from git archaeology.
   builds four, so code that builds servers repeatedly (tests, an
   embedding application) leaked four per server. Idle clients are now
   forgotten while requests are handled, with no goroutine.
+- **A cancelled run is no longer counted as a failure** -- @hc12r. A
+  cancelled run ended with the same error as a failed one, so the engine
+  added it to `brokoli_pipeline_runs_failed`, and cancelling runs raised
+  the metric operators alert on. Cancelled runs are now counted in a new
+  `brokoli_pipeline_runs_cancelled` (`RunsCancelled`, also in
+  `Engine.Metrics()`), and the error they return is `engine.ErrRunCancelled`,
+  with the same message as before.
 
 ## [0.19.0] - 2026-10-24
 

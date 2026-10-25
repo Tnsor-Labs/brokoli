@@ -166,6 +166,10 @@ type Engine struct {
 	RunsTotal     int64
 	RunsSucceeded int64
 	RunsFailed    int64
+	// RunsCancelled counts runs that ended because they were cancelled.
+	// They were counted in RunsFailed, so cancelling raised the failure
+	// metric.
+	RunsCancelled int64
 
 	// Startup-recovery counters (Tnsor-Labs/brokoli#9), incremented by
 	// RecoverNonTerminalRuns via atomic.AddInt64 exactly like RunsTotal/
@@ -787,6 +791,24 @@ func (e *Engine) newRunRunner(pipe *models.Pipeline, requiredCapabilities ...[]s
 	return runner
 }
 
+// ErrRunCancelled is the error a run returns when it was cancelled. Its
+// text is the one a cancelled run has always reported.
+var ErrRunCancelled = errors.New("pipeline cancelled")
+
+// countRunOutcome adds a finished run to the engine's counters. Every
+// path that executes a run counts through here, so a cancelled run is
+// counted as cancelled everywhere rather than failed on some paths.
+func (e *Engine) countRunOutcome(err error) {
+	switch {
+	case errors.Is(err, ErrRunCancelled):
+		atomic.AddInt64(&e.RunsCancelled, 1)
+	case err != nil:
+		atomic.AddInt64(&e.RunsFailed, 1)
+	default:
+		atomic.AddInt64(&e.RunsSucceeded, 1)
+	}
+}
+
 func (e *Engine) configureRunner(r *Runner) *Runner {
 	r.nativeADBCWorker = e.NativeADBCWorker
 	r.waitInPlace = e.WaitInPlace
@@ -921,11 +943,10 @@ func (e *Engine) RunPipelineOpts(pipelineID string, opts RunOptions) (*models.Ru
 		e.emitLineageStart(pipe, runID)
 
 		run, err := runner.Execute()
+		e.countRunOutcome(err)
 		if err != nil {
-			atomic.AddInt64(&e.RunsFailed, 1)
 			e.emitLineageFail(pipe, runID, err.Error())
 		} else {
-			atomic.AddInt64(&e.RunsSucceeded, 1)
 			e.emitLineageComplete(pipe, runID, time.Since(startedAt).Milliseconds())
 		}
 		// Signal the caller first so the RunPipeline return latency does not include
@@ -1335,11 +1356,7 @@ func (e *Engine) runPipelineAsyncOpts(useJobQueue bool, pipelineID string, requi
 			e.mu.Unlock()
 		}()
 		_, err := runner.Execute()
-		if err != nil {
-			atomic.AddInt64(&e.RunsFailed, 1)
-		} else {
-			atomic.AddInt64(&e.RunsSucceeded, 1)
-		}
+		e.countRunOutcome(err)
 	}()
 
 	return runID, nil
@@ -1494,11 +1511,7 @@ func (e *Engine) ExecuteQueuedRun(runID, pipelineID string, params map[string]st
 	atomic.AddInt64(&e.RunsTotal, 1)
 
 	_, executeErr := runner.Execute()
-	if executeErr != nil {
-		atomic.AddInt64(&e.RunsFailed, 1)
-	} else {
-		atomic.AddInt64(&e.RunsSucceeded, 1)
-	}
+	e.countRunOutcome(executeErr)
 	persisted, err := e.store.GetRun(runID)
 	if err != nil {
 		return nil, fmt.Errorf("verify terminal run state: %w", err)

@@ -4,7 +4,7 @@ import "sync/atomic"
 
 // EngineMetrics is a snapshot of the engine's counters.
 type EngineMetrics struct {
-	RunsTotal, RunsSucceeded, RunsFailed                    int64
+	RunsTotal, RunsSucceeded, RunsFailed, RunsCancelled     int64
 	RunsRecovered, RunsRecoveryFailed, RunsRecoveryRequeued int64
 	AttemptsReclaimed                                       int64
 	EventsAppended, EventsAppendFailed, EventsReplayed      int64
@@ -21,6 +21,7 @@ func (e *Engine) Metrics() EngineMetrics {
 		RunsTotal:            atomic.LoadInt64(&e.RunsTotal),
 		RunsSucceeded:        atomic.LoadInt64(&e.RunsSucceeded),
 		RunsFailed:           atomic.LoadInt64(&e.RunsFailed),
+		RunsCancelled:        atomic.LoadInt64(&e.RunsCancelled),
 		RunsRecovered:        atomic.LoadInt64(&e.RunsRecovered),
 		RunsRecoveryFailed:   atomic.LoadInt64(&e.RunsRecoveryFailed),
 		RunsRecoveryRequeued: atomic.LoadInt64(&e.RunsRecoveryRequeued),
