@@ -11,10 +11,29 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-10-25
+
+A reliability release. A node's timeout now stops the work it times out:
+before, Brokoli stopped waiting but the step carried on, and a retry could
+write the same rows a second time. Alongside that, fixes for crashes,
+races and quietly wrong answers found in an audit of the codebase.
+
 ### Changed
 
 These can change what an existing deployment does.
 
+- **Upgrading from 0.19** -- @hc12r. No new migration runs. Node
+  timeouts are now enforced: a step that times out is cancelled, and a
+  timed-out attempt that does not stop within the node's timeout (at most
+  30 seconds) fails the node instead of being retried beside it, so a
+  step that used to finish past its timeout now fails at it. Cancelled
+  runs move from `brokoli_pipeline_runs_failed` to the new
+  `brokoli_pipeline_runs_cancelled`. Integers from REST sources, JSON
+  files and code nodes are `int64` rather than `float64`. Dedup keeps rows
+  it used to drop as duplicates, and joins match an integer key with the
+  same number as a float. Session tokens are accepted only when signed
+  with HS256. A server whose scheduler cannot start exits. Each is
+  described below.
 - **A server whose scheduler cannot start exits** -- @hc12r. In `all`
   and `scheduler` mode, a scheduler that failed to start (its first read
   of the pipelines failed) was logged as a warning, and the process went
