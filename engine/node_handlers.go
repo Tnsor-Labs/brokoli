@@ -1472,7 +1472,11 @@ func apiSinkConfigFrom(node models.Node) (apiSinkConfig, error) {
 // totalBatches is 0 when the count is not known in advance, which is the
 // streamed case -- the log then counts batches as it goes rather than claiming
 // a denominator it cannot have.
-func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatches int, next func() (*common.DataSet, error)) (int, int, error) {
+// sendAPIBatches sends under ctx, the attempt's context, so a timed-out
+// or cancelled attempt sends no further batches. It used the run's
+// context, which a timeout never reaches: after the node had timed out
+// and failed, the loop went on sending for as long as the run lasted.
+func (r *Runner) sendAPIBatches(ctx context.Context, node models.Node, cfg apiSinkConfig, totalBatches int, next func() (*common.DataSet, error)) (int, int, error) {
 	// sink_api's URL is arbitrary pipeline-editor-supplied config, so it must
 	// use the same operator-configured outbound policy as every other
 	// pipeline-triggered request. Previously this had no SSRF protection.
@@ -1480,7 +1484,7 @@ func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatche
 	totalSent, batchNum := 0, 0
 
 	for {
-		if r.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return totalSent, batchNum, fmt.Errorf("cancelled")
 		}
 		batch, err := next()
@@ -1500,7 +1504,7 @@ func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatche
 			return totalSent, batchNum, fmt.Errorf("marshal batch %d: %w", batchNum, err)
 		}
 
-		req, err := http.NewRequestWithContext(r.ctx, cfg.method, cfg.url, strings.NewReader(string(payload)))
+		req, err := http.NewRequestWithContext(ctx, cfg.method, cfg.url, strings.NewReader(string(payload)))
 		if err != nil {
 			return totalSent, batchNum, fmt.Errorf("create request: %w", err)
 		}
@@ -1536,7 +1540,7 @@ func ofTotal(total int) string {
 	return fmt.Sprintf("/%d", total)
 }
 
-func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runSinkAPI(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_api node requires input data")
 	}
@@ -1560,7 +1564,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 		return batch, nil
 	}
 
-	totalSent, batches, err := r.sendAPIBatches(node, cfg, totalBatches, next)
+	totalSent, batches, err := r.sendAPIBatches(ctx, node, cfg, totalBatches, next)
 	if err != nil {
 		return nil, err
 	}

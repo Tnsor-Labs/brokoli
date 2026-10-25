@@ -642,7 +642,7 @@ func (r *Runner) runNodeStreamed(ctx context.Context, node models.Node, inputRef
 	case models.NodeTypeSourceDB:
 		return r.runSourceDBStreamed(ctx, node, outputs, attempt)
 	case models.NodeTypeSinkAPI:
-		return r.runSinkAPIStreamed(node, inputRef, outputs)
+		return r.runSinkAPIStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeSinkFile:
 		return r.runSinkFileStreamed(ctx, node, inputRef, outputs)
 	case models.NodeTypeSinkDB:
@@ -1062,7 +1062,7 @@ func (r *Runner) runSinkFileStreamed(ctx context.Context, node models.Node, inpu
 // runSinkAPIStreamed posts a referenced input in batches without ever holding
 // it. The batches the reader yields are handed to the same sender the
 // materialising path uses, so the two cannot drift over what they send.
-func (r *Runner) runSinkAPIStreamed(node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
+func (r *Runner) runSinkAPIStreamed(ctx context.Context, node models.Node, inputRef *artifact.DatasetRef, outputs *nodeOutputs) (nodeExecutionResult, error) {
 	if inputRef == nil {
 		return nodeExecutionResult{}, fmt.Errorf("sink_api streamed path requires a referenced input (dispatch bug)")
 	}
@@ -1115,7 +1115,7 @@ func (r *Runner) runSinkAPIStreamed(node models.Node, inputRef *artifact.Dataset
 		totalBatches = int((inputRef.RowCount + int64(cfg.batchSize) - 1) / int64(cfg.batchSize))
 	}
 
-	totalSent, sentBatches, err := r.sendAPIBatches(node, cfg, totalBatches, next)
+	totalSent, sentBatches, err := r.sendAPIBatches(ctx, node, cfg, totalBatches, next)
 	if err != nil {
 		return nodeExecutionResult{}, err
 	}

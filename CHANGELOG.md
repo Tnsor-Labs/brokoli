@@ -142,6 +142,12 @@ reconstruct from git archaeology.
   on every migrate path including partitions and remote workers.
   `engine.QueryDatabaseContext` is the context-aware form of
   `QueryDatabase`.
+- **An API sink stops sending when its attempt times out** -- @hc12r.
+  `sink_api` sent its batches under the run's context, which a node's
+  timeout never reaches, so after the node had timed out and failed it
+  went on sending the remaining batches for as long as the run lasted.
+  It now sends under the attempt's deadline. A request already received
+  by the endpoint cannot be taken back; no further batches go out.
 
 ## [0.19.0] - 2026-10-24
 
