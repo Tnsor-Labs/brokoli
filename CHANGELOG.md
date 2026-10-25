@@ -11,6 +11,17 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Changed
+
+These can change what an existing deployment does.
+
+- **A server whose scheduler cannot start exits** -- @hc12r. In `all`
+  and `scheduler` mode, a scheduler that failed to start (its first read
+  of the pipelines failed) was logged as a warning, and the process went
+  on serving with no scheduler: nothing ran on a schedule, and only that
+  log line said so. The process now exits with the error, so a process
+  supervisor or orchestrator restarts it.
+
 ### Fixed
 
 - **Starting a Postgres installation no longer rebuilds the variables
