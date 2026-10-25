@@ -147,7 +147,10 @@ func (r *Runner) runSourceFile(ctx context.Context, node models.Node) (*common.D
 	return ds, nil
 }
 
-func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
+// runSourceAPI fetches under ctx, the attempt's context, when the fetcher
+// can be bounded by one: a timed-out or cancelled attempt abandons its
+// request and fetches no further page. It used a background context.
+func (r *Runner) runSourceAPI(ctx context.Context, node models.Node) (*common.DataSet, error) {
 	source, _ := node.Config["url"].(string)
 	sourceType, _ := node.Config["source_type"].(string)
 	if source == "" {
@@ -210,7 +213,7 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		return ds, nil
 	}
 
-	ds, err := r.fetchSourceAPI(node, fetcher, source, hasPagination, execCfg)
+	ds, err := r.fetchSourceAPI(ctx, node, fetcher, source, hasPagination, execCfg)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
 	}
@@ -227,7 +230,7 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 // pagination config, no checkpoint store configured, or a fetcher type that
 // doesn't support it. That fallback keeps checkpointing strictly opt-in and
 // zero-overhead for every pipeline that doesn't set checkpoint_every.
-func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, source string, hasPagination bool, execCfg map[string]interface{}) (*common.DataSet, error) {
+func (r *Runner) fetchSourceAPI(ctx context.Context, node models.Node, fetcher fetchers.Fetcher, source string, hasPagination bool, execCfg map[string]interface{}) (*common.DataSet, error) {
 	checkpointEvery, hasCheckpointEvery := execConfigInt(execCfg, "checkpoint_every")
 	cf, supportsCheckpointing := fetcher.(fetchers.CheckpointingFetcher)
 
@@ -244,6 +247,9 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 			case r.checkpointStore == nil:
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v set but no checkpoint store is configured — ignoring", execCfg["checkpoint_every"])
 			}
+		}
+		if bounded, ok := fetcher.(fetchers.ContextFetcher); ok {
+			return bounded.FetchContext(ctx, source, node.Config)
 		}
 		return fetcher.Fetch(source, node.Config)
 	}
@@ -287,7 +293,13 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 		return nil
 	}
 
-	ds, err := cf.FetchPaginatedResumable(source, node.Config, resume, resumeRecords, onCheckpoint)
+	var ds *common.DataSet
+	var err error
+	if bounded, ok := fetcher.(fetchers.CheckpointingContextFetcher); ok {
+		ds, err = bounded.FetchPaginatedResumableContext(ctx, source, node.Config, resume, resumeRecords, onCheckpoint)
+	} else {
+		ds, err = cf.FetchPaginatedResumable(source, node.Config, resume, resumeRecords, onCheckpoint)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -332,15 +344,19 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return records
 }
 
-func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult, error) {
-	if native, err := r.nativeSourceRequest(r.ctx, node); err != nil {
+// runSourceDB reads under ctx, the attempt's context, so a timed-out or
+// cancelled attempt's query is cancelled in the database. It used a
+// background context with a five-minute ceiling, and the run's context
+// for native and BigQuery sources, so a query outlived its attempt.
+func (r *Runner) runSourceDB(ctx context.Context, node models.Node, attempt int) (nodeExecutionResult, error) {
+	if native, err := r.nativeSourceRequest(ctx, node); err != nil {
 		return nodeExecutionResult{}, err
 	} else if native != nil {
 		maxRows := 0
 		if r.dryRun {
 			maxRows = r.dryRunMaxRows
 		}
-		return r.runNativeSource(r.ctx, node, native, attempt, maxRows)
+		return r.runNativeSource(ctx, node, native, attempt, maxRows)
 	}
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
@@ -366,14 +382,14 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
-		ds, err := QueryBigQuery(r.ctx, uri, query, config, auth, args...)
+		ds, err := QueryBigQuery(ctx, uri, query, config, auth, args...)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from BigQuery", len(ds.Rows), len(ds.Columns))
 		return nodeExecutionResult{output: ds}, nil
 	}
-	ds, err := QueryDatabase(uri, query, args...)
+	ds, err := QueryDatabaseContext(ctx, uri, query, args...)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
 	}

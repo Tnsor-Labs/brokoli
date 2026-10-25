@@ -163,6 +163,16 @@ These can change what an existing deployment does.
   posted with no context and only a 10-second client limit, so a slow
   endpoint held the attempt past the node's timeout. The request now
   carries the attempt's deadline.
+- **Database and API sources, dbt and code expansions stop with their
+  attempt** -- @hc12r. These steps ran under contexts their node's
+  deadline never reached. A `source_db` query whose attempt had timed out
+  went on waiting in the database. A `source_api` request ran to the
+  API's reply, and a paginated fetch could go on to further pages and sat
+  through every retry wait. A timed-out `dbt run` kept building models.
+  A code expansion's local instances ignored even cancelling the run.
+  Each now stops when its attempt times out or is cancelled.
+  `fetchers.ContextFetcher` and `RESTFetcher.FetchContext` bound a fetch
+  by a context.
 
 ## [0.19.0] - 2026-10-24
 

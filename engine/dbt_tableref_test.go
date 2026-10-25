@@ -230,6 +230,7 @@ func TestEphemeralModelIsRefusedByName(t *testing.T) {
 func TestOutputModelWithoutAConnectionIsRefused(t *testing.T) {
 	r := &Runner{}
 	_, err := r.dbtOutputTableRef(
+		r.ctx,
 		models.Node{ID: "dbt", Config: map[string]interface{}{"output_model": "customers"}},
 		"/nonexistent", nil, nil)
 	if err == nil {
@@ -243,7 +244,7 @@ func TestOutputModelWithoutAConnectionIsRefused(t *testing.T) {
 // Not asking for a reference is the common case and must stay silent.
 func TestNoOutputModelIsNotAnError(t *testing.T) {
 	r := &Runner{}
-	ref, err := r.dbtOutputTableRef(models.Node{ID: "dbt", Config: map[string]interface{}{}}, "", nil, nil)
+	ref, err := r.dbtOutputTableRef(r.ctx, models.Node{ID: "dbt", Config: map[string]interface{}{}}, "", nil, nil)
 	if err != nil {
 		t.Fatalf("a node that asks for nothing must not error: %v", err)
 	}

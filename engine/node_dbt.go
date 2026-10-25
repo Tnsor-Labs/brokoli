@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -31,7 +32,11 @@ var dbtCommands = map[string]bool{
 // proposes replacing this with a model-level integration that reads dbt's
 // manifest; until that exists, the contract here is narrow: run the command,
 // report what dbt reported, and fail loudly when dbt fails.
-func (r *Runner) runDBT(node models.Node) (nodeExecutionResult, error) {
+// runDBT runs dbt under ctx, the attempt's context, so a timed-out or
+// cancelled attempt stops its dbt process. It used the run's context,
+// which a timeout never reaches: a dbt run that timed out kept building
+// models, and a retry would start a second one beside it.
+func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionResult, error) {
 	command, _ := node.Config["command"].(string)
 	projectDir, _ := node.Config["project_dir"].(string)
 	profiles, _ := node.Config["profiles_dir"].(string)
@@ -96,7 +101,7 @@ func (r *Runner) runDBT(node models.Node) (nodeExecutionResult, error) {
 	// The attempt's context, so the node's configured timeout and a
 	// cancelled run both stop dbt where it is. Without it a hung invocation
 	// outlived both, which no other external call in the engine allows.
-	cmd := exec.CommandContext(r.ctx, "dbt", args...)
+	cmd := exec.CommandContext(ctx, "dbt", args...)
 	cmd.Dir = projectDir
 	// Only override DBT_PROFILES_DIR when one was configured. Setting it
 	// unconditionally exported an empty value and overrode dbt's own
@@ -142,7 +147,7 @@ func (r *Runner) runDBT(node models.Node) (nodeExecutionResult, error) {
 		if p, perr := dbtmanifest.ParseRunResultsForProject(projectDir); perr == nil {
 			parsed = p
 		}
-		failure := classifyDBTFailure(command, err, contextErrOf(r.ctx), parsed)
+		failure := classifyDBTFailure(command, err, contextErrOf(ctx), parsed)
 		r.log(node.ID, models.LogLevelError, "dbt %s failed after %.1fs (%s)",
 			command, duration.Seconds(), failure.Kind)
 		return nodeExecutionResult{}, failure
@@ -156,7 +161,7 @@ func (r *Runner) runDBT(node models.Node) (nodeExecutionResult, error) {
 	// compiler that already exists, without the engine learning what dbt
 	// is. Only when the node asks for it by naming an output_model.
 	if project, presults, ok := r.dbtArtifacts(projectDir); ok {
-		ref, refErr := r.dbtOutputTableRef(node, projectDir, project, presults)
+		ref, refErr := r.dbtOutputTableRef(ctx, node, projectDir, project, presults)
 		if refErr != nil {
 			return nodeExecutionResult{}, fmt.Errorf("dbt: %w", refErr)
 		}

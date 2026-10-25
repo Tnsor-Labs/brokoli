@@ -1990,11 +1990,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSourceFile:
 		return outputExecutionResult(r.runSourceFile(ctx, node))
 	case models.NodeTypeSourceAPI:
-		return outputExecutionResult(r.runSourceAPI(node))
+		return outputExecutionResult(r.runSourceAPI(ctx, node))
 	case models.NodeTypeSourceDB:
 		// Returns a full result: a source that can report its column
 		// types hands them downstream alongside the rows (#363).
-		return r.runSourceDB(node, attempt)
+		return r.runSourceDB(ctx, node, attempt)
 	case models.NodeTypeTransform:
 		return r.runTransform(node, input, inputSchema)
 	case models.NodeTypeProject:
@@ -2014,7 +2014,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// see engine/expansion.go's top-of-file doc comment for the full
 		// architectural resolution.
 		if nodeHasExpansion(node) {
-			output, err := r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+			output, err := r.runCodeExpansion(ctx, node, edgeInputsByFrom, attempt)
 			if err != nil {
 				return nodeExecutionResult{}, err
 			}
@@ -2052,7 +2052,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeDBT:
 		// dbt can hand downstream a reference rather than rows (#353
 		// Phase 3), so it returns a full result rather than a dataset.
-		return r.runDBT(node)
+		return r.runDBT(ctx, node)
 	case models.NodeTypeNotify:
 		return outputExecutionResult(r.runNotify(ctx, node, input))
 	case models.NodeTypeBash:

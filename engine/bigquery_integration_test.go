@@ -134,7 +134,7 @@ func TestBigQueryRunBindsRunParameters(t *testing.T) {
 	r.ctx = ctx
 	node := models.Node{ID: "bq", Type: models.NodeTypeSourceDB, Config: map[string]interface{}{
 		"uri": uri, "query": fmt.Sprintf("SELECT id FROM %s WHERE name = '${param.name}'", table)}}
-	result, err := r.runSourceDB(node, 1)
+	result, err := r.runSourceDB(ctx, node, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestBigQueryRunBindsRunParameters(t *testing.T) {
 		t.Fatalf("hostile value: %#v; the parameter was not bound", result.output)
 	}
 	r.varCtx = NewVariableContext(map[string]string{"name": "two"}, r.run.ID, time.Now())
-	result, err = r.runSourceDB(node, 1)
+	result, err = r.runSourceDB(ctx, node, 1)
 	if err != nil {
 		t.Fatal(err)
 	}

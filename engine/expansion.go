@@ -376,7 +376,12 @@ func combineExpansionResults(results []*common.DataSet) (*common.DataSet, error)
 // (not just the status/row-count models.ExpansionInstance already
 // persists), which is the larger per-instance dispatch work #90 M3's
 // acceptance gate covers.
-func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]*common.DataSet, nodeAttempt int) (*common.DataSet, error) {
+// runCodeExpansion runs local instances under ctx, the attempt's
+// context, so a timed-out or cancelled attempt stops their scripts.
+// Remote instances still wait under the run's context: stopping the local
+// wait would not stop the work order on its worker, and a retry would then
+// dispatch a second one beside it.
+func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInputsByFrom map[string]*common.DataSet, nodeAttempt int) (*common.DataSet, error) {
 	cfg, err := parseExpansionConfig(node)
 	if err != nil {
 		return nil, err
@@ -460,7 +465,7 @@ func (r *Runner) runCodeExpansion(node models.Node, edgeInputsByFrom map[string]
 			Columns: columnsOf(item),
 			Rows:    []common.DataRow{item},
 		}
-		out, err := r.executeExpansionInstance(node, nodeAttempt, i, instanceKey, len(items), itemDS, script, configForScript, runParams, timeoutSec)
+		out, err := r.executeExpansionInstance(ctx, node, nodeAttempt, i, instanceKey, len(items), itemDS, script, configForScript, runParams, timeoutSec)
 		if err != nil {
 			return fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
 		}
@@ -573,7 +578,7 @@ func columnsOf(row common.DataRow) []string {
 // store that doesn't implement store.ExpansionInstanceStore simply doesn't
 // get per-item durability — see that interface's doc comment — expansion
 // still executes either way).
-func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index int, instanceKey string, total int, itemDS *common.DataSet, script string, configForScript map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, error) {
+func (r *Runner) executeExpansionInstance(ctx context.Context, node models.Node, nodeAttempt, index int, instanceKey string, total int, itemDS *common.DataSet, script string, configForScript map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, error) {
 	instStore, _ := r.store.(store.ExpansionInstanceStore)
 
 	startTime := time.Now().UTC()
@@ -644,7 +649,7 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 
 	var span trace.Span
 	if !r.dryRun {
-		_, span = tracing.Tracer().Start(r.ctx, "brokoli.node.expansion_instance",
+		_, span = tracing.Tracer().Start(ctx, "brokoli.node.expansion_instance",
 			trace.WithAttributes(
 				attribute.String("run_id", r.run.ID),
 				attribute.String("node_id", node.ID),
@@ -665,7 +670,7 @@ func (r *Runner) executeExpansionInstance(node models.Node, nodeAttempt, index i
 	if execAttemptStore != nil && r.instanceJobQueue != nil {
 		result, err = r.dispatchExpansionInstanceRemotely(node, nodeAttempt, instanceKey, execFencingGen, itemDS, script, configForScript, runParams, timeoutSec)
 	} else {
-		result, stderr, err = ExecuteCodeNode(script, itemDS, configForScript, runParams, r.parameters, timeoutSec)
+		result, stderr, err = ExecuteCodeNodeContext(ctx, script, itemDS, configForScript, runParams, r.parameters, timeoutSec)
 	}
 	if stderr != "" {
 		for _, line := range splitLines(stderr) {

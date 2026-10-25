@@ -158,13 +158,13 @@ func TestDBTCommandsActuallyRun(t *testing.T) {
 	r := dbtRunner(t)
 
 	// seed first: the models ref it.
-	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+	if _, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "seed", "project_dir": projectDir, "profiles_dir": profilesDir,
 	})); err != nil {
 		t.Fatalf("dbt seed: %v", err)
 	}
 
-	res, err := r.runDBT(dbtNode(map[string]interface{}{
+	res, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "run", "project_dir": projectDir, "profiles_dir": profilesDir,
 		"select": "stg_orders city_totals",
 	}))
@@ -184,14 +184,14 @@ func TestDBTCommandsActuallyRun(t *testing.T) {
 		}
 	}
 
-	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+	if _, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "test", "project_dir": projectDir, "profiles_dir": profilesDir,
 		"select": "stg_orders city_totals",
 	})); err != nil {
 		t.Fatalf("dbt test: %v", err)
 	}
 
-	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+	if _, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "build", "project_dir": projectDir, "profiles_dir": profilesDir,
 		"select": "stg_orders city_totals",
 	})); err != nil {
@@ -205,7 +205,7 @@ func TestDBTListStillUsesOutputJSON(t *testing.T) {
 	t.Parallel()
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
-	res, err := r.runDBT(dbtNode(map[string]interface{}{
+	res, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "ls", "project_dir": projectDir, "profiles_dir": profilesDir,
 	}))
 	if err != nil {
@@ -225,7 +225,7 @@ func TestDBTFailingModelNamesTheModel(t *testing.T) {
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 
-	_, err := r.runDBT(dbtNode(map[string]interface{}{
+	_, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "run", "project_dir": projectDir, "profiles_dir": profilesDir,
 		"select": "always_fails",
 	}))
@@ -245,7 +245,7 @@ func TestDBTReadsResultsFromTheProjectDirectory(t *testing.T) {
 	projectDir, profilesDir := dbtFixtureProject(t)
 	r := dbtRunner(t)
 
-	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+	if _, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "seed", "project_dir": projectDir, "profiles_dir": profilesDir,
 	})); err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestDBTCancellationStopsTheProcess(t *testing.T) {
 	r.ctx = ctx
 	cancel()
 
-	_, err := r.runDBT(dbtNode(map[string]interface{}{
+	_, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		"command": "run", "project_dir": projectDir, "profiles_dir": profilesDir,
 	}))
 	if err == nil {
@@ -296,7 +296,7 @@ func TestDBTDoesNotClobberProfilesDirFromTheEnvironment(t *testing.T) {
 	t.Setenv("DBT_PROFILES_DIR", profilesDir)
 
 	r := dbtRunner(t)
-	if _, err := r.runDBT(dbtNode(map[string]interface{}{
+	if _, err := r.runDBT(r.ctx, dbtNode(map[string]interface{}{
 		// No profiles_dir configured on the node.
 		"command": "seed", "project_dir": projectDir,
 	})); err != nil {

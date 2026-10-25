@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -39,6 +40,7 @@ import (
 // Returns (nil, nil) when the node did not ask for one, which is the common
 // case and not a problem.
 func (r *Runner) dbtOutputTableRef(
+	ctx context.Context,
 	node models.Node,
 	projectDir string,
 	project *dbtmanifest.Project,
@@ -115,7 +117,7 @@ func (r *Runner) dbtOutputTableRef(
 	if !ok {
 		return nil, fmt.Errorf("no dialect registered for %q", dialect)
 	}
-	columns, err := queryColumnOrder(r.ctx, uri, query, d)
+	columns, err := queryColumnOrder(ctx, uri, query, d)
 	if err != nil {
 		return nil, fmt.Errorf("read the columns of %s: %w", relation, err)
 	}
