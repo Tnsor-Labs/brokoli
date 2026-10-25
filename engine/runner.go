@@ -1207,6 +1207,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		}()
 
 		var err error
+		stillRunning := false
 		select {
 		case result := <-resultCh:
 			output, outputRef, conditionDecision, err = result.result.output, result.result.outputRef, result.result.condition, result.err
@@ -1235,6 +1236,18 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				err = ErrRunCancelled
 			} else {
 				err = fmt.Errorf("node timed out after %s", nodeTimeout)
+				// A timed-out attempt is abandoned, not stopped: a handler
+				// that does not watch attemptCtx keeps running. Retrying
+				// beside it could write twice (a sink, a migrate), so the
+				// retry waits for it to stop, and if it does not stop
+				// within the grace period the node fails here instead.
+				grace := min(nodeTimeout, maxAttemptStopGrace)
+				select {
+				case <-resultCh:
+				case <-time.After(grace):
+					stillRunning = true
+					err = fmt.Errorf("node timed out after %s and was still running %s later, so it was not retried: a retry alongside it could write twice", nodeTimeout, grace)
+				}
 			}
 		}
 		attemptCancel()
@@ -1581,6 +1594,9 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		r.logWithTrace(node.ID, models.LogLevelWarning, spanID, attempt,
 			map[string]string{"error": err.Error(), "duration_ms": fmt.Sprintf("%d", duration)},
 			"Attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
+		if stillRunning {
+			break
+		}
 	}
 
 	if lastErr != nil {
@@ -1865,6 +1881,11 @@ func externalExecutorMustReturnData(n models.Node) bool {
 // its own remote dispatch (ADR-033) rather than claiming a second,
 // competing one at the same key: a task node's one instance IS the
 // whole node, unlike an expansion item's own distinct "idx:N" key.
+// maxAttemptStopGrace caps how long a timed-out attempt is given to
+// stop before its node fails without a retry. The grace is the node's
+// own timeout, up to this.
+const maxAttemptStopGrace = 30 * time.Second
+
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, allInputSchemas []columnSchema, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
 	// A disabled node type is refused here as well as at validation: this
 	// runs on the worker, whose operator may disable what the server that

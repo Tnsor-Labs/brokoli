@@ -118,6 +118,14 @@ reconstruct from git archaeology.
   `brokoli_pipeline_runs_cancelled` (`RunsCancelled`, also in
   `Engine.Metrics()`), and the error they return is `engine.ErrRunCancelled`,
   with the same message as before.
+- **A retry no longer runs alongside the attempt that timed out** --
+  @hc12r. When a node timed out, Brokoli stopped waiting for it but did
+  not stop it: a handler that does not watch its deadline kept running,
+  and the retry started beside it, so a sink or migrate could write
+  twice. A retry now waits for the timed-out attempt to stop, for up to
+  the node's timeout (at most 30 seconds). An attempt still running after
+  that fails the node instead of being retried beside it, with an error
+  that says so.
 
 ## [0.19.0] - 2026-10-24
 
