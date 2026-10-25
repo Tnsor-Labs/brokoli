@@ -2044,7 +2044,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSinkFile:
 		return outputExecutionResult(r.runSinkFile(ctx, node, input))
 	case models.NodeTypeSinkDB:
-		return outputExecutionResult(r.runSinkDB(node, input, inputSchema, attempt))
+		return outputExecutionResult(r.runSinkDB(ctx, node, input, inputSchema, attempt))
 	case models.NodeTypeSinkAPI:
 		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:

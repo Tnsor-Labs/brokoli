@@ -1222,7 +1222,12 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 	return []byte(buf.String()), w.Error()
 }
 
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
+// runSinkDB writes under ctx, the attempt's context: when the attempt
+// times out or the run is cancelled, the write is cancelled with it. It
+// used to write under the run's context or a background one, so a write
+// blocked on a lock carried on after its attempt gave up, and the retry
+// wrote the rows a second time.
+func (r *Runner) runSinkDB(ctx context.Context, node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_db node requires input data")
 	}
@@ -1258,7 +1263,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		if err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
-		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config, auth); err != nil {
+		if err := LoadBigQuery(ctx, uri, table, mode, input, config, auth); err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Loaded %d rows into BigQuery table %s", len(input.Rows), table)
@@ -1290,7 +1295,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 			// Author-written (#667): a person wrote this SQL in a
 			// sql_generate node and that node forwarded it here.
 			r.recordExecutedSQL(node.ID, attempt, s)
-			return r.execSinkSQL(node, uri, s)
+			return r.execSinkSQL(ctx, node, uri, s)
 		}
 	}
 
@@ -1331,7 +1336,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 				"widths and precision may not match the source", table)
 	}
 	if cfg.Dialect == "mysql" && strings.EqualFold(cfg.Mode, ModeUpsert) {
-		others, err := validateMySQLUpsertKey(r.ctx, uri, table, cfg.KeyColumns)
+		others, err := validateMySQLUpsertKey(ctx, uri, table, cfg.KeyColumns)
 		if err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
@@ -1357,7 +1362,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// megabytes of SQL text for the server to parse back.
 	if w, ok := bulkWriterFor(cfg); ok {
 		r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
-		affected, err := bulkWriteRows(w, uri, cfg, input)
+		affected, err := bulkWriteRowsContext(ctx, w, uri, cfg, input)
 		if err != nil {
 			return nil, fmt.Errorf("bulk write to %s: %w", table, err)
 		}
@@ -1372,7 +1377,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// Engine-generated (#667): GenerateSQL rendered the input rows into
 	// INSERT ... VALUES. Nobody wrote it, so a note is recorded in its place.
 	r.recordGeneratedWrite(node.ID, attempt, cfg.Table)
-	return r.execSinkSQL(node, uri, sql)
+	return r.execSinkSQL(ctx, node, uri, sql)
 }
 
 // execSinkSQL executes a sink's SQL and deliberately does NOT record it. Its
@@ -1380,8 +1385,8 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 // sql_generate node, the other passes SQL the engine generated. Only the
 // caller knows which (#667); recording here would have to guess from the
 // text.
-func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
-	affected, err := ExecuteSQL(uri, sql)
+func (r *Runner) execSinkSQL(ctx context.Context, node models.Node, uri, sql string) (*common.DataSet, error) {
+	affected, err := ExecuteSQLContext(ctx, uri, sql)
 	if err != nil {
 		return nil, fmt.Errorf("execute SQL: %w", err)
 	}

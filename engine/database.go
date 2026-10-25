@@ -256,6 +256,14 @@ func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, err
 
 // ExecuteSQL opens a connection and executes SQL statements (for sink_db).
 func ExecuteSQL(uri, sqlStatements string) (int64, error) {
+	return ExecuteSQLContext(context.Background(), uri, sqlStatements)
+}
+
+// ExecuteSQLContext is ExecuteSQL bounded by ctx as well as its own
+// ten-minute ceiling. A node's write passes its attempt's context, so a
+// timed-out or cancelled attempt stops writing; it used to run on a
+// background context and carry on after its attempt had given up.
+func ExecuteSQLContext(ctx context.Context, uri, sqlStatements string) (int64, error) {
 	if err := refuseNativeDatabase(uri, "SQL execution"); err != nil {
 		return 0, err
 	}
@@ -273,7 +281,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -295,7 +303,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 		if stmt == "" {
 			continue
 		}
-		result, err := tx.Exec(stmt)
+		result, err := tx.ExecContext(ctx, stmt)
 		if err != nil {
 			tx.Rollback()
 			return 0, fmt.Errorf("exec: %w", err)

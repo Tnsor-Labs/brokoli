@@ -126,6 +126,14 @@ reconstruct from git archaeology.
   the node's timeout (at most 30 seconds). An attempt still running after
   that fails the node instead of being retried beside it, with an error
   that says so.
+- **A sink_db write stops when its attempt times out** -- @hc12r. A
+  database sink wrote under a context of its own, so a node's timeout
+  never reached the database: a write blocked on a lock carried on after
+  its attempt had timed out, and the retry wrote the same rows again
+  (6 rows for 3 on Postgres and on SQLite, with the run reported as
+  successful). The write now runs under the attempt's deadline and is
+  cancelled with it. `engine.ExecuteSQLContext` is the context-aware form
+  of `ExecuteSQL`.
 
 ## [0.19.0] - 2026-10-24
 
