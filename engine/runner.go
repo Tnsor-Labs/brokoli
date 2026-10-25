@@ -2054,7 +2054,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// Phase 3), so it returns a full result rather than a dataset.
 		return r.runDBT(node)
 	case models.NodeTypeNotify:
-		return outputExecutionResult(r.runNotify(node, input))
+		return outputExecutionResult(r.runNotify(ctx, node, input))
 	case models.NodeTypeBash:
 		return outputExecutionResult(r.runBash(ctx, node, input))
 	case models.NodeTypeWait:

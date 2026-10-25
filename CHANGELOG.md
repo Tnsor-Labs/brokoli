@@ -148,6 +148,10 @@ reconstruct from git archaeology.
   went on sending the remaining batches for as long as the run lasted.
   It now sends under the attempt's deadline. A request already received
   by the endpoint cannot be taken back; no further batches go out.
+- **A notify node gives up when its attempt times out** -- @hc12r. It
+  posted with no context and only a 10-second client limit, so a slow
+  endpoint held the attempt past the node's timeout. The request now
+  carries the attempt's deadline.
 
 ## [0.19.0] - 2026-10-24
 

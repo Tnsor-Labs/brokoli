@@ -2,8 +2,10 @@ package engine
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -14,7 +16,10 @@ import (
 
 // runNotify sends a notification via webhook, Slack, or email.
 // Passes through the input dataset unchanged.
-func (r *Runner) runNotify(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+// runNotify posts under ctx, the attempt's context, so a slow endpoint
+// cannot hold the attempt past its timeout. It used to post with no
+// context and only the client's own 10s limit.
+func (r *Runner) runNotify(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	notifyType, _ := node.Config["notify_type"].(string)
 	webhookURL, _ := node.Config["webhook_url"].(string)
 	message, _ := node.Config["message"].(string)
@@ -36,15 +41,15 @@ func (r *Runner) runNotify(node models.Node, input *common.DataSet) (*common.Dat
 
 	switch notifyType {
 	case "slack":
-		return r.notifySlack(node, webhookURL, channel, message, input)
+		return r.notifySlack(ctx, node, webhookURL, channel, message, input)
 	case "webhook":
-		return r.notifyWebhook(node, webhookURL, message, input)
+		return r.notifyWebhook(ctx, node, webhookURL, message, input)
 	default:
 		return nil, fmt.Errorf("unsupported notify type: %s (use slack or webhook)", notifyType)
 	}
 }
 
-func (r *Runner) notifySlack(node models.Node, webhookURL, channel, message string, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) notifySlack(ctx context.Context, node models.Node, webhookURL, channel, message string, input *common.DataSet) (*common.DataSet, error) {
 	if webhookURL == "" {
 		return nil, fmt.Errorf("slack webhook_url is required")
 	}
@@ -58,7 +63,7 @@ func (r *Runner) notifySlack(node models.Node, webhookURL, channel, message stri
 
 	body, _ := json.Marshal(payload)
 	client := netguard.Outbound().Client(10 * time.Second)
-	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
+	resp, err := postJSON(ctx, client, webhookURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("slack notification failed: %w", err)
 	}
@@ -72,7 +77,7 @@ func (r *Runner) notifySlack(node models.Node, webhookURL, channel, message stri
 	return input, nil
 }
 
-func (r *Runner) notifyWebhook(node models.Node, webhookURL, message string, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) notifyWebhook(ctx context.Context, node models.Node, webhookURL, message string, input *common.DataSet) (*common.DataSet, error) {
 	if webhookURL == "" {
 		return nil, fmt.Errorf("webhook_url is required")
 	}
@@ -90,7 +95,7 @@ func (r *Runner) notifyWebhook(node models.Node, webhookURL, message string, inp
 
 	body, _ := json.Marshal(payload)
 	client := netguard.Outbound().Client(10 * time.Second)
-	resp, err := client.Post(webhookURL, "application/json", bytes.NewReader(body))
+	resp, err := postJSON(ctx, client, webhookURL, body)
 	if err != nil {
 		return nil, fmt.Errorf("webhook notification failed: %w", err)
 	}
@@ -98,4 +103,14 @@ func (r *Runner) notifyWebhook(node models.Node, webhookURL, message string, inp
 
 	r.log(node.ID, models.LogLevelInfo, "Webhook notification sent (status %d)", resp.StatusCode)
 	return input, nil
+}
+
+// postJSON posts body as JSON with ctx on the request.
+func postJSON(ctx context.Context, client *http.Client, url string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return client.Do(req)
 }
