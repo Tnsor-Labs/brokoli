@@ -134,6 +134,14 @@ reconstruct from git archaeology.
   successful). The write now runs under the attempt's deadline and is
   cancelled with it. `engine.ExecuteSQLContext` is the context-aware form
   of `ExecuteSQL`.
+- **A migrate stops when its attempt times out** -- @hc12r. Same flaw
+  as the database sink: migrate read and wrote under the run's context,
+  which a node's timeout never reaches, so a write blocked on a lock
+  outlived its attempt and the retry migrated the rows again (6 rows for
+  3 on Postgres). Reads and writes now run under the attempt's deadline,
+  on every migrate path including partitions and remote workers.
+  `engine.QueryDatabaseContext` is the context-aware form of
+  `QueryDatabase`.
 
 ## [0.19.0] - 2026-10-24
 

@@ -166,6 +166,12 @@ func refuseNativeDatabase(uri, operation string) error {
 // QueryDatabase runs a query and reads its whole result. args are bound to
 // the query's placeholders (see bindSQLParams).
 func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, error) {
+	return QueryDatabaseContext(context.Background(), uri, query, args...)
+}
+
+// QueryDatabaseContext is QueryDatabase bounded by ctx as well as its own
+// five-minute ceiling, so a node's read stops when its attempt does.
+func QueryDatabaseContext(ctx context.Context, uri, query string, args ...interface{}) (*common.DataSet, error) {
 	if err := refuseNativeDatabase(uri, "query"); err != nil {
 		return nil, err
 	}
@@ -181,7 +187,7 @@ func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, err
 	defer db.Close()
 
 	// 5 minute query timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {

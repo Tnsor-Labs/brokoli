@@ -1570,7 +1570,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSet, error) {
+func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt int) (*common.DataSet, error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
@@ -1638,7 +1638,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
 	if canMigratePostgresSameServer(sourceURI, destURI, dialect, mode, createTable, sourceQuery) {
 		r.log(node.ID, models.LogLevelInfo, "Migration: staging the source query inside PostgreSQL")
-		affected, err := migratePostgresSameServer(r.ctx, destURI, sourceQuery, destTable, keyColumns, sourceArgs, boolConfig(node.Config["_partition_disjoint"]))
+		affected, err := migratePostgresSameServer(ctx, destURI, sourceQuery, destTable, keyColumns, sourceArgs, boolConfig(node.Config["_partition_disjoint"]))
 		if err != nil {
 			return nil, fmt.Errorf("migrate: direct PostgreSQL upsert: %w", err)
 		}
@@ -1651,7 +1651,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 		}
 		if writer, ok := bulkWriterFor(streamCfg); ok {
 			r.log(node.ID, models.LogLevelInfo, "Migration: streaming source batches into the bulk writer")
-			affected, chunks, err := r.streamMigrateBulk(sourceURI, sourceQuery, sourceArgs, destURI, streamCfg, writer)
+			affected, chunks, err := r.streamMigrateBulk(ctx, sourceURI, sourceQuery, sourceArgs, destURI, streamCfg, writer)
 			if err != nil {
 				return nil, fmt.Errorf("migrate: streaming bulk write to %s: %w", destTable, err)
 			}
@@ -1659,14 +1659,14 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 			return migrateSummary(int(affected), destTable, chunks), nil
 		}
 	}
-	sourceDS, err := QueryDatabase(sourceURI, sourceQuery, sourceArgs...)
+	sourceDS, err := QueryDatabaseContext(ctx, sourceURI, sourceQuery, sourceArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Source: %d rows, %d columns", len(sourceDS.Rows), len(sourceDS.Columns))
 
 	if dialect == "mysql" && strings.EqualFold(mode, ModeUpsert) {
-		others, err := validateMySQLUpsertKey(r.ctx, destURI, destTable, keyColumns)
+		others, err := validateMySQLUpsertKey(ctx, destURI, destTable, keyColumns)
 		if err != nil {
 			return nil, fmt.Errorf("migrate: %w", err)
 		}
@@ -1693,7 +1693,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	// its own below, exactly as before.
 	typedDDL := ""
 	if createTable {
-		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery, sourceArgs...)
+		srcTypes, _, haveTypes := sourceColumnTypes(ctx, sourceURI, sourceQuery, sourceArgs...)
 		if haveTypes {
 			tableEngine, _ := node.Config["table_engine"].(string)
 			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes)
@@ -1736,7 +1736,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 		sent := 0
 		chunkNum := 0
 		next := func() (*common.DataSet, error) {
-			if r.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return nil, fmt.Errorf("cancelled at chunk %d", chunkNum+1)
 			}
 			if sent >= len(sourceDS.Rows) {
@@ -1753,7 +1753,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 				chunkNum, totalChunksFor(len(sourceDS.Rows), chunkSize), len(chunk.Rows), sent)
 			return chunk, nil
 		}
-		affected, err := w(r.ctx, destURI, writeCfg, sourceDS.Columns, next)
+		affected, err := w(ctx, destURI, writeCfg, sourceDS.Columns, next)
 		if err != nil {
 			return nil, fmt.Errorf("migrate: bulk write to %s: %w", destTable, err)
 		}
@@ -1768,7 +1768,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	// No bulk writer for this destination: the DDL, if one was rendered,
 	// has to run on its own before the chunked statement path.
 	if writeCfg.CreateDDL != "" {
-		if _, err := ExecuteSQL(destURI, writeCfg.CreateDDL); err != nil {
+		if _, err := ExecuteSQLContext(ctx, destURI, writeCfg.CreateDDL); err != nil {
 			return nil, fmt.Errorf("migrate: create %s: %w", destTable, err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Created %s from the source's column types", destTable)
@@ -1781,7 +1781,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	totalChunks := (len(sourceDS.Rows) + chunkSize - 1) / chunkSize
 
 	for i := 0; i < len(sourceDS.Rows); i += chunkSize {
-		if r.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return nil, fmt.Errorf("cancelled at chunk %d", (i/chunkSize)+1)
 		}
 
@@ -1817,7 +1817,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 			return nil, fmt.Errorf("generate SQL chunk %d: %w", chunkNum, err)
 		}
 
-		affected, err := ExecuteSQL(destURI, sql)
+		affected, err := ExecuteSQLContext(ctx, destURI, sql)
 		if err != nil {
 			return nil, fmt.Errorf("execute chunk %d: %w", chunkNum, err)
 		}

@@ -12,8 +12,8 @@ import (
 // batches. The producer copies only the batch slice: row maps are allocated by
 // the scanner and never mutated after emission. A full source result is never
 // materialized, which is essential for cross-database migrations.
-func (r *Runner) streamMigrateBulk(sourceURI, sourceQuery string, sourceArgs []interface{}, destURI string, cfg SQLGenConfig, writer bulkBatchWriter) (int64, int, error) {
-	ctx, cancel := context.WithCancel(r.ctx)
+func (r *Runner) streamMigrateBulk(ctx context.Context, sourceURI, sourceQuery string, sourceArgs []interface{}, destURI string, cfg SQLGenConfig, writer bulkBatchWriter) (int64, int, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	type batchResult struct {

@@ -2048,7 +2048,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSinkAPI:
 		return outputExecutionResult(r.runSinkAPI(node, input))
 	case models.NodeTypeMigrate:
-		return outputExecutionResult(r.runMigrate(node, attempt))
+		return outputExecutionResult(r.runMigrate(ctx, node, attempt))
 	case models.NodeTypeDBT:
 		// dbt can hand downstream a reference rather than rows (#353
 		// Phase 3), so it returns a full result rather than a dataset.
