@@ -11,6 +11,18 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Changed
+
+- **Versioned schema migrations** -- @hc12r. The database now records the
+  migrations applied to it, in a new `schema_migrations` table, and a start
+  applies only the ones it lacks. Until now the whole schema setup ran on
+  every start, with most of its errors ignored. The first start after
+  upgrading runs that setup one last time, as migration 1, and logs
+  `applied schema migration 1 (baseline)`; later starts skip it. An older
+  release still starts against an upgraded database, so a rollback works.
+  The system roles and the built-in templates are still brought up to date
+  on every start.
+
 ## [0.20.0] - 2026-10-25
 
 A reliability release. A node's timeout now stops the work it times out:

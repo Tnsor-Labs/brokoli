@@ -57,6 +57,7 @@ func TestExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert pre-migration row: %v", err)
 	}
+	forgetMigrations(t, s.db)
 	if err := s.Close(); err != nil {
 		t.Fatalf("close pre-migration store: %v", err)
 	}
@@ -111,6 +112,7 @@ func TestExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testing.T) {
 
 	// Idempotency: reopening a database that already has instance_key must
 	// be a pure no-op — no error, no data loss, no second rebuild attempt.
+	forgetMigrations(t, migrated.db)
 	if err := migrated.Close(); err != nil {
 		t.Fatalf("close migrated store: %v", err)
 	}

@@ -57,6 +57,9 @@ func variablesKeyOID(t *testing.T, db *sql.DB) int64 {
 func TestPostgresVariablesKeyIsNotRebuiltOnEveryStart(t *testing.T) {
 	s, dsn := openVariablesKeyTestStore(t)
 	before := variablesKeyOID(t, s.db)
+	// Run the baseline again, as on a database from before versioning: it
+	// must leave a key that is already right alone.
+	forgetMigrations(t, s.db)
 
 	again, err := NewPostgresStore(dsn)
 	if err != nil {
@@ -88,6 +91,7 @@ func TestPostgresVariablesKeyIsWidenedOnce(t *testing.T) {
 		VALUES ('region', 'eu', $1, $1, '')`, now); err != nil {
 		t.Fatalf("insert an old row: %v", err)
 	}
+	forgetMigrations(t, s.db)
 
 	again, err := NewPostgresStore(dsn)
 	if err != nil {
@@ -138,6 +142,7 @@ func TestPostgresVariablesWithoutAKeyFailToStartWhenTheKeyCannotBeAdded(t *testi
 			t.Fatalf("insert a duplicate: %v", err)
 		}
 	}
+	forgetMigrations(t, s.db)
 
 	again, err := NewPostgresStore(dsn)
 	if err == nil {

@@ -133,7 +133,56 @@ func WithMigrationLock(db *sql.DB, fn func() error) error {
 	return fn()
 }
 
+// migrate brings the schema up to date, then reconciles what follows the
+// code. The caller holds WithMigrationLock. See store/migrations.go.
 func (s *PostgresStore) migrate() error {
+	if err := runMigrations(s.db, postgresMigrationDialect, s.migrations()); err != nil {
+		return err
+	}
+	return s.reconcile()
+}
+
+// migrations is Postgres's versioned schema history. Append new steps;
+// never edit one that has shipped.
+func (s *PostgresStore) migrations() []migration {
+	return []migration{
+		{version: 1, name: "baseline", baseline: s.migrateBaseline},
+	}
+}
+
+// reconcile runs on every start, after the migrations; see the SQLite
+// store's reconcile.
+func (s *PostgresStore) reconcile() error {
+	s.reconcileSystemRoles()
+	if err := s.seedPipelineTemplates(); err != nil {
+		return fmt.Errorf("seed pipeline templates: %w", err)
+	}
+	return nil
+}
+
+// reconcileSystemRoles inserts any missing system role and brings each one
+// to the code's definition; see the SQLite store's reconcileSystemRoles.
+func (s *PostgresStore) reconcileSystemRoles() {
+	for _, role := range models.DefaultRoles() {
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
+			continue
+		}
+		if _, err := s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
+			role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem, time.Now().UTC()); err != nil {
+			log.Printf("store: seed system role %s: %v", role.ID, err)
+		}
+		if _, err := s.db.Exec("UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=TRUE",
+			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
+			log.Printf("store: reconcile system role %s: %v", role.ID, err)
+		}
+	}
+}
+
+// migrateBaseline is schema version 1, frozen; see the SQLite store's
+// migrateBaseline.
+func (s *PostgresStore) migrateBaseline() error {
 	migration, err := pgMigrationsFS.ReadFile("migrations/001_initial_pg.sql")
 	if err != nil {
 		return fmt.Errorf("read migration: %w", err)
@@ -157,30 +206,7 @@ func (s *PostgresStore) migrate() error {
 		permissions JSONB NOT NULL DEFAULT '[]', is_system BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 
-	// System roles are defined in code (models.DefaultRoles) and cannot be
-	// edited through the API, so the stored rows are a copy of that
-	// definition, not a source of truth. They used to be written only on the
-	// first run, which left every existing deployment on the permission set
-	// of the version it was installed with: a permission added later (secret
-	// store management, driver management) was held by nobody, and a check
-	// that read the stored role refused it to admins. Every start now inserts
-	// any missing system role and brings each one to the code's definition.
-	// Custom roles are left alone.
-	for _, role := range models.DefaultRoles() {
-		permsJSON, err := json.Marshal(role.Permissions)
-		if err != nil {
-			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
-			continue
-		}
-		if _, err := s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
-			role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem, time.Now().UTC()); err != nil {
-			log.Printf("store: seed system role %s: %v", role.ID, err)
-		}
-		if _, err := s.db.Exec("UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=TRUE",
-			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
-			log.Printf("store: reconcile system role %s: %v", role.ID, err)
-		}
-	}
+	// System roles are written by reconcileSystemRoles on every start.
 
 	// Pipeline schema additions (safe to re-run — errors ignored for existing columns)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS schedule_timezone TEXT NOT NULL DEFAULT ''`)
@@ -642,11 +668,8 @@ func (s *PostgresStore) migrate() error {
 		edges JSONB NOT NULL DEFAULT '[]',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-	if err := s.seedPipelineTemplates(); err != nil {
-		return fmt.Errorf("seed pipeline templates: %w", err)
-	}
 	// ADR-041: secret stores.
-	if err := s.secretStores().migrate(); err != nil {
+	if err := s.secretStores().createTable(); err != nil {
 		return err
 	}
 

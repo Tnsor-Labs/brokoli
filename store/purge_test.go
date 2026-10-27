@@ -162,8 +162,8 @@ func TestCreateRun_EmptyOrgIDPersistsAsEmpty(t *testing.T) {
 // TestMigration_BackfillsRunOrgIDFromPipeline simulates a run created
 // before this fix (org_id still the schema default 'default', bypassing
 // CreateRun entirely — the same state every pre-fix row is actually in)
-// and confirms re-running migrate() (which happens on every store open)
-// backfills it from the owning pipeline's real org_id.
+// and confirms the baseline backfills it from the owning pipeline's real
+// org_id when a database from before versioning first opens.
 //
 // The backfill's COALESCE-to-existing-value fallback for a run whose
 // pipeline no longer exists isn't exercised here: runs.pipeline_id has
@@ -191,12 +191,16 @@ func TestMigration_BackfillsRunOrgIDFromPipeline(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert legacy run: %v", err)
 	}
+	// Rows like this exist only in a database from before versioning, which
+	// carries no record of its migrations.
+	if _, err := s.db.Exec(`DROP TABLE schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}
 
-	// Reopen — migrate() runs again on every open, which is where the
-	// backfill lives.
+	// Reopen: the baseline, where the backfill lives, runs once more.
 	s2, err := NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
