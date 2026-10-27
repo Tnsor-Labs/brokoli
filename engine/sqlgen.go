@@ -149,10 +149,10 @@ func GenerateSQL(cfg SQLGenConfig, ds *common.DataSet) (string, error) {
 	// for a CSV/Excel source is the file's own header row -- so this is a
 	// second-order injection: a pipeline builder who wrote a completely
 	// safe sink_db config is still exposed if the upstream file's headers
-	// aren't. Rejecting outright (not attempting a per-dialect escape) is
-	// deliberate: dialect-specific identifier escaping is easy to get
-	// subtly wrong, and no legitimate identifier needs a quote character
-	// or a statement terminator in it.
+	// aren't. Rejecting outright is deliberate: no legitimate identifier
+	// needs a quote character or a statement terminator in it. quoteIdent
+	// also doubles any quote it is handed, as a second layer for paths
+	// that quote names this check never saw.
 	for _, id := range append([]string{cfg.Table}, ds.Columns...) {
 		if err := validateIdentifier(id); err != nil {
 			return "", fmt.Errorf("invalid identifier %q: %w", id, err)
@@ -429,15 +429,19 @@ func (d dialect) quoteIdent(s string) string {
 	// pair of quotes asks the database for a table whose *name* contains
 	// a dot, in the default schema — so a sink pointed at another schema
 	// failed with "relation does not exist" while that relation plainly
-	// existed. Each part still goes through validateIdentifier upstream,
-	// which is what keeps the split safe: no part can carry a quote
-	// character or terminator.
+	// existed.
+	//
+	// A quote inside a part is doubled, which is how each of these
+	// dialects writes one inside a quoted identifier, so a part cannot end
+	// its quotes early. That used to rest on every caller having run
+	// validateIdentifier, and the same-server migrate path quotes column
+	// names read from the source query's result, which nothing validates.
 	parts := strings.Split(s, ".")
 	for i, part := range parts {
 		if d.quoteChar == "[" {
-			parts[i] = "[" + part + "]"
+			parts[i] = "[" + strings.ReplaceAll(part, "]", "]]") + "]"
 		} else {
-			parts[i] = d.quoteChar + part + d.quoteChar
+			parts[i] = d.quoteChar + strings.ReplaceAll(part, d.quoteChar, d.quoteChar+d.quoteChar) + d.quoteChar
 		}
 	}
 	return strings.Join(parts, ".")

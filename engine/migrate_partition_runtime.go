@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -13,10 +14,15 @@ import (
 	"github.com/Tnsor-Labs/brokoli/store"
 )
 
-func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, error) {
+// runMigrate and the functions it calls read and write under ctx, the
+// attempt's context, so a timed-out or cancelled attempt stops migrating.
+// They used the run's context, which a timeout never reaches: a write
+// blocked on a lock outlived its attempt and the retry migrated the rows
+// again.
+func (r *Runner) runMigrate(ctx context.Context, node models.Node, attempt int) (*common.DataSet, error) {
 	raw, partitioned := node.Config["partition"]
 	if !partitioned || raw == nil {
-		return r.runMigrateSingle(node, attempt)
+		return r.runMigrateSingle(ctx, node, attempt)
 	}
 	partition, ranges, err := parseMigratePartitionConfig(raw)
 	if err != nil {
@@ -64,12 +70,12 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 			defer wg.Done()
 			select {
 			case sem <- struct{}{}:
-			case <-r.ctx.Done():
-				errs <- r.ctx.Err()
+			case <-ctx.Done():
+				errs <- ctx.Err()
 				return
 			}
 			defer func() { <-sem }()
-			result, err := r.runMigratePartition(node, attempt, partition, ranges[i], sourceQuery, dialect)
+			result, err := r.runMigratePartition(ctx, node, attempt, partition, ranges[i], sourceQuery, dialect)
 			if err != nil {
 				errs <- fmt.Errorf("partition %d: %w", i, err)
 				return
@@ -103,7 +109,7 @@ func (r *Runner) runMigrate(node models.Node, attempt int) (*common.DataSet, err
 	return migrateSummary(total, destTable, len(ranges)), nil
 }
 
-func (r *Runner) runMigratePartition(node models.Node, attempt int, partition migratePartitionConfig, bounds migratePartitionRange, sourceQuery, dialect string) (*common.DataSet, error) {
+func (r *Runner) runMigratePartition(ctx context.Context, node models.Node, attempt int, partition migratePartitionConfig, bounds migratePartitionRange, sourceQuery, dialect string) (*common.DataSet, error) {
 	key := fmt.Sprintf("range:%d", bounds.Index)
 	if result, ok := r.reusedExpansionInstance(node.ID, key); ok {
 		return result, nil
@@ -173,7 +179,7 @@ func (r *Runner) runMigratePartition(node models.Node, attempt int, partition mi
 		}
 		result, err = r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, key, fencing, work, migrateTimeout(node), nil)
 	} else {
-		result, err = r.runMigrateSingle(partitionNode, attempt)
+		result, err = r.runMigrateSingle(ctx, partitionNode, attempt)
 	}
 	if err != nil {
 		if instStore != nil && !r.dryRun {

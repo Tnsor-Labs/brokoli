@@ -118,8 +118,14 @@ func bulkCreateReady(cfg SQLGenConfig, ds *common.DataSet) (SQLGenConfig, error)
 // is the batch-path entry point; the writers themselves are the streaming
 // ones, and both paths share the implementation so the two cannot drift.
 func bulkWriteRows(w bulkBatchWriter, uri string, cfg SQLGenConfig, ds *common.DataSet) (int64, error) {
+	return bulkWriteRowsContext(context.Background(), w, uri, cfg, ds)
+}
+
+// bulkWriteRowsContext is bulkWriteRows bounded by ctx, so a node's
+// write stops when its attempt times out or its run is cancelled.
+func bulkWriteRowsContext(ctx context.Context, w bulkBatchWriter, uri string, cfg SQLGenConfig, ds *common.DataSet) (int64, error) {
 	sent := false
-	return w(context.Background(), uri, cfg, ds.Columns, func() (*common.DataSet, error) {
+	return w(ctx, uri, cfg, ds.Columns, func() (*common.DataSet, error) {
 		if sent {
 			return nil, io.EOF
 		}

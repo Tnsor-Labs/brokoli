@@ -249,6 +249,38 @@ pushdown compiler, check the output actually says `PASS` for the live tests
 rather than assuming — the differential tests are the only thing standing
 between a plausible change and a silently wrong one.
 
+### Changing the database schema
+
+Schema changes are versioned migrations (`store/migrations.go`). A
+database records each migration it has applied in `schema_migrations`, and
+a start applies only the ones it lacks.
+
+To change the schema, append a step to both stores' lists,
+`(*SQLiteStore).migrations` and `(*PostgresStore).migrations`, with the next
+version number:
+
+```go
+{version: 2, name: "runs priority", apply: func(tx *sql.Tx) error {
+	_, err := tx.Exec(`ALTER TABLE runs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`)
+	return err
+}},
+```
+
+- A step runs once, inside a transaction with the row that records it. If
+  it fails, the start fails and nothing is recorded, so return every error.
+  Do not write `IF NOT EXISTS` guards to make a step safe to repeat; it
+  runs once.
+- Keep steps additive. An older binary keeps running against a newer
+  schema during a rolling deploy or a rollback, and it only warns.
+- Never edit the baseline (version 1, `migrateBaseline`) or a step that has
+  shipped. A database that has recorded it never runs it again, so the edit
+  would reach new installations only. `TestBaselineIsFrozen` fails if the
+  baseline changes.
+- Work that has to follow the code on every start, such as the system
+  roles, belongs in the stores' `reconcile`, not in a migration.
+- Test the upgrade too, not only a fresh database: open a store, write the
+  data the step changes, close it, and open it again.
+
 ## Code of conduct and licence
 
 Be straightforward and civil; argue about the work, not the person.

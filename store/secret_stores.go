@@ -50,7 +50,7 @@ func (q secretStoreSQL) ph(n int) string {
 	return "?"
 }
 
-func (q secretStoreSQL) migrate() error {
+func (q secretStoreSQL) createTable() error {
 	ts := "TEXT"
 	if q.pg {
 		ts = "TIMESTAMPTZ"

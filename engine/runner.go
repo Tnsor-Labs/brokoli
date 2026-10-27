@@ -472,7 +472,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 		// Check if cancelled
 		if r.ctx.Err() != nil {
-			runErr = fmt.Errorf("pipeline cancelled")
+			runErr = ErrRunCancelled
 			break
 		}
 
@@ -565,7 +565,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 
 				// Check cancellation before starting node
 				if r.ctx.Err() != nil {
-					nodeErr = fmt.Errorf("pipeline cancelled")
+					nodeErr = ErrRunCancelled
 					return
 				}
 
@@ -631,40 +631,16 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		return r.run, r.finalizeCancelled()
 	}
 
+	// The loop leaves with an error only once the run is cancelled, which
+	// returned above; every failure returns through failRun inside it.
+	// This keeps that true should a later change add an exit: a failure
+	// has one way out, so what a failed run does is decided in one place.
 	if runErr != nil {
 		var park *WaitParkError
 		if errors.As(runErr, &park) {
 			return r.run, r.parkRun(park)
 		}
-		r.run.Status = models.RunStatusFailed
-		r.run.FinishedAt = &finishTime
-		// The reason belongs on the run, not only in the event beside it.
-		// Without this the run persists as failed with an empty error and
-		// the only copy of the message is in run_events and the logs, so
-		// the run view has nothing to show. It is also what ProjectRun
-		// rebuilds from the terminal payload, and the row written here and
-		// the row rebuilt from events must not disagree.
-		r.run.Error = r.redact(runErr.Error())
-		if err := r.store.UpdateRun(r.run); err != nil {
-			return r.run, fmt.Errorf("persist failed run: %w", err)
-		}
-		r.appendEvent(models.RunEvent{
-			RunID:     r.run.ID,
-			EventType: models.RunEventTerminal,
-			Payload: models.RunEventPayload{
-				Status:     models.RunStatusFailed,
-				FinishedAt: r.run.FinishedAt,
-				Error:      r.run.Error,
-			},
-		})
-		r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusFailed, Error: runErr.Error()})
-		r.raiseFailureAlert(runErr)
-		r.fireHook("on_failure", map[string]string{"error": runErr.Error()})
-		r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), runErr.Error())
-		NotifyPipelineEvent(r.pipe, r.run, "run.failed", runErr.Error())
-		common.SLog().Warn("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
-			"status", models.RunStatusFailed, "error", runErr)
-		return r.run, runErr
+		return r.run, r.failRun(runErr)
 	}
 
 	r.run.Status = models.RunStatusSuccess
@@ -1182,9 +1158,22 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		resultCh := make(chan nodeResult, 1)
 		go func() {
 			defer releaseSlot()
-			crashAt(crashPointBeforeNodeExecution, node.ID)
 			var result nodeExecutionResult
 			var e error
+			// A handler panics in this goroutine, outside the wave's
+			// recover, and an unrecovered panic in any goroutine ends the
+			// process: the server, the scheduler and every other run in
+			// it. The panic fails this attempt instead, and the result is
+			// sent from here so the select below always gets one.
+			defer func() {
+				if rec := recover(); rec != nil {
+					common.SLog().Error("node panicked", common.RunAttr(r.run.ID),
+						"node", node.ID, "panic", fmt.Sprint(rec), "stack", string(debug.Stack()))
+					result, e = nodeExecutionResult{}, fmt.Errorf("node %s panicked: %v", node.Name, rec)
+				}
+				resultCh <- nodeResult{result, e}
+			}()
+			crashAt(crashPointBeforeNodeExecution, node.ID)
 			// The plan gate is checked here, at the one point both
 			// execution paths pass through, rather than inside either of
 			// them. It used to live in runNodeLogic, which the streaming
@@ -1215,10 +1204,10 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 					result, e = r.runNodeLogic(node, input, inputSchema, allInputs, allInputSchemas, edgeInputsByFrom, attempt, idempotencyKey, attemptCtx, execFencingGen)
 				}
 			}
-			resultCh <- nodeResult{result, e}
 		}()
 
 		var err error
+		stillRunning := false
 		select {
 		case result := <-resultCh:
 			output, outputRef, conditionDecision, err = result.result.output, result.result.outputRef, result.result.condition, result.err
@@ -1244,9 +1233,21 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 			}
 		case <-attemptCtx.Done():
 			if r.ctx.Err() != nil {
-				err = fmt.Errorf("pipeline cancelled")
+				err = ErrRunCancelled
 			} else {
 				err = fmt.Errorf("node timed out after %s", nodeTimeout)
+				// A timed-out attempt is abandoned, not stopped: a handler
+				// that does not watch attemptCtx keeps running. Retrying
+				// beside it could write twice (a sink, a migrate), so the
+				// retry waits for it to stop, and if it does not stop
+				// within the grace period the node fails here instead.
+				grace := min(nodeTimeout, maxAttemptStopGrace)
+				select {
+				case <-resultCh:
+				case <-time.After(grace):
+					stillRunning = true
+					err = fmt.Errorf("node timed out after %s and was still running %s later, so it was not retried: a retry alongside it could write twice", nodeTimeout, grace)
+				}
 			}
 		}
 		attemptCancel()
@@ -1593,6 +1594,9 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		r.logWithTrace(node.ID, models.LogLevelWarning, spanID, attempt,
 			map[string]string{"error": err.Error(), "duration_ms": fmt.Sprintf("%d", duration)},
 			"Attempt %d/%d failed: %v", attempt+1, maxRetries+1, err)
+		if stillRunning {
+			break
+		}
 	}
 
 	if lastErr != nil {
@@ -1601,6 +1605,13 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
 		common.SLog().Error("node failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(node.ID), "attempts", maxRetries+1, "error", lastErr)
+		// A node stopped by a cancel did not fail on its own; the run's
+		// cancellation is reported through on_failure instead.
+		if r.ctx.Err() == nil {
+			r.fireHook("on_node_failure", map[string]string{
+				"node_id": node.ID, "node": node.Name, "error": r.redact(lastErr.Error()),
+			})
+		}
 		return nil, fmt.Errorf("node %s (%s) failed: %w", node.Name, node.ID, lastErr)
 	}
 	return conditionDecision, nil
@@ -1870,6 +1881,11 @@ func externalExecutorMustReturnData(n models.Node) bool {
 // its own remote dispatch (ADR-033) rather than claiming a second,
 // competing one at the same key: a task node's one instance IS the
 // whole node, unlike an expansion item's own distinct "idx:N" key.
+// maxAttemptStopGrace caps how long a timed-out attempt is given to
+// stop before its node fails without a retry. The grace is the node's
+// own timeout, up to this.
+const maxAttemptStopGrace = 30 * time.Second
+
 func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSchema columnSchema, allInputs []*common.DataSet, allInputSchemas []columnSchema, edgeInputsByFrom map[string]*common.DataSet, attempt int, idempotencyKey string, ctx context.Context, execFencingGen int64) (nodeExecutionResult, error) {
 	// A disabled node type is refused here as well as at validation: this
 	// runs on the worker, whose operator may disable what the server that
@@ -1974,11 +1990,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSourceFile:
 		return outputExecutionResult(r.runSourceFile(ctx, node))
 	case models.NodeTypeSourceAPI:
-		return outputExecutionResult(r.runSourceAPI(node))
+		return outputExecutionResult(r.runSourceAPI(ctx, node))
 	case models.NodeTypeSourceDB:
 		// Returns a full result: a source that can report its column
 		// types hands them downstream alongside the rows (#363).
-		return r.runSourceDB(node, attempt)
+		return r.runSourceDB(ctx, node, attempt)
 	case models.NodeTypeTransform:
 		return r.runTransform(node, input, inputSchema)
 	case models.NodeTypeProject:
@@ -1998,7 +2014,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		// see engine/expansion.go's top-of-file doc comment for the full
 		// architectural resolution.
 		if nodeHasExpansion(node) {
-			output, err := r.runCodeExpansion(node, edgeInputsByFrom, attempt)
+			output, err := r.runCodeExpansion(ctx, node, edgeInputsByFrom, attempt)
 			if err != nil {
 				return nodeExecutionResult{}, err
 			}
@@ -2028,17 +2044,17 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	case models.NodeTypeSinkFile:
 		return outputExecutionResult(r.runSinkFile(ctx, node, input))
 	case models.NodeTypeSinkDB:
-		return outputExecutionResult(r.runSinkDB(node, input, inputSchema, attempt))
+		return outputExecutionResult(r.runSinkDB(ctx, node, input, inputSchema, attempt))
 	case models.NodeTypeSinkAPI:
-		return outputExecutionResult(r.runSinkAPI(node, input))
+		return outputExecutionResult(r.runSinkAPI(ctx, node, input))
 	case models.NodeTypeMigrate:
-		return outputExecutionResult(r.runMigrate(node, attempt))
+		return outputExecutionResult(r.runMigrate(ctx, node, attempt))
 	case models.NodeTypeDBT:
 		// dbt can hand downstream a reference rather than rows (#353
 		// Phase 3), so it returns a full result rather than a dataset.
-		return r.runDBT(node)
+		return r.runDBT(ctx, node)
 	case models.NodeTypeNotify:
-		return outputExecutionResult(r.runNotify(node, input))
+		return outputExecutionResult(r.runNotify(ctx, node, input))
 	case models.NodeTypeBash:
 		return outputExecutionResult(r.runBash(ctx, node, input))
 	case models.NodeTypeWait:
@@ -2154,7 +2170,7 @@ func (r *Runner) finalizeCancelled() error {
 	r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
 	common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
 		"status", models.RunStatusCancelled)
-	return fmt.Errorf("pipeline cancelled")
+	return ErrRunCancelled
 }
 
 func (r *Runner) failRun(err error) error {
@@ -2193,8 +2209,14 @@ func (r *Runner) failRun(err error) error {
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Error: msg})
 	r.raiseFailureAlert(errors.New(msg))
+	// on_failure was fired only from a block after the wave loop that no
+	// failure reached, so a failed run never called it. The URL is the
+	// pipeline author's, outside Brokoli: it gets the redacted message.
+	r.fireHook("on_failure", map[string]string{"error": msg})
 	r.sendNotification("run.failed", "critical", fmt.Sprintf("Pipeline \"%s\" failed", r.pipe.Name), msg)
 	NotifyPipelineEvent(r.pipe, r.run, "run.failed", msg)
+	common.SLog().Warn("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
+		"status", models.RunStatusFailed, "error", msg)
 	// Add to dead letter queue
 	if r.store != nil {
 		if dlqErr := r.store.AddToDLQ(r.pipe.ID, r.run.ID, "", "", msg, ""); dlqErr != nil {

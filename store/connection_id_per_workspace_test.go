@@ -102,6 +102,7 @@ func TestOpeningAnOlderDatabaseScopesConnectionIDs(t *testing.T) {
 	if err := s.CreateConnection(old); err != nil {
 		t.Fatal(err)
 	}
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	s, err = NewSQLiteStore(path)
@@ -139,6 +140,7 @@ func TestOpeningAnOlderPostgresDatabaseScopesConnectionIDs(t *testing.T) {
 	if _, err := s.db.Exec(`ALTER TABLE connections ADD CONSTRAINT connections_conn_id_key UNIQUE (conn_id)`); err != nil {
 		t.Skipf("cannot recreate the old constraint on this database: %v", err)
 	}
+	forgetMigrations(t, s.db)
 	s.Close()
 	s, err = NewPostgresStore(url)
 	if err != nil {

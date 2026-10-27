@@ -61,7 +61,68 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	return s, nil
 }
 
+// migrate brings the schema up to date, then reconciles what follows the
+// code. See store/migrations.go.
 func (s *SQLiteStore) migrate() error {
+	if err := runMigrations(s.db, sqliteMigrationDialect, s.migrations()); err != nil {
+		return err
+	}
+	return s.reconcile()
+}
+
+// migrations is SQLite's versioned schema history. Append new steps; never
+// edit one that has shipped.
+func (s *SQLiteStore) migrations() []migration {
+	return []migration{
+		{version: 1, name: "baseline", baseline: s.migrateBaseline},
+	}
+}
+
+// reconcile runs on every start, after the migrations: system roles are
+// defined in code and follow it, and built-in templates added since this
+// database was created are offered to it.
+func (s *SQLiteStore) reconcile() error {
+	s.reconcileSystemRoles()
+	if err := s.seedPipelineTemplates(); err != nil {
+		return fmt.Errorf("seed pipeline templates: %w", err)
+	}
+	return nil
+}
+
+// reconcileSystemRoles inserts any missing system role and brings each one
+// to the code's definition. System roles are defined in code
+// (models.DefaultRoles) and cannot be edited through the API, so the
+// stored rows are a copy of that definition, not a source of truth. They
+// used to be written only on the first run, which left every existing
+// deployment on the permission set of the version it was installed with: a
+// permission added later (secret store management, driver management) was
+// held by nobody, and a check that read the stored role refused it to
+// admins. Custom roles are left alone.
+func (s *SQLiteStore) reconcileSystemRoles() {
+	for _, role := range models.DefaultRoles() {
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
+			continue
+		}
+		if _, err := s.db.Exec("INSERT OR IGNORE INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)",
+			role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().UTC().Format(timeFormat)); err != nil {
+			log.Printf("store: seed system role %s: %v", role.ID, err)
+		}
+		if _, err := s.db.Exec("UPDATE roles SET name=?, description=?, permissions=? WHERE id=? AND is_system=1",
+			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
+			log.Printf("store: reconcile system role %s: %v", role.ID, err)
+		}
+	}
+}
+
+// migrateBaseline is schema version 1: the schema setup as it stood when
+// versioning began (v0.20). It is idempotent, so it brings an empty
+// database or one from any earlier release to the same shape. It is
+// frozen: a change here would reach new databases only, because a database
+// that has recorded version 1 never runs it again. Add a migration
+// instead (store/migrations.go); TestBaselineIsFrozen enforces this.
+func (s *SQLiteStore) migrateBaseline() error {
 	files := []string{"001_initial.sql", "002_connections.sql", "003_variables.sql", "005_workspaces.sql"}
 	for _, f := range files {
 		migration, err := migrationsFS.ReadFile("migrations/" + f)
@@ -167,30 +228,7 @@ func (s *SQLiteStore) migrate() error {
 		permissions TEXT NOT NULL DEFAULT '[]', is_system INTEGER NOT NULL DEFAULT 0,
 		created_at TEXT NOT NULL)`)
 
-	// System roles are defined in code (models.DefaultRoles) and cannot be
-	// edited through the API, so the stored rows are a copy of that
-	// definition, not a source of truth. They used to be written only on the
-	// first run, which left every existing deployment on the permission set
-	// of the version it was installed with: a permission added later (secret
-	// store management, driver management) was held by nobody, and a check
-	// that read the stored role refused it to admins. Every start now inserts
-	// any missing system role and brings each one to the code's definition.
-	// Custom roles are left alone.
-	for _, role := range models.DefaultRoles() {
-		permsJSON, err := json.Marshal(role.Permissions)
-		if err != nil {
-			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
-			continue
-		}
-		if _, err := s.db.Exec("INSERT OR IGNORE INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)",
-			role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().UTC().Format(timeFormat)); err != nil {
-			log.Printf("store: seed system role %s: %v", role.ID, err)
-		}
-		if _, err := s.db.Exec("UPDATE roles SET name=?, description=?, permissions=? WHERE id=? AND is_system=1",
-			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
-			log.Printf("store: reconcile system role %s: %v", role.ID, err)
-		}
-	}
+	// System roles are written by reconcileSystemRoles on every start.
 
 	// Dead letter queue
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS dead_letter_queue (
@@ -495,13 +533,13 @@ func (s *SQLiteStore) migrate() error {
 	// Pipeline templates — global, admin-curated starter pipelines
 	// (GET /api/templates). Used to be hardcoded JS in the frontend;
 	// moved to the backend (brokoli#71) and now to the database so
-	// they're editable without a redeploy. Every migrate offers the rows
+	// they're editable without a redeploy. Every start offers the rows
 	// of pkg/templates.Builtin this database has not been offered
-	// before, tracked by id in a setting: an admin's edit or deletion of
-	// a seeded row is a real, intentional change and must not be
-	// silently reverted, while a template added to Builtin after this
-	// install was created still has to reach it. See
-	// seedBuiltinTemplates.
+	// before (reconcile, after the migrations), tracked by id in a
+	// setting: an admin's edit or deletion of a seeded row is a real,
+	// intentional change and must not be silently reverted, while a
+	// template added to Builtin after this install was created still has
+	// to reach it. See seedBuiltinTemplates.
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS pipeline_templates (
 		id TEXT PRIMARY KEY,
 		name TEXT NOT NULL,
@@ -511,11 +549,8 @@ func (s *SQLiteStore) migrate() error {
 		edges TEXT NOT NULL DEFAULT '[]',
 		created_at TEXT NOT NULL,
 		updated_at TEXT NOT NULL)`)
-	if err := s.seedPipelineTemplates(); err != nil {
-		return fmt.Errorf("seed pipeline templates: %w", err)
-	}
 	// ADR-041: secret stores.
-	if err := s.secretStores().migrate(); err != nil {
+	if err := s.secretStores().createTable(); err != nil {
 		return err
 	}
 	if err := s.scopeConnectionIDsToWorkspaces(); err != nil {
@@ -727,8 +762,11 @@ func (s *SQLiteStore) WithTx(fn func(*sql.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	// Deferred so a panic in fn rolls back too: it used to leave the
+	// transaction open, and on SQLite every later write then failed with
+	// "database is locked". After Commit this is a no-op.
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return tx.Commit()
@@ -765,6 +803,9 @@ func (s *SQLiteStore) ListDLQ(pipelineID string, includeResolved bool, limit int
 		}
 		e.Resolved = resolved != 0
 		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -2722,6 +2763,9 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 		}
 		conns = append(conns, c)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return conns, nil
 }
 
@@ -2748,6 +2792,9 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 			return nil, err
 		}
 		conns = append(conns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return conns, nil
 }
@@ -2864,6 +2911,9 @@ func (s *SQLiteStore) ListWorkspaces() ([]models.Workspace, error) {
 		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		ws = append(ws, w)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ws, nil
 }
 
@@ -2912,6 +2962,9 @@ func (s *SQLiteStore) ListWorkspaceMembers(workspaceID string) ([]models.Workspa
 		m.JoinedAt, _ = time.Parse(timeFormat, joinedAt)
 		members = append(members, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return members, nil
 }
 
@@ -2935,6 +2988,9 @@ func (s *SQLiteStore) GetUserWorkspaces(userID string) ([]models.Workspace, erro
 		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		ws = append(ws, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ws, nil
 }
@@ -2988,6 +3044,9 @@ func (s *SQLiteStore) ListAPITokens(workspaceID string) ([]models.APIToken, erro
 		}
 		tokens = append(tokens, t)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return tokens, nil
 }
 
@@ -3023,6 +3082,9 @@ func (s *SQLiteStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 		}
 		result = append(result, d)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -3051,6 +3113,9 @@ func (s *SQLiteStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarDay
 			return nil, err
 		}
 		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -3109,6 +3174,9 @@ func (s *SQLiteStore) ListVariables() ([]models.Variable, error) {
 		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		vars = append(vars, v)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return vars, nil
 }
 
@@ -3130,6 +3198,9 @@ func (s *SQLiteStore) ListVariablesByWorkspace(workspaceID string) ([]models.Var
 		v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
 		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
 		vars = append(vars, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -3738,6 +3809,9 @@ func (s *SQLiteStore) ListPhysicalInstances(runID string) ([]models.PhysicalInst
 		in.Status = models.RunStatus(status)
 		in.StartedAt = parseTimePtr(startedAt)
 		out = append(out, in)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

@@ -147,7 +147,10 @@ func (r *Runner) runSourceFile(ctx context.Context, node models.Node) (*common.D
 	return ds, nil
 }
 
-func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
+// runSourceAPI fetches under ctx, the attempt's context, when the fetcher
+// can be bounded by one: a timed-out or cancelled attempt abandons its
+// request and fetches no further page. It used a background context.
+func (r *Runner) runSourceAPI(ctx context.Context, node models.Node) (*common.DataSet, error) {
 	source, _ := node.Config["url"].(string)
 	sourceType, _ := node.Config["source_type"].(string)
 	if source == "" {
@@ -210,7 +213,7 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 		return ds, nil
 	}
 
-	ds, err := r.fetchSourceAPI(node, fetcher, source, hasPagination, execCfg)
+	ds, err := r.fetchSourceAPI(ctx, node, fetcher, source, hasPagination, execCfg)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", source, err)
 	}
@@ -227,7 +230,7 @@ func (r *Runner) runSourceAPI(node models.Node) (*common.DataSet, error) {
 // pagination config, no checkpoint store configured, or a fetcher type that
 // doesn't support it. That fallback keeps checkpointing strictly opt-in and
 // zero-overhead for every pipeline that doesn't set checkpoint_every.
-func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, source string, hasPagination bool, execCfg map[string]interface{}) (*common.DataSet, error) {
+func (r *Runner) fetchSourceAPI(ctx context.Context, node models.Node, fetcher fetchers.Fetcher, source string, hasPagination bool, execCfg map[string]interface{}) (*common.DataSet, error) {
 	checkpointEvery, hasCheckpointEvery := execConfigInt(execCfg, "checkpoint_every")
 	cf, supportsCheckpointing := fetcher.(fetchers.CheckpointingFetcher)
 
@@ -244,6 +247,9 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 			case r.checkpointStore == nil:
 				r.log(node.ID, models.LogLevelWarning, "source_api execution.checkpoint_every=%v set but no checkpoint store is configured — ignoring", execCfg["checkpoint_every"])
 			}
+		}
+		if bounded, ok := fetcher.(fetchers.ContextFetcher); ok {
+			return bounded.FetchContext(ctx, source, node.Config)
 		}
 		return fetcher.Fetch(source, node.Config)
 	}
@@ -287,7 +293,13 @@ func (r *Runner) fetchSourceAPI(node models.Node, fetcher fetchers.Fetcher, sour
 		return nil
 	}
 
-	ds, err := cf.FetchPaginatedResumable(source, node.Config, resume, resumeRecords, onCheckpoint)
+	var ds *common.DataSet
+	var err error
+	if bounded, ok := fetcher.(fetchers.CheckpointingContextFetcher); ok {
+		ds, err = bounded.FetchPaginatedResumableContext(ctx, source, node.Config, resume, resumeRecords, onCheckpoint)
+	} else {
+		ds, err = cf.FetchPaginatedResumable(source, node.Config, resume, resumeRecords, onCheckpoint)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -332,15 +344,19 @@ func dataSetToRecords(ds *common.DataSet) []map[string]interface{} {
 	return records
 }
 
-func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult, error) {
-	if native, err := r.nativeSourceRequest(r.ctx, node); err != nil {
+// runSourceDB reads under ctx, the attempt's context, so a timed-out or
+// cancelled attempt's query is cancelled in the database. It used a
+// background context with a five-minute ceiling, and the run's context
+// for native and BigQuery sources, so a query outlived its attempt.
+func (r *Runner) runSourceDB(ctx context.Context, node models.Node, attempt int) (nodeExecutionResult, error) {
+	if native, err := r.nativeSourceRequest(ctx, node); err != nil {
 		return nodeExecutionResult{}, err
 	} else if native != nil {
 		maxRows := 0
 		if r.dryRun {
 			maxRows = r.dryRunMaxRows
 		}
-		return r.runNativeSource(r.ctx, node, native, attempt, maxRows)
+		return r.runNativeSource(ctx, node, native, attempt, maxRows)
 	}
 	uri, _ := node.Config["uri"].(string)
 	query, _ := node.Config["query"].(string)
@@ -366,14 +382,14 @@ func (r *Runner) runSourceDB(node models.Node, attempt int) (nodeExecutionResult
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
-		ds, err := QueryBigQuery(r.ctx, uri, query, config, auth, args...)
+		ds, err := QueryBigQuery(ctx, uri, query, config, auth, args...)
 		if err != nil {
 			return nodeExecutionResult{}, fmt.Errorf("query BigQuery: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Queried %d rows, %d columns from BigQuery", len(ds.Rows), len(ds.Columns))
 		return nodeExecutionResult{output: ds}, nil
 	}
-	ds, err := QueryDatabase(uri, query, args...)
+	ds, err := QueryDatabaseContext(ctx, uri, query, args...)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("query database: %w", err)
 	}
@@ -1222,7 +1238,12 @@ func (r *Runner) marshalCSV(ds *common.DataSet) ([]byte, error) {
 	return []byte(buf.String()), w.Error()
 }
 
-func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
+// runSinkDB writes under ctx, the attempt's context: when the attempt
+// times out or the run is cancelled, the write is cancelled with it. It
+// used to write under the run's context or a background one, so a write
+// blocked on a lock carried on after its attempt gave up, and the retry
+// wrote the rows a second time.
+func (r *Runner) runSinkDB(ctx context.Context, node models.Node, input *common.DataSet, inputSchema columnSchema, attempt int) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_db node requires input data")
 	}
@@ -1258,7 +1279,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 		if err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
-		if err := LoadBigQuery(r.ctx, uri, table, mode, input, config, auth); err != nil {
+		if err := LoadBigQuery(ctx, uri, table, mode, input, config, auth); err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Loaded %d rows into BigQuery table %s", len(input.Rows), table)
@@ -1290,7 +1311,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 			// Author-written (#667): a person wrote this SQL in a
 			// sql_generate node and that node forwarded it here.
 			r.recordExecutedSQL(node.ID, attempt, s)
-			return r.execSinkSQL(node, uri, s)
+			return r.execSinkSQL(ctx, node, uri, s)
 		}
 	}
 
@@ -1331,7 +1352,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 				"widths and precision may not match the source", table)
 	}
 	if cfg.Dialect == "mysql" && strings.EqualFold(cfg.Mode, ModeUpsert) {
-		others, err := validateMySQLUpsertKey(r.ctx, uri, table, cfg.KeyColumns)
+		others, err := validateMySQLUpsertKey(ctx, uri, table, cfg.KeyColumns)
 		if err != nil {
 			return nil, fmt.Errorf("sink_db: %w", err)
 		}
@@ -1357,7 +1378,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// megabytes of SQL text for the server to parse back.
 	if w, ok := bulkWriterFor(cfg); ok {
 		r.recordBulkWrite(node.ID, attempt, cfg.Dialect, cfg.Table)
-		affected, err := bulkWriteRows(w, uri, cfg, input)
+		affected, err := bulkWriteRowsContext(ctx, w, uri, cfg, input)
 		if err != nil {
 			return nil, fmt.Errorf("bulk write to %s: %w", table, err)
 		}
@@ -1372,7 +1393,7 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 	// Engine-generated (#667): GenerateSQL rendered the input rows into
 	// INSERT ... VALUES. Nobody wrote it, so a note is recorded in its place.
 	r.recordGeneratedWrite(node.ID, attempt, cfg.Table)
-	return r.execSinkSQL(node, uri, sql)
+	return r.execSinkSQL(ctx, node, uri, sql)
 }
 
 // execSinkSQL executes a sink's SQL and deliberately does NOT record it. Its
@@ -1380,8 +1401,8 @@ func (r *Runner) runSinkDB(node models.Node, input *common.DataSet, inputSchema 
 // sql_generate node, the other passes SQL the engine generated. Only the
 // caller knows which (#667); recording here would have to guess from the
 // text.
-func (r *Runner) execSinkSQL(node models.Node, uri, sql string) (*common.DataSet, error) {
-	affected, err := ExecuteSQL(uri, sql)
+func (r *Runner) execSinkSQL(ctx context.Context, node models.Node, uri, sql string) (*common.DataSet, error) {
+	affected, err := ExecuteSQLContext(ctx, uri, sql)
 	if err != nil {
 		return nil, fmt.Errorf("execute SQL: %w", err)
 	}
@@ -1467,7 +1488,11 @@ func apiSinkConfigFrom(node models.Node) (apiSinkConfig, error) {
 // totalBatches is 0 when the count is not known in advance, which is the
 // streamed case -- the log then counts batches as it goes rather than claiming
 // a denominator it cannot have.
-func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatches int, next func() (*common.DataSet, error)) (int, int, error) {
+// sendAPIBatches sends under ctx, the attempt's context, so a timed-out
+// or cancelled attempt sends no further batches. It used the run's
+// context, which a timeout never reaches: after the node had timed out
+// and failed, the loop went on sending for as long as the run lasted.
+func (r *Runner) sendAPIBatches(ctx context.Context, node models.Node, cfg apiSinkConfig, totalBatches int, next func() (*common.DataSet, error)) (int, int, error) {
 	// sink_api's URL is arbitrary pipeline-editor-supplied config, so it must
 	// use the same operator-configured outbound policy as every other
 	// pipeline-triggered request. Previously this had no SSRF protection.
@@ -1475,7 +1500,7 @@ func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatche
 	totalSent, batchNum := 0, 0
 
 	for {
-		if r.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return totalSent, batchNum, fmt.Errorf("cancelled")
 		}
 		batch, err := next()
@@ -1495,7 +1520,7 @@ func (r *Runner) sendAPIBatches(node models.Node, cfg apiSinkConfig, totalBatche
 			return totalSent, batchNum, fmt.Errorf("marshal batch %d: %w", batchNum, err)
 		}
 
-		req, err := http.NewRequestWithContext(r.ctx, cfg.method, cfg.url, strings.NewReader(string(payload)))
+		req, err := http.NewRequestWithContext(ctx, cfg.method, cfg.url, strings.NewReader(string(payload)))
 		if err != nil {
 			return totalSent, batchNum, fmt.Errorf("create request: %w", err)
 		}
@@ -1531,7 +1556,7 @@ func ofTotal(total int) string {
 	return fmt.Sprintf("/%d", total)
 }
 
-func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.DataSet, error) {
+func (r *Runner) runSinkAPI(ctx context.Context, node models.Node, input *common.DataSet) (*common.DataSet, error) {
 	if input == nil {
 		return nil, fmt.Errorf("sink_api node requires input data")
 	}
@@ -1555,7 +1580,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 		return batch, nil
 	}
 
-	totalSent, batches, err := r.sendAPIBatches(node, cfg, totalBatches, next)
+	totalSent, batches, err := r.sendAPIBatches(ctx, node, cfg, totalBatches, next)
 	if err != nil {
 		return nil, err
 	}
@@ -1565,7 +1590,7 @@ func (r *Runner) runSinkAPI(node models.Node, input *common.DataSet) (*common.Da
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSet, error) {
+func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt int) (*common.DataSet, error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
@@ -1633,7 +1658,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	r.recordExecutedSQL(node.ID, attempt, sourceQuery)
 	if canMigratePostgresSameServer(sourceURI, destURI, dialect, mode, createTable, sourceQuery) {
 		r.log(node.ID, models.LogLevelInfo, "Migration: staging the source query inside PostgreSQL")
-		affected, err := migratePostgresSameServer(r.ctx, destURI, sourceQuery, destTable, keyColumns, sourceArgs, boolConfig(node.Config["_partition_disjoint"]))
+		affected, err := migratePostgresSameServer(ctx, destURI, sourceQuery, destTable, keyColumns, sourceArgs, boolConfig(node.Config["_partition_disjoint"]))
 		if err != nil {
 			return nil, fmt.Errorf("migrate: direct PostgreSQL upsert: %w", err)
 		}
@@ -1646,7 +1671,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 		}
 		if writer, ok := bulkWriterFor(streamCfg); ok {
 			r.log(node.ID, models.LogLevelInfo, "Migration: streaming source batches into the bulk writer")
-			affected, chunks, err := r.streamMigrateBulk(sourceURI, sourceQuery, sourceArgs, destURI, streamCfg, writer)
+			affected, chunks, err := r.streamMigrateBulk(ctx, sourceURI, sourceQuery, sourceArgs, destURI, streamCfg, writer)
 			if err != nil {
 				return nil, fmt.Errorf("migrate: streaming bulk write to %s: %w", destTable, err)
 			}
@@ -1654,14 +1679,14 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 			return migrateSummary(int(affected), destTable, chunks), nil
 		}
 	}
-	sourceDS, err := QueryDatabase(sourceURI, sourceQuery, sourceArgs...)
+	sourceDS, err := QueryDatabaseContext(ctx, sourceURI, sourceQuery, sourceArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
 	r.log(node.ID, models.LogLevelInfo, "Source: %d rows, %d columns", len(sourceDS.Rows), len(sourceDS.Columns))
 
 	if dialect == "mysql" && strings.EqualFold(mode, ModeUpsert) {
-		others, err := validateMySQLUpsertKey(r.ctx, destURI, destTable, keyColumns)
+		others, err := validateMySQLUpsertKey(ctx, destURI, destTable, keyColumns)
 		if err != nil {
 			return nil, fmt.Errorf("migrate: %w", err)
 		}
@@ -1688,7 +1713,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	// its own below, exactly as before.
 	typedDDL := ""
 	if createTable {
-		srcTypes, _, haveTypes := sourceColumnTypes(r.ctx, sourceURI, sourceQuery, sourceArgs...)
+		srcTypes, _, haveTypes := sourceColumnTypes(ctx, sourceURI, sourceQuery, sourceArgs...)
 		if haveTypes {
 			tableEngine, _ := node.Config["table_engine"].(string)
 			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes)
@@ -1731,7 +1756,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 		sent := 0
 		chunkNum := 0
 		next := func() (*common.DataSet, error) {
-			if r.ctx.Err() != nil {
+			if ctx.Err() != nil {
 				return nil, fmt.Errorf("cancelled at chunk %d", chunkNum+1)
 			}
 			if sent >= len(sourceDS.Rows) {
@@ -1748,7 +1773,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 				chunkNum, totalChunksFor(len(sourceDS.Rows), chunkSize), len(chunk.Rows), sent)
 			return chunk, nil
 		}
-		affected, err := w(r.ctx, destURI, writeCfg, sourceDS.Columns, next)
+		affected, err := w(ctx, destURI, writeCfg, sourceDS.Columns, next)
 		if err != nil {
 			return nil, fmt.Errorf("migrate: bulk write to %s: %w", destTable, err)
 		}
@@ -1763,7 +1788,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	// No bulk writer for this destination: the DDL, if one was rendered,
 	// has to run on its own before the chunked statement path.
 	if writeCfg.CreateDDL != "" {
-		if _, err := ExecuteSQL(destURI, writeCfg.CreateDDL); err != nil {
+		if _, err := ExecuteSQLContext(ctx, destURI, writeCfg.CreateDDL); err != nil {
 			return nil, fmt.Errorf("migrate: create %s: %w", destTable, err)
 		}
 		r.log(node.ID, models.LogLevelInfo, "Created %s from the source's column types", destTable)
@@ -1776,7 +1801,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 	totalChunks := (len(sourceDS.Rows) + chunkSize - 1) / chunkSize
 
 	for i := 0; i < len(sourceDS.Rows); i += chunkSize {
-		if r.ctx.Err() != nil {
+		if ctx.Err() != nil {
 			return nil, fmt.Errorf("cancelled at chunk %d", (i/chunkSize)+1)
 		}
 
@@ -1812,7 +1837,7 @@ func (r *Runner) runMigrateSingle(node models.Node, attempt int) (*common.DataSe
 			return nil, fmt.Errorf("generate SQL chunk %d: %w", chunkNum, err)
 		}
 
-		affected, err := ExecuteSQL(destURI, sql)
+		affected, err := ExecuteSQLContext(ctx, destURI, sql)
 		if err != nil {
 			return nil, fmt.Errorf("execute chunk %d: %w", chunkNum, err)
 		}

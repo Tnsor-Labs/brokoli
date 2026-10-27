@@ -62,7 +62,7 @@ func TestPoolRunsAndReusesTypeScriptWorkers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Meta.Language != "typescript" || first.Meta.WrapperVersion != 1 || second.Rows[0]["a"] != float64(6) {
+	if first.Meta.Language != "typescript" || first.Meta.WrapperVersion != 1 || second.Rows[0]["a"] != int64(6) {
 		t.Fatalf("TypeScript result/meta wrong: first=%+v second=%+v", first, second)
 	}
 	if !second.Meta.Warm || p.WorkerBoots() != 1 {
@@ -190,7 +190,7 @@ func TestPoolReusesWarmWorkers(t *testing.T) {
 	}
 	// Inline input keeps the v1 stdin contract: the result returns
 	// inline too, no file involved.
-	if second.Path != "" || len(second.Rows) != 1 || second.Rows[0]["a"] != float64(4) {
+	if second.Path != "" || len(second.Rows) != 1 || second.Rows[0]["a"] != int64(4) {
 		t.Fatalf("inline result wrong: %+v", second)
 	}
 	if second.Meta.WrapperVersion != 2 || second.Meta.ProtocolVersion != 1 {

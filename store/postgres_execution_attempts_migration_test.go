@@ -91,6 +91,7 @@ func TestPostgresExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testin
 	); err != nil {
 		t.Fatalf("insert pre-migration row: %v", err)
 	}
+	forgetMigrations(t, s.db)
 	if err := s.Close(); err != nil {
 		t.Fatalf("close pre-migration store: %v", err)
 	}

@@ -68,10 +68,7 @@ var (
 // both. Operators still configure exactly one secret.
 func DatacapIssuer() (*datacap.Issuer, error) {
 	datacapIssuerOnce.Do(func() {
-		if jwtSecret == nil {
-			InitJWTSecret()
-		}
-		key, err := datacap.DeriveKey(jwtSecret)
+		key, err := datacap.DeriveKey(jwtKey())
 		if err != nil {
 			datacapIssuerErr = err
 			return

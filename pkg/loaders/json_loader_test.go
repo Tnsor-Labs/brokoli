@@ -90,7 +90,7 @@ func TestJSONLoader_Load(t *testing.T) {
 				if ds.Rows[0]["name"] != "John Doe" {
 					t.Errorf("Expected name 'John Doe', got %v", ds.Rows[0]["name"])
 				}
-				if ds.Rows[0]["age"] != float64(30) {
+				if ds.Rows[0]["age"] != int64(30) {
 					t.Errorf("Expected age 30, got %v", ds.Rows[0]["age"])
 				}
 			},

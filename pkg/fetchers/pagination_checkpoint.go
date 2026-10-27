@@ -65,6 +65,12 @@ type CheckpointingFetcher interface {
 	FetchPaginatedResumable(source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error)
 }
 
+// CheckpointingContextFetcher is a CheckpointingFetcher that can be
+// bounded by a context, as ContextFetcher is for Fetch.
+type CheckpointingContextFetcher interface {
+	FetchPaginatedResumableContext(ctx context.Context, source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error)
+}
+
 // PageFetcher executes exactly one already-planned pagination request. The
 // engine uses this narrow contract for a source_api page WorkOrder so a remote
 // worker does not need to recreate the coordinator's pagination loop.

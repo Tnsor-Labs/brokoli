@@ -181,7 +181,8 @@ func TestMigrationWidensTheKeyWithoutLosingData(t *testing.T) {
 }
 
 // Re-running the migration on an already-widened database must be a
-// no-op, since it runs on every boot.
+// no-op: the baseline runs again on a database from before versioning,
+// and after a crash between applying it and recording it.
 func TestMigrationIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "twice.db")
 	s1, err := NewSQLiteStore(path)
@@ -189,6 +190,7 @@ func TestMigrationIsIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	put(t, s1, "tenant-a", "k", "v")
+	forgetMigrations(t, s1.db)
 	s1.Close()
 
 	s2, err := NewSQLiteStore(path)

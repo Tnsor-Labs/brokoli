@@ -42,7 +42,7 @@ func TestRESTFetcher_Records_ExtractsNestedArray(t *testing.T) {
 	if ds.Rows[0]["scientificName"] != "Aves" {
 		t.Errorf("expected first row scientificName=Aves, got %v", ds.Rows[0]["scientificName"])
 	}
-	if ds.Rows[1]["key"] != float64(2) {
+	if ds.Rows[1]["key"] != int64(2) {
 		t.Errorf("expected second row key=2, got %v", ds.Rows[1]["key"])
 	}
 	// Must NOT contain the envelope's own top-level keys as columns.
@@ -94,7 +94,7 @@ func TestRESTFetcher_Scalar_ExtractsValuePath(t *testing.T) {
 	if len(ds.Rows) != 1 {
 		t.Fatalf("expected exactly 1 row for scalar response, got %d", len(ds.Rows))
 	}
-	if ds.Rows[0]["value"] != float64(42) {
+	if ds.Rows[0]["value"] != int64(42) {
 		t.Errorf("expected value=42, got %v", ds.Rows[0]["value"])
 	}
 }

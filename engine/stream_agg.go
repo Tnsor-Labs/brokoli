@@ -78,7 +78,7 @@ func (a *aggAccumulator) add(v interface{}) {
 		if a.distinct == nil {
 			a.distinct = make(map[string]struct{})
 		}
-		a.distinct[canonicalValueKey(v)] = struct{}{}
+		a.distinct[valueKey(v)] = struct{}{}
 	}
 	if f, ok := toAggFloat(v); ok {
 		a.sum += f

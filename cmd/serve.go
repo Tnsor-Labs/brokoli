@@ -305,13 +305,12 @@ var serveCmd = &cobra.Command{
 		// Only start scheduler if mode is "all" or "scheduler"
 		var sched *engine.Scheduler
 		if RunMode == "all" || RunMode == "scheduler" {
-			leaderForSched, cleanupLeader := newLeaderElector(s)
-			defer cleanupLeader()
-			sched = engine.NewScheduler(eng, s, leaderForSched)
-			if err := sched.Start(); err != nil {
-				log.Printf("WARNING: scheduler failed to start: %v", err)
+			started, stopScheduler, err := startScheduler(eng, s)
+			if err != nil {
+				return err
 			}
-			defer sched.Stop()
+			defer stopScheduler()
+			sched = started
 		}
 
 		var uiFS fs.FS
@@ -1126,6 +1125,25 @@ func drainWorkerSlots(slots chan struct{}, capacity int, timeout time.Duration) 
 // the caller; it stops the background election loop and, for the Postgres
 // case, releases held leadership so a replacement doesn't have to wait out
 // the full lease duration on a clean shutdown.
+// startScheduler starts the scheduler, or fails. A scheduler that could
+// not start used to be a warning: the process went on serving with no
+// scheduler at all, so nothing ran on a schedule and only that log line
+// said so. Failing makes the process exit, and an orchestrator restarts
+// it. stop stops the scheduler and then releases leadership.
+func startScheduler(eng *engine.Engine, s store.Store) (sched *engine.Scheduler, stop func(), err error) {
+	leader, cleanupLeader := newLeaderElector(s)
+	sched = engine.NewScheduler(eng, s, leader)
+	if err := sched.Start(); err != nil {
+		sched.Stop()
+		cleanupLeader()
+		return nil, nil, fmt.Errorf("scheduler failed to start: %w", err)
+	}
+	return sched, func() {
+		sched.Stop()
+		cleanupLeader()
+	}, nil
+}
+
 func newLeaderElector(s store.Store) (leader store.LeaderElector, cleanup func()) {
 	pg, ok := s.(*store.PostgresStore)
 	if !ok {

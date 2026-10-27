@@ -166,6 +166,12 @@ func refuseNativeDatabase(uri, operation string) error {
 // QueryDatabase runs a query and reads its whole result. args are bound to
 // the query's placeholders (see bindSQLParams).
 func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, error) {
+	return QueryDatabaseContext(context.Background(), uri, query, args...)
+}
+
+// QueryDatabaseContext is QueryDatabase bounded by ctx as well as its own
+// five-minute ceiling, so a node's read stops when its attempt does.
+func QueryDatabaseContext(ctx context.Context, uri, query string, args ...interface{}) (*common.DataSet, error) {
 	if err := refuseNativeDatabase(uri, "query"); err != nil {
 		return nil, err
 	}
@@ -181,7 +187,7 @@ func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, err
 	defer db.Close()
 
 	// 5 minute query timeout
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -256,6 +262,14 @@ func QueryDatabase(uri, query string, args ...interface{}) (*common.DataSet, err
 
 // ExecuteSQL opens a connection and executes SQL statements (for sink_db).
 func ExecuteSQL(uri, sqlStatements string) (int64, error) {
+	return ExecuteSQLContext(context.Background(), uri, sqlStatements)
+}
+
+// ExecuteSQLContext is ExecuteSQL bounded by ctx as well as its own
+// ten-minute ceiling. A node's write passes its attempt's context, so a
+// timed-out or cancelled attempt stops writing; it used to run on a
+// background context and carry on after its attempt had given up.
+func ExecuteSQLContext(ctx context.Context, uri, sqlStatements string) (int64, error) {
 	if err := refuseNativeDatabase(uri, "SQL execution"); err != nil {
 		return 0, err
 	}
@@ -273,7 +287,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 	}
 	defer db.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	if err := db.PingContext(ctx); err != nil {
@@ -295,7 +309,7 @@ func ExecuteSQL(uri, sqlStatements string) (int64, error) {
 		if stmt == "" {
 			continue
 		}
-		result, err := tx.Exec(stmt)
+		result, err := tx.ExecContext(ctx, stmt)
 		if err != nil {
 			tx.Rollback()
 			return 0, fmt.Errorf("exec: %w", err)

@@ -133,7 +133,56 @@ func WithMigrationLock(db *sql.DB, fn func() error) error {
 	return fn()
 }
 
+// migrate brings the schema up to date, then reconciles what follows the
+// code. The caller holds WithMigrationLock. See store/migrations.go.
 func (s *PostgresStore) migrate() error {
+	if err := runMigrations(s.db, postgresMigrationDialect, s.migrations()); err != nil {
+		return err
+	}
+	return s.reconcile()
+}
+
+// migrations is Postgres's versioned schema history. Append new steps;
+// never edit one that has shipped.
+func (s *PostgresStore) migrations() []migration {
+	return []migration{
+		{version: 1, name: "baseline", baseline: s.migrateBaseline},
+	}
+}
+
+// reconcile runs on every start, after the migrations; see the SQLite
+// store's reconcile.
+func (s *PostgresStore) reconcile() error {
+	s.reconcileSystemRoles()
+	if err := s.seedPipelineTemplates(); err != nil {
+		return fmt.Errorf("seed pipeline templates: %w", err)
+	}
+	return nil
+}
+
+// reconcileSystemRoles inserts any missing system role and brings each one
+// to the code's definition; see the SQLite store's reconcileSystemRoles.
+func (s *PostgresStore) reconcileSystemRoles() {
+	for _, role := range models.DefaultRoles() {
+		permsJSON, err := json.Marshal(role.Permissions)
+		if err != nil {
+			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
+			continue
+		}
+		if _, err := s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
+			role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem, time.Now().UTC()); err != nil {
+			log.Printf("store: seed system role %s: %v", role.ID, err)
+		}
+		if _, err := s.db.Exec("UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=TRUE",
+			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
+			log.Printf("store: reconcile system role %s: %v", role.ID, err)
+		}
+	}
+}
+
+// migrateBaseline is schema version 1, frozen; see the SQLite store's
+// migrateBaseline.
+func (s *PostgresStore) migrateBaseline() error {
 	migration, err := pgMigrationsFS.ReadFile("migrations/001_initial_pg.sql")
 	if err != nil {
 		return fmt.Errorf("read migration: %w", err)
@@ -157,30 +206,7 @@ func (s *PostgresStore) migrate() error {
 		permissions JSONB NOT NULL DEFAULT '[]', is_system BOOLEAN NOT NULL DEFAULT FALSE,
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
 
-	// System roles are defined in code (models.DefaultRoles) and cannot be
-	// edited through the API, so the stored rows are a copy of that
-	// definition, not a source of truth. They used to be written only on the
-	// first run, which left every existing deployment on the permission set
-	// of the version it was installed with: a permission added later (secret
-	// store management, driver management) was held by nobody, and a check
-	// that read the stored role refused it to admins. Every start now inserts
-	// any missing system role and brings each one to the code's definition.
-	// Custom roles are left alone.
-	for _, role := range models.DefaultRoles() {
-		permsJSON, err := json.Marshal(role.Permissions)
-		if err != nil {
-			log.Printf("store: encode permissions of system role %s: %v", role.ID, err)
-			continue
-		}
-		if _, err := s.db.Exec("INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (id) DO NOTHING",
-			role.ID, role.Name, role.Description, string(permsJSON), role.IsSystem, time.Now().UTC()); err != nil {
-			log.Printf("store: seed system role %s: %v", role.ID, err)
-		}
-		if _, err := s.db.Exec("UPDATE roles SET name=$1, description=$2, permissions=$3 WHERE id=$4 AND is_system=TRUE",
-			role.Name, role.Description, string(permsJSON), role.ID); err != nil {
-			log.Printf("store: reconcile system role %s: %v", role.ID, err)
-		}
-	}
+	// System roles are written by reconcileSystemRoles on every start.
 
 	// Pipeline schema additions (safe to re-run — errors ignored for existing columns)
 	s.db.Exec(`ALTER TABLE pipelines ADD COLUMN IF NOT EXISTS schedule_timezone TEXT NOT NULL DEFAULT ''`)
@@ -296,13 +322,9 @@ func (s *PostgresStore) migrate() error {
 		workspace_id TEXT NOT NULL DEFAULT 'default'
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_variables_workspace ON variables(workspace_id)`)
-	// Widen the variables key from (key) to (workspace_id, key). See
-	// SQLiteStore.scopeVariablesToWorkspace for why this cannot collide
-	// and why there is deliberately no collision check. Postgres can
-	// alter the constraint in place, so no table rebuild is needed.
-	s.db.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`)
-	s.db.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`)
-	s.db.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`)
+	if err := s.scopeVariablesToWorkspace(); err != nil {
+		return fmt.Errorf("scope variables to workspace: %w", err)
+	}
 
 	// Workspaces + related tables
 	s.db.Exec(`CREATE TABLE IF NOT EXISTS workspaces (
@@ -646,11 +668,8 @@ func (s *PostgresStore) migrate() error {
 		edges JSONB NOT NULL DEFAULT '[]',
 		created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`)
-	if err := s.seedPipelineTemplates(); err != nil {
-		return fmt.Errorf("seed pipeline templates: %w", err)
-	}
 	// ADR-041: secret stores.
-	if err := s.secretStores().migrate(); err != nil {
+	if err := s.secretStores().createTable(); err != nil {
 		return err
 	}
 
@@ -669,6 +688,52 @@ func (s *PostgresStore) hasColumn(table, column string) (bool, error) {
 		table, column,
 	).Scan(&exists)
 	return exists, err
+}
+
+// scopeVariablesToWorkspace widens the variables key from (key) to
+// (workspace_id, key). See SQLiteStore.scopeVariablesToWorkspace for why
+// this cannot collide and why there is deliberately no collision check.
+// Postgres can alter the constraint in place, so no table rebuild is
+// needed.
+//
+// It used to run on every start, unguarded and with its errors ignored:
+// each start dropped the key and added it again. A process still serving
+// during a rolling deploy then failed SetVariable, whose ON CONFLICT
+// needs the key, and an ADD that failed left the table with no key at all.
+// It now runs once, in one transaction, and reports a failure.
+func (s *PostgresStore) scopeVariablesToWorkspace() (retErr error) {
+	var cols string
+	err := s.db.QueryRow(`SELECT COALESCE(string_agg(a.attname, ',' ORDER BY k.n), '')
+		FROM pg_constraint c
+		CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, n)
+		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
+		WHERE c.conrelid = 'variables'::regclass AND c.contype = 'p'`).Scan(&cols)
+	if err != nil {
+		return fmt.Errorf("read the variables key: %w", err)
+	}
+	if cols == "workspace_id,key" {
+		return nil
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if retErr != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.Exec(`UPDATE variables SET workspace_id = 'default' WHERE workspace_id IS NULL OR workspace_id = ''`); err != nil {
+		return fmt.Errorf("move unscoped variables to the default workspace: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE variables DROP CONSTRAINT IF EXISTS variables_pkey`); err != nil {
+		return fmt.Errorf("drop the old key: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE variables ADD PRIMARY KEY (workspace_id, key)`); err != nil {
+		return fmt.Errorf("add the new key: %w", err)
+	}
+	return tx.Commit()
 }
 
 // widenExecutionAttemptsPrimaryKey widens execution_attempts from
@@ -740,8 +805,11 @@ func (s *PostgresStore) WithTx(fn func(*sql.Tx) error) error {
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
+	// Deferred so a panic in fn rolls back too: it used to leave the
+	// transaction open, and on SQLite every later write then failed with
+	// "database is locked". After Commit this is a no-op.
+	defer func() { _ = tx.Rollback() }()
 	if err := fn(tx); err != nil {
-		tx.Rollback()
 		return err
 	}
 	return tx.Commit()
@@ -776,6 +844,9 @@ func (s *PostgresStore) ListDLQ(pipelineID string, includeResolved bool, limit i
 			return nil, err
 		}
 		entries = append(entries, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return entries, nil
 }
@@ -2221,6 +2292,9 @@ func (s *PostgresStore) GetRunCalendar(days int) ([]CalendarDay, error) {
 		}
 		result = append(result, d)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 
@@ -2250,6 +2324,9 @@ func (s *PostgresStore) GetRunCalendarByOrg(days int, orgID string) ([]CalendarD
 			return nil, err
 		}
 		result = append(result, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }
@@ -2342,6 +2419,9 @@ func (s *PostgresStore) ListConnections() ([]models.Connection, error) {
 			return nil, err
 		}
 		conns = append(conns, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return conns, nil
 }
@@ -2447,6 +2527,9 @@ func (s *PostgresStore) ListVariables() ([]models.Variable, error) {
 			return nil, err
 		}
 		vars = append(vars, v)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return vars, nil
 }
@@ -2859,6 +2942,9 @@ func (s *PostgresStore) ListWorkspaces() ([]models.Workspace, error) {
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
 		ws = append(ws, w)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ws, nil
 }
 func (s *PostgresStore) DeleteWorkspace(id string) error {
@@ -2886,6 +2972,9 @@ func (s *PostgresStore) ListWorkspaceMembers(workspaceID string) ([]models.Works
 		rows.Scan(&m.WorkspaceID, &m.UserID, &m.Username, &m.Role, &m.JoinedAt)
 		ms = append(ms, m)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return ms, nil
 }
 func (s *PostgresStore) GetUserWorkspaces(userID string) ([]models.Workspace, error) {
@@ -2899,6 +2988,9 @@ func (s *PostgresStore) GetUserWorkspaces(userID string) ([]models.Workspace, er
 		var w models.Workspace
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &w.CreatedAt, &w.UpdatedAt)
 		ws = append(ws, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ws, nil
 }
@@ -2931,6 +3023,9 @@ func (s *PostgresStore) ListAPITokens(workspaceID string) ([]models.APIToken, er
 		var t models.APIToken
 		rows.Scan(&t.ID, &t.Name, &t.WorkspaceID, &t.UserID, &t.Role, &t.ExpiresAt, &t.CreatedAt)
 		ts = append(ts, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return ts, nil
 }
@@ -3491,6 +3586,9 @@ func (s *PostgresStore) ListPhysicalInstances(runID string) ([]models.PhysicalIn
 			in.StartedAt = &t
 		}
 		out = append(out, in)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return out, nil
 }

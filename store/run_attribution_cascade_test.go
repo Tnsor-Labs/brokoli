@@ -170,6 +170,7 @@ func TestAnOldTableIsMigratedAndItsOrphansCleared(t *testing.T) {
 	if got := attributionRowCount(t, s); got != 2 {
 		t.Fatalf("legacy table holds %d row(s), want 2", got)
 	}
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	// Reopen: the migration runs on boot.
@@ -212,7 +213,8 @@ func TestAnOldTableIsMigratedAndItsOrphansCleared(t *testing.T) {
 }
 
 // Running the migration twice must not rebuild the table again or lose
-// anything. Boot happens more than once.
+// anything. The baseline runs again on a database from before versioning,
+// and after a crash between applying it and recording it.
 func TestTheMigrationIsIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "twice.db")
 	s, err := NewSQLiteStore(path)
@@ -220,6 +222,7 @@ func TestTheMigrationIsIdempotent(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	seedRunWithAttribution(t, s, "r1", "p1", time.Now().UTC())
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	for i := 0; i < 3; i++ {
@@ -230,6 +233,7 @@ func TestTheMigrationIsIdempotent(t *testing.T) {
 		if got := attributionRowCount(t, s2); got != 1 {
 			t.Fatalf("reopen %d: %d row(s), want 1", i, got)
 		}
+		forgetMigrations(t, s2.db)
 		s2.Close()
 	}
 }

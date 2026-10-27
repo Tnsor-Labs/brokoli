@@ -59,7 +59,7 @@ func TestExtractRecordsAtPath(t *testing.T) {
 	if len(records) != 2 {
 		t.Fatalf("expected 2 records, got %d", len(records))
 	}
-	if records[0]["id"] != float64(1) {
+	if records[0]["id"] != int64(1) {
 		t.Errorf("expected first record id=1, got %v", records[0]["id"])
 	}
 }

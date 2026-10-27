@@ -81,6 +81,7 @@ func TestOpeningAnOlderDatabaseMovesThePipelineIDIndex(t *testing.T) {
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX idx_pipeline_pid ON pipelines(pipeline_id) WHERE pipeline_id != ''`); err != nil {
 		t.Fatal(err)
 	}
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	s, err = NewSQLiteStore(path)

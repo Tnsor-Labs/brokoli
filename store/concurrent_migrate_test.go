@@ -64,13 +64,22 @@ func TestConcurrentStartsMigrateTogether(t *testing.T) {
 			}
 			u.Path = "/" + name
 			startTogether(t, u.String(), round)
+			db, err := sql.Open("pgx", u.String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var rows int
+			if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&rows); err != nil || rows != len((&PostgresStore{}).migrations()) {
+				t.Errorf("round %d: schema_migrations holds %d rows (%v), want one per migration", round, rows, err)
+			}
+			db.Close()
 			if _, err := admin.Exec("DROP DATABASE " + name + " WITH (FORCE)"); err != nil {
 				t.Fatal(err)
 			}
 		}
 	})
 
-	t.Run("new indexes only", func(t *testing.T) {
+	t.Run("upgrade that needs only new indexes", func(t *testing.T) {
 		first, err := NewPostgresStore(base)
 		if err != nil {
 			t.Fatal(err)
@@ -80,6 +89,9 @@ func TestConcurrentStartsMigrateTogether(t *testing.T) {
 			if _, err := first.db.Exec(`DROP INDEX IF EXISTS idx_connections_ws_conn_id; DROP INDEX IF EXISTS idx_pipeline_org_pid`); err != nil {
 				t.Fatal(err)
 			}
+			// An upgrade from before versioning: the baseline runs on every
+			// start at once and adds the missing indexes together.
+			forgetMigrations(t, first.db)
 			startTogether(t, base, round)
 		}
 	})

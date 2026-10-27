@@ -111,7 +111,7 @@ func executeMigrateWorkOrder(ctx context.Context, wo *extensions.InstanceWorkOrd
 		"_partition_disjoint": true,
 	}
 	runner := &Runner{ctx: ctx}
-	return runner.runMigrateSingle(models.Node{ID: wo.NodeType, Type: models.NodeTypeMigrate, Config: config}, 0)
+	return runner.runMigrateSingle(ctx, models.Node{ID: wo.NodeType, Type: models.NodeTypeMigrate, Config: config}, 0)
 }
 
 func resolveMigrateWorkOrderURI(cr *ConnectionResolver, workspaceID, runID, connID, directURI string, nodeType models.NodeType) (string, error) {

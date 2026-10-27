@@ -363,41 +363,9 @@ func decodeRow(dec *json.Decoder, row *common.DataRow) error {
 		return err
 	}
 	for k, v := range *row {
-		(*row)[k] = normalizeJSONNumbers(v)
+		(*row)[k] = common.NormalizeJSONNumbers(v)
 	}
 	return nil
-}
-
-// normalizeJSONNumbers replaces json.Number values with int64 or float64,
-// recursing into the maps and slices a JSON or array column decodes into so a
-// nested number is not left as a json.Number for a type switch to miss.
-func normalizeJSONNumbers(v interface{}) interface{} {
-	switch val := v.(type) {
-	case json.Number:
-		// Int64 first: an integer that fits stays exact, which is the whole
-		// point. Only a value that is not an integer, or does not fit, is
-		// allowed to become a float.
-		if i, err := val.Int64(); err == nil {
-			return i
-		}
-		if f, err := val.Float64(); err == nil {
-			return f
-		}
-		// Neither: keep the text rather than invent a number.
-		return val.String()
-	case map[string]interface{}:
-		for k, inner := range val {
-			val[k] = normalizeJSONNumbers(inner)
-		}
-		return val
-	case []interface{}:
-		for i, inner := range val {
-			val[i] = normalizeJSONNumbers(inner)
-		}
-		return val
-	default:
-		return v
-	}
 }
 
 // ndjsonStreamEncoder is EncodeNDJSON for a dataset that arrives batch at

@@ -81,13 +81,25 @@ type RequestOptions struct {
 }
 
 func (f *RESTFetcher) Fetch(source string, options map[string]interface{}) (*common.DataSet, error) {
-	return f.FetchPaginatedResumable(source, options, nil, nil, nil)
+	return f.FetchContext(context.Background(), source, options)
+}
+
+// FetchContext is Fetch bounded by ctx: when ctx ends, the request in
+// flight is abandoned, no further page is fetched, and a wait between
+// pages or retries ends early.
+func (f *RESTFetcher) FetchContext(ctx context.Context, source string, options map[string]interface{}) (*common.DataSet, error) {
+	return f.FetchPaginatedResumableContext(ctx, source, options, nil, nil, nil)
 }
 
 // FetchPaginatedResumable implements CheckpointingFetcher. For a
 // non-paginated source (no "pagination" in options), resume/resumeRecords/
 // onCheckpoint are simply unused — this is exactly Fetch's original body.
 func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
+	return f.FetchPaginatedResumableContext(context.Background(), source, options, resume, resumeRecords, onCheckpoint)
+}
+
+// FetchPaginatedResumableContext is FetchPaginatedResumable bounded by ctx.
+func (f *RESTFetcher) FetchPaginatedResumableContext(ctx context.Context, source string, options map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
 	if source == "" {
 		return nil, ErrInvalidURL
 	}
@@ -97,10 +109,10 @@ func (f *RESTFetcher) FetchPaginatedResumable(source string, options map[string]
 	requestOptions := f.extractRequestOptions(options)
 
 	if paginationCfg, ok := asStringMap(options["pagination"]); ok && paginationCfg != nil {
-		return f.fetchPaginated(source, requestOptions, paginationCfg, options, resume, resumeRecords, onCheckpoint)
+		return f.fetchPaginated(ctx, source, requestOptions, paginationCfg, options, resume, resumeRecords, onCheckpoint)
 	}
 
-	responseBody, headers, err := f.executeRequest(source, requestOptions)
+	responseBody, headers, err := f.executeRequestContext(ctx, source, requestOptions)
 	if err != nil {
 		return nil, err
 	}
@@ -369,8 +381,8 @@ func (f *RESTFetcher) parseResponseContract(responseBody []byte, options map[str
 }
 
 func scalarDataSet(responseBody []byte, valuePath string) (*common.DataSet, error) {
-	var root interface{}
-	if err := json.Unmarshal(responseBody, &root); err != nil {
+	root, err := common.DecodeJSONValue(responseBody)
+	if err != nil {
 		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 	value, ok := common.ExtractPath(root, valuePath)
@@ -500,7 +512,7 @@ func extractDatasetRecords(responseBody []byte, options map[string]interface{}) 
 // meant a pipeline author couldn't configure them independently. Falling
 // back to the shared key keeps existing pipelines' behavior unchanged —
 // this is purely additive.
-func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
+func (f *RESTFetcher) fetchPaginated(ctx context.Context, source string, baseOptions RequestOptions, paginationCfg map[string]interface{}, fullOptions map[string]interface{}, resume *PaginationCheckpoint, resumeRecords []map[string]interface{}, onCheckpoint CheckpointSaver) (*common.DataSet, error) {
 	strategy, _ := paginationCfg["strategy"].(string)
 
 	execCfg, _ := asStringMap(fullOptions["execution"])
@@ -526,18 +538,21 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 
 	var lastRequestAt time.Time
 	var rateMu sync.Mutex
-	waitForRateSlot := func() {
+	waitForRateSlot := func() error {
 		if minInterval <= 0 {
-			return
+			return nil
 		}
 		rateMu.Lock()
 		defer rateMu.Unlock()
 		if !lastRequestAt.IsZero() {
 			if elapsed := time.Since(lastRequestAt); elapsed < minInterval {
-				time.Sleep(minInterval - elapsed)
+				if err := sleepContext(ctx, minInterval-elapsed); err != nil {
+					return err
+				}
 			}
 		}
 		lastRequestAt = time.Now()
+		return nil
 	}
 
 	// fetchPage is safe to call concurrently from multiple goroutines: the
@@ -548,13 +563,20 @@ func (f *RESTFetcher) fetchPaginated(source string, baseOptions RequestOptions, 
 		var headers http.Header
 		var err error
 		for attempt := 0; attempt <= maxRetries; attempt++ {
-			waitForRateSlot()
-			body, headers, err = f.executeRequest(pageURL, opts)
+			if werr := waitForRateSlot(); werr != nil {
+				return nil, nil, werr
+			}
+			body, headers, err = f.executeRequestContext(ctx, pageURL, opts)
 			if err == nil {
 				return body, headers, nil
 			}
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
 			if attempt < maxRetries {
-				time.Sleep(pageRetryDelay(retryBackoff, attempt))
+				if serr := sleepContext(ctx, pageRetryDelay(retryBackoff, attempt)); serr != nil {
+					return nil, nil, serr
+				}
 			}
 		}
 		return nil, nil, err
@@ -696,8 +718,7 @@ func (f *RESTFetcher) paginateOffset(source string, baseOptions RequestOptions, 
 		if endFlagPath == "" {
 			return false
 		}
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, endFlagPath); ok {
 				endFlag, _ := v.(bool)
 				return endFlag
@@ -757,8 +778,7 @@ func (f *RESTFetcher) paginateNumbered(source string, baseOptions RequestOptions
 		if totalPagesPath == "" {
 			return -1
 		}
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, totalPagesPath); ok {
 				if n, ok := toFloat(v); ok {
 					return int(n)
@@ -841,8 +861,7 @@ func (f *RESTFetcher) paginateCursor(source string, baseOptions RequestOptions, 
 		}
 
 		nextCursor := ""
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, cursorPath); ok {
 				nextCursor = stringifyScalar(v)
 			}
@@ -884,8 +903,7 @@ func (f *RESTFetcher) paginateNextLink(source string, baseOptions RequestOptions
 		}
 
 		next := ""
-		var root interface{}
-		if jsonErr := json.Unmarshal(body, &root); jsonErr == nil {
+		if root, jsonErr := common.DecodeJSONValue(body); jsonErr == nil {
 			if v, ok := common.ExtractPath(root, nextPath); ok {
 				next = stringifyScalar(v)
 			}
@@ -1043,6 +1061,8 @@ func toFloat(v interface{}) (float64, bool) {
 	switch n := v.(type) {
 	case float64:
 		return n, true
+	case int64:
+		return float64(n), true
 	case int:
 		return float64(n), true
 	case json.Number:
@@ -1062,5 +1082,17 @@ func stringifyScalar(v interface{}) string {
 		return ""
 	default:
 		return fmt.Sprintf("%v", s)
+	}
+}
+
+// sleepContext waits for d, or until ctx ends, whichever comes first.
+func sleepContext(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

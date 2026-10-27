@@ -88,6 +88,7 @@ func TestOpeningAPerOrganizationDatabaseMovesTheIndex(t *testing.T) {
 	if _, err := s.db.Exec(`CREATE UNIQUE INDEX idx_pipeline_org_pid ON pipelines(org_id, pipeline_id) WHERE pipeline_id != ''`); err != nil {
 		t.Fatal(err)
 	}
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	s, err = NewSQLiteStore(path)

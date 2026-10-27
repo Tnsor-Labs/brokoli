@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 	"sort"
 	"strings"
@@ -82,23 +83,82 @@ func MergeKeyOrder(order map[string]int, raw []byte) {
 	})
 }
 
+// DecodeJSONValue decodes one JSON document into Go values, keeping
+// integers exact. json.Unmarshal into interface{} makes every number a
+// float64, which changes any integer above 2^53 (an id, a cursor) and
+// gives a row a float for what the document wrote as an integer. Here an
+// integer that fits becomes an int64; any other number becomes a float64,
+// as before. Like json.Unmarshal, it refuses anything after the value.
+func DecodeJSONValue(data []byte) (interface{}, error) {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	var v interface{}
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, fmt.Errorf("invalid JSON: unexpected content after the top-level value")
+	}
+	return NormalizeJSONNumbers(v), nil
+}
+
+// NormalizeJSONNumbers replaces json.Number values with int64 or float64,
+// recursing into the maps and slices a JSON or array column decodes into so a
+// nested number is not left as a json.Number for a type switch to miss.
+func NormalizeJSONNumbers(v interface{}) interface{} {
+	switch val := v.(type) {
+	case json.Number:
+		// Int64 first: an integer that fits stays exact, which is the whole
+		// point. Only a value that is not an integer, or does not fit, is
+		// allowed to become a float.
+		if i, err := val.Int64(); err == nil {
+			return i
+		}
+		if f, err := val.Float64(); err == nil {
+			return f
+		}
+		// Neither: keep the text rather than invent a number.
+		return val.String()
+	case map[string]interface{}:
+		for k, inner := range val {
+			val[k] = NormalizeJSONNumbers(inner)
+		}
+		return val
+	case []interface{}:
+		for i, inner := range val {
+			val[i] = NormalizeJSONNumbers(inner)
+		}
+		return val
+	default:
+		return v
+	}
+}
+
 func ParseJSONData(jsonBytes []byte) ([]map[string]interface{}, error) {
-	// Try 1: array of objects — most common: [{...}, {...}]
-	var data []map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &data); err == nil && len(data) > 0 {
-		return data, nil
+	root, err := DecodeJSONValue(jsonBytes)
+	if err != nil {
+		return nil, fmt.Errorf("no data found in JSON content")
 	}
 
-	// Try 2: single object — {...}
-	var singleObject map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &singleObject); err == nil {
-		return []map[string]interface{}{singleObject}, nil
+	// Try 1: array of objects — most common: [{...}, {...}]
+	if arr, ok := root.([]interface{}); ok && len(arr) > 0 {
+		if data, ok := objectsOnly(arr); ok {
+			return data, nil
+		}
+	}
+
+	// Try 2: single object — {...}. A null document has always come back
+	// as one empty row; that is kept as it was.
+	switch obj := root.(type) {
+	case map[string]interface{}:
+		return []map[string]interface{}{obj}, nil
+	case nil:
+		return []map[string]interface{}{nil}, nil
 	}
 
 	// Try 3: mixed array — [dict, [array], value, ...]
 	// Handles APIs like World Bank: [metadata_dict, [data_dict, data_dict, ...]]
-	var mixedArray []interface{}
-	if err := json.Unmarshal(jsonBytes, &mixedArray); err == nil && len(mixedArray) > 0 {
+	if mixedArray, ok := root.([]interface{}); ok && len(mixedArray) > 0 {
 		var result []map[string]interface{}
 		for _, item := range mixedArray {
 			switch v := item.(type) {
@@ -118,6 +178,22 @@ func ParseJSONData(jsonBytes []byte) ([]map[string]interface{}, error) {
 	}
 
 	return nil, fmt.Errorf("no data found in JSON content")
+}
+
+// objectsOnly returns arr as rows when every element is an object (or
+// null, which json.Unmarshal into []map[string]interface{} made a nil map).
+func objectsOnly(arr []interface{}) ([]map[string]interface{}, bool) {
+	data := make([]map[string]interface{}, len(arr))
+	for i, item := range arr {
+		switch m := item.(type) {
+		case map[string]interface{}:
+			data[i] = m
+		case nil:
+		default:
+			return nil, false
+		}
+	}
+	return data, true
 }
 
 // ExtractPath navigates a dot-separated path (e.g. "data.items" or
@@ -153,8 +229,8 @@ func ExtractPath(root interface{}, path string) (interface{}, bool) {
 // a shape ParseJSONData's auto-detection mishandles by wrapping the whole
 // envelope as a single row.
 func ExtractRecordsAtPath(jsonBytes []byte, path string) ([]map[string]interface{}, error) {
-	var root interface{}
-	if err := json.Unmarshal(jsonBytes, &root); err != nil {
+	root, err := DecodeJSONValue(jsonBytes)
+	if err != nil {
 		return nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	value, ok := ExtractPath(root, path)
