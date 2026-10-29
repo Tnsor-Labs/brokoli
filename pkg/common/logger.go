@@ -6,8 +6,6 @@ import (
 	"log"
 	"os"
 	"strings"
-
-	"github.com/Tnsor-Labs/brokoli/pkg/errors"
 )
 
 type LogLevel int
@@ -87,13 +85,22 @@ func (l *Logger) SetLevel(level LogLevel) {
 	l.level = level
 }
 
+// output writes one log line. Logging is best effort: a write that fails
+// (a full disk, a closed file) is dropped. It used to go to
+// errors.CheckError, which calls log.Fatalf, so a failed log write ended
+// the whole server. Depth 3 keeps the file and line of the caller of
+// Debug, Info and the rest.
+func (l *Logger) output(lg *log.Logger, message string) {
+	_ = lg.Output(3, message)
+}
+
 // Debug logs a message at debug level.
 // Debug logs are only written to the log file, not to the console.
 // This should be used for sensitive data that should not be exposed in normal operation.
 func (l *Logger) Debug(format string, v ...interface{}) {
 	if l.level <= LogLevelDebug {
 		// Debug messages only go to the log file, not to console
-		errors.CheckError(l.debugLogger.Output(2, fmt.Sprintf(format, v...)))
+		l.output(l.debugLogger, fmt.Sprintf(format, v...))
 	}
 }
 
@@ -102,7 +109,7 @@ func (l *Logger) Debug(format string, v ...interface{}) {
 func (l *Logger) Info(format string, v ...interface{}) {
 	if l.level <= LogLevelInfo {
 		message := fmt.Sprintf(format, v...)
-		errors.CheckError(l.infoLogger.Output(2, message))
+		l.output(l.infoLogger, message)
 
 		// For console output, we might want to use in-place updates for progress messages
 		if l.consoleWriter != nil && l.consoleWriter != l.fileWriter {
@@ -121,7 +128,7 @@ func (l *Logger) Info(format string, v ...interface{}) {
 func (l *Logger) Warning(format string, v ...interface{}) {
 	if l.level <= LogLevelWarning {
 		message := fmt.Sprintf(format, v...)
-		errors.CheckError(l.warningLogger.Output(2, message))
+		l.output(l.warningLogger, message)
 
 		// Also output to console if it's different from the file writer
 		if l.consoleWriter != nil && l.consoleWriter != l.fileWriter {
@@ -134,7 +141,7 @@ func (l *Logger) Warning(format string, v ...interface{}) {
 func (l *Logger) Error(format string, v ...interface{}) {
 	if l.level <= LogLevelError {
 		message := fmt.Sprintf(format, v...)
-		errors.CheckError(l.errorLogger.Output(2, message))
+		l.output(l.errorLogger, message)
 
 		// Also output to console if it's different from the file writer
 		if l.consoleWriter != nil && l.consoleWriter != l.fileWriter {
@@ -147,7 +154,7 @@ func (l *Logger) Error(format string, v ...interface{}) {
 func (l *Logger) Fatal(format string, v ...interface{}) {
 	if l.level <= LogLevelFatal {
 		message := fmt.Sprintf(format, v...)
-		errors.CheckError(l.fatalLogger.Output(2, message))
+		l.output(l.fatalLogger, message)
 
 		// Also output to console if it's different from the file writer
 		if l.consoleWriter != nil && l.consoleWriter != l.fileWriter {
@@ -165,7 +172,7 @@ func (l *Logger) Progress(format string, v ...interface{}) {
 		message := fmt.Sprintf(format, v...)
 
 		// Log to file with normal format
-		errors.CheckError(l.infoLogger.Output(2, fmt.Sprintf("PROGRESS: %s", message)))
+		l.output(l.infoLogger, fmt.Sprintf("PROGRESS: %s", message))
 
 		// For console, use carriage return for in-place update
 		if l.consoleWriter != nil && l.consoleWriter != l.fileWriter {
