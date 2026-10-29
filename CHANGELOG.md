@@ -25,6 +25,17 @@ reconstruct from git archaeology.
   treated as unavailable; the earlier build stage remains responsible for
   reporting source compilation failures.
 
+- **SQLite timestamps sort and compare correctly** -- @hc12r. SQLite stores
+  timestamps as text and compares them as text, but they were written with
+  trailing zeros trimmed, so `10:00:05.1` sorted after `10:00:05.123` and
+  `10:00:05` after both. Run logs could come back out of order, and lease
+  expiry, due waits and purge cutoffs could misjudge values within the same
+  second. Every timestamp is now written at a fixed width in UTC, and
+  migration 2 rewrites the ones already stored; the first start after
+  upgrading logs how many it rewrote per column. Also fixed: the default
+  workspace showed a zero creation date, and run provenance stored its time
+  in yet another format. Postgres was not affected.
+
 ### Changed
 
 - **Versioned schema migrations** -- @hc12r. The database now records the

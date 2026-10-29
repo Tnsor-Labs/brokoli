@@ -246,13 +246,13 @@ func parseAlertTime(v interface{}, dialect string) (time.Time, bool) {
 	case time.Time:
 		return t, true
 	case string:
-		parsed, err := time.Parse(time.RFC3339Nano, t)
+		parsed, err := parseTime(t)
 		if err != nil {
 			return time.Time{}, false
 		}
 		return parsed, true
 	case []byte:
-		parsed, err := time.Parse(time.RFC3339Nano, string(t))
+		parsed, err := parseTime(string(t))
 		if err != nil {
 			return time.Time{}, false
 		}
@@ -440,12 +440,12 @@ func countUnreadAlertsFor(db *sql.DB, dialect, orgID, userID string) (int, error
 }
 
 // alertTimeArg renders a timestamp for whichever column type the dialect
-// uses: TIMESTAMPTZ on Postgres, RFC 3339 text on SQLite.
+// uses: TIMESTAMPTZ on Postgres, formatTime's text on SQLite.
 func alertTimeArg(dialect string, t time.Time) interface{} {
 	if dialect == "postgres" {
 		return t.UTC()
 	}
-	return t.UTC().Format(time.RFC3339Nano)
+	return formatTime(t)
 }
 
 // ── Store implementations ───────────────────────────────────

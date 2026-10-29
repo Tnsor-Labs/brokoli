@@ -66,7 +66,11 @@ func saveNodeProvenance(db *sql.DB, dialect string, p *models.NodeProvenance) er
 	query := rewritePlaceholders(dialect,
 		`INSERT INTO run_provenance (run_id, node_id, facts, recorded_at) VALUES (?,?,?,?)
 		 ON CONFLICT(run_id, node_id) DO UPDATE SET facts=excluded.facts, recorded_at=excluded.recorded_at`)
-	if _, err := db.Exec(query, p.RunID, p.NodeID, string(facts), p.RecordedAt); err != nil {
+	var recordedAt interface{} = p.RecordedAt
+	if dialect != "postgres" {
+		recordedAt = formatTime(p.RecordedAt)
+	}
+	if _, err := db.Exec(query, p.RunID, p.NodeID, string(facts), recordedAt); err != nil {
 		return fmt.Errorf("save provenance %s/%s: %w", p.RunID, p.NodeID, err)
 	}
 	return nil

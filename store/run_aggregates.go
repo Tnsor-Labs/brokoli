@@ -100,24 +100,14 @@ func (sc RunScope) scopeSQL(ph func() string) (string, []interface{}) {
 	}
 }
 
-// sinceArg renders a window start for a dialect.
-//
-// SQLite compares started_at as text, and the bound value must NOT carry a
-// zone suffix. Runs are stored with RFC3339Nano, which writes a fractional
-// part only when there is one, so a row reads "…T10:00:00.123456789Z" or
-// "…T10:00:00Z". Against a boundary of "…T10:00:00Z" the first compares
-// LESS, because '.' (0x2E) sorts below 'Z' (0x5A) -- so a run at the
-// boundary with any sub-second component is dropped from its own window.
-// Measured, not reasoned about: with the Z, two of three sample rows
-// matched; without it, three of three.
-//
-// A 19-character boundary has no such collision: every stored value shares
-// its prefix and is longer, so the comparison falls through to the digits.
+// sinceArg renders a window start for a dialect. SQLite compares
+// started_at as text, which is correct because formatTime writes every
+// timestamp at the same width (migration 2 rewrote the older ones).
 func sinceArg(dialect string, since time.Time) interface{} {
 	if dialect == "postgres" {
 		return since.UTC()
 	}
-	return since.UTC().Format("2006-01-02T15:04:05")
+	return formatTime(since)
 }
 
 // queryRunAggregates runs one grouped count. groupDay switches between the

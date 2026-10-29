@@ -76,7 +76,7 @@ var (
 
 func (d migrationDialect) appliedAt(t time.Time) interface{} {
 	if d.name == "sqlite" {
-		return t.UTC().Format(timeFormat)
+		return formatTime(t)
 	}
 	return t.UTC()
 }
