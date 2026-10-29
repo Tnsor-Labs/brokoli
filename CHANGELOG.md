@@ -29,6 +29,14 @@ reconstruct from git archaeology.
   loader also opened the file a second time by name; it now reads the one
   it checked.
 
+- **A preview of parallel steps cannot crash the server** -- @hc12r. The
+  steps of a preview that run side by side each recorded their result in
+  one shared map with no lock. Two finishing at the same moment were a data
+  race, and Go ends the process on concurrent map writes. It was rare
+  because the store's connection pool usually ordered the writes; with the
+  window widened, the race detector flags it at once. Results are now
+  recorded under a lock.
+
 - **Vulnerability preflight distinguishes tool failures from findings** --
   @arin30. Preflight reuses only the pinned `govulncheck` version, reports a
   missing or unusable scanner as a non-green `SKIP`, and keeps actual
