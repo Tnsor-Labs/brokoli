@@ -51,6 +51,12 @@ reconstruct from git archaeology.
   5xx are retried now. When the server sends `Retry-After` and it is longer
   than the configured backoff, the retry waits for it, up to five minutes.
 
+- **A failed log write no longer stops the server** -- @hc12r. The shared
+  logger the loaders and the engine write through handed every write error
+  to a helper that calls `log.Fatalf`, so a full disk under the log file
+  ended the process at its next log line. Logging is best effort now; a
+  line that cannot be written is dropped.
+
 - **SQLite timestamps sort and compare correctly** -- @hc12r. SQLite stores
   timestamps as text and compares them as text, but they were written with
   trailing zeros trimmed, so `10:00:05.1` sorted after `10:00:05.123` and
