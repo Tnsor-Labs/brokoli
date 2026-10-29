@@ -29,11 +29,12 @@ const maxRetryAfter = 5 * time.Minute
 
 // pageRetryable reports whether a failed page fetch can succeed if it is
 // tried again. Transport errors, timeouts and rate limits (408, 425, 429)
-// and server errors (5xx) can. Any other status (400, 401, 403, 404...)
-// and a refused or malformed target come back the same on every try, and
-// retrying them only delays the failure and adds load on the server.
+// and server errors (5xx) can. Any other status (400, 401, 403, 404...),
+// a refused or malformed target and an oversized body come back the same
+// on every try, and retrying them only delays the failure and adds load on
+// the server.
 func pageRetryable(err error) bool {
-	if errors.Is(err, ErrSSRFBlocked) || errors.Is(err, ErrInvalidURL) {
+	if errors.Is(err, ErrSSRFBlocked) || errors.Is(err, ErrInvalidURL) || errors.Is(err, ErrResponseTooLarge) {
 		return false
 	}
 	var se *statusError

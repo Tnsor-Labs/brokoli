@@ -25,6 +25,7 @@ var (
 	ErrHTTPRequestFailed = errors.New("HTTP request failed")
 	ErrEmptyResponse     = errors.New("empty response received")
 	ErrSSRFBlocked       = errors.New("request to private/internal network blocked")
+	ErrResponseTooLarge  = errors.New("response body too large")
 )
 
 // maxPaginationPages is a hard safety cap on the number of pages a
@@ -42,6 +43,11 @@ const maxPaginationPages = 100000
 // retry here is a best-effort convenience, not a durable execution-attempt
 // mechanism (see PR notes on scope).
 const defaultPageRetries = 2
+
+// defaultMaxResponseBytes caps one response body unless the node sets
+// max_response_bytes. The whole body is held in memory and then parsed, so
+// without a cap a server that never stops sending ends the process.
+const defaultMaxResponseBytes int64 = 512 << 20 // 512 MiB
 
 type RESTFetcher struct {
 	client *http.Client
@@ -78,6 +84,9 @@ type RequestOptions struct {
 	// first page and every paginated page alike.
 	AuthUser     string
 	AuthPassword string
+	// MaxResponseBytes caps the body of each response. Zero means
+	// defaultMaxResponseBytes.
+	MaxResponseBytes int64
 }
 
 func (f *RESTFetcher) Fetch(source string, options map[string]interface{}) (*common.DataSet, error) {
@@ -106,7 +115,10 @@ func (f *RESTFetcher) FetchPaginatedResumableContext(ctx context.Context, source
 
 	f.ensureClientInitialized(options)
 
-	requestOptions := f.extractRequestOptions(options)
+	requestOptions, err := f.extractRequestOptions(options)
+	if err != nil {
+		return nil, err
+	}
 
 	if paginationCfg, ok := asStringMap(options["pagination"]); ok && paginationCfg != nil {
 		return f.fetchPaginated(ctx, source, requestOptions, paginationCfg, options, resume, resumeRecords, onCheckpoint)
@@ -135,7 +147,10 @@ func (f *RESTFetcher) FetchPageContext(ctx context.Context, source string, optio
 	}
 
 	f.ensureClientInitialized(options)
-	requestOptions := f.extractRequestOptions(options)
+	requestOptions, err := f.extractRequestOptions(options)
+	if err != nil {
+		return nil, err
+	}
 	requestOptions.Params = mergeParams(requestOptions.Params, pageParams)
 	if pageURL == "" {
 		pageURL = source
@@ -189,7 +204,7 @@ func (f *RESTFetcher) ensureClientInitialized(options map[string]interface{}) {
 	}
 }
 
-func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) RequestOptions {
+func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) (RequestOptions, error) {
 	requestOptions := RequestOptions{
 		Method: "GET", // Default method
 	}
@@ -235,7 +250,15 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 		requestOptions.AuthPassword, _ = options["auth_password"].(string)
 	}
 
-	return requestOptions
+	if _, set := options["max_response_bytes"]; set {
+		n, ok := numOpt(options, "max_response_bytes")
+		if !ok || n < 1 || n != float64(int64(n)) {
+			return requestOptions, fmt.Errorf("max_response_bytes must be a positive whole number of bytes")
+		}
+		requestOptions.MaxResponseBytes = int64(n)
+	}
+
+	return requestOptions, nil
 }
 
 func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, options RequestOptions) ([]byte, http.Header, error) {
@@ -328,9 +351,9 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 		return nil, nil, &statusError{code: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readResponseBody(resp, options.MaxResponseBytes)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, nil, err
 	}
 
 	if len(body) == 0 {
@@ -338,6 +361,27 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 	}
 
 	return body, resp.Header, nil
+}
+
+// readResponseBody reads the whole body, refusing one longer than limit
+// bytes (defaultMaxResponseBytes when limit is zero). A declared length over
+// the cap is refused before any of it is read.
+func readResponseBody(resp *http.Response, limit int64) ([]byte, error) {
+	if limit <= 0 {
+		limit = defaultMaxResponseBytes
+	}
+	tooLarge := fmt.Errorf("%w: over %d bytes; raise max_response_bytes if this response is expected", ErrResponseTooLarge, limit)
+	if resp.ContentLength > limit {
+		return nil, tooLarge
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if int64(len(body)) > limit {
+		return nil, tooLarge
+	}
+	return body, nil
 }
 
 // parseResponseContract interprets a single response body according to the
