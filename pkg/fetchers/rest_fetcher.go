@@ -238,13 +238,6 @@ func (f *RESTFetcher) extractRequestOptions(options map[string]interface{}) Requ
 	return requestOptions
 }
 
-// executeRequest performs a single HTTP request and returns the response
-// body and headers. Headers are returned (rather than discarded) because
-// link_header pagination needs to read the response's Link header.
-func (f *RESTFetcher) executeRequest(rawURL string, options RequestOptions) ([]byte, http.Header, error) {
-	return f.executeRequestContext(context.Background(), rawURL, options)
-}
-
 func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, options RequestOptions) ([]byte, http.Header, error) {
 	// Resolve relative URLs (e.g. /api/samples/data/file.csv) against the
 	// Brokoli server. A relative path is an implicit self-reference to the

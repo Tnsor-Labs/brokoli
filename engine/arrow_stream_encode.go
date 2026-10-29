@@ -307,13 +307,12 @@ func streamCodecFromEnv() streamCodec {
 // the pipe this writes into: by the time a byte exists it is too late to
 // label it.
 type datasetStreamWriter struct {
-	w        io.Writer
-	codec    streamCodec
-	decided  bool
-	arrow    *arrowStreamEncoder
-	ndjson   *ndjsonStreamEncoder
-	rows     int64
-	firstErr error
+	w       io.Writer
+	codec   streamCodec
+	decided bool
+	arrow   *arrowStreamEncoder
+	ndjson  *ndjsonStreamEncoder
+	rows    int64
 }
 
 func newDatasetStreamWriter(w io.Writer, codec streamCodec) *datasetStreamWriter {

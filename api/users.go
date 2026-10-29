@@ -1174,8 +1174,6 @@ func generateID() string {
 	return hex.EncodeToString(b)
 }
 
-type contextKey string
-
 func contextWithClaims(ctx interface{ Value(any) any }, claims *jwt.MapClaims) interface {
 	Deadline() (time.Time, bool)
 	Done() <-chan struct{}

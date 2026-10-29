@@ -138,8 +138,8 @@ func TestMigrationCarriesIntegerWidth(t *testing.T) {
 		if err := rows.Scan(p...); err != nil {
 			t.Fatal(err)
 		}
-		name := fmt.Sprintf("%s", vals[0].([]byte))
-		seen[name] = strings.ToLower(fmt.Sprintf("%s", vals[1].([]byte)))
+		name := string(vals[0].([]byte))
+		seen[name] = strings.ToLower(string(vals[1].([]byte)))
 	}
 	if !strings.HasPrefix(seen["id"], "bigint") {
 		t.Errorf("id column is %q, want bigint — a narrower type cannot hold the source", seen["id"])

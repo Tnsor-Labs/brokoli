@@ -2,7 +2,6 @@ package engine
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -335,17 +334,4 @@ func autoLayoutNodes(p *models.Pipeline) {
 			}
 		}
 	}
-}
-
-// sanitizeConfigValue ensures config values don't contain YAML injection payloads.
-// Rejects multiline YAML directives and anchors in string values.
-func sanitizeConfigValue(v interface{}) interface{} {
-	s, ok := v.(string)
-	if !ok {
-		return v
-	}
-	if strings.Contains(s, "!!") || strings.HasPrefix(s, "*") || strings.HasPrefix(s, "&") {
-		return strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(s, "!!", ""), "&", ""), "*", "")
-	}
-	return v
 }

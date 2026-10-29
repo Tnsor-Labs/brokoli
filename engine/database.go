@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
@@ -144,10 +143,6 @@ func detectDriver(uri string) (string, string, error) {
 		}
 		return "pgx", uri, nil
 	}
-}
-
-func parseJSON(s string, v interface{}) error {
-	return json.Unmarshal([]byte(s), v)
 }
 
 func refuseNativeDatabase(uri, operation string) error {
