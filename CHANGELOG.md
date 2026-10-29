@@ -51,6 +51,13 @@ reconstruct from git archaeology.
   5xx are retried now. When the server sends `Retry-After` and it is longer
   than the configured backoff, the retry waits for it, up to five minutes.
 
+- **A REST response can no longer exhaust memory** -- @hc12r. A
+  `source_api` read each response body whole, with no limit, so an endpoint
+  that kept sending ended the process. A response is now capped at 512 MiB,
+  and a declared length over the cap is refused before anything is read.
+  A node that expects more sets `max_response_bytes`. An oversized page is
+  not retried.
+
 - **A failed log write no longer stops the server** -- @hc12r. The shared
   logger the loaders and the engine write through handed every write error
   to a helper that calls `log.Fatalf`, so a full disk under the log file
