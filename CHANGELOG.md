@@ -21,8 +21,10 @@ reconstruct from git archaeology.
 - **The server closes idle connections** -- @hc12r. With no idle timeout
   set, a kept-alive connection that sent nothing more stayed open, with its
   goroutine and file descriptor, until the client closed it. Idle
-  connections now close after two minutes. Uploads, downloads and event
-  streams are unaffected: there is still no read or write deadline.
+  connections now close after 11 minutes, longer than load balancers keep
+  a backend connection idle (GCP's is 600 seconds), so the proxy still
+  closes first. Uploads, downloads and event streams are unaffected: there
+  is still no read or write deadline.
 
 - **File nodes cannot be led out of the data directories by a symlink** --
   @hc12r. The check that a path is inside `BROKOLI_DATA_DIRS` read the path

@@ -370,12 +370,15 @@ func (s *Server) Start() error {
 // upload, a streamed download or a server-sent event stream. IdleTimeout
 // needs saying because it falls back to ReadTimeout, so with neither set a
 // kept-alive connection that sends nothing more was held open for ever.
+// It is longer than any proxy in front is likely to keep a backend
+// connection idle (GCP's load balancer: 600s), so the proxy closes first
+// and never sends a request down a connection the server is closing.
 func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	return &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		IdleTimeout:       11 * time.Minute,
 	}
 }
 
