@@ -77,7 +77,7 @@ func (b *ArrowBatchReader) Next() (*common.DataSet, error) {
 		}
 		return nil, io.EOF
 	}
-	rec := b.rdr.Record()
+	rec := b.rdr.RecordBatch()
 
 	// Field order comes from the schema, but the caller's declared
 	// columns may name them in a different order; index by schema

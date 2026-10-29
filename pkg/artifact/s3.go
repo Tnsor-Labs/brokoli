@@ -226,7 +226,9 @@ func (s *S3Store) Put(ctx context.Context, namespace string, r io.Reader, opts P
 // directly for a streamed, unsized io.Reader input.
 func (s *S3Store) uploadCounting(ctx context.Context, key string, r io.Reader) (int64, error) {
 	cr := &countingReader{r: r}
+	//lint:ignore SA1019 moving to feature/s3/transfermanager is a change of its own
 	uploader := manager.NewUploader(s.client)
+	//lint:ignore SA1019 moving to feature/s3/transfermanager is a change of its own
 	_, err := uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(key),

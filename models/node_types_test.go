@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
-	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -21,39 +21,37 @@ import (
 // no way to enumerate the constants of a named type at runtime, so the
 // declarations themselves are the only available source of truth.
 func TestAllNodeTypesIsComplete(t *testing.T) {
-	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", func(os.FileInfo) bool { return true }, 0)
+	paths, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("parsing this package: %v", err)
+		t.Fatal(err)
 	}
-
+	fset := token.NewFileSet()
 	declared := map[string]bool{}
-	for name, pkg := range pkgs {
-		if strings.HasSuffix(name, "_test") {
+	for _, path := range paths {
+		if strings.HasSuffix(path, "_test.go") {
 			continue
 		}
-		for path, file := range pkg.Files {
-			if strings.HasSuffix(path, "_test.go") {
-				continue
-			}
-			ast.Inspect(file, func(n ast.Node) bool {
-				spec, ok := n.(*ast.ValueSpec)
-				if !ok {
-					return true
-				}
-				// Only constants whose declared type is NodeType. A
-				// NodeType-typed var, or a string constant that merely
-				// looks like one, is not a node type.
-				ident, ok := spec.Type.(*ast.Ident)
-				if !ok || ident.Name != "NodeType" {
-					return true
-				}
-				for _, name := range spec.Names {
-					declared[name.Name] = true
-				}
-				return true
-			})
+		file, err := parser.ParseFile(fset, path, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", path, err)
 		}
+		ast.Inspect(file, func(n ast.Node) bool {
+			spec, ok := n.(*ast.ValueSpec)
+			if !ok {
+				return true
+			}
+			// Only constants whose declared type is NodeType. A
+			// NodeType-typed var, or a string constant that merely
+			// looks like one, is not a node type.
+			ident, ok := spec.Type.(*ast.Ident)
+			if !ok || ident.Name != "NodeType" {
+				return true
+			}
+			for _, name := range spec.Names {
+				declared[name.Name] = true
+			}
+			return true
+		})
 	}
 	if len(declared) == 0 {
 		t.Fatal("found no NodeType constants at all; this test would pass for an empty list")

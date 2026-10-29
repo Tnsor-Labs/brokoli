@@ -110,7 +110,7 @@ func benchArrowTyped(t testing.TB, rows []benchRow) []byte {
 		b.Field(4).(*array.StringBuilder).Append(r.Category)
 		b.Field(5).(*array.StringBuilder).Append(r.Note)
 	}
-	rec := b.NewRecord()
+	rec := b.NewRecordBatch()
 	defer rec.Release()
 
 	var buf bytes.Buffer

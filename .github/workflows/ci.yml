@@ -51,6 +51,28 @@ jobs:
       - name: Enforce outbound HTTP policy
         run: go run ./internal/cmd/netguardcheck ./...
 
+  static-analysis:
+    name: Static analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.10"
+
+      # go test runs only a subset of vet's analyzers.
+      - name: go vet
+        run: go vet ./...
+
+      # Pinned: a new release adds checks, and a gate that turns red on
+      # its own is not one anyone trusts. Bump it deliberately. Checks that
+      # are off, and why, are in staticcheck.conf.
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...
+
   test:
     name: Test
     runs-on: ubuntu-latest

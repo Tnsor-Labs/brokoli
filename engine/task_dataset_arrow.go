@@ -68,7 +68,7 @@ func decodeArrowIPCRows(r io.Reader) ([]common.DataRow, []string, error) {
 	}
 
 	for rdr.Next() {
-		rec := rdr.Record()
+		rec := rdr.RecordBatch()
 		if int64(len(rows))+rec.NumRows() > int64(maxTaskDatasetRows) {
 			return nil, nil, fmt.Errorf("more than %d rows, over this server's cap", maxTaskDatasetRows)
 		}
@@ -265,7 +265,7 @@ func arrowIPCFromRows(columns []string, rows []common.DataRow) ([]byte, error) {
 			fb.Append(fmt.Sprintf("%v", v))
 		}
 	}
-	rec := b.NewRecord()
+	rec := b.NewRecordBatch()
 	defer rec.Release()
 
 	var buf bytes.Buffer

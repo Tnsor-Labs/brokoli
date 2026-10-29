@@ -448,6 +448,9 @@ func applyFunction(r TransformRule, ds *common.DataSet) error {
 			case "trim":
 				row[r.Column] = strings.TrimSpace(str)
 			case "title":
+				// cases.Title also lowercases the rest of each word, so
+				// switching would change what existing pipelines produce.
+				//lint:ignore SA1019 the output is a contract; see above
 				row[r.Column] = strings.Title(str)
 			default:
 				return fmt.Errorf("unsupported function: %s", r.Function)

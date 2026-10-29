@@ -215,9 +215,11 @@ func (c *s3FileClient) upload(ctx context.Context, key string, write func(io.Wri
 		return 0, fmt.Errorf("S3 object key is required")
 	}
 	reader, writer := io.Pipe()
+	//lint:ignore SA1019 moving to feature/s3/transfermanager is a change of its own
 	uploader := manager.NewUploader(c.client)
 	result := make(chan error, 1)
 	go func() {
+		//lint:ignore SA1019 moving to feature/s3/transfermanager is a change of its own
 		_, err := uploader.Upload(ctx, &s3.PutObjectInput{
 			Bucket: aws.String(c.bucket), Key: aws.String(key), Body: reader,
 		})
