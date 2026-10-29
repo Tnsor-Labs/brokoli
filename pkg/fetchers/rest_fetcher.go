@@ -332,7 +332,7 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, nil, fmt.Errorf("%w: status code %d", ErrHTTPRequestFailed, resp.StatusCode)
+		return nil, nil, &statusError{code: resp.StatusCode, retryAfter: parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())}
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -573,8 +573,11 @@ func (f *RESTFetcher) fetchPaginated(ctx context.Context, source string, baseOpt
 			if ctx.Err() != nil {
 				return nil, nil, ctx.Err()
 			}
+			if !pageRetryable(err) {
+				return nil, nil, err
+			}
 			if attempt < maxRetries {
-				if serr := sleepContext(ctx, pageRetryDelay(retryBackoff, attempt)); serr != nil {
+				if serr := sleepContext(ctx, pageRetryWait(retryBackoff, attempt, err)); serr != nil {
 					return nil, nil, serr
 				}
 			}

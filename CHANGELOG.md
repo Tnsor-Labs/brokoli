@@ -25,6 +25,13 @@ reconstruct from git archaeology.
   treated as unavailable; the earlier build stage remains responsible for
   reporting source compilation failures.
 
+- **REST page retries skip failures that cannot pass, and honour
+  Retry-After** -- @hc12r. A paginated `source_api` retried every failed
+  page, so a 401, 403 or 404 was requested again on every retry before the
+  node failed with the same error. Only transport errors, 408, 425, 429 and
+  5xx are retried now. When the server sends `Retry-After` and it is longer
+  than the configured backoff, the retry waits for it, up to five minutes.
+
 - **SQLite timestamps sort and compare correctly** -- @hc12r. SQLite stores
   timestamps as text and compares them as text, but they were written with
   trailing zeros trimmed, so `10:00:05.1` sorted after `10:00:05.123` and
