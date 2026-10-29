@@ -25,6 +25,14 @@ reconstruct from git archaeology.
   treated as unavailable; the earlier build stage remains responsible for
   reporting source compilation failures.
 
+- **API request bodies are bounded** -- @hc12r. Creating or updating a
+  pipeline, and 21 other endpoints (connections, variables, secret stores,
+  runs, backfills, templates, users and more), decoded a JSON body of any
+  size, so one request could make the server buffer as much as a client
+  cared to send. They now read at most 4 MiB, the size of the largest
+  pipeline definition the API already accepted in a change request, and
+  answer 400 past it. Endpoints that set a smaller limit keep theirs.
+
 - **REST page retries skip failures that cannot pass, and honour
   Retry-After** -- @hc12r. A paginated `source_api` retried every failed
   page, so a 401, 403 or 404 was requested again on every retry before the

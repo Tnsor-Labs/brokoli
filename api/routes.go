@@ -2,7 +2,6 @@ package api
 
 import (
 	"database/sql"
-	"encoding/json"
 	"log"
 	"net/http"
 	"slices"
@@ -692,7 +691,7 @@ func systemPurge(s store.Store, e *engine.Engine) http.HandlerFunc {
 		var req struct {
 			Days int `json:"days"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Days <= 0 {
+		if err := decodeJSON(w, r, &req); err != nil || req.Days <= 0 {
 			req.Days = 30
 		}
 

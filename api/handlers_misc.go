@@ -1007,7 +1007,7 @@ func (h *NotificationSettingsHandler) Update(w http.ResponseWriter, r *http.Requ
 		Username     string `json:"username"`
 		TeamsWebhook string `json:"teams_webhook"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -1178,7 +1178,7 @@ func bulkPipelineHandler(s store.Store) http.HandlerFunc {
 			IDs    []string `json:"ids"`
 			Action string   `json:"action"` // delete, enable, disable
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSON(w, r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}

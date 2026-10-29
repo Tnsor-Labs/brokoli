@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"strings"
 	"time"
@@ -142,7 +141,7 @@ func (h *VariableHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *VariableHandler) Set(w http.ResponseWriter, r *http.Request) {
 	var v models.Variable
-	if err := json.NewDecoder(r.Body).Decode(&v); err != nil {
+	if err := decodeJSON(w, r, &v); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
