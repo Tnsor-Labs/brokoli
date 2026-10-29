@@ -13,6 +13,11 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
+  same name as a component apart from case (`queries.ts` and `Queries.tsx`,
+  `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the
+  component's import resolved to the wrong file and `npm run build` failed.
+
 - **File nodes cannot be led out of the data directories by a symlink** --
   @hc12r. The check that a path is inside `BROKOLI_DATA_DIRS` read the path
   as written, so a symlink inside a data directory pointing elsewhere (for
@@ -23,11 +28,6 @@ reconstruct from git archaeology.
   inside a data directory keep working, absolute ones included. The Excel
   loader also opened the file a second time by name; it now reads the one
   it checked.
-
-- **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
-  same name as a component apart from case (`queries.ts` and `Queries.tsx`,
-  `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the
-  component's import resolved to the wrong file and `npm run build` failed.
 
 - **Vulnerability preflight distinguishes tool failures from findings** --
   @arin30. Preflight reuses only the pinned `govulncheck` version, reports a

@@ -36,7 +36,7 @@ func SafeWriteFile(filePath string, data []byte, perm os.FileMode) error {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
-		f.Close() //nolint:errcheck // the write error is the one to report
+		_ = f.Close() // the write error is the one to report
 		return err
 	}
 	return f.Close()
