@@ -285,21 +285,17 @@ func columnRefBroken(parts []string, row common.DataRow) bool {
 
 func filterRows(r TransformRule, ds *common.DataSet) error {
 
-	// Validate the condition once, up front, so an unrecognized form fails
-	// loudly — even for an empty dataset — instead of silently keeping
-	// every row (brokoli-sdk#14). The parse is row-independent, so an empty
-	// row exercises exactly the form check.
-	if _, err := matchesCondition(r.Condition, common.DataRow{}); err != nil {
+	// Parsed once, up front, so an unrecognized form fails loudly, even
+	// for an empty dataset, instead of silently keeping every row
+	// (brokoli-sdk#14), and so no row pays for the parse.
+	m, err := newConditionMatcher(r.Condition)
+	if err != nil {
 		return fmt.Errorf("filter_rows: %w", err)
 	}
 
 	var kept []common.DataRow
 	for _, row := range ds.Rows {
-		match, err := matchesCondition(r.Condition, row)
-		if err != nil {
-			return fmt.Errorf("filter_rows: %w", err)
-		}
-		if match {
+		if m.matches(row) {
 			kept = append(kept, row)
 		}
 	}
@@ -307,24 +303,12 @@ func filterRows(r TransformRule, ds *common.DataSet) error {
 	return nil
 }
 
-// comparisonOps are the operators matchesCondition understands beyond the
+// comparisonOps are the operators a condition understands beyond the
 // “in“ set membership form. Order does not matter here — detection is by
 // leftmost position with the longest operator winning at a tie, so ">="
 // beats ">" and "!=" beats "=" (below).
 var comparisonOps = []string{">=", "<=", "!=", "==", "=", ">", "<"}
 
-// matchesCondition reports whether row satisfies cond. cond is one of:
-//
-//	column in [a, b, c]           set membership
-//	column = value / == value     string equality
-//	column != value               string inequality
-//	column > / < / >= / <= value  ordered comparison (numeric when both
-//	                              sides parse as numbers, else lexicographic)
-//
-// An unrecognized form is an error, not a silent "keep the row" — the
-// silent pass-through was a data-quality footgun (brokoli-sdk#14): a
-// condition like "id > 100" against a matcher that didn't know ">" kept
-// every row with no error.
 // parsedCondition is the shared parse of a filter condition. Both backends —
 // the Go matcher below and the SQL compiler in transform_sql.go — read it, so
 // they cannot disagree about which column, operator, and target a condition
@@ -371,57 +355,118 @@ func parseCondition(cond string) (parsedCondition, error) {
 	}, nil
 }
 
-func matchesCondition(cond string, row common.DataRow) (bool, error) {
-	pc, err := parseCondition(cond)
-	if err != nil {
-		return false, err
-	}
-	if pc.Op == "in" {
-		colVal := fmt.Sprintf("%v", row[pc.Column])
-		for _, v := range pc.Set {
-			if v == colVal {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-
-	target := pc.Target
-	left := fmt.Sprintf("%v", row[pc.Column])
-
-	switch pc.Op {
-	case "=", "==":
-		return left == target, nil
-	case "!=":
-		return left != target, nil
+// matches reports whether row satisfies the condition, which is one of:
+//
+//	column in [a, b, c]           set membership
+//	column = value / == value     string equality
+//	column != value               string inequality
+//	column > / < / >= / <= value  ordered comparison (numeric when both
+//	                              sides parse as numbers, else lexicographic)
+//
+// An unrecognized form is an error from newConditionMatcher, not a silent
+// "keep the row" — the
+// silent pass-through was a data-quality footgun (brokoli-sdk#14): a
+// condition like "id > 100" against a matcher that didn't know ">" kept
+// every row with no error.
+func (m conditionMatcher) matches(row common.DataRow) bool {
+	cell := row[m.Column]
+	switch m.Op {
+	case "in", "=", "==", "!=":
+		return m.matchesText(cellText(cell))
 	}
 
 	// Ordered comparison: numeric when both sides parse as numbers,
 	// otherwise lexicographic (so dates/strings still order sensibly).
-	cmp := strings.Compare(left, target)
-	if lf, lerr := strconv.ParseFloat(left, 64); lerr == nil {
-		if rf, rerr := strconv.ParseFloat(target, 64); rerr == nil {
+	cmp, numeric := 0, false
+	if m.targetIsNum {
+		var lf float64
+		if lf, numeric = cellNumber(cell); numeric {
 			switch {
-			case lf < rf:
+			case lf < m.targetNum:
 				cmp = -1
-			case lf > rf:
+			case lf > m.targetNum:
 				cmp = 1
-			default:
-				cmp = 0
 			}
 		}
 	}
-	switch pc.Op {
-	case ">":
-		return cmp > 0, nil
-	case "<":
-		return cmp < 0, nil
-	case ">=":
-		return cmp >= 0, nil
-	case "<=":
-		return cmp <= 0, nil
+	if !numeric {
+		cmp = strings.Compare(cellText(cell), m.Target)
 	}
-	return false, fmt.Errorf("unrecognized operator %q", pc.Op) // unreachable
+	switch m.Op {
+	case ">":
+		return cmp > 0
+	case "<":
+		return cmp < 0
+	case ">=":
+		return cmp >= 0
+	default: // "<="
+		return cmp <= 0
+	}
+}
+
+// matchesText evaluates the set and equality forms, which compare text.
+func (m conditionMatcher) matchesText(left string) bool {
+	switch m.Op {
+	case "in":
+		for _, v := range m.Set {
+			if v == left {
+				return true
+			}
+		}
+		return false
+	case "=", "==":
+		return left == m.Target
+	default: // "!="
+		return left != m.Target
+	}
+}
+
+// conditionMatcher is a filter condition parsed once, with its target
+// already read as a number when it is one, to be evaluated against many
+// rows.
+type conditionMatcher struct {
+	parsedCondition
+	targetNum   float64
+	targetIsNum bool
+}
+
+func newConditionMatcher(cond string) (conditionMatcher, error) {
+	pc, err := parseCondition(cond)
+	if err != nil {
+		return conditionMatcher{}, err
+	}
+	m := conditionMatcher{parsedCondition: pc}
+	m.targetNum, err = strconv.ParseFloat(pc.Target, 64)
+	m.targetIsNum = err == nil
+	return m, nil
+}
+
+// cellNumber is a cell read as a number, as the condition reads it: its
+// text parsed as a float. float64, int64 and int skip the text, which gives
+// the same value: %v writes a float64 in the shortest form that parses back
+// exactly, and parsing a decimal integer rounds as converting it does.
+// float32 is not among them, because its %v is shortest for 32 bits and
+// parses back as a different float64.
+func cellNumber(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case int64:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	}
+	f, err := strconv.ParseFloat(cellText(v), 64)
+	return f, err == nil
+}
+
+// cellText is a cell as the condition compares it: its %v rendering,
+// without the formatting call for the common case of a string.
+func cellText(v interface{}) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprintf("%v", v)
 }
 
 func applyFunction(r TransformRule, ds *common.DataSet) error {
