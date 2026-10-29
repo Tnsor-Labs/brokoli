@@ -65,8 +65,11 @@ type Runner struct {
 	artifactSourceRunIDs map[string]string
 	dryRun               bool
 	dryRunMaxRows        int
-	dryRunResults        map[string]*DryRunNodeResult
-	params               map[string]string // legacy untyped runtime params (ADR-032 section 3)
+	// dryRunResults is written through recordDryRun, under dryRunMu:
+	// the nodes of a wave run at once.
+	dryRunResults map[string]*DryRunNodeResult
+	dryRunMu      sync.Mutex
+	params        map[string]string // legacy untyped runtime params (ADR-032 section 3)
 	// parameters is the resolved, typed run-parameter snapshot (ADR-032
 	// rollout step 4, issue #439): validated and defaulted by
 	// taskinterface.ResolveParameters against Pipeline.Parameters before
@@ -1421,17 +1424,14 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 				}
 
 				if r.dryRun {
-					if r.dryRunResults == nil {
-						r.dryRunResults = make(map[string]*DryRunNodeResult)
-					}
 					previewRows := make([]map[string]interface{}, len(output.Rows))
 					for i, row := range output.Rows {
 						previewRows[i] = map[string]interface{}(row)
 					}
-					r.dryRunResults[node.ID] = &DryRunNodeResult{
+					r.recordDryRun(&DryRunNodeResult{
 						NodeID: node.ID, Name: node.Name, Status: "success",
 						Columns: output.Columns, Rows: previewRows,
-					}
+					})
 				} else {
 					n := int64(len(output.Rows))
 					if err := r.store.SaveNodePreview(r.run.ID, node.ID, store.NodePreview{
@@ -1543,10 +1543,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		if r.dryRun {
 			// A preview shows the failure on the node; the last attempt's
 			// error is the one that stands.
-			if r.dryRunResults == nil {
-				r.dryRunResults = make(map[string]*DryRunNodeResult)
-			}
-			r.dryRunResults[node.ID] = &DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusFailed), Error: nr.Error}
+			r.recordDryRun(&DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusFailed), Error: nr.Error})
 		}
 		if !r.dryRun {
 			// If we can't durably record that this attempt failed, don't
@@ -1706,12 +1703,19 @@ func (r *Runner) persistSkippedNode(node models.Node, readyAt time.Time) error {
 	return r.persistSkippedOutcome(node, readyAt, false, nil, "")
 }
 
+// recordDryRun keeps a node's preview result.
+func (r *Runner) recordDryRun(res *DryRunNodeResult) {
+	r.dryRunMu.Lock()
+	defer r.dryRunMu.Unlock()
+	if r.dryRunResults == nil {
+		r.dryRunResults = make(map[string]*DryRunNodeResult)
+	}
+	r.dryRunResults[res.NodeID] = res
+}
+
 func (r *Runner) persistSkippedOutcome(node models.Node, readyAt time.Time, reused bool, conditionResult *bool, artifactRunID string) error {
 	if r.dryRun {
-		if r.dryRunResults == nil {
-			r.dryRunResults = make(map[string]*DryRunNodeResult)
-		}
-		r.dryRunResults[node.ID] = &DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusSkipped)}
+		r.recordDryRun(&DryRunNodeResult{NodeID: node.ID, Name: node.Name, Status: string(models.RunStatusSkipped)})
 		return nil
 	}
 
