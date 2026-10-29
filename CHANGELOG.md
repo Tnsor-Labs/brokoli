@@ -56,6 +56,12 @@ reconstruct from git archaeology.
   write per row. On Postgres the index is built during the first start after
   upgrading, and writes to `runs` wait until it is done.
 
+- **Dead code removed** -- @hc12r. Eight functions, a type and a field that
+  nothing called, found by staticcheck. One was a YAML "sanitizer" that was
+  never wired in, and would have been wrong if it were: it stripped `*`, `&`
+  and `!!` from every string config value, so `SELECT * FROM t` would have
+  lost its `*`. No behaviour changes.
+
 ## [0.20.0] - 2026-10-25
 
 A reliability release. A node's timeout now stops the work it times out:

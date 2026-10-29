@@ -25,12 +25,6 @@ const bigQueryTestKey = `{"type":"service_account","project_id":"acme","private_
 	`"private_key":"-----BEGIN PRIVATE KEY-----\nMARKER-bq-private-key\n-----END PRIVATE KEY-----\n",` +
 	`"client_email":"loader@acme.iam.gserviceaccount.com"}`
 
-type bigQueryTokenSource struct{}
-
-func (bigQueryTokenSource) Token(context.Context, identity.TokenRequest) (string, error) {
-	return "token", nil
-}
-
 func bigQueryStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
 	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "bq.db"))

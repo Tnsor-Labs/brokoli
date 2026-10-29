@@ -2642,10 +2642,6 @@ func scanRunFromScanner(sc scanner) (*models.Run, error) {
 	return &r, nil
 }
 
-func scanRun(row *sql.Row) (*models.Run, error) {
-	return scanRunFromScanner(row)
-}
-
 func scanRunRows(rows *sql.Rows) (*models.Run, error) {
 	return scanRunFromScanner(rows)
 }

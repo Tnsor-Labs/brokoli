@@ -112,7 +112,7 @@ func TestDeriveInstanceKey_DeterministicAndDistinct(t *testing.T) {
 	if deriveInstanceKey(0) == deriveInstanceKey(1) {
 		t.Error("expected distinct keys for distinct indices")
 	}
-	if deriveInstanceKey(3) != deriveInstanceKey(3) {
+	if first, again := deriveInstanceKey(3), deriveInstanceKey(3); first != again {
 		t.Error("expected deterministic key for same index")
 	}
 }

@@ -22,12 +22,6 @@ func NewVariableHandler(s store.Store, c *crypto.Config) *VariableHandler {
 	return &VariableHandler{store: s, crypto: c}
 }
 
-// validateVariableAccess verifies a variable exists in the user's workspace scope.
-func (h *VariableHandler) validateVariableAccess(r *http.Request, key string) bool {
-	_, ok := h.variableWorkspace(r, key)
-	return ok
-}
-
 // variableWorkspace returns the workspace this caller may reach the key
 // in, and whether they may reach it at all.
 //
