@@ -36,6 +36,12 @@ reconstruct from git archaeology.
   treated as unavailable; the earlier build stage remains responsible for
   reporting source compilation failures.
 
+- **Listing schedules no longer holds up scheduled runs** -- @hc12r. The
+  schedule list read each pipeline's last run with its own query while
+  holding the lock a schedule takes when it fires, so with many schedules
+  every scheduled run waited for the whole list. It now reads all the last
+  runs in one query, after releasing the lock.
+
 - **API request bodies are bounded** -- @hc12r. Creating or updating a
   pipeline, and 21 other endpoints (connections, variables, secret stores,
   runs, backfills, templates, users and more), decoded a JSON body of any

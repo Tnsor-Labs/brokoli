@@ -645,25 +645,30 @@ func (s *Scheduler) SyncPipeline(pipelineID, pipelineName, schedule string, enab
 // Status returns info about all active schedules.
 func (s *Scheduler) Status() []ScheduleInfo {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	var infos []ScheduleInfo
+	ids := make([]string, 0, len(s.entries))
 	for pid, entryID := range s.entries {
-		entry := s.cron.Entry(entryID)
-		info := ScheduleInfo{
+		infos = append(infos, ScheduleInfo{
 			PipelineID:   pid,
 			PipelineName: s.names[pid],
 			Schedule:     s.schedules[pid],
-			NextRun:      entry.Next,
-		}
+			NextRun:      s.cron.Entry(entryID).Next,
+		})
+		ids = append(ids, pid)
+	}
+	s.mu.Unlock()
 
-		// Get last run time
-		runs, err := s.store.ListRunsByPipeline(pid, 1)
-		if err == nil && len(runs) > 0 && runs[0].StartedAt != nil {
-			info.LastRun = runs[0].StartedAt.UTC().Format(time.RFC3339)
+	// One query, made after releasing s.mu: a firing schedule takes the
+	// same lock, and one query per pipeline under it held every schedule
+	// up for as long as the list took to read.
+	latest, err := s.store.GetLatestRunsByPipelineIDs(ids)
+	if err != nil {
+		return infos
+	}
+	for i := range infos {
+		if run := latest[infos[i].PipelineID]; run != nil && run.StartedAt != nil {
+			infos[i].LastRun = run.StartedAt.UTC().Format(time.RFC3339)
 		}
-
-		infos = append(infos, info)
 	}
 	return infos
 }
