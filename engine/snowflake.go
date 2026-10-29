@@ -247,7 +247,8 @@ func (c *snowflakeGuardConn) BeginTx(ctx context.Context, opts driver.TxOptions)
 	if b, ok := c.inner.(driver.ConnBeginTx); ok {
 		return b.BeginTx(ctx, opts)
 	}
-	return c.inner.Begin() //nolint:staticcheck // fallback for a driver without BeginTx
+	//lint:ignore SA1019 fallback for a driver without BeginTx
+	return c.inner.Begin()
 }
 
 func (c *snowflakeGuardConn) Ping(ctx context.Context) error {

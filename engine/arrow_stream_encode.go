@@ -231,7 +231,7 @@ func (e *arrowStreamEncoder) lossyWideningError(col string, v int64) error {
 }
 
 func (e *arrowStreamEncoder) flush() error {
-	rec := e.b.NewRecord()
+	rec := e.b.NewRecordBatch()
 	defer rec.Release()
 	if rec.NumRows() == 0 {
 		return nil

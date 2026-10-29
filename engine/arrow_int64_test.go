@@ -27,7 +27,7 @@ func arrowIPCWith(t *testing.T, field arrow.Field, append func(b array.Builder))
 	b := array.NewRecordBuilder(memory.DefaultAllocator, schema)
 	defer b.Release()
 	append(b.Field(0))
-	rec := b.NewRecord()
+	rec := b.NewRecordBatch()
 	defer rec.Release()
 
 	var buf bytes.Buffer

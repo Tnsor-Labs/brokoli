@@ -237,6 +237,7 @@ type nativeStageError struct {
 func (e *nativeStageError) Error() string { return e.stage + ": " + e.err.Error() }
 func (e *nativeStageError) Unwrap() error { return e.err }
 
+//lint:ignore U1000 its callers build only with the adbc and cgo tags
 func atStage(stage string, err error) error {
 	if err == nil {
 		return nil

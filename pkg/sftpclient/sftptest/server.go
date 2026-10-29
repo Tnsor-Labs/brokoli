@@ -4,7 +4,8 @@
 package sftptest
 
 import (
-	"crypto/dsa" //nolint:staticcheck // a deliberately weak key, to prove it is refused
+	//lint:ignore SA1019 a deliberately weak key, to prove it is refused
+	"crypto/dsa"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
