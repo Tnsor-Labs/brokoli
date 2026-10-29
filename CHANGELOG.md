@@ -64,6 +64,15 @@ reconstruct from git archaeology.
   ended the process at its next log line. Logging is best effort now; a
   line that cannot be written is dropped.
 
+- **Outbound HTTP clients no longer leak connections** -- @hc12r. Webhooks,
+  alerts, notifications, `sink_api`, waits and the other outbound callers
+  build a client per request, and its transport had no idle timeout, so
+  every dropped client kept its connection and two goroutines open until
+  the remote server closed it (50 requests left 150 goroutines behind).
+  Idle connections now close after 90 seconds, and a TLS handshake that
+  never finishes fails after 10 instead of hanging a client that has no
+  overall timeout.
+
 - **SQLite timestamps sort and compare correctly** -- @hc12r. SQLite stores
   timestamps as text and compares them as text, but they were written with
   trailing zeros trimmed, so `10:00:05.1` sorted after `10:00:05.123` and

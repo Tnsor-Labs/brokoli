@@ -391,6 +391,18 @@ func (p Policy) Client(timeout time.Duration) *http.Client {
 		// on each one to remember.
 		Transport: &userAgentTransport{base: &http.Transport{
 			DialContext: safeDial,
+			// Most callers build a client per request and drop it. Without
+			// an idle timeout its kept-alive connection, and the two
+			// goroutines serving it, stayed open until the remote server
+			// closed it, which some never do.
+			IdleConnTimeout: 90 * time.Second,
+			// A client with no overall timeout (the object-store and
+			// warehouse SDKs) would otherwise wait forever on a server
+			// that accepts the connection and never finishes TLS.
+			TLSHandshakeTimeout:   10 * time.Second,
+			ExpectContinueTimeout: 1 * time.Second,
+			// No Proxy, deliberately: the policy checks the address it
+			// dials, and through a proxy that is the proxy, not the target.
 		}},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
