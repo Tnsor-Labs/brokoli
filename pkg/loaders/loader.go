@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 
@@ -60,7 +59,7 @@ func GetLoader(filePath string) (Loader, error) {
 // binary workbook. Anything else, including a file that cannot be read, goes
 // to the Excel loader, which reports its own error.
 func isLegacyExcel(filePath string) bool {
-	f, err := os.Open(filePath) // #nosec G304 -- a data-directory path the caller has already validated
+	f, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return false
 	}

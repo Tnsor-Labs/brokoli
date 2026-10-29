@@ -41,17 +41,18 @@ func safeExcelize(filePath, op string, fn func() error) (err error) {
 }
 
 func (l *ExcelLoader) Load(filePath string) (*common.DataSet, error) {
-	// Validate file path using safe file operations
-	_, err := common.SafeOpenFile(filePath)
+	// excelize reads from the confined handle; opening the path a second
+	// time by name would not be confined.
+	f, err := common.SafeOpenFile(filePath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to safely access Excel file: %w", err)
 	}
+	defer f.Close() //nolint:errcheck // read-only
 
-	// Now use the excelize library to open the Excel file
 	var file *excelize.File
 	if err := safeExcelize(filePath, "open", func() error {
 		var openErr error
-		file, openErr = excelize.OpenFile(filePath)
+		file, openErr = excelize.OpenReader(f)
 		return openErr
 	}); err != nil {
 		return nil, fmt.Errorf("failed to open Excel file: %w", err)

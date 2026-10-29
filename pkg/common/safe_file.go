@@ -1,60 +1,43 @@
 package common
 
 import (
+	"io"
 	"os"
-	"path/filepath"
 )
 
-// SafeFileAccess provides secure file operations to prevent path traversal attacks
-// by validating that the file path is within the allowed directory
+// File operations confined to the data directories (DataDirs). Each goes
+// through OpenInDataDir, so a path that leads out of them, by ".." or by
+// a symlink, is refused when the file is opened.
 
-// SafeReadFile reads a file securely, ensuring the path doesn't escape the base directory
+// SafeReadFile is os.ReadFile confined to the data directories.
 func SafeReadFile(filePath string) ([]byte, error) {
-	return safeFileOperation(filePath, func(path string) ([]byte, error) {
-		// #nosec G304
-		return os.ReadFile(path)
-	})
-}
-
-// SafeOpenFile opens a file securely, ensuring the path doesn't escape the base directory
-func SafeOpenFile(filePath string) (*os.File, error) {
-	file, err := safeFileOperation(filePath, func(path string) (*os.File, error) {
-		// #nosec G304
-		return os.Open(path)
-	})
-	return file, err
-}
-
-// SafeCreateFile creates a file securely, ensuring the path doesn't escape the base directory
-func SafeCreateFile(filePath string) (*os.File, error) {
-	file, err := safeFileOperation(filePath, func(path string) (*os.File, error) {
-		// #nosec G304
-		return os.Create(path)
-	})
-	return file, err
-}
-
-// SafeWriteFile writes to a file securely, ensuring the path doesn't escape the base directory
-func SafeWriteFile(filePath string, data []byte, perm os.FileMode) error {
-	_, err := safeFileOperation(filePath, func(path string) (interface{}, error) {
-		return nil, os.WriteFile(path, data, perm)
-	})
-	return err
-}
-
-// safeFileOperation is a generic helper function for secure file operations.
-// The path must be inside one of the configured data directories — see
-// DataDirs, which is the single answer to that question for both this
-// package and the engine.
-func safeFileOperation[T any](filePath string, operation func(string) (T, error)) (T, error) {
-	var zero T
-
-	if err := PathAllowed(filePath); err != nil {
-		return zero, err
-	}
-	abs, err := filepath.Abs(filePath)
+	f, err := SafeOpenFile(filePath)
 	if err != nil {
-		return zero, err
+		return nil, err
 	}
-	return operation(abs)
+	defer f.Close() //nolint:errcheck // read-only
+	return io.ReadAll(f)
+}
+
+// SafeOpenFile is os.Open confined to the data directories.
+func SafeOpenFile(filePath string) (*os.File, error) {
+	return OpenInDataDir(filePath, os.O_RDONLY, 0)
+}
+
+// SafeCreateFile is os.Create confined to the data directories.
+func SafeCreateFile(filePath string) (*os.File, error) {
+	return OpenInDataDir(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o666)
+}
+
+// SafeWriteFile is os.WriteFile confined to the data directories.
+func SafeWriteFile(filePath string, data []byte, perm os.FileMode) error {
+	f, err := OpenInDataDir(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close() //nolint:errcheck // the write error is the one to report
+		return err
+	}
+	return f.Close()
 }
