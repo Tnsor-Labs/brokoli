@@ -147,6 +147,7 @@ func (s *PostgresStore) migrate() error {
 func (s *PostgresStore) migrations() []migration {
 	return []migration{
 		{version: 1, name: "baseline", baseline: s.migrateBaseline},
+		{version: 2, name: "run indexes", apply: addRunIndexes},
 	}
 }
 

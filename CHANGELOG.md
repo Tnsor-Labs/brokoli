@@ -48,6 +48,14 @@ reconstruct from git archaeology.
   The system roles and the built-in templates are still brought up to date
   on every start.
 
+- **Index on run start time** -- @hc12r. Purge, retention, the run calendar
+  and the dashboard counts filter runs by start time alone, and no index led
+  with it. Measured on SQLite with a million runs, the 365-day calendar went
+  from 4.2 s to 1.2 s. Two indexes that duplicated the leading column of
+  another (`node_runs(run_id)`, `run_events(run_id)`) are dropped, saving a
+  write per row. On Postgres the index is built during the first start after
+  upgrading, and writes to `runs` wait until it is done.
+
 ## [0.20.0] - 2026-10-25
 
 A reliability release. A node's timeout now stops the work it times out:

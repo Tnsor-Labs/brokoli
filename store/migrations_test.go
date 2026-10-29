@@ -174,9 +174,7 @@ func TestSQLiteStoreJoinsVersioningAndRunsBaselineOnce(t *testing.T) {
 		t.Fatalf("a new database is at version %d (%v), want %d", v, err, len(s.migrations()))
 	}
 	// What an earlier release leaves: the full schema, no record of it.
-	if _, err := s.db.Exec(`DROP TABLE schema_migrations`); err != nil {
-		t.Fatal(err)
-	}
+	forgetMigrations(t, s.db)
 	s.Close()
 
 	s, err = NewSQLiteStore(path)
@@ -328,9 +326,24 @@ func TestBaselineIsFrozen(t *testing.T) {
 // forgetMigrations makes db look like a database from before versioning,
 // which has its schema but no record of it: the state an earlier release
 // leaves, and the only one in which the baseline runs on existing data.
+//
+// db was created by this build, so the schema changes of every migration
+// after the baseline are undone too; reopening applies them again, as it
+// would on a real older database. A new migration that changes the schema
+// adds its undo here, or the tests that reopen an older database fail on
+// "already exists". A step that only rewrites data (SQLite's migration 2)
+// is safe to run again and needs nothing.
 func forgetMigrations(t *testing.T, db *sql.DB) {
 	t.Helper()
-	if _, err := db.Exec(`DROP TABLE schema_migrations`); err != nil {
-		t.Fatalf("forget migrations: %v", err)
+	for _, stmt := range []string{
+		`DROP TABLE schema_migrations`,
+		// addRunIndexes (SQLite 3, Postgres 2)
+		`DROP INDEX idx_runs_started_at`,
+		`CREATE INDEX idx_node_runs_run ON node_runs (run_id)`,
+		`CREATE INDEX idx_run_events_run ON run_events (run_id)`,
+	} {
+		if _, err := db.Exec(stmt); err != nil {
+			t.Fatalf("forget migrations: %s: %v", stmt, err)
+		}
 	}
 }
