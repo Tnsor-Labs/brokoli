@@ -164,15 +164,15 @@ func (r *Runner) writeFileOutput(ctx context.Context, node models.Node, path str
 	if err := validateFilePath(path); err != nil {
 		return fileWrite{}, fmt.Errorf("sink_file: %w", err)
 	}
+	// Both steps are confined to the data directory, so a symlink planted
+	// in it cannot redirect the write.
 	if dir := filepath.Dir(path); dir != "" {
-		// #nosec G301 -- the mode sink_file has always created it with.
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		if err := common.MkdirAllInDataDir(dir, 0o755); err != nil {
 			return fileWrite{}, fmt.Errorf("create output directory: %w", err)
 		}
 	}
-	// #nosec G304,G302 -- path has been through validateFilePath; 0644 is
-	// what the sink has always produced.
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	// 0644 is what the sink has always produced.
+	f, err := common.OpenInDataDir(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
 	if err != nil {
 		return fileWrite{}, fmt.Errorf("write %s: %w", path, err)
 	}

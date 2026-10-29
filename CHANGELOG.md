@@ -18,6 +18,17 @@ reconstruct from git archaeology.
   `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the
   component's import resolved to the wrong file and `npm run build` failed.
 
+- **File nodes cannot be led out of the data directories by a symlink** --
+  @hc12r. The check that a path is inside `BROKOLI_DATA_DIRS` read the path
+  as written, so a symlink inside a data directory pointing elsewhere (for
+  example `/data/exports -> /etc`) passed it, and the file was then read or
+  written wherever the link led. Files are now opened through Go's
+  `os.Root`, which refuses a path that leaves the directory at the moment
+  it is opened, with no gap between a check and the open. Links that stay
+  inside a data directory keep working, absolute ones included. The Excel
+  loader also opened the file a second time by name; it now reads the one
+  it checked.
+
 - **Vulnerability preflight distinguishes tool failures from findings** --
   @arin30. Preflight reuses only the pinned `govulncheck` version, reports a
   missing or unusable scanner as a non-green `SKIP`, and keeps actual
