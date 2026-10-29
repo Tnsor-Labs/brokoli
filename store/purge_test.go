@@ -193,9 +193,7 @@ func TestMigration_BackfillsRunOrgIDFromPipeline(t *testing.T) {
 	}
 	// Rows like this exist only in a database from before versioning, which
 	// carries no record of its migrations.
-	if _, err := s.db.Exec(`DROP TABLE schema_migrations`); err != nil {
-		t.Fatal(err)
-	}
+	forgetMigrations(t, s.db)
 	if err := s.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
 	}

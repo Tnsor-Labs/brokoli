@@ -281,6 +281,10 @@ migration 2 rewrote its timestamps and has no Postgres counterpart.
   roles, belongs in the stores' `reconcile`, not in a migration.
 - Test the upgrade too, not only a fresh database: open a store, write the
   data the step changes, close it, and open it again.
+- A step that changes the schema also adds its undo to `forgetMigrations`
+  (`store/migrations_test.go`). Tests use it to turn a database this build
+  created into one an earlier release left, and without the undo they fail
+  on "already exists".
 - SQLite has no time type, so timestamps are text and are compared as
   text. Write them with `formatTime` and read them with `parseTime`
   (`store/timefmt.go`); never `Format(time.RFC3339Nano)`, and never hand a
