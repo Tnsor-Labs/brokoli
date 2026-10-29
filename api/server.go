@@ -333,11 +333,7 @@ func NewMinimalServer(port int, s store.Store, e *engine.Engine, sched *engine.S
 // Start begins listening for HTTP requests with graceful shutdown.
 func (s *Server) Start() error {
 	addr := fmt.Sprintf(":%d", s.port)
-	srv := &http.Server{
-		Addr:              addr,
-		Handler:           s.router,
-		ReadHeaderTimeout: 10 * time.Second,
-	}
+	srv := newHTTPServer(addr, s.router)
 
 	// Graceful shutdown on SIGINT/SIGTERM
 	quit := make(chan os.Signal, 1)
@@ -365,6 +361,24 @@ func (s *Server) Start() error {
 		close(s.evictDone)
 		log.Println("Server stopped cleanly")
 		return nil
+	}
+}
+
+// newHTTPServer is the server Start listens with.
+//
+// There is no ReadTimeout or WriteTimeout: either would cut off a long
+// upload, a streamed download or a server-sent event stream. IdleTimeout
+// needs saying because it falls back to ReadTimeout, so with neither set a
+// kept-alive connection that sends nothing more was held open for ever.
+// It is longer than any proxy in front is likely to keep a backend
+// connection idle (GCP's load balancer: 600s), so the proxy closes first
+// and never sends a request down a connection the server is closing.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       11 * time.Minute,
 	}
 }
 
