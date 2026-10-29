@@ -256,11 +256,12 @@ database records each migration it has applied in `schema_migrations`, and
 a start applies only the ones it lacks.
 
 To change the schema, append a step to both stores' lists,
-`(*SQLiteStore).migrations` and `(*PostgresStore).migrations`, with the next
-version number:
+`(*SQLiteStore).migrations` and `(*PostgresStore).migrations`, each with its
+list's next version number. The numbers can differ between the two: SQLite's
+migration 2 rewrote its timestamps and has no Postgres counterpart.
 
 ```go
-{version: 2, name: "runs priority", apply: func(tx *sql.Tx) error {
+{version: 3, name: "runs priority", apply: func(tx *sql.Tx) error {
 	_, err := tx.Exec(`ALTER TABLE runs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0`)
 	return err
 }},
@@ -280,6 +281,11 @@ version number:
   roles, belongs in the stores' `reconcile`, not in a migration.
 - Test the upgrade too, not only a fresh database: open a store, write the
   data the step changes, close it, and open it again.
+- SQLite has no time type, so timestamps are text and are compared as
+  text. Write them with `formatTime` and read them with `parseTime`
+  (`store/timefmt.go`); never `Format(time.RFC3339Nano)`, and never hand a
+  `time.Time` to the driver, which stores `time.Time.String()`. Values of
+  different widths compare wrongly.
 
 ## Code of conduct and licence
 

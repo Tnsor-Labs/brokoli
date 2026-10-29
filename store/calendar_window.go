@@ -27,10 +27,10 @@ func CalendarWindowStartTime(days int) time.Time {
 	return today.AddDate(0, 0, -(days - 1))
 }
 
-// CalendarWindowStart returns the same instant as an RFC 3339 string, for
-// SQLite, where started_at is stored as text and compares lexically.
+// CalendarWindowStart returns the same instant as SQLite stores it, where
+// started_at is text and compares lexically.
 func CalendarWindowStart(days int) string {
-	return CalendarWindowStartTime(days).Format(time.RFC3339)
+	return formatTime(CalendarWindowStartTime(days))
 }
 
 // CalendarWindowDates lists every UTC day in the window, oldest first.

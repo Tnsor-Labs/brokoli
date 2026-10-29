@@ -23,8 +23,6 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
-const timeFormat = time.RFC3339Nano
-
 // wrapStoreErr annotates storage errors with the operation name and resource ID.
 func wrapStoreErr(op string, id string, err error) error {
 	if err == nil {
@@ -75,6 +73,7 @@ func (s *SQLiteStore) migrate() error {
 func (s *SQLiteStore) migrations() []migration {
 	return []migration{
 		{version: 1, name: "baseline", baseline: s.migrateBaseline},
+		{version: 2, name: "fixed-width timestamps", apply: rewriteTimestamps},
 	}
 }
 
@@ -106,7 +105,7 @@ func (s *SQLiteStore) reconcileSystemRoles() {
 			continue
 		}
 		if _, err := s.db.Exec("INSERT OR IGNORE INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)",
-			role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), time.Now().UTC().Format(timeFormat)); err != nil {
+			role.ID, role.Name, role.Description, string(permsJSON), boolToInt(role.IsSystem), formatTime(time.Now())); err != nil {
 			log.Printf("store: seed system role %s: %v", role.ID, err)
 		}
 		if _, err := s.db.Exec("UPDATE roles SET name=?, description=?, permissions=? WHERE id=? AND is_system=1",
@@ -737,7 +736,7 @@ func (s *SQLiteStore) RecordLoginAttempt(username, ip string, success bool) erro
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO login_attempts (username, ip, success, attempted_at) VALUES (?, ?, ?, ?)`,
-		username, ip, successInt, time.Now().UTC().Format(timeFormat),
+		username, ip, successInt, formatTime(time.Now()),
 	)
 	return err
 }
@@ -746,7 +745,7 @@ func (s *SQLiteStore) GetRecentFailedAttempts(username string, since time.Time) 
 	var count int
 	err := s.db.QueryRow(
 		`SELECT COUNT(*) FROM login_attempts WHERE username = ? AND success = 0 AND attempted_at > ?`,
-		username, since.UTC().Format(timeFormat),
+		username, formatTime(since),
 	).Scan(&count)
 	return count, err
 }
@@ -778,7 +777,7 @@ func (s *SQLiteStore) AddToDLQ(pipelineID, runID, nodeID, nodeName, errMsg, payl
 	id := common.NewID()
 	_, err := s.db.Exec(
 		`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, node_id, node_name, payload, created_at) VALUES (?,?,?,?,?,?,?,?)`,
-		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, time.Now().UTC().Format(timeFormat),
+		id, pipelineID, runID, errMsg, nodeID, nodeName, payload, formatTime(time.Now()),
 	)
 	return wrapStoreErr("AddToDLQ", id, err)
 }
@@ -811,7 +810,7 @@ func (s *SQLiteStore) ListDLQ(pipelineID string, includeResolved bool, limit int
 }
 
 func (s *SQLiteStore) ResolveDLQ(id string) error {
-	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = 1, resolved_at = ? WHERE id = ?`, time.Now().UTC().Format(timeFormat), id)
+	_, err := s.db.Exec(`UPDATE dead_letter_queue SET resolved = 1, resolved_at = ? WHERE id = ?`, formatTime(time.Now()), id)
 	return wrapStoreErr("ResolveDLQ", id, err)
 }
 
@@ -872,7 +871,7 @@ func (s *SQLiteStore) CreatePipeline(p *models.Pipeline) error {
 		`INSERT INTO pipelines (id, ir_version, name, description, nodes, edges, schedule, schedule_timezone, webhook_url, params, tags, sla_deadline, sla_timezone, depends_on, dependency_rules, webhook_token, enabled, created_at, updated_at, pipeline_id, source, workspace_id, org_id, hooks, extensions, catchup, parameters, draft)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		p.ID, p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.CreatedAt.UTC().Format(timeFormat), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft),
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), formatTime(p.CreatedAt), formatTime(p.UpdatedAt), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft),
 	)
 	if isPipelineIDConflict(err) {
 		return ErrDuplicatePipelineID
@@ -1110,7 +1109,7 @@ func (s *SQLiteStore) UpdatePipeline(p *models.Pipeline) error {
 		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?, parameters=?, draft=?
 		 WHERE id=?`,
 		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft), p.ID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), formatTime(p.UpdatedAt), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft), p.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipeline", p.ID, err)
@@ -1287,7 +1286,7 @@ func (s *SQLiteStore) UpdatePipelineTx(tx *sql.Tx, p *models.Pipeline) error {
 		`UPDATE pipelines SET ir_version=?, name=?, description=?, nodes=?, edges=?, schedule=?, schedule_timezone=?, webhook_url=?, params=?, tags=?, sla_deadline=?, sla_timezone=?, depends_on=?, dependency_rules=?, webhook_token=?, enabled=?, updated_at=?, pipeline_id=?, source=?, workspace_id=?, org_id=?, hooks=?, extensions=?, catchup=?, parameters=?, draft=?
 		 WHERE id=?`,
 		p.IRVersion, p.Name, p.Description, string(f.nodesJSON), string(f.edgesJSON),
-		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), p.UpdatedAt.UTC().Format(timeFormat), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft), p.ID,
+		p.Schedule, p.ScheduleTimezone, p.WebhookURL, string(f.paramsJSON), string(f.tagsJSON), p.SLADeadline, p.SLATimezone, string(f.depsJSON), string(f.depRulesJSON), p.WebhookToken, boolToInt(p.Enabled), formatTime(p.UpdatedAt), p.PipelineID, p.Source, p.WorkspaceID, p.OrgID, string(f.hooksJSON), string(f.extensionsJSON), boolToInt(p.Catchup), string(f.parametersJSON), boolToInt(p.Draft), p.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipelineTx", p.ID, err)
@@ -1359,7 +1358,7 @@ func (s *SQLiteStore) CreateParkedWait(w *models.ParkedWait) error {
 		`INSERT INTO parked_waits (run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		w.RunID, w.PipelineID, w.NodeID, w.Condition, w.PollInterval,
-		w.NextPollAt.UTC().Format(timeFormat), w.ExpiresAt.UTC().Format(timeFormat), w.CreatedAt.UTC().Format(timeFormat),
+		formatTime(w.NextPollAt), formatTime(w.ExpiresAt), formatTime(w.CreatedAt),
 	)
 	return wrapStoreErr("CreateParkedWait", w.RunID, err)
 }
@@ -1377,7 +1376,7 @@ func (s *SQLiteStore) ListDueParkedWaits(now time.Time, limit int) ([]models.Par
 	rows, err := s.db.Query(
 		`SELECT run_id, pipeline_id, node_id, condition, poll_interval_ms, next_poll_at, expires_at, created_at
 		 FROM parked_waits WHERE next_poll_at <= ? OR expires_at <= ? ORDER BY next_poll_at ASC LIMIT ?`,
-		now.UTC().Format(timeFormat), now.UTC().Format(timeFormat), limit,
+		formatTime(now), formatTime(now), limit,
 	)
 	if err != nil {
 		return nil, err
@@ -1390,9 +1389,9 @@ func (s *SQLiteStore) ListDueParkedWaits(now time.Time, limit int) ([]models.Par
 		if err := rows.Scan(&w.RunID, &w.PipelineID, &w.NodeID, &w.Condition, &w.PollInterval, &next, &exp, &created); err != nil {
 			return nil, err
 		}
-		w.NextPollAt, _ = time.Parse(timeFormat, next)
-		w.ExpiresAt, _ = time.Parse(timeFormat, exp)
-		w.CreatedAt, _ = time.Parse(timeFormat, created)
+		w.NextPollAt, _ = parseTime(next)
+		w.ExpiresAt, _ = parseTime(exp)
+		w.CreatedAt, _ = parseTime(created)
 		out = append(out, w)
 	}
 	return out, rows.Err()
@@ -1400,7 +1399,7 @@ func (s *SQLiteStore) ListDueParkedWaits(now time.Time, limit int) ([]models.Par
 
 func (s *SQLiteStore) BumpParkedWait(runID string, nextPollAt time.Time) error {
 	_, err := s.db.Exec(`UPDATE parked_waits SET next_poll_at = ? WHERE run_id = ?`,
-		nextPollAt.UTC().Format(timeFormat), runID)
+		formatTime(nextPollAt), runID)
 	return wrapStoreErr("BumpParkedWait", runID, err)
 }
 
@@ -1886,7 +1885,7 @@ func sqliteAppendEvent(x sqlExecer, e *models.RunEvent) error {
 
 	result, err := x.Exec(
 		`INSERT INTO run_events (run_id, node_id, attempt, event_type, payload, created_at, schema_version) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.RunID, nodeID, attempt, string(e.EventType), string(payloadJSON), e.CreatedAt.Format(timeFormat), schemaVersion,
+		e.RunID, nodeID, attempt, string(e.EventType), string(payloadJSON), formatTime(e.CreatedAt), schemaVersion,
 	)
 	if err != nil {
 		return wrapStoreErr("AppendEvent", e.RunID, err)
@@ -1936,7 +1935,7 @@ func scanRunEvent(rows *sql.Rows) (*models.RunEvent, error) {
 	if err := json.Unmarshal([]byte(payloadJSON), &ev.Payload); err != nil {
 		return nil, fmt.Errorf("decode event payload: %w", err)
 	}
-	createdAtTime, err := time.Parse(timeFormat, createdAt)
+	createdAtTime, err := parseTime(createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("decode event created_at: %w", err)
 	}
@@ -1966,7 +1965,7 @@ func (s *SQLiteStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAt
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(run_id, node_id, instance_key, attempt) DO NOTHING`,
 		a.RunID, a.NodeID, a.InstanceKey, a.Attempt, string(status), a.ClaimedBy, formatTimePtr(a.LeaseExpiresAt),
-		a.FencingGeneration, a.IdempotencyKey, a.Error, a.CreatedAt.Format(timeFormat), a.UpdatedAt.Format(timeFormat),
+		a.FencingGeneration, a.IdempotencyKey, a.Error, formatTime(a.CreatedAt), formatTime(a.UpdatedAt),
 	)
 	return wrapStoreErr("CreateExecutionAttempt", a.RunID, err)
 }
@@ -1980,10 +1979,10 @@ func (s *SQLiteStore) ClaimAttempt(runID, nodeID, instanceKey string, attempt in
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=?
 		   AND status NOT IN (?, ?)
 		   AND (status=? OR lease_expires_at IS NULL OR lease_expires_at<?)`,
-		string(models.AttemptStatusClaimed), claimedBy, formatTimePtr(&leaseExpires), now.Format(timeFormat),
+		string(models.AttemptStatusClaimed), claimedBy, formatTimePtr(&leaseExpires), formatTime(now),
 		runID, nodeID, instanceKey, attempt,
 		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
-		string(models.AttemptStatusQueued), now.Format(timeFormat),
+		string(models.AttemptStatusQueued), formatTime(now),
 	)
 	if err != nil {
 		return 0, false, wrapStoreErr("ClaimAttempt", runID, err)
@@ -2008,7 +2007,7 @@ func (s *SQLiteStore) RenewLease(runID, nodeID, instanceKey string, attempt int,
 	result, err := s.db.Exec(
 		`UPDATE execution_attempts SET lease_expires_at=?, updated_at=?
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=? AND claimed_by=? AND fencing_generation=? AND status IN (?, ?)`,
-		formatTimePtr(&leaseExpires), now.Format(timeFormat),
+		formatTimePtr(&leaseExpires), formatTime(now),
 		runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration,
 		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
 	)
@@ -2027,7 +2026,7 @@ func (s *SQLiteStore) AckAttempt(runID, nodeID, instanceKey string, attempt int,
 	result, err := s.db.Exec(
 		`UPDATE execution_attempts SET status=?, updated_at=?
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=? AND claimed_by=? AND fencing_generation=? AND status IN (?, ?)`,
-		string(models.AttemptStatusStarted), now.Format(timeFormat),
+		string(models.AttemptStatusStarted), formatTime(now),
 		runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration,
 		string(models.AttemptStatusClaimed), string(models.AttemptStatusStarted),
 	)
@@ -2069,7 +2068,7 @@ func sqliteSettleAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt 
 	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=?, error=?, updated_at=?
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=? AND fencing_generation=? AND status NOT IN (?, ?)`,
-		string(toStatus), errMsg, now.Format(timeFormat),
+		string(toStatus), errMsg, formatTime(now),
 		runID, nodeID, instanceKey, attempt, fencingGeneration,
 		string(models.AttemptStatusCompleted), string(models.AttemptStatusFailed),
 	)
@@ -2153,12 +2152,12 @@ func scanExecutionAttempt(row scanner) (*models.ExecutionAttempt, error) {
 	}
 	a.Status = models.AttemptStatus(status)
 	a.LeaseExpiresAt = parseTimePtr(leaseExpiresAt)
-	createdAtTime, err := time.Parse(timeFormat, createdAt)
+	createdAtTime, err := parseTime(createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("decode created_at: %w", err)
 	}
 	a.CreatedAt = createdAtTime
-	updatedAtTime, err := time.Parse(timeFormat, updatedAt)
+	updatedAtTime, err := parseTime(updatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("decode updated_at: %w", err)
 	}
@@ -2179,7 +2178,7 @@ func (s *SQLiteStore) AppendLog(entry *models.LogEntry) error {
 	}
 	_, err := s.db.Exec(
 		`INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp.UTC().Format(timeFormat),
+		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, formatTime(entry.Timestamp),
 		entry.TraceID, entry.SpanID, entry.Attempt, metadata,
 	)
 	return err
@@ -2203,7 +2202,7 @@ func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {
 			return nil, err
 		}
 		entry.Level = models.LogLevel(level)
-		entry.Timestamp, _ = time.Parse(timeFormat, ts)
+		entry.Timestamp, _ = parseTime(ts)
 		if metadataStr != "" {
 			_ = json.Unmarshal([]byte(metadataStr), &entry.Metadata)
 		}
@@ -2309,7 +2308,7 @@ func (s *SQLiteStore) SavePipelineVersion(pipelineID string, snapshot string, me
 
 		_, err := s.db.Exec(
 			`INSERT INTO pipeline_versions (pipeline_id, version, snapshot, message, created_at) VALUES (?, ?, ?, ?, ?)`,
-			pipelineID, nextVer, snapshot, message, time.Now().UTC().Format(timeFormat),
+			pipelineID, nextVer, snapshot, message, formatTime(time.Now()),
 		)
 		if err == nil {
 			return nextVer, nil
@@ -2355,7 +2354,7 @@ func (s *SQLiteStore) SaveNodeProfile(runID, nodeID, profileJSON, schemaJSON, dr
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO node_profiles (run_id, node_id, profile, schema_snapshot, drift_alerts, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		runID, nodeID, profileJSON, schemaJSON, driftJSON, time.Now().UTC().Format(timeFormat),
+		runID, nodeID, profileJSON, schemaJSON, driftJSON, formatTime(time.Now()),
 	)
 	return err
 }
@@ -2432,7 +2431,7 @@ func (s *SQLiteStore) GetLatestNodeProfilesForPipelines(pipelineIDs []string) (m
 		if err := rows.Scan(&pipelineID, &nodeID, &profile, &schema, &runID, &createdAt); err != nil {
 			return nil, wrapStoreErr("GetLatestNodeProfilesForPipelines", "", err)
 		}
-		observedAt, _ := time.Parse(timeFormat, createdAt)
+		observedAt, _ := parseTime(createdAt)
 		out[pipelineID+":"+nodeID] = NodeProfileRecord{
 			ProfileJSON: profile, SchemaJSON: schema, RunID: runID, ObservedAt: observedAt,
 		}
@@ -2488,7 +2487,7 @@ func (s *SQLiteStore) CountRunsByStatus() (map[string]int, error) {
 // --- Maintenance ---
 
 func (s *SQLiteStore) PurgeRunsOlderThan(days int) (int64, error) {
-	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	cutoff := formatTime(time.Now().AddDate(0, 0, -days))
 	result, err := s.db.Exec(`DELETE FROM runs WHERE started_at < ? AND started_at IS NOT NULL`, cutoff)
 	if err != nil {
 		return 0, err
@@ -2499,7 +2498,7 @@ func (s *SQLiteStore) PurgeRunsOlderThan(days int) (int64, error) {
 }
 
 func (s *SQLiteStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, error) {
-	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	cutoff := formatTime(time.Now().AddDate(0, 0, -days))
 	result, err := s.db.Exec(`DELETE FROM runs WHERE started_at < ? AND started_at IS NOT NULL AND org_id = ?`, cutoff, orgID)
 	if err != nil {
 		return 0, err
@@ -2510,13 +2509,13 @@ func (s *SQLiteStore) PurgeRunsOlderThanByOrg(days int, orgID string) (int64, er
 // ListRunIDsOlderThan mirrors PurgeRunsOlderThan's WHERE clause exactly —
 // call before it to know which run IDs are about to be purged.
 func (s *SQLiteStore) ListRunIDsOlderThan(days int) ([]string, error) {
-	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	cutoff := formatTime(time.Now().AddDate(0, 0, -days))
 	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < ? AND started_at IS NOT NULL`, cutoff)
 }
 
 // ListRunIDsOlderThanByOrg mirrors PurgeRunsOlderThanByOrg's WHERE clause.
 func (s *SQLiteStore) ListRunIDsOlderThanByOrg(days int, orgID string) ([]string, error) {
-	cutoff := time.Now().AddDate(0, 0, -days).UTC().Format(timeFormat)
+	cutoff := formatTime(time.Now().AddDate(0, 0, -days))
 	return queryRunIDs(s.db, `SELECT id FROM runs WHERE started_at < ? AND started_at IS NOT NULL AND org_id = ?`, cutoff, orgID)
 }
 
@@ -2608,8 +2607,8 @@ func scanPipelineFromScanner(sc scanner) (*models.Pipeline, error) {
 	p.Enabled = enabled != 0
 	p.Catchup = catchup != 0
 	p.Draft = draft != 0
-	p.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-	p.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	p.CreatedAt, _ = parseTime(createdAt)
+	p.UpdatedAt, _ = parseTime(updatedAt)
 	return &p, nil
 }
 
@@ -2661,14 +2660,14 @@ func formatTimePtr(t *time.Time) sql.NullString {
 	if t == nil {
 		return sql.NullString{}
 	}
-	return sql.NullString{String: t.UTC().Format(timeFormat), Valid: true}
+	return sql.NullString{String: formatTime(*t), Valid: true}
 }
 
 func parseTimePtr(ns sql.NullString) *time.Time {
 	if !ns.Valid {
 		return nil
 	}
-	t, err := time.Parse(timeFormat, ns.String)
+	t, err := parseTime(ns.String)
 	if err != nil {
 		return nil
 	}
@@ -2715,7 +2714,7 @@ func (s *SQLiteStore) CreateConnection(c *models.Connection) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		c.ID, c.ConnID, c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef, wsID,
-		c.CreatedAt.UTC().Format(timeFormat), c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity,
+		formatTime(c.CreatedAt), formatTime(c.UpdatedAt), c.MaxConcurrent, driverIdentity,
 	)
 	return err
 }
@@ -2756,8 +2755,8 @@ func (s *SQLiteStore) ListConnections() ([]models.Connection, error) {
 			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
 			return nil, err
 		}
-		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		c.CreatedAt, _ = parseTime(createdAt)
+		c.UpdatedAt, _ = parseTime(updatedAt)
 		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 			return nil, err
 		}
@@ -2786,8 +2785,8 @@ func (s *SQLiteStore) ListConnectionsByWorkspace(workspaceID string) ([]models.C
 			&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &driverIdentity); err != nil {
 			return nil, err
 		}
-		c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		c.CreatedAt, _ = parseTime(createdAt)
+		c.UpdatedAt, _ = parseTime(updatedAt)
 		if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 			return nil, err
 		}
@@ -2821,7 +2820,7 @@ func (s *SQLiteStore) UpdateConnection(c *models.Connection) error {
 		 WHERE conn_id = ? AND (? = '' OR workspace_id = ?)`,
 		c.Type, c.Description, c.Host, c.Port, c.Schema, c.Login,
 		passEnc, extraEnc, passRef, extraRef,
-		c.UpdatedAt.UTC().Format(timeFormat), c.MaxConcurrent, driverIdentity, c.ConnID, c.WorkspaceID, c.WorkspaceID,
+		formatTime(c.UpdatedAt), c.MaxConcurrent, driverIdentity, c.ConnID, c.WorkspaceID, c.WorkspaceID,
 	)
 	if err != nil {
 		return err
@@ -2865,8 +2864,8 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 		&c.Password, &c.Extra, &c.PasswordRef, &c.ExtraRef, &createdAt, &updatedAt, &c.MaxConcurrent, &c.WorkspaceID, &driverIdentity); err != nil {
 		return nil, err
 	}
-	c.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-	c.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	c.CreatedAt, _ = parseTime(createdAt)
+	c.UpdatedAt, _ = parseTime(updatedAt)
 	if err := setConnectionDriverIdentity(&c, driverIdentity); err != nil {
 		return nil, err
 	}
@@ -2878,7 +2877,7 @@ func scanConnection(row *sql.Row) (*models.Connection, error) {
 func (s *SQLiteStore) CreateWorkspace(w *models.Workspace) error {
 	_, err := s.db.Exec(
 		`INSERT INTO workspaces (id, name, slug, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		w.ID, w.Name, w.Slug, w.Description, w.CreatedAt.UTC().Format(timeFormat), w.UpdatedAt.UTC().Format(timeFormat),
+		w.ID, w.Name, w.Slug, w.Description, formatTime(w.CreatedAt), formatTime(w.UpdatedAt),
 	)
 	return err
 }
@@ -2891,8 +2890,8 @@ func (s *SQLiteStore) GetWorkspace(id string) (*models.Workspace, error) {
 	if err != nil {
 		return nil, err
 	}
-	w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-	w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	w.CreatedAt, _ = parseTime(createdAt)
+	w.UpdatedAt, _ = parseTime(updatedAt)
 	return &w, nil
 }
 
@@ -2907,8 +2906,8 @@ func (s *SQLiteStore) ListWorkspaces() ([]models.Workspace, error) {
 		var w models.Workspace
 		var createdAt, updatedAt string
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &createdAt, &updatedAt)
-		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		w.CreatedAt, _ = parseTime(createdAt)
+		w.UpdatedAt, _ = parseTime(updatedAt)
 		ws = append(ws, w)
 	}
 	if err := rows.Err(); err != nil {
@@ -2935,7 +2934,7 @@ func (s *SQLiteStore) DeleteWorkspace(id string) error {
 func (s *SQLiteStore) AddWorkspaceMember(m *models.WorkspaceMember) error {
 	_, err := s.db.Exec(
 		`INSERT OR REPLACE INTO workspace_members (workspace_id, user_id, username, role, joined_at) VALUES (?, ?, ?, ?, ?)`,
-		m.WorkspaceID, m.UserID, m.Username, m.Role, m.JoinedAt.UTC().Format(timeFormat),
+		m.WorkspaceID, m.UserID, m.Username, m.Role, formatTime(m.JoinedAt),
 	)
 	return err
 }
@@ -2959,7 +2958,7 @@ func (s *SQLiteStore) ListWorkspaceMembers(workspaceID string) ([]models.Workspa
 		var m models.WorkspaceMember
 		var joinedAt string
 		rows.Scan(&m.WorkspaceID, &m.UserID, &m.Username, &m.Role, &joinedAt)
-		m.JoinedAt, _ = time.Parse(timeFormat, joinedAt)
+		m.JoinedAt, _ = parseTime(joinedAt)
 		members = append(members, m)
 	}
 	if err := rows.Err(); err != nil {
@@ -2985,8 +2984,8 @@ func (s *SQLiteStore) GetUserWorkspaces(userID string) ([]models.Workspace, erro
 		var w models.Workspace
 		var createdAt, updatedAt string
 		rows.Scan(&w.ID, &w.Name, &w.Slug, &w.Description, &createdAt, &updatedAt)
-		w.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		w.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		w.CreatedAt, _ = parseTime(createdAt)
+		w.UpdatedAt, _ = parseTime(updatedAt)
 		ws = append(ws, w)
 	}
 	if err := rows.Err(); err != nil {
@@ -3001,7 +3000,7 @@ func (s *SQLiteStore) CreateAPIToken(t *models.APIToken) error {
 	_, err := s.db.Exec(
 		`INSERT INTO api_tokens (id, name, token_hash, workspace_id, user_id, role, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.TokenHash, t.WorkspaceID, t.UserID, t.Role,
-		t.ExpiresAt.UTC().Format(timeFormat), t.CreatedAt.UTC().Format(timeFormat),
+		formatTime(t.ExpiresAt), formatTime(t.CreatedAt),
 	)
 	return err
 }
@@ -3015,10 +3014,10 @@ func (s *SQLiteStore) GetAPITokenByHash(hash string) (*models.APIToken, error) {
 	if err != nil {
 		return nil, err
 	}
-	t.ExpiresAt, _ = time.Parse(timeFormat, expiresAt)
-	t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	t.ExpiresAt, _ = parseTime(expiresAt)
+	t.CreatedAt, _ = parseTime(createdAt)
 	if lastUsed != "" {
-		t.LastUsedAt, _ = time.Parse(timeFormat, lastUsed)
+		t.LastUsedAt, _ = parseTime(lastUsed)
 	}
 	return &t, nil
 }
@@ -3037,10 +3036,10 @@ func (s *SQLiteStore) ListAPITokens(workspaceID string) ([]models.APIToken, erro
 		var t models.APIToken
 		var expiresAt, createdAt, lastUsed string
 		rows.Scan(&t.ID, &t.Name, &t.WorkspaceID, &t.UserID, &t.Role, &expiresAt, &createdAt, &lastUsed)
-		t.ExpiresAt, _ = time.Parse(timeFormat, expiresAt)
-		t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+		t.ExpiresAt, _ = parseTime(expiresAt)
+		t.CreatedAt, _ = parseTime(createdAt)
 		if lastUsed != "" {
-			t.LastUsedAt, _ = time.Parse(timeFormat, lastUsed)
+			t.LastUsedAt, _ = parseTime(lastUsed)
 		}
 		tokens = append(tokens, t)
 	}
@@ -3132,7 +3131,7 @@ func (s *SQLiteStore) SetVariable(v *models.Variable) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(workspace_id, key) DO UPDATE SET value=excluded.value, type=excluded.type, description=excluded.description, updated_at=excluded.updated_at`,
 		v.Key, v.Value, v.Type, v.Description, wsID,
-		v.CreatedAt.UTC().Format(timeFormat), v.UpdatedAt.UTC().Format(timeFormat),
+		formatTime(v.CreatedAt), formatTime(v.UpdatedAt),
 	)
 	return err
 }
@@ -3149,8 +3148,8 @@ func (s *SQLiteStore) GetVariable(workspaceID, key string) (*models.Variable, er
 	if err != nil {
 		return nil, err
 	}
-	v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-	v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	v.CreatedAt, _ = parseTime(createdAt)
+	v.UpdatedAt, _ = parseTime(updatedAt)
 	return &v, nil
 }
 
@@ -3170,8 +3169,8 @@ func (s *SQLiteStore) ListVariables() ([]models.Variable, error) {
 		if err := rows.Scan(&v.Key, &v.Value, &v.Type, &v.Description, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		v.CreatedAt, _ = parseTime(createdAt)
+		v.UpdatedAt, _ = parseTime(updatedAt)
 		vars = append(vars, v)
 	}
 	if err := rows.Err(); err != nil {
@@ -3195,8 +3194,8 @@ func (s *SQLiteStore) ListVariablesByWorkspace(workspaceID string) ([]models.Var
 		if err := rows.Scan(&v.Key, &v.Value, &v.Type, &v.Description, &createdAt, &updatedAt); err != nil {
 			return nil, err
 		}
-		v.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-		v.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+		v.CreatedAt, _ = parseTime(createdAt)
+		v.UpdatedAt, _ = parseTime(updatedAt)
 		vars = append(vars, v)
 	}
 	if err := rows.Err(); err != nil {
@@ -3228,7 +3227,7 @@ func (s *SQLiteStore) CreateAlert(a *models.Alert) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		a.ID, a.OrgID, a.Kind, a.Severity, a.Title, a.Body,
 		a.PipelineID, a.PipelineName, a.RunID,
-		a.CreatedAt.UTC().Format(timeFormat),
+		formatTime(a.CreatedAt),
 		nullableTime(a.ReadAt), nullableTime(a.DismissedAt),
 	)
 	return wrapStoreErr("CreateAlert", a.ID, err)
@@ -3250,7 +3249,7 @@ func (s *SQLiteStore) PutTaskBundle(orgID, digest string, archive []byte) (bool,
 	if taskbundle.DigestOf(archive) != digest {
 		return false, fmt.Errorf("task bundle digest %q does not match the archive's actual digest %q", digest, taskbundle.DigestOf(archive))
 	}
-	now := time.Now().UTC().Format(timeFormat)
+	now := formatTime(time.Now())
 	res, err := s.db.Exec(
 		`INSERT INTO task_bundles (org_id, digest, size_bytes, archive, created_at) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (org_id, digest) DO NOTHING`,
@@ -3299,7 +3298,7 @@ func (s *SQLiteStore) PutTaskBundleV2(orgID, digest string, archive []byte) (boo
 	if taskbundlev2.DigestOf(archive) != digest {
 		return false, fmt.Errorf("task bundle digest %q does not match the archive's actual digest %q", digest, taskbundlev2.DigestOf(archive))
 	}
-	now := time.Now().UTC().Format(timeFormat)
+	now := formatTime(time.Now())
 	res, err := s.db.Exec(
 		`INSERT INTO task_bundles_v2 (org_id, digest, size_bytes, archive, created_at) VALUES (?, ?, ?, ?, ?)
 		 ON CONFLICT (org_id, digest) DO NOTHING`,
@@ -3348,7 +3347,7 @@ func (s *SQLiteStore) PutResolvedExecutionRecord(runID, nodeID string, record *t
 	if err != nil {
 		return false, fmt.Errorf("marshal resolved execution record: %w", err)
 	}
-	now := time.Now().UTC().Format(timeFormat)
+	now := formatTime(time.Now())
 	res, err := s.db.Exec(
 		`INSERT INTO resolved_execution_records (run_id, node_id, record_json, created_at) VALUES (?, ?, ?, ?)
 		 ON CONFLICT (run_id, node_id) DO NOTHING`,
@@ -3435,7 +3434,7 @@ func (s *SQLiteStore) CountUnreadAlerts(orgID string) (int, error) {
 func (s *SQLiteStore) MarkAlertRead(orgID, id string) error {
 	result, err := s.db.Exec(
 		`UPDATE alerts SET read_at = ? WHERE id = ? AND org_id = ? AND read_at IS NULL`,
-		time.Now().UTC().Format(timeFormat), id, orgID,
+		formatTime(time.Now()), id, orgID,
 	)
 	if err != nil {
 		return wrapStoreErr("MarkAlertRead", id, err)
@@ -3457,7 +3456,7 @@ func (s *SQLiteStore) MarkAlertRead(orgID, id string) error {
 func (s *SQLiteStore) MarkAllAlertsRead(orgID string) error {
 	_, err := s.db.Exec(
 		`UPDATE alerts SET read_at = ? WHERE org_id = ? AND read_at IS NULL`,
-		time.Now().UTC().Format(timeFormat), orgID,
+		formatTime(time.Now()), orgID,
 	)
 	return wrapStoreErr("MarkAllAlertsRead", orgID, err)
 }
@@ -3465,7 +3464,7 @@ func (s *SQLiteStore) MarkAllAlertsRead(orgID string) error {
 func (s *SQLiteStore) DismissAlert(orgID, id string) error {
 	result, err := s.db.Exec(
 		`UPDATE alerts SET dismissed_at = ? WHERE id = ? AND org_id = ? AND dismissed_at IS NULL`,
-		time.Now().UTC().Format(timeFormat), id, orgID,
+		formatTime(time.Now()), id, orgID,
 	)
 	if err != nil {
 		return wrapStoreErr("DismissAlert", id, err)
@@ -3484,14 +3483,14 @@ func scanAlert(sc scanner) (*models.Alert, error) {
 		&a.PipelineID, &a.PipelineName, &a.RunID, &createdAt, &readAt, &dismissedAt); err != nil {
 		return nil, err
 	}
-	a.CreatedAt, _ = time.Parse(timeFormat, createdAt)
+	a.CreatedAt, _ = parseTime(createdAt)
 	if readAt.Valid && readAt.String != "" {
-		if t, err := time.Parse(timeFormat, readAt.String); err == nil {
+		if t, err := parseTime(readAt.String); err == nil {
 			a.ReadAt = &t
 		}
 	}
 	if dismissedAt.Valid && dismissedAt.String != "" {
-		if t, err := time.Parse(timeFormat, dismissedAt.String); err == nil {
+		if t, err := parseTime(dismissedAt.String); err == nil {
 			a.DismissedAt = &t
 		}
 	}
@@ -3503,7 +3502,7 @@ func nullableTime(t *time.Time) interface{} {
 	if t == nil {
 		return nil
 	}
-	return t.UTC().Format(timeFormat)
+	return formatTime(*t)
 }
 
 // ListDLQByOrg is the org-wide counterpart to ListDLQ. Entries carry no
@@ -3557,7 +3556,7 @@ func (s *SQLiteStore) CreatePipelineTemplate(t *models.PipelineTemplate) error {
 		`INSERT INTO pipeline_templates (id, name, description, icon, nodes, edges, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.ID, t.Name, t.Description, t.Icon, string(nodesJSON), string(edgesJSON),
-		t.CreatedAt.UTC().Format(timeFormat), t.UpdatedAt.UTC().Format(timeFormat),
+		formatTime(t.CreatedAt), formatTime(t.UpdatedAt),
 	)
 	return wrapStoreErr("CreatePipelineTemplate", t.ID, err)
 }
@@ -3604,7 +3603,7 @@ func (s *SQLiteStore) UpdatePipelineTemplate(t *models.PipelineTemplate) error {
 	}
 	result, err := s.db.Exec(
 		`UPDATE pipeline_templates SET name = ?, description = ?, icon = ?, nodes = ?, edges = ?, updated_at = ? WHERE id = ?`,
-		t.Name, t.Description, t.Icon, string(nodesJSON), string(edgesJSON), t.UpdatedAt.UTC().Format(timeFormat), t.ID,
+		t.Name, t.Description, t.Icon, string(nodesJSON), string(edgesJSON), formatTime(t.UpdatedAt), t.ID,
 	)
 	if err != nil {
 		return wrapStoreErr("UpdatePipelineTemplate", t.ID, err)
@@ -3640,8 +3639,8 @@ func scanPipelineTemplate(sc scanner) (*models.PipelineTemplate, error) {
 	if err := json.Unmarshal([]byte(edgesJSON), &t.Edges); err != nil {
 		return nil, fmt.Errorf("decode edges: %w", err)
 	}
-	t.CreatedAt, _ = time.Parse(timeFormat, createdAt)
-	t.UpdatedAt, _ = time.Parse(timeFormat, updatedAt)
+	t.CreatedAt, _ = parseTime(createdAt)
+	t.UpdatedAt, _ = parseTime(updatedAt)
 	return &t, nil
 }
 
@@ -3654,9 +3653,19 @@ func (s *SQLiteStore) CreateRole(r *models.Role) error {
 	}
 	_, err = s.db.Exec(
 		`INSERT INTO roles (id, name, description, permissions, is_system, created_at) VALUES (?,?,?,?,?,?)`,
-		r.ID, r.Name, r.Description, string(permsJSON), boolToInt(r.IsSystem), r.CreatedAt,
+		r.ID, r.Name, r.Description, string(permsJSON), boolToInt(r.IsSystem), roleCreatedAt(r.CreatedAt),
 	)
 	return err
+}
+
+// roleCreatedAt stores a role's creation time, which the model carries as
+// a string, in formatTime's shape. Empty or unreadable means now.
+func roleCreatedAt(s string) string {
+	t, err := parseTime(s)
+	if err != nil {
+		t = time.Now()
+	}
+	return formatTime(t)
 }
 
 func (s *SQLiteStore) GetRole(id string) (*models.Role, error) {
@@ -3745,7 +3754,7 @@ func (s *SQLiteStore) SaveRunPlan(runID, planJSON string) error {
 	_, err := s.db.Exec(
 		`INSERT INTO run_physical_plans (run_id, plan, created_at) VALUES (?, ?, ?)
 		 ON CONFLICT(run_id) DO UPDATE SET plan = excluded.plan`,
-		runID, planJSON, time.Now().UTC().Format(timeFormat),
+		runID, planJSON, formatTime(time.Now()),
 	)
 	return wrapStoreErr("SaveRunPlan", runID, err)
 }
@@ -3767,7 +3776,7 @@ func (s *SQLiteStore) SavePhysicalInstances(runID string, instances []models.Phy
 		for _, in := range instances {
 			var startedAt interface{}
 			if in.StartedAt != nil {
-				startedAt = in.StartedAt.UTC().Format(timeFormat)
+				startedAt = formatTime(*in.StartedAt)
 			}
 			_, err := tx.Exec(
 				`INSERT INTO physical_instances

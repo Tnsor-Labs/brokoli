@@ -80,7 +80,7 @@ func (q secretStoreSQL) timeArg(t time.Time) interface{} {
 	if q.pg {
 		return t.UTC()
 	}
-	return t.UTC().Format(timeFormat)
+	return formatTime(t)
 }
 
 func encodeStringMap(m map[string]string) string {
@@ -137,8 +137,8 @@ func (q secretStoreSQL) scan(row interface{ Scan(...interface{}) error }) (*mode
 			&s.AuthMethod, &authSettings, &s.CredentialRef, &c, &u); err != nil {
 			return nil, err
 		}
-		s.CreatedAt, _ = time.Parse(timeFormat, c)
-		s.UpdatedAt, _ = time.Parse(timeFormat, u)
+		s.CreatedAt, _ = parseTime(c)
+		s.UpdatedAt, _ = parseTime(u)
 	}
 	s.Settings, s.AuthSettings = decodeStringMap(settings), decodeStringMap(authSettings)
 	return &s, nil
