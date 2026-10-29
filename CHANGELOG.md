@@ -13,6 +13,11 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
+  same name as a component apart from case (`queries.ts` and `Queries.tsx`,
+  `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the
+  component's import resolved to the wrong file and `npm run build` failed.
+
 - **Vulnerability preflight distinguishes tool failures from findings** --
   @arin30. Preflight reuses only the pinned `govulncheck` version, reports a
   missing or unusable scanner as a non-green `SKIP`, and keeps actual

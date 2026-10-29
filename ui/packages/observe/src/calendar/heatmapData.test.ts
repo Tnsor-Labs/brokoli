@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildHeatmap, levelFor, moveIndex } from './heatmap'
+import { buildHeatmap, levelFor, moveIndex } from './heatmapData'
 
 // 2026-09-13 is a Sunday. Noon UTC, so no local zone can move it to another UTC day.
 const NOW = Date.UTC(2026, 8, 13, 12)

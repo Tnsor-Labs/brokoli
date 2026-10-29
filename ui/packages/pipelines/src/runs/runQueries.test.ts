@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { RunEvent } from '@brokoli/api'
-import { classifyStatement, groupQueries, statementReason } from './queries'
+import { classifyStatement, groupQueries, statementReason } from './runQueries'
 
 const TRUNCATED = 'SELECT * FROM big\n-- [brokoli] statement truncated: 64000 of 91234 bytes recorded'
 const WITHHELD = '-- [brokoli] statement not recorded: a secret it substitutes is shorter than 8 bytes and cannot be masked'

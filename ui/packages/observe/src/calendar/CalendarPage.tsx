@@ -8,7 +8,7 @@ import { Button, Callout, EmptyState, IconButton, Page, PageHeader, SegmentedCon
 import { Stat, rateTone } from '../Stat'
 import { finishedRate } from '../dashboard/model'
 import { HeatmapGrid, latestActive } from './Heatmap'
-import { buildHeatmap, formatUtcDay, type HeatCell, type Heatmap } from './heatmap'
+import { buildHeatmap, formatUtcDay, type HeatCell, type Heatmap } from './heatmapData'
 import '../observe.css'
 
 type Range = '90' | '182' | '365'
