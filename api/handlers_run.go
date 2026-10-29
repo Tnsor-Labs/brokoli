@@ -88,7 +88,7 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 		Params     map[string]string      `json:"params"`
 		Parameters map[string]interface{} `json:"parameters"`
 	}
-	json.NewDecoder(r.Body).Decode(&req) // ignore error — body may be empty
+	decodeJSON(w, r, &req) // ignore error — body may be empty
 
 	// Async: return immediately with run ID. Pipeline executes in background.
 	// This prevents client timeouts from creating duplicate runs.
@@ -485,7 +485,7 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 		EndDate   string `json:"end_date"`
 		Force     bool   `json:"force"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
@@ -572,7 +572,7 @@ func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	// from "no from_node", so a caller who asked for one node would
 	// silently get a plain resume of the whole run instead, doing more
 	// work than was asked for with nothing to notice it by.
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+	if err := decodeJSON(w, r, &req); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "request body could not be read as JSON: "+err.Error())
 		return
 	}
@@ -595,7 +595,7 @@ func (h *RunHandler) TestConnection(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		URI string `json:"uri"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.URI == "" {
+	if err := decodeJSON(w, r, &req); err != nil || req.URI == "" {
 		writeError(w, http.StatusBadRequest, "uri is required")
 		return
 	}

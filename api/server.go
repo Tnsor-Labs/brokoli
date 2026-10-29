@@ -192,7 +192,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				UserID      string `json:"user_id"`
 				NewPassword string `json:"new_password"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if err := decodeJSON(w, r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid JSON")
 				return
 			}
@@ -223,7 +223,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 				CurrentPassword string `json:"current_password"`
 				NewPassword     string `json:"new_password"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if err := decodeJSON(w, r, &req); err != nil {
 				writeError(w, http.StatusBadRequest, "invalid JSON")
 				return
 			}

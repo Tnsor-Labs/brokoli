@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -175,7 +174,7 @@ func UpdateProfileHandler(us *UserStore) http.HandlerFunc {
 		}
 
 		var p ProfileUpdate
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
+		if err := decodeJSON(w, r, &p); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid JSON")
 			return
 		}

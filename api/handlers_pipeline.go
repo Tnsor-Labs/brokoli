@@ -190,6 +190,7 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
+	limitBody(w, r)
 	decoded, err := decodePipelineStrict(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -368,6 +369,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	limitBody(w, r)
 	decoded, err := decodePipelineStrict(r.Body)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -747,7 +749,7 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Version int `json:"version"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Version <= 0 {
+	if err := decodeJSON(w, r, &req); err != nil || req.Version <= 0 {
 		writeError(w, http.StatusBadRequest, "version is required")
 		return
 	}

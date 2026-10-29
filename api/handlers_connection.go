@@ -210,7 +210,7 @@ func (h *ConnectionHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 func (h *ConnectionHandler) Create(w http.ResponseWriter, r *http.Request) {
 	var c models.Connection
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
+	if err := decodeJSON(w, r, &c); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}

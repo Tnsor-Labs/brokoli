@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -182,7 +181,7 @@ func (h *SecretStoreHandler) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var s models.SecretStore
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+	if err := decodeJSON(w, r, &s); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -221,7 +220,7 @@ func (h *SecretStoreHandler) Update(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var s models.SecretStore
-	if err := json.NewDecoder(r.Body).Decode(&s); err != nil {
+	if err := decodeJSON(w, r, &s); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -299,7 +298,7 @@ func (h *SecretStoreHandler) Test(w http.ResponseWriter, r *http.Request) {
 		Version string `json:"version"`
 		Field   string `json:"field"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&req)
+	_ = decodeJSON(w, r, &req)
 	if strings.TrimSpace(req.Path) == "" {
 		writeError(w, http.StatusBadRequest, "name a path to read")
 		return

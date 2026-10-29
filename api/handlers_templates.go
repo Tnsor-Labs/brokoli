@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
@@ -47,7 +46,7 @@ func (h *TemplateHandler) Create(w http.ResponseWriter, r *http.Request) {
 		Nodes       []models.Node `json:"nodes"`
 		Edges       []models.Edge `json:"edges"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
@@ -97,7 +96,7 @@ func (h *TemplateHandler) Update(w http.ResponseWriter, r *http.Request) {
 		Nodes       *[]models.Node `json:"nodes"`
 		Edges       *[]models.Edge `json:"edges"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return
 	}
