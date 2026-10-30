@@ -1036,21 +1036,6 @@ func requestInterval(execCfg map[string]interface{}) time.Duration {
 	return time.Duration(float64(time.Second) / rps)
 }
 
-// pageRetryDelay returns the backoff delay before retry attempt `attempt`
-// (0-indexed) of a failed page fetch.
-func pageRetryDelay(backoff string, attempt int) time.Duration {
-	base := 100 * time.Millisecond
-	if backoff == "linear" {
-		return base * time.Duration(attempt+1)
-	}
-	// Default/"exponential"
-	delay := base
-	for i := 0; i < attempt; i++ {
-		delay *= 2
-	}
-	return delay
-}
-
 func mergeParams(base map[string]string, extra map[string]string) map[string]string {
 	merged := make(map[string]string, len(base)+len(extra))
 	for k, v := range base {

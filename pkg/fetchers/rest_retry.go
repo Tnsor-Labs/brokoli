@@ -3,6 +3,7 @@ package fetchers
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"time"
@@ -50,10 +51,47 @@ func pageRetryable(err error) bool {
 	return true
 }
 
+// pageRetryBase is the first retry's backoff, and every retry's when the
+// backoff is fixed.
+const pageRetryBase = 100 * time.Millisecond
+
+// maxPageRetryDelay caps the configured backoff. Doubling from
+// pageRetryBase passes it at the 12th retry, and without a cap the 37th
+// overflowed time.Duration into a negative wait, which is no wait at all.
+const maxPageRetryDelay = 5 * time.Minute
+
+// pageRetryDelay is the backoff before retry attempt (0-indexed) of a
+// failed page fetch: "fixed", "linear" or, by default, "exponential".
+func pageRetryDelay(backoff string, attempt int) time.Duration {
+	steps := int(maxPageRetryDelay / pageRetryBase)
+	switch backoff {
+	case "fixed":
+		return pageRetryBase
+	case "linear":
+		if attempt+1 >= steps {
+			return maxPageRetryDelay
+		}
+		return pageRetryBase * time.Duration(attempt+1)
+	}
+	delay := pageRetryBase
+	for i := 0; i < attempt && delay < maxPageRetryDelay; i++ {
+		delay *= 2
+	}
+	return min(delay, maxPageRetryDelay)
+}
+
 // pageRetryWait is the pause before retry attempt (0-indexed): the
-// configured backoff, or the server's Retry-After when that is longer.
+// configured backoff with jitter, or the server's Retry-After when that is
+// longer.
+//
+// The jitter puts the pause at a random point in the upper half of the
+// backoff. Pages fetched concurrently tend to fail together, a rate limit
+// being the usual cause, and with a fixed pause they all retried at the
+// same instant and hit it again together. A Retry-After is the server's
+// own schedule and is kept as asked.
 func pageRetryWait(backoff string, attempt int, err error) time.Duration {
-	wait := pageRetryDelay(backoff, attempt)
+	delay := pageRetryDelay(backoff, attempt)
+	wait := delay/2 + rand.N(delay/2+1)
 	var se *statusError
 	if errors.As(err, &se) && se.retryAfter > wait {
 		wait = min(se.retryAfter, maxRetryAfter)
