@@ -275,11 +275,8 @@ func copyBatchesToPostgres(ctx context.Context, uri string, cfg SQLGenConfig, co
 func copyReader(columns []string, next func() (*common.DataSet, error)) io.Reader {
 	pr, pw := io.Pipe()
 	go func() {
-		// bufio.Writer keeps the first write error and returns it from
-		// every later call including Flush, so the per-field writes are
-		// deliberately unchecked and the row terminator and Flush carry
-		// the check for the whole row.
 		buf := bufio.NewWriterSize(pw, copyStreamBufferSize)
+		var line []byte
 		for {
 			batch, err := next()
 			if err == io.EOF {
@@ -290,13 +287,8 @@ func copyReader(columns []string, next func() (*common.DataSet, error)) io.Reade
 				return
 			}
 			for _, row := range batch.Rows {
-				for i, col := range columns {
-					if i > 0 {
-						_ = buf.WriteByte('\t')
-					}
-					_, _ = buf.WriteString(copyEscape(row[col]))
-				}
-				if err := buf.WriteByte('\n'); err != nil {
+				line = appendTextLine(line[:0], row, columns, appendCopyField)
+				if _, err := buf.Write(line); err != nil {
 					pw.CloseWithError(err)
 					return
 				}
@@ -311,29 +303,29 @@ func copyReader(columns []string, next func() (*common.DataSet, error)) io.Reade
 	return pr
 }
 
-// copyEscape renders one value as a COPY text field.
+// appendCopyField appends one value as a COPY text field to dst.
 //
 // The type switch mirrors formatValue's: the value's Go type decides,
 // never its printed form. Only the four characters COPY treats as
 // structure need escaping — everything else, including quotes, travels
 // as-is, because this is data on a copy stream and not SQL text.
-func copyEscape(v any) string {
-	if v == nil {
-		return `\N`
-	}
-	var s string
+//
+// It appends rather than returning a string because it runs once per
+// cell: the integers, booleans and times that make up most rows are
+// written straight into the line without a string, fmt or reflection
+// in between.
+func appendCopyField(dst []byte, v any) []byte {
 	switch t := v.(type) {
-	case time.Time:
-		s = t.Format("2006-01-02 15:04:05.999999-07:00")
-	case *time.Time:
-		if t == nil {
-			return `\N`
-		}
-		s = t.Format("2006-01-02 15:04:05.999999-07:00")
+	case nil:
+		return append(dst, `\N`...)
 	case string:
-		s = t
-	case []byte:
-		s = string(t)
+		return appendBackslashEscaped(dst, t, false)
+	case int64:
+		return strconv.AppendInt(dst, t, 10)
+	case int:
+		return strconv.AppendInt(dst, int64(t), 10)
+	case bool:
+		return strconv.AppendBool(dst, t)
 	case float64:
 		// Never %v a float here. Go renders float64(1000000) as "1e+06",
 		// which Postgres rejects for an integer column and, worse, accepts
@@ -342,19 +334,69 @@ func copyEscape(v any) string {
 		// change a value is not something to leave in place on the strength
 		// of "should".
 		if t == math.Trunc(t) && math.Abs(t) < 1e15 {
-			s = strconv.FormatFloat(t, 'f', -1, 64)
-		} else {
-			s = strconv.FormatFloat(t, 'g', -1, 64)
+			return strconv.AppendFloat(dst, t, 'f', -1, 64)
 		}
+		return strconv.AppendFloat(dst, t, 'g', -1, 64)
+	case time.Time:
+		return t.AppendFormat(dst, copyTimeLayout)
+	case *time.Time:
+		if t == nil {
+			return append(dst, `\N`...)
+		}
+		return t.AppendFormat(dst, copyTimeLayout)
+	case []byte:
+		return appendBackslashEscaped(dst, t, false)
 	default:
-		s = valueText(t)
+		return appendBackslashEscaped(dst, valueText(t), false)
 	}
+}
 
-	if !strings.ContainsAny(s, "\\\t\n\r") {
-		return s
+const copyTimeLayout = "2006-01-02 15:04:05.999999-07:00"
+
+// appendTextLine appends one row as a line of tab-separated fields, each
+// rendered by field, ending in a newline: the text format COPY and LOAD
+// DATA share.
+func appendTextLine(dst []byte, row common.DataRow, columns []string, field func([]byte, any) []byte) []byte {
+	for i, col := range columns {
+		if i > 0 {
+			dst = append(dst, '\t')
+		}
+		dst = field(dst, row[col])
 	}
-	r := strings.NewReplacer(`\`, `\\`, "\t", `\t`, "\n", `\n`, "\r", `\r`)
-	return r.Replace(s)
+	return append(dst, '\n')
+}
+
+// appendBackslashEscaped appends s with the characters the COPY and LOAD
+// DATA text formats treat as structure written as backslash escapes:
+// backslash, tab, newline and carriage return, and NUL as \0 when nul is
+// set. LOAD DATA reads \0 as NUL; COPY has no escape for it, and Postgres
+// text cannot hold one anyway.
+func appendBackslashEscaped[T string | []byte](dst []byte, s T, nul bool) []byte {
+	start := 0
+	for i := 0; i < len(s); i++ {
+		var esc byte
+		switch s[i] {
+		case '\\':
+			esc = '\\'
+		case '\t':
+			esc = 't'
+		case '\n':
+			esc = 'n'
+		case '\r':
+			esc = 'r'
+		case 0:
+			if !nul {
+				continue
+			}
+			esc = '0'
+		default:
+			continue
+		}
+		dst = append(dst, s[start:i]...)
+		dst = append(dst, '\\', esc)
+		start = i + 1
+	}
+	return append(dst, s[start:]...)
 }
 
 // validatePostgresUpsertKey checks that key_columns name a unique index on

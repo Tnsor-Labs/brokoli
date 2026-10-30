@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -276,6 +277,7 @@ func mysqlLoadReader(columns []string, next func() (*common.DataSet, error)) io.
 	pr, pw := io.Pipe()
 	go func() {
 		buf := bufio.NewWriterSize(pw, copyStreamBufferSize)
+		var line []byte
 		for {
 			batch, err := next()
 			if err == io.EOF {
@@ -286,13 +288,8 @@ func mysqlLoadReader(columns []string, next func() (*common.DataSet, error)) io.
 				return
 			}
 			for _, row := range batch.Rows {
-				for i, col := range columns {
-					if i > 0 {
-						_ = buf.WriteByte('\t')
-					}
-					_, _ = buf.WriteString(mysqlLoadEscape(row[col]))
-				}
-				if err := buf.WriteByte('\n'); err != nil {
+				line = appendTextLine(line[:0], row, columns, appendMySQLLoadField)
+				if _, err := buf.Write(line); err != nil {
 					pw.CloseWithError(err)
 					return
 				}
@@ -307,8 +304,8 @@ func mysqlLoadReader(columns []string, next func() (*common.DataSet, error)) io.
 	return pr
 }
 
-// mysqlLoadEscape renders one value as a LOAD DATA text field, mirroring
-// copyEscape: the value's Go type decides, never its printed form, and only
+// appendMySQLLoadField appends one value as a LOAD DATA text field to
+// dst, mirroring appendCopyField: the value's Go type decides, never its printed form, and only
 // the characters the format clause treats as structure are escaped.
 //
 // Two renderings deliberately differ from the statement path's literals:
@@ -321,53 +318,38 @@ func mysqlLoadReader(columns []string, next func() (*common.DataSet, error)) io.
 //   - Times are unquoted, because fields are not quoted here. The layout
 //     and the UTC conversion match the mysql dialect's exactly, so both
 //     paths store the same instant.
-func mysqlLoadEscape(v any) string {
-	if v == nil {
-		return `\N`
-	}
-	var s string
+func appendMySQLLoadField(dst []byte, v any) []byte {
 	switch t := v.(type) {
-	case time.Time:
-		s = t.UTC().Format("2006-01-02 15:04:05.999999")
-	case *time.Time:
-		if t == nil {
-			return `\N`
-		}
-		s = t.UTC().Format("2006-01-02 15:04:05.999999")
+	case nil:
+		return append(dst, `\N`...)
+	case string:
+		return appendBackslashEscaped(dst, t, true)
+	case int64:
+		return strconv.AppendInt(dst, t, 10)
+	case int:
+		return strconv.AppendInt(dst, int64(t), 10)
 	case bool:
 		if t {
-			return "1"
+			return append(dst, '1')
 		}
-		return "0"
+		return append(dst, '0')
+	case float64:
+		// %v's rendering, the statement path's for a float, without fmt.
+		return strconv.AppendFloat(dst, t, 'g', -1, 64)
+	case time.Time:
+		return t.UTC().AppendFormat(dst, mysqlLoadTimeLayout)
+	case *time.Time:
+		if t == nil {
+			return append(dst, `\N`...)
+		}
+		return t.UTC().AppendFormat(dst, mysqlLoadTimeLayout)
 	case json.Number:
-		s = t.String()
+		return appendBackslashEscaped(dst, string(t), true)
 	case []byte:
-		s = string(t)
-	case string:
-		s = t
+		return appendBackslashEscaped(dst, t, true)
 	default:
-		s = valueText(t)
+		return appendBackslashEscaped(dst, valueText(t), true)
 	}
-	if !strings.ContainsAny(s, "\\\t\n\r\x00") {
-		return s
-	}
-	var sb strings.Builder
-	sb.Grow(len(s) + 8)
-	for i := 0; i < len(s); i++ {
-		switch s[i] {
-		case '\\':
-			sb.WriteString(`\\`)
-		case '\t':
-			sb.WriteString(`\t`)
-		case '\n':
-			sb.WriteString(`\n`)
-		case '\r':
-			sb.WriteString(`\r`)
-		case 0:
-			sb.WriteString(`\0`)
-		default:
-			sb.WriteByte(s[i])
-		}
-	}
-	return sb.String()
 }
+
+const mysqlLoadTimeLayout = "2006-01-02 15:04:05.999999"
