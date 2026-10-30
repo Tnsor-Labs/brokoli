@@ -3,6 +3,7 @@ package engine
 import (
 	"database/sql"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -184,7 +185,17 @@ func (r *Runner) dispatchSourceAPIPage(node models.Node, source, sourceType stri
 			lastErr = fmt.Errorf("%v; settle failed: %w", dispatchErr, failErr)
 		}
 		if attempt < maxRetries {
-			time.Sleep(remotePageRetryDelay(backoff, attempt))
+			// A cancel ends the retries. The run is reported cancelled
+			// without waiting for this goroutine, and with time.Sleep it
+			// went on claiming, dispatching and failing attempts against
+			// the cancelled run until the schedule ran out.
+			wait := time.NewTimer(jitterRemotePageRetry(remotePageRetryDelay(backoff, attempt)))
+			select {
+			case <-wait.C:
+			case <-r.ctx.Done():
+				wait.Stop()
+				return remotePageResult{err: fmt.Errorf("page retry stopped: %w (last error: %v)", r.ctx.Err(), lastErr)}
+			}
 		}
 	}
 	return remotePageResult{err: lastErr}
@@ -217,6 +228,9 @@ func (r *Runner) claimRemoteInstanceAttempt(nodeID, instanceKey string, attempt 
 	return attemptStore, gen, nil
 }
 
+// remotePageRetryDelay is the backoff before retry attempt (0-indexed) of
+// a page dispatched to a worker: "fixed", "linear", "none" or, by default,
+// "exponential" (capped at 32s).
 func remotePageRetryDelay(backoff string, attempt int) time.Duration {
 	if strings.EqualFold(backoff, "linear") {
 		return time.Duration(attempt+1) * time.Second
@@ -224,8 +238,19 @@ func remotePageRetryDelay(backoff string, attempt int) time.Duration {
 	if strings.EqualFold(backoff, "none") {
 		return 0
 	}
+	if strings.EqualFold(backoff, "fixed") {
+		return time.Second
+	}
 	seconds := 1 << minRemote(attempt, 5)
 	return time.Duration(seconds) * time.Second
+}
+
+// jitterRemotePageRetry puts the pause at a random point in the upper half
+// of the backoff, as the in-process page retry does: pages dispatched
+// together tend to fail together, and an identical pause sent them back
+// to the server at the same instant.
+func jitterRemotePageRetry(d time.Duration) time.Duration {
+	return d/2 + rand.N(d/2+1) // #nosec G404 -- jitter spreads retries; nothing depends on it being unpredictable.
 }
 
 func intOptRemote(cfg map[string]interface{}, key string, fallback int) int {

@@ -126,6 +126,16 @@ reconstruct from git archaeology.
   exponential for page retries and now waits 100 ms every time. A
   server's `Retry-After` is still kept exactly.
 
+- **A cancelled run stops retrying pages on remote workers** -- @hc12r.
+  When a paginated REST source ran its pages on workers, a page waiting
+  to retry did not notice a cancel. The run was reported cancelled at
+  once, but the page carried on: it finished its wait, sent the next
+  attempt to the workers, which fetched the page from the API again, and
+  repeated this until its retries ran out, up to a minute with the
+  default exponential backoff and six retries. The wait now ends on a
+  cancel. Its backoff is also jittered like the in-process page retry,
+  and `fixed` waits one second instead of backing off exponentially.
+
 ### Changed
 
 - **Versioned schema migrations** -- @hc12r. The database now records the
