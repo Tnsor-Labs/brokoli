@@ -172,6 +172,16 @@ reconstruct from git archaeology.
   went from 181 ms and 2 million allocations to 8 ms and none, typed
   columns 4-10x faster; every column gets the type it got before.
 
+- **Run logs are written in batches when nodes log at once** -- @hc12r.
+  Every log line was its own database transaction, and on SQLite each
+  commit waits for the disk while holding the lock node updates also need.
+  Lines that arrive while another is being written now wait and are
+  stored together in one transaction. A line is still stored by the time
+  the node's log call returns, and a node's lines keep their order. With 8
+  nodes logging at once a line costs 0.31 ms instead of 1.4 ms; with 32,
+  0.09 ms instead of 1.9 ms. A store without batch writes keeps writing
+  one line at a time.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`

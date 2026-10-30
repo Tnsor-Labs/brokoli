@@ -2176,21 +2176,33 @@ func scanExecutionAttempt(row scanner) (*models.ExecutionAttempt, error) {
 
 // --- Logs ---
 
-func (s *SQLiteStore) AppendLog(entry *models.LogEntry) error {
+const sqliteInsertLog = `INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+// sqliteLogArgs are entry's values for sqliteInsertLog.
+func sqliteLogArgs(entry *models.LogEntry) ([]interface{}, error) {
 	metadata := "{}"
 	if entry.Metadata != nil {
 		metaBytes, err := json.Marshal(entry.Metadata)
 		if err != nil {
-			return fmt.Errorf("marshal log metadata: %w", err)
+			return nil, fmt.Errorf("marshal log metadata: %w", err)
 		}
 		metadata = string(metaBytes)
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, formatTime(entry.Timestamp),
-		entry.TraceID, entry.SpanID, entry.Attempt, metadata,
-	)
+	return []interface{}{entry.RunID, entry.NodeID, string(entry.Level), entry.Message, formatTime(entry.Timestamp),
+		entry.TraceID, entry.SpanID, entry.Attempt, metadata}, nil
+}
+
+func (s *SQLiteStore) AppendLog(entry *models.LogEntry) error {
+	args, err := sqliteLogArgs(entry)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(sqliteInsertLog, args...)
 	return err
+}
+
+func (s *SQLiteStore) AppendLogs(entries []*models.LogEntry) error {
+	return appendLogsTx(s.db, sqliteInsertLog, entries, sqliteLogArgs)
 }
 
 func (s *SQLiteStore) GetLogs(runID string) ([]models.LogEntry, error) {

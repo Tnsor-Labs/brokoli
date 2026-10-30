@@ -69,7 +69,9 @@ type Runner struct {
 	// the nodes of a wave run at once.
 	dryRunResults map[string]*DryRunNodeResult
 	dryRunMu      sync.Mutex
-	params        map[string]string // legacy untyped runtime params (ADR-032 section 3)
+	// logs batches the log lines nodes write concurrently (logBatcher).
+	logs   logBatcher
+	params map[string]string // legacy untyped runtime params (ADR-032 section 3)
 	// parameters is the resolved, typed run-parameter snapshot (ADR-032
 	// rollout step 4, issue #439): validated and defaulted by
 	// taskinterface.ResolveParameters against Pipeline.Parameters before
@@ -2334,7 +2336,7 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 	// loudly via the process log instead of silently discarding it (the
 	// previous behavior) without changing this function's signature or
 	// making log persistence load-bearing for node success.
-	if err := r.store.AppendLog(&models.LogEntry{
+	entry := &models.LogEntry{
 		RunID:     r.run.ID,
 		NodeID:    nodeID,
 		Level:     level,
@@ -2344,7 +2346,14 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 		SpanID:    spanID,
 		Attempt:   attempt,
 		Metadata:  metadata,
-	}); err != nil {
+	}
+	var err error
+	if batcher, ok := r.store.(store.LogBatchAppender); ok {
+		err = r.logs.append(batcher, entry)
+	} else {
+		err = r.store.AppendLog(entry)
+	}
+	if err != nil {
 		common.SLog().Warn("append log entry failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(nodeID), "error", err)
 	}

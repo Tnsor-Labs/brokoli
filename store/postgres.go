@@ -2028,17 +2028,29 @@ func (s *PostgresStore) ListExecutionAttemptsByRun(runID string) ([]models.Execu
 
 // --- Logs ---
 
-func (s *PostgresStore) AppendLog(entry *models.LogEntry) error {
+const postgresInsertLog = `INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`
+
+// postgresLogArgs are entry's values for postgresInsertLog.
+func postgresLogArgs(entry *models.LogEntry) ([]interface{}, error) {
 	metadataJSON, _ := json.Marshal(entry.Metadata)
 	if entry.Metadata == nil {
 		metadataJSON = []byte("{}")
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO logs (run_id, node_id, level, message, timestamp, trace_id, span_id, attempt, metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-		entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp,
-		entry.TraceID, entry.SpanID, entry.Attempt, string(metadataJSON),
-	)
+	return []interface{}{entry.RunID, entry.NodeID, string(entry.Level), entry.Message, entry.Timestamp,
+		entry.TraceID, entry.SpanID, entry.Attempt, string(metadataJSON)}, nil
+}
+
+func (s *PostgresStore) AppendLog(entry *models.LogEntry) error {
+	args, err := postgresLogArgs(entry)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(postgresInsertLog, args...)
 	return err
+}
+
+func (s *PostgresStore) AppendLogs(entries []*models.LogEntry) error {
+	return appendLogsTx(s.db, postgresInsertLog, entries, postgresLogArgs)
 }
 
 func (s *PostgresStore) GetLogs(runID string) ([]models.LogEntry, error) {
