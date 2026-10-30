@@ -126,6 +126,17 @@ reconstruct from git archaeology.
   write per row. On Postgres the index is built during the first start after
   upgrading, and writes to `runs` wait until it is done.
 
+- **Row filters are 6-9x faster** -- @hc12r. A `filter_rows` transform
+  parsed its condition again for every row, and formatted every cell as
+  text before comparing it. The condition is now parsed once, a string cell
+  is compared as it is, and an ordered comparison reads an integer or
+  float cell as a number directly. On 100,000 rows: `amount >= 50` 70 ms to
+  7.5 ms, `status = s1` 37 ms to 6.3 ms, `status in [...]` 64 ms to 8.2 ms,
+  each down from 100,000-400,000 allocations to about 20. Which rows a
+  filter keeps is unchanged; a test checks the new matcher against the old
+  one across awkward values (NaN, infinities, negative zero, integers past
+  2^53, float32, nil, dates).
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`
