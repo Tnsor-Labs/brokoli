@@ -724,9 +724,8 @@ func mayBeNumber(s string) bool {
 }
 
 // exactWhereNeeded gives every number in column c the big.Float form when
-// any of them has it, so a comparison never mixes the two forms. A float64
-// key becomes the exact value of its shortest decimal, which is the value
-// it stood for.
+// any of them has it. compareSortKeys handles mixed forms on its own; this
+// only saves it converting the same key again on every comparison.
 func exactWhereNeeded(keys [][]sortKey, c int) {
 	mixed := false
 	for _, k := range keys {
@@ -740,13 +739,21 @@ func exactWhereNeeded(keys [][]sortKey, c int) {
 	}
 	for _, k := range keys {
 		if k[c].class == sortClassNumber && k[c].num == nil {
-			k[c].num, _, _ = big.ParseFloat(strconv.FormatFloat(k[c].f, 'g', -1, 64), 10, sortKeyPrecision, big.ToNearestEven)
+			k[c].num = k[c].exact()
 		}
 	}
 }
 
-// compareSortKeys orders two keys of one column, after exactWhereNeeded
-// has run on it.
+// exact is a number key's big.Float form. A float64 key becomes the exact
+// value of its shortest decimal, which is the value it stood for.
+func (k sortKey) exact() *big.Float {
+	if k.num != nil {
+		return k.num
+	}
+	f, _, _ := big.ParseFloat(strconv.FormatFloat(k.f, 'g', -1, 64), 10, sortKeyPrecision, big.ToNearestEven)
+	return f
+}
+
 func compareSortKeys(a, b sortKey) int {
 	if a.class != b.class {
 		if a.class < b.class {
@@ -756,8 +763,8 @@ func compareSortKeys(a, b sortKey) int {
 	}
 	switch a.class {
 	case sortClassNumber:
-		if a.num != nil {
-			return a.num.Cmp(b.num)
+		if a.num != nil || b.num != nil {
+			return a.exact().Cmp(b.exact())
 		}
 		switch {
 		case a.f < b.f:
