@@ -1381,6 +1381,14 @@ func (s *PostgresStore) ClaimPendingRun(runID, pipelineID string, startedAt time
 	return n == 1, nil
 }
 
+func (s *PostgresStore) RunCancelRequested(runID string) (bool, error) {
+	var requested bool
+	if err := s.db.QueryRow(`SELECT cancel_requested FROM runs WHERE id = $1`, runID).Scan(&requested); err != nil {
+		return false, err
+	}
+	return requested, nil
+}
+
 func (s *PostgresStore) RequestRunCancel(runID string) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE runs SET cancel_requested=TRUE WHERE id=$1 AND status IN ($2, $3)`,

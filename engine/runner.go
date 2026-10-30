@@ -467,10 +467,8 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		// boundary. One cheap primary-key read per wave; a read failure is
 		// ignored (the relay and local paths remain the fast, primary
 		// mechanisms — this is the convergence backstop).
-		if r.run != nil {
-			if stored, err := r.store.GetRun(r.run.ID); err == nil && stored.CancelRequested {
-				r.Cancel()
-			}
+		if r.run != nil && r.cancelRequested(r.run.ID) {
+			r.Cancel()
 		}
 
 		// Check if cancelled
@@ -2116,7 +2114,7 @@ func (r *Runner) startCancelIntentWatcher() func() {
 			case <-r.ctx.Done():
 				return
 			case <-ticker.C:
-				if stored, err := r.store.GetRun(runID); err == nil && stored.CancelRequested {
+				if r.cancelRequested(runID) {
 					r.Cancel()
 					return
 				}
@@ -2124,6 +2122,19 @@ func (r *Runner) startCancelIntentWatcher() func() {
 		}
 	}()
 	return func() { close(done) }
+}
+
+// cancelRequested reads runID's durable cancel flag. A store that can read
+// the flag alone does (store.RunCancelRequestReader); GetRun also loads
+// every node run. A read failure counts as no request: this is the
+// backstop, not the primary cancel path.
+func (r *Runner) cancelRequested(runID string) bool {
+	if cr, ok := r.store.(store.RunCancelRequestReader); ok {
+		requested, err := cr.RunCancelRequested(runID)
+		return err == nil && requested
+	}
+	stored, err := r.store.GetRun(runID)
+	return err == nil && stored.CancelRequested
 }
 
 // reclaimTransientBlobs deletes the run's blob scratch namespace when the
