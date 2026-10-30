@@ -182,6 +182,16 @@ reconstruct from git archaeology.
   0.09 ms instead of 1.9 ms. A store without batch writes keeps writing
   one line at a time.
 
+- **Bulk loads into Postgres and MySQL encode rows 1.9-2.8x faster** --
+  @hc12r. The COPY and `LOAD DATA` writers render each value into the
+  row's line directly instead of building a string per value, and integers,
+  booleans and floats no longer go through `fmt`. The COPY writer also built
+  a new 6 KB escaper for every value that held a tab, newline, carriage
+  return or backslash. Measured on 10,000 mixed rows: COPY went from 2.8 to
+  1.0 ms per thousand rows and from 51,000 allocations to 13, `LOAD DATA`
+  from 1.8 to 0.95 ms and from 31,000 allocations to 13. The bytes written
+  are unchanged, held to the old encoders by a test over every value kind.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`
