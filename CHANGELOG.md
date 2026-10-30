@@ -163,6 +163,15 @@ reconstruct from git archaeology.
   however large the run, where the full lookup took 0.56 ms at 50 node runs
   and 4.4 ms at 500.
 
+- **Creating a table infers column types without parsing every value
+  every way** -- @hc12r. To choose each column's type, every value was
+  formatted as text and tried as an integer, a float, a boolean and five
+  date layouts, each failed parse allocating an error. Typed values are now
+  classified directly, and text is only tried where it can match: a word
+  like `customer-000123` skips every parse. On 100,000 rows a text column
+  went from 181 ms and 2 million allocations to 8 ms and none, typed
+  columns 4-10x faster; every column gets the type it got before.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`

@@ -239,28 +239,17 @@ func inferColumnType(col string, rows []common.DataRow) string {
 			continue
 		}
 		total++
-		s := fmt.Sprintf("%v", val)
-		if s == "" {
-			continue
-		}
-
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+		switch kind, n := inferKind(val); kind {
+		case kindInt:
 			intCount++
 			if n > math.MaxInt32 || n < math.MinInt32 {
 				wide = true
 			}
-			continue
-		}
-		if _, err := strconv.ParseFloat(s, 64); err == nil {
+		case kindFloat:
 			floatCount++
-			continue
-		}
-		lower := strings.ToLower(s)
-		if lower == "true" || lower == "false" {
+		case kindBool:
 			boolCount++
-			continue
-		}
-		if isDate(s) {
+		case kindDate:
 			dateCount++
 		}
 	}
@@ -305,6 +294,90 @@ var dateFormats = []string{
 	"02-01-2006",
 }
 
+// The kinds inferKind tells apart.
+const (
+	kindOther = iota
+	kindInt
+	kindFloat
+	kindBool
+	kindDate
+)
+
+// inferKind classifies one value for inferColumnType, as its %v text reads:
+// an integer (returned as n), a float, a boolean, a date, or none of them.
+// The checks are tried in that order, and each value lands in the first
+// that matches.
+//
+// The text is not always built. An int64, int or bool cell is what its %v
+// reads as. A float64 cell reads as an integer when it is whole and below
+// a million in magnitude, the only whole floats %v prints as plain digits
+// (1e6 prints as 1e+06), and as a float otherwise, NaN and the infinities
+// included. Text is parsed
+// only as far as it can match: a number starts with a digit, a sign, a
+// point, or the i or n of inf and nan; a boolean is four or five bytes; a
+// date is at least ten bytes and starts with a digit (see dateFormats).
+func inferKind(val interface{}) (int, int64) {
+	var s string
+	switch v := val.(type) {
+	case int64:
+		return kindInt, v
+	case int:
+		return kindInt, int64(v)
+	case bool:
+		return kindBool, 0
+	case float64:
+		if v == math.Trunc(v) && math.Abs(v) < 1e6 {
+			return kindInt, int64(v)
+		}
+		return kindFloat, 0
+	case string:
+		s = v
+	default:
+		s = fmt.Sprintf("%v", val)
+	}
+	if s == "" {
+		return kindOther, 0
+	}
+	if mayBeParsedNumber(s) {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil {
+			return kindInt, n
+		}
+		if _, err := strconv.ParseFloat(s, 64); err == nil {
+			return kindFloat, 0
+		}
+	}
+	if len(s) == 4 || len(s) == 5 {
+		if lower := strings.ToLower(s); lower == "true" || lower == "false" {
+			return kindBool, 0
+		}
+	}
+	if len(s) >= 10 && s[0] >= '0' && s[0] <= '9' && isDate(s) {
+		return kindDate, 0
+	}
+	return kindOther, 0
+}
+
+// mayBeParsedNumber is false for text that strconv's ParseInt and
+// ParseFloat both refuse on its first character after a sign.
+func mayBeParsedNumber(s string) bool {
+	if s[0] == '+' || s[0] == '-' {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	switch c := s[0]; {
+	case c >= '0' && c <= '9', c == '.':
+		return true
+	case c == 'i', c == 'I', c == 'n', c == 'N': // inf, infinity, nan
+		return true
+	}
+	return false
+}
+
+// isDate reports whether s parses with one of dateFormats. Every one of
+// them starts with a digit and is at least ten bytes long (a four-digit
+// year and two two-digit fields), which inferKind relies on to skip it.
 func isDate(s string) bool {
 	for _, f := range dateFormats {
 		if _, err := time.Parse(f, s); err == nil {
