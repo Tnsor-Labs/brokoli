@@ -136,6 +136,14 @@ reconstruct from git archaeology.
   cancel. Its backoff is also jittered like the in-process page retry,
   and `fixed` waits one second instead of backing off exponentially.
 
+- **A cancelled run sends no more work to remote workers** -- @hc12r.
+  The runner reports a cancel without waiting for the goroutines
+  dispatching pages, expansion items, partitions or task instances, and
+  one that reached the dispatcher afterwards still put its job on the
+  queue: a worker ran it in full, and only then found the run cancelled.
+  The dispatcher now checks for a cancel first and settles the attempt as
+  failed without sending anything.
+
 ### Changed
 
 - **Versioned schema migrations** -- @hc12r. The database now records the
