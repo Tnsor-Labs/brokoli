@@ -171,7 +171,7 @@ func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, er
 	}
 
 	var sb strings.Builder
-	sb.WriteString("CREATE TABLE " + d.quoteIdent(cfg.Table) + " (\n")
+	sb.WriteString(d.createTableHead(cfg.Table) + " (\n")
 	for i, col := range ds.Columns {
 		sqlType := ""
 		notNull := false

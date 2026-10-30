@@ -46,6 +46,14 @@ type WriteSyntax struct {
 	// everywhere but ClickHouse, whose language requires an ENGINE
 	// clause (ADR-027).
 	CreateTableSuffix string
+	// CreateIfNotExists says the backend accepts CREATE TABLE IF NOT
+	// EXISTS. sink_db's create_table promises to create the table if it
+	// does not exist, and a plain CREATE TABLE kept that promise only on a
+	// pipeline's first run: every later run failed with "already exists".
+	// SQL Server has no such clause and is guarded with OBJECT_ID by the
+	// generator instead. The generic dialect stays plain, since nothing is
+	// known about the server it speaks to.
+	CreateIfNotExists bool
 }
 
 // StatementWriter is the write-vocabulary capability. Every registered
@@ -64,6 +72,7 @@ func (postgres) WriteSyntax() WriteSyntax {
 			"INTEGER": "INTEGER", "BIGINT": "BIGINT", "FLOAT": "DOUBLE PRECISION", "BOOLEAN": "BOOLEAN",
 			"TEXT": "TEXT", "TIMESTAMP": "TIMESTAMP"},
 		TSLayout: "2006-01-02 15:04:05.999999-07:00", TSUTC: false,
+		CreateIfNotExists: true,
 	}
 }
 
@@ -75,6 +84,7 @@ func (mysqld) WriteSyntax() WriteSyntax {
 			"INTEGER": "INT", "BIGINT": "BIGINT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN",
 			"TEXT": "TEXT", "TIMESTAMP": "DATETIME"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+		CreateIfNotExists: true,
 	}
 }
 
@@ -86,6 +96,7 @@ func (clickhouse) WriteSyntax() WriteSyntax {
 			"INTEGER": "Int64", "BIGINT": "Int64", "FLOAT": "Float64", "BOOLEAN": "Bool",
 			"TEXT": "String", "TIMESTAMP": "DateTime64(6, 'UTC')"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+		CreateIfNotExists: true,
 		CreateTableSuffix: " ENGINE = MergeTree ORDER BY tuple()",
 	}
 }
@@ -98,6 +109,7 @@ func (sqlited) WriteSyntax() WriteSyntax {
 			"INTEGER": "INTEGER", "BIGINT": "INTEGER", "FLOAT": "REAL", "BOOLEAN": "INTEGER",
 			"TEXT": "TEXT", "TIMESTAMP": "TEXT"},
 		TSLayout: "2006-01-02T15:04:05.999999Z07:00", TSUTC: false,
+		CreateIfNotExists: true,
 	}
 }
 
@@ -123,6 +135,7 @@ func (snowflake) WriteSyntax() WriteSyntax {
 			"INTEGER": "INTEGER", "BIGINT": "BIGINT", "FLOAT": "FLOAT", "BOOLEAN": "BOOLEAN",
 			"TEXT": "VARCHAR", "TIMESTAMP": "TIMESTAMP_NTZ"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+		CreateIfNotExists: true,
 	}
 }
 
@@ -138,6 +151,7 @@ func (databricks) WriteSyntax() WriteSyntax {
 			"INTEGER": "INT", "BIGINT": "BIGINT", "FLOAT": "DOUBLE", "BOOLEAN": "BOOLEAN",
 			"TEXT": "STRING", "TIMESTAMP": "TIMESTAMP"},
 		TSLayout: "2006-01-02 15:04:05.999999", TSUTC: true,
+		CreateIfNotExists: true,
 	}
 }
 
