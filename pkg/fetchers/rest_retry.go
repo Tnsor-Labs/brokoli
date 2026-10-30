@@ -91,7 +91,7 @@ func pageRetryDelay(backoff string, attempt int) time.Duration {
 // own schedule and is kept as asked.
 func pageRetryWait(backoff string, attempt int, err error) time.Duration {
 	delay := pageRetryDelay(backoff, attempt)
-	wait := delay/2 + rand.N(delay/2+1)
+	wait := delay/2 + rand.N(delay/2+1) // #nosec G404 -- jitter spreads retries; nothing depends on it being unpredictable.
 	var se *statusError
 	if errors.As(err, &se) && se.retryAfter > wait {
 		wait = min(se.retryAfter, maxRetryAfter)
