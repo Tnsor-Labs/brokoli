@@ -96,6 +96,17 @@ type RunCancelRequester interface {
 	RequestRunCancel(runID string) (requested bool, err error)
 }
 
+// RunCancelRequestReader is the read half of RunCancelRequester, separate so
+// that a store implementing that interface keeps satisfying it. A running
+// run polls the flag every wave and every few seconds; this reads one
+// column where GetRun also loads every node run. Callers fall back to
+// GetRun when a store does not implement it.
+type RunCancelRequestReader interface {
+	// RunCancelRequested reports the durable cancel flag on runID. A
+	// missing run is an error, as GetRun's is.
+	RunCancelRequested(runID string) (bool, error)
+}
+
 // ExecutionAttemptStore provides durable claim/lease operations over
 // models.ExecutionAttempt rows — the outbox/intent record and
 // compare-and-swap claim contract described by Tnsor-Labs/brokoli#7,

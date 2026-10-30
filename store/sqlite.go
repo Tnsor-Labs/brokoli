@@ -1461,6 +1461,14 @@ func (s *SQLiteStore) ClaimPendingRun(runID, pipelineID string, startedAt time.T
 	return n == 1, nil
 }
 
+func (s *SQLiteStore) RunCancelRequested(runID string) (bool, error) {
+	var requested bool
+	if err := s.db.QueryRow(`SELECT cancel_requested FROM runs WHERE id = ?`, runID).Scan(&requested); err != nil {
+		return false, wrapStoreErr("RunCancelRequested", runID, err)
+	}
+	return requested, nil
+}
+
 func (s *SQLiteStore) RequestRunCancel(runID string) (bool, error) {
 	result, err := s.db.Exec(
 		`UPDATE runs SET cancel_requested=1 WHERE id=? AND status IN (?, ?)`,

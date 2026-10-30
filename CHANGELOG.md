@@ -147,6 +147,13 @@ reconstruct from git archaeology.
   from 400,000-900,000 to 6. The order is unchanged; a test checks it
   against the old comparison over values packed where rounding is tight.
 
+- **A running run checks for a cancel without loading its node runs** --
+  @hc12r. Every running run re-reads its durable cancel flag at each wave
+  and every five seconds, and did so with the full run lookup, which also
+  loads every node run. It now reads the flag alone: on SQLite about 30 µs
+  however large the run, where the full lookup took 0.56 ms at 50 node runs
+  and 4.4 ms at 500.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`
