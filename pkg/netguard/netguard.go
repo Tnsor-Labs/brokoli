@@ -401,6 +401,14 @@ func (p Policy) Client(timeout time.Duration) *http.Client {
 			// that accepts the connection and never finishes TLS.
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
+			// A custom DialContext turns off net/http's automatic HTTP/2,
+			// so every request in flight to a host held a TLS connection
+			// of its own: eight concurrent pages, eight handshakes. With
+			// it, a server that offers h2 gets one multiplexed connection;
+			// one that does not is spoken to over HTTP/1.1 as before. The
+			// policy is unaffected: HTTP/2 still opens its connections
+			// through safeDial, and never shares one between hosts.
+			ForceAttemptHTTP2: true,
 			// No Proxy, deliberately: the policy checks the address it
 			// dials, and through a proxy that is the proxy, not the target.
 		}},

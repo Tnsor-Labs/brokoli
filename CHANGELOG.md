@@ -221,6 +221,16 @@ reconstruct from git archaeology.
   from 1.8 to 0.95 ms and from 31,000 allocations to 13. The bytes written
   are unchanged, held to the old encoders by a test over every value kind.
 
+- **Outbound HTTP uses HTTP/2 where the server offers it** -- @hc12r.
+  The outbound client's own dialer, the one that enforces the network
+  policy, had switched off Go's automatic HTTP/2, so REST sources, object
+  stores, BigQuery, notifications and the rest spoke HTTP/1.1 to every
+  server, and each request in flight to a host held a connection of its
+  own. A REST source fetching eight pages at once made eight TLS
+  handshakes; it now makes one and sends the pages over it. Servers that
+  do not offer HTTP/2 are spoken to over HTTP/1.1 as before, and the
+  policy still checks every connection.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`
