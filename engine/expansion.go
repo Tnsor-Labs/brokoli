@@ -791,6 +791,20 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 		return nil, fmt.Errorf("dispatch instance %s remotely: no artifact store configured to read the result back from", instanceKey)
 	}
 
+	// A cancelled run sends no more work. The runner reports a cancel
+	// without waiting for the goroutines dispatching instances, so a page
+	// retry, partition or item can still reach this after it; enqueued,
+	// the job would run on a worker in full and only then find the
+	// attempt settled. The attempt is settled here instead, fenced like
+	// the wait below.
+	if r.ctx.Err() != nil {
+		reason := fmt.Sprintf("pipeline cancelled before remote instance %s was dispatched", instanceKey)
+		if failErr := execAttemptStore.FailAttempt(r.run.ID, nodeID, instanceKey, nodeAttempt, execFencingGen, reason); failErr != nil {
+			r.log(nodeID, models.LogLevelWarning, "failed to settle cancelled remote instance %s: %v", instanceKey, failErr)
+		}
+		return nil, fmt.Errorf("%s", reason)
+	}
+
 	idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, nodeID, instanceKey, nodeAttempt)
 	job := extensions.RunJob{
 		ID: common.NewID(), PipelineID: r.pipe.ID, RunID: r.run.ID, OrgID: r.pipe.OrgID,

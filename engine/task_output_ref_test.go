@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -223,6 +224,7 @@ type attemptOnlyStore struct {
 func dispatchRigRunner(t *testing.T, q *captureQueue) *Runner {
 	t.Helper()
 	return &Runner{
+		ctx:              context.Background(),
 		run:              &models.Run{ID: "run-1"},
 		pipe:             &models.Pipeline{ID: "pipe-1", OrgID: "org-1"},
 		orgID:            "org-1",
