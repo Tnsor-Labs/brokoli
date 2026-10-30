@@ -39,7 +39,7 @@ func csvRecordFor(row common.DataRow, columns []string) []string {
 					record[i] = strconv.FormatFloat(val, 'f', -1, 64)
 				}
 			default:
-				record[i] = fmt.Sprintf("%v", v)
+				record[i] = valueText(v)
 			}
 		}
 	}

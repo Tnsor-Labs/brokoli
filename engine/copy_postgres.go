@@ -347,7 +347,7 @@ func copyEscape(v any) string {
 			s = strconv.FormatFloat(t, 'g', -1, 64)
 		}
 	default:
-		s = fmt.Sprintf("%v", t)
+		s = valueText(t)
 	}
 
 	if !strings.ContainsAny(s, "\\\t\n\r") {

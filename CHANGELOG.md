@@ -18,6 +18,15 @@ reconstruct from git archaeology.
   `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the
   component's import resolved to the wrong file and `npm run build` failed.
 
+- **Nested values are written as JSON** -- @hc12r. A REST source passes
+  nested objects and arrays through as they are, and the Postgres COPY
+  writer, the SQL statement writer, MySQL's bulk load and CSV files
+  rendered them in Go's own syntax: `{"a": 1, "b": [2, 3]}` arrived as
+  `map[a:1 b:[2 3]]`, which nothing can read back. A `jsonb` column refused
+  the write; a text column or a CSV file stored it silently. They are now
+  written as JSON, with `<`, `>` and `&` kept as they are and 64-bit
+  integers exact.
+
 - **The server closes idle connections** -- @hc12r. With no idle timeout
   set, a kept-alive connection that sent nothing more stayed open, with its
   goroutine and file descriptor, until the client closed it. Idle

@@ -346,7 +346,7 @@ func mysqlLoadEscape(v any) string {
 	case string:
 		s = t
 	default:
-		s = fmt.Sprintf("%v", t)
+		s = valueText(t)
 	}
 	if !strings.ContainsAny(s, "\\\t\n\r\x00") {
 		return s
