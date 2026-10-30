@@ -96,6 +96,15 @@ type RunCancelRequester interface {
 	RequestRunCancel(runID string) (requested bool, err error)
 }
 
+// LogBatchAppender is an optional store capability (type-assert): store
+// several log entries in one transaction. A running run's nodes log
+// concurrently, and one transaction per line is most of what a log write
+// costs. Callers fall back to AppendLog per entry without it.
+type LogBatchAppender interface {
+	// AppendLogs stores every entry or none of them, in order.
+	AppendLogs(entries []*models.LogEntry) error
+}
+
 // RunCancelRequestReader is the read half of RunCancelRequester, separate so
 // that a store implementing that interface keeps satisfying it. A running
 // run polls the flag every wave and every few seconds; this reads one
