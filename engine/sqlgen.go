@@ -531,9 +531,9 @@ func (d dialect) formatValue(v interface{}) string {
 	case json.Number:
 		return t.String()
 	default:
-		// Anything else (a struct a driver handed back, say) is rendered
-		// and quoted rather than emitted bare.
-		return d.quoteString(fmt.Sprintf("%v", t))
+		// Anything else (a nested value, a struct a driver handed back) is
+		// rendered and quoted rather than emitted bare.
+		return d.quoteString(valueText(t))
 	}
 }
 
