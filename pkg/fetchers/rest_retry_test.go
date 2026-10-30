@@ -102,10 +102,84 @@ func TestPageRetryWaitCapsTheServersAsk(t *testing.T) {
 		t.Errorf("wait = %v, want the %v cap", got, maxRetryAfter)
 	}
 	short := &statusError{code: http.StatusServiceUnavailable, retryAfter: time.Millisecond}
-	if got, backoff := pageRetryWait("exponential", 3, short), pageRetryDelay("exponential", 3); got != backoff {
-		t.Errorf("wait = %v, want the configured backoff %v when it is longer", got, backoff)
+	if got, backoff := pageRetryWait("exponential", 3, short), pageRetryDelay("exponential", 3); got < backoff/2 || got > backoff {
+		t.Errorf("wait = %v, want the configured backoff %v (jittered) when it is longer", got, backoff)
 	}
 	if msg := (&statusError{code: 404}).Error(); msg != "HTTP request failed: status code "+strconv.Itoa(404) {
 		t.Errorf("message changed: %q", msg)
+	}
+}
+
+func TestPageRetryDelayFollowsTheConfiguredBackoff(t *testing.T) {
+	for _, tc := range []struct {
+		backoff string
+		attempt int
+		want    time.Duration
+	}{
+		{"exponential", 0, 100 * time.Millisecond},
+		{"exponential", 1, 200 * time.Millisecond},
+		{"exponential", 3, 800 * time.Millisecond},
+		{"", 2, 400 * time.Millisecond},
+		{"linear", 0, 100 * time.Millisecond},
+		{"linear", 4, 500 * time.Millisecond},
+		// The UI offers fixed; page retries used to treat it as exponential.
+		{"fixed", 0, 100 * time.Millisecond},
+		{"fixed", 9, 100 * time.Millisecond},
+	} {
+		if got := pageRetryDelay(tc.backoff, tc.attempt); got != tc.want {
+			t.Errorf("pageRetryDelay(%q, %d) = %v, want %v", tc.backoff, tc.attempt, got, tc.want)
+		}
+	}
+}
+
+// A long retry budget must not wait for ever, nor overflow into a
+// negative wait (no wait at all), which doubling from 100ms did at the
+// 37th retry.
+func TestPageRetryDelayIsCapped(t *testing.T) {
+	for _, backoff := range []string{"exponential", "linear"} {
+		prev := time.Duration(0)
+		for attempt := 0; attempt < 5000; attempt++ {
+			got := pageRetryDelay(backoff, attempt)
+			if got < prev || got > maxPageRetryDelay {
+				t.Fatalf("pageRetryDelay(%q, %d) = %v after %v; want non-decreasing and at most %v", backoff, attempt, got, prev, maxPageRetryDelay)
+			}
+			prev = got
+		}
+		if prev != maxPageRetryDelay {
+			t.Errorf("%s backoff settles at %v, want the %v cap", backoff, prev, maxPageRetryDelay)
+		}
+	}
+}
+
+// Pages that fail together must not retry together: every wait falls in
+// the upper half of the backoff, and the waits are spread across it.
+func TestPageRetryWaitIsJittered(t *testing.T) {
+	limited := &statusError{code: http.StatusTooManyRequests}
+	for _, attempt := range []int{0, 3, 40} {
+		delay := pageRetryDelay("exponential", attempt)
+		seen := map[time.Duration]bool{}
+		lowest, highest := delay, time.Duration(0)
+		for range 500 {
+			got := pageRetryWait("exponential", attempt, limited)
+			if got < delay/2 || got > delay {
+				t.Fatalf("attempt %d: wait %v outside [%v, %v]", attempt, got, delay/2, delay)
+			}
+			seen[got] = true
+			lowest, highest = min(lowest, got), max(highest, got)
+		}
+		// 500 uniform draws leave less than a 1e-50 chance of any of these.
+		if len(seen) < 400 || lowest > delay/2+delay/8 || highest < delay-delay/8 {
+			t.Errorf("attempt %d: %d distinct waits in [%v, %v] of [%v, %v]; want them spread across it", attempt, len(seen), lowest, highest, delay/2, delay)
+		}
+	}
+}
+
+// A Retry-After is the server's schedule: kept exactly, not jittered.
+func TestPageRetryWaitKeepsRetryAfterExactly(t *testing.T) {
+	asked := &statusError{code: http.StatusTooManyRequests, retryAfter: 7 * time.Second}
+	for range 50 {
+		if got := pageRetryWait("exponential", 0, asked); got != 7*time.Second {
+			t.Fatalf("wait = %v, want the server's 7s", got)
+		}
 	}
 }

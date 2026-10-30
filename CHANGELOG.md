@@ -115,6 +115,17 @@ reconstruct from git archaeology.
   workspace showed a zero creation date, and run provenance stored its time
   in yet another format. Postgres was not affected.
 
+- **REST page retries spread out, stop at five minutes, and honour fixed
+  backoff** -- @hc12r. A failed page waited exactly 100 ms doubled per
+  attempt, so pages fetched concurrently that failed together (a rate
+  limit, typically) all retried at the same instant and failed together
+  again. The wait is now a random point in the upper half of the backoff.
+  It is also capped at five minutes: with a large `page_max_retries` the
+  doubling never stopped, and from the 37th retry it overflowed into no
+  wait at all. `fixed`, offered in the node inspector, was treated as
+  exponential for page retries and now waits 100 ms every time. A
+  server's `Retry-After` is still kept exactly.
+
 ### Changed
 
 - **Versioned schema migrations** -- @hc12r. The database now records the
