@@ -137,6 +137,16 @@ reconstruct from git archaeology.
   one across awkward values (NaN, infinities, negative zero, integers past
   2^53, float32, nil, dates).
 
+- **Sorting is 1.5-3.6x faster** -- @hc12r. A `sort` transform turned
+  every number into a 200-bit `big.Float`, and formatted and test-parsed
+  every value, text included. Numbers now compare as float64 wherever that
+  cannot change the order: float and integer cells, integer text within
+  2^53, and plain decimals of up to 15 significant digits, such as `12.50`
+  from a CSV. A column holding any other number keeps the exact
+  comparison for all of its numbers. On 100,000 rows, allocations fell
+  from 400,000-900,000 to 6. The order is unchanged; a test checks it
+  against the old comparison over values packed where rounding is tight.
+
 - **Dead code removed** -- @hc12r. Eight functions, a type and a field that
   nothing called, found by staticcheck. One was a YAML "sanitizer" that was
   never wired in, and would have been wrong if it were: it stripped `*`, `&`

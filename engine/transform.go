@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"math"
 	"math/big"
 	"sort"
 	"strconv"
@@ -563,12 +564,16 @@ func dropColumns(r TransformRule, ds *common.DataSet) error {
 // rows with equal keys keep their order.
 func sortRows(r TransformRule, ds *common.DataSet) error {
 	keys := make([][]sortKey, len(ds.Rows))
+	flat := make([]sortKey, len(ds.Rows)*len(r.Columns))
 	for i, row := range ds.Rows {
-		k := make([]sortKey, len(r.Columns))
+		k := flat[i*len(r.Columns) : (i+1)*len(r.Columns) : (i+1)*len(r.Columns)]
 		for c, col := range r.Columns {
 			k[c] = sortKeyOf(row[col])
 		}
 		keys[i] = k
+	}
+	for c := range r.Columns {
+		exactWhereNeeded(keys, c)
 	}
 	order := make([]int, len(ds.Rows))
 	for i := range order {
@@ -602,9 +607,14 @@ const (
 )
 
 // sortKey is one value, classified once so a comparison never parses.
+//
+// A number is held as a float64 when that orders it exactly as its
+// decimal form does (see sortKeyOf), and as a big.Float otherwise. Within
+// one column every number uses the same form: see exactWhereNeeded.
 type sortKey struct {
 	class int
-	num   *big.Float
+	f     float64
+	num   *big.Float // nil while f stands for the number
 	text  string
 }
 
@@ -612,17 +622,131 @@ type sortKey struct {
 // integers too large for a float64 to tell apart still compare correctly.
 const sortKeyPrecision = 200
 
+// maxExactInt is the largest magnitude below which every integer is a
+// float64.
+const maxExactInt = 1 << 53
+
+// sortKeyOf classifies v by its %v text, read as a decimal number when it
+// is one. The float64 form is used only where it cannot change an order:
+// a finite float64 (its %v is the shortest decimal that reads back as it,
+// and that rounding preserves order), an integer within 2^53, text that is
+// exactly one of those, and a short plain decimal (see shortDecimal). Anything else that reads as a number keeps the
+// exact big.Float, as every number did before.
 func sortKeyOf(v interface{}) sortKey {
-	if v == nil {
+	switch n := v.(type) {
+	case nil:
 		return sortKey{class: sortClassNull}
+	case string:
+		return textSortKey(n)
+	case float64:
+		if !math.IsInf(n, 0) && !math.IsNaN(n) {
+			return sortKey{class: sortClassNumber, f: n}
+		}
+	case int64:
+		if n > -maxExactInt && n < maxExactInt {
+			return sortKey{class: sortClassNumber, f: float64(n)}
+		}
+	case int:
+		if n > -maxExactInt && n < maxExactInt {
+			return sortKey{class: sortClassNumber, f: float64(n)}
+		}
 	}
-	s := fmt.Sprintf("%v", v)
+	return textSortKey(fmt.Sprintf("%v", v))
+}
+
+func textSortKey(s string) sortKey {
+	if !mayBeNumber(s) {
+		return sortKey{class: sortClassText, text: s}
+	}
+	if shortDecimal(s) {
+		if f, err := strconv.ParseFloat(s, 64); err == nil && (f == 0 || math.Abs(f) >= minNormal) {
+			return sortKey{class: sortClassNumber, f: f}
+		}
+	}
+	if f, err := strconv.ParseFloat(s, 64); err == nil && !math.IsInf(f, 0) && !math.IsNaN(f) &&
+		strconv.FormatFloat(f, 'g', -1, 64) == s {
+		return sortKey{class: sortClassNumber, f: f}
+	}
+	if i, err := strconv.ParseInt(s, 10, 64); err == nil && i > -maxExactInt && i < maxExactInt {
+		return sortKey{class: sortClassNumber, f: float64(i)}
+	}
 	if f, _, err := big.ParseFloat(s, 10, sortKeyPrecision, big.ToNearestEven); err == nil {
 		return sortKey{class: sortClassNumber, num: f}
 	}
 	return sortKey{class: sortClassText, text: s}
 }
 
+// minNormal is the smallest normal float64. Below it precision thins out,
+// and the argument in shortDecimal no longer holds.
+const minNormal = 0x1p-1022
+
+// shortDecimal reports whether s is a plain decimal (sign, digits, at most
+// one point, no exponent) with at most 15 significant digits. Such a value
+// orders exactly as its float64 does, against other such values and
+// against any float64: two different 15-digit decimals never round to the
+// same float64, and a float64's rounding interval is too narrow to hold
+// two of them, so when one rounds to f it is the shortest decimal of f.
+// This is what lets "12.50", which is not the shortest form, skip the
+// big.Float.
+func shortDecimal(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	digits, significant, point := 0, 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '.' && !point:
+			point = true
+		case c >= '0' && c <= '9':
+			digits++
+			if c != '0' || significant > 0 {
+				significant++
+			}
+		default:
+			return false
+		}
+	}
+	return digits > 0 && significant <= 15
+}
+
+// mayBeNumber is false for text that big.ParseFloat would refuse on its
+// first character, so ordinary text skips the parse. A number starts with
+// a digit or a point, after an optional sign; "Inf" with an i.
+func mayBeNumber(s string) bool {
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		s = s[1:]
+	}
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	return c >= '0' && c <= '9' || c == '.' || c == 'i' || c == 'I'
+}
+
+// exactWhereNeeded gives every number in column c the big.Float form when
+// any of them has it, so a comparison never mixes the two forms. A float64
+// key becomes the exact value of its shortest decimal, which is the value
+// it stood for.
+func exactWhereNeeded(keys [][]sortKey, c int) {
+	mixed := false
+	for _, k := range keys {
+		if k[c].class == sortClassNumber && k[c].num != nil {
+			mixed = true
+			break
+		}
+	}
+	if !mixed {
+		return
+	}
+	for _, k := range keys {
+		if k[c].class == sortClassNumber && k[c].num == nil {
+			k[c].num, _, _ = big.ParseFloat(strconv.FormatFloat(k[c].f, 'g', -1, 64), 10, sortKeyPrecision, big.ToNearestEven)
+		}
+	}
+}
+
+// compareSortKeys orders two keys of one column, after exactWhereNeeded
+// has run on it.
 func compareSortKeys(a, b sortKey) int {
 	if a.class != b.class {
 		if a.class < b.class {
@@ -632,7 +756,16 @@ func compareSortKeys(a, b sortKey) int {
 	}
 	switch a.class {
 	case sortClassNumber:
-		return a.num.Cmp(b.num)
+		if a.num != nil {
+			return a.num.Cmp(b.num)
+		}
+		switch {
+		case a.f < b.f:
+			return -1
+		case a.f > b.f:
+			return 1
+		}
+		return 0
 	case sortClassText:
 		return strings.Compare(a.text, b.text)
 	}
