@@ -266,6 +266,24 @@ func TestReadingTheLogAgainRecordsNothingTwice(t *testing.T) {
 	}
 }
 
+// The scan re-reads recent events, which a trigger created after them must
+// not be sent: it was made to hear about what fails from then on.
+func TestATriggerIsNotSentWhatFailedBeforeIt(t *testing.T) {
+	b := newDispatchBed(t)
+	rc := newReceiver(t)
+	b.pipelineWithNodes("orders", models.DefaultWorkspaceID)
+	before := b.runEvent("orders", models.RunEventTerminal, models.RunStatusFailed, "x")
+	id, _ := b.trigger(`{"events":["run.failed"],"url":"` + rc.srv.URL + `","cooldown_seconds":0}`)
+	created := time.Now().UTC().Add(time.Minute) // as if made a minute after that failure
+	if _, err := b.users.db.Exec(`UPDATE agent_triggers SET created_at = ? WHERE id = ?`, created.Format(triggerTimeFormat), id); err != nil {
+		t.Fatal(err)
+	}
+	b.pass()
+	if ds := b.deliveries(id); len(ds) != 0 {
+		t.Fatalf("a failure from before the trigger was delivered: %+v (run %s)", ds, before)
+	}
+}
+
 func TestACooldownReportsAFailingPipelineOnce(t *testing.T) {
 	b := newDispatchBed(t)
 	rc := newReceiver(t)

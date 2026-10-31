@@ -75,3 +75,12 @@ TypeScript-only syntax that would require on-worker transpilation.
 The run detail shows the execution plan and node evidence. The dashboard and
 Lineage view make the same run useful after the first demo: you can see what
 was planned, what ran, and how the output relates to the input.
+
+## A triage agent
+
+[`agents/triage`](agents/triage/README.md) is a reference agent for
+[agent triggers](../docs/agent-triggers.md). When a run fails it asks
+Brokoli why over MCP, asks a model whether the cause is in the pipeline's
+definition, and if it is, validates the fix and proposes it as a change
+request for a person to apply. It runs as a webhook receiver or as a
+scheduled job that reads the agent's feed.

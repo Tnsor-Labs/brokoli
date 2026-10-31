@@ -243,6 +243,13 @@ func (d *triggerDispatcher) match() error {
 			if !t.Watches(event, p.ID) || !sameWorkspace(p.WorkspaceID, t.WorkspaceID) {
 				continue
 			}
+			// The scan re-reads a margin of recent events, so a trigger
+			// created a moment ago would be sent the failures from before it.
+			// A second of slack covers clocks (an event is stamped by the
+			// process that ran the step) and Postgres's microseconds.
+			if ev.CreatedAt.Before(t.CreatedAt.Add(-time.Second)) {
+				continue
+			}
 			del := &TriggerDelivery{ID: newDeliveryID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
 				PipelineID: p.ID, RunID: run.ID, Event: event}
 			if body, err = d.eventBody(del, t, p, run, ev, false); err != nil {

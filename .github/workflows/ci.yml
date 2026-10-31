@@ -76,7 +76,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The race run and the coverage run together take about 19 minutes
+    # (19m39s on #939), so 20 left no room: #940 was cancelled in the
+    # coverage step with every package passing.
+    timeout-minutes: 30
 
     # Several tests are only meaningful against a real server: what a string
     # literal means, how a driver converts a value, whether a collation orders
@@ -184,6 +187,15 @@ jobs:
         run: |
           pip install --quiet pytest
           python -m pytest pkg/codeexec/pywrapper/tests/ -q
+
+      # The reference triage agent (ADR-047): its tests need no server and
+      # no model. With its requirements installed, the one that checks the
+      # request sent to the model provider runs too instead of skipping.
+      - name: Triage agent tests
+        working-directory: examples/agents/triage
+        run: |
+          pip install --quiet -r requirements.txt
+          python -m pytest test_triage.py -q -rs
 
       - name: Set up Go
         uses: actions/setup-go@v5
