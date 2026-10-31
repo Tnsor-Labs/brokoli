@@ -895,30 +895,12 @@ func computeAgg(fn, col string, rows []common.DataRow) interface{} {
 			return 0.0
 		}
 		return sum / float64(count)
-	case "min":
-		var min float64
-		first := true
+	case "min", "max":
+		var acc aggAccumulator
 		for _, row := range rows {
-			if f, ok := toAggFloat(row[col]); ok {
-				if first || f < min {
-					min = f
-					first = false
-				}
-			}
+			acc.add(row[col])
 		}
-		return min
-	case "max":
-		var max float64
-		first := true
-		for _, row := range rows {
-			if f, ok := toAggFloat(row[col]); ok {
-				if first || f > max {
-					max = f
-					first = false
-				}
-			}
-		}
-		return max
+		return acc.result(fn)
 	default:
 		return nil
 	}

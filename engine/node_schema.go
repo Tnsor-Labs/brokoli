@@ -359,12 +359,15 @@ func expressionChild(expr map[string]interface{}, key string) map[string]interfa
 // depends on what the engine's own aggregation actually returns.
 //
 // Group keys are copied from a representative row, so they keep their type.
-// The aggregates do not: computeAgg pushes every value through toAggFloat,
-// so sum, avg, min and max all return a float64 -- min and max included,
-// even over an integer or an exact decimal column. Declaring that they
-// "keep the column's type" would produce DDL the values no longer fit; a
-// decimal column reduced to a float64 has already lost its exactness before
-// any DDL is written, and the destination should say so.
+// sum and avg push every value through toAggFloat and return a float64.
+// min and max do too while every value is a number -- even over an integer
+// or an exact decimal column, so declaring that they "keep the column's
+// type" would produce DDL the values no longer fit. Over a date, a time, a
+// timestamp, or text that holds no number, they return one of the column's
+// own values (see aggAccumulator), so they keep that type; a text column
+// whose values are numbers gives a float64, which text still holds. When the input column's type is
+// unknown, neither is certain, so nothing is declared and the destination
+// infers it from the values.
 //
 // count returns len(rows), a Go int.
 func aggregateSchema(rule TransformRule, in columnSchema) columnSchema {
@@ -389,8 +392,19 @@ func aggregateSchema(rule TransformRule, in columnSchema) columnSchema {
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
 		case "count_distinct":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeInt, Bits: 64, Nullable: false}
-		case "sum", "avg", "min", "max":
+		case "sum", "avg":
 			out[name] = dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}
+		case "min", "max":
+			ct, known := in[af.Column]
+			switch {
+			case !known:
+				// Numbers give a float64, anything else the value itself.
+			case orderedKeepsType(ct.Class):
+				ct.Nullable = true
+				out[name] = ct
+			default:
+				out[name] = dbdialect.ColumnType{Class: dbdialect.TypeFloat, Bits: 64, Nullable: true}
+			}
 		default:
 			// computeAgg returns nil for anything else, and a column of
 			// nils has no type to declare.
@@ -443,4 +457,15 @@ func (s columnSchema) countKnown(columns []string) int {
 		}
 	}
 	return n
+}
+
+// orderedKeepsType reports whether min or max over a column of this class
+// returns one of its values rather than a float64: its values are not
+// numbers, so they are ordered rather than summed.
+func orderedKeepsType(c dbdialect.TypeClass) bool {
+	switch c {
+	case dbdialect.TypeText, dbdialect.TypeDate, dbdialect.TypeTime, dbdialect.TypeTimestamp, dbdialect.TypeTimestampTZ:
+		return true
+	}
+	return false
 }

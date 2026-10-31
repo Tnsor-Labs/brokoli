@@ -610,6 +610,12 @@ func TestStreamAggregation_EquivalentToBatch(t *testing.T) {
 				{Column: "mixed", Function: "min", Alias: "mixed_min"},
 			}},
 		}},
+		{"min-max-of-dates", []TransformRule{
+			{Type: "aggregate", GroupBy: []string{"region"}, AggFields: []AggField{
+				{Column: "ordered_on", Function: "min", Alias: "first_order"},
+				{Column: "ordered_on", Function: "max", Alias: "last_order"},
+			}},
+		}},
 		{"aggregations-compat-alias", []TransformRule{
 			{Type: "aggregate", GroupBy: []string{"region"}, Aggregations: []AggField{
 				{Column: "amount", Function: "sum"},
@@ -639,7 +645,7 @@ func TestStreamAggregation_EquivalentToBatch(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			outputs := newStreamTestOutputs(t)
-			in := &common.DataSet{Columns: []string{"id", "region", "kind", "amount", "mixed"}}
+			in := &common.DataSet{Columns: []string{"id", "region", "kind", "amount", "mixed", "ordered_on"}}
 			for i := 0; i < 3200; i++ {
 				var mixed interface{} = float64(i)
 				if i%3 == 0 {
@@ -648,6 +654,7 @@ func TestStreamAggregation_EquivalentToBatch(t *testing.T) {
 				in.Rows = append(in.Rows, common.DataRow{
 					"id": float64(i), "region": fmt.Sprintf("r%d", i%5),
 					"kind": fmt.Sprintf("k%d", i%2), "amount": float64(i) * 1.25, "mixed": mixed,
+					"ordered_on": time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC).AddDate(0, 0, (i*37)%700).Format("2006-01-02"),
 				})
 			}
 

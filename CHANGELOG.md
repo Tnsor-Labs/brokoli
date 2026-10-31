@@ -11,6 +11,23 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`min` and `max` over dates, timestamps and text returned 0** -- @hc12r.
+  An aggregate folded only values that parse as numbers, so over a column
+  of dates (`2026-10-27`) none counted and every group's `max` was `0`,
+  with no error. When a group has no numeric value, `min` and `max` now
+  order its values as the `sort` rule does and return the value itself:
+  the latest date, the earliest timestamp (instants are compared by time,
+  whatever their zone), the last word. A group with any number keeps the
+  numeric answer it had, values that are not numbers still skipped, and a
+  group with no value at all still gives `0`. The output schema follows:
+  `min`/`max` of a date, time, timestamp or text column keep that type, so
+  a `create_table` sink makes a column that holds them, and over a column
+  of unknown type nothing is declared and the type is inferred from the
+  values. Both the in-memory and the streamed aggregation changed, and the
+  test that holds them to identical results now covers dates.
+
 ## [0.21.0] - 2026-10-31
 
 A performance and correctness release. Row filters, sorting, bulk loads
