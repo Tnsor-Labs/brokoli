@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,11 +75,15 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 	if err != nil {
 		return 0, err
 	}
+	names := make([]string, len(destination))
+	for i, c := range destination {
+		names[i] = c.name
+	}
 	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(cfg.Table, mssql.BulkOptions{
 		KeepNulls:    true,
 		RowsPerBatch: 5000,
 		Tablock:      true,
-	}, destination...))
+	}, names...))
 	if err != nil {
 		return 0, fmt.Errorf("prepare SQL Server bulk copy: %w", err)
 	}
@@ -98,7 +104,11 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 		for _, row := range batch.Rows {
 			values := make([]interface{}, len(columns))
 			for i, column := range columns {
-				values[i] = row[column]
+				v, err := sqlServerBulkValue(row[column], destination[i].typ)
+				if err != nil {
+					return 0, fmt.Errorf("write SQL Server bulk row %d, column %s: %w", affected, column, err)
+				}
+				values[i] = v
 			}
 			if _, err := stmt.ExecContext(ctx, values...); err != nil {
 				return 0, fmt.Errorf("write SQL Server bulk row %d: %w", affected, err)
@@ -116,8 +126,12 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 	return affected, nil
 }
 
+// sqlServerColumn is a destination column as the server declares it: its
+// own name and its type's name.
+type sqlServerColumn struct{ name, typ string }
+
 // sqlServerDestinationColumns returns the destination table's own name for
-// each column, in the order given.
+// each column, in the order given, with the column's type.
 //
 // go-mssqldb matches bulk-copy columns to the table byte for byte. SQL
 // Server resolves a column name under the database's collation, which is
@@ -128,20 +142,172 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 // a case-insensitive database matches regardless of case, a case-sensitive
 // one does not. A column the server does not find keeps its given name, so
 // the driver's own error names it.
-func sqlServerDestinationColumns(ctx context.Context, tx *sql.Tx, table string, columns []string) ([]string, error) {
-	out := make([]string, len(columns))
+func sqlServerDestinationColumns(ctx context.Context, tx *sql.Tx, table string, columns []string) ([]sqlServerColumn, error) {
+	out := make([]sqlServerColumn, len(columns))
 	for i, column := range columns {
-		var name string
+		var c sqlServerColumn
 		err := tx.QueryRowContext(ctx,
-			"SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
-			table, column).Scan(&name)
+			"SELECT c.name, t.name FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.system_type_id "+
+				"WHERE c.object_id = OBJECT_ID(@p1) AND c.name = @p2",
+			table, column).Scan(&c.name, &c.typ)
 		switch {
 		case err == sql.ErrNoRows:
-			name = column
+			c = sqlServerColumn{name: column}
 		case err != nil:
 			return nil, fmt.Errorf("look up column %q of %s: %w", column, table, err)
 		}
-		out[i] = name
+		out[i] = c
 	}
 	return out, nil
+}
+
+// sqlServerBulkValue makes a value fit for its destination column the way
+// the statement path's literal would be made to fit by the server.
+//
+// Two gaps in go-mssqldb's bulk copy make this necessary. It refuses a
+// string for integer, float and bit columns (date, decimal and character
+// columns take one), and a CSV source hands every value over as a string:
+// a table created from that CSV gets INT and FLOAT columns, inferred from
+// the values, so a create-and-load from CSV failed on its first row with
+// "mssql: invalid type for int column: string". And it writes an integer
+// into a narrower column by truncating its bytes, so 300 bound for a
+// tinyint was stored as 44, and a value past an INT's range wrapped,
+// where the statement path's literal is refused with "overflowed".
+//
+// The rules follow SQL Server's own conversion, which the differential
+// test against a live server holds this to. Text: surrounding spaces are
+// ignored and an empty string is 0. Integer columns refuse a value outside
+// their range. A bit takes true or false in any case, or any whole number,
+// non-zero meaning 1. Anything else is refused, as the server refuses it.
+func sqlServerBulkValue(v any, typ string) (any, error) {
+	if lo, hi, ok := sqlServerIntRange(typ); ok {
+		n, isNum, err := sqlServerWholeNumber(v)
+		if err != nil || !isNum {
+			return v, err
+		}
+		if n < lo || n > hi {
+			return nil, fmt.Errorf("%v overflows a %s column", v, typ)
+		}
+		return n, nil
+	}
+	if typ == "bit" {
+		return sqlServerBit(v)
+	}
+	s, ok := v.(string)
+	if !ok {
+		return v, nil
+	}
+	t := strings.TrimSpace(s)
+	switch typ {
+	case "real", "float":
+		if t == "" {
+			return float64(0), nil
+		}
+		f, err := strconv.ParseFloat(t, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("%q is not a number for a %s column", s, typ)
+		}
+		return f, nil
+	}
+	return v, nil
+}
+
+// sqlServerBit reads v as a bit: true or false as text in any case, or
+// any number, non-zero meaning 1. The driver takes only a bool.
+func sqlServerBit(v any) (any, error) {
+	switch t := v.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	case float64:
+		if math.IsNaN(t) {
+			return nil, fmt.Errorf("NaN is not a value for a bit column")
+		}
+		return t != 0, nil
+	case float32:
+		return sqlServerBit(float64(t))
+	}
+	n, isNum, err := sqlServerWholeNumber(v)
+	if err != nil {
+		return nil, fmt.Errorf("%v is not a whole number, true or false for a bit column", v)
+	}
+	if !isNum {
+		return v, nil
+	}
+	return n != 0, nil
+}
+
+// sqlServerIntRange is the range of an integer column type.
+func sqlServerIntRange(typ string) (lo, hi int64, ok bool) {
+	switch typ {
+	case "tinyint":
+		return 0, math.MaxUint8, true
+	case "smallint":
+		return math.MinInt16, math.MaxInt16, true
+	case "int":
+		return math.MinInt32, math.MaxInt32, true
+	case "bigint":
+		return math.MinInt64, math.MaxInt64, true
+	}
+	return 0, 0, false
+}
+
+// sqlServerWholeNumber reads v as the whole number an integer column would
+// store. isNum is false for a value that is not a number or numeric text
+// (a bool, say), which the driver then accepts or refuses on its own. A
+// float is truncated toward zero, as the server converts one.
+func sqlServerWholeNumber(v any) (n int64, isNum bool, err error) {
+	switch t := v.(type) {
+	case string:
+		s := strings.TrimSpace(t)
+		if s == "" {
+			return 0, true, nil
+		}
+		n, err := strconv.ParseInt(s, 10, 64)
+		if err != nil {
+			if ne, ok := err.(*strconv.NumError); ok && ne.Err == strconv.ErrRange {
+				return 0, false, fmt.Errorf("%q overflows a 64-bit integer", t)
+			}
+			return 0, false, fmt.Errorf("%q is not a whole number for an integer column", t)
+		}
+		return n, true, nil
+	case int:
+		return int64(t), true, nil
+	case int8:
+		return int64(t), true, nil
+	case int16:
+		return int64(t), true, nil
+	case int32:
+		return int64(t), true, nil
+	case int64:
+		return t, true, nil
+	case uint8:
+		return int64(t), true, nil
+	case uint16:
+		return int64(t), true, nil
+	case uint32:
+		return int64(t), true, nil
+	case uint:
+		if uint64(t) > math.MaxInt64 {
+			return 0, false, fmt.Errorf("%d overflows a 64-bit integer", t)
+		}
+		return int64(t), true, nil
+	case uint64:
+		if t > math.MaxInt64 {
+			return 0, false, fmt.Errorf("%d overflows a 64-bit integer", t)
+		}
+		return int64(t), true, nil
+	case float32:
+		return sqlServerWholeNumber(float64(t))
+	case float64:
+		if math.IsNaN(t) || t >= 0x1p63 || t < -0x1p63 {
+			return 0, false, fmt.Errorf("%v overflows a 64-bit integer", t)
+		}
+		return int64(t), true, nil
+	}
+	return 0, false, nil
 }
