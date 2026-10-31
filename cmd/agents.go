@@ -56,7 +56,10 @@ func agentsCall(cmd *cobra.Command, method, path string, body, out any) error {
 	if token == "" {
 		token = os.Getenv("BROKOLI_TOKEN")
 	}
-	c := &mcpserver.HTTPCaller{Server: server, Token: token}
+	// Triggers belong to a workspace; commands that take --workspace act
+	// in it, the others in the caller's default.
+	workspace, _ := cmd.Flags().GetString("workspace")
+	c := &mcpserver.HTTPCaller{Server: server, Token: token, Workspace: workspace}
 	status, data, err := c.Do(context.Background(), method, path, body)
 	if err != nil {
 		return err
@@ -257,6 +260,6 @@ func init() {
 	agentsTokenCreateCmd.Flags().Bool("on-behalf", false, "the agent acts on your behalf with this token (you must own it)")
 	_ = agentsTokenCreateCmd.MarkFlagRequired("name")
 	agentsTokenCmd.AddCommand(agentsTokenCreateCmd, agentsTokenListCmd, agentsTokenRevokeCmd)
-	agentsCmd.AddCommand(agentsListCmd, agentsCreateCmd, agentsDisableCmd, agentsTokenCmd)
+	agentsCmd.AddCommand(agentsListCmd, agentsCreateCmd, agentsDisableCmd, agentsTokenCmd, agentsTriggerCmd)
 	rootCmd.AddCommand(agentsCmd)
 }
