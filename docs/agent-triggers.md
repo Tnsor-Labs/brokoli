@@ -155,6 +155,20 @@ A receiver accepts a delivery when any signature matches and the timestamp
 is within five minutes of its clock, which bounds replay. Compute the
 signature over the body **exactly as received**, before parsing it.
 
+With the official library in Python (`pip install standardwebhooks`):
+
+```python
+from standardwebhooks.webhooks import Webhook
+
+# Raises standardwebhooks.webhooks.WebhookVerificationError when the
+# delivery does not verify; returns the parsed body when it does.
+event = Webhook(secret).verify(body, headers)
+```
+
+`headers` maps the header names to their values, and `body` is the raw
+bytes. During a rotation the library accepts the delivery with either
+secret.
+
 Python, standard library only:
 
 ```python
