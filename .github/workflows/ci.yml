@@ -185,6 +185,15 @@ jobs:
           pip install --quiet pytest
           python -m pytest pkg/codeexec/pywrapper/tests/ -q
 
+      # The reference triage agent (ADR-047): its tests need no server and
+      # no model. With its requirements installed, the one that checks the
+      # request sent to the model provider runs too instead of skipping.
+      - name: Triage agent tests
+        working-directory: examples/agents/triage
+        run: |
+          pip install --quiet -r requirements.txt
+          python -m pytest test_triage.py -q -rs
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:

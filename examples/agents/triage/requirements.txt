@@ -1,0 +1,3 @@
+# Only the default model provider (Anthropic) needs this; talking to Brokoli
+# needs nothing beyond the Python standard library.
+anthropic>=2.3,<3

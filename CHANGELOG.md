@@ -57,8 +57,25 @@ reconstruct from git archaeology.
   read, so an event the agent did not get to comes back. Access is
   checked when the agent reads; unread events expire after 7 days. A
   feed trigger has no URL and no signing secret.
+- **A reference triage agent** (`examples/agents/triage`, ADR-047) --
+  @hc12r. One Python file that does the whole loop: it receives signed
+  deliveries (`serve`) or reads the agent's feed (`poll`, with `--once`
+  for a scheduled job), asks Brokoli why the run failed (`explain_run`,
+  `get_pipeline`), asks a model whether the cause is in the pipeline's
+  definition, and if it is, validates the fix and proposes it with a
+  title and a description for the reviewer. Otherwise it reports what it
+  found and proposes nothing. It never applies a change, proposes nothing
+  more while its own proposal for the pipeline waits, and acknowledges a
+  feed event only after triaging it. Claude is the default model provider;
+  any other plugs in as a command that reads the request on stdin.
 
 ### Fixed
+
+- **A new agent trigger was sent failures from before it existed** --
+  @hc12r. The dispatcher re-reads the last two minutes of run events
+  (Postgres can commit them out of order), so a trigger created within
+  two minutes of a failure was delivered that failure. A trigger now hears
+  only about what happens after it is created.
 
 - **`min` and `max` over dates, timestamps and text returned 0** -- @hc12r.
   An aggregate folded only values that parse as numbers, so over a column

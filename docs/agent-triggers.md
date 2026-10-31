@@ -10,6 +10,11 @@ MCP tools and permission checks as when a person starts it, with its own
 token: the event never carries a credential, and nothing about what the
 agent may do changes. Agents never apply a change.
 
+To see the whole loop work, start from the reference agent in
+[examples/agents/triage](../examples/agents/triage/README.md): one Python
+file that receives deliveries (or reads the feed), asks a model whether the
+cause is in the pipeline's definition, and proposes the fix.
+
 This is [ADR-047](adr/047-agent-triggers.md). Agent identities are
 [agents.md](agents.md); the MCP tools are [mcp.md](mcp.md); change requests
 are [change-requests.md](change-requests.md).
@@ -308,6 +313,7 @@ may have been seen by someone who should not have it.
 | `url is not allowed by this server's outbound network policy` | The URL resolves to a private, loopback or link-local address. An operator allows internal receivers with `BROKOLI_OUTBOUND_ALLOW_PRIVATE`, `BROKOLI_OUTBOUND_ALLOW_LOOPBACK` or `BROKOLI_OUTBOUND_ALLOW_CIDRS`. |
 | `triggers need the server's encryption key` | The server has no encryption key (`BROKOLI_ENCRYPTION_KEY`, or the key file next to the database), which also protects connection credentials. |
 | `agent ... would not be allowed to act on it` | The agent's role, within its owner's, lacks `pipelines.view` or `runs.view`, or the pipeline is outside the agent's organization or workspace. |
+| A new trigger is not sent a failure from just before it was made | A trigger hears about what fails from the moment it is created. Redeliver nothing; to try it, send a test event or fail the pipeline again. |
 | No deliveries at all | No replica runs a scheduler (`--mode all` or `--mode scheduler`); or the failures are within the cooldown of one already delivered; or the run event was not recorded (the run's log then has an `append run event` warning). |
 | A delivery is `skipped` | Its reason says why; fix that and redeliver it. |
 | Signatures do not verify | The body was parsed and re-serialized before verifying, the receiver uses an old secret after a rotation's 24 hours, or its clock is more than five minutes off. |
