@@ -11,6 +11,27 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Agent triggers: subscribe an agent to run events** (ADR-047) -- @hc12r.
+  A trigger names an agent, the events it wants (`run.failed`, which
+  includes runs a quality check or contract gate stopped, and
+  `run.blocked`), one pipeline or every pipeline in the workspace, the URL
+  deliveries go to, and a cooldown (30 minutes by default) so a pipeline
+  that keeps failing is reported once. Whoever may manage the agent (its
+  owner, or `settings.manage_users`) manages its triggers:
+  `/api/agents/{id}/triggers` and `brokoli agents trigger
+  list|create|update|delete|rotate-secret`. Each trigger has a Standard
+  Webhooks signing secret, shown once and stored encrypted with the key
+  that protects connection credentials; rotating it keeps the old one
+  signing for 24 hours. A trigger is refused when the agent could not see
+  what it would be told about: its role, within its owner's permissions,
+  must grant `pipelines.view` and `runs.view`, the pipeline must be in
+  the trigger's workspace and organization, and a distribution's identity
+  rules apply as they do to the agent's own requests. The URL must be
+  allowed by the outbound network policy and carry no credentials.
+  Delivering the events arrives with the dispatcher, in the next change.
+
 ### Fixed
 
 - **`min` and `max` over dates, timestamps and text returned 0** -- @hc12r.

@@ -147,8 +147,19 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 			}
 			writeJSON(w, http.StatusOK, pc.requestPermissions(req, mapClaims))
 		})
-		// Agent identities (ADR-046 phase 2).
+		// Agent identities (ADR-046 phase 2), and the triggers that start
+		// their work (ADR-047). Trigger secrets are sealed with the key
+		// that protects connection credentials.
 		registerAgentRoutes(r, userStore, pc)
+		var triggerKey *crypto.Config
+		if len(cryptoCfg) > 0 {
+			triggerKey = cryptoCfg[0]
+		}
+		if ts, err := NewTriggerStore(userStore.db, triggerKey); err != nil {
+			log.Printf("agent triggers unavailable: %v", err)
+		} else {
+			registerAgentTriggerRoutes(r, userStore, pc, ts)
+		}
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))
 		r.Get("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {
