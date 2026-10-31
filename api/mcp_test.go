@@ -166,8 +166,10 @@ func toolNames(t *testing.T, cs *mcp.ClientSession) []string {
 	for _, tl := range res.Tools { // listed in name order
 		names = append(names, tl.Name)
 		// Proposing, running and cancelling act (ADR-046: marked so a
-		// client asks the person first); everything else only reads.
-		acts := tl.Name == "propose_change" || tl.Name == "trigger_run" || tl.Name == "cancel_run"
+		// client asks the person first); reading the trigger feed
+		// acknowledges what was read (ADR-047), which changes the agent's
+		// own queue and nothing else; everything else only reads.
+		acts := tl.Name == "propose_change" || tl.Name == "trigger_run" || tl.Name == "cancel_run" || tl.Name == "next_events"
 		if tl.Annotations == nil || tl.Annotations.ReadOnlyHint == acts {
 			t.Errorf("%s is marked read only: %v", tl.Name, tl.Annotations != nil && tl.Annotations.ReadOnlyHint)
 		}
@@ -189,7 +191,7 @@ func TestMCPServesTheRuntimeToAgentsThroughTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	want := "cancel_run dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs propose_change trigger_run validate_pipeline"
+	want := "cancel_run dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change trigger_run validate_pipeline"
 	if got := toolNames(t, cs); strings.Join(got, " ") != want {
 		t.Fatalf("tools = %v", got)
 	}
@@ -267,7 +269,7 @@ func TestMCPServesTheRuntimeToAgentsThroughTheAPI(t *testing.T) {
 func TestMCPListsOnlyTheToolsTheCallerMayUse(t *testing.T) {
 	url, tokens, _ := mcpBed(t)
 	for who, want := range map[string]string{
-		"vic": "explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs validate_pipeline",
+		"vic": "explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events validate_pipeline",
 		"cat": "get_lineage get_pipeline list_change_requests list_pipelines validate_pipeline",
 	} {
 		cs, err := mcpSession(t, url, tokens[who])

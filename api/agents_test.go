@@ -368,7 +368,7 @@ func TestAnAgentOverMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	if got := strings.Join(toolNames(t, cs), " "); got != "dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs propose_change trigger_run validate_pipeline" {
+	if got := strings.Join(toolNames(t, cs), " "); got != "dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change trigger_run validate_pipeline" {
 		t.Fatalf("tools = %s", got)
 	}
 	init := cs.InitializeResult()

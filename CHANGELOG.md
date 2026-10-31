@@ -41,6 +41,22 @@ reconstruct from git archaeology.
   keeps a delivery log (`brokoli agents trigger deliveries`, kept 30
   days) and can redeliver. Set `BROKOLI_PUBLIC_URL` for events to carry
   links to the MCP endpoint and the run. See `docs/agent-triggers.md`.
+- **Agent triggers: `run.recovered` and test events** (ADR-047 phase 2)
+  -- @hc12r. `run.recovered` is delivered when a run succeeds after the
+  pipeline's previous finished run failed, so an agent learns that the fix
+  it proposed, once applied, worked. `brokoli agents trigger test` (`POST
+  .../triggers/{id}/test`) delivers a `run.failed` marked `"test": true`
+  to check a receiver. The cooldown is now per event type, so a delivered
+  failure does not hide the recovery after it, and test events do not
+  count toward it.
+- **Agent triggers: a feed for agents without a URL** (ADR-047 phase 2)
+  -- @hc12r. A trigger with `"delivery": "feed"` (`brokoli agents trigger
+  create --feed`) keeps its events for the agent, which reads them with
+  its own token: `GET /api/agents/me/events?after=<cursor>`, or the new
+  `next_events` MCP tool. Passing the cursor back acknowledges what was
+  read, so an event the agent did not get to comes back. Access is
+  checked when the agent reads; unread events expire after 7 days. A
+  feed trigger has no URL and no signing secret.
 
 ### Fixed
 

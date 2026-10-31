@@ -21,10 +21,11 @@ are [change-requests.md](change-requests.md).
 | **Agent** | the agent identity that is told |
 | **Workspace** | the workspace the trigger belongs to; it sees only that workspace's pipelines |
 | **Scope** | one pipeline, or every pipeline in the workspace the agent may see |
-| **Events** | `run.failed`, `run.blocked` (below) |
-| **URL** | where deliveries are sent: `http` or `https`, allowed by the server's outbound network policy, with no credentials in it |
-| **Cooldown** | after a delivery about a pipeline, how long the trigger stays quiet about that pipeline (default 30 minutes; 0 to 7 days) |
-| **Signing secret** | a Standard Webhooks secret (`whsec_...`), shown once, when the trigger is made |
+| **Events** | `run.failed`, `run.blocked`, `run.recovered` (below) |
+| **Delivery** | `webhook`: posted to the URL and signed; or `feed`: kept for the agent, which reads it with its own token (below) |
+| **URL** | for a webhook, where deliveries are sent: `http` or `https`, allowed by the server's outbound network policy, with no credentials in it. A feed has none |
+| **Cooldown** | after delivering an event about a pipeline, how long the trigger stays quiet about the same event for that pipeline (default 30 minutes; 0 to 7 days). It is per event type, so a delivered failure does not hide the recovery after it; test events do not count |
+| **Signing secret** | for a webhook, a Standard Webhooks secret (`whsec_...`), shown once, when the trigger is made. A feed has none: nothing it delivers is signed |
 
 Whoever may manage the agent manages its triggers: the agent's **owner**,
 or someone with `settings.manage_users`. An agent's own token cannot
@@ -43,6 +44,7 @@ its access stops its triggers without anyone editing them.
 |---|---|---|
 | `run.failed` | a run ends failed. A quality check or contract gate that blocks the data ends the run this way too: the event names each failed step and its type, so `quality_check` or `contract_gate` means data was stopped, not that code broke. It also covers a run that startup recovery could not bring back. | `explain_run` |
 | `run.blocked` | a run did not start because its dependencies were not satisfied | `get_lineage` |
+| `run.recovered` | a run succeeds after the pipeline's previous finished run failed (runs that were blocked or cancelled, or are still going, are passed over). It is how an agent learns that a fix it proposed, once applied, worked. | `list_runs` |
 
 A successful run, a cancelled run and a run still in progress are not
 events here.
@@ -88,6 +90,48 @@ Over the API, `POST /api/agents/{agent-id}/triggers`:
 The answer is `201` with `trigger` and `secret`. Every later read of the
 trigger leaves the secret out.
 
+## For an agent without a URL: the feed
+
+An agent on a laptop, in a CI job or behind a NAT cannot receive a
+webhook. Give its trigger the feed instead, and the agent asks for its
+events:
+
+```bash
+brokoli agents trigger create triage-bot --feed --events run.failed,run.recovered
+```
+
+Over the API, `"delivery": "feed"` and no `url`. A feed trigger has no
+signing secret and needs no encryption key on the server.
+
+The agent reads with **its own token** (`bka_...`), not a person's:
+
+```
+GET /api/agents/me/events?after=<cursor>&limit=50
+Authorization: Bearer bka_...
+```
+
+```json
+{
+  "events": [ { "type": "run.failed", "id": "dlv_...", "pipeline": { ... }, "run": { ... }, "next": { ... } } ],
+  "cursor": "MjAyNi0xMC0zMVQwMzoxMjowOS4..."
+}
+```
+
+- Each event is exactly what a webhook would have posted.
+- **Pass back the cursor to acknowledge.** Reading with `after=<cursor>`
+  marks every event up to it as delivered and answers what came after.
+  An event the agent did not get to, because it stopped or crashed, comes
+  back on the next read. Read, handle, then read again with the cursor.
+- `limit` is 50 by default and at most 200.
+- Access is checked when the agent reads, as a webhook's is before it is
+  sent: an event about a pipeline the agent may no longer see is skipped,
+  not answered.
+- Unread events are kept 7 days, then marked **expired**.
+- Over MCP, the `next_events` tool does the same: call it, handle the
+  events, then call it again with the `cursor` it answered.
+- Only an agent has a feed; a person's token is refused. A person sees a
+  trigger's events in its delivery log, like any other trigger's.
+
 ## Manage them
 
 | CLI | API |
@@ -98,6 +142,7 @@ trigger leaves the secret out.
 | `brokoli agents trigger rotate-secret <agent> <trigger>` | `POST /api/agents/{id}/triggers/{trigger}/secret` |
 | `brokoli agents trigger deliveries <agent> <trigger>` | `GET /api/agents/{id}/triggers/{trigger}/deliveries` |
 | `brokoli agents trigger redeliver <agent> <trigger> <delivery>` | `POST /api/agents/{id}/triggers/{trigger}/deliveries/{delivery}/redeliver` |
+| `brokoli agents trigger test <agent> <trigger>` | `POST /api/agents/{id}/triggers/{trigger}/test` |
 
 Every change is recorded in the audit log.
 
@@ -232,6 +277,22 @@ brokoli agents trigger deliveries triage-bot 975e1f20...
 # dlv_8c1d...   run.failed  01a1...   2026-10-31 03:12  delivered  1         200
 # dlv_51ab...   run.failed  01a0...   2026-10-30 22:40  pending    2         503   next try 22:44:10 (answered 503)
 ```
+
+## Send a test event
+
+To wire up a receiver without waiting for a real failure:
+
+```bash
+brokoli agents trigger test triage-bot 975e1f20...
+# Queued test delivery dlv_4b2e... about pipeline orders_daily; it is sent within a few seconds.
+```
+
+It is a `run.failed` about the trigger's pipeline, or the first pipeline in
+its workspace the agent may see, with `"test": true` and a run id starting
+`test-`. It is signed, retried and logged like any other delivery, it is
+not held back by the cooldown, and it does not count toward it: a real
+failure right after a test is still delivered. Over the API, `POST
+/api/agents/{id}/triggers/{trigger}/test`.
 
 ## Rotate the secret
 

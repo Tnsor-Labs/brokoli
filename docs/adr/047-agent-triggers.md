@@ -68,10 +68,13 @@ A trigger belongs to a workspace and names:
 - **its scope**: one pipeline, or every pipeline in the workspace;
 - **the events** it wants (section 2);
 - **how it is delivered**: a webhook URL, or the pull feed;
-- **a cooldown** (default 30 minutes) per pipeline: after a delivery, the
-  same trigger does not fire again for the same pipeline until it passes.
-  A pipeline failing every five minutes produces one delivery, not twelve
-  an hour; the run page still shows every failure.
+- **a cooldown** (default 30 minutes) per pipeline and event type: after a
+  delivery, the same trigger does not deliver the same event about the
+  same pipeline again until it passes. A pipeline failing every five
+  minutes produces one delivery, not twelve an hour; the run page still
+  shows every failure. (Amended in phase 2: the cooldown was per pipeline,
+  which would have hidden the `run.recovered` after a delivered
+  `run.failed`. Test events do not count toward it.)
 
 Creating or changing a trigger needs permission to manage the agent: its
 owner, or someone who may manage users. A webhook trigger's **signing

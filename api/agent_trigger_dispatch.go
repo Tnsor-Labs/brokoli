@@ -80,8 +80,11 @@ func triggerEventOf(ev models.RunEvent) string {
 // identifiers and redacted context, never a credential: the agent calls
 // back over MCP with the token it already holds.
 type TriggerEvent struct {
-	Type        string          `json:"type"`
-	ID          string          `json:"id"`
+	Type string `json:"type"`
+	ID   string `json:"id"`
+	// Test marks an event someone asked for to try a receiver: no run
+	// happened (ADR-047 section 7).
+	Test        bool            `json:"test,omitempty"`
 	OccurredAt  time.Time       `json:"occurred_at"`
 	WorkspaceID string          `json:"workspace_id"`
 	Agent       string          `json:"agent"`
@@ -180,6 +183,9 @@ func (d *triggerDispatcher) loop(ctx context.Context, every time.Duration) {
 		}
 		d.send(ctx)
 		if now := d.now(); now.Sub(lastPrune) > time.Hour {
+			if err := d.ts.ExpireFeed(now.Add(-feedRetained)); err != nil {
+				log.Printf("agent triggers: expire feed: %v", err)
+			}
 			if err := d.ts.PruneDeliveries(now.Add(-deliveryRetained)); err != nil {
 				log.Printf("agent triggers: prune: %v", err)
 			}
@@ -209,11 +215,18 @@ func (d *triggerDispatcher) match() error {
 			highest = ev.ID
 		}
 		event := triggerEventOf(ev)
+		if event == "" && wantsRecovered(triggers) && ev.NodeID == "" &&
+			ev.EventType == models.RunEventTerminal && ev.Payload.Status == models.RunStatusSuccess {
+			event = TriggerEventRunRecovered
+		}
 		if event == "" || len(triggers) == 0 {
 			continue
 		}
 		run, err := d.s.GetRun(ev.RunID)
 		if err != nil {
+			continue
+		}
+		if event == TriggerEventRunRecovered && !d.followsAFailure(run) {
 			continue
 		}
 		pipelineID := ev.Payload.PipelineID
@@ -230,9 +243,9 @@ func (d *triggerDispatcher) match() error {
 			if !t.Watches(event, p.ID) || !sameWorkspace(p.WorkspaceID, t.WorkspaceID) {
 				continue
 			}
-			del := &TriggerDelivery{ID: "dlv_" + generateID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
+			del := &TriggerDelivery{ID: newDeliveryID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
 				PipelineID: p.ID, RunID: run.ID, Event: event}
-			if body, err = d.eventBody(del, t, p, run, ev); err != nil {
+			if body, err = d.eventBody(del, t, p, run, ev, false); err != nil {
 				return err
 			}
 			if _, err := d.ts.Enqueue(del, string(body), time.Duration(t.CooldownSeconds)*time.Second, now); err != nil {
@@ -245,20 +258,23 @@ func (d *triggerDispatcher) match() error {
 
 // eventBody is the delivery's body, fixed when the event is matched so
 // every retry sends the same bytes.
-func (d *triggerDispatcher) eventBody(del *TriggerDelivery, t *AgentTrigger, p *models.Pipeline, run *models.Run, ev models.RunEvent) ([]byte, error) {
+func (d *triggerDispatcher) eventBody(del *TriggerDelivery, t *AgentTrigger, p *models.Pipeline, run *models.Run, ev models.RunEvent, test bool) ([]byte, error) {
 	agentName := t.AgentID
 	if a, err := d.users.GetAgent(t.AgentID); err == nil {
 		agentName = a.Name
 	}
 	e := TriggerEvent{
-		Type: del.Event, ID: del.ID, OccurredAt: ev.CreatedAt.UTC(), WorkspaceID: t.WorkspaceID, Agent: agentName,
+		Type: del.Event, ID: del.ID, Test: test, OccurredAt: ev.CreatedAt.UTC(), WorkspaceID: t.WorkspaceID, Agent: agentName,
 		Pipeline: TriggerPipeline{ID: p.ID, Name: p.Name},
 		Run: TriggerRun{ID: run.ID, Status: string(run.Status),
 			Error: mcpserver.Clip(mcpserver.RedactText(run.Error), mcpserver.MaxText)},
 		Next: TriggerNext{SuggestedTool: "explain_run"},
 	}
-	if del.Event == TriggerEventRunBlocked {
+	switch del.Event {
+	case TriggerEventRunBlocked:
 		e.Next.SuggestedTool = "get_lineage"
+	case TriggerEventRunRecovered:
+		e.Next.SuggestedTool = "list_runs"
 	}
 	if e.Run.Status == "" {
 		e.Run.Status = string(ev.Payload.Status)
@@ -287,6 +303,47 @@ func (d *triggerDispatcher) eventBody(del *TriggerDelivery, t *AgentTrigger, p *
 		e.Next.RunURL = d.publicURL + "/#/pipelines/" + p.ID + "/runs?run=" + run.ID
 	}
 	return json.Marshal(e)
+}
+
+// wantsRecovered reports whether any trigger subscribes to run.recovered,
+// so a success is looked into only when someone would be told.
+func wantsRecovered(triggers []AgentTrigger) bool {
+	for i := range triggers {
+		for _, e := range triggers[i].Events {
+			if e == TriggerEventRunRecovered {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// followsAFailure reports whether the run before run, of the same
+// pipeline, failed: the success then means the pipeline recovered. Runs
+// that have not finished, and runs that were blocked or cancelled, are
+// passed over: they say nothing about whether the pipeline works.
+func (d *triggerDispatcher) followsAFailure(run *models.Run) bool {
+	runs, err := d.s.ListRunsByPipeline(run.PipelineID, 20)
+	if err != nil {
+		return false
+	}
+	seen := false
+	for _, r := range runs {
+		if r.ID == run.ID {
+			seen = true
+			continue
+		}
+		if !seen {
+			continue
+		}
+		switch r.Status {
+		case models.RunStatusFailed:
+			return true
+		case models.RunStatusSuccess:
+			return false
+		}
+	}
+	return false
 }
 
 // send posts every due delivery.
