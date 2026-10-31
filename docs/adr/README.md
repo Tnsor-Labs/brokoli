@@ -114,7 +114,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-044](./044-composable-runtime-and-feature-distribution.md) | Composable runtime and feature distribution | Proposed |
 | [ADR-045](./045-optional-native-worker-capabilities.md) | Optional native worker capabilities | Proposed |
 | [ADR-046](./046-agents-mcp-server-and-agent-identities.md) | Agents as users of the runtime: an MCP server, agent identities and change requests | Accepted |
-| [ADR-047](./047-agent-triggers.md) | Agent triggers: events that start an agent's work | Proposed |
+| [ADR-047](./047-agent-triggers.md) | Agent triggers: events that start an agent's work | Accepted |
 
 ## How to add a new ADR
 

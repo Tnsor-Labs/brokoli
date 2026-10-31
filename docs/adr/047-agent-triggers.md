@@ -1,6 +1,6 @@
 # ADR-047: Agent triggers: events that start an agent's work
 
-**Status:** proposed
+**Status:** accepted (approved by the product owner, 2026-10-31)
 **Date:** 2026-10-31
 
 ## Context
