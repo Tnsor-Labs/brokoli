@@ -76,7 +76,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # The race run and the coverage run together take about 19 minutes
+    # (19m39s on #939), so 20 left no room: #940 was cancelled in the
+    # coverage step with every package passing.
+    timeout-minutes: 30
 
     # Several tests are only meaningful against a real server: what a string
     # literal means, how a driver converts a value, whether a collation orders
