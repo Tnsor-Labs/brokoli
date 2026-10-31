@@ -25,6 +25,16 @@ reconstruct from git archaeology.
   and text is converted, both the way SQL Server treats the same value on
   the statement path, held to that by a test against a live server.
 
+- **A database sink that creates its table works on every run, not only
+  the first** -- @hc12r. `create_table` is offered as "create the table
+  if it does not exist", but the table was created with a plain
+  `CREATE TABLE`, so a pipeline succeeded once and then failed on every
+  later run with `relation ... already exists`. Postgres, MySQL,
+  ClickHouse, SQLite, Snowflake and Databricks now use
+  `CREATE TABLE IF NOT EXISTS`, and SQL Server, which has no such clause,
+  checks `OBJECT_ID` first. A failed load still rolls a newly created
+  table back on Postgres.
+
 - **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
   same name as a component apart from case (`queries.ts` and `Queries.tsx`,
   `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the

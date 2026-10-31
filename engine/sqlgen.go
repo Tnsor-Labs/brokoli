@@ -458,6 +458,8 @@ type dialect struct {
 	// ordering assumption smuggled in (ADR-027). A caller with a real
 	// sort key overrides it per node (table_engine).
 	createTableSuffix string
+	// createIfNotExists: see dbdialect.WriteSyntax.CreateIfNotExists.
+	createIfNotExists bool
 }
 
 func getDialect(name string) dialect {
@@ -493,6 +495,7 @@ func getDialect(name string) dialect {
 		terminator: ws.Terminator, boolTrue: ws.BoolTrue, boolFalse: ws.BoolFalse,
 		typeMap: ws.TypeMap, tsLayout: ws.TSLayout, tsUTC: ws.TSUTC,
 		backslashEscapes: ws.BackslashEscapes, createTableSuffix: ws.CreateTableSuffix,
+		createIfNotExists: ws.CreateIfNotExists,
 	}
 }
 
@@ -639,9 +642,27 @@ func (d dialect) formatTime(t time.Time) string {
 	return d.strQuote + t.Format(layout) + d.strQuote
 }
 
+// createTableHead opens a CREATE TABLE that does nothing when the table
+// is already there, which is what create_table promises: "create the table
+// if it does not exist". A plain CREATE TABLE failed every run of a
+// pipeline after its first. SQL Server has no IF NOT EXISTS clause, so the
+// statement is guarded with OBJECT_ID instead; a backend the generator
+// knows nothing about gets the plain form.
+func (d dialect) createTableHead(table string) string {
+	q := d.quoteIdent(table)
+	switch {
+	case d.createIfNotExists:
+		return "CREATE TABLE IF NOT EXISTS " + q
+	case d.name == "sqlserver":
+		return "IF OBJECT_ID(N" + d.quoteString(q) + ", N'U') IS NULL CREATE TABLE " + q
+	default:
+		return "CREATE TABLE " + q
+	}
+}
+
 func (d dialect) createTable(table string, columns []string, types map[string]string) string {
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE %s (\n", d.quoteIdent(table)))
+	sb.WriteString(d.createTableHead(table) + " (\n")
 	for i, col := range columns {
 		sqlType := d.typeMap[types[col]]
 		if sqlType == "" {
