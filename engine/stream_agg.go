@@ -3,6 +3,7 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
@@ -58,9 +59,13 @@ func planTransformRules(rules []TransformRule) (transformStreamPlan, bool) {
 // aggAccumulator holds one aggregation function's running state for one
 // group. Every branch replicates computeAgg (transform.go) exactly,
 // including its edges: count counts ALL rows in the group regardless of
-// the column's value; count_distinct skips nulls; sum/avg/min/max fold only values toAggFloat
-// accepts; min/max over zero accepted values return 0.0 (computeAgg's
-// `first` flag never clears, leaving the zero value).
+// the column's value; count_distinct skips nulls; sum/avg fold only values
+// toAggFloat accepts. min/max fold numbers too, skipping values that are
+// not, as long as the group has at least one number; when none of its
+// non-null values is a number (dates, timestamps, words), they order those
+// values as the sort transform does and return the value itself. Before
+// that, a date column's max was 0: none of its values parsed, so none
+// counted, and 0.0 is still what a group with no value at all returns.
 type aggAccumulator struct {
 	count    int
 	sum      float64
@@ -70,6 +75,12 @@ type aggAccumulator struct {
 	max      float64
 	sawAny   bool
 	distinct map[string]struct{}
+
+	// The ordered min and max over every non-null value, used when none of
+	// them is a number (sawOther and not sawAny).
+	sawOther bool
+	ordMin   interface{}
+	ordMax   interface{}
 }
 
 func (a *aggAccumulator) add(v interface{}) {
@@ -80,18 +91,43 @@ func (a *aggAccumulator) add(v interface{}) {
 		}
 		a.distinct[valueKey(v)] = struct{}{}
 	}
-	if f, ok := toAggFloat(v); ok {
-		a.sum += f
-		a.avgSum += f
-		a.avgCount++
-		if !a.sawAny || f < a.min {
-			a.min = f
-		}
-		if !a.sawAny || f > a.max {
-			a.max = f
-		}
-		a.sawAny = true
+	if v == nil {
+		return
 	}
+	if a.ordMin == nil || compareAggValues(v, a.ordMin) < 0 {
+		a.ordMin = v
+	}
+	if a.ordMax == nil || compareAggValues(v, a.ordMax) > 0 {
+		a.ordMax = v
+	}
+	f, ok := toAggFloat(v)
+	if !ok {
+		a.sawOther = true
+		return
+	}
+	a.sum += f
+	a.avgSum += f
+	a.avgCount++
+	if !a.sawAny || f < a.min {
+		a.min = f
+	}
+	if !a.sawAny || f > a.max {
+		a.max = f
+	}
+	a.sawAny = true
+}
+
+// compareAggValues orders two non-null values for min and max: instants
+// by time, so zones do not matter, and everything else as the sort
+// transform orders it (numbers by value before text, text by bytes, which
+// puts ISO dates in date order).
+func compareAggValues(a, b interface{}) int {
+	if ta, ok := a.(time.Time); ok {
+		if tb, ok := b.(time.Time); ok {
+			return ta.Compare(tb)
+		}
+	}
+	return compareSortKeys(sortKeyOf(a), sortKeyOf(b))
 }
 
 func (a *aggAccumulator) result(fn string) interface{} {
@@ -108,8 +144,14 @@ func (a *aggAccumulator) result(fn string) interface{} {
 		}
 		return a.avgSum / float64(a.avgCount)
 	case "min":
-		return a.min // 0.0 when no accepted values, matching computeAgg
+		if a.sawOther && !a.sawAny {
+			return a.ordMin
+		}
+		return a.min // 0.0 when there is no value at all
 	case "max":
+		if a.sawOther && !a.sawAny {
+			return a.ordMax
+		}
 		return a.max
 	default:
 		return nil
