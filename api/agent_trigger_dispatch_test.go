@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -82,9 +83,10 @@ func (rc *receiver) requests() []received {
 	return append([]received(nil), rc.got...)
 }
 
-type leading bool
+// leading is a leader gate the test flips while the dispatcher reads it.
+type leading struct{ v atomic.Bool }
 
-func (l *leading) IsLeader() bool { return bool(*l) }
+func (l *leading) IsLeader() bool { return l.v.Load() }
 
 // dispatchBed is a trigger bed with a dispatcher on a clock the test moves.
 type dispatchBed struct {
@@ -98,7 +100,8 @@ type dispatchBed struct {
 func newDispatchBed(t *testing.T) *dispatchBed {
 	t.Helper()
 	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
-	b := &dispatchBed{agentBed: newTriggerBed(t), clock: time.Now().UTC(), leader: true}
+	b := &dispatchBed{agentBed: newTriggerBed(t), clock: time.Now().UTC()}
+	b.leader.v.Store(true)
 	b.agentID, _ = b.agent("triage-bot", AgentRole, "eve", "eve", true)
 	b.d = &triggerDispatcher{s: b.s, scan: b.s.(store.RunEventScanner), users: b.users, pc: NewPermissionChecker(b.s),
 		ts: b.triggerStore(), leader: &b.leader, publicURL: "https://brokoli.example.com",
@@ -427,7 +430,7 @@ func TestTheDispatcherWorksOnlyWhileItLeads(t *testing.T) {
 	b.runEvent("orders", models.RunEventTerminal, models.RunStatusFailed, "x")
 	b.d.now = time.Now
 
-	b.leader = false
+	b.leader.v.Store(false)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { b.d.loop(ctx, 10*time.Millisecond); close(done) }()
@@ -435,7 +438,7 @@ func TestTheDispatcherWorksOnlyWhileItLeads(t *testing.T) {
 	if ds := b.deliveries(id); len(ds) != 0 {
 		t.Fatalf("a follower recorded %d deliveries", len(ds))
 	}
-	b.leader = true
+	b.leader.v.Store(true)
 	deadline := time.Now().Add(5 * time.Second)
 	for len(rc.requests()) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
