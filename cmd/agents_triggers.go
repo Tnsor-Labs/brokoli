@@ -44,6 +44,9 @@ func triggersPath(agentID string, rest ...string) string {
 // triggerBody is what the flags that were set say about a trigger.
 func triggerBody(cmd *cobra.Command) (map[string]any, error) {
 	body := map[string]any{}
+	if feed, _ := cmd.Flags().GetBool("feed"); feed {
+		body["delivery"] = "feed"
+	}
 	if cmd.Flags().Changed("events") {
 		events, _ := cmd.Flags().GetStringSlice("events")
 		body["events"] = events
@@ -76,6 +79,13 @@ func triggerBody(cmd *cobra.Command) (map[string]any, error) {
 	return body, nil
 }
 
+func target(t triggerRecord) string {
+	if t.URL == "" {
+		return "(feed)"
+	}
+	return t.URL
+}
+
 func scope(t triggerRecord) string {
 	if t.PipelineID == "" {
 		return "every pipeline"
@@ -103,7 +113,7 @@ var agentsTriggerListCmd = &cobra.Command{
 			if !t.Enabled {
 				state = "disabled"
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, strings.Join(t.Events, ","), scope(t), t.URL,
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n", t.ID, strings.Join(t.Events, ","), scope(t), target(t),
 				time.Duration(t.CooldownSeconds)*time.Second, state)
 		}
 		return tw.Flush()
@@ -114,7 +124,8 @@ var agentsTriggerCreateCmd = &cobra.Command{
 	Use:   "create <agent>",
 	Short: "Make a trigger; its signing secret is printed once",
 	Example: `  brokoli agents trigger create triage-bot --url https://agents.example.com/brokoli --events run.failed
-  brokoli agents trigger create triage-bot --url https://agents.example.com/brokoli --events run.failed,run.blocked --pipeline orders_daily --cooldown 1h`,
+  brokoli agents trigger create triage-bot --url https://agents.example.com/brokoli --events run.failed,run.blocked --pipeline orders_daily --cooldown 1h
+  brokoli agents trigger create triage-bot --feed --events run.failed,run.recovered`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		a, err := resolveAgent(cmd, args[0])
@@ -131,6 +142,11 @@ var agentsTriggerCreateCmd = &cobra.Command{
 		}
 		if err := agentsCall(cmd, http.MethodPost, triggersPath(a.ID), body, &res); err != nil {
 			return err
+		}
+		if res.Secret == "" {
+			fmt.Printf("Trigger %s puts %s about %s in %s's feed.\nThe agent reads it with its own token: GET /api/agents/me/events, or the next_events MCP tool.\n",
+				res.Trigger.ID, strings.Join(res.Trigger.Events, " and "), scope(res.Trigger), a.Name)
+			return nil
 		}
 		fmt.Fprintf(os.Stderr, "Trigger %s delivers %s about %s to %s.\nIts signing secret is shown only now:\n",
 			res.Trigger.ID, strings.Join(res.Trigger.Events, " and "), scope(res.Trigger), res.Trigger.URL)
@@ -305,11 +321,11 @@ func init() {
 		c.Flags().String("pipeline", "", "one pipeline id to watch (default: every pipeline in the workspace)")
 		c.Flags().Duration("cooldown", 30*time.Minute, "after a delivery, how long to stay quiet about the same pipeline")
 	}
+	agentsTriggerCreateCmd.Flags().Bool("feed", false, "put events in the agent's feed, which it reads with its own token, instead of posting them to --url")
 	agentsTriggerCreateCmd.Flags().Bool("disable", false, "make it disabled")
 	agentsTriggerCreateCmd.Flags().Bool("enable", false, "make it enabled (the default)")
 	agentsTriggerUpdateCmd.Flags().Bool("enable", false, "enable it")
 	agentsTriggerUpdateCmd.Flags().Bool("disable", false, "disable it")
-	_ = agentsTriggerCreateCmd.MarkFlagRequired("url")
 	_ = agentsTriggerCreateCmd.MarkFlagRequired("events")
 	agentsTriggerCmd.AddCommand(all...)
 }

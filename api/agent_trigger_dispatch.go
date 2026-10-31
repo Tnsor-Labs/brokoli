@@ -183,6 +183,9 @@ func (d *triggerDispatcher) loop(ctx context.Context, every time.Duration) {
 		}
 		d.send(ctx)
 		if now := d.now(); now.Sub(lastPrune) > time.Hour {
+			if err := d.ts.ExpireFeed(now.Add(-feedRetained)); err != nil {
+				log.Printf("agent triggers: expire feed: %v", err)
+			}
 			if err := d.ts.PruneDeliveries(now.Add(-deliveryRetained)); err != nil {
 				log.Printf("agent triggers: prune: %v", err)
 			}
@@ -240,7 +243,7 @@ func (d *triggerDispatcher) match() error {
 			if !t.Watches(event, p.ID) || !sameWorkspace(p.WorkspaceID, t.WorkspaceID) {
 				continue
 			}
-			del := &TriggerDelivery{ID: "dlv_" + generateID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
+			del := &TriggerDelivery{ID: newDeliveryID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
 				PipelineID: p.ID, RunID: run.ID, Event: event}
 			if body, err = d.eventBody(del, t, p, run, ev, false); err != nil {
 				return err

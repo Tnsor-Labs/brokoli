@@ -2,8 +2,11 @@ package api
 
 import (
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
+	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,13 +24,38 @@ func parseFixedTime(s string) time.Time {
 	return t
 }
 
+// newDeliveryID is a delivery id that sorts in the order deliveries are
+// made: deliveries recorded in one matching pass share a timestamp, and
+// the feed reads by (timestamp, id), so a random id could put a later
+// delivery before a cursor an agent already passed, where it would never
+// be read.
+func newDeliveryID() string {
+	for {
+		last := lastDeliveryNano.Load()
+		next := time.Now().UnixNano()
+		if next <= last {
+			next = last + 1
+		}
+		if lastDeliveryNano.CompareAndSwap(last, next) {
+			return fmt.Sprintf("dlv_%016x%s", next, generateID()[:12])
+		}
+	}
+}
+
+var lastDeliveryNano atomic.Int64
+
 // Delivery states.
 const (
 	DeliveryPending   = "pending"
 	DeliveryDelivered = "delivered"
 	DeliveryFailed    = "failed"
 	DeliverySkipped   = "skipped"
+	// DeliveryExpired is a feed delivery its agent did not read in time.
+	DeliveryExpired = "expired"
 )
+
+// feedRetained is how long a feed delivery waits to be read.
+const feedRetained = 7 * 24 * time.Hour
 
 // ErrDeliveryNotFound is a delivery that does not exist, or is not the
 // trigger's.
@@ -187,10 +215,13 @@ func scanDelivery(row interface{ Scan(...any) error }) (*TriggerDelivery, error)
 	return &d, nil
 }
 
-// Due is what is waiting to be sent at now, oldest first.
+// Due is what is waiting to be sent at now, oldest first. Feed deliveries
+// are never sent: they wait for their agent to read them.
 func (ts *TriggerStore) Due(now time.Time, limit int) ([]TriggerDelivery, error) {
 	rows, err := ts.db.Query(ts.q(`SELECT `+deliveryColumns+` FROM agent_trigger_deliveries
-		WHERE status = ? AND next_attempt_at <= ? ORDER BY next_attempt_at, id LIMIT ?`), DeliveryPending, fixedTime(now), limit)
+		WHERE status = ? AND next_attempt_at <= ?
+		AND trigger_id IN (SELECT id FROM agent_triggers WHERE delivery = ?)
+		ORDER BY next_attempt_at, id LIMIT ?`), DeliveryPending, fixedTime(now), DeliveryWebhook, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -311,4 +342,86 @@ func (ts *TriggerStore) GetByID(id string) (*AgentTrigger, error) {
 		return nil, ErrTriggerNotFound
 	}
 	return t, err
+}
+
+// FeedPosition is where a delivery sits in its agent's feed: deliveries
+// are read in the order they were recorded.
+type FeedPosition struct{ CreatedAt, ID string }
+
+// String is the cursor an agent passes back.
+func (p FeedPosition) String() string {
+	if p.ID == "" {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString([]byte(p.CreatedAt + "|" + p.ID))
+}
+
+// ParseFeedPosition reads a cursor; an empty one is the start of the feed.
+func ParseFeedPosition(cursor string) (FeedPosition, error) {
+	if cursor == "" {
+		return FeedPosition{}, nil
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cursor)
+	if err != nil {
+		return FeedPosition{}, errors.New("not a cursor this server gave out")
+	}
+	created, id, ok := strings.Cut(string(raw), "|")
+	if !ok || id == "" || parseFixedTime(created).IsZero() {
+		return FeedPosition{}, errors.New("not a cursor this server gave out")
+	}
+	return FeedPosition{CreatedAt: created, ID: id}, nil
+}
+
+const feedDeliveries = `FROM agent_trigger_deliveries WHERE agent_id = ? AND status = ?
+	AND trigger_id IN (SELECT id FROM agent_triggers WHERE delivery = ?)`
+
+// FeedAcknowledge marks agentID's waiting feed deliveries up to and
+// including upto as read.
+func (ts *TriggerStore) FeedAcknowledge(agentID string, upto FeedPosition, now time.Time) error {
+	if upto.ID == "" {
+		return nil
+	}
+	_, err := ts.db.Exec(ts.q(`UPDATE agent_trigger_deliveries SET status = ?, attempts = attempts + 1, next_attempt_at = '',
+		finished_at = ? WHERE agent_id = ? AND status = ? AND trigger_id IN (SELECT id FROM agent_triggers WHERE delivery = ?)
+		AND (created_at < ? OR (created_at = ? AND id <= ?))`),
+		DeliveryDelivered, fixedTime(now), agentID, DeliveryPending, DeliveryFeed, upto.CreatedAt, upto.CreatedAt, upto.ID)
+	return err
+}
+
+// FeedPending is agentID's waiting feed deliveries after after, oldest
+// first.
+func (ts *TriggerStore) FeedPending(agentID string, after FeedPosition, limit int) ([]TriggerDelivery, error) {
+	query, args := `SELECT `+deliveryColumns+` `+feedDeliveries, []any{agentID, DeliveryPending, DeliveryFeed}
+	if after.ID != "" {
+		query += ` AND (created_at > ? OR (created_at = ? AND id > ?))`
+		args = append(args, after.CreatedAt, after.CreatedAt, after.ID)
+	}
+	rows, err := ts.db.Query(ts.q(query+` ORDER BY created_at, id LIMIT ?`), append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []TriggerDelivery
+	for rows.Next() {
+		d, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
+}
+
+// Position is where d sits in its feed.
+func (d *TriggerDelivery) Position() FeedPosition {
+	return FeedPosition{CreatedAt: fixedTime(d.CreatedAt), ID: d.ID}
+}
+
+// ExpireFeed marks feed deliveries still unread from before before as
+// expired.
+func (ts *TriggerStore) ExpireFeed(before time.Time) error {
+	_, err := ts.db.Exec(ts.q(`UPDATE agent_trigger_deliveries SET status = ?, reason = ?, next_attempt_at = '', finished_at = ?
+		WHERE status = ? AND created_at < ? AND trigger_id IN (SELECT id FROM agent_triggers WHERE delivery = ?)`),
+		DeliveryExpired, "its agent did not read it within 7 days", fixedTime(time.Now()), DeliveryPending, fixedTime(before), DeliveryFeed)
+	return err
 }

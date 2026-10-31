@@ -47,6 +47,16 @@ const (
 // caller's to see.
 var ErrTriggerNotFound = errors.New("trigger not found")
 
+// ErrNoSecret is a feed trigger asked for a signing secret: nothing it
+// delivers is signed.
+var ErrNoSecret = errors.New("a feed trigger has no signing secret: its agent reads the feed with its own token")
+
+// How a trigger delivers.
+const (
+	DeliveryWebhook = "webhook"
+	DeliveryFeed    = "feed"
+)
+
 // AgentTrigger subscribes an agent to run events in one workspace. The
 // signing secret is never part of it: it is shown once, when it is made.
 type AgentTrigger struct {
@@ -57,8 +67,9 @@ type AgentTrigger struct {
 	// pipeline in the workspace the agent may see.
 	PipelineID string   `json:"pipeline_id,omitempty"`
 	Events     []string `json:"events"`
-	// Delivery is how events reach the agent: "webhook" (a pull feed is
-	// ADR-047 phase 2).
+	// Delivery is how events reach the agent: "webhook", posted to URL and
+	// signed, or "feed", which the agent reads with its own token
+	// (GET /api/agents/me/events) and which has no URL and no secret.
 	Delivery        string     `json:"delivery"`
 	URL             string     `json:"url"`
 	CooldownSeconds int        `json:"cooldown_seconds"`
@@ -148,24 +159,27 @@ func (ts *TriggerStore) seal(secret string) (string, error) {
 	return ts.crypto.Encrypt(secret)
 }
 
-// Create records t with a new signing secret, and returns the secret: the
-// only time it leaves the server.
+// Create records t and returns its signing secret: the only time it
+// leaves the server. A feed trigger has none: its agent reads the feed
+// with its own token, so nothing is signed.
 func (ts *TriggerStore) Create(t *AgentTrigger) (string, error) {
-	secret, err := newTriggerSecret()
-	if err != nil {
-		return "", err
+	if t.Delivery == "" {
+		t.Delivery = DeliveryWebhook
 	}
-	sealed, err := ts.seal(secret)
-	if err != nil {
-		return "", err
+	var secret, sealed string
+	if t.Delivery == DeliveryWebhook {
+		var err error
+		if secret, err = newTriggerSecret(); err != nil {
+			return "", err
+		}
+		if sealed, err = ts.seal(secret); err != nil {
+			return "", err
+		}
 	}
 	events, _ := json.Marshal(t.Events)
 	now := time.Now().UTC()
 	t.ID, t.CreatedAt, t.UpdatedAt = generateID(), now, now
-	if t.Delivery == "" {
-		t.Delivery = "webhook"
-	}
-	_, err = ts.db.Exec(ts.q(`INSERT INTO agent_triggers (id, agent_id, workspace_id, pipeline_id, events, delivery, url, secret,
+	_, err := ts.db.Exec(ts.q(`INSERT INTO agent_triggers (id, agent_id, workspace_id, pipeline_id, events, delivery, url, secret,
 		cooldown_seconds, enabled, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
 		t.ID, t.AgentID, t.WorkspaceID, t.PipelineID, string(events), t.Delivery, t.URL, sealed,
 		t.CooldownSeconds, boolInt(t.Enabled), t.CreatedBy, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
@@ -251,12 +265,16 @@ func (ts *TriggerStore) Delete(agentID, id string) error {
 // RotateSecret gives a trigger a new signing secret and returns it. The
 // old one keeps signing alongside it for previousSecretOverlap.
 func (ts *TriggerStore) RotateSecret(agentID, id string) (string, error) {
-	var current string
-	if err := ts.db.QueryRow(ts.q(`SELECT secret FROM agent_triggers WHERE id = ? AND agent_id = ?`), id, agentID).Scan(&current); err != nil {
+	var current, delivery string
+	if err := ts.db.QueryRow(ts.q(`SELECT secret, delivery FROM agent_triggers WHERE id = ? AND agent_id = ?`), id, agentID).
+		Scan(&current, &delivery); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrTriggerNotFound
 		}
 		return "", err
+	}
+	if delivery != DeliveryWebhook {
+		return "", ErrNoSecret
 	}
 	secret, err := newTriggerSecret()
 	if err != nil {

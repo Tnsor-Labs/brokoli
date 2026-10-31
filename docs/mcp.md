@@ -12,8 +12,8 @@ sees exactly what that account may see. It never sees a credential.
 This is [ADR-046](adr/046-agents-mcp-server-and-agent-identities.md):
 the tools read, validate, and propose changes that a person applies
 ([change-requests.md](change-requests.md)). Agents have accounts of their
-own ([agents.md](agents.md)). Tools that run pipelines come in a later
-phase.
+own ([agents.md](agents.md)). Agents can also preview and run pipelines,
+and read the events their triggers deliver ([agent-triggers.md](agent-triggers.md)).
 
 ## Two ways to connect
 
@@ -151,8 +151,12 @@ The endpoints, for reference:
 | `dry_run_pipeline` | a preview of a saved pipeline: each step's columns and first 5 rows, its error, or why it was not run. Nothing is written and no run is recorded | `pipelines.run` |
 | `trigger_run` | runs a saved pipeline now, with `params` and declared `parameters`; with `wait_seconds` (up to 45) the run's outcome, otherwise its id | `pipelines.run` |
 | `cancel_run` | cancels a run that has not finished | `runs.cancel` |
+| `next_events` | the calling agent's waiting trigger events, oldest first, for triggers that deliver to its feed ([agent-triggers.md](agent-triggers.md)); passing the cursor it answers acknowledges what was read | `runs.view` |
 
-`propose_change`, `trigger_run` and `cancel_run` act; every other tool is
+`propose_change`, `trigger_run` and `cancel_run` act, and `next_events`
+acknowledges the events it read (it changes the agent's own queue and
+nothing else, so it is marked not read only but not destructive); every
+other tool is
 marked read only. `propose_change` changes nothing that runs but records
 a change request; `trigger_run` runs a pipeline, which reads and writes
 what the pipeline does; `cancel_run` stops a run. They are marked so in

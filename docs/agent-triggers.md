@@ -22,9 +22,10 @@ are [change-requests.md](change-requests.md).
 | **Workspace** | the workspace the trigger belongs to; it sees only that workspace's pipelines |
 | **Scope** | one pipeline, or every pipeline in the workspace the agent may see |
 | **Events** | `run.failed`, `run.blocked`, `run.recovered` (below) |
-| **URL** | where deliveries are sent: `http` or `https`, allowed by the server's outbound network policy, with no credentials in it |
+| **Delivery** | `webhook`: posted to the URL and signed; or `feed`: kept for the agent, which reads it with its own token (below) |
+| **URL** | for a webhook, where deliveries are sent: `http` or `https`, allowed by the server's outbound network policy, with no credentials in it. A feed has none |
 | **Cooldown** | after delivering an event about a pipeline, how long the trigger stays quiet about the same event for that pipeline (default 30 minutes; 0 to 7 days). It is per event type, so a delivered failure does not hide the recovery after it; test events do not count |
-| **Signing secret** | a Standard Webhooks secret (`whsec_...`), shown once, when the trigger is made |
+| **Signing secret** | for a webhook, a Standard Webhooks secret (`whsec_...`), shown once, when the trigger is made. A feed has none: nothing it delivers is signed |
 
 Whoever may manage the agent manages its triggers: the agent's **owner**,
 or someone with `settings.manage_users`. An agent's own token cannot
@@ -88,6 +89,48 @@ Over the API, `POST /api/agents/{agent-id}/triggers`:
 
 The answer is `201` with `trigger` and `secret`. Every later read of the
 trigger leaves the secret out.
+
+## For an agent without a URL: the feed
+
+An agent on a laptop, in a CI job or behind a NAT cannot receive a
+webhook. Give its trigger the feed instead, and the agent asks for its
+events:
+
+```bash
+brokoli agents trigger create triage-bot --feed --events run.failed,run.recovered
+```
+
+Over the API, `"delivery": "feed"` and no `url`. A feed trigger has no
+signing secret and needs no encryption key on the server.
+
+The agent reads with **its own token** (`bka_...`), not a person's:
+
+```
+GET /api/agents/me/events?after=<cursor>&limit=50
+Authorization: Bearer bka_...
+```
+
+```json
+{
+  "events": [ { "type": "run.failed", "id": "dlv_...", "pipeline": { ... }, "run": { ... }, "next": { ... } } ],
+  "cursor": "MjAyNi0xMC0zMVQwMzoxMjowOS4..."
+}
+```
+
+- Each event is exactly what a webhook would have posted.
+- **Pass back the cursor to acknowledge.** Reading with `after=<cursor>`
+  marks every event up to it as delivered and answers what came after.
+  An event the agent did not get to, because it stopped or crashed, comes
+  back on the next read. Read, handle, then read again with the cursor.
+- `limit` is 50 by default and at most 200.
+- Access is checked when the agent reads, as a webhook's is before it is
+  sent: an event about a pipeline the agent may no longer see is skipped,
+  not answered.
+- Unread events are kept 7 days, then marked **expired**.
+- Over MCP, the `next_events` tool does the same: call it, handle the
+  events, then call it again with the `cursor` it answered.
+- Only an agent has a feed; a person's token is refused. A person sees a
+  trigger's events in its delivery log, like any other trigger's.
 
 ## Manage them
 
