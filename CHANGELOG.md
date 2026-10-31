@@ -13,14 +13,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
-- **SQL Server bulk loads accept numbers and booleans that arrive as text**
-  -- @hc12r. The bulk-copy path refused a string for an integer, float or
-  bit column ("invalid type for int column: string"), and a CSV source
-  hands every value over as a string, so loading a CSV into SQL Server
-  failed on its first row whenever the column was numeric, including
-  every table `create_table` made from that CSV. Such values are now
-  converted the way SQL Server converts the same text on the statement
-  path, held to that by a test against a live server.
+- **SQL Server bulk loads no longer corrupt out-of-range integers, and
+  accept numbers that arrive as text** -- @hc12r. The bulk-copy path wrote
+  an integer into a narrower column by truncating its bytes: 300 bound for
+  a `tinyint` was stored as 44, and a value past an `int`'s range wrapped,
+  where the statement path refuses it as an overflow. It also refused a
+  string for an integer, float or bit column, and a CSV source hands every
+  value over as a string, so loading a CSV into SQL Server failed on its
+  first row whenever a column was numeric, including every table
+  `create_table` made from that CSV. Out-of-range values are now refused
+  and text is converted, both the way SQL Server treats the same value on
+  the statement path, held to that by a test against a live server.
 
 - **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
   same name as a component apart from case (`queries.ts` and `Queries.tsx`,
