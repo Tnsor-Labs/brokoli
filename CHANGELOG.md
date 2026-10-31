@@ -13,6 +13,15 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **SQL Server bulk loads accept numbers and booleans that arrive as text**
+  -- @hc12r. The bulk-copy path refused a string for an integer, float or
+  bit column ("invalid type for int column: string"), and a CSV source
+  hands every value over as a string, so loading a CSV into SQL Server
+  failed on its first row whenever the column was numeric, including
+  every table `create_table` made from that CSV. Such values are now
+  converted the way SQL Server converts the same text on the statement
+  path, held to that by a test against a live server.
+
 - **The UI builds on macOS and Windows** -- @Fj460. Two logic files had the
   same name as a component apart from case (`queries.ts` and `Queries.tsx`,
   `heatmap.ts` and `Heatmap.tsx`), so on a case-insensitive filesystem the

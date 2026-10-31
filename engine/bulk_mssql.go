@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"io"
+	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -73,11 +75,15 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 	if err != nil {
 		return 0, err
 	}
+	names := make([]string, len(destination))
+	for i, c := range destination {
+		names[i] = c.name
+	}
 	stmt, err := tx.PrepareContext(ctx, mssql.CopyIn(cfg.Table, mssql.BulkOptions{
 		KeepNulls:    true,
 		RowsPerBatch: 5000,
 		Tablock:      true,
-	}, destination...))
+	}, names...))
 	if err != nil {
 		return 0, fmt.Errorf("prepare SQL Server bulk copy: %w", err)
 	}
@@ -98,7 +104,11 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 		for _, row := range batch.Rows {
 			values := make([]interface{}, len(columns))
 			for i, column := range columns {
-				values[i] = row[column]
+				v, err := sqlServerBulkValue(row[column], destination[i].typ)
+				if err != nil {
+					return 0, fmt.Errorf("write SQL Server bulk row %d, column %s: %w", affected, column, err)
+				}
+				values[i] = v
 			}
 			if _, err := stmt.ExecContext(ctx, values...); err != nil {
 				return 0, fmt.Errorf("write SQL Server bulk row %d: %w", affected, err)
@@ -116,8 +126,12 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 	return affected, nil
 }
 
+// sqlServerColumn is a destination column as the server declares it: its
+// own name and its type's name.
+type sqlServerColumn struct{ name, typ string }
+
 // sqlServerDestinationColumns returns the destination table's own name for
-// each column, in the order given.
+// each column, in the order given, with the column's type.
 //
 // go-mssqldb matches bulk-copy columns to the table byte for byte. SQL
 // Server resolves a column name under the database's collation, which is
@@ -128,20 +142,71 @@ func copyBatchesToSQLServer(ctx context.Context, uri string, cfg SQLGenConfig, c
 // a case-insensitive database matches regardless of case, a case-sensitive
 // one does not. A column the server does not find keeps its given name, so
 // the driver's own error names it.
-func sqlServerDestinationColumns(ctx context.Context, tx *sql.Tx, table string, columns []string) ([]string, error) {
-	out := make([]string, len(columns))
+func sqlServerDestinationColumns(ctx context.Context, tx *sql.Tx, table string, columns []string) ([]sqlServerColumn, error) {
+	out := make([]sqlServerColumn, len(columns))
 	for i, column := range columns {
-		var name string
+		var c sqlServerColumn
 		err := tx.QueryRowContext(ctx,
-			"SELECT name FROM sys.columns WHERE object_id = OBJECT_ID(@p1) AND name = @p2",
-			table, column).Scan(&name)
+			"SELECT c.name, t.name FROM sys.columns c JOIN sys.types t ON t.user_type_id = c.system_type_id "+
+				"WHERE c.object_id = OBJECT_ID(@p1) AND c.name = @p2",
+			table, column).Scan(&c.name, &c.typ)
 		switch {
 		case err == sql.ErrNoRows:
-			name = column
+			c = sqlServerColumn{name: column}
 		case err != nil:
 			return nil, fmt.Errorf("look up column %q of %s: %w", column, table, err)
 		}
-		out[i] = name
+		out[i] = c
 	}
 	return out, nil
+}
+
+// sqlServerBulkValue converts a string bound for an integer, float or bit
+// column into the value that column takes, the way the server converts
+// the same string as a literal on the statement path.
+//
+// go-mssqldb's bulk copy refuses a string for those three column kinds
+// (date, decimal and character columns take one), and a CSV source hands
+// every value over as a string. A table created from that CSV gets INT and
+// FLOAT columns, inferred from the values, so a create-and-load from CSV
+// failed on its first row: "mssql: invalid type for int column: string".
+// The rules follow SQL Server's implicit conversion, which the
+// differential test against a live server holds this to: surrounding
+// spaces are ignored, an empty string is 0, a bit takes 1, 0, true or
+// false in any case. Anything else is refused, as the server refuses it.
+func sqlServerBulkValue(v any, typ string) (any, error) {
+	s, ok := v.(string)
+	if !ok {
+		return v, nil
+	}
+	t := strings.TrimSpace(s)
+	switch typ {
+	case "tinyint", "smallint", "int", "bigint":
+		if t == "" {
+			return int64(0), nil
+		}
+		n, err := strconv.ParseInt(t, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%q is not a whole number for a %s column", s, typ)
+		}
+		return n, nil
+	case "real", "float":
+		if t == "" {
+			return float64(0), nil
+		}
+		f, err := strconv.ParseFloat(t, 64)
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+			return nil, fmt.Errorf("%q is not a number for a %s column", s, typ)
+		}
+		return f, nil
+	case "bit":
+		switch strings.ToLower(t) {
+		case "1", "true":
+			return true, nil
+		case "0", "false", "":
+			return false, nil
+		}
+		return nil, fmt.Errorf("%q is not 1, 0, true or false for a bit column", s)
+	}
+	return v, nil
 }
