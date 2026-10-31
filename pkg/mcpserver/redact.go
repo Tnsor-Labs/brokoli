@@ -75,3 +75,15 @@ func isEmpty(v any) bool {
 	}
 	return false
 }
+
+// RedactText removes credentials from text that will leave the server:
+// passwords in URLs, and Bearer and Basic credentials. It is what every
+// MCP result's text goes through, for other places that send run text to
+// an agent (ADR-047's trigger events).
+func RedactText(s string) string { return redactString(s) }
+
+// Clip cuts s to n bytes, saying how much was cut, as MCP results are.
+func Clip(s string, n int) string { return clip(s, n) }
+
+// MaxText is how long a single text MCP returns may be.
+const MaxText = maxText

@@ -22,6 +22,8 @@ import (
 //	PATCH  /api/agents/{id}/triggers/{triggerId}           its events, URL, pipeline, cooldown, enabled
 //	DELETE /api/agents/{id}/triggers/{triggerId}           remove it
 //	POST   /api/agents/{id}/triggers/{triggerId}/secret    a new signing secret; the old one signs too for 24 hours
+//	GET    /api/agents/{id}/triggers/{triggerId}/deliveries                        its newest deliveries, every attempt
+//	POST   /api/agents/{id}/triggers/{triggerId}/deliveries/{deliveryId}/redeliver  send one again, now
 
 type triggersAPI struct {
 	agents *agentsAPI
@@ -36,6 +38,38 @@ func registerAgentTriggerRoutes(r chi.Router, users *UserStore, pc *PermissionCh
 	r.Patch("/api/agents/{id}/triggers/{triggerId}", h.update)
 	r.Delete("/api/agents/{id}/triggers/{triggerId}", h.remove)
 	r.Post("/api/agents/{id}/triggers/{triggerId}/secret", h.rotate)
+	r.Get("/api/agents/{id}/triggers/{triggerId}/deliveries", h.deliveries)
+	r.Post("/api/agents/{id}/triggers/{triggerId}/deliveries/{deliveryId}/redeliver", h.redeliver)
+}
+
+func (h *triggersAPI) deliveries(w http.ResponseWriter, r *http.Request) {
+	_, t, ok := h.trigger(w, r)
+	if !ok {
+		return
+	}
+	out, err := h.ts.Deliveries(t.ID, 50)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not list deliveries")
+		return
+	}
+	if out == nil {
+		out = []TriggerDelivery{}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (h *triggersAPI) redeliver(w http.ResponseWriter, r *http.Request) {
+	a, t, ok := h.trigger(w, r)
+	if !ok {
+		return
+	}
+	id := chi.URLParam(r, "deliveryId")
+	if err := h.ts.Redeliver(t.ID, id, time.Now()); err != nil {
+		writeError(w, http.StatusNotFound, ErrDeliveryNotFound.Error())
+		return
+	}
+	AuditLog(r, "redeliver_trigger_event", "agent", a.ID, nil, map[string]interface{}{"trigger_id": t.ID, "delivery_id": id})
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": DeliveryPending, "note": "Queued; it is sent within a few seconds."})
 }
 
 // triggerInput is a trigger as a request writes it; nil leaves a field

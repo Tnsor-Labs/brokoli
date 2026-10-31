@@ -384,6 +384,19 @@ var serveCmd = &cobra.Command{
 			return err
 		}
 
+		// Agent triggers (ADR-047): run events delivered to agents. The
+		// dispatcher works only while the scheduler leads, so it starts
+		// where a scheduler does; it needs the users and the key, which
+		// exist only from here.
+		if sched != nil {
+			stopTriggers, err := api.StartAgentTriggers(s, userStore, cryptoCfg, sched, os.Getenv("BROKOLI_PUBLIC_URL"))
+			if err != nil {
+				log.Printf("agent triggers unavailable: %v", err)
+			} else {
+				defer stopTriggers()
+			}
+		}
+
 		// Wire variable store and connection resolver into engine
 		eng.VarStore = engine.NewVarStoreAdapter(s, cryptoCfg)
 		secretsChain := secrets.NewDefaultChain(cryptoCfg)
