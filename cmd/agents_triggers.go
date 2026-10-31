@@ -202,8 +202,74 @@ var agentsTriggerRotateCmd = &cobra.Command{
 	},
 }
 
+type deliveryRecord struct {
+	ID         string     `json:"id"`
+	Event      string     `json:"event"`
+	PipelineID string     `json:"pipeline_id"`
+	RunID      string     `json:"run_id"`
+	Status     string     `json:"status"`
+	Attempts   int        `json:"attempts"`
+	LastStatus int        `json:"last_status"`
+	Reason     string     `json:"reason"`
+	LastError  string     `json:"last_error"`
+	CreatedAt  time.Time  `json:"created_at"`
+	Next       *time.Time `json:"next_attempt_at"`
+}
+
+var agentsTriggerDeliveriesCmd = &cobra.Command{
+	Use:   "deliveries <agent> <trigger-id>",
+	Short: "List a trigger's newest deliveries: what was sent, when, and what came back",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := resolveAgent(cmd, args[0])
+		if err != nil {
+			return err
+		}
+		var out []deliveryRecord
+		if err := agentsCall(cmd, http.MethodGet, triggersPath(a.ID, args[1], "deliveries"), nil, &out); err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(tw, "ID\tEVENT\tRUN\tCREATED\tSTATUS\tATTEMPTS\tLAST\tDETAIL")
+		for _, d := range out {
+			detail := d.Reason
+			if detail == "" && d.Status == "pending" && d.Next != nil {
+				detail = "next try " + d.Next.Local().Format("15:04:05")
+				if d.LastError != "" {
+					detail += " (" + d.LastError + ")"
+				}
+			}
+			last := "-"
+			if d.LastStatus != 0 {
+				last = fmt.Sprint(d.LastStatus)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n", d.ID, d.Event, d.RunID, d.CreatedAt.Local().Format("2006-01-02 15:04"),
+				d.Status, d.Attempts, last, detail)
+		}
+		return tw.Flush()
+	},
+}
+
+var agentsTriggerRedeliverCmd = &cobra.Command{
+	Use:   "redeliver <agent> <trigger-id> <delivery-id>",
+	Short: "Send a delivery again, now (it keeps its id, so a receiver can tell)",
+	Args:  cobra.ExactArgs(3),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := resolveAgent(cmd, args[0])
+		if err != nil {
+			return err
+		}
+		if err := agentsCall(cmd, http.MethodPost, triggersPath(a.ID, args[1], "deliveries", args[2], "redeliver"), nil, nil); err != nil {
+			return err
+		}
+		fmt.Println("Queued; it is sent within a few seconds.")
+		return nil
+	},
+}
+
 func init() {
-	all := []*cobra.Command{agentsTriggerListCmd, agentsTriggerCreateCmd, agentsTriggerUpdateCmd, agentsTriggerDeleteCmd, agentsTriggerRotateCmd}
+	all := []*cobra.Command{agentsTriggerListCmd, agentsTriggerCreateCmd, agentsTriggerUpdateCmd, agentsTriggerDeleteCmd,
+		agentsTriggerRotateCmd, agentsTriggerDeliveriesCmd, agentsTriggerRedeliverCmd}
 	for _, c := range all {
 		// A refusal from the server is the answer; the usage text is not.
 		c.SilenceUsage = true
