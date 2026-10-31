@@ -190,6 +190,9 @@ func sqlServerBulkValue(v any, typ string) (any, error) {
 		}
 		return n, nil
 	}
+	if typ == "bit" {
+		return sqlServerBit(v)
+	}
 	s, ok := v.(string)
 	if !ok {
 		return v, nil
@@ -205,20 +208,37 @@ func sqlServerBulkValue(v any, typ string) (any, error) {
 			return nil, fmt.Errorf("%q is not a number for a %s column", s, typ)
 		}
 		return f, nil
-	case "bit":
-		switch strings.ToLower(t) {
-		case "true":
-			return true, nil
-		case "false", "":
-			return false, nil
-		}
-		n, err := strconv.ParseInt(t, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("%q is not a whole number, true or false for a bit column", s)
-		}
-		return n != 0, nil
 	}
 	return v, nil
+}
+
+// sqlServerBit reads v as a bit: true or false as text in any case, or
+// any number, non-zero meaning 1. The driver takes only a bool.
+func sqlServerBit(v any) (any, error) {
+	switch t := v.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true":
+			return true, nil
+		case "false":
+			return false, nil
+		}
+	case float64:
+		if math.IsNaN(t) {
+			return nil, fmt.Errorf("NaN is not a value for a bit column")
+		}
+		return t != 0, nil
+	case float32:
+		return sqlServerBit(float64(t))
+	}
+	n, isNum, err := sqlServerWholeNumber(v)
+	if err != nil {
+		return nil, fmt.Errorf("%v is not a whole number, true or false for a bit column", v)
+	}
+	if !isNum {
+		return v, nil
+	}
+	return n != 0, nil
 }
 
 // sqlServerIntRange is the range of an integer column type.

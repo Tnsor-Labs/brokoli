@@ -67,6 +67,10 @@ func TestSQLServerBulkValueConvertsStringsLikeTheServer(t *testing.T) {
 		{2.9, "int", int64(2)},
 		{1e10, "int", nil},
 		{1e19, "bigint", nil},
+		{int64(300), "bit", true},
+		{int64(0), "bit", false},
+		{0.5, "bit", true},
+		{true, "bit", true},
 	} {
 		got, err := sqlServerBulkValue(tc.in, tc.typ)
 		if tc.want == nil {
