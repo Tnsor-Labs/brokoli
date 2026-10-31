@@ -30,7 +30,17 @@ reconstruct from git archaeology.
   the trigger's workspace and organization, and a distribution's identity
   rules apply as they do to the agent's own requests. The URL must be
   allowed by the outbound network policy and carry no credentials.
-  Delivering the events arrives with the dispatcher, in the next change.
+  Events are delivered by the scheduler's leader, which reads the run
+  event log (so runs on remote workers count), signs each delivery per
+  Standard Webhooks, and retries anything not answered `2xx` within 10
+  seconds for 24 hours. The event carries the run, its failed steps and
+  their types, and its error (redacted as MCP results are), never a
+  credential: the agent calls back over MCP with its own token. Before
+  every delivery the agent's access is checked again, and a delivery to
+  an agent that may no longer see the pipeline is skipped. Each trigger
+  keeps a delivery log (`brokoli agents trigger deliveries`, kept 30
+  days) and can redeliver. Set `BROKOLI_PUBLIC_URL` for events to carry
+  links to the MCP endpoint and the run. See `docs/agent-triggers.md`.
 
 ### Fixed
 

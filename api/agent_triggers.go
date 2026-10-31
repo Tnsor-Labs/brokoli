@@ -113,8 +113,10 @@ func NewTriggerStore(db *sql.DB, c *crypto.Config) (*TriggerStore, error) {
 	)`); err != nil {
 			return fmt.Errorf("create agent_triggers: %w", err)
 		}
-		_, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_agent_triggers_agent ON agent_triggers (agent_id)`)
-		return err
+		if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_agent_triggers_agent ON agent_triggers (agent_id)`); err != nil {
+			return err
+		}
+		return createDeliveryTables(db)
 	}
 	var err error
 	if ts.dialect == "postgres" {
