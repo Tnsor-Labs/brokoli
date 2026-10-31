@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -24,6 +25,7 @@ import (
 //	POST   /api/agents/{id}/triggers/{triggerId}/secret    a new signing secret; the old one signs too for 24 hours
 //	GET    /api/agents/{id}/triggers/{triggerId}/deliveries                        its newest deliveries, every attempt
 //	POST   /api/agents/{id}/triggers/{triggerId}/deliveries/{deliveryId}/redeliver  send one again, now
+//	POST   /api/agents/{id}/triggers/{triggerId}/test                               deliver a test run.failed
 
 type triggersAPI struct {
 	agents *agentsAPI
@@ -40,6 +42,63 @@ func registerAgentTriggerRoutes(r chi.Router, users *UserStore, pc *PermissionCh
 	r.Post("/api/agents/{id}/triggers/{triggerId}/secret", h.rotate)
 	r.Get("/api/agents/{id}/triggers/{triggerId}/deliveries", h.deliveries)
 	r.Post("/api/agents/{id}/triggers/{triggerId}/deliveries/{deliveryId}/redeliver", h.redeliver)
+	r.Post("/api/agents/{id}/triggers/{triggerId}/test", h.test)
+}
+
+// test queues a synthetic run.failed, marked "test", about the trigger's
+// pipeline or the first pipeline in its workspace the agent may see, so a
+// receiver can be wired up without waiting for a real failure. It ignores
+// the cooldown, and goes out like any other delivery.
+func (h *triggersAPI) test(w http.ResponseWriter, r *http.Request) {
+	a, t, ok := h.trigger(w, r)
+	if !ok {
+		return
+	}
+	p, why := h.testPipeline(t)
+	if p == nil {
+		writeError(w, http.StatusConflict, why)
+		return
+	}
+	now := time.Now().UTC()
+	run := &models.Run{ID: "test-" + generateID()[:16], PipelineID: p.ID, Status: models.RunStatusFailed,
+		Error: "This is a test event from Brokoli: no run failed. A real run.failed carries the run's error here."}
+	del := &TriggerDelivery{ID: "dlv_" + generateID(), TriggerID: t.ID, AgentID: t.AgentID, WorkspaceID: t.WorkspaceID,
+		PipelineID: p.ID, RunID: run.ID, Event: TriggerEventRunFailed}
+	d := &triggerDispatcher{s: h.agents.pc.store, users: h.agents.users, publicURL: strings.TrimRight(oauthPublicURL, "/")}
+	body, err := d.eventBody(del, t, p, run, models.RunEvent{CreatedAt: now}, true)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not build the test event")
+		return
+	}
+	if _, err := h.ts.Enqueue(del, string(body), 0, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not queue the test event")
+		return
+	}
+	AuditLog(r, "test_trigger", "agent", a.ID, nil, map[string]interface{}{"trigger_id": t.ID, "delivery_id": del.ID})
+	writeJSON(w, http.StatusAccepted, map[string]string{"delivery_id": del.ID, "pipeline_id": p.ID,
+		"note": "Queued; it is sent within a few seconds. The event carries \"test\": true."})
+}
+
+// testPipeline is the pipeline a test event is about, or why there is none.
+func (h *triggersAPI) testPipeline(t *AgentTrigger) (*models.Pipeline, string) {
+	candidates := []models.Pipeline{}
+	if t.PipelineID != "" {
+		if p, err := h.agents.pc.store.GetPipeline(t.PipelineID); err == nil {
+			candidates = append(candidates, *p)
+		}
+	} else if all, err := h.agents.pc.store.ListPipelines(); err == nil {
+		candidates = all
+	}
+	for i := range candidates {
+		p := &candidates[i]
+		if !sameWorkspace(p.WorkspaceID, t.WorkspaceID) {
+			continue
+		}
+		if ok, _ := h.agents.users.agentMaySeePipeline(h.agents.pc, t.AgentID, t.WorkspaceID, p); ok {
+			return p, ""
+		}
+	}
+	return nil, "there is no pipeline in this workspace the agent may see, so there is nothing to make a test event about"
 }
 
 func (h *triggersAPI) deliveries(w http.ResponseWriter, r *http.Request) {

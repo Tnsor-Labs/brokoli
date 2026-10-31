@@ -136,14 +136,17 @@ func (ts *TriggerStore) SetCursor(id int64) error {
 }
 
 // Enqueue records a delivery unless the trigger already has one for this
-// run and event, or delivered about this pipeline within cooldown. It
-// reports whether it recorded one.
+// run and event, or delivered the same event about this pipeline within
+// cooldown. Test events do not count: a real failure right after someone
+// tested the receiver is still delivered. It reports whether it recorded
+// one.
 func (ts *TriggerStore) Enqueue(d *TriggerDelivery, payload string, cooldown time.Duration, now time.Time) (bool, error) {
 	if cooldown > 0 {
 		var recent int
 		if err := ts.db.QueryRow(ts.q(`SELECT COUNT(*) FROM agent_trigger_deliveries
-			WHERE trigger_id = ? AND pipeline_id = ? AND created_at > ? AND NOT (run_id = ? AND event = ?)`),
-			d.TriggerID, d.PipelineID, fixedTime(now.Add(-cooldown)), d.RunID, d.Event).Scan(&recent); err != nil {
+			WHERE trigger_id = ? AND pipeline_id = ? AND event = ? AND created_at > ? AND run_id <> ?
+			AND run_id NOT LIKE 'test-%'`),
+			d.TriggerID, d.PipelineID, d.Event, fixedTime(now.Add(-cooldown)), d.RunID).Scan(&recent); err != nil {
 			return false, err
 		}
 		if recent > 0 {

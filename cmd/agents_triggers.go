@@ -267,9 +267,31 @@ var agentsTriggerRedeliverCmd = &cobra.Command{
 	},
 }
 
+var agentsTriggerTestCmd = &cobra.Command{
+	Use:   "test <agent> <trigger-id>",
+	Short: "Deliver a test run.failed (marked \"test\": true), to check the receiver",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		a, err := resolveAgent(cmd, args[0])
+		if err != nil {
+			return err
+		}
+		var res struct {
+			DeliveryID string `json:"delivery_id"`
+			PipelineID string `json:"pipeline_id"`
+		}
+		if err := agentsCall(cmd, http.MethodPost, triggersPath(a.ID, args[1], "test"), nil, &res); err != nil {
+			return err
+		}
+		fmt.Printf("Queued test delivery %s about pipeline %s; it is sent within a few seconds.\n", res.DeliveryID, res.PipelineID)
+		fmt.Printf("Check it with: brokoli agents trigger deliveries %s %s\n", args[0], args[1])
+		return nil
+	},
+}
+
 func init() {
 	all := []*cobra.Command{agentsTriggerListCmd, agentsTriggerCreateCmd, agentsTriggerUpdateCmd, agentsTriggerDeleteCmd,
-		agentsTriggerRotateCmd, agentsTriggerDeliveriesCmd, agentsTriggerRedeliverCmd}
+		agentsTriggerRotateCmd, agentsTriggerDeliveriesCmd, agentsTriggerRedeliverCmd, agentsTriggerTestCmd}
 	for _, c := range all {
 		// A refusal from the server is the answer; the usage text is not.
 		c.SilenceUsage = true
@@ -279,7 +301,7 @@ func init() {
 	}
 	for _, c := range []*cobra.Command{agentsTriggerCreateCmd, agentsTriggerUpdateCmd} {
 		c.Flags().String("url", "", "where deliveries are sent (http or https)")
-		c.Flags().StringSlice("events", nil, "run.failed, run.blocked")
+		c.Flags().StringSlice("events", nil, "run.failed, run.blocked, run.recovered")
 		c.Flags().String("pipeline", "", "one pipeline id to watch (default: every pipeline in the workspace)")
 		c.Flags().Duration("cooldown", 30*time.Minute, "after a delivery, how long to stay quiet about the same pipeline")
 	}

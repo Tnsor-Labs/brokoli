@@ -41,6 +41,14 @@ reconstruct from git archaeology.
   keeps a delivery log (`brokoli agents trigger deliveries`, kept 30
   days) and can redeliver. Set `BROKOLI_PUBLIC_URL` for events to carry
   links to the MCP endpoint and the run. See `docs/agent-triggers.md`.
+- **Agent triggers: `run.recovered` and test events** (ADR-047 phase 2)
+  -- @hc12r. `run.recovered` is delivered when a run succeeds after the
+  pipeline's previous finished run failed, so an agent learns that the fix
+  it proposed, once applied, worked. `brokoli agents trigger test` (`POST
+  .../triggers/{id}/test`) delivers a `run.failed` marked `"test": true`
+  to check a receiver. The cooldown is now per event type, so a delivered
+  failure does not hide the recovery after it, and test events do not
+  count toward it.
 
 ### Fixed
 

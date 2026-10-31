@@ -21,15 +21,17 @@ import (
 
 // The events a trigger may subscribe to.
 const (
-	TriggerEventRunFailed  = "run.failed"
-	TriggerEventRunBlocked = "run.blocked"
+	TriggerEventRunFailed    = "run.failed"
+	TriggerEventRunBlocked   = "run.blocked"
+	TriggerEventRunRecovered = "run.recovered"
 )
 
-var triggerEvents = map[string]bool{TriggerEventRunFailed: true, TriggerEventRunBlocked: true}
+var triggerEvents = map[string]bool{TriggerEventRunFailed: true, TriggerEventRunBlocked: true, TriggerEventRunRecovered: true}
 
 const (
-	// defaultTriggerCooldown is how long a trigger stays quiet for a
-	// pipeline after it delivered an event about it (ADR-047 section 1).
+	// defaultTriggerCooldown is how long a trigger stays quiet about a
+	// pipeline after it delivered an event of the same type about it
+	// (ADR-047 section 1): a failure does not hide the recovery after it.
 	defaultTriggerCooldown = 30 * time.Minute
 	maxTriggerCooldown     = 7 * 24 * time.Hour
 	// previousSecretOverlap is how long a rotated-out signing secret keeps
