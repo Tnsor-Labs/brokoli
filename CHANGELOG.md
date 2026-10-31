@@ -11,6 +11,129 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-10-31
+
+A performance and correctness release. Row filters, sorting, bulk loads
+into Postgres and MySQL and run logging are several times faster; REST
+sources retry politely, stop when their run is cancelled and speak HTTP/2;
+and the database now records its schema migrations. It also fixes results
+that were quietly wrong, among them SQL Server bulk loads that stored
+out-of-range integers truncated, and `create_table` sinks that worked only
+on a pipeline's first run.
+
+### Changed
+
+These can change what an existing deployment does.
+
+- **Upgrading from 0.20** -- @hc12r. The first start applies schema
+  migrations and logs each one: the baseline (migration 1) everywhere; on
+  SQLite, migration 2 rewrites stored timestamps at a fixed width and logs
+  how many per column; and the index on run start time (migration 3 on
+  SQLite, 2 on Postgres), during which writes to `runs` wait on Postgres.
+  Later starts apply none, and 0.20 still starts against an upgraded
+  database, so a rollback works. Nested objects and arrays are written as
+  JSON instead of Go's `map[...]` syntax. API request bodies are limited to
+  4 MiB. A REST response is limited to 512 MiB unless the node sets
+  `max_response_bytes`; a 4xx other than 408, 425 and 429 is no longer
+  retried; retry waits are jittered and capped at five minutes, and
+  `fixed` backoff is honoured. SQL Server bulk loads refuse an integer
+  outside its column's range, where they stored it truncated, so a load
+  that wrote wrong numbers now fails and names the row. A `create_table`
+  sink no longer fails when its table exists. A file path that leaves the
+  data directories through a symlink is refused. Outbound HTTP uses HTTP/2
+  where the server offers it. Each is described below.
+
+- **Versioned schema migrations** -- @hc12r. The database now records the
+  migrations applied to it, in a new `schema_migrations` table, and a start
+  applies only the ones it lacks. Until now the whole schema setup ran on
+  every start, with most of its errors ignored. The first start after
+  upgrading runs that setup one last time, as migration 1, and logs
+  `applied schema migration 1 (baseline)`; later starts skip it. An older
+  release still starts against an upgraded database, so a rollback works.
+  The system roles and the built-in templates are still brought up to date
+  on every start.
+
+- **Index on run start time** -- @hc12r. Purge, retention, the run calendar
+  and the dashboard counts filter runs by start time alone, and no index led
+  with it. Measured on SQLite with a million runs, the 365-day calendar went
+  from 4.2 s to 1.2 s. Two indexes that duplicated the leading column of
+  another (`node_runs(run_id)`, `run_events(run_id)`) are dropped, saving a
+  write per row. On Postgres the index is built during the first start after
+  upgrading, and writes to `runs` wait until it is done.
+
+- **Row filters are 6-9x faster** -- @hc12r. A `filter_rows` transform
+  parsed its condition again for every row, and formatted every cell as
+  text before comparing it. The condition is now parsed once, a string cell
+  is compared as it is, and an ordered comparison reads an integer or
+  float cell as a number directly. On 100,000 rows: `amount >= 50` 70 ms to
+  7.5 ms, `status = s1` 37 ms to 6.3 ms, `status in [...]` 64 ms to 8.2 ms,
+  each down from 100,000-400,000 allocations to about 20. Which rows a
+  filter keeps is unchanged; a test checks the new matcher against the old
+  one across awkward values (NaN, infinities, negative zero, integers past
+  2^53, float32, nil, dates).
+
+- **Sorting is 1.5-3.6x faster** -- @hc12r. A `sort` transform turned
+  every number into a 200-bit `big.Float`, and formatted and test-parsed
+  every value, text included. Numbers now compare as float64 wherever that
+  cannot change the order: float and integer cells, integer text within
+  2^53, and plain decimals of up to 15 significant digits, such as `12.50`
+  from a CSV. A column holding any other number keeps the exact
+  comparison for all of its numbers. On 100,000 rows, allocations fell
+  from 400,000-900,000 to 6. The order is unchanged; a test checks it
+  against the old comparison over values packed where rounding is tight.
+
+- **A running run checks for a cancel without loading its node runs** --
+  @hc12r. Every running run re-reads its durable cancel flag at each wave
+  and every five seconds, and did so with the full run lookup, which also
+  loads every node run. It now reads the flag alone: on SQLite about 30 µs
+  however large the run, where the full lookup took 0.56 ms at 50 node runs
+  and 4.4 ms at 500.
+
+- **Creating a table infers column types without parsing every value
+  every way** -- @hc12r. To choose each column's type, every value was
+  formatted as text and tried as an integer, a float, a boolean and five
+  date layouts, each failed parse allocating an error. Typed values are now
+  classified directly, and text is only tried where it can match: a word
+  like `customer-000123` skips every parse. On 100,000 rows a text column
+  went from 181 ms and 2 million allocations to 8 ms and none, typed
+  columns 4-10x faster; every column gets the type it got before.
+
+- **Run logs are written in batches when nodes log at once** -- @hc12r.
+  Every log line was its own database transaction, and on SQLite each
+  commit waits for the disk while holding the lock node updates also need.
+  Lines that arrive while another is being written now wait and are
+  stored together in one transaction. A line is still stored by the time
+  the node's log call returns, and a node's lines keep their order. With 8
+  nodes logging at once a line costs 0.31 ms instead of 1.4 ms; with 32,
+  0.09 ms instead of 1.9 ms. A store without batch writes keeps writing
+  one line at a time.
+
+- **Bulk loads into Postgres and MySQL encode rows 1.9-2.8x faster** --
+  @hc12r. The COPY and `LOAD DATA` writers render each value into the
+  row's line directly instead of building a string per value, and integers,
+  booleans and floats no longer go through `fmt`. The COPY writer also built
+  a new 6 KB escaper for every value that held a tab, newline, carriage
+  return or backslash. Measured on 10,000 mixed rows: COPY went from 2.8 to
+  1.0 ms per thousand rows and from 51,000 allocations to 13, `LOAD DATA`
+  from 1.8 to 0.95 ms and from 31,000 allocations to 13. The bytes written
+  are unchanged, held to the old encoders by a test over every value kind.
+
+- **Outbound HTTP uses HTTP/2 where the server offers it** -- @hc12r.
+  The outbound client's own dialer, the one that enforces the network
+  policy, had switched off Go's automatic HTTP/2, so REST sources, object
+  stores, BigQuery, notifications and the rest spoke HTTP/1.1 to every
+  server, and each request in flight to a host held a connection of its
+  own. A REST source fetching eight pages at once made eight TLS
+  handshakes; it now makes one and sends the pages over it. Servers that
+  do not offer HTTP/2 are spoken to over HTTP/1.1 as before, and the
+  policy still checks every connection.
+
+- **Dead code removed** -- @hc12r. Eight functions, a type and a field that
+  nothing called, found by staticcheck. One was a YAML "sanitizer" that was
+  never wired in, and would have been wrong if it were: it stripped `*`, `&`
+  and `!!` from every string config value, so `SELECT * FROM t` would have
+  lost its `*`. No behaviour changes.
+
 ### Fixed
 
 - **SQL Server bulk loads no longer corrupt out-of-range integers, and
@@ -165,99 +288,6 @@ reconstruct from git archaeology.
   queue: a worker ran it in full, and only then found the run cancelled.
   The dispatcher now checks for a cancel first and settles the attempt as
   failed without sending anything.
-
-### Changed
-
-- **Versioned schema migrations** -- @hc12r. The database now records the
-  migrations applied to it, in a new `schema_migrations` table, and a start
-  applies only the ones it lacks. Until now the whole schema setup ran on
-  every start, with most of its errors ignored. The first start after
-  upgrading runs that setup one last time, as migration 1, and logs
-  `applied schema migration 1 (baseline)`; later starts skip it. An older
-  release still starts against an upgraded database, so a rollback works.
-  The system roles and the built-in templates are still brought up to date
-  on every start.
-
-- **Index on run start time** -- @hc12r. Purge, retention, the run calendar
-  and the dashboard counts filter runs by start time alone, and no index led
-  with it. Measured on SQLite with a million runs, the 365-day calendar went
-  from 4.2 s to 1.2 s. Two indexes that duplicated the leading column of
-  another (`node_runs(run_id)`, `run_events(run_id)`) are dropped, saving a
-  write per row. On Postgres the index is built during the first start after
-  upgrading, and writes to `runs` wait until it is done.
-
-- **Row filters are 6-9x faster** -- @hc12r. A `filter_rows` transform
-  parsed its condition again for every row, and formatted every cell as
-  text before comparing it. The condition is now parsed once, a string cell
-  is compared as it is, and an ordered comparison reads an integer or
-  float cell as a number directly. On 100,000 rows: `amount >= 50` 70 ms to
-  7.5 ms, `status = s1` 37 ms to 6.3 ms, `status in [...]` 64 ms to 8.2 ms,
-  each down from 100,000-400,000 allocations to about 20. Which rows a
-  filter keeps is unchanged; a test checks the new matcher against the old
-  one across awkward values (NaN, infinities, negative zero, integers past
-  2^53, float32, nil, dates).
-
-- **Sorting is 1.5-3.6x faster** -- @hc12r. A `sort` transform turned
-  every number into a 200-bit `big.Float`, and formatted and test-parsed
-  every value, text included. Numbers now compare as float64 wherever that
-  cannot change the order: float and integer cells, integer text within
-  2^53, and plain decimals of up to 15 significant digits, such as `12.50`
-  from a CSV. A column holding any other number keeps the exact
-  comparison for all of its numbers. On 100,000 rows, allocations fell
-  from 400,000-900,000 to 6. The order is unchanged; a test checks it
-  against the old comparison over values packed where rounding is tight.
-
-- **A running run checks for a cancel without loading its node runs** --
-  @hc12r. Every running run re-reads its durable cancel flag at each wave
-  and every five seconds, and did so with the full run lookup, which also
-  loads every node run. It now reads the flag alone: on SQLite about 30 µs
-  however large the run, where the full lookup took 0.56 ms at 50 node runs
-  and 4.4 ms at 500.
-
-- **Creating a table infers column types without parsing every value
-  every way** -- @hc12r. To choose each column's type, every value was
-  formatted as text and tried as an integer, a float, a boolean and five
-  date layouts, each failed parse allocating an error. Typed values are now
-  classified directly, and text is only tried where it can match: a word
-  like `customer-000123` skips every parse. On 100,000 rows a text column
-  went from 181 ms and 2 million allocations to 8 ms and none, typed
-  columns 4-10x faster; every column gets the type it got before.
-
-- **Run logs are written in batches when nodes log at once** -- @hc12r.
-  Every log line was its own database transaction, and on SQLite each
-  commit waits for the disk while holding the lock node updates also need.
-  Lines that arrive while another is being written now wait and are
-  stored together in one transaction. A line is still stored by the time
-  the node's log call returns, and a node's lines keep their order. With 8
-  nodes logging at once a line costs 0.31 ms instead of 1.4 ms; with 32,
-  0.09 ms instead of 1.9 ms. A store without batch writes keeps writing
-  one line at a time.
-
-- **Bulk loads into Postgres and MySQL encode rows 1.9-2.8x faster** --
-  @hc12r. The COPY and `LOAD DATA` writers render each value into the
-  row's line directly instead of building a string per value, and integers,
-  booleans and floats no longer go through `fmt`. The COPY writer also built
-  a new 6 KB escaper for every value that held a tab, newline, carriage
-  return or backslash. Measured on 10,000 mixed rows: COPY went from 2.8 to
-  1.0 ms per thousand rows and from 51,000 allocations to 13, `LOAD DATA`
-  from 1.8 to 0.95 ms and from 31,000 allocations to 13. The bytes written
-  are unchanged, held to the old encoders by a test over every value kind.
-
-- **Outbound HTTP uses HTTP/2 where the server offers it** -- @hc12r.
-  The outbound client's own dialer, the one that enforces the network
-  policy, had switched off Go's automatic HTTP/2, so REST sources, object
-  stores, BigQuery, notifications and the rest spoke HTTP/1.1 to every
-  server, and each request in flight to a host held a connection of its
-  own. A REST source fetching eight pages at once made eight TLS
-  handshakes; it now makes one and sends the pages over it. Servers that
-  do not offer HTTP/2 are spoken to over HTTP/1.1 as before, and the
-  policy still checks every connection.
-
-- **Dead code removed** -- @hc12r. Eight functions, a type and a field that
-  nothing called, found by staticcheck. One was a YAML "sanitizer" that was
-  never wired in, and would have been wrong if it were: it stripped `*`, `&`
-  and `!!` from every string config value, so `SELECT * FROM t` would have
-  lost its `*`. No behaviour changes.
 
 ## [0.20.0] - 2026-10-25
 
