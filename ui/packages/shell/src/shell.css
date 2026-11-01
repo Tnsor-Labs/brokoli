@@ -391,3 +391,76 @@
   outline-offset: -2px;
   border-radius: var(--bk-radius-xs);
 }
+.sh-inbox-tabs {
+  margin-bottom: 12px;
+}
+.sh-inbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.sh-message > svg {
+  margin-top: 2px;
+}
+.sh-message-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--bk-color-text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.sh-message-head:focus-visible {
+  outline: 2px solid var(--bk-color-accent);
+  outline-offset: 2px;
+}
+.sh-message-topic {
+  font-size: var(--bk-text-sm);
+  font-weight: 500;
+}
+.sh-message-line {
+  margin: 0;
+  overflow: hidden;
+  color: var(--bk-color-text-secondary);
+  font-size: var(--bk-text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sh-message-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: var(--bk-text-sm);
+}
+.sh-message-links a {
+  color: var(--bk-color-accent);
+  text-decoration: none;
+}
+.sh-message-links a:hover {
+  text-decoration: underline;
+}
+.sh-conversation-text {
+  margin: 0;
+  font-size: var(--bk-text-sm);
+  line-height: var(--bk-leading-normal);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.sh-conversation-foot {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.sh-conversation-foot > :first-child {
+  flex: 1 1 200px;
+}

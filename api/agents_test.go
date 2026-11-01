@@ -108,7 +108,7 @@ func TestAnAgentActsWithItsOwnTokenAndRole(t *testing.T) {
 		t.Fatalf("me = %d %s", code, raw)
 	}
 	// The agent role, within its owner's.
-	if got := strings.Join(b.permissions(token), " "); got != "pipelines.propose pipelines.run pipelines.view runs.view" {
+	if got := strings.Join(b.permissions(token), " "); got != "messages.send pipelines.propose pipelines.run pipelines.view runs.view" {
 		t.Fatalf("permissions = %s", got)
 	}
 
@@ -368,7 +368,7 @@ func TestAnAgentOverMCP(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	if got := strings.Join(toolNames(t, cs), " "); got != "dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change trigger_run validate_pipeline" {
+	if got := strings.Join(toolNames(t, cs), " "); got != "dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change send_message trigger_run validate_pipeline" {
 		t.Fatalf("tools = %s", got)
 	}
 	init := cs.InitializeResult()

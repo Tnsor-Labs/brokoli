@@ -2,7 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowLeft, Copy } from 'lucide-react'
-import { agentsApi, currentWorkspace, type Agent } from '@brokoli/api'
+import { agentsApi, currentWorkspace, messagesApi, type Agent } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import {
   AgentAvatar,
@@ -37,6 +37,12 @@ export function AgentPage() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const agent = useQuery({ queryKey: [...AGENTS_KEY, id], queryFn: () => agentsApi.get(id) })
+  // What the agent said this week, and how much of it people muted.
+  const said = useQuery({
+    queryKey: [...AGENTS_KEY, id, 'messages'],
+    queryFn: () => messagesApi.summary(id),
+    retry: false,
+  })
   const session = useSession()
   const [disabling, setDisabling] = useState(false)
 
@@ -88,6 +94,12 @@ export function AgentPage() {
             <span>
               {a.last_used_at ? `Last used ${formatRelative(a.last_used_at)}` : 'Never used'}
             </span>
+            {said.data && said.data.sent > 0 && (
+              <span title="Messages it sent people in the last 7 days">
+                {said.data.sent} {said.data.sent === 1 ? 'message' : 'messages'} this week
+                {said.data.muted > 0 && `, ${said.data.muted} to people who muted it`}
+              </span>
+            )}
           </div>
         }
         actions={

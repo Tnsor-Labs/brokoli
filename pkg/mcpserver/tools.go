@@ -68,6 +68,7 @@ func tools() []tool {
 		{permission: "pipelines.run", add: addTriggerRun},
 		{permission: "runs.cancel", add: addCancelRun},
 		{permission: "runs.view", add: addNextEvents},
+		{permission: "messages.send", add: addSendMessage},
 	}
 }
 

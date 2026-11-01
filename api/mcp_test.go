@@ -165,11 +165,13 @@ func toolNames(t *testing.T, cs *mcp.ClientSession) []string {
 	names := []string{}
 	for _, tl := range res.Tools { // listed in name order
 		names = append(names, tl.Name)
-		// Proposing, running and cancelling act (ADR-046: marked so a
-		// client asks the person first); reading the trigger feed
-		// acknowledges what was read (ADR-047), which changes the agent's
-		// own queue and nothing else; everything else only reads.
-		acts := tl.Name == "propose_change" || tl.Name == "trigger_run" || tl.Name == "cancel_run" || tl.Name == "next_events"
+		// Proposing, running, cancelling and messaging a person act
+		// (ADR-046, ADR-048: marked so a client asks the person first);
+		// reading the trigger feed acknowledges what was read (ADR-047),
+		// which changes the agent's own queue and nothing else; everything
+		// else only reads.
+		acts := tl.Name == "propose_change" || tl.Name == "trigger_run" || tl.Name == "cancel_run" || tl.Name == "next_events" ||
+			tl.Name == "send_message"
 		if tl.Annotations == nil || tl.Annotations.ReadOnlyHint == acts {
 			t.Errorf("%s is marked read only: %v", tl.Name, tl.Annotations != nil && tl.Annotations.ReadOnlyHint)
 		}
@@ -191,7 +193,7 @@ func TestMCPServesTheRuntimeToAgentsThroughTheAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cs.Close()
-	want := "cancel_run dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change trigger_run validate_pipeline"
+	want := "cancel_run dry_run_pipeline explain_run get_lineage get_pipeline get_run get_run_logs list_change_requests list_pipelines list_runs next_events propose_change send_message trigger_run validate_pipeline"
 	if got := toolNames(t, cs); strings.Join(got, " ") != want {
 		t.Fatalf("tools = %v", got)
 	}
