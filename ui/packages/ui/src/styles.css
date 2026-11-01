@@ -1294,6 +1294,12 @@
   color: var(--bk-color-accent);
   font-size: var(--bk-text-xs);
   font-weight: 600;
+  overflow: hidden;
+}
+.bk-account-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 .bk-account-text {
   display: flex;

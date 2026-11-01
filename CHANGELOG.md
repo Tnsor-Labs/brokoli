@@ -13,6 +13,11 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **A photo in the sidebar account chip** -- @hc12r. `SidebarAccount`
+  (`@brokoli/auth`) takes an optional `avatarSrc`: the signed-in person's
+  photo, shown in place of their initials. The initials come back when it is
+  absent or fails to load.
+
 - **People reply to agents** (ADR-048 phase 2) -- @hc12r. A person writes
   in their conversation with an agent (`POST
   /api/messages/conversations/{id}/messages`), and an agent's owner can open
