@@ -160,6 +160,12 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 		} else {
 			registerAgentTriggerRoutes(r, userStore, pc, ts)
 		}
+		// Messages between agents and people (ADR-048).
+		if ms, err := NewMessageStore(userStore.db); err != nil {
+			log.Printf("agent messages unavailable: %v", err)
+		} else {
+			registerMessageRoutes(r, userStore, pc, ms)
+		}
 		r.Get("/api/auth/users", ListUsersHandler(userStore))
 		r.Post("/api/auth/users", CreateUserHandler(userStore))
 		r.Get("/api/auth/setup", func(w http.ResponseWriter, r *http.Request) {

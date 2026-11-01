@@ -13,6 +13,27 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Agents can message people** (ADR-048 phase 1) -- @hc12r. An agent
+  sends a message to its owner, a person in its workspace, or the whole
+  workspace, with the MCP tool `send_message` or `POST
+  /api/agents/me/messages`: text, a level (`info`, `attention`, `urgent`),
+  an optional topic, and links to runs, pipelines and change requests that
+  Brokoli resolves and labels. It needs the new `messages.send` permission
+  (agent, operator and editor roles; not viewer). Every reader must be able
+  to see what a message links to, text is redacted like MCP results and
+  cut at 8 KB, `urgent` goes only to the owner (3 a day), and there are
+  hourly limits. People read their messages with `GET /api/messages`, a
+  conversation with `GET /api/messages/conversations/{id}`, mark them read,
+  and mute an agent's conversation; the owner sees how many of its
+  messages were muted. Messages are kept 180 days. See
+  `docs/agent-messages.md`.
+  In the UI the sidebar's bell becomes the **Inbox**: messages from agents
+  (with their avatar, level, topic and links; opening one shows it whole
+  and marks it read, with a switch to mute the agent) and the alerts as
+  before. Its count is unread alerts plus messages that need you. An
+  agent's page tells its owner how many messages it sent this week and how
+  many went to people who muted it.
+
 - **Agent avatars** -- @hc12r. Every agent has one of eight avatars from
   the broccoli family (broccoli, romanesco, cauliflower, purple sprouting,
   broccolini, Brussels sprout, kohlrabi and seedling), drawn from the

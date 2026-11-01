@@ -152,8 +152,9 @@ The endpoints, for reference:
 | `trigger_run` | runs a saved pipeline now, with `params` and declared `parameters`; with `wait_seconds` (up to 45) the run's outcome, otherwise its id | `pipelines.run` |
 | `cancel_run` | cancels a run that has not finished | `runs.cancel` |
 | `next_events` | the calling agent's waiting trigger events, oldest first, for triggers that deliver to its feed ([agent-triggers.md](agent-triggers.md)); passing the cursor it answers acknowledges what was read | `runs.view` |
+| `send_message` | a message from the calling agent to its owner, a person in its workspace, or the whole workspace, at a level (`info`, `attention`, `urgent`) with links to runs, pipelines and change requests ([agent-messages.md](agent-messages.md)) | `messages.send` |
 
-`propose_change`, `trigger_run` and `cancel_run` act, and `next_events`
+`propose_change`, `trigger_run`, `cancel_run` and `send_message` act, and `next_events`
 acknowledges the events it read (it changes the agent's own queue and
 nothing else, so it is marked not read only but not destructive); every
 other tool is

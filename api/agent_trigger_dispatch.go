@@ -129,11 +129,13 @@ type TriggerNext struct {
 type leaderGate interface{ IsLeader() bool }
 
 type triggerDispatcher struct {
-	s         store.Store
-	scan      store.RunEventScanner
-	users     *UserStore
-	pc        *PermissionChecker
-	ts        *TriggerStore
+	s     store.Store
+	scan  store.RunEventScanner
+	users *UserStore
+	pc    *PermissionChecker
+	ts    *TriggerStore
+	// ms is pruned with the deliveries: messages are kept 180 days (ADR-048).
+	ms        *MessageStore
 	leader    leaderGate
 	publicURL string
 	client    *http.Client
@@ -154,8 +156,12 @@ func StartAgentTriggers(s store.Store, users *UserStore, cc *crypto.Config, lead
 	if err != nil {
 		return nil, err
 	}
+	ms, err := NewMessageStore(users.db)
+	if err != nil {
+		return nil, err
+	}
 	d := &triggerDispatcher{
-		s: s, scan: scan, users: users, pc: NewPermissionChecker(s), ts: ts, leader: leader,
+		s: s, scan: scan, users: users, pc: NewPermissionChecker(s), ts: ts, ms: ms, leader: leader,
 		publicURL: strings.TrimRight(publicURL, "/"), client: netguard.Outbound().Client(sendTimeout), now: time.Now,
 	}
 	setRaiser(d)
@@ -192,6 +198,11 @@ func (d *triggerDispatcher) loop(ctx context.Context, every time.Duration) {
 			}
 			if err := d.ts.PruneDeliveries(now.Add(-deliveryRetained)); err != nil {
 				log.Printf("agent triggers: prune: %v", err)
+			}
+			if d.ms != nil {
+				if err := d.ms.Prune(now.Add(-messageRetained)); err != nil {
+					log.Printf("agent messages: prune: %v", err)
+				}
 			}
 			lastPrune = now
 		}

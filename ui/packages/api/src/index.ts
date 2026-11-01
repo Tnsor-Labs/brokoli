@@ -38,10 +38,15 @@ export {
   templateApi,
 } from './endpoints'
 export type { DeleteResolve } from './endpoints'
-export { agentsApi, triggersApi } from './agents'
+export { agentsApi, messagesApi, triggersApi } from './agents'
 export type {
   Agent,
+  AgentMessage,
   AgentToken,
+  Conversation,
+  InboxMessage,
+  MessageLevel,
+  MessageLink,
   AgentTrigger,
   DeliveryAttempt,
   DeliveryStatus,

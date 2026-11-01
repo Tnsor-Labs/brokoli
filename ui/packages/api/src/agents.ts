@@ -203,3 +203,76 @@ export const triggersApi = {
       ),
     ),
 }
+
+/* Messages from agents (ADR-048). */
+
+export type MessageLevel = 'info' | 'attention' | 'urgent'
+
+export interface MessageLink {
+  kind: 'pipeline' | 'run' | 'change_request'
+  id: string
+  pipeline_id?: string
+  label?: string
+}
+
+export interface AgentMessage {
+  id: string
+  conversation_id: string
+  from: 'agent' | 'person'
+  level: MessageLevel
+  topic?: string
+  text: string
+  links: MessageLink[]
+  muted?: boolean
+  created_at: string
+  read_at?: string
+}
+
+/** A message as the inbox shows it: from which agent, at which level. */
+export interface InboxMessage extends AgentMessage {
+  agent_id: string
+  agent_name: string
+  agent_avatar: string
+  /** info when the conversation is muted. */
+  shown_level: MessageLevel
+}
+
+export interface Conversation {
+  id: string
+  workspace_id: string
+  agent_id: string
+  person_id: string
+  muted: boolean
+  created_at: string
+  last_message_at: string
+}
+
+export const messagesApi = {
+  /** The caller's messages from agents; null when the server has no messages. */
+  inbox: (limit = 50) =>
+    unlessMissing(
+      request<{ messages: InboxMessage[] | null; needs_you: number }>('/messages', {
+        query: { limit },
+      }).then((d) => ({
+        messages: d?.messages ?? [],
+        needsYou: d?.needs_you ?? 0,
+      })),
+    ),
+  conversation: (id: string) =>
+    request<{
+      conversation: Conversation
+      agent: { id: string; name?: string; avatar?: string; owner_name?: string; disabled?: boolean }
+      messages: AgentMessage[] | null
+    }>(`/messages/conversations/${enc(id)}`).then((d) => ({ ...d, messages: d.messages ?? [] })),
+  /** Marks one message read, or every message when id is omitted. */
+  read: (id?: string) => request<void>('/messages/read', { json: id ? { message_id: id } : {} }),
+  mute: (conversationId: string, muted: boolean) =>
+    request<Conversation>(`/messages/conversations/${enc(conversationId)}/mute`, {
+      json: { muted },
+    }),
+  /** For an agent's owner: what it sent in the last week, and how much was muted. */
+  summary: (agentId: string) =>
+    request<{ days: number; sent: number; muted: number }>(
+      `/agents/${enc(agentId)}/messages/summary`,
+    ),
+}

@@ -21,6 +21,10 @@ const (
 	PermRunsResume   Permission = "runs.resume"
 	PermRunsBackfill Permission = "runs.backfill"
 
+	// PermMessagesSend is an agent sending a message to a person (ADR-048).
+	// Agents hold it through their role; a read-only agent does not.
+	PermMessagesSend Permission = "messages.send"
+
 	// Connections
 	PermConnectionsView   Permission = "connections.view"
 	PermConnectionsCreate Permission = "connections.create"
@@ -97,6 +101,7 @@ func AllPermissions() []Permission {
 		PermPipelinesView, PermPipelinesCreate, PermPipelinesEdit, PermPipelinesDelete, PermPipelinesRun, PermPipelinesExport,
 		PermPipelinesPropose,
 		PermRunsView, PermRunsCancel, PermRunsResume, PermRunsBackfill,
+		PermMessagesSend,
 		PermConnectionsView, PermConnectionsCreate, PermConnectionsEdit, PermConnectionsDelete, PermConnectionsTest,
 		PermVariablesView, PermVariablesCreate, PermVariablesEdit, PermVariablesDelete, PermVariablesViewSecret,
 		PermWorkspacesView, PermWorkspacesCreate, PermWorkspacesManageMembers, PermWorkspacesManageTokens, PermWorkspacesDelete,
@@ -128,6 +133,7 @@ func AllPermissionInfos() []PermissionInfo {
 		{PermPipelinesRun, "Pipelines", "Run pipelines"},
 		{PermPipelinesExport, "Pipelines", "Export pipelines"},
 		{PermPipelinesPropose, "Pipelines", "Propose changes to pipelines"},
+		{PermMessagesSend, "Messages", "Send messages to people (agents)"},
 		{PermRunsView, "Runs", "View runs and logs"},
 		{PermRunsCancel, "Runs", "Cancel running pipelines"},
 		{PermRunsResume, "Runs", "Resume failed runs"},
@@ -183,6 +189,7 @@ func DefaultRoles() []Role {
 		PermPipelinesView, PermPipelinesCreate, PermPipelinesEdit, PermPipelinesDelete, PermPipelinesRun, PermPipelinesExport,
 		PermPipelinesPropose,
 		PermRunsView, PermRunsCancel, PermRunsResume, PermRunsBackfill,
+		PermMessagesSend,
 		PermConnectionsView, PermConnectionsCreate, PermConnectionsEdit, PermConnectionsDelete, PermConnectionsTest,
 		PermSecretStoresManage,
 		PermVariablesView, PermVariablesCreate, PermVariablesEdit, PermVariablesDelete,
@@ -196,6 +203,7 @@ func DefaultRoles() []Role {
 	operatorPerms := []Permission{
 		PermPipelinesView, PermPipelinesRun, PermPipelinesPropose,
 		PermRunsView, PermRunsCancel, PermRunsResume,
+		PermMessagesSend,
 		PermConnectionsView, PermConnectionsTest,
 		PermVariablesView,
 		PermWorkspacesView,
@@ -223,6 +231,7 @@ func DefaultRoles() []Role {
 		PermRunsView,
 		PermPipelinesRun,
 		PermPipelinesPropose,
+		PermMessagesSend,
 	}
 
 	return []Role{
@@ -230,7 +239,7 @@ func DefaultRoles() []Role {
 		{ID: "editor", Name: "Editor", Description: "Create, edit, and run pipelines", Permissions: editorPerms, IsSystem: true},
 		{ID: "operator", Name: "Operator", Description: "Run and monitor pipelines", Permissions: operatorPerms, IsSystem: true},
 		{ID: "viewer", Name: "Viewer", Description: "Read-only access", Permissions: viewerPerms, IsSystem: true},
-		{ID: "agent", Name: "Agent", Description: "An AI agent: see pipelines, runs and lineage, run pipelines, and propose changes", Permissions: agentPerms, IsSystem: true},
+		{ID: "agent", Name: "Agent", Description: "An AI agent: see pipelines, runs and lineage, run pipelines, propose changes, and message people", Permissions: agentPerms, IsSystem: true},
 	}
 }
 
