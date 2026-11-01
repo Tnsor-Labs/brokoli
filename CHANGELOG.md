@@ -103,7 +103,10 @@ reconstruct from git archaeology.
   --base-url ...`: OpenAI, Azure OpenAI, Gemini, Mistral, DeepSeek, Groq,
   OpenRouter, or Ollama, vLLM and LM Studio locally), or a program of your
   own that reads the request on stdin. Every answer is checked against the
-  decision's shape before the agent acts on it.
+  decision's shape before the agent acts on it. It tells its owner what it did
+  with `send_message`: a proposal as `info` with the change request
+  linked, a cause outside the definition as `attention` (`--no-messages`
+  turns this off).
 
 - **An Agents page** (ADR-047 phase 3) -- @hc12r. Agents now have a page
   of their own in the UI: create one, issue and revoke its tokens (with the

@@ -317,10 +317,11 @@ class Triage:
     # How many times the model may fix a definition that does not validate.
     attempts = 2
 
-    def __init__(self, brokoli: Brokoli, model, dry_run: bool = False):
+    def __init__(self, brokoli: Brokoli, model, dry_run: bool = False, messages: bool = True):
         self.brokoli = brokoli
         self.model = model
         self.dry_run = dry_run
+        self.messages = messages
 
     def handle(self, event: dict) -> dict:
         """Triage one event; answers what was done, for the log."""
@@ -358,7 +359,7 @@ class Triage:
                 log(f"run {run['id']}: no decision from the model: {e}")
                 return {"outcome": "no-decision", "reason": str(e)}
             if decision["verdict"] != "fix":
-                return self.report(run["id"], decision)
+                return self.report(pipeline, run["id"], decision)
             try:
                 definition = json.loads(decision["definition"])
             except ValueError as e:
@@ -374,7 +375,7 @@ class Triage:
                 + "\n\nCorrect it, or answer report if you cannot."
             )}]
         decision["description"] += "\n\nThe drafted fix did not validate, so nothing was proposed."
-        return self.report(run["id"], decision)
+        return self.report(pipeline, run["id"], decision)
 
     def waiting_proposal(self, pipeline: str, agent: str | None) -> dict | None:
         """This agent's open change request for the pipeline, if one can
@@ -395,12 +396,33 @@ class Triage:
         cr = self.brokoli.call("propose_change", pipeline=pipeline, definition=definition,
                                title=decision["title"], description=description)
         log(f"run {run_id}: proposed \"{decision['title']}\" as change request {cr.get('id')}")
+        links = [{"kind": "run", "id": run_id}]
+        if cr.get("id"):
+            links.append({"kind": "change_request", "id": cr["id"]})
+        self.tell(level="info", topic="I proposed a fix",
+                  text=f"A run failed, and the cause is in the pipeline's definition. {decision['finding']}\n\n"
+                       f"I proposed \"{decision['title']}\". It changes nothing until someone applies it.",
+                  links=links)
         return {"outcome": "proposed", "change_request": cr.get("id"), "title": decision["title"]}
 
-    def report(self, run_id: str, decision: dict) -> dict:
+    def report(self, pipeline: str, run_id: str, decision: dict) -> dict:
         log(f"run {run_id}: not a definition problem; reporting. {decision['finding']}")
         log(decision["description"])
+        self.tell(level="attention", topic="A failed run needs a person",
+                  text=f"{decision['finding']}\n\n{decision['description']}",
+                  links=[{"kind": "run", "id": run_id}, {"kind": "pipeline", "id": pipeline}])
         return {"outcome": "reported", "finding": decision["finding"]}
+
+    def tell(self, **message):
+        """Sends the agent's owner a message in Brokoli (ADR-048). A message
+        that cannot be sent (an older server, a role without messages.send,
+        a limit reached) is logged; the triage itself stands."""
+        if self.dry_run or not self.messages:
+            return
+        try:
+            self.brokoli.call("send_message", to="owner", **message)
+        except BrokoliError as e:
+            log(f"could not send the message: {e}")
 
 
 # --- serve: receive webhooks
@@ -524,6 +546,8 @@ def main(argv=None) -> int:
     p.add_argument("--model-command", default=os.environ.get("TRIAGE_MODEL_COMMAND"),
                    help="command: a command that reads the request on stdin and answers JSON")
     p.add_argument("--dry-run", action="store_true", help="decide, validate, but do not propose")
+    p.add_argument("--no-messages", action="store_true",
+                   help="only log findings; do not send them to the agent's owner in Brokoli")
     sub = p.add_subparsers(dest="mode", required=True)
     s = sub.add_parser("serve", help="receive webhook deliveries")
     s.add_argument("--host", default="127.0.0.1")
@@ -543,7 +567,7 @@ def main(argv=None) -> int:
         p.error("BROKOLI_TOKEN holds more than a token: set it to the token alone")
     brokoli = Brokoli(args.server, token)
     model = make_model(p, args)
-    triage = Triage(brokoli, model, dry_run=args.dry_run)
+    triage = Triage(brokoli, model, dry_run=args.dry_run, messages=not args.no_messages)
 
     if args.mode == "serve":
         secret = os.environ.get("TRIAGE_WEBHOOK_SECRET")
