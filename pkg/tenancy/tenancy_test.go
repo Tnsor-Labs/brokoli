@@ -92,6 +92,23 @@ func TestListFilters(t *testing.T) {
 	}
 }
 
+func TestWorkspaceOnlyResources(t *testing.T) {
+	Register("t_threads", InWorkspace("t_threads", "workspace_id"))
+	s := New("org1", "wsA", []string{"wsA"}, ActorPerson)
+	if f, args, _ := s.ListFilter("t_threads", "c"); f != "(c.workspace_id = ?)" || len(args) != 1 || args[0] != "wsA" {
+		t.Errorf("workspace-only filter %q %v", f, args)
+	}
+	if q, _ := OwnerQuery("t_threads"); q != "SELECT '', workspace_id FROM t_threads WHERE id = ?" {
+		t.Errorf("workspace-only owner query %q", q)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Error("a Via resource under a workspace-only parent was registered; the parent has no organization to check")
+		}
+	}()
+	Register("t_bad", Via("t_bad", "thread_id", "t_threads"))
+}
+
 func TestOwnerQueries(t *testing.T) {
 	q, _ := OwnerQuery("t_runs")
 	if !strings.Contains(q, "JOIN t_pipelines p ON p.id = c.pipeline_id") || strings.Contains(q, "LEFT JOIN") {

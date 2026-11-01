@@ -516,12 +516,8 @@ func (h *changeRequestsAPI) pipeline(w http.ResponseWriter, r *http.Request) (*m
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return nil, false
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return nil, false
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return nil, false
 	}
 	return p, true
@@ -715,7 +711,7 @@ func (h *changeRequestsAPI) listWorkspace(w http.ResponseWriter, r *http.Request
 		if s == nil {
 			s = &seen{}
 			if p, err := h.ph.store.GetPipeline(cr.PipelineID); err == nil && p != nil &&
-				p.WorkspaceID == ws && ValidateOrgAccess(r, p.OrgID) && userOwnsWorkspace(r, p.WorkspaceID) {
+				p.WorkspaceID == ws && pipelineVisible(r, p) {
 				s.p, s.ok, s.current = p, true, h.currentVersion(p.ID)
 			}
 			pipelines[cr.PipelineID] = s

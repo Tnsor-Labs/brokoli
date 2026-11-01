@@ -104,7 +104,7 @@ func claimsMaySeePipeline(pc *PermissionChecker, claims jwt.MapClaims, workspace
 			return false, who + " does not grant " + string(need)
 		}
 	}
-	if !ValidateOrgAccess(r, p.OrgID) || !userOwnsWorkspace(r, p.WorkspaceID) {
+	if !pipelineVisible(r, p) {
 		return false, "the pipeline is not in " + whose + " organization or workspaces"
 	}
 	return true, ""

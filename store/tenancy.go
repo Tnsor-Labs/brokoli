@@ -19,6 +19,54 @@ func init() {
 	// An alert about no pipeline belongs to the organization; one about a
 	// pipeline that is gone is invisible, its workspace being unknown.
 	tenancy.Register("alerts", tenancy.Via("alerts", "pipeline_id", "pipelines").AllowNull())
+	tenancy.Register("dead_letter_queue", tenancy.Via("dead_letter_queue", "pipeline_id", "pipelines"))
+}
+
+// listDLQIn is ListDLQByOrg kept to the pipelines the scope lists: the
+// current workspace's dead-letter entries.
+func listDLQIn(db *sql.DB, dialect string, scope tenancy.Scope, includeResolved bool, limit int) ([]DLQEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	filter, args, err := scope.ListFilter("pipelines", "p")
+	if err != nil {
+		return nil, err
+	}
+	resolvedAt, unresolved := "COALESCE(d.resolved_at,'')", " AND d.resolved = 0"
+	if dialect == "postgres" {
+		resolvedAt, unresolved = "COALESCE(d.resolved_at::text,'')", " AND d.resolved = FALSE"
+	}
+	query := `SELECT d.id, d.pipeline_id, d.run_id, d.error, d.node_id, d.node_name, d.payload,
+		d.created_at, d.resolved, ` + resolvedAt + `, COALESCE(p.name,'')
+		FROM dead_letter_queue d JOIN pipelines p ON p.id = d.pipeline_id
+		WHERE ` + filter
+	if !includeResolved {
+		query += unresolved
+	}
+	query += " ORDER BY d.created_at DESC LIMIT ?"
+	rows, err := db.Query(rewritePlaceholders(dialect, query), append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := []DLQEntry{}
+	for rows.Next() {
+		var e DLQEntry
+		if err := rows.Scan(&e.ID, &e.PipelineID, &e.RunID, &e.Error, &e.NodeID, &e.NodeName,
+			&e.Payload, &e.CreatedAt, &e.Resolved, &e.ResolvedAt, &e.PipelineName); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
+}
+
+func (s *SQLiteStore) ListDLQIn(scope tenancy.Scope, includeResolved bool, limit int) ([]DLQEntry, error) {
+	return listDLQIn(s.db, "sqlite", scope, includeResolved, limit)
+}
+
+func (s *PostgresStore) ListDLQIn(scope tenancy.Scope, includeResolved bool, limit int) ([]DLQEntry, error) {
+	return listDLQIn(s.db, "postgres", scope, includeResolved, limit)
 }
 
 // ErrNotVisible is what the scoped store answers for a row that does not
@@ -175,6 +223,24 @@ func (x ScopedStore) Run(id string) (*models.Run, error) {
 		return nil, ErrNotVisible
 	}
 	return x.st.GetRun(id)
+}
+
+// ListPipelines lists the current workspace's pipelines: the organization's
+// in that workspace, or, with no organization (the community edition),
+// the workspace's.
+func (x ScopedStore) ListPipelines() ([]models.Pipeline, error) {
+	if !x.scope.Valid() {
+		return []models.Pipeline{}, nil
+	}
+	if x.scope.OrgID != "" {
+		return x.st.ListPipelinesByOrgAndWorkspace(x.scope.OrgID, x.scope.Workspace)
+	}
+	return x.st.ListPipelinesByWorkspace(x.scope.Workspace)
+}
+
+// DLQ lists the current workspace's dead-letter entries.
+func (x ScopedStore) DLQ(includeResolved bool, limit int) ([]DLQEntry, error) {
+	return x.st.ListDLQIn(x.scope, includeResolved, limit)
 }
 
 // RunIDsStartedBy lists the runs userID started, in the current workspace.

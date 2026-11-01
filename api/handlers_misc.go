@@ -26,7 +26,7 @@ func dlqListHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := chi.URLParam(r, "id")
 		if p, err := s.GetPipeline(id); err == nil {
-			if !ValidateOrgAccess(r, p.OrgID) {
+			if !pipelineVisible(r, p) {
 				DenyOrgAccess(w)
 				return
 			}
@@ -58,7 +58,7 @@ func dlqResolveHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		pipelineID := chi.URLParam(r, "id")
 		if p, err := s.GetPipeline(pipelineID); err == nil {
-			if !ValidateOrgAccess(r, p.OrgID) {
+			if !pipelineVisible(r, p) {
 				DenyOrgAccess(w)
 				return
 			}
@@ -229,7 +229,7 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "pipeline not found")
 			return
 		}
-		if !ValidateOrgAccess(r, p.OrgID) {
+		if !pipelineVisible(r, p) {
 			DenyOrgAccess(w)
 			return
 		}
@@ -273,7 +273,7 @@ func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "pipeline not found")
 			return
 		}
-		if !ValidateOrgAccess(r, p.OrgID) {
+		if !pipelineVisible(r, p) {
 			DenyOrgAccess(w)
 			return
 		}
@@ -283,7 +283,13 @@ func pipelineDependentsHandler(s store.Store) http.HandlerFunc {
 			return
 		}
 		out := make([]map[string]interface{}, 0)
+		scoped := scopedStore(s, r)
 		for _, sum := range summaries {
+			// A dependent in a workspace the caller does not belong to is
+			// not named to them (ADR-049); the list read the organization.
+			if !scoped.Visible("pipelines", sum.ID) {
+				continue
+			}
 			for _, rule := range sum.EffectiveDependencies() {
 				if rule.PipelineID != id {
 					continue
@@ -325,6 +331,28 @@ func pipelineDependencyGraphHandler(s store.Store) http.HandlerFunc {
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
+		}
+		// The current workspace's pipelines (ADR-049). The dependency read
+		// is the organization's, so every workspace's graph showed every
+		// pipeline in the organization by name. Only where workspaces are
+		// kept apart; without a workspace registry there is one.
+		if RequestScope(r).ByWorkspace() {
+			listed, err := listPipelinesForRequest(s, r)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			inWorkspace := make(map[string]bool, len(listed))
+			for _, p := range listed {
+				inWorkspace[p.ID] = true
+			}
+			kept := summaries[:0]
+			for _, sum := range summaries {
+				if inWorkspace[sum.ID] {
+					kept = append(kept, sum)
+				}
+			}
+			summaries = kept
 		}
 		truncated := false
 		if len(summaries) > maxGraphNodes {
@@ -423,23 +451,16 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 
 // listPipelinesForRequest returns pipelines scoped to the user's org or workspace.
 func listPipelinesForRequest(s store.Store, r *http.Request) ([]models.Pipeline, error) {
-	orgID := GetOrgIDFromRequest(r)
-	if orgID != "" {
-		// Org AND workspace: by org alone, every view built on this read
-		// counted and displayed the whole organization's pipelines no
-		// matter which workspace the person was looking at.
-		wsID, ok := effectiveWorkspace(r)
-		if !ok {
-			return []models.Pipeline{}, nil
-		}
-		return s.ListPipelinesByOrgAndWorkspace(orgID, wsID)
-	}
-	// In multi-tenant mode (OrgResolverFunc set), users without an org see nothing
-	if OrgResolverFunc != nil {
+	// In multi-tenant mode (OrgResolverFunc set), users without an org see
+	// nothing; an organization member in no workspace has a scope that
+	// sees nothing too.
+	if GetOrgIDFromRequest(r) == "" && OrgResolverFunc != nil {
 		return []models.Pipeline{}, nil
 	}
-	// Community/self-hosted mode: fall back to workspace
-	return s.ListPipelinesByWorkspace(GetWorkspaceID(r))
+	// The current workspace's pipelines (ADR-049): by org alone, every
+	// view built on this read counted and displayed the whole
+	// organization's pipelines no matter which workspace was open.
+	return scopedStore(s, r).ListPipelines()
 }
 
 // dashboardRecentRunsSample is how many runs the "Recent activity" list
@@ -1199,8 +1220,10 @@ func bulkPipelineHandler(s store.Store) http.HandlerFunc {
 				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
 				continue
 			}
-			if !ValidateOrgAccess(r, p.OrgID) {
-				failed = append(failed, BulkResultItem{ID: id, Error: "access denied"})
+			// Another workspace's pipeline is answered like a missing one,
+			// so a bulk request cannot tell which ids exist elsewhere.
+			if !pipelineVisible(r, p) {
+				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
 				continue
 			}
 			var err error

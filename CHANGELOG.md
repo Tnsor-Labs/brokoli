@@ -159,6 +159,16 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Workspace isolation for the rest of the pipeline routes** (ADR-049
+  phase 2) -- @hc12r. The dead-letter queue (`GET /api/dlq`, a pipeline's
+  entries and resolving one), a pipeline's dependencies and dependents, the
+  dependency graph and bulk actions checked the organization only. They now
+  use the same tenancy scope: another workspace's pipeline is "not found"
+  (bulk included, which said "access denied" and so told which ids exist),
+  dependents and the graph name only pipelines the caller may see, and the
+  dead-letter list is the current workspace's. Every pipeline route that
+  wrote the organization and workspace checks by hand now makes one call.
+
 - **Workspace isolation for runs and alerts** (ADR-049 phase 1) -- @hc12r.
   Run routes (run, logs, events, plan, previews, grid, cancel, resume,
   backfill, dry run), `GET /api/runs?started_by=me`, and the alert list and

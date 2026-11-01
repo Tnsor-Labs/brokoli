@@ -420,7 +420,7 @@ func (h *triggersAPI) check(r *http.Request, a *Agent, t *AgentTrigger) string {
 	if t.PipelineID != "" {
 		found, err := h.agents.pc.store.GetPipeline(t.PipelineID)
 		if err != nil || !sameWorkspace(found.WorkspaceID, t.WorkspaceID) ||
-			!ValidateOrgAccess(r, found.OrgID) || !userOwnsWorkspace(r, found.WorkspaceID) {
+			!pipelineVisible(r, found) {
 			return "no pipeline " + t.PipelineID + " in this workspace"
 		}
 		p = found

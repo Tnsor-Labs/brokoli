@@ -43,6 +43,13 @@ var seeders = map[string]func(t *testing.T, w world, pipelineID, org string) str
 		}
 		return r.ID
 	},
+	"dead_letter_queue": func(t *testing.T, w world, pipelineID, _ string) string {
+		id := common.NewID()
+		if _, err := w.st.db.Exec(`INSERT INTO dead_letter_queue (id, pipeline_id, run_id, error, created_at) VALUES (?, ?, 'r', 'boom', '2026-11-01T00:00:00Z')`, id, pipelineID); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	},
 	"alerts": func(t *testing.T, w world, pipelineID, org string) string {
 		a := &models.Alert{ID: common.NewID(), OrgID: org, Kind: "run_failed", Severity: "error", Title: "x", PipelineID: pipelineID, CreatedAt: time.Now()}
 		if err := w.st.CreateAlert(a); err != nil {

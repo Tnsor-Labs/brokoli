@@ -60,6 +60,9 @@ func computeScope(r *http.Request, orgID string) tenancy.Scope {
 		return tenancy.Scope{} // sees nothing
 	}
 	member := UserWorkspaceResolverFunc(userID)
+	if len(member) == 0 {
+		return tenancy.Scope{} // in the organization but in no workspace: sees nothing
+	}
 	ws := GetWorkspaceID(r)
 	if ws == models.DefaultWorkspaceID && len(member) > 0 {
 		ws = member[0]
@@ -74,4 +77,22 @@ func requestActor(r *http.Request) tenancy.Actor {
 		}
 	}
 	return tenancy.ActorPerson
+}
+
+// pipelineVisible reports whether a pipeline the handler has already
+// loaded may be reached by id under this request's scope: the same rule
+// the scoped store applies (ADR-049), without reading the pipeline twice.
+// It replaces the ValidateOrgAccess + userOwnsWorkspace pair the pipeline
+// routes each wrote by hand, and the routes that wrote only the first.
+func pipelineVisible(r *http.Request, p *models.Pipeline) bool {
+	return p != nil && RequestScope(r).Sees(p.OrgID, p.WorkspaceID)
+}
+
+// The resources whose tables this package owns (ADR-049). Change requests
+// belong to their pipeline's workspace; triggers and conversations carry
+// their workspace directly.
+func init() {
+	tenancy.Register("change_requests", tenancy.Via("change_requests", "pipeline_id", "pipelines"))
+	tenancy.Register("agent_triggers", tenancy.InWorkspace("agent_triggers", "workspace_id"))
+	tenancy.Register("agent_conversations", tenancy.InWorkspace("agent_conversations", "workspace_id"))
 }

@@ -93,6 +93,10 @@ func (s Scope) Valid() bool { return s.valid }
 // Tenanted reports whether rules are enforced at all.
 func (s Scope) Tenanted() bool { return s.valid && s.tenanted }
 
+// ByWorkspace reports whether workspaces are kept apart, not only
+// organizations: a multi-tenant deployment with a workspace registry.
+func (s Scope) ByWorkspace() bool { return s.valid && s.tenanted && s.byWS }
+
 // Lists reports whether a row in workspace ws belongs in a list made for
 // this request: the current workspace only.
 func (s Scope) Lists(orgID, ws string) bool {

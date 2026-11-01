@@ -386,7 +386,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 						p, err = s.GetPipelineByPipelineIDInOrg(GetOrgIDFromRequest(r), id)
 					}
 				}
-				if err != nil || p == nil || !ValidateOrgAccess(r, p.OrgID) {
+				if err != nil || !pipelineVisible(r, p) {
 					DenyOrgAccess(w)
 					return
 				}
