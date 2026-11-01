@@ -1,6 +1,6 @@
 # ADR-048: Talking with agents: messages, conversations and reminders
 
-**Status:** proposed
+**Status:** accepted (approved by the product owner, 2026-11-01)
 **Date:** 2026-11-01
 
 ## Context
