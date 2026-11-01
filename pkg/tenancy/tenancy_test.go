@@ -97,6 +97,10 @@ func TestOwnerQueries(t *testing.T) {
 	if !strings.Contains(q, "JOIN t_pipelines p ON p.id = c.pipeline_id") || strings.Contains(q, "LEFT JOIN") {
 		t.Errorf("runs owner query: %s", q)
 	}
+	Register("t_ownership", Via("t_ownership", "pipeline_id", "t_pipelines").KeyedBy("pipeline_id"))
+	if q, _ := OwnerQuery("t_ownership"); !strings.HasSuffix(q, "WHERE c.pipeline_id = ?") {
+		t.Errorf("a resource keyed by pipeline_id: %s", q)
+	}
 	q, _ = OwnerQuery("t_alerts")
 	if !strings.Contains(q, "LEFT JOIN") || !strings.Contains(q, "p.id IS NOT NULL") {
 		t.Errorf("alerts owner query must keep parentless rows and drop orphans: %s", q)

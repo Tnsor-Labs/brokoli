@@ -18,6 +18,8 @@ type Spec struct {
 	// allowNull: a row with no parent belongs to the organization, not a
 	// workspace, and is visible to every workspace in it.
 	allowNull bool
+	// key is the column that identifies a row; "id" unless KeyedBy.
+	key string
 }
 
 // Direct is a resource that carries its own organization and workspace
@@ -38,6 +40,17 @@ func Via(table, parentCol, parent string) Spec {
 // cannot be established.
 func (s Spec) AllowNull() Spec { s.allowNull = true; return s }
 
+// KeyedBy names the column that identifies a row, for a table whose key
+// is not "id" (one keyed by its pipeline, for instance).
+func (s Spec) KeyedBy(col string) Spec { s.key = col; return s }
+
+func (s Spec) keyCol() string {
+	if s.key == "" {
+		return "id"
+	}
+	return s.key
+}
+
 var (
 	mu       sync.RWMutex
 	registry = map[string]Spec{}
@@ -48,7 +61,7 @@ var (
 // chosen in code, never input; they are checked here anyway, since they
 // are interpolated into queries.
 func Register(name string, s Spec) {
-	for _, id := range []string{name, s.table, s.orgCol, s.workspaceCol, s.parentCol, s.parent} {
+	for _, id := range []string{name, s.table, s.orgCol, s.workspaceCol, s.parentCol, s.parent, s.key} {
 		if id != "" && !ident.MatchString(id) {
 			panic(fmt.Sprintf("tenancy: %q is not a plain SQL identifier", id))
 		}
@@ -110,15 +123,15 @@ func OwnerQuery(resource string) (string, error) {
 		return "", err
 	}
 	if s.parent == "" {
-		return fmt.Sprintf(`SELECT %s, %s FROM %s WHERE id = ?`, s.orgCol, s.workspaceCol, s.table), nil
+		return fmt.Sprintf(`SELECT %s, %s FROM %s WHERE %s = ?`, s.orgCol, s.workspaceCol, s.table, s.keyCol()), nil
 	}
 	if s.allowNull {
 		return fmt.Sprintf(`SELECT COALESCE(p.%s, ''), COALESCE(p.%s, '') FROM %s c LEFT JOIN %s p ON p.id = c.%s
-			WHERE c.id = ? AND (p.id IS NOT NULL OR c.%s IS NULL OR c.%s = '')`,
-			root.orgCol, root.workspaceCol, s.table, root.table, s.parentCol, s.parentCol, s.parentCol), nil
+			WHERE c.%s = ? AND (p.id IS NOT NULL OR c.%s IS NULL OR c.%s = '')`,
+			root.orgCol, root.workspaceCol, s.table, root.table, s.parentCol, s.keyCol(), s.parentCol, s.parentCol), nil
 	}
-	return fmt.Sprintf(`SELECT p.%s, p.%s FROM %s c JOIN %s p ON p.id = c.%s WHERE c.id = ?`,
-		root.orgCol, root.workspaceCol, s.table, root.table, s.parentCol), nil
+	return fmt.Sprintf(`SELECT p.%s, p.%s FROM %s c JOIN %s p ON p.id = c.%s WHERE c.%s = ?`,
+		root.orgCol, root.workspaceCol, s.table, root.table, s.parentCol, s.keyCol()), nil
 }
 
 // ListFilter is the condition that keeps a list of resource to what this
