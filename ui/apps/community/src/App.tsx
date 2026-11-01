@@ -43,12 +43,7 @@ const router = createHashRouter([
                   ...workspaceRoutes(),
                   ...agentRoutes(),
                   ...observeRoutes(),
-                  {
-                    path: '*',
-                    element: (
-                      <NotMigrated title="This page">There is no page at this address.</NotMigrated>
-                    ),
-                  },
+                  { path: '*', element: <NotMigrated title="This page">There is no page at this address.</NotMigrated> },
                 ],
               },
             ],
