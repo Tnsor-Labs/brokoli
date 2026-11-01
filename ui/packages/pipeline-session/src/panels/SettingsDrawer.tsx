@@ -5,6 +5,7 @@ import { Badge, Button, Drawer, Field, Input, Select, Textarea, useToast } from 
 import { sanitizeTags } from '../document'
 import { MapEditor } from '../forms/fields'
 import { DependencyPicker } from './DependencyPicker'
+import { PipelineAgents } from './PipelineAgents'
 
 const NAME_FORBIDDEN = /[<>"'&]/
 
@@ -178,6 +179,8 @@ export function SettingsDrawer({
             onChange={(rules, legacy) => onChange({ dependency_rules: rules.length ? rules : undefined, depends_on: legacy.length ? legacy : undefined })}
           />
         </section>
+
+        <PipelineAgents pipelineId={pipeline.id} />
       </fieldset>
     </Drawer>
   )

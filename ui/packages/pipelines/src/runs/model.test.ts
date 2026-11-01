@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { PipelineEdge } from '@brokoli/api'
-import { canRerunStatus, descendantClosure, triggeredByLabel } from './model'
+import { canRerunStatus, descendantClosure, noticeLabel, triggeredByLabel } from './model'
 
 const edges = (...pairs: [string, string][]): PipelineEdge[] =>
   pairs.map(([from, to]) => ({ from, to }))
@@ -53,5 +53,20 @@ describe('triggeredByLabel', () => {
     expect(triggeredByLabel({ kind: 'agent', user_name: 'triage-bot' })).toBe('agent triage-bot')
     expect(triggeredByLabel({ kind: 'agent' })).toBe('an agent')
     expect(triggeredByLabel({ kind: 'user', user_name: 'Ada' })).toBe('Ada')
+  })
+})
+
+describe('noticeLabel', () => {
+  it('says where telling the agent stands', () => {
+    expect(noticeLabel({ status: 'delivered' })).toBe('told')
+    expect(noticeLabel({ status: 'pending' })).toBe('being told')
+    expect(noticeLabel({ status: 'failed' })).toBe('could not be reached')
+    expect(noticeLabel({ status: 'expired' })).toBe('did not read it in time')
+  })
+  it('gives the reason a delivery was skipped', () => {
+    expect(noticeLabel({ status: 'skipped', reason: 'the trigger is disabled' })).toBe(
+      'not told: the trigger is disabled',
+    )
+    expect(noticeLabel({ status: 'skipped' })).toBe('not told')
   })
 })

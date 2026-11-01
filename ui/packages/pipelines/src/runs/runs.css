@@ -1019,3 +1019,8 @@
   font-size: var(--bk-text-sm);
   white-space: nowrap;
 }
+.bk-run-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}

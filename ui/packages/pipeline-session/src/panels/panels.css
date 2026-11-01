@@ -594,3 +594,27 @@
   color: var(--bk-color-code-text);
   font: 400 var(--bk-text-xs) / 1.6 var(--bk-font-mono);
 }
+.ps-agents {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bk-color-border);
+  border-radius: var(--bk-radius-md);
+  list-style: none;
+}
+.ps-agents li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+  padding: 8px 12px;
+  font-size: var(--bk-text-sm);
+}
+.ps-agents li + li {
+  border-top: 1px solid var(--bk-color-border);
+}
+.ps-agents-events {
+  font-family: var(--bk-font-mono);
+  font-size: var(--bk-text-xs);
+}

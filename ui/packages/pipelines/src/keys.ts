@@ -10,6 +10,7 @@ export const keys = {
   runLogs: (runId: string) => ['run', runId, 'logs'] as const,
   runEvents: (runId: string) => ['run', runId, 'events'] as const,
   runInstances: (runId: string) => ['run', runId, 'instances'] as const,
+  runAgents: (runId: string) => ['run', runId, 'agents'] as const,
   nodePreview: (runId: string, nodeId: string) => ['run', runId, 'preview', nodeId] as const,
   nodeProfile: (runId: string, nodeId: string) => ['run', runId, 'profile', nodeId] as const,
   nodeStats: (id: string) => ['pipeline', id, 'node-stats'] as const,
@@ -17,11 +18,14 @@ export const keys = {
 
 export const paths = {
   list: '/pipelines',
-  runs: (id: string, runId?: string) => `/pipelines/${encodeURIComponent(id)}/runs${runId ? `?run=${encodeURIComponent(runId)}` : ''}`,
+  runs: (id: string, runId?: string) =>
+    `/pipelines/${encodeURIComponent(id)}/runs${runId ? `?run=${encodeURIComponent(runId)}` : ''}`,
   editor: (id: string) => `/pipelines/${encodeURIComponent(id)}/edit`,
   grid: (id: string) => `/pipelines/${encodeURIComponent(id)}/grid`,
-  change: (id: string, changeId: string) => `/pipelines/${encodeURIComponent(id)}/changes/${encodeURIComponent(changeId)}`,
-  timeline: (id: string, runId: string) => `/pipelines/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/gantt`,
+  change: (id: string, changeId: string) =>
+    `/pipelines/${encodeURIComponent(id)}/changes/${encodeURIComponent(changeId)}`,
+  timeline: (id: string, runId: string) =>
+    `/pipelines/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/gantt`,
 }
 
 /** Status groups shared by the list, the runs page and the grid. */
