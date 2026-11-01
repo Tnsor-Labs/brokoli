@@ -35,9 +35,14 @@ function initials(name: string) {
   )
 }
 
-/** Sidebar footer: who is signed in, live-update state, theme and sign-out. */
-export function SidebarAccount({ collapsed = false, profileHref }: { collapsed?: boolean; profileHref?: string }) {
+/**
+ * Sidebar footer: who is signed in, live-update state, theme and sign-out.
+ * `avatarSrc` is the signed-in person's photo when the application knows
+ * one; the initials stand in without it, and when the picture fails to load.
+ */
+export function SidebarAccount({ collapsed = false, profileHref, avatarSrc }: { collapsed?: boolean; profileHref?: string; avatarSrc?: string | null }) {
   const session = useSession()
+  const [failed, setFailed] = useState<string | null>(null)
   const { theme, toggle } = useTheme()
   const [live, setLive] = useState(false)
   useEffect(() => onLiveConnection(setLive), [])
@@ -47,7 +52,7 @@ export function SidebarAccount({ collapsed = false, profileHref }: { collapsed?:
   const inner = (
     <>
       <span className="bk-account-avatar" aria-hidden="true">
-        {initials(name)}
+        {avatarSrc && failed !== avatarSrc ? <img src={avatarSrc} alt="" onError={() => setFailed(avatarSrc)} /> : initials(name)}
       </span>
       {!collapsed && (
         <span className="bk-account-text">
