@@ -115,6 +115,7 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-045](./045-optional-native-worker-capabilities.md) | Optional native worker capabilities | Proposed |
 | [ADR-046](./046-agents-mcp-server-and-agent-identities.md) | Agents as users of the runtime: an MCP server, agent identities and change requests | Accepted |
 | [ADR-047](./047-agent-triggers.md) | Agent triggers: events that start an agent's work | Accepted |
+| [ADR-048](./048-talking-with-agents.md) | Talking with agents: messages, conversations and reminders | Proposed |
 
 ## How to add a new ADR
 
