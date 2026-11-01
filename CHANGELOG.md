@@ -73,6 +73,19 @@ reconstruct from git archaeology.
   own that reads the request on stdin. Every answer is checked against the
   decision's shape before the agent acts on it.
 
+- **See which agents were told about a run, and which triggers watch a
+  pipeline** (ADR-047 phase 3) -- @hc12r. `GET /api/runs/{id}/agents`
+  lists the agents a run was delivered to, where each delivery stands,
+  and the change request each agent then proposed to the pipeline, if
+  any. `GET /api/pipelines/{id}/triggers` lists the triggers on a
+  pipeline and on its whole workspace. Both answer anyone who may see the
+  pipeline; a webhook's URL is shown only to whoever may manage the agent.
+  `GET /api/agents/trigger-events` lists the event types a trigger may
+  subscribe to, with what each means. A distribution can add its own:
+  `api.RegisterTriggerEvent` while the program starts, then
+  `api.RaiseTriggerEvent` when one happens, and it is delivered as run
+  events are (once per occurrence, cooldown, access checked at delivery).
+
 ### Fixed
 
 - **A new agent trigger was sent failures from before it existed** --

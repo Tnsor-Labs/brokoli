@@ -7,8 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
+	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
@@ -26,7 +27,60 @@ const (
 	TriggerEventRunRecovered = "run.recovered"
 )
 
-var triggerEvents = map[string]bool{TriggerEventRunFailed: true, TriggerEventRunBlocked: true, TriggerEventRunRecovered: true}
+// TriggerEventType is an event a trigger may subscribe to, with what it
+// means, for whoever chooses (the UI lists these).
+type TriggerEventType struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// SuggestedTool is the MCP tool an agent should start with; for an
+	// added type it defaults to get_pipeline.
+	SuggestedTool string `json:"suggested_tool,omitempty"`
+}
+
+var (
+	triggerEventsMu   sync.RWMutex
+	triggerEventTypes = []TriggerEventType{
+		{TriggerEventRunFailed, "A run failed, including when a quality check or contract gate stopped it.", "explain_run"},
+		{TriggerEventRunBlocked, "A run did not start because its dependencies were not satisfied.", "get_lineage"},
+		{TriggerEventRunRecovered, "A run succeeded after the previous run of the same pipeline did not.", "list_runs"},
+	}
+	triggerEventName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
+)
+
+// RegisterTriggerEvent adds an event type that a distribution raises
+// (ADR-047 section 2), so triggers may subscribe to it. Call it while the
+// program starts, as mcpserver.Register is called; a name that is not
+// dotted lower case, or is already taken, is a programming error.
+func RegisterTriggerEvent(t TriggerEventType) {
+	if !triggerEventName.MatchString(t.Name) || t.Description == "" {
+		panic(fmt.Sprintf("agent triggers: event type %q needs a dotted lower-case name and a description", t.Name))
+	}
+	triggerEventsMu.Lock()
+	defer triggerEventsMu.Unlock()
+	for _, e := range triggerEventTypes {
+		if e.Name == t.Name {
+			panic(fmt.Sprintf("agent triggers: event type %q is registered twice", t.Name))
+		}
+	}
+	triggerEventTypes = append(triggerEventTypes, t)
+}
+
+// TriggerEventTypes is every event type a trigger may subscribe to, the
+// built-in ones first.
+func TriggerEventTypes() []TriggerEventType {
+	triggerEventsMu.RLock()
+	defer triggerEventsMu.RUnlock()
+	return append([]TriggerEventType(nil), triggerEventTypes...)
+}
+
+func triggerEventNames() []string {
+	types := TriggerEventTypes()
+	out := make([]string, len(types))
+	for i, t := range types {
+		out[i] = t.Name
+	}
+	return out
+}
 
 const (
 	// defaultTriggerCooldown is how long a trigger stays quiet about a
@@ -246,6 +300,38 @@ func (ts *TriggerStore) List(agentID, workspaceID string) ([]AgentTrigger, error
 	return out, rows.Err()
 }
 
+// ListWorkspace is every trigger in a workspace, enabled or not.
+func (ts *TriggerStore) ListWorkspace(workspaceID string) ([]AgentTrigger, error) {
+	all, err := ts.listAll()
+	if err != nil {
+		return nil, err
+	}
+	out := []AgentTrigger{}
+	for _, t := range all {
+		if sameWorkspace(t.WorkspaceID, workspaceID) {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
+func (ts *TriggerStore) listAll() ([]AgentTrigger, error) {
+	rows, err := ts.db.Query(ts.q(`SELECT ` + triggerColumns + ` FROM agent_triggers ORDER BY created_at, id`))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AgentTrigger{}
+	for rows.Next() {
+		t, err := scanTrigger(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *t)
+	}
+	return out, rows.Err()
+}
+
 // Update writes t's events, URL, pipeline, cooldown and enabled flag.
 func (ts *TriggerStore) Update(t *AgentTrigger) error {
 	events, _ := json.Marshal(t.Events)
@@ -333,12 +419,16 @@ func boolInt(b bool) int {
 // validTriggerEvents is why events cannot be a trigger's, or "".
 func validTriggerEvents(events []string) string {
 	if len(events) == 0 {
-		return "a trigger needs at least one event: " + strings.Join(sortedKeys(triggerEvents), ", ")
+		return "a trigger needs at least one event: " + strings.Join(triggerEventNames(), ", ")
+	}
+	known := map[string]bool{}
+	for _, n := range triggerEventNames() {
+		known[n] = true
 	}
 	seen := map[string]bool{}
 	for _, e := range events {
-		if !triggerEvents[e] {
-			return fmt.Sprintf("unknown event %q; a trigger may subscribe to %s", e, strings.Join(sortedKeys(triggerEvents), ", "))
+		if !known[e] {
+			return fmt.Sprintf("unknown event %q; a trigger may subscribe to %s", e, strings.Join(triggerEventNames(), ", "))
 		}
 		if seen[e] {
 			return fmt.Sprintf("event %q is listed twice", e)
@@ -346,13 +436,4 @@ func validTriggerEvents(events []string) string {
 		seen[e] = true
 	}
 	return ""
-}
-
-func sortedKeys(m map[string]bool) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
 }

@@ -120,6 +120,7 @@ func createDeliveryTables(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_trigger_deliveries_once ON agent_trigger_deliveries (trigger_id, run_id, event)`,
 		`CREATE INDEX IF NOT EXISTS idx_trigger_deliveries_due ON agent_trigger_deliveries (status, next_attempt_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_trigger_deliveries_recent ON agent_trigger_deliveries (trigger_id, pipeline_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_trigger_deliveries_run ON agent_trigger_deliveries (run_id)`,
 		`CREATE TABLE IF NOT EXISTS agent_trigger_attempts (
 			id TEXT PRIMARY KEY,
 			delivery_id TEXT NOT NULL,
@@ -272,6 +273,25 @@ func (ts *TriggerStore) Deliveries(triggerID string, limit int) ([]TriggerDelive
 		}
 	}
 	return out, nil
+}
+
+// RunDeliveries is every delivery made about a run, oldest first.
+func (ts *TriggerStore) RunDeliveries(runID string) ([]TriggerDelivery, error) {
+	rows, err := ts.db.Query(ts.q(`SELECT `+deliveryColumns+` FROM agent_trigger_deliveries WHERE run_id = ?
+		ORDER BY created_at, id`), runID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []TriggerDelivery{}
+	for rows.Next() {
+		d, err := scanDelivery(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, *d)
+	}
+	return out, rows.Err()
 }
 
 // newestDeliveries reads the rows and closes them before the attempts are

@@ -89,8 +89,11 @@ type TriggerEvent struct {
 	WorkspaceID string          `json:"workspace_id"`
 	Agent       string          `json:"agent"`
 	Pipeline    TriggerPipeline `json:"pipeline"`
-	Run         TriggerRun      `json:"run"`
-	Next        TriggerNext     `json:"next"`
+	// Run is absent from an added event that is not about a run.
+	Run TriggerRun `json:"run,omitzero"`
+	// Summary is what a distribution says about an event it raised.
+	Summary string      `json:"summary,omitempty"`
+	Next    TriggerNext `json:"next"`
 }
 
 // TriggerPipeline names the pipeline an event is about.
@@ -155,6 +158,7 @@ func StartAgentTriggers(s store.Store, users *UserStore, cc *crypto.Config, lead
 		s: s, scan: scan, users: users, pc: NewPermissionChecker(s), ts: ts, leader: leader,
 		publicURL: strings.TrimRight(publicURL, "/"), client: netguard.Outbound().Client(sendTimeout), now: time.Now,
 	}
+	setRaiser(d)
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
 	wg.Add(1)
@@ -162,7 +166,7 @@ func StartAgentTriggers(s store.Store, users *UserStore, cc *crypto.Config, lead
 		defer wg.Done()
 		d.loop(ctx, dispatchInterval)
 	}()
-	return func() { cancel(); wg.Wait() }, nil
+	return func() { cancel(); wg.Wait(); setRaiser(nil) }, nil
 }
 
 func (d *triggerDispatcher) loop(ctx context.Context, every time.Duration) {
