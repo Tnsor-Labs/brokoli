@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 )
 
 // Incident ownership on alerts (brokoli-ee#242).
@@ -108,6 +109,9 @@ type AlertQuery struct {
 	AssigneeUserIDs []string
 	UnreadOnly      bool
 	Limit           int
+	// Scope, when set, keeps the list to what the request's scope lists
+	// (ADR-049). The scoped store sets it; handlers do not.
+	Scope *tenancy.Scope
 }
 
 // stateClause renders the SQL for a lifecycle state.
@@ -142,6 +146,14 @@ func queryAlerts(db *sql.DB, dialect string, q AlertQuery) ([]models.Alert, erro
 	if q.AssigneeIsCaller {
 		query += " AND assignee_user_id = " + ph()
 		args = append(args, q.UserID)
+	}
+	if q.Scope != nil {
+		filter, fargs, err := q.Scope.ListFilter("alerts", "")
+		if err != nil {
+			return nil, err
+		}
+		query += " AND " + bindFilter(filter, ph)
+		args = append(args, fargs...)
 	}
 	if len(q.AssigneeUserIDs) > 0 {
 		marks := make([]string, len(q.AssigneeUserIDs))

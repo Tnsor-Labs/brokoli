@@ -159,6 +159,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Workspace isolation for runs and alerts** (ADR-049 phase 1) -- @hc12r.
+  Run routes (run, logs, events, plan, previews, grid, cancel, resume,
+  backfill, dry run), `GET /api/runs?started_by=me`, and the alert list and
+  unread count checked the organization only, so inside one organization a
+  person reached runs of workspaces they do not belong to, and every
+  workspace's Home showed the others' runs and failures. They now go
+  through one tenancy scope, computed by the workspace middleware and
+  applied by a scoped store: lists show the current workspace, and an item
+  by id is reachable in any workspace the caller belongs to, "not found"
+  otherwise. An alert of a deleted pipeline is no longer shown.
+
 - **A log warning could end up in a CLI command's output** -- @hc12r.
   Every command tried to open `brok.log` in the working directory when it
   started, and outside the allowed data directories printed a warning to

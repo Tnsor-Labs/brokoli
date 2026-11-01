@@ -63,7 +63,10 @@ func (h *AlertHandler) List(w http.ResponseWriter, r *http.Request) {
 		query.AssigneeIsCaller = true
 	}
 
-	alerts, err := h.store.QueryAlerts(query)
+	// The current workspace's alerts only (ADR-049): the list filtered by
+	// organization alone showed every workspace's failures in each.
+	scoped := scopedStore(h.store, r)
+	alerts, err := scoped.Alerts(query)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -77,7 +80,7 @@ func (h *AlertHandler) List(w http.ResponseWriter, r *http.Request) {
 	// unauthenticated deployment has always had.
 	var unread int
 	if userID != "" {
-		unread, err = h.store.CountUnreadAlertsFor(orgID, userID)
+		unread, err = scoped.CountUnreadAlerts(userID)
 	} else {
 		unread, err = h.store.CountUnreadAlerts(orgID)
 	}

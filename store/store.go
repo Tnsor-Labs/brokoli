@@ -10,6 +10,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskruntime"
+	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 )
 
 // nonTerminalRunStatusFilter is the SQL fragment (valid in both the SQLite
@@ -334,6 +335,14 @@ type CalendarDay struct {
 // APIStore) satisfies the whole set, so composing changes nothing for
 // them; it only gives narrow consumers a smaller surface to depend on.
 type Store interface {
+	// Tenancy (ADR-049). TenancyOwner answers the organization and
+	// workspace of one row of a registered resource; the scoped variants
+	// keep a list to what a tenancy.Scope lists. Handlers reach these
+	// through store.Scoped, not directly.
+	TenancyOwner(resource, id string) (orgID, workspaceID string, err error)
+	ListRunIDsStartedByIn(scope tenancy.Scope, userID string, limit int) ([]string, error)
+	CountUnreadAlertsIn(scope tenancy.Scope, userID string) (int, error)
+
 	PipelineStore
 	RunStore
 	NodeRunStore
