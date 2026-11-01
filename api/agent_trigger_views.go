@@ -108,10 +108,14 @@ func (h *triggersAPI) runNotices(w http.ResponseWriter, r *http.Request) {
 		// Oldest first, so the first match is the first proposal made.
 		sort.SliceStable(proposals, func(i, j int) bool { return proposals[i].CreatedAt.Before(proposals[j].CreatedAt) })
 	}
-	names := map[string]string{}
+	seen := map[string]*Agent{}
 	out := make([]RunNotice, 0, len(deliveries))
 	for _, d := range deliveries {
-		n := RunNotice{DeliveryID: d.ID, TriggerID: d.TriggerID, AgentID: d.AgentID, AgentName: h.agentName(names, d.AgentID),
+		a := h.visibleAgent(r, seen, d.AgentID)
+		if a == nil {
+			continue
+		}
+		n := RunNotice{DeliveryID: d.ID, TriggerID: d.TriggerID, AgentID: d.AgentID, AgentName: a.Name,
 			Event: d.Event, Status: d.Status, Reason: d.Reason, CreatedAt: d.CreatedAt, FinishedAt: d.FinishedAt}
 		for _, cr := range proposals {
 			if cr.CreatedBy == d.AgentID && !cr.CreatedAt.Before(d.CreatedAt) {
@@ -135,18 +139,22 @@ func (h *triggersAPI) pipelineTriggers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	callerID, manager := h.callerManages(r)
-	names := map[string]string{}
+	seen := map[string]*Agent{}
 	out := []PipelineTrigger{}
 	for _, t := range triggers {
 		if t.PipelineID != "" && t.PipelineID != p.ID {
 			continue
 		}
-		pt := PipelineTrigger{ID: t.ID, AgentID: t.AgentID, AgentName: h.agentName(names, t.AgentID), Events: t.Events,
+		a := h.visibleAgent(r, seen, t.AgentID)
+		if a == nil {
+			continue
+		}
+		pt := PipelineTrigger{ID: t.ID, AgentID: t.AgentID, AgentName: a.Name, Events: t.Events,
 			Delivery: t.Delivery, Scope: "workspace", Enabled: t.Enabled, CooldownSeconds: t.CooldownSeconds}
 		if t.PipelineID != "" {
 			pt.Scope = "pipeline"
 		}
-		if a, err := h.agents.users.GetAgent(t.AgentID); err == nil && callerID != "" && (manager || a.OwnerID == callerID) && visible(r, a) {
+		if callerID != "" && (manager || a.OwnerID == callerID) {
 			pt.URL, pt.MayManage = t.URL, true
 		}
 		out = append(out, pt)
@@ -165,14 +173,19 @@ func (h *triggersAPI) callerManages(r *http.Request) (string, bool) {
 	return id, h.agents.pc.HasPermission(r, models.PermSettingsManageUsers)
 }
 
-func (h *triggersAPI) agentName(cache map[string]string, id string) string {
-	if n, ok := cache[id]; ok {
-		return n
+// visibleAgent is the agent with id when the caller may learn it exists
+// (AgentHooks.Visible: a distribution scopes agents to a tenant), or nil.
+// A run or pipeline the caller may see does not make every agent named on
+// it theirs to know: a trigger is checked against the pipeline when it
+// delivers, not when it is listed.
+func (h *triggersAPI) visibleAgent(r *http.Request, cache map[string]*Agent, id string) *Agent {
+	if a, ok := cache[id]; ok {
+		return a
 	}
-	n := id
-	if a, err := h.agents.users.GetAgent(id); err == nil {
-		n = a.Name
+	a, err := h.agents.users.GetAgent(id)
+	if err != nil || !visible(r, a) {
+		a = nil
 	}
-	cache[id] = n
-	return n
+	cache[id] = a
+	return a
 }

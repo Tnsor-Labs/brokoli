@@ -92,6 +92,8 @@ reconstruct from git archaeology.
   any. `GET /api/pipelines/{id}/triggers` lists the triggers on a
   pipeline and on its whole workspace. Both answer anyone who may see the
   pipeline; a webhook's URL is shown only to whoever may manage the agent.
+  Neither lists an agent the caller may not know of (a distribution that
+  scopes agents to a tenant decides).
   `GET /api/agents/trigger-events` lists the event types a trigger may
   subscribe to, with what each means. A distribution can add its own:
   `api.RegisterTriggerEvent` while the program starts, then
