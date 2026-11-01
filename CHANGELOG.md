@@ -66,8 +66,12 @@ reconstruct from git archaeology.
   title and a description for the reviewer. Otherwise it reports what it
   found and proposes nothing. It never applies a change, proposes nothing
   more while its own proposal for the pipeline waits, and acknowledges a
-  feed event only after triaging it. Claude is the default model provider;
-  any other plugs in as a command that reads the request on stdin.
+  feed event only after triaging it. The model can be Claude (the
+  default), any model behind an OpenAI-compatible API (`--provider openai
+  --base-url ...`: OpenAI, Azure OpenAI, Gemini, Mistral, DeepSeek, Groq,
+  OpenRouter, or Ollama, vLLM and LM Studio locally), or a program of your
+  own that reads the request on stdin. Every answer is checked against the
+  decision's shape before the agent acts on it.
 
 ### Fixed
 

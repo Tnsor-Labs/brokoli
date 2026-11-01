@@ -1,8 +1,8 @@
 """Tests for the reference triage agent: python3 -m unittest test_triage.py
 
 They need no server and no model: Brokoli and the model are stand-ins.
-The Anthropic test runs only when the anthropic package is installed; it
-checks the request the SDK sends, against a local server.
+The provider tests run only when that provider's package is installed;
+they check the request the SDK sends, against a local server.
 """
 
 import base64
@@ -11,6 +11,8 @@ import hmac
 import http.server
 import json
 import os
+import shlex
+import sys
 import threading
 import time
 import unittest
@@ -283,6 +285,141 @@ class AnthropicRequestTest(unittest.TestCase):
         self.assertIn("server-side-fallback-2026-07-01", headers.get("anthropic-beta", ""))
         self.assertTrue(body["stream"])
         self.assertNotIn("temperature", body)
+
+
+try:
+    import openai
+
+    OPENAI_SDK = int(openai.__version__.split(".")[0]) >= 1
+except ImportError:
+    OPENAI_SDK = False
+
+
+@unittest.skipUnless(OPENAI_SDK, "openai from requirements.txt is not installed")
+class OpenAIRequestTest(unittest.TestCase):
+    """What the OpenAI-compatible provider sends, caught by a local server."""
+
+    def setUp(self):
+        self.requests = []
+        self.answer = {"content": json.dumps(fix(FIXED)), "refusal": None, "finish_reason": "stop"}
+        outer = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                outer.requests.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
+                a = outer.answer
+                out = json.dumps({
+                    "id": "c1", "object": "chat.completion", "created": 1, "model": body["model"],
+                    "choices": [{"index": 0, "finish_reason": a["finish_reason"],
+                                 "message": {"role": "assistant", "content": a["content"], "refusal": a["refusal"]}}],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.shutdown)
+        self.url = f"http://127.0.0.1:{self.srv.server_port}/v1"
+        for k, v in {"TRIAGE_TEST_KEY": "key-1", "OPENAI_BASE_URL": None}.items():
+            self.addCleanup(os.environ.__setitem__, k, os.environ[k]) if k in os.environ else self.addCleanup(os.environ.pop, k, None)
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def model(self, effort=None, response_format="json_schema", key_env="TRIAGE_TEST_KEY"):
+        return triage.OpenAIModel("some-model", effort, self.url, key_env, response_format)
+
+    def test_the_request_asks_for_the_decision_by_schema(self):
+        decision, reply = self.model().decide([{"role": "user", "content": "x"}])
+        self.assertEqual(decision["verdict"], "fix")
+        self.assertEqual(reply, [{"role": "assistant", "content": self.answer["content"]}])
+        path, headers, body = self.requests[0]
+        self.assertEqual(path, "/v1/chat/completions")
+        self.assertEqual(headers.get("authorization"), "Bearer key-1")
+        self.assertEqual(body["model"], "some-model")
+        self.assertEqual(body["messages"][0], {"role": "system", "content": triage.SYSTEM})
+        self.assertEqual(body["messages"][1:], [{"role": "user", "content": "x"}])
+        self.assertEqual(body["response_format"], {"type": "json_schema", "json_schema": {
+            "name": "decision", "schema": triage.DECISION, "strict": True}})
+        self.assertNotIn("reasoning_effort", body, "not every model takes one")
+
+    def test_an_effort_is_sent_as_reasoning_effort(self):
+        self.model(effort="low").decide([{"role": "user", "content": "x"}])
+        self.assertEqual(self.requests[0][2]["reasoning_effort"], "low")
+
+    def test_json_object_puts_the_schema_in_the_prompt(self):
+        self.model(response_format="json_object").decide([{"role": "user", "content": "x"}])
+        body = self.requests[0][2]
+        self.assertEqual(body["response_format"], {"type": "json_object"})
+        self.assertIn(json.dumps(triage.DECISION), body["messages"][0]["content"])
+
+    def test_a_server_of_your_own_needs_no_key(self):
+        self.model(key_env="TRIAGE_NO_SUCH_KEY").decide([{"role": "user", "content": "x"}])
+        self.assertEqual(len(self.requests), 1)
+
+    def test_what_is_not_a_decision_is_refused(self):
+        # Each answer but the last holds a good decision, so only the guard
+        # named can be what refuses it.
+        good = json.dumps(fix(FIXED))
+        cases = {
+            "a refusal": ({"content": good, "refusal": "I cannot help with that", "finish_reason": "stop"}, "I cannot help"),
+            "cut off": ({"content": good, "refusal": None, "finish_reason": "length"}, "output limit"),
+            "filtered": ({"content": good, "refusal": None, "finish_reason": "content_filter"}, "content filter"),
+            "not JSON": ({"content": "here is my answer", "refusal": None, "finish_reason": "stop"}, "not JSON"),
+            "a field missing": ({"content": json.dumps({"verdict": "fix"}), "refusal": None, "finish_reason": "stop"}, "no finding"),
+            "another verdict": ({"content": json.dumps({**fix(FIXED), "verdict": "apply"}), "refusal": None, "finish_reason": "stop"}, "'apply'"),
+        }
+        for name, (answer, why) in cases.items():
+            with self.subTest(name):
+                self.answer = answer
+                with self.assertRaisesRegex(triage.Refused, why):
+                    self.model(response_format="json_object").decide([{"role": "user", "content": "x"}])
+
+
+class CommandModelTest(unittest.TestCase):
+    def command(self, answer):
+        return triage.CommandModel(f"{shlex.quote(sys.executable)} -c {shlex.quote(f'print({answer!r})')}")
+
+    def test_the_command_answers_the_decision(self):
+        decision, _ = self.command(json.dumps(fix(FIXED))).decide([{"role": "user", "content": "x"}])
+        self.assertEqual(decision["verdict"], "fix")
+
+    def test_an_answer_of_the_wrong_shape_is_refused(self):
+        with self.assertRaisesRegex(triage.Refused, "'apply'"):
+            self.command(json.dumps({**fix(FIXED), "verdict": "apply"})).decide([{"role": "user", "content": "x"}])
+
+
+class ProviderChoiceTest(unittest.TestCase):
+    def args(self, *argv):
+        p = triage.argparse.ArgumentParser()
+        p.error = lambda msg: (_ for _ in ()).throw(ValueError(msg))
+        ns = triage.argparse.Namespace(provider="anthropic", model=None, effort=None, base_url=None,
+                                       api_key_env="OPENAI_API_KEY", response_format="json_schema",
+                                       model_command=None)
+        for k, v in zip(argv[::2], argv[1::2]):
+            setattr(ns, k, v)
+        return p, ns
+
+    def test_a_model_command_alone_still_means_the_command_provider(self):
+        self.assertIsInstance(triage.make_model(*self.args("model_command", "cat")), triage.CommandModel)
+
+    def test_what_cannot_work_is_refused_before_any_call(self):
+        for argv, why in [
+            (("provider", "openai"), "needs --model"),
+            (("provider", "command"), "needs --model-command"),
+            (("effort", "minimal"), "anthropic"),
+        ]:
+            with self.subTest(argv), self.assertRaisesRegex(ValueError, why):
+                triage.make_model(*self.args(*argv))
 
 
 if __name__ == "__main__":
