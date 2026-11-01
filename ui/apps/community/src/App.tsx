@@ -6,7 +6,7 @@ import { LoginRoute, OAuthConsentPage, RequireAuth, SessionProvider } from '@bro
 import { observeRoutes } from '@brokoli/observe'
 import { pipelineRoutes } from '@brokoli/pipelines'
 import { ErrorScreen, NotMigrated, ToastProvider } from '@brokoli/ui'
-import { workspaceRoutes } from '@brokoli/workspace'
+import { agentRoutes, workspaceRoutes } from '@brokoli/workspace'
 import { Shell } from './Shell'
 
 /*
@@ -41,8 +41,14 @@ const router = createHashRouter([
                   { path: 'home', element: <HomePage /> },
                   ...pipelineRoutes(),
                   ...workspaceRoutes(),
+                  ...agentRoutes(),
                   ...observeRoutes(),
-                  { path: '*', element: <NotMigrated title="This page">There is no page at this address.</NotMigrated> },
+                  {
+                    path: '*',
+                    element: (
+                      <NotMigrated title="This page">There is no page at this address.</NotMigrated>
+                    ),
+                  },
                 ],
               },
             ],

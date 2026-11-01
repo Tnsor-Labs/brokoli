@@ -38,6 +38,19 @@ export {
   templateApi,
 } from './endpoints'
 export type { DeleteResolve } from './endpoints'
+export { agentsApi, triggersApi } from './agents'
+export type {
+  Agent,
+  AgentToken,
+  AgentTrigger,
+  DeliveryAttempt,
+  DeliveryStatus,
+  PipelineTrigger,
+  RunNotice,
+  TriggerDelivery,
+  TriggerEventType,
+  TriggerInput,
+} from './agents'
 export {
   closeLiveClient,
   dashboardKey,

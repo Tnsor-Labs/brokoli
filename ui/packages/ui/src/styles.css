@@ -1115,6 +1115,9 @@
 
 /* ---------- Table ---------- */
 .bk-table-wrap {
+  /* A containing block, so absolutely positioned cell content (bk-sr-only
+     headers, switch knobs) scrolls with the table instead of widening the page. */
+  position: relative;
   overflow-x: auto;
   border: 1px solid var(--bk-color-border);
   border-radius: var(--bk-radius-lg);
