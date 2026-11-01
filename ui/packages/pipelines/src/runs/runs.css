@@ -1024,3 +1024,11 @@
   flex-direction: column;
   gap: 4px;
 }
+.bk-run-agent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+.bk-run-agent > span {
+  min-width: 0;
+}

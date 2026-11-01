@@ -10,6 +10,45 @@
 .ag-back:hover {
   color: var(--bk-color-text);
 }
+.ag-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+}
+.ag-avatars {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: 8px;
+  max-width: 760px;
+}
+.ag-avatar-pick {
+  display: grid;
+  align-content: start;
+  justify-items: center;
+  gap: 6px;
+  padding: 8px 4px;
+  border: 2px solid transparent;
+  border-radius: var(--bk-radius-lg);
+  background: none;
+  color: var(--bk-color-text-muted);
+  font: inherit;
+  font-size: var(--bk-text-xs);
+  cursor: pointer;
+}
+.ag-avatar-pick:hover {
+  background: var(--bk-color-hover);
+}
+.ag-avatar-pick[aria-pressed='true'] {
+  border-color: var(--bk-color-accent);
+  color: var(--bk-color-text);
+}
+.ag-avatar-pick:focus-visible {
+  outline: 2px solid var(--bk-color-accent);
+  outline-offset: 2px;
+}
+.ag-avatar-pick:disabled {
+  cursor: progress;
+}
 .ag-meta {
   display: flex;
   flex-wrap: wrap;

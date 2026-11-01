@@ -13,6 +13,17 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Agent avatars** -- @hc12r. Every agent has one of eight avatars from
+  the broccoli family (broccoli, romanesco, cauliflower, purple sprouting,
+  broccolini, Brussels sprout, kohlrabi and seedling), drawn from the
+  Brokoli mark, each with a face of its own. An agent starts with the one
+  its id hashes to; its owner can pick another on the agent's page. It
+  shows in the agents list, on the agent's page, beside "Agents told" on a
+  run, and in a pipeline's settings. The API returns it as `avatar` and
+  takes it on `PATCH /api/agents/{id}`; an agent's owner may change it
+  without `settings.manage_users`. `AgentAvatar` and `AgentAvatarPicker`
+  are exported for a distribution's own pages.
+
 - **Agent triggers: subscribe an agent to run events** (ADR-047) -- @hc12r.
   A trigger names an agent, the events it wants (`run.failed`, which
   includes runs a quality check or contract gate stopped, and

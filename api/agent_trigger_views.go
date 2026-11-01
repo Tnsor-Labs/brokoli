@@ -23,15 +23,17 @@ import (
 
 // RunNotice is one agent told about a run.
 type RunNotice struct {
-	DeliveryID string     `json:"delivery_id"`
-	TriggerID  string     `json:"trigger_id"`
-	AgentID    string     `json:"agent_id"`
-	AgentName  string     `json:"agent_name"`
-	Event      string     `json:"event"`
-	Status     string     `json:"status"`
-	Reason     string     `json:"reason,omitempty"`
-	CreatedAt  time.Time  `json:"created_at"`
-	FinishedAt *time.Time `json:"finished_at,omitempty"`
+	DeliveryID string `json:"delivery_id"`
+	TriggerID  string `json:"trigger_id"`
+	AgentID    string `json:"agent_id"`
+	AgentName  string `json:"agent_name"`
+	// AgentAvatar is the agent's avatar (Agent.Avatar).
+	AgentAvatar string     `json:"agent_avatar"`
+	Event       string     `json:"event"`
+	Status      string     `json:"status"`
+	Reason      string     `json:"reason,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 	// Proposal is the first change request the agent made to the pipeline
 	// after it was told, if it made one.
 	Proposal *NoticeProposal `json:"proposal,omitempty"`
@@ -46,11 +48,13 @@ type NoticeProposal struct {
 
 // PipelineTrigger is a trigger seen from a pipeline it watches.
 type PipelineTrigger struct {
-	ID        string   `json:"id"`
-	AgentID   string   `json:"agent_id"`
-	AgentName string   `json:"agent_name"`
-	Events    []string `json:"events"`
-	Delivery  string   `json:"delivery"`
+	ID        string `json:"id"`
+	AgentID   string `json:"agent_id"`
+	AgentName string `json:"agent_name"`
+	// AgentAvatar is the agent's avatar (Agent.Avatar).
+	AgentAvatar string   `json:"agent_avatar"`
+	Events      []string `json:"events"`
+	Delivery    string   `json:"delivery"`
 	// Scope is "pipeline" for a trigger on this pipeline alone, or
 	// "workspace" for one on every pipeline in the workspace.
 	Scope           string `json:"scope"`
@@ -115,7 +119,7 @@ func (h *triggersAPI) runNotices(w http.ResponseWriter, r *http.Request) {
 		if a == nil {
 			continue
 		}
-		n := RunNotice{DeliveryID: d.ID, TriggerID: d.TriggerID, AgentID: d.AgentID, AgentName: a.Name,
+		n := RunNotice{DeliveryID: d.ID, TriggerID: d.TriggerID, AgentID: d.AgentID, AgentName: a.Name, AgentAvatar: a.Avatar,
 			Event: d.Event, Status: d.Status, Reason: d.Reason, CreatedAt: d.CreatedAt, FinishedAt: d.FinishedAt}
 		for _, cr := range proposals {
 			if cr.CreatedBy == d.AgentID && !cr.CreatedAt.Before(d.CreatedAt) {
@@ -149,7 +153,7 @@ func (h *triggersAPI) pipelineTriggers(w http.ResponseWriter, r *http.Request) {
 		if a == nil {
 			continue
 		}
-		pt := PipelineTrigger{ID: t.ID, AgentID: t.AgentID, AgentName: a.Name, Events: t.Events,
+		pt := PipelineTrigger{ID: t.ID, AgentID: t.AgentID, AgentName: a.Name, AgentAvatar: a.Avatar, Events: t.Events,
 			Delivery: t.Delivery, Scope: "workspace", Enabled: t.Enabled, CooldownSeconds: t.CooldownSeconds}
 		if t.PipelineID != "" {
 			pt.Scope = "pipeline"

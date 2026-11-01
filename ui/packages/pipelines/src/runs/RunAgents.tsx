@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { triggersApi } from '@brokoli/api'
+import { AgentAvatar } from '@brokoli/ui'
 import { keys, paths } from '../keys'
 import { noticeLabel } from './model'
 
@@ -36,20 +37,23 @@ export function RunAgents({
       <dt>Agents told</dt>
       <dd className="bk-run-agents">
         {list.map((n) => (
-          <span key={n.delivery_id}>
-            <Link to={`/agents/${encodeURIComponent(n.agent_id)}`} className="bk-mono">
-              {n.agent_name}
-            </Link>{' '}
-            <span className="bk-muted">
-              {noticeLabel(n)} ({n.event})
+          <span key={n.delivery_id} className="bk-run-agent">
+            <AgentAvatar avatar={n.agent_avatar} size={20} />
+            <span>
+              <Link to={`/agents/${encodeURIComponent(n.agent_id)}`} className="bk-mono">
+                {n.agent_name}
+              </Link>{' '}
+              <span className="bk-muted">
+                {noticeLabel(n)} ({n.event})
+              </span>
+              {n.proposal && (
+                <>
+                  {', proposed '}
+                  <Link to={paths.change(pipelineId, n.proposal.id)}>{n.proposal.title}</Link>
+                  <span className="bk-muted"> ({n.proposal.status})</span>
+                </>
+              )}
             </span>
-            {n.proposal && (
-              <>
-                {', proposed '}
-                <Link to={paths.change(pipelineId, n.proposal.id)}>{n.proposal.title}</Link>
-                <span className="bk-muted"> ({n.proposal.status})</span>
-              </>
-            )}
           </span>
         ))}
       </dd>
