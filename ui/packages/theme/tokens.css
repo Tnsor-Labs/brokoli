@@ -138,6 +138,18 @@
   --bk-duration-fast: 120ms;
   --bk-duration: 180ms;
 
+  /* Agent avatars (AgentAvatar): the tile behind each one, and the eyes.
+     Tiles are a deep tint of the vegetable so the brighter drawing reads. */
+  --bk-color-avatar-broccoli: #173326;
+  --bk-color-avatar-romanesco: #26301a;
+  --bk-color-avatar-cauliflower: #302c22;
+  --bk-color-avatar-purple: #2a2238;
+  --bk-color-avatar-broccolini: #15302b;
+  --bk-color-avatar-sprout: #1e2f1d;
+  --bk-color-avatar-kohlrabi: #25233a;
+  --bk-color-avatar-seedling: #1f2d1b;
+  --bk-color-avatar-eye: #0b0f0d;
+
   --bk-z-sticky: 10;
   --bk-z-menu: 900;
   --bk-z-modal: 1000;
@@ -150,6 +162,15 @@
  * it clears 4.5:1 on all four backgrounds.
  */
 :root[data-theme='light'] {
+  --bk-color-avatar-broccoli: #e3f6ea;
+  --bk-color-avatar-romanesco: #eef6d9;
+  --bk-color-avatar-cauliflower: #f4f0e2;
+  --bk-color-avatar-purple: #efe7fa;
+  --bk-color-avatar-broccolini: #e1f3ee;
+  --bk-color-avatar-sprout: #e8f4e2;
+  --bk-color-avatar-kohlrabi: #ebe8f6;
+  --bk-color-avatar-seedling: #edf6e6;
+  --bk-color-avatar-eye: #15201a;
   --bk-color-canvas: #f3f3f0;
   --bk-color-canvas-subtle: #eeeeea;
   --bk-color-surface: #ffffff;

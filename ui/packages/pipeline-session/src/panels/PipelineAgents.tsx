@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { triggersApi } from '@brokoli/api'
-import { Badge } from '@brokoli/ui'
+import { AgentAvatar, Badge } from '@brokoli/ui'
 
 /*
  * The agents told about this pipeline's runs (ADR-047): the triggers on it
@@ -30,6 +30,7 @@ export function PipelineAgents({ pipelineId }: { pipelineId: string }) {
         <ul className="ps-agents">
           {list.map((t) => (
             <li key={t.id}>
+              <AgentAvatar avatar={t.agent_avatar} size={20} />
               {t.may_manage ? (
                 <Link to={`/agents/${encodeURIComponent(t.agent_id)}`} className="bk-mono">
                   {t.agent_name}

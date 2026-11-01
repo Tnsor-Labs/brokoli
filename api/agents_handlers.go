@@ -234,16 +234,35 @@ func (h *agentsAPI) update(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !admin {
-		writeError(w, http.StatusForbidden, "insufficient permissions: "+string(models.PermSettingsManageUsers))
-		return
-	}
 	var req struct {
 		Role        *string `json:"role"`
 		Description *string `json:"description"`
+		Avatar      *string `json:"avatar"`
 	}
 	if !decodeBody(w, r, &req) {
 		return
+	}
+	// The agent's owner picks its avatar; its role and description are for
+	// whoever manages users.
+	if (req.Role != nil || req.Description != nil) && !admin {
+		writeError(w, http.StatusForbidden, "insufficient permissions: "+string(models.PermSettingsManageUsers))
+		return
+	}
+	if req.Avatar != nil {
+		if *req.Avatar != "" && !validAgentAvatar(*req.Avatar) {
+			writeError(w, http.StatusBadRequest, "no avatar "+*req.Avatar+"; an agent's avatar is one of "+strings.Join(AgentAvatars[:], ", ")+", or empty for the default")
+			return
+		}
+		if err := h.users.SetAgentAvatar(a.ID, *req.Avatar); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not update the agent")
+			return
+		}
+		if req.Role == nil && req.Description == nil {
+			updated, _ := h.users.GetAgent(a.ID)
+			AuditLog(r, "update", "agent", a.ID, map[string]interface{}{"avatar": a.Avatar}, map[string]interface{}{"avatar": *req.Avatar})
+			writeJSON(w, http.StatusOK, updated)
+			return
+		}
 	}
 	role, description := a.Role, a.Description
 	if req.Role != nil {

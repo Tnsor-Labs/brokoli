@@ -147,7 +147,7 @@ brokoli agents token revoke <agent> <token id>
 GET    /api/agents                          the agents you own; every agent for settings.manage_users
 POST   /api/agents                          {"name", "role"?, "description"?, "owner_id"?}
 GET    /api/agents/{id}
-PATCH  /api/agents/{id}                     {"role"?, "description"?}
+PATCH  /api/agents/{id}                     {"role"?, "description"?, "avatar"?}
 DELETE /api/agents/{id}                     disable it and revoke its tokens
 GET    /api/agents/{id}/tokens
 POST   /api/agents/{id}/tokens              {"name", "expires_in_days"?, "on_behalf_of_owner"?}
@@ -166,9 +166,18 @@ An agent:
   "owner_name": "ada",
   "disabled": false,
   "created_at": "2026-10-20T07:14:10Z",
-  "last_used_at": "2026-10-20T07:20:00Z"
+  "last_used_at": "2026-10-20T07:20:00Z",
+  "avatar": "romanesco"
 }
 ```
+
+Every agent has an avatar, one of the broccoli family the UI draws:
+`broccoli`, `romanesco`, `cauliflower`, `purple`, `broccolini`, `sprout`,
+`kohlrabi` and `seedling`. Until its owner picks one, it has the one its id
+hashes to, so it is the same on every read. Its owner, or whoever manages
+users, picks another with `PATCH {"avatar": "kohlrabi"}`, and `""` goes
+back to the default. Changing its role or description still needs
+`settings.manage_users`.
 
 Issuing a token answers `{"token": "bka_...", "record": {...}, "note":
 "This is the only time the token is shown..."}`.

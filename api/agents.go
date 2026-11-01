@@ -21,6 +21,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"strings"
 	"time"
@@ -85,6 +86,36 @@ type Agent struct {
 	Disabled    bool       `json:"disabled"`
 	CreatedAt   time.Time  `json:"created_at"`
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	// Avatar is the agent's picture, one of AgentAvatars: its owner's
+	// choice, or else one drawn from its id.
+	Avatar string `json:"avatar"`
+}
+
+// AgentAvatars are the pictures an agent can have, the broccoli family the
+// UI draws. The order is part of the contract: an agent with no choice gets
+// the one its id hashes to, so reordering would change everyone's default.
+var AgentAvatars = [agentAvatarCount]string{"broccoli", "romanesco", "cauliflower", "purple", "broccolini", "sprout", "kohlrabi", "seedling"}
+
+// agentAvatarCount is how many avatars there are.
+const agentAvatarCount = 8
+
+// validAgentAvatar reports whether name is one of AgentAvatars.
+func validAgentAvatar(name string) bool {
+	for _, a := range AgentAvatars {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultAgentAvatar is the avatar an agent has until its owner picks one:
+// FNV-1a of its id, so it is stable and needs nothing stored.
+func defaultAgentAvatar(id string) string {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(id))
+	// A constant divisor, so the index needs no integer conversion.
+	return AgentAvatars[h.Sum32()%agentAvatarCount]
 }
 
 // AgentToken is a token's record; the token itself is never stored.
@@ -206,13 +237,18 @@ func (us *UserStore) discardAgent(id string) error {
 const agentName = `COALESCE(NULLIF(u.display_name, ''), u.username)`
 
 const agentColumns = `u.id, ` + agentName + `, u.description, u.role, u.owner_id, COALESCE(o.username, ''), u.disabled_at, u.created_at,
-	COALESCE((SELECT MAX(t.last_used_at) FROM agent_tokens t WHERE t.agent_id = u.id), '')`
+	COALESCE((SELECT MAX(t.last_used_at) FROM agent_tokens t WHERE t.agent_id = u.id), ''), u.avatar_url`
 
 func scanAgent(row interface{ Scan(...any) error }) (*Agent, error) {
 	var a Agent
-	var disabled, created, lastUsed string
-	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Role, &a.OwnerID, &a.OwnerName, &disabled, &created, &lastUsed); err != nil {
+	var disabled, created, lastUsed, avatar string
+	if err := row.Scan(&a.ID, &a.Name, &a.Description, &a.Role, &a.OwnerID, &a.OwnerName, &disabled, &created, &lastUsed, &avatar); err != nil {
 		return nil, err
+	}
+	// An agent's avatar is stored in the avatar_url a person's account uses
+	// for a picture. Anything but one of the names is no choice.
+	if a.Avatar = avatar; !validAgentAvatar(avatar) {
+		a.Avatar = defaultAgentAvatar(a.ID)
 	}
 	a.Disabled = disabled != ""
 	a.CreatedAt, _ = time.Parse(time.RFC3339, created)
@@ -257,6 +293,13 @@ func (us *UserStore) ListAgents(ownerID string) ([]Agent, error) {
 // UpdateAgent sets an agent's role and description.
 func (us *UserStore) UpdateAgent(id, role, description string) error {
 	res, err := us.db.Exec(us.q(`UPDATE users SET role = ?, description = ? WHERE id = ? AND kind = ?`), role, description, id, UserKindAgent)
+	return oneRow(res, err, ErrAgentNotFound)
+}
+
+// SetAgentAvatar records the owner's choice of avatar; "" goes back to the
+// one drawn from the agent's id.
+func (us *UserStore) SetAgentAvatar(id, avatar string) error {
+	res, err := us.db.Exec(us.q(`UPDATE users SET avatar_url = ? WHERE id = ? AND kind = ?`), avatar, id, UserKindAgent)
 	return oneRow(res, err, ErrAgentNotFound)
 }
 

@@ -18,6 +18,8 @@ export interface Agent {
   disabled: boolean
   created_at: string
   last_used_at?: string
+  /** One of the agent avatars: its owner's choice, or one drawn from its id. */
+  avatar?: string
 }
 
 export interface AgentToken {
@@ -98,6 +100,7 @@ export interface RunNotice {
   trigger_id: string
   agent_id: string
   agent_name: string
+  agent_avatar?: string
   event: string
   status: DeliveryStatus
   reason?: string
@@ -111,6 +114,7 @@ export interface PipelineTrigger {
   id: string
   agent_id: string
   agent_name: string
+  agent_avatar?: string
   events: string[]
   delivery: 'webhook' | 'feed'
   scope: 'pipeline' | 'workspace'
@@ -134,7 +138,8 @@ export const agentsApi = {
   get: (id: string) => request<Agent>(`/agents/${enc(id)}`),
   create: (body: { name: string; role: string; description: string; owner_id?: string }) =>
     request<Agent>('/agents', { json: body }),
-  update: (id: string, body: { role?: string; description?: string }) =>
+  /** avatar may be set by the agent's owner; "" goes back to the default. */
+  update: (id: string, body: { role?: string; description?: string; avatar?: string }) =>
     request<Agent>(`/agents/${enc(id)}`, { method: 'PATCH', json: body }),
   disable: (id: string) => request<void>(`/agents/${enc(id)}`, { method: 'DELETE' }),
   tokens: (id: string) =>

@@ -5,6 +5,7 @@ import { Bot, Plus } from 'lucide-react'
 import { agentsApi, type Agent } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import {
+  AgentAvatar,
   Badge,
   Button,
   Callout,
@@ -117,9 +118,7 @@ export function AgentsPage() {
                 >
                   <td>
                     <div className="ws-name">
-                      <span className="ws-type-icon">
-                        <Bot size={16} aria-hidden="true" />
-                      </span>
+                      <AgentAvatar avatar={a.avatar} size={32} />
                       <span>
                         <Link
                           to={`/agents/${encodeURIComponent(a.id)}`}

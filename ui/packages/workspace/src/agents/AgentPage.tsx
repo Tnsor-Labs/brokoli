@@ -5,6 +5,7 @@ import { ArrowLeft, Copy } from 'lucide-react'
 import { agentsApi, currentWorkspace, type Agent } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import {
+  AgentAvatar,
   Badge,
   Button,
   Callout,
@@ -23,6 +24,7 @@ import {
   useToast,
 } from '@brokoli/ui'
 import { AGENTS_KEY } from './AgentsPage'
+import { AgentAvatarPicker } from './AgentAvatarPicker'
 import { AgentTriggers } from './AgentTriggers'
 import { connectCommand, roleLabel, tokenState } from './model'
 import '../workspace.css'
@@ -35,6 +37,7 @@ export function AgentPage() {
   const queryClient = useQueryClient()
   const toast = useToast()
   const agent = useQuery({ queryKey: [...AGENTS_KEY, id], queryFn: () => agentsApi.get(id) })
+  const session = useSession()
   const [disabling, setDisabling] = useState(false)
 
   const back = (
@@ -59,11 +62,19 @@ export function AgentPage() {
       </Page>
     )
   const a = agent.data
+  // Its owner picks the agent's avatar, as may whoever manages users.
+  const mayDress =
+    !a.disabled && (session.user?.id === a.owner_id || session.can('settings.manage_users'))
   return (
     <Page>
       {back}
       <PageHeader
-        title={<span className="bk-mono">{a.name}</span>}
+        title={
+          <span className="ag-title">
+            <AgentAvatar avatar={a.avatar} size={52} />
+            <span className="bk-mono">{a.name}</span>
+          </span>
+        }
         description={a.description || undefined}
         meta={
           <div className="ag-meta">
@@ -92,6 +103,12 @@ export function AgentPage() {
           Its tokens no longer work and its triggers deliver nothing. What it did stays recorded as
           it.
         </Callout>
+      )}
+      {mayDress && (
+        <AgentAvatarPicker
+          agent={a}
+          onChanged={() => queryClient.invalidateQueries({ queryKey: AGENTS_KEY })}
+        />
       )}
       <AgentTriggers agent={a} />
       {!a.disabled && <Tokens agent={a} />}
