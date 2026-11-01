@@ -26,6 +26,7 @@ import { FAILURE, keys, paths } from '../keys'
 import { LogView } from './LogView'
 import { NodeData } from './NodeData'
 import { Provenance } from './Provenance'
+import { RunAgents } from './RunAgents'
 import { Queries } from './Queries'
 import { Timeline } from './Timeline'
 import { canRerunStatus, descendantClosure, isActive, nodeStatuses, primaryAttempts, runDuration, totalRows, triggeredByLabel } from './model'
@@ -213,6 +214,7 @@ export function RunDetail({
             </dd>
           </div>
         )}
+        <RunAgents runId={r.id} pipelineId={pipeline.id} finishedAt={r.finished_at} />
         {r.params && Object.keys(r.params).length > 0 && (
           <div className="is-wide">
             <dt>Parameters</dt>

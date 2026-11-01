@@ -81,6 +81,9 @@ reconstruct from git archaeology.
   delivery log with every attempt and a button to send one again. Before,
   triggers could only be managed with the CLI or the API. A distribution
   with its own agents page can embed the triggers panel (`AgentTriggers`).
+  A run's page names the agents told about it, where each delivery stands,
+  and the change request each then proposed, linked; a pipeline's settings
+  list the triggers that watch it.
 
 - **See which agents were told about a run, and which triggers watch a
   pipeline** (ADR-047 phase 3) -- @hc12r. `GET /api/runs/{id}/agents`
