@@ -69,6 +69,7 @@ func tools() []tool {
 		{permission: "runs.cancel", add: addCancelRun},
 		{permission: "runs.view", add: addNextEvents},
 		{permission: "messages.send", add: addSendMessage},
+		{permission: "messages.send", add: addReadMessages},
 	}
 }
 

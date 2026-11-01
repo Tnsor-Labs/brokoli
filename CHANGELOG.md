@@ -13,6 +13,19 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **People reply to agents** (ADR-048 phase 2) -- @hc12r. A person writes
+  in their conversation with an agent (`POST
+  /api/messages/conversations/{id}/messages`), and an agent's owner can open
+  one from the agent's page (`POST /api/agents/{id}/conversation`). The
+  agent is told through a new trigger event, `message.received`, which goes
+  to every trigger of the agent that subscribes to it, by webhook or feed,
+  whatever pipeline the trigger watches and with no cooldown, and carries
+  the message and who wrote it. Agents read with the MCP tool
+  `read_messages` (unread messages, then marked read; or one conversation's
+  thread) and `GET /api/agents/me/messages`, and answer with `send_message`
+  in the same conversation. People's messages are redacted, cut at 8 KB and
+  limited to 30 an hour in a conversation.
+
 - **Agents can message people** (ADR-048 phase 1) -- @hc12r. An agent
   sends a message to its owner, a person in its workspace, or the whole
   workspace, with the MCP tool `send_message` or `POST

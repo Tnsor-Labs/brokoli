@@ -83,9 +83,10 @@ export function isTestDelivery(d: Pick<TriggerDelivery, 'run_id'>): boolean {
   return d.run_id.startsWith('test-')
 }
 
-/** The run a delivery is about, or null for a test or an added event with no run. */
+/** The run a delivery is about, or null for a test, a message, or an added event with no run. */
 export function deliveryRun(d: Pick<TriggerDelivery, 'run_id'>): string | null {
-  if (isTestDelivery(d) || d.run_id.startsWith('raised:')) return null
+  if (isTestDelivery(d) || d.run_id.startsWith('raised:') || d.run_id.startsWith('message:'))
+    return null
   return d.run_id
 }
 

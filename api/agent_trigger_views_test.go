@@ -23,8 +23,8 @@ func TestTheEventTypesAreListedWithWhatTheyMean(t *testing.T) {
 		return out
 	}
 	got := list()
-	if len(got) != 3 || got[0].Name != "run.failed" || got[1].Name != "run.blocked" || got[2].Name != "run.recovered" {
-		t.Fatalf("event types = %+v, want the three built-in ones in order", got)
+	if len(got) != 4 || got[0].Name != "run.failed" || got[1].Name != "run.blocked" || got[2].Name != "run.recovered" || got[3].Name != "message.received" {
+		t.Fatalf("event types = %+v, want the four built-in ones in order", got)
 	}
 	for _, e := range got {
 		if e.Description == "" {
@@ -36,7 +36,7 @@ func TestTheEventTypesAreListedWithWhatTheyMean(t *testing.T) {
 	before := TriggerEventTypes()
 	t.Cleanup(func() { triggerEventsMu.Lock(); triggerEventTypes = before; triggerEventsMu.Unlock() })
 	RegisterTriggerEvent(TriggerEventType{Name: "pipeline.deadline_missed", Description: "A pipeline did not finish by its deadline."})
-	if got := list(); len(got) != 4 || got[3].Name != "pipeline.deadline_missed" {
+	if got := list(); len(got) != 5 || got[4].Name != "pipeline.deadline_missed" {
 		t.Fatalf("after registering: %+v", got)
 	}
 	b.pipelineWithNodes("orders", models.DefaultWorkspaceID)

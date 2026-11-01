@@ -5,11 +5,11 @@ needs, something urgent. The message lands in the person's inbox in
 Brokoli, shown with the agent's avatar and name, with links to the runs,
 pipelines and change requests it is about.
 
-This is phase 1 of [ADR-048](adr/048-talking-with-agents.md): agents send,
-people read, mark read and mute. Replies, scheduled triggers and reminders
-come in later phases. Agent identities are [agents.md](agents.md); what
-tells an agent to start work is [agent-triggers.md](agent-triggers.md); the
-MCP tools are [mcp.md](mcp.md).
+This is [ADR-048](adr/048-talking-with-agents.md), phases 1 and 2: agents
+send; people read, reply, mark read and mute; a reply reaches the agent
+through its triggers. Scheduled triggers and reminders come later. Agent
+identities are [agents.md](agents.md); what tells an agent to start work is
+[agent-triggers.md](agent-triggers.md); the MCP tools are [mcp.md](mcp.md).
 
 ## Sending
 
@@ -125,6 +125,63 @@ GET /api/agents/{id}/messages/summary            {"days": 7, "sent": 12, "muted"
 ```
 
 That is for the agent's owner, or whoever manages users.
+
+## Replying
+
+A person writes in their conversation with an agent:
+
+```
+POST /api/messages/conversations/{id}/messages   {"text": "Yes, and keep the column nullable."}
+POST /api/agents/{id}/conversation               its owner opens (or finds) their conversation with an agent
+```
+
+Only the conversation's person writes in it. A conversation exists once the
+agent has written to someone, or once the agent's owner (or whoever manages
+users) opens one from the agent's page, so nobody starts a conversation with
+an agent they do not own. A person's message is redacted like an agent's
+(it may be posted to the agent's URL), cut at 8 KB, and limited to 30 an
+hour in one conversation. Nothing reaches a disabled agent (`409`).
+
+The answer says how many of the agent's triggers were told (`told`). With
+none, it adds a note: the agent is not told at once, and reads the message
+when it next checks.
+
+### How the agent hears it
+
+Every trigger of the agent that subscribes to **`message.received`**
+([agent-triggers.md](agent-triggers.md)) is told, by webhook or in its feed,
+whatever pipeline the trigger watches and without a cooldown:
+
+```json
+{
+  "type": "message.received",
+  "id": "dlv_...",
+  "agent": "triage-bot",
+  "message": {"conversation_id": "...", "message_id": "msg_...", "from": "ada", "text": "Yes, and keep the column nullable."},
+  "next": {"suggested_tool": "read_messages", "mcp": "https://.../api/mcp"}
+}
+```
+
+An agent with no such trigger still reads its messages; it just learns of
+them when it checks.
+
+### How the agent reads it
+
+With MCP, **`read_messages`**: without arguments, the unread messages people
+wrote to the agent, oldest first, each with `from_name` and its
+conversation, which it then marks read; with `conversation_id`, that
+conversation's whole thread. The agent answers with `send_message` to the
+person's username, which lands in the same conversation. Having written to
+the agent, that person may also be sent `urgent` messages.
+
+```
+GET  /api/agents/me/messages?unread=true         what people wrote to the agent (unread=false for all)
+POST /api/agents/me/messages/read                {"message_ids": [...]}, or {} for all
+GET  /api/agents/me/conversations/{id}           one of its conversations
+```
+
+These answer the calling agent only. The agent's view of a conversation does
+not say whether the person muted it.
 
 ## Kept
 

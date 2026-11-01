@@ -25,6 +25,14 @@ import (
 //	POST /api/messages/read                          mark one message, or all, read
 //	POST /api/messages/conversations/{id}/mute       mute or unmute an agent's conversation
 //	GET  /api/agents/{id}/messages/summary           for its owner: what the agent sent this week
+//
+// Phase 2, replies:
+//
+//	POST /api/messages/conversations/{id}/messages   a person writes in their conversation
+//	POST /api/agents/{id}/conversation               its owner opens (or finds) their conversation with an agent
+//	GET  /api/agents/me/messages                     an agent reads what people wrote to it
+//	POST /api/agents/me/messages/read                an agent marks people's messages read
+//	GET  /api/agents/me/conversations/{id}           an agent reads one of its conversations
 
 // The limits per agent (ADR-048 section 4).
 const (
@@ -51,7 +59,16 @@ func registerMessageRoutes(r chi.Router, users *UserStore, pc *PermissionChecker
 	r.Post("/api/messages/read", h.read)
 	r.Post("/api/messages/conversations/{id}/mute", h.mute)
 	r.Get("/api/agents/{id}/messages/summary", h.summary)
+	r.Post("/api/messages/conversations/{id}/messages", h.reply)
+	r.Post("/api/agents/{id}/conversation", h.open)
+	r.Get("/api/agents/me/messages", h.agentInbox)
+	r.Post("/api/agents/me/messages/read", h.agentRead)
+	r.Get("/api/agents/me/conversations/{id}", h.agentConversation)
 }
+
+// limitPersonHour is how many messages a person writes in one
+// conversation in an hour.
+const limitPersonHour = 30
 
 type sendInput struct {
 	To    string        `json:"to"`
@@ -539,4 +556,196 @@ func (cs *ChangeRequestStore) byID(id string) (*ChangeRequest, error) {
 		return nil, ErrChangeNotFound
 	}
 	return cr, err
+}
+
+// cutText trims and cuts text at the message limit on a rune boundary,
+// saying so in the text.
+func cutText(text string) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= maxMessageText {
+		return text
+	}
+	cut := maxMessageText
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + "\n\n[cut: the message was longer than 8 KB]"
+}
+
+// reply is a person writing in their conversation. The agent is told
+// through its triggers that subscribe to message.received; with none, it
+// reads the message when it checks.
+func (h *messagesAPI) reply(w http.ResponseWriter, r *http.Request) {
+	c, ok := h.own(w, r)
+	if !ok {
+		return
+	}
+	a, err := h.users.GetAgent(c.AgentID)
+	if err != nil || a.Disabled {
+		writeError(w, http.StatusConflict, "the agent is disabled; nothing reaches it")
+		return
+	}
+	var in struct {
+		Text string `json:"text"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	text := cutText(in.Text)
+	if text == "" {
+		writeError(w, http.StatusBadRequest, "a message needs text")
+		return
+	}
+	now := h.now()
+	if n, _ := h.ms.personSentSince(c.ID, now.Add(-time.Hour)); n >= limitPersonHour {
+		w.Header().Set("Retry-After", "600")
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf("at most %d messages an hour in one conversation", limitPersonHour))
+		return
+	}
+	redacted := mcpserver.RedactText(text)
+	m := &Message{Level: MessageInfo, Text: redacted, Links: []MessageLink{}}
+	if err := h.ms.AddPersonMessage(c, m, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not store the message")
+		return
+	}
+	from := c.PersonID
+	if u, err := h.users.GetUserByID(c.PersonID); err == nil {
+		from = u.Username
+	}
+	told := raiseAgentMessage(a.ID, a.Name, c.WorkspaceID, m, from)
+	AuditLog(r, "write_to_agent", "agent", a.ID, nil, map[string]interface{}{"conversation_id": c.ID, "message_id": m.ID})
+	out := map[string]interface{}{"message": m, "told": told}
+	if told == 0 {
+		out["note"] = a.Name + " has no trigger for messages, so it is not told at once; it reads them when it checks."
+	}
+	if redacted != text {
+		out["redacted"] = true
+	}
+	writeJSON(w, http.StatusCreated, out)
+}
+
+// open finds or makes the caller's conversation with an agent they own, or
+// that they may manage: how an owner starts talking to their agent.
+func (h *messagesAPI) open(w http.ResponseWriter, r *http.Request) {
+	a, callerID, _, ok := (&agentsAPI{users: h.users, pc: h.pc}).owned(w, r)
+	if !ok {
+		return
+	}
+	if a.Disabled {
+		writeError(w, http.StatusConflict, "the agent is disabled")
+		return
+	}
+	c, err := h.ms.conversation(workspaceOf(r), a.ID, callerID, h.now())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not open the conversation")
+		return
+	}
+	writeJSON(w, http.StatusOK, c)
+}
+
+// agentID is the calling agent's id; otherwise an answer is written.
+func (h *messagesAPI) agentID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if !AgentIdentitiesEnabled {
+		writeError(w, http.StatusNotFound, "agent identities are not available on this server")
+		return "", false
+	}
+	claims, _ := r.Context().Value("claims").(*jwt.MapClaims)
+	if claims == nil {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return "", false
+	}
+	if !isAgentClaims(claims) {
+		writeError(w, http.StatusForbidden, "only an agent reads its messages here; a person reads the inbox")
+		return "", false
+	}
+	id, _ := (*claims)["sub"].(string)
+	return id, true
+}
+
+// PersonMessage is a person's message to an agent, as the agent reads it.
+type PersonMessage struct {
+	AgentMessage
+	FromName string `json:"from_name"`
+}
+
+func (h *messagesAPI) agentInbox(w http.ResponseWriter, r *http.Request) {
+	agentID, ok := h.agentID(w, r)
+	if !ok {
+		return
+	}
+	limit := inboxDefault
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = min(v, inboxMax)
+	}
+	unread := r.URL.Query().Get("unread") != "false"
+	msgs, err := h.ms.FromPeople(agentID, "", unread, limit)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read your messages")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"messages": h.named(msgs)})
+}
+
+// named adds each writer's username.
+func (h *messagesAPI) named(msgs []AgentMessage) []PersonMessage {
+	names := map[string]string{}
+	out := make([]PersonMessage, 0, len(msgs))
+	for _, m := range msgs {
+		n, seen := names[m.PersonID]
+		if !seen {
+			n = m.PersonID
+			if u, err := h.users.GetUserByID(m.PersonID); err == nil {
+				n = u.Username
+			}
+			names[m.PersonID] = n
+		}
+		out = append(out, PersonMessage{AgentMessage: m, FromName: n})
+	}
+	return out
+}
+
+func (h *messagesAPI) agentRead(w http.ResponseWriter, r *http.Request) {
+	agentID, ok := h.agentID(w, r)
+	if !ok {
+		return
+	}
+	var in struct {
+		MessageIDs []string `json:"message_ids"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+	if len(in.MessageIDs) > inboxMax {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("at most %d ids", inboxMax))
+		return
+	}
+	if err := h.ms.MarkReadByAgent(agentID, in.MessageIDs, h.now()); err != nil {
+		writeError(w, http.StatusInternalServerError, "could not mark read")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *messagesAPI) agentConversation(w http.ResponseWriter, r *http.Request) {
+	agentID, ok := h.agentID(w, r)
+	if !ok {
+		return
+	}
+	c, err := h.ms.Conversation(chi.URLParam(r, "id"))
+	if err != nil || c.AgentID != agentID {
+		writeError(w, http.StatusNotFound, ErrConversationNotFound.Error())
+		return
+	}
+	msgs, err := h.ms.ConversationMessages(c.ID, inboxMax)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "could not read the conversation")
+		return
+	}
+	person := map[string]interface{}{"id": c.PersonID}
+	if u, err := h.users.GetUserByID(c.PersonID); err == nil {
+		person["username"] = u.Username
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"conversation": map[string]interface{}{
+		"id": c.ID, "workspace_id": c.WorkspaceID, "created_at": c.CreatedAt, "last_message_at": c.LastMessageAt,
+	}, "person": person, "messages": msgs})
 }

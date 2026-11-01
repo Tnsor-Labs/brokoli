@@ -204,6 +204,95 @@ func (ms *MessageStore) AddAgentMessage(workspaceID, agentID, personID, audience
 	return c, nil
 }
 
+// AddPersonMessage stores a person's message in their conversation with an
+// agent (ADR-048 phase 2). Its read_at is when the agent read it.
+func (ms *MessageStore) AddPersonMessage(c *Conversation, m *Message, now time.Time) error {
+	links, err := json.Marshal(m.Links)
+	if err != nil {
+		return err
+	}
+	m.ID, m.ConversationID, m.From, m.CreatedAt = newMessageID(now), c.ID, MessageFromPerson, now
+	if m.Level == "" {
+		m.Level = MessageInfo
+	}
+	if _, err := ms.db.Exec(ms.q(`INSERT INTO agent_messages (id, conversation_id, agent_id, author, level, audience, topic, body, links, muted, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`),
+		m.ID, c.ID, c.AgentID, MessageFromPerson, m.Level, "person", m.Topic, m.Text, string(links), fixedTime(now)); err != nil {
+		return err
+	}
+	_, err = ms.db.Exec(ms.q(`UPDATE agent_conversations SET last_message_at = ? WHERE id = ?`), fixedTime(now), c.ID)
+	return err
+}
+
+// AgentMessage is a person's message as its agent reads it.
+type AgentMessage struct {
+	Message
+	PersonID string `json:"person_id"`
+}
+
+// FromPeople is what people wrote to an agent, oldest first: unread only
+// when unreadOnly, in one conversation when conversationID is set.
+func (ms *MessageStore) FromPeople(agentID, conversationID string, unreadOnly bool, limit int) ([]AgentMessage, error) {
+	query := `SELECT m.` + strings.ReplaceAll(messageColumns, ", ", ", m.") + `, c.person_id FROM agent_messages m
+		JOIN agent_conversations c ON c.id = m.conversation_id
+		WHERE c.agent_id = ? AND m.author = ?`
+	args := []any{agentID, MessageFromPerson}
+	if conversationID != "" {
+		query += ` AND c.id = ?`
+		args = append(args, conversationID)
+	}
+	if unreadOnly {
+		query += ` AND m.read_at = ''`
+	}
+	rows, err := ms.db.Query(ms.q(query+` ORDER BY m.created_at, m.id LIMIT ?`), append(args, limit)...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AgentMessage{}
+	for rows.Next() {
+		var am AgentMessage
+		var links, created, read string
+		var muted int
+		if err := rows.Scan(&am.ID, &am.ConversationID, &am.From, &am.Level, &am.Topic, &am.Text, &links, &muted, &created, &read, &am.PersonID); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(links), &am.Links); err != nil || am.Links == nil {
+			am.Links = []MessageLink{}
+		}
+		am.CreatedAt = parseFixedTime(created)
+		if read != "" {
+			t := parseFixedTime(read)
+			am.ReadAt = &t
+		}
+		out = append(out, am)
+	}
+	return out, rows.Err()
+}
+
+// MarkReadByAgent marks people's messages to an agent read: the ones named,
+// or all of them when ids is empty.
+func (ms *MessageStore) MarkReadByAgent(agentID string, ids []string, now time.Time) error {
+	query := `UPDATE agent_messages SET read_at = ? WHERE read_at = '' AND author = ? AND agent_id = ?`
+	args := []any{fixedTime(now), MessageFromPerson, agentID}
+	if len(ids) > 0 {
+		query += ` AND id IN (?` + strings.Repeat(", ?", len(ids)-1) + `)`
+		for _, id := range ids {
+			args = append(args, id)
+		}
+	}
+	_, err := ms.db.Exec(ms.q(query), args...)
+	return err
+}
+
+// personSentSince is how many messages a person wrote in a conversation since a time.
+func (ms *MessageStore) personSentSince(conversationID string, since time.Time) (int, error) {
+	var n int
+	err := ms.db.QueryRow(ms.q(`SELECT COUNT(*) FROM agent_messages WHERE conversation_id = ? AND author = ? AND created_at >= ?`),
+		conversationID, MessageFromPerson, fixedTime(since)).Scan(&n)
+	return n, err
+}
+
 // newMessageID sorts in the order messages are written, so a conversation
 // reads in order by id when two share a timestamp.
 func newMessageID(now time.Time) string {

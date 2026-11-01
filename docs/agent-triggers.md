@@ -50,6 +50,7 @@ its access stops its triggers without anyone editing them.
 | `run.failed` | a run ends failed. A quality check or contract gate that blocks the data ends the run this way too: the event names each failed step and its type, so `quality_check` or `contract_gate` means data was stopped, not that code broke. It also covers a run that startup recovery could not bring back. | `explain_run` |
 | `run.blocked` | a run did not start because its dependencies were not satisfied | `get_lineage` |
 | `run.recovered` | a run succeeds after the pipeline's previous finished run failed (runs that were blocked or cancelled, or are still going, are passed over). It is how an agent learns that a fix it proposed, once applied, worked. | `list_runs` |
+| `message.received` | a person wrote to the agent in a conversation ([agent-messages.md](agent-messages.md)). It is about the agent, not a pipeline: every trigger of the agent that subscribes to it is told, whatever pipeline it watches, and no cooldown holds it back. The event carries the conversation, the message and who wrote it, and no `pipeline`. | `read_messages` |
 
 A successful run, a cancelled run and a run still in progress are not
 events here.

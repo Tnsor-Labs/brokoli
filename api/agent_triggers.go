@@ -25,6 +25,11 @@ const (
 	TriggerEventRunFailed    = "run.failed"
 	TriggerEventRunBlocked   = "run.blocked"
 	TriggerEventRunRecovered = "run.recovered"
+	// TriggerEventMessageReceived is a person writing to the agent
+	// (ADR-048 section 3). It is about the agent, not a pipeline: it goes
+	// to the agent's triggers whatever pipeline they watch, and no
+	// cooldown holds it back.
+	TriggerEventMessageReceived = "message.received"
 )
 
 // TriggerEventType is an event a trigger may subscribe to, with what it
@@ -43,6 +48,7 @@ var (
 		{TriggerEventRunFailed, "A run failed, including when a quality check or contract gate stopped it.", "explain_run"},
 		{TriggerEventRunBlocked, "A run did not start because its dependencies were not satisfied.", "get_lineage"},
 		{TriggerEventRunRecovered, "A run succeeded after the previous run of the same pipeline did not.", "list_runs"},
+		{TriggerEventMessageReceived, "A person wrote to the agent in a conversation.", "read_messages"},
 	}
 	triggerEventName = regexp.MustCompile(`^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$`)
 )

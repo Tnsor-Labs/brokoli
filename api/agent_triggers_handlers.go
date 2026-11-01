@@ -119,14 +119,7 @@ func (h *triggersAPI) feedRefusal(d *TriggerDelivery) string {
 	if !t.Enabled {
 		return "the trigger is disabled"
 	}
-	p, err := h.agents.pc.store.GetPipeline(d.PipelineID)
-	if err != nil {
-		return "the pipeline no longer exists"
-	}
-	if ok, why := h.agents.users.agentMaySeePipeline(h.agents.pc, t.AgentID, t.WorkspaceID, p); !ok {
-		return "the agent may not see this pipeline now: " + why
-	}
-	return ""
+	return deliveryRefusal(h.agents.pc.store, h.agents.users, h.agents.pc, d, t)
 }
 
 // test queues a synthetic run.failed, marked "test", about the trigger's

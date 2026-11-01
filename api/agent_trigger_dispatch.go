@@ -84,16 +84,53 @@ type TriggerEvent struct {
 	ID   string `json:"id"`
 	// Test marks an event someone asked for to try a receiver: no run
 	// happened (ADR-047 section 7).
-	Test        bool            `json:"test,omitempty"`
-	OccurredAt  time.Time       `json:"occurred_at"`
-	WorkspaceID string          `json:"workspace_id"`
-	Agent       string          `json:"agent"`
-	Pipeline    TriggerPipeline `json:"pipeline"`
+	Test        bool      `json:"test,omitempty"`
+	OccurredAt  time.Time `json:"occurred_at"`
+	WorkspaceID string    `json:"workspace_id"`
+	Agent       string    `json:"agent"`
+	// Pipeline is absent from an event about the agent itself (a message).
+	Pipeline TriggerPipeline `json:"pipeline,omitzero"`
 	// Run is absent from an added event that is not about a run.
 	Run TriggerRun `json:"run,omitzero"`
 	// Summary is what a distribution says about an event it raised.
-	Summary string      `json:"summary,omitempty"`
-	Next    TriggerNext `json:"next"`
+	Summary string `json:"summary,omitempty"`
+	// Message is the message a message.received event is about.
+	Message *TriggerMessage `json:"message,omitempty"`
+	Next    TriggerNext     `json:"next"`
+}
+
+// TriggerMessage is what a message.received event says about the message.
+// The agent reads the rest of the conversation with read_messages.
+type TriggerMessage struct {
+	ConversationID string `json:"conversation_id"`
+	MessageID      string `json:"message_id"`
+	From           string `json:"from"`
+	Text           string `json:"text"`
+}
+
+// deliveryRefusal is why delivery del, for trigger t, may not reach its
+// agent now, or "". A delivery about a pipeline needs the agent to see the
+// pipeline now; one about the agent itself (a message) needs the agent to
+// be there and enabled.
+func deliveryRefusal(s store.Store, users *UserStore, pc *PermissionChecker, del *TriggerDelivery, t *AgentTrigger) string {
+	if del.PipelineID == "" {
+		a, err := users.GetAgent(t.AgentID)
+		if err != nil {
+			return "the agent no longer exists"
+		}
+		if a.Disabled {
+			return "the agent is disabled"
+		}
+		return ""
+	}
+	p, err := s.GetPipeline(del.PipelineID)
+	if err != nil {
+		return "the pipeline no longer exists"
+	}
+	if ok, why := users.agentMaySeePipeline(pc, t.AgentID, t.WorkspaceID, p); !ok {
+		return "the agent may not see this pipeline now: " + why
+	}
+	return ""
 }
 
 // TriggerPipeline names the pipeline an event is about.
@@ -398,12 +435,8 @@ func (d *triggerDispatcher) deliver(ctx context.Context, del *TriggerDelivery) e
 	if !t.Enabled {
 		return d.ts.Skip(del, "the trigger is disabled", now)
 	}
-	p, err := d.s.GetPipeline(del.PipelineID)
-	if err != nil {
-		return d.ts.Skip(del, "the pipeline no longer exists", now)
-	}
-	if ok, why := d.users.agentMaySeePipeline(d.pc, t.AgentID, t.WorkspaceID, p); !ok {
-		return d.ts.Skip(del, "the agent may not see this pipeline now: "+why, now)
+	if why := deliveryRefusal(d.s, d.users, d.pc, del, t); why != "" {
+		return d.ts.Skip(del, why, now)
 	}
 	secrets, err := d.ts.SigningSecrets(t.ID, now)
 	if err != nil {
