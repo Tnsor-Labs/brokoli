@@ -24,7 +24,10 @@ reconstruct from git archaeology.
   `read_messages` (unread messages, then marked read; or one conversation's
   thread) and `GET /api/agents/me/messages`, and answer with `send_message`
   in the same conversation. People's messages are redacted, cut at 8 KB and
-  limited to 30 an hour in a conversation.
+  limited to 30 an hour in a conversation. In the UI, opening a message in the Inbox shows
+  its whole conversation with a box to answer in (Ctrl+Enter sends), and an
+  agent's page has "Talk to" for its owner; when the agent has no trigger
+  for messages, the reply says it reads them when it next checks.
 
 - **Agents can message people** (ADR-048 phase 1) -- @hc12r. An agent
   sends a message to its owner, a person in its workspace, or the whole

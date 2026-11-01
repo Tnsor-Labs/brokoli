@@ -270,6 +270,15 @@ export const messagesApi = {
     request<Conversation>(`/messages/conversations/${enc(conversationId)}/mute`, {
       json: { muted },
     }),
+  /** A person writes in their conversation; told is how many of the agent's triggers were told. */
+  reply: (conversationId: string, text: string) =>
+    request<{ message: AgentMessage; told: number; note?: string; redacted?: boolean }>(
+      `/messages/conversations/${enc(conversationId)}/messages`,
+      { json: { text } },
+    ),
+  /** An agent's owner opens (or finds) their conversation with it. */
+  open: (agentId: string) =>
+    request<Conversation>(`/agents/${enc(agentId)}/conversation`, { method: 'POST' }),
   /** For an agent's owner: what it sent in the last week, and how much was muted. */
   summary: (agentId: string) =>
     request<{ days: number; sent: number; muted: number }>(

@@ -14,7 +14,6 @@ import {
   EmptyState,
   SegmentedControl,
   Skeleton,
-  Switch,
   cx,
   errorMessage,
   formatDateTime,
@@ -22,6 +21,7 @@ import {
   useToast,
   type Tone,
 } from '@brokoli/ui'
+import { Conversation } from '@brokoli/workspace'
 import {
   LEVEL_LABEL,
   firstLine as messageLine,
@@ -337,13 +337,16 @@ function MessagesPanel({ onClose }: { onClose: () => void }) {
                 </button>
                 {m.topic && <span className="sh-message-topic">{m.topic}</span>}
                 {open === m.id ? (
-                  <p className="sh-conversation-text">{m.text}</p>
+                  <Conversation
+                    conversationId={m.conversation_id}
+                    onChanged={refresh}
+                    onNavigate={onClose}
+                  />
                 ) : (
-                  <p className="sh-message-line">{messageLine(m.text)}</p>
-                )}
-                {m.links.length > 0 && <MessageLinks links={m.links} onClose={onClose} />}
-                {open === m.id && (
-                  <MessageControls conversationId={m.conversation_id} onChanged={refresh} />
+                  <>
+                    <p className="sh-message-line">{messageLine(m.text)}</p>
+                    {m.links.length > 0 && <MessageLinks links={m.links} onClose={onClose} />}
+                  </>
                 )}
               </div>
             </li>
@@ -367,50 +370,6 @@ function MessageLinks({ links, onClose }: { links: InboxMessage['links']; onClos
           <span key={l.kind + l.id}>{linkLabel(l)}</span>
         )
       })}
-    </div>
-  )
-}
-
-/** Who an opened message is from, and muting that agent's conversation. */
-function MessageControls({
-  conversationId,
-  onChanged,
-}: {
-  conversationId: string
-  onChanged: () => unknown
-}) {
-  const toast = useToast()
-  const queryClient = useQueryClient()
-  const key = ['messages', 'conversation', conversationId]
-  const query = useQuery({ queryKey: key, queryFn: () => messagesApi.conversation(conversationId) })
-  if (!query.data) return null
-  const { conversation, agent } = query.data
-  const name = agent.name ?? 'The agent'
-  const setMuted = async (muted: boolean) => {
-    try {
-      await messagesApi.mute(conversationId, muted)
-      await queryClient.invalidateQueries({ queryKey: key })
-      await onChanged()
-      toast.success(
-        muted ? `${name} is muted` : `${name} is unmuted`,
-        muted ? 'Its messages still arrive, quietly, and do not count on the bell.' : undefined,
-      )
-    } catch (e) {
-      toast.error('Could not change it', e)
-    }
-  }
-  return (
-    <div className="sh-conversation-foot">
-      <span className="sh-quiet">
-        From an agent{agent.owner_name ? `, owned by ${agent.owner_name}` : ''}. Replying comes in a
-        later release.
-      </span>
-      <Switch
-        checked={conversation.muted}
-        label={conversation.muted ? `Unmute ${name}` : `Mute ${name}`}
-        onChange={(next) => void setMuted(next)}
-      />
-      <span className="sh-quiet">{conversation.muted ? 'Muted' : 'Mute'}</span>
     </div>
   )
 }
