@@ -199,3 +199,37 @@ func TestAPipelineShowsTheTriggersThatWatchIt(t *testing.T) {
 		}
 	}
 }
+
+// A distribution scopes agents to a tenant (AgentHooks.Visible). An agent
+// the caller may not know of is left out of a run's notices and a
+// pipeline's triggers, even when the run or pipeline is the caller's.
+func TestTriggerViewsLeaveOutAgentsTheCallerMayNotSee(t *testing.T) {
+	b := newDispatchBed(t)
+	rc := newReceiver(t)
+	b.pipelineWithNodes("orders", models.DefaultWorkspaceID)
+	b.trigger(`{"events":["run.failed"],"url":"` + rc.srv.URL + `","cooldown_seconds":0}`)
+	failed := b.runEvent("orders", models.RunEventTerminal, models.RunStatusFailed, "boom")
+	b.pass()
+
+	count := func(path string) int {
+		t.Helper()
+		rec := serve(b.srv, http.MethodGet, path, b.tokens["vic"], "")
+		var out []map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); rec.Code != http.StatusOK || err != nil {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body.String())
+		}
+		return len(out)
+	}
+	if count("/api/runs/"+failed+"/agents") != 1 || count("/api/pipelines/orders/triggers") != 1 {
+		t.Fatal("before hiding the agent, each view should list it once")
+	}
+	prev := AgentHooks.Visible
+	t.Cleanup(func() { AgentHooks.Visible = prev })
+	AgentHooks.Visible = func(*http.Request, *Agent) bool { return false }
+	if n := count("/api/runs/" + failed + "/agents"); n != 0 {
+		t.Errorf("run notices list %d agents the caller may not see", n)
+	}
+	if n := count("/api/pipelines/orders/triggers"); n != 0 {
+		t.Errorf("pipeline triggers list %d triggers of agents the caller may not see", n)
+	}
+}
