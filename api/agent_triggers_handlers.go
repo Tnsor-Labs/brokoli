@@ -47,6 +47,9 @@ func registerAgentTriggerRoutes(r chi.Router, users *UserStore, pc *PermissionCh
 	r.Post("/api/agents/{id}/triggers/{triggerId}/deliveries/{deliveryId}/redeliver", h.redeliver)
 	r.Post("/api/agents/{id}/triggers/{triggerId}/test", h.test)
 	r.Get("/api/agents/me/events", h.feed)
+	r.Get("/api/agents/trigger-events", h.eventTypes)
+	r.Get("/api/runs/{id}/agents", h.runNotices)
+	r.Get("/api/pipelines/{id}/triggers", h.pipelineTriggers)
 }
 
 const (

@@ -54,6 +54,34 @@ its access stops its triggers without anyone editing them.
 A successful run, a cancelled run and a run still in progress are not
 events here.
 
+`GET /api/agents/trigger-events` lists every event type this server
+offers, with what each means and the MCP tool an agent should start with.
+
+A distribution can add its own types, for example a deadline it tracks.
+In Go, it registers the type while the program starts, then raises it
+when it happens:
+
+```go
+api.RegisterTriggerEvent(api.TriggerEventType{
+	Name:        "pipeline.deadline_missed",
+	Description: "A pipeline did not finish by its deadline.",
+})
+
+// later, on any replica
+api.RaiseTriggerEvent(api.RaisedEvent{
+	Type:       "pipeline.deadline_missed",
+	PipelineID: p.ID,
+	Key:        "2026-11-01",  // or RunID, when it is about a run
+	Summary:    "orders_daily had not finished by 06:00.",
+})
+```
+
+A raised event follows every rule here: it goes to the triggers in the
+pipeline's workspace that subscribe to it, each sends an occurrence (its
+run, or its key for that pipeline) once, the cooldown holds repeats back,
+and the agent's access is checked when it is delivered. Its body is the
+one below with a `summary`, and without `run` when it is not about one.
+
 ## Make one
 
 From the command line, signed in as the agent's owner (`brokoli login`):
@@ -150,6 +178,24 @@ Authorization: Bearer bka_...
 | `brokoli agents trigger test <agent> <trigger>` | `POST /api/agents/{id}/triggers/{trigger}/test` |
 
 Every change is recorded in the audit log.
+
+## See who was told
+
+Two reads answer anyone who may see the pipeline, not only whoever manages
+the agent:
+
+- `GET /api/runs/{id}/agents`: the agents told about a run. Each entry
+  names the agent, the event, where its delivery stands (`delivered`,
+  `pending`, `failed`, `skipped`, `expired`) and, if the agent then
+  proposed a change to the pipeline, that change request (`proposal`: its
+  id, title and status). The proposal is the agent's first change request
+  to the pipeline made after it was told; Brokoli does not ask the agent
+  which run it was answering.
+- `GET /api/pipelines/{id}/triggers`: the triggers that watch a pipeline,
+  those on it alone (`"scope": "pipeline"`) and those on every pipeline in
+  its workspace (`"scope": "workspace"`), enabled or not. A webhook's URL
+  is included, with `"may_manage": true`, only for whoever may manage the
+  agent.
 
 ## What a delivery looks like
 
