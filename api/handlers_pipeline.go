@@ -178,12 +178,8 @@ func (h *PipelineHandler) Get(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, pipeline.OrgID) {
+	if !pipelineVisible(r, pipeline) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, pipeline.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 	writeJSON(w, http.StatusOK, pipeline)
@@ -354,12 +350,8 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, existing.OrgID) {
+	if !pipelineVisible(r, existing) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, existing.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -468,12 +460,8 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, existing.OrgID) {
+	if !pipelineVisible(r, existing) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, existing.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -702,12 +690,8 @@ func (h *PipelineHandler) ListVersions(w http.ResponseWriter, r *http.Request) {
 	// A failed read is refused like another organization's pipeline: the
 	// check used to run only when the read succeeded.
 	p, err := h.store.GetPipeline(id)
-	if err != nil || p == nil || !ValidateOrgAccess(r, p.OrgID) {
+	if err != nil || !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 	versions, err := h.store.ListPipelineVersions(id)
@@ -725,12 +709,8 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	existing, err := h.store.GetPipeline(id)
 	if err == nil {
-		if !ValidateOrgAccess(r, existing.OrgID) {
+		if !pipelineVisible(r, existing) {
 			DenyOrgAccess(w)
-			return
-		}
-		if !userOwnsWorkspace(r, existing.WorkspaceID) {
-			denyWorkspaceAccess(w)
 			return
 		}
 	} else {
@@ -806,12 +786,8 @@ func (h *PipelineHandler) Validate(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -857,12 +833,8 @@ func (h *PipelineHandler) Plan(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 	plan, err := engine.PlanPipeline(p)
@@ -967,12 +939,8 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Validate org access
-	if !ValidateOrgAccess(r, orig.OrgID) {
+	if !pipelineVisible(r, orig) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, orig.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -1054,12 +1022,8 @@ func (h *PipelineHandler) ValidateNodes(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 
@@ -1079,12 +1043,8 @@ func (h *PipelineHandler) Export(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return
 	}
 

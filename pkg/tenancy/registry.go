@@ -28,6 +28,13 @@ func Direct(table, orgCol, workspaceCol string) Spec {
 	return Spec{table: table, orgCol: orgCol, workspaceCol: workspaceCol}
 }
 
+// InWorkspace is a resource that carries only a workspace column. A
+// workspace belongs to one organization, so membership of it implies the
+// organization; there is no organization column to check.
+func InWorkspace(table, workspaceCol string) Spec {
+	return Spec{table: table, workspaceCol: workspaceCol}
+}
+
 // Via is a resource that belongs to the workspace of its parent row, as a
 // run belongs to its pipeline's. The parent must be registered as Direct.
 func Via(table, parentCol, parent string) Spec {
@@ -73,7 +80,7 @@ func Register(name string, s Spec) {
 	defer mu.Unlock()
 	if s.parent != "" {
 		p, ok := registry[s.parent]
-		if !ok || p.workspaceCol == "" {
+		if !ok || p.workspaceCol == "" || p.orgCol == "" {
 			panic(fmt.Sprintf("tenancy: %s's parent %s must be registered as Direct first", name, s.parent))
 		}
 	}
@@ -122,6 +129,9 @@ func OwnerQuery(resource string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if s.parent == "" && s.orgCol == "" {
+		return fmt.Sprintf(`SELECT '', %s FROM %s WHERE %s = ?`, s.workspaceCol, s.table, s.keyCol()), nil
+	}
 	if s.parent == "" {
 		return fmt.Sprintf(`SELECT %s, %s FROM %s WHERE %s = ?`, s.orgCol, s.workspaceCol, s.table, s.keyCol()), nil
 	}
@@ -154,6 +164,15 @@ func (s Scope) ListFilter(resource, alias string) (string, []any, error) {
 			return c
 		}
 		return alias + "." + c
+	}
+	if spec.parent == "" && spec.orgCol == "" {
+		// A workspace-only table: the current workspace, which the
+		// middleware checked the caller belongs to. Without a workspace
+		// registry there is one workspace and nothing to filter on.
+		if !s.byWS {
+			return "1=1", nil, nil
+		}
+		return fmt.Sprintf("(%s = ?)", col(spec.workspaceCol)), []any{s.Workspace}, nil
 	}
 	// Without a workspace registry only the organization is kept to.
 	where, args := fmt.Sprintf("%s = ? AND %s = ?", root.orgCol, root.workspaceCol), []any{s.OrgID, s.Workspace}

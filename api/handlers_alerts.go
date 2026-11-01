@@ -148,7 +148,9 @@ func (h *AlertHandler) ListDLQ(w http.ResponseWriter, r *http.Request) {
 	includeResolved := r.URL.Query().Get("include_resolved") == "true"
 	limit := boundedListLimit(r.URL.Query().Get("limit"))
 
-	entries, err := h.store.ListDLQByOrg(GetOrgIDFromRequest(r), includeResolved, limit)
+	// The current workspace's entries (ADR-049); by organization alone
+	// every workspace listed the others' failed records.
+	entries, err := scopedStore(h.store, r).DLQ(includeResolved, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

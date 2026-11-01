@@ -77,12 +77,8 @@ func (h *triggersAPI) visiblePipeline(w http.ResponseWriter, r *http.Request, id
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return nil, false
 	}
-	if !ValidateOrgAccess(r, p.OrgID) {
+	if !pipelineVisible(r, p) {
 		DenyOrgAccess(w)
-		return nil, false
-	}
-	if !userOwnsWorkspace(r, p.WorkspaceID) {
-		denyWorkspaceAccess(w)
 		return nil, false
 	}
 	return p, true
