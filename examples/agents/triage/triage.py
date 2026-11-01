@@ -322,6 +322,8 @@ class Triage:
         self.model = model
         self.dry_run = dry_run
         self.messages = messages
+        # What it last found, for a person who asks (ADR-048 phase 2).
+        self.last = None
 
     def handle(self, event: dict) -> dict:
         """Triage one event; answers what was done, for the log."""
@@ -330,6 +332,8 @@ class Triage:
         if event.get("test"):
             log(f"test event for {pipeline}: received; nothing to do")
             return {"outcome": "test"}
+        if kind == "message.received":
+            return self.answer()
         if kind != "run.failed" or not run.get("id") or not pipeline:
             log(f"{kind} for {pipeline}: nothing to triage")
             return {"outcome": "ignored"}
@@ -396,6 +400,8 @@ class Triage:
         cr = self.brokoli.call("propose_change", pipeline=pipeline, definition=definition,
                                title=decision["title"], description=description)
         log(f"run {run_id}: proposed \"{decision['title']}\" as change request {cr.get('id')}")
+        self.last = {"run": run_id, "pipeline": pipeline, "finding": decision["finding"],
+                     "proposed": decision["title"], "change_request": cr.get("id")}
         links = [{"kind": "run", "id": run_id}]
         if cr.get("id"):
             links.append({"kind": "change_request", "id": cr["id"]})
@@ -407,11 +413,50 @@ class Triage:
 
     def report(self, pipeline: str, run_id: str, decision: dict) -> dict:
         log(f"run {run_id}: not a definition problem; reporting. {decision['finding']}")
+        self.last = {"run": run_id, "pipeline": pipeline, "finding": decision["finding"]}
         log(decision["description"])
         self.tell(level="attention", topic="A failed run needs a person",
                   text=f"{decision['finding']}\n\n{decision['description']}",
                   links=[{"kind": "run", "id": run_id}, {"kind": "pipeline", "id": pipeline}])
         return {"outcome": "reported", "finding": decision["finding"]}
+
+    def answer(self) -> dict:
+        """Answers what people wrote to the agent (ADR-048 phase 2).
+
+        This reference agent answers every message the same way: with what
+        it last found. It does not take instructions by message; a real
+        agent would hand the message and its conversation to the model."""
+        try:
+            unread = self.brokoli.call("read_messages").get("messages") or []
+        except BrokoliError as e:
+            log(f"could not read messages: {e}")
+            return {"outcome": "no-messages", "reason": str(e)}
+        # One answer to each person, however many messages they sent.
+        writers = []
+        for m in unread:
+            who = m.get("from_name")
+            log(f"message from {who}: {m.get('text', '')[:120]}")
+            if who and who not in writers:
+                writers.append(who)
+        answered = 0
+        for who in writers:
+            if self.dry_run or not self.messages:
+                continue
+            if self.last:
+                text = f"The last run I looked into was {self.last['run']}: {self.last['finding']}"
+                links = [{"kind": "run", "id": self.last["run"]}]
+                if self.last.get("change_request"):
+                    text += f"\n\nI proposed \"{self.last['proposed']}\"; it changes nothing until someone applies it."
+                    links.append({"kind": "change_request", "id": self.last["change_request"]})
+            else:
+                text, links = "I have not looked into a failed run since I started.", []
+            text += "\n\nI am the reference triage agent: I answer with what I found, and do not take instructions by message."
+            try:
+                self.brokoli.call("send_message", to=who, text=text, links=links)
+                answered += 1
+            except BrokoliError as e:
+                log(f"could not answer {who}: {e}")
+        return {"outcome": "answered", "read": len(unread), "answered": answered}
 
     def tell(self, **message):
         """Sends the agent's owner a message in Brokoli (ADR-048). A message
