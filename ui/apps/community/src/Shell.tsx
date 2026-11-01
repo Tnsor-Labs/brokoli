@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Blocks, CircleHelp, House, KeyRound, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Settings, Waypoints, Workflow, type LucideIcon } from 'lucide-react'
+import { Blocks, Bot, CircleHelp, House, KeyRound, LayoutDashboard, PanelLeftClose, PanelLeftOpen, Settings, Waypoints, Workflow, type LucideIcon } from 'lucide-react'
 import { SectionTabs, ShellOverlays, SidebarSearch, SidebarStatus, itemActive, type Section, type ShellPage } from '@brokoli/shell'
 import { SidebarAccount } from '@brokoli/auth'
 import { AppShell, Brand, BrandIcon, IconButton, Menu, NavSection, cx, type BrandIconName } from '@brokoli/ui'
@@ -11,7 +11,7 @@ import './shell.css'
 type Item = { to: string; label: string; icon: LucideIcon | BrandIconName; match: string[]; count?: boolean }
 
 /*
- * Community navigation: seven places, grouped by what a person is doing,
+ * Community navigation: eight places, grouped by what a person is doing,
  * the same shape as Enterprise's. Pages that belong together share one item
  * and a tab strip (SECTIONS below), each keeping its own address; Settings
  * and Help sit at the bottom. Search finds every page by its own name.
@@ -21,6 +21,7 @@ const NAV: { label?: string; items: Item[] }[] = [
     items: [
       { to: '/home', label: 'Home', icon: House, match: ['/home'], count: true },
       { to: '/pipelines', label: 'Pipelines', icon: Workflow, match: ['/pipelines'] },
+      { to: '/agents', label: 'Agents', icon: Bot, match: ['/agents'] },
     ],
   },
   {
@@ -52,6 +53,7 @@ const SECTIONS: Section[] = [
 const PAGES: ShellPage[] = [
   { to: '/home', label: 'Home', group: 'Home', key: 'h' },
   { to: '/pipelines', label: 'Pipelines', group: 'Pipelines', key: 'p' },
+  { to: '/agents', label: 'Agents', group: 'Agents', key: 'e' },
   { to: '/dashboard', label: 'Dashboard', group: 'Observe', key: 'd' },
   { to: '/calendar', label: 'Schedule (calendar)', group: 'Observe', key: 'm' },
   { to: '/lineage', label: 'Lineage', group: 'Observe', key: 'l' },

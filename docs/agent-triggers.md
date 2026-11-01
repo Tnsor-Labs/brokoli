@@ -167,6 +167,11 @@ Authorization: Bearer bka_...
 
 ## Manage them
 
+In the UI, open **Agents**, then the agent: its page lists its triggers,
+makes new ones, switches them off, sends test events, makes a new signing
+secret and shows each trigger's deliveries. The CLI and the API do the
+same:
+
 | CLI | API |
 |---|---|
 | `brokoli agents trigger list <agent>` | `GET /api/agents/{id}/triggers` |

@@ -73,6 +73,15 @@ reconstruct from git archaeology.
   own that reads the request on stdin. Every answer is checked against the
   decision's shape before the agent acts on it.
 
+- **An Agents page** (ADR-047 phase 3) -- @hc12r. Agents now have a page
+  of their own in the UI: create one, issue and revoke its tokens (with the
+  command to connect a client), and manage its triggers: make a webhook or
+  feed trigger, choose its events, pipelines and cooldown, switch it off,
+  send a test event, make a new signing secret (shown once), and read its
+  delivery log with every attempt and a button to send one again. Before,
+  triggers could only be managed with the CLI or the API. A distribution
+  with its own agents page can embed the triggers panel (`AgentTriggers`).
+
 - **See which agents were told about a run, and which triggers watch a
   pipeline** (ADR-047 phase 3) -- @hc12r. `GET /api/runs/{id}/agents`
   lists the agents a run was delivered to, where each delivery stands,
