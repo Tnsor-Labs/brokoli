@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 	"github.com/golang-jwt/jwt/v5"
 )
 
@@ -66,6 +67,12 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 					return
 				}
 			}
+			// The request's tenancy scope (ADR-049), from the membership
+			// just resolved, so handlers do not resolve it again.
+			ctx := context.WithValue(r.Context(), workspaceKey, wsID)
+			ctx = tenancy.WithScope(ctx, scopeFor(GetOrgIDFromRequest(r), wsID, userWorkspaces, requestActor(r)))
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
 		}
 
 		ctx := context.WithValue(r.Context(), workspaceKey, wsID)
@@ -143,25 +150,11 @@ func sanitizeWorkspaceID(id string) string {
 // allowed here and left to the org check, mirroring ValidateOrgAccess's own
 // allowance for a resource with no org.
 func userOwnsWorkspace(r *http.Request, resourceWorkspaceID string) bool {
-	if GetOrgIDFromRequest(r) == "" {
-		return true // community edition: no tenancy to enforce
-	}
-	if UserWorkspaceResolverFunc == nil {
-		return true // single tenant: no second workspace exists
-	}
-	if resourceWorkspaceID == "" || resourceWorkspaceID == models.DefaultWorkspaceID {
-		return true // legacy row, governed by the org check
-	}
-	userID := getUserIDFromRequest(r)
-	if userID == "" {
-		return false
-	}
-	for _, ws := range UserWorkspaceResolverFunc(userID) {
-		if ws == resourceWorkspaceID {
-			return true
-		}
-	}
-	return false
+	// The membership rule lives in tenancy.Scope.Sees (ADR-049); this is
+	// kept for the handlers not yet moved onto the scoped store. The
+	// organization is checked by the caller's ValidateOrgAccess.
+	scope := RequestScope(r)
+	return scope.Sees(scope.OrgID, resourceWorkspaceID)
 }
 
 // denyWorkspaceAccess answers a cross-workspace request. 404 rather than 403,

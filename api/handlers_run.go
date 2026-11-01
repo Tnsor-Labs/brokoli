@@ -51,25 +51,19 @@ func NewRunHandler(s store.Store, e *engine.Engine) *RunHandler {
 // The checks it replaces ran only when the read succeeded, so a failed read
 // skipped them, and "missing" and "another organization's" got different
 // answers, which says which ids exist elsewhere.
+//
+// The rule itself is the scoped store's (ADR-049): the pipeline's
+// organization and a workspace the caller belongs to. It used to check
+// the organization only, so a member of one workspace could reach another
+// workspace's runs by id.
 func pipelineInOrg(s store.Store, r *http.Request, pipelineID string) bool {
-	p, err := s.GetPipeline(pipelineID)
-	if err != nil || p == nil {
-		return false
-	}
-	return ValidateOrgAccess(r, p.OrgID)
+	return scopedStore(s, r).Visible("pipelines", pipelineID)
 }
 
-// validateRunAccess checks that a run's pipeline belongs to the user's org.
+// validateRunAccess checks that the caller may reach a run: its pipeline's
+// organization, and a workspace the caller belongs to (ADR-049).
 func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
-	run, err := h.store.GetRun(runID)
-	if err != nil {
-		return false
-	}
-	p, err := h.store.GetPipeline(run.PipelineID)
-	if err != nil {
-		return false
-	}
-	return ValidateOrgAccess(r, p.OrgID)
+	return scopedStore(h.store, r).Visible("runs", runID)
 }
 
 func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
@@ -526,16 +520,12 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
-	pipe, err := h.store.GetPipeline(pipelineID)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "pipeline not found")
-		return
-	}
 	// DryRun actually executes the pipeline for real (up to 10 rows,
 	// unpersisted) -- same reasoning as Backfill above, not just a read
-	// check.
-	if !ValidateOrgAccess(r, pipe.OrgID) {
-		DenyOrgAccess(w)
+	// check. A pipeline the caller may not reach is answered as missing.
+	pipe, err := scopedStore(h.store, r).Pipeline(pipelineID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
 

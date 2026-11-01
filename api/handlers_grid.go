@@ -50,13 +50,10 @@ type gridResponse struct {
 // Grid serves GET /api/pipelines/{id}/grid?runs=N.
 func (h *RunHandler) Grid(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
-	pipe, err := h.store.GetPipeline(pipelineID)
+	// Scoped (ADR-049): another workspace's pipeline is answered as missing.
+	pipe, err := scopedStore(h.store, r).Pipeline(pipelineID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
-		return
-	}
-	if !ValidateOrgAccess(r, pipe.OrgID) {
-		DenyOrgAccess(w)
 		return
 	}
 

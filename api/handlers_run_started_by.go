@@ -48,33 +48,22 @@ func (h *RunHandler) ListStartedBy(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	// Read more ids than asked for, because the org filter below removes
-	// some. Without the headroom a caller whose recent runs are mostly in
-	// another organization gets a short page and no way to tell it from
-	// having no more runs.
-	ids, err := h.store.ListRunIDsStartedBy(attribution.UserID, limit*2)
+	// The current workspace's runs (ADR-049), filtered in the query, so a
+	// page is a full page. It used to filter by organization afterwards,
+	// which listed the caller's runs from every workspace in each one.
+	ids, err := scopedStore(h.store, r).RunIDsStartedBy(attribution.UserID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list runs")
 		return
 	}
 
-	runs := make([]models.Run, 0, limit)
+	runs := make([]models.Run, 0, len(ids))
 	for _, id := range ids {
-		if len(runs) == limit {
-			break
-		}
 		run, err := h.store.GetRun(id)
 		if err != nil {
 			// A run that has been purged since its attribution was written.
 			// Skipping is right: the row is a record of something that no
 			// longer exists.
-			continue
-		}
-		// The same tenant check every other run route makes. Attribution
-		// is keyed by user, and a user can belong to more than one
-		// organization, so their own runs elsewhere must not appear here.
-		p, err := h.store.GetPipeline(run.PipelineID)
-		if err != nil || !ValidateOrgAccess(r, p.OrgID) {
 			continue
 		}
 		runs = append(runs, *run)
