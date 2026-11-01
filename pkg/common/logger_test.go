@@ -2,6 +2,8 @@ package common
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -270,5 +272,78 @@ func TestDefaultLogger(t *testing.T) {
 
 	if DefaultLogger.level != LogLevelInfo {
 		t.Errorf("DefaultLogger level = %v, want %v", DefaultLogger.level, LogLevelInfo)
+	}
+}
+
+// captureStdio swaps os.Stdout and os.Stderr for files in a temp dir, and
+// returns a function that restores them and answers what each received.
+func captureStdio(t *testing.T) func() (stdout, stderr string) {
+	t.Helper()
+	dir := t.TempDir()
+	out, err := os.Create(filepath.Join(dir, "stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	errf, err := os.Create(filepath.Join(dir, "stderr"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldOut, oldErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = out, errf
+	return func() (string, string) {
+		os.Stdout, os.Stderr = oldOut, oldErr
+		_ = out.Close()
+		_ = errf.Close()
+		o, _ := os.ReadFile(out.Name())
+		e, _ := os.ReadFile(errf.Name())
+		return string(o), string(e)
+	}
+}
+
+// A command's stdout is what it answers: `brokoli agents token create ... >
+// triage.token` once wrote the log file's warning into the token file.
+func TestLogLinesStayOffStdout(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("BROKOLI_DATA_DIRS", t.TempDir()) // the working directory is outside it
+	done := captureStdio(t)
+	l := NewLogger(LogLevelDebug)
+	l.Warning("first %d", 1)
+	l.Info("second")
+	l.Debug("a secret meant for the file alone")
+	stdout, stderr := done()
+
+	if stdout != "" {
+		t.Errorf("stdout = %q, want nothing", stdout)
+	}
+	if !strings.Contains(stderr, "WARNING: first 1") || !strings.Contains(stderr, "second") {
+		t.Errorf("stderr = %q, want both messages", stderr)
+	}
+	if n := strings.Count(stderr, "Failed to open log file"); n != 1 {
+		t.Errorf("the log file's failure was said %d times, want once:\n%s", n, stderr)
+	}
+	if strings.Contains(stderr, "a secret") {
+		t.Errorf("a debug line reached the console: %q", stderr)
+	}
+}
+
+// DefaultLogger is made in every command; one that never logs must not
+// create brok.log, or complain that it cannot.
+func TestTheLogFileIsOpenedOnTheFirstMessage(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	t.Setenv("BROKOLI_DATA_DIRS", dir)
+	done := captureStdio(t)
+	l := NewLogger(LogLevelDebug)
+	if _, err := os.Stat(filepath.Join(dir, LogFilePath)); !os.IsNotExist(err) {
+		t.Fatalf("brok.log exists before anything was logged (err %v)", err)
+	}
+	l.Debug("only in the file")
+	stdout, stderr := done()
+	got, err := os.ReadFile(filepath.Join(dir, LogFilePath))
+	if err != nil || !strings.Contains(string(got), "DEBUG: ") || !strings.Contains(string(got), "only in the file") {
+		t.Fatalf("brok.log = %q (err %v), want the debug line", got, err)
+	}
+	if stdout != "" || stderr != "" {
+		t.Errorf("a debug line reached the console: stdout %q stderr %q", stdout, stderr)
 	}
 }

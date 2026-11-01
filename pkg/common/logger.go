@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"sync"
 )
 
 type LogLevel int
@@ -33,21 +34,38 @@ type Logger struct {
 	consoleWriter io.Writer
 }
 
-// NewLogger creates a new logger with the specified log level
-// Logs will be written to both console and brok.log file
+// NewLogger creates a logger at level. Every message goes to brok.log;
+// info and above also go to stderr. Log lines are diagnostics, so they
+// stay off stdout, where a command writes what it answers: a CLI command
+// whose output is redirected (`brokoli agents token create ... > file`)
+// must not find a log line in the file.
+//
+// The file is opened on the first message, not here: DefaultLogger is made
+// when the package loads, in every command, and most never log.
 func NewLogger(level LogLevel) *Logger {
-	fileWriter, err := OpenInDataDir(LogFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		// If we can't open the log file, just log to console
-		fmt.Printf("WARNING: Failed to open log file: %v\n", err)
-		return NewLoggerWithWriter(os.Stdout, level)
-	}
+	return NewLoggerWithWriters(&lazyLogFile{path: LogFilePath}, os.Stderr, level)
+}
 
-	// For console output, we only want to show important messages (info and above)
-	// Debug messages will only go to the log file
-	logger := NewLoggerWithWriters(fileWriter, os.Stdout, level)
+// lazyLogFile opens the log file on its first write. If it cannot be
+// opened, that is said once on stderr; info and above still reach stderr,
+// and debug lines, which are meant for the file alone, are dropped.
+type lazyLogFile struct {
+	path string
+	once sync.Once
+	w    io.Writer
+}
 
-	return logger
+func (f *lazyLogFile) Write(p []byte) (int, error) {
+	f.once.Do(func() {
+		file, err := OpenInDataDir(f.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WARNING: Failed to open log file: %v\n", err)
+			f.w = io.Discard
+			return
+		}
+		f.w = file
+	})
+	return f.w.Write(p)
 }
 
 // NewLoggerWithWriter creates a logger with a single writer for all log levels

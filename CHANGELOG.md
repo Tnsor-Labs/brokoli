@@ -100,6 +100,14 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A log warning could end up in a CLI command's output** -- @hc12r.
+  Every command tried to open `brok.log` in the working directory when it
+  started, and outside the allowed data directories printed a warning to
+  stdout. `brokoli agents token create ... > triage.token` then wrote the
+  warning into the token file, and the token did not work. Log lines now go
+  to stderr, never stdout, and the log file is opened only when something
+  is logged.
+
 - **A new agent trigger was sent failures from before it existed** --
   @hc12r. The dispatcher re-reads the last two minutes of run events
   (Postgres can commit them out of order), so a trigger created within
