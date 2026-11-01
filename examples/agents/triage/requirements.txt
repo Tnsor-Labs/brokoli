@@ -1,3 +1,5 @@
-# Only the default model provider (Anthropic) needs this; talking to Brokoli
-# needs nothing beyond the Python standard library.
+# Talking to Brokoli needs only the Python standard library. Each model
+# provider needs its SDK: anthropic for --provider anthropic (the default),
+# openai for --provider openai. Install the one you use, or both.
 anthropic>=2.3,<3
+openai>=1.58,<4

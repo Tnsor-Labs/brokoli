@@ -8,7 +8,9 @@ applies anything.
 
 It is one file, [`triage.py`](triage.py), meant to be read, run as it is,
 and changed. Talking to Brokoli needs only the Python standard library. The
-default model provider needs the `anthropic` package.
+model can be Claude, any model behind an OpenAI-compatible API (OpenAI,
+Gemini, Mistral, OpenRouter, Ollama and many more), or a program of your
+own; see [The model](#the-model).
 
 This is the reference agent described in
 [ADR-047](../../../docs/adr/047-agent-triggers.md). Triggers themselves are
@@ -67,6 +69,14 @@ repository.
 ```bash
 pip install -r requirements.txt
 export ANTHROPIC_API_KEY=...   # or sign in with `ant auth login`
+```
+
+That is for the default provider, Claude. For any other, see
+[Providers](#providers): for example a model on your own machine with
+Ollama needs no key at all:
+
+```bash
+export TRIAGE_PROVIDER=openai TRIAGE_BASE_URL=http://localhost:11434/v1 TRIAGE_MODEL=<model>
 ```
 
 **3. Choose how Brokoli reaches the agent**, then run it. There are two
@@ -162,9 +172,13 @@ check for a waiting proposal, because it does not know the agent's name.
 | --- | --- | --- | --- |
 | `--server` | `BROKOLI_SERVER` | `http://localhost:8080` | the Brokoli server |
 | | `BROKOLI_TOKEN` | (required) | the agent's token |
-| `--model` | `TRIAGE_MODEL` | `claude-opus-5-5` | the Anthropic model |
-| `--effort` | `TRIAGE_EFFORT` | `high` | how hard the model works: `low` to `max` |
-| `--model-command` | `TRIAGE_MODEL_COMMAND` | | use another provider (below) |
+| `--provider` | `TRIAGE_PROVIDER` | `anthropic` | `anthropic`, `openai` (any OpenAI-compatible API) or `command` |
+| `--model` | `TRIAGE_MODEL` | `claude-opus-5-5` with `anthropic` | the model; required with `openai` |
+| `--effort` | `TRIAGE_EFFORT` | `high` with `anthropic` | how hard the model works; see [Providers](#providers) |
+| `--base-url` | `TRIAGE_BASE_URL` | OpenAI's | `openai`: where the API is |
+| `--api-key-env` | `TRIAGE_API_KEY_ENV` | `OPENAI_API_KEY` | `openai`: the variable that holds the key |
+| `--response-format` | `TRIAGE_RESPONSE_FORMAT` | `json_schema` | `openai`: `json_object` for a service without JSON schemas |
+| `--model-command` | `TRIAGE_MODEL_COMMAND` | | `command`: the program to run (below) |
 | `--dry-run` | | off | decide and validate, but propose nothing |
 | | `TRIAGE_WEBHOOK_SECRET` | (required for `serve`) | the trigger's signing secret |
 
@@ -173,13 +187,13 @@ for 24 hours, so you have a day to give the agent the new one.
 
 ## The model
 
-The default provider is Claude through the Anthropic API. The request asks
-for adaptive thinking and constrains the answer to a JSON schema (verdict,
-finding, title, description, definition), so the agent never has to parse
-free text. It also turns on the API's server-side fallback: if the model's
-safety classifiers decline the request, another model answers it in the
-same call. If the whole chain declines, the agent logs that it has no
-decision and proposes nothing.
+Whatever the provider, the model gets the same instructions and the same
+facts, and must answer the same JSON decision: verdict, finding, title,
+description, definition. The agent checks the answer's shape before acting
+on it, and Brokoli validates every drafted definition, so a weaker model
+costs you proposals, not broken pipelines: an answer of the wrong shape is
+logged as no decision, and a fix that does not validate is sent back once
+and then reported instead of proposed.
 
 The agent calls Brokoli's MCP tools itself instead of handing the MCP
 server to the model. Two reasons:
@@ -188,7 +202,69 @@ server to the model. Two reasons:
   or propose twice;
 - the Brokoli server and the agent's token never leave your network.
 
-### Another provider
+That is also why any provider works: the model only has to answer one
+question at a time, with no tools.
+
+### Providers
+
+| Provider | `--provider` | `--base-url` | Key in |
+| --- | --- | --- | --- |
+| Claude (Anthropic) | `anthropic` (default) | | `ANTHROPIC_API_KEY` |
+| OpenAI | `openai` | | `OPENAI_API_KEY` |
+| Azure OpenAI | `openai` | `https://<resource>.openai.azure.com/openai/v1/` | your choice, with `--api-key-env` |
+| Google Gemini | `openai` | `https://generativelanguage.googleapis.com/v1beta/openai/` | `GEMINI_API_KEY`, with `--api-key-env` |
+| Mistral | `openai` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY`, with `--api-key-env` |
+| DeepSeek | `openai` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY`, with `--api-key-env` |
+| Groq | `openai` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY`, with `--api-key-env` |
+| OpenRouter | `openai` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY`, with `--api-key-env` |
+| Ollama | `openai` | `http://localhost:11434/v1` | none |
+| vLLM | `openai` | `http://localhost:8000/v1` | none |
+| LM Studio | `openai` | `http://localhost:1234/v1` | none |
+| anything else | `command` | | up to your program |
+
+`--model` is the provider's own name for the model; look it up in its
+console or model list, since names change often. For example, with Gemini:
+
+```bash
+export GEMINI_API_KEY=...
+python triage.py --provider openai \
+  --base-url https://generativelanguage.googleapis.com/v1beta/openai/ \
+  --api-key-env GEMINI_API_KEY --model <gemini model> poll --once
+```
+
+Install only the SDK you use if you like: `anthropic` for Claude, `openai`
+for every `openai` row (it is only the client; nothing is sent to OpenAI
+unless `--base-url` is left at its default).
+
+### Claude
+
+The request asks
+for adaptive thinking and constrains the answer to a JSON schema (verdict,
+finding, title, description, definition), so the agent never has to parse
+free text. It also turns on the API's server-side fallback: if the model's
+safety classifiers decline the request, another model answers it in the
+same call. If the whole chain declines, the agent logs that it has no
+decision and proposes nothing. `--effort` is `low`, `medium`, `high` (the
+default), `xhigh` or `max`.
+
+### OpenAI-compatible APIs
+
+`--provider openai` sends a chat completions request with the decision's
+JSON schema as a strict `response_format`. Most services and local servers
+honor it. One that answers that it does not support `json_schema` (some
+models on some services only offer JSON mode) can be asked for any JSON
+object with `--response-format json_object`: the schema then goes in the
+instructions, and the agent's own check of the answer does the rest.
+
+`--effort` is sent as `reasoning_effort`, and only when you set it,
+because only reasoning models accept it, with the values the provider
+documents. A refusal, an answer cut off at the output limit, or one stopped
+by the provider's content filter is logged as no decision.
+
+### Your own program
+
+Give a command with `--model-command` (and `--provider command`, or no
+`--provider`). The agent runs it once per decision,
 
 Give a command with `--model-command`. The agent runs it once per decision,
 writes this to its stdin:
@@ -224,9 +300,9 @@ two more messages: its own answer (`assistant`) and Brokoli's errors
 python -m unittest test_triage.py
 ```
 
-They need no server and no model. The test that checks the request sent to
-the Anthropic API runs when `anthropic` from `requirements.txt` is
-installed, and is skipped otherwise.
+They need no server and no model. The tests that check the request each
+provider's SDK sends run when that SDK from `requirements.txt` is
+installed, and are skipped otherwise.
 
 ## Make it yours
 

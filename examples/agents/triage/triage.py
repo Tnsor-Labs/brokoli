@@ -16,8 +16,11 @@ It never applies a change: a person reviews and applies every proposal.
 
 Everything it does in Brokoli goes through MCP with its own agent token, so
 it can see and do exactly what the agent's role allows. Only the Python
-standard library is needed to talk to Brokoli; the default model provider
-needs the `anthropic` package. See README.md for the setup.
+standard library is needed to talk to Brokoli. The model can be Claude
+(`--provider anthropic`, the default, needs the `anthropic` package), any
+service or local server that speaks the OpenAI chat API (`--provider
+openai`, needs the `openai` package), or a command of your own. See
+README.md for the setup.
 """
 
 from __future__ import annotations
@@ -209,6 +212,79 @@ class AnthropicModel:
         return json.loads(text), [{"role": "assistant", "content": response.content}]
 
 
+class OpenAIModel:
+    """Any model behind the OpenAI chat completions API.
+
+    That is OpenAI itself, and every service or server that offers the same
+    API: Google Gemini, Mistral, DeepSeek, Groq, OpenRouter, Azure OpenAI,
+    and Ollama, vLLM or LM Studio on your own machine. --base-url says
+    where. The key is read from the variable --api-key-env names
+    (OPENAI_API_KEY by default); a server of your own needs none.
+
+    The answer is constrained to DECISION with a strict JSON schema. A
+    service that does not support schemas can be asked for any JSON object
+    instead (--response-format json_object): the schema then goes in the
+    system prompt, and the answer is checked here.
+    """
+
+    def __init__(self, model: str, effort: str | None, base_url: str | None,
+                 api_key_env: str, response_format: str):
+        import openai  # only this provider needs it
+
+        key = os.environ.get(api_key_env)
+        if not key and not (base_url or os.environ.get("OPENAI_BASE_URL")):
+            raise SystemExit(f"set {api_key_env} to the provider's API key")
+        # A server of your own takes any key, but the SDK will not send none.
+        self.client = openai.OpenAI(api_key=key or "none", base_url=base_url, timeout=900)
+        self.model = model
+        self.effort = effort
+        self.system = SYSTEM
+        if response_format == "json_schema":
+            self.format = {"type": "json_schema",
+                           "json_schema": {"name": "decision", "schema": DECISION, "strict": True}}
+        else:
+            self.format = {"type": "json_object"}
+            self.system += ("\n\nAnswer with one JSON object, and nothing else, that matches this JSON Schema:\n"
+                            + json.dumps(DECISION))
+
+    def decide(self, messages: list) -> tuple[dict, list]:
+        extra = {"reasoning_effort": self.effort} if self.effort else {}
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=[{"role": "system", "content": self.system}, *messages],
+            response_format=self.format,
+            **extra,
+        )
+        choice = response.choices[0]
+        if getattr(choice.message, "refusal", None):
+            raise Refused(choice.message.refusal)
+        if choice.finish_reason == "length":
+            raise Refused("the answer did not fit in the model's output limit")
+        if choice.finish_reason == "content_filter":
+            raise Refused("the provider's content filter stopped the answer")
+        text = choice.message.content or ""
+        return checked(text), [{"role": "assistant", "content": text}]
+
+
+def checked(text: str) -> dict:
+    """The decision in text, if it has the shape DECISION asks for.
+
+    Only Anthropic's and strict schema answers are held to the schema by
+    the provider; anything else is checked here before it is acted on."""
+    try:
+        decision = json.loads(text)
+    except ValueError as e:
+        raise Refused(f"the answer is not JSON: {e}") from None
+    if not isinstance(decision, dict):
+        raise Refused("the answer is not a JSON object")
+    missing = [k for k in DECISION["required"] if not isinstance(decision.get(k), str)]
+    if missing:
+        raise Refused(f"the answer has no {', '.join(missing)}")
+    if decision["verdict"] not in DECISION["properties"]["verdict"]["enum"]:
+        raise Refused(f"the answer's verdict is {decision['verdict']!r}")
+    return decision
+
+
 class CommandModel:
     """Any other provider: a command the operator supplies.
 
@@ -227,7 +303,7 @@ class CommandModel:
         if out.returncode != 0:
             raise Refused(f"model command exited {out.returncode}: {out.stderr.strip()[:300]}")
         text = out.stdout.strip()
-        return json.loads(text), [{"role": "assistant", "content": text}]
+        return checked(text), [{"role": "assistant", "content": text}]
 
 
 # --- Triage
@@ -406,15 +482,47 @@ def poll(triage: Triage, once: bool, interval: float):
 # --- main
 
 
+DEFAULT_MODEL = "claude-opus-5-5"
+ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def make_model(p: argparse.ArgumentParser, args):
+    # --model-command alone has always meant the command provider.
+    provider = "command" if args.model_command and args.provider == "anthropic" else args.provider
+    if provider == "command":
+        if not args.model_command:
+            p.error("--provider command needs --model-command")
+        return CommandModel(args.model_command)
+    if provider == "openai":
+        if not args.model:
+            p.error("--provider openai needs --model: the provider's name for it")
+        return OpenAIModel(args.model, args.effort, args.base_url, args.api_key_env, args.response_format)
+    effort = args.effort or "high"
+    if effort not in ANTHROPIC_EFFORTS:
+        p.error(f"--effort with anthropic is one of {', '.join(ANTHROPIC_EFFORTS)}")
+    return AnthropicModel(args.model or DEFAULT_MODEL, effort)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description="A reference triage agent for Brokoli.")
     p.add_argument("--server", default=os.environ.get("BROKOLI_SERVER", "http://localhost:8080"))
-    p.add_argument("--model", default=os.environ.get("TRIAGE_MODEL", "claude-opus-5-5"),
-                   help="the Anthropic model (default %(default)s)")
-    p.add_argument("--effort", default=os.environ.get("TRIAGE_EFFORT", "high"),
-                   choices=["low", "medium", "high", "xhigh", "max"])
+    p.add_argument("--provider", default=os.environ.get("TRIAGE_PROVIDER", "anthropic"),
+                   choices=["anthropic", "openai", "command"],
+                   help="anthropic (default); openai for any OpenAI-compatible API; command for your own")
+    p.add_argument("--model", default=os.environ.get("TRIAGE_MODEL"),
+                   help=f"the model (default {DEFAULT_MODEL} with anthropic; required with openai)")
+    p.add_argument("--effort", default=os.environ.get("TRIAGE_EFFORT"),
+                   help="how hard the model thinks: anthropic takes low to max (default high); "
+                        "openai sends it as reasoning_effort, for models that take one")
+    p.add_argument("--base-url", default=os.environ.get("TRIAGE_BASE_URL"),
+                   help="openai: where the API is, when it is not OpenAI's (Gemini, Ollama, OpenRouter, ...)")
+    p.add_argument("--api-key-env", default=os.environ.get("TRIAGE_API_KEY_ENV", "OPENAI_API_KEY"),
+                   help="openai: the variable that holds the API key (default %(default)s)")
+    p.add_argument("--response-format", default=os.environ.get("TRIAGE_RESPONSE_FORMAT", "json_schema"),
+                   choices=["json_schema", "json_object"],
+                   help="openai: json_object for a service that does not support JSON schemas")
     p.add_argument("--model-command", default=os.environ.get("TRIAGE_MODEL_COMMAND"),
-                   help="use another provider: a command that reads the request on stdin and answers JSON")
+                   help="command: a command that reads the request on stdin and answers JSON")
     p.add_argument("--dry-run", action="store_true", help="decide, validate, but do not propose")
     sub = p.add_subparsers(dest="mode", required=True)
     s = sub.add_parser("serve", help="receive webhook deliveries")
@@ -434,7 +542,7 @@ def main(argv=None) -> int:
     if any(c.isspace() for c in token):
         p.error("BROKOLI_TOKEN holds more than a token: set it to the token alone")
     brokoli = Brokoli(args.server, token)
-    model = CommandModel(args.model_command) if args.model_command else AnthropicModel(args.model, args.effort)
+    model = make_model(p, args)
     triage = Triage(brokoli, model, dry_run=args.dry_run)
 
     if args.mode == "serve":
