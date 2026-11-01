@@ -41,13 +41,22 @@ For each `run.failed` event:
 5. **Proposes it** with `propose_change`. The change request shows the
    diff, the validation, and the description, and the reviewer can test
    it on a few rows before applying it.
+6. **Tells its owner** with `send_message` (see
+   [agent messages](../../../docs/agent-messages.md)): a proposal as an
+   `info` message linking the run and the change request, and a cause
+   outside the definition (a missing file, a source that is down) as
+   `attention`, with what it found and the run and pipeline linked. The
+   owner reads them in the Inbox in Brokoli. A message that cannot be sent
+   (an older server, a role without `messages.send`, a limit reached) is
+   logged and the triage stands. `--no-messages` turns this off.
 
 Test events (`"test": true`) are logged and not triaged. Other event types
 are ignored.
 
 Everything it does in Brokoli is an MCP call with its own agent token, so
 it can see and do only what the agent's role allows. Proposing needs
-`pipelines.propose`; the built-in `agent` role has it.
+`pipelines.propose` and messaging needs `messages.send`; the built-in
+`agent` role has both.
 
 ## Set it up
 
@@ -179,7 +188,8 @@ check for a waiting proposal, because it does not know the agent's name.
 | `--api-key-env` | `TRIAGE_API_KEY_ENV` | `OPENAI_API_KEY` | `openai`: the variable that holds the key |
 | `--response-format` | `TRIAGE_RESPONSE_FORMAT` | `json_schema` | `openai`: `json_object` for a service without JSON schemas |
 | `--model-command` | `TRIAGE_MODEL_COMMAND` | | `command`: the program to run (below) |
-| `--dry-run` | | off | decide and validate, but propose nothing |
+| `--dry-run` | | off | decide and validate, but propose nothing and send no message |
+| `--no-messages` | | off | only log findings; do not send them to the owner's inbox |
 | | `TRIAGE_WEBHOOK_SECRET` | (required for `serve`) | the trigger's signing secret |
 
 During a secret rotation Brokoli signs with the new and the previous secret
@@ -306,8 +316,9 @@ installed, and are skipped otherwise.
 
 ## Make it yours
 
-- **Report somewhere useful.** A report is only logged. Send it to chat,
-  open an issue, or comment on the pipeline's issue with
+- **Report somewhere else too.** Reports reach the owner's Inbox. Send
+  them to a person other than the owner (`to` is any username in the
+  workspace), to chat as well, or comment on the pipeline's issue with
   `comment_on_issue`.
 - **Look further before deciding.** Add `get_run_logs`, `get_lineage`, or
   `dry_run_pipeline` (a preview on a few rows that writes nothing) to what

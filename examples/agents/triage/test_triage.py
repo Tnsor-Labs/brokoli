@@ -25,8 +25,9 @@ FAILED = {"type": "run.failed", "agent": "triage-bot", "pipeline": {"id": "order
 
 
 class FakeBrokoli:
-    def __init__(self, valid=lambda d: d == FIXED, open_requests=()):
+    def __init__(self, valid=lambda d: d == FIXED, open_requests=(), send_fails=False):
         self.calls = []
+        self.send_fails = send_fails
         self.valid = valid
         self.open_requests = list(open_requests)
 
@@ -43,7 +44,14 @@ class FakeBrokoli:
             return {"valid": ok, "errors": [] if ok else ["node fetch: path is wrong"]}
         if tool == "propose_change":
             return {"id": "cr1"}
+        if tool == "send_message":
+            if self.send_fails:
+                raise triage.BrokoliError("send_message: HTTP 403: insufficient permissions: messages.send")
+            return {"sent": [{"to": "eve"}]}
         raise AssertionError(tool)
+
+    def sent(self):
+        return [args for t, args in self.calls if t == "send_message"]
 
     def tools(self):
         return [t for t, _ in self.calls]
@@ -83,8 +91,8 @@ class TriageTest(unittest.TestCase):
         b = FakeBrokoli()
         out = triage.Triage(b, ScriptedModel(fix(FIXED))).handle(FAILED)
         self.assertEqual(out["outcome"], "proposed")
-        self.assertEqual(b.tools(), ["list_change_requests", "explain_run", "get_pipeline", "validate_pipeline", "propose_change"])
-        proposed = b.calls[-1][1]
+        self.assertEqual(b.tools(), ["list_change_requests", "explain_run", "get_pipeline", "validate_pipeline", "propose_change", "send_message"])
+        proposed = b.calls[-2][1]
         self.assertEqual(proposed["definition"], FIXED)
         self.assertEqual(proposed["pipeline"], "orders")
         self.assertIn("run `r1`", proposed["description"])
@@ -94,6 +102,36 @@ class TriageTest(unittest.TestCase):
         out = triage.Triage(b, ScriptedModel(REPORT)).handle(FAILED)
         self.assertEqual(out["outcome"], "reported")
         self.assertNotIn("propose_change", b.tools())
+
+    def test_a_report_is_sent_to_the_owner_as_needing_attention(self):
+        b = FakeBrokoli()
+        triage.Triage(b, ScriptedModel(REPORT)).handle(FAILED)
+        [m] = b.sent()
+        self.assertEqual((m["to"], m["level"]), ("owner", "attention"))
+        self.assertIn(REPORT["finding"], m["text"])
+        self.assertIn(REPORT["description"], m["text"])
+        self.assertEqual(m["links"], [{"kind": "run", "id": "r1"}, {"kind": "pipeline", "id": "orders"}])
+
+    def test_a_proposal_is_told_to_the_owner_with_its_change_request(self):
+        b = FakeBrokoli()
+        triage.Triage(b, ScriptedModel(fix(FIXED))).handle(FAILED)
+        [m] = b.sent()
+        self.assertEqual((m["to"], m["level"]), ("owner", "info"))
+        self.assertIn(fix(FIXED)["title"], m["text"])
+        self.assertEqual(m["links"], [{"kind": "run", "id": "r1"}, {"kind": "change_request", "id": "cr1"}])
+
+    def test_a_message_that_cannot_be_sent_does_not_fail_the_triage(self):
+        b = FakeBrokoli(send_fails=True)
+        out = triage.Triage(b, ScriptedModel(REPORT)).handle(FAILED)
+        self.assertEqual(out["outcome"], "reported")
+        self.assertEqual(len(b.sent()), 1)
+
+    def test_no_messages_when_asked_not_to_or_in_a_dry_run(self):
+        for kwargs in ({"messages": False}, {"dry_run": True}):
+            with self.subTest(**kwargs):
+                b = FakeBrokoli()
+                triage.Triage(b, ScriptedModel(REPORT), **kwargs).handle(FAILED)
+                self.assertEqual(b.sent(), [])
 
     def test_a_fix_that_does_not_validate_is_retried_with_the_errors(self):
         b = FakeBrokoli()
