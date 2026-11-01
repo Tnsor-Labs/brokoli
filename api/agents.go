@@ -94,7 +94,10 @@ type Agent struct {
 // AgentAvatars are the pictures an agent can have, the broccoli family the
 // UI draws. The order is part of the contract: an agent with no choice gets
 // the one its id hashes to, so reordering would change everyone's default.
-var AgentAvatars = []string{"broccoli", "romanesco", "cauliflower", "purple", "broccolini", "sprout", "kohlrabi", "seedling"}
+var AgentAvatars = [agentAvatarCount]string{"broccoli", "romanesco", "cauliflower", "purple", "broccolini", "sprout", "kohlrabi", "seedling"}
+
+// agentAvatarCount is how many avatars there are.
+const agentAvatarCount = 8
 
 // validAgentAvatar reports whether name is one of AgentAvatars.
 func validAgentAvatar(name string) bool {
@@ -111,7 +114,8 @@ func validAgentAvatar(name string) bool {
 func defaultAgentAvatar(id string) string {
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(id))
-	return AgentAvatars[h.Sum32()%uint32(len(AgentAvatars))]
+	// A constant divisor, so the index needs no integer conversion.
+	return AgentAvatars[h.Sum32()%agentAvatarCount]
 }
 
 // AgentToken is a token's record; the token itself is never stored.

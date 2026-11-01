@@ -106,7 +106,7 @@ func TestTriggerViewsCarryTheAgentsAvatar(t *testing.T) {
 // come from the position, so the order is a contract.
 func TestTheAvatarFamilyIsInItsContractOrder(t *testing.T) {
 	want := []string{"broccoli", "romanesco", "cauliflower", "purple", "broccolini", "sprout", "kohlrabi", "seedling"}
-	if strings.Join(AgentAvatars, ",") != strings.Join(want, ",") {
+	if strings.Join(AgentAvatars[:], ",") != strings.Join(want, ",") {
 		t.Fatalf("AgentAvatars = %v, want %v", AgentAvatars, want)
 	}
 }

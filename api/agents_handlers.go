@@ -250,7 +250,7 @@ func (h *agentsAPI) update(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Avatar != nil {
 		if *req.Avatar != "" && !validAgentAvatar(*req.Avatar) {
-			writeError(w, http.StatusBadRequest, "no avatar "+*req.Avatar+"; an agent's avatar is one of "+strings.Join(AgentAvatars, ", ")+", or empty for the default")
+			writeError(w, http.StatusBadRequest, "no avatar "+*req.Avatar+"; an agent's avatar is one of "+strings.Join(AgentAvatars[:], ", ")+", or empty for the default")
 			return
 		}
 		if err := h.users.SetAgentAvatar(a.ID, *req.Avatar); err != nil {
