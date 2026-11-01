@@ -50,6 +50,17 @@ For each `run.failed` event:
    (an older server, a role without `messages.send`, a limit reached) is
    logged and the triage stands. `--no-messages` turns this off.
 
+When someone writes to the agent (`message.received`, ADR-048 phase 2), it
+reads the messages with `read_messages` and answers each person once, in
+the same conversation, with what it last found and the run (and change
+request) linked. It does not take instructions by message: it is a
+reference, and a real agent would hand the message and the conversation to
+the model. Subscribe a trigger to `message.received` so it hears at once:
+
+```bash
+brokoli agents trigger create triage-bot --feed --events run.failed,message.received
+```
+
 Test events (`"test": true`) are logged and not triaged. Other event types
 are ignored.
 

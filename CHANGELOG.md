@@ -122,7 +122,8 @@ reconstruct from git archaeology.
   decision's shape before the agent acts on it. It tells its owner what it did
   with `send_message`: a proposal as `info` with the change request
   linked, a cause outside the definition as `attention` (`--no-messages`
-  turns this off).
+  turns this off). Written to (`message.received`), it answers each person
+  once with what it last found.
 
 - **An Agents page** (ADR-047 phase 3) -- @hc12r. Agents now have a page
   of their own in the UI: create one, issue and revoke its tokens (with the

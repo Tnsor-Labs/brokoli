@@ -28,6 +28,7 @@ class FakeBrokoli:
     def __init__(self, valid=lambda d: d == FIXED, open_requests=(), send_fails=False):
         self.calls = []
         self.send_fails = send_fails
+        self.inbox = []
         self.valid = valid
         self.open_requests = list(open_requests)
 
@@ -44,6 +45,9 @@ class FakeBrokoli:
             return {"valid": ok, "errors": [] if ok else ["node fetch: path is wrong"]}
         if tool == "propose_change":
             return {"id": "cr1"}
+        if tool == "read_messages":
+            out, self.inbox = self.inbox, []
+            return {"messages": out}
         if tool == "send_message":
             if self.send_fails:
                 raise triage.BrokoliError("send_message: HTTP 403: insufficient permissions: messages.send")
@@ -125,6 +129,39 @@ class TriageTest(unittest.TestCase):
         out = triage.Triage(b, ScriptedModel(REPORT)).handle(FAILED)
         self.assertEqual(out["outcome"], "reported")
         self.assertEqual(len(b.sent()), 1)
+
+    def test_a_message_is_answered_with_the_last_finding(self):
+        b = FakeBrokoli()
+        t = triage.Triage(b, ScriptedModel(fix(FIXED)))
+        t.handle(FAILED)
+        b.inbox = [{"id": "m1", "from_name": "ada", "text": "What did you find?", "conversation_id": "c1"}]
+        out = t.handle({"type": "message.received", "message": {"from": "ada"}})
+        self.assertEqual((out["outcome"], out["read"], out["answered"]), ("answered", 1, 1))
+        answer = b.sent()[-1]
+        self.assertEqual(answer["to"], "ada")
+        self.assertIn("r1", answer["text"])
+        self.assertIn(fix(FIXED)["title"], answer["text"])
+        self.assertEqual(answer["links"], [{"kind": "run", "id": "r1"}, {"kind": "change_request", "id": "cr1"}])
+        # Read once: a second event finds nothing new and sends nothing.
+        before = len(b.sent())
+        self.assertEqual(t.handle({"type": "message.received"})["read"], 0)
+        self.assertEqual(len(b.sent()), before)
+
+    def test_several_messages_from_one_person_get_one_answer(self):
+        b = FakeBrokoli()
+        b.inbox = [{"id": "m1", "from_name": "ada", "text": "One."}, {"id": "m2", "from_name": "ada", "text": "Two."},
+                   {"id": "m3", "from_name": "vic", "text": "Three."}]
+        out = triage.Triage(b, ScriptedModel()).handle({"type": "message.received"})
+        self.assertEqual((out["read"], out["answered"]), (3, 2))
+        self.assertEqual([m["to"] for m in b.sent()], ["ada", "vic"])
+
+    def test_a_message_before_any_finding_says_so(self):
+        b = FakeBrokoli()
+        b.inbox = [{"id": "m1", "from_name": "vic", "text": "Hello?"}]
+        triage.Triage(b, ScriptedModel()).handle({"type": "message.received"})
+        [answer] = b.sent()
+        self.assertEqual(answer["to"], "vic")
+        self.assertIn("not looked into a failed run", answer["text"])
 
     def test_no_messages_when_asked_not_to_or_in_a_dry_run(self):
         for kwargs in ({"messages": False}, {"dry_run": True}):
