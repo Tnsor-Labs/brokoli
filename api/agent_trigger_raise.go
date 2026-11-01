@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 
@@ -76,7 +77,8 @@ func (d *triggerDispatcher) raise(ev RaisedEvent) (int, error) {
 	switch {
 	case kind == nil:
 		return 0, fmt.Errorf("event type %q is not registered", ev.Type)
-	case ev.Type == TriggerEventRunFailed || ev.Type == TriggerEventRunBlocked || ev.Type == TriggerEventRunRecovered:
+	case ev.Type == TriggerEventRunFailed || ev.Type == TriggerEventRunBlocked || ev.Type == TriggerEventRunRecovered ||
+		ev.Type == TriggerEventMessageReceived:
 		return 0, fmt.Errorf("%s is raised by Brokoli from the run event log", ev.Type)
 	case ev.RunID == "" && ev.Key == "":
 		return 0, errors.New("a raised event names its run, or a key for the occurrence")
@@ -164,4 +166,46 @@ func (d *triggerDispatcher) raisedBody(del *TriggerDelivery, t *AgentTrigger, p 
 		e.Next.MCP = d.publicURL + "/api/mcp"
 	}
 	return json.Marshal(e)
+}
+
+// raiseAgentMessage tells an agent's triggers that a person wrote to it
+// (ADR-048 section 3): every enabled trigger of the agent in the workspace
+// that subscribes to message.received, whatever pipeline it watches, with
+// no cooldown. It answers how many deliveries it made; with no dispatcher
+// running it makes none, and the agent reads the message when it checks.
+func raiseAgentMessage(agentID, agentName, workspaceID string, m *Message, from string) int {
+	raiserMu.RLock()
+	d := raiser
+	raiserMu.RUnlock()
+	if d == nil {
+		return 0
+	}
+	triggers, err := d.ts.List("", "")
+	if err != nil {
+		return 0
+	}
+	now := d.now()
+	made := 0
+	for i := range triggers {
+		t := &triggers[i]
+		if t.AgentID != agentID || !t.Enabled || !sameWorkspace(t.WorkspaceID, workspaceID) || !slices.Contains(t.Events, TriggerEventMessageReceived) {
+			continue
+		}
+		del := &TriggerDelivery{ID: newDeliveryID(), TriggerID: t.ID, AgentID: agentID, WorkspaceID: t.WorkspaceID,
+			RunID: "message:" + m.ID, Event: TriggerEventMessageReceived}
+		e := TriggerEvent{Type: del.Event, ID: del.ID, OccurredAt: m.CreatedAt.UTC(), WorkspaceID: t.WorkspaceID, Agent: agentName,
+			Message: &TriggerMessage{ConversationID: m.ConversationID, MessageID: m.ID, From: from, Text: m.Text},
+			Next:    TriggerNext{SuggestedTool: "read_messages"}}
+		if d.publicURL != "" {
+			e.Next.MCP = d.publicURL + "/api/mcp"
+		}
+		body, err := json.Marshal(e)
+		if err != nil {
+			continue
+		}
+		if ok, err := d.ts.Enqueue(del, string(body), 0, now); err == nil && ok {
+			made++
+		}
+	}
+	return made
 }

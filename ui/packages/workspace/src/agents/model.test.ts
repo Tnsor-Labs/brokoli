@@ -70,6 +70,7 @@ describe('deliveryRun', () => {
     expect(deliveryRun({ run_id: 'r1' })).toBe('r1')
     expect(deliveryRun({ run_id: 'test-abc' })).toBeNull()
     expect(deliveryRun({ run_id: 'raised:orders:2026-11-01' })).toBeNull()
+    expect(deliveryRun({ run_id: 'message:msg_18e3' })).toBeNull()
   })
 })
 

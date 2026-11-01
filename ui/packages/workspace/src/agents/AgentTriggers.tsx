@@ -568,8 +568,10 @@ function Deliveries({
                         >
                           {pipelineName(d.pipeline_id)}
                         </Link>
-                      ) : (
+                      ) : d.pipeline_id ? (
                         pipelineName(d.pipeline_id)
+                      ) : (
+                        'A message to it'
                       )}
                     </td>
                     <td>
