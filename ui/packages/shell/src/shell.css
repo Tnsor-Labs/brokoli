@@ -447,20 +447,3 @@
 .sh-message-links a:hover {
   text-decoration: underline;
 }
-.sh-conversation-text {
-  margin: 0;
-  font-size: var(--bk-text-sm);
-  line-height: var(--bk-leading-normal);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.sh-conversation-foot {
-  margin-top: 4px;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px 10px;
-}
-.sh-conversation-foot > :first-child {
-  flex: 1 1 200px;
-}

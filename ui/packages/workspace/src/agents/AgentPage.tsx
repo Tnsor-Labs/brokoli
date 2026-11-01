@@ -26,6 +26,7 @@ import {
 import { AGENTS_KEY } from './AgentsPage'
 import { AgentAvatarPicker } from './AgentAvatarPicker'
 import { AgentTriggers } from './AgentTriggers'
+import { Conversation } from './Conversation'
 import { connectCommand, roleLabel, tokenState } from './model'
 import '../workspace.css'
 import './agents.css'
@@ -122,6 +123,7 @@ export function AgentPage() {
           onChanged={() => queryClient.invalidateQueries({ queryKey: AGENTS_KEY })}
         />
       )}
+      {mayDress && <TalkTo agent={a} />}
       <AgentTriggers agent={a} />
       {!a.disabled && <Tokens agent={a} />}
       {disabling && (
@@ -293,6 +295,41 @@ function Tokens({ agent }: { agent: Agent }) {
           </ul>
         )
       )}
+    </section>
+  )
+}
+
+/** The owner's conversation with their agent: opened on request, not on sight. */
+function TalkTo({ agent }: { agent: Agent }) {
+  const toast = useToast()
+  const [conversation, setConversation] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const open = async () => {
+    setBusy(true)
+    try {
+      setConversation((await messagesApi.open(agent.id)).id)
+    } catch (e) {
+      toast.error('Could not open the conversation', e)
+    }
+    setBusy(false)
+  }
+  return (
+    <section className="ag-section" aria-labelledby="ag-talk">
+      <div className="ag-section-head">
+        <div>
+          <h2 id="ag-talk">Talk to {agent.name}</h2>
+          <p className="ws-muted">
+            Ask it something or tell it what to leave alone. It is told through a trigger for
+            messages, or reads them when it next checks.
+          </p>
+        </div>
+        {!conversation && (
+          <Button variant="secondary" loading={busy} onClick={() => void open()}>
+            Open the conversation
+          </Button>
+        )}
+      </div>
+      {conversation && <Conversation conversationId={conversation} mute={false} />}
     </section>
   )
 }
