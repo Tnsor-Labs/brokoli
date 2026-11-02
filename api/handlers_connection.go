@@ -549,7 +549,9 @@ func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
 func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		log.Printf("Connection test failed (open %s): %v", driver, engine.RedactDSNError(err, dsn))
+		// #nosec G706 -- driver is one of the server's registered names, and the
+		// error has its DSN redacted.
+		log.Printf("Connection test failed (open %q): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -559,7 +561,8 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
-		log.Printf("Connection test failed (ping %s): %v", driver, engine.RedactDSNError(err, dsn))
+		// #nosec G706 -- as above.
+		log.Printf("Connection test failed (ping %q): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -577,6 +580,9 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	url := c.BuildURI()
 
+	// #nosec G704 -- testing a stored connection means requesting its URL;
+	// the client below is netguard.Outbound, which refuses private and
+	// metadata targets.
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return map[string]interface{}{
@@ -602,7 +608,7 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 	}
 
 	client := netguard.Outbound().Client(5 * time.Second)
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- netguard.Outbound, see above
 	if err != nil {
 		if errors.Is(err, netguard.ErrBlockedTarget) {
 			return map[string]interface{}{
