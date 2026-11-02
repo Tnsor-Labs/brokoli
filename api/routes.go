@@ -304,7 +304,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/lineage", lineageHandler(s))
 
 		// Scheduler
-		r.Get("/scheduler/status", schedulerStatusHandler(sched))
+		r.Get("/scheduler/status", schedulerStatusHandler(sched, s))
 
 		// Notifications / Slack config
 		nh := NewNotificationSettingsHandler(s, ext)
@@ -390,7 +390,11 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 					DenyOrgAccess(w)
 					return
 				}
-				if err := ext.GitSync.Push(id); err != nil {
+				// The pipeline checked above, by its own id: passing the id
+				// as given let a pipeline_id resolve again downstream,
+				// outside the caller's organization, to whichever pipeline
+				// had that name first.
+				if err := ext.GitSync.Push(p.ID); err != nil {
 					writeError(w, http.StatusInternalServerError, err.Error())
 					return
 				}
@@ -699,6 +703,25 @@ func systemPurge(s store.Store, e *engine.Engine) http.HandlerFunc {
 		// id is "default" is still one organization: treating that id as
 		// "no organization" purged every tenant's runs for its members.
 		orgID := GetOrgIDFromRequest(r)
+		// Where workspaces are kept apart, the current workspace's runs
+		// only (ADR-049): settings.edit is a workspace permission, and a
+		// purge by organization let an admin of one workspace delete the
+		// run history of all of them.
+		if scope := RequestScope(r); scope.ByWorkspace() {
+			runIDs, err := s.PurgeRunsIn(scope, req.Days)
+			purgeRunFiles(e, runIDs)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"deleted":      len(runIDs),
+				"days":         req.Days,
+				"org_id":       orgID,
+				"workspace_id": scope.Workspace,
+			})
+			return
+		}
 		if orgID != "" {
 			runIDs, err := s.ListRunIDsOlderThanByOrg(req.Days, orgID)
 			if err != nil {

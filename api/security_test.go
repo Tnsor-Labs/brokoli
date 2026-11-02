@@ -1,9 +1,6 @@
 package api
 
 import (
-	"context"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -95,61 +92,6 @@ func TestIsWritePermission_AllModelPermissions(t *testing.T) {
 		if !readOnly[perm] && !result {
 			t.Errorf("permission %q should be write but isWritePermission returned false", perm)
 		}
-	}
-}
-
-// ─── Workspace access validation ────────────────────────────────────────────
-
-func newRequestWithWorkspace(wsID string) *http.Request {
-	r := httptest.NewRequest("GET", "/api/pipelines", nil)
-	if wsID != "" {
-		ctx := context.WithValue(r.Context(), workspaceKey, wsID)
-		r = r.WithContext(ctx)
-	}
-	return r
-}
-
-func TestValidateWorkspaceAccess_DefaultWorkspace(t *testing.T) {
-	// Default workspace always passes regardless of resource workspace
-	r := newRequestWithWorkspace(models.DefaultWorkspaceID)
-	if !ValidateWorkspaceAccess(r, "any-workspace-id") {
-		t.Error("default workspace should always grant access")
-	}
-	if !ValidateWorkspaceAccess(r, models.DefaultWorkspaceID) {
-		t.Error("default workspace should grant access to default resources")
-	}
-	if !ValidateWorkspaceAccess(r, "") {
-		t.Error("default workspace should grant access to resources with empty workspace")
-	}
-}
-
-func TestValidateWorkspaceAccess_NoWorkspaceInContext(t *testing.T) {
-	// When no workspace is set in context, GetWorkspaceID returns default
-	r := httptest.NewRequest("GET", "/api/pipelines", nil)
-	if !ValidateWorkspaceAccess(r, "some-workspace") {
-		t.Error("missing workspace context should fall back to default and grant access")
-	}
-}
-
-func TestValidateWorkspaceAccess_MatchingWorkspace(t *testing.T) {
-	r := newRequestWithWorkspace("ws-team-alpha")
-	if !ValidateWorkspaceAccess(r, "ws-team-alpha") {
-		t.Error("matching workspace IDs should grant access")
-	}
-}
-
-func TestValidateWorkspaceAccess_MismatchedWorkspace(t *testing.T) {
-	r := newRequestWithWorkspace("ws-team-alpha")
-	if ValidateWorkspaceAccess(r, "ws-team-beta") {
-		t.Error("mismatched workspace IDs should deny access")
-	}
-}
-
-func TestValidateWorkspaceAccess_MismatchedEmpty(t *testing.T) {
-	// Non-default workspace accessing a resource with empty workspace ID
-	r := newRequestWithWorkspace("ws-team-alpha")
-	if ValidateWorkspaceAccess(r, "") {
-		t.Error("non-default workspace should not access resources with empty workspace ID")
 	}
 }
 

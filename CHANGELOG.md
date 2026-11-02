@@ -157,7 +157,79 @@ reconstruct from git archaeology.
   `api.RaiseTriggerEvent` when one happens, and it is delivered as run
   events are (once per occurrence, cooldown, access checked at delivery).
 
+### Removed
+
+- **`api.ValidateOrgAccess` and `api.ValidateWorkspaceAccess`** --
+  @hc12r. Tenancy is the request's scope now (ADR-049): `scopedStore(s, r)`
+  for reads and actions, `RequestScope(r)` for the rule itself. The first
+  checked the organization only; the second was never called. A test now
+  fails when a handler calls the raw store for pipelines, runs, alerts or
+  dead letters outside a short list of known sites, which may only shrink.
+
 ### Fixed
+
+- **Workspace isolation for alert actions** (ADR-049 phase 3) -- @hc12r.
+  Marking an alert read, dismissing, assigning, acknowledging and resolving
+  it checked the organization only, so a person could act on another
+  workspace's alert by id. They now answer "not found" for an alert outside
+  the caller's workspaces. "Mark all read" marks the current workspace's
+  alerts, not every workspace's in the organization. A run fetched by id
+  for its plan or instances, and resolving a dead letter, now give the same
+  "not found" for a run or entry the caller may not see as for one that
+  does not exist.
+
+- **Deleting a pipeline could delete other workspaces' pipelines**
+  (ADR-049 phase 3) -- @hc12r. `DELETE /api/pipelines/{id}?resolve=cascade`
+  deleted every pipeline in the organization that depended on it, in any
+  workspace, and the refusal without `resolve` listed them by name. A
+  cascade that would reach a pipeline the caller may not see is now
+  refused (decouple still works), and the refusal names only the
+  dependents the caller may see, with a count of the others
+  (`dependents_elsewhere`).
+
+- **Dependencies on other workspaces' pipelines** (ADR-049 phase 3) --
+  @hc12r. A pipeline could be made to depend on any pipeline in the
+  organization, which let it fire on, and report the status of, a pipeline
+  in a workspace its author does not belong to. A new dependency must now
+  be on a pipeline the caller may see; dependencies already saved are kept
+  and do not block editing. A pipeline's dependency view
+  (`GET /api/pipelines/{id}/deps`) keeps only the id and whether it is
+  satisfied for an upstream in another workspace, not its name, status or
+  timing.
+
+- **The scheduler status listed every organization's schedules** --
+  @hc12r. `GET /api/scheduler/status` returned every scheduled pipeline on
+  the server, with its name, cron and last and next run, to any signed-in
+  person. It now lists the schedules of the pipelines the request lists:
+  the current workspace's.
+
+- **Live run state and logs of other workspaces** (ADR-049 phase 3) --
+  @hc12r. The live connection (`/api/ws`) let a session watch its
+  organization's dashboard, which listed every workspace's runs, and any
+  run of the organization by id, logs included. Where workspaces are kept
+  apart, the server now publishes a dashboard per workspace
+  (`dashboard.{org}.{workspace}`), refuses the organization-wide one, and
+  lets a session watch a run only in a workspace its person belongs to.
+  The UI watches the workspace's dashboard.
+
+- **Purge deleted every workspace's run history** (ADR-049 phase 3) --
+  @hc12r. `POST /api/system/purge` deleted the organization's old runs, so
+  an admin of one workspace deleted the run history and run files of all
+  of them. Where workspaces are kept apart it deletes the current
+  workspace's.
+
+- **Dashboard counts and the run calendar were the organization's** --
+  @hc12r. `GET /api/dashboard` counted every workspace's runs (runs today,
+  success rate, trends, running run ids, top failing) next to the current
+  workspace's pipelines, and `GET /api/runs/calendar` counted the
+  organization's runs per day. Both are the current workspace's where
+  workspaces are kept apart.
+
+- **Git push could export another organization's pipeline** -- @hc12r.
+  `POST /api/git/push/{id}` checked the pipeline named in the path, then
+  handed the path's id on unchanged; given a `pipeline_id`, the export
+  looked it up again across every organization. It now passes on the id of
+  the pipeline it checked.
 
 - **Workspace isolation for the rest of the pipeline routes** (ADR-049
   phase 2) -- @hc12r. The dead-letter queue (`GET /api/dlq`, a pipeline's

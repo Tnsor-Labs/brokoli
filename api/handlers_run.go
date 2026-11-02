@@ -45,21 +45,6 @@ func NewRunHandler(s store.Store, e *engine.Engine) *RunHandler {
 	return &RunHandler{store: s, engine: e}
 }
 
-// pipelineInOrg reports whether the caller's organization may reach the
-// pipeline. Anything short of a pipeline it can see is false: a missing
-// one, another organization's, and one the store could not read alike.
-// The checks it replaces ran only when the read succeeded, so a failed read
-// skipped them, and "missing" and "another organization's" got different
-// answers, which says which ids exist elsewhere.
-//
-// The rule itself is the scoped store's (ADR-049): the pipeline's
-// organization and a workspace the caller belongs to. It used to check
-// the organization only, so a member of one workspace could reach another
-// workspace's runs by id.
-func pipelineInOrg(s store.Store, r *http.Request, pipelineID string) bool {
-	return scopedStore(s, r).Visible("pipelines", pipelineID)
-}
-
 // validateRunAccess checks that the caller may reach a run: its pipeline's
 // organization, and a workspace the caller belongs to (ADR-049).
 func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
@@ -69,8 +54,7 @@ func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
 func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
-	// Verify pipeline belongs to user's org
-	if !pipelineInOrg(h.store, r, pipelineID) {
+	if !scopedStore(h.store, r).Visible("pipelines", pipelineID) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -153,9 +137,8 @@ func runPageSize(r *http.Request) int {
 // COUNT (Tnsor-Labs/brokoli#79).
 func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
-
-	// Verify pipeline belongs to user's org
-	if !pipelineInOrg(h.store, r, pipelineID) {
+	scoped := scopedStore(h.store, r)
+	if !scoped.Visible("pipelines", pipelineID) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -169,7 +152,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	// existed. Both the page and the total now come from the database.
 	if q.Get("page") != "" {
 		pp := ParsePageParams(r)
-		runs, total, err := h.store.ListRunsByPipelinePaged(pipelineID, pp.Limit(), pp.Offset())
+		runs, total, err := scoped.RunsByPipelinePaged(pipelineID, pp.Limit(), pp.Offset())
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -180,7 +163,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if HasCursorPagination(r) {
-		runs, hasNext, err := h.store.ListRunsByPipelineCursor(pipelineID, CursorParam(r), limit)
+		runs, hasNext, err := scoped.RunsByPipelineCursor(pipelineID, CursorParam(r), limit)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -199,7 +182,7 @@ func (h *RunHandler) ListByPipeline(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	runs, err := h.store.ListRunsByPipeline(pipelineID, limit)
+	runs, err := scoped.RunsByPipeline(pipelineID, limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -259,14 +242,10 @@ func populateRunErrors(runs []models.Run) []models.Run {
 
 func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	run, err := h.store.GetRun(id)
+	// A run the caller may not see is answered as one that does not exist.
+	run, err := scopedStore(h.store, r).Run(id)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "run not found")
-		return
-	}
-	// Verify run's pipeline belongs to user's org
-	if !pipelineInOrg(h.store, r, run.PipelineID) {
-		DenyOrgAccess(w)
 		return
 	}
 	run.PopulateError()
@@ -290,13 +269,8 @@ func (h *RunHandler) Get(w http.ResponseWriter, r *http.Request) {
 // which recomputes the plan for the current definition.
 func (h *RunHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	run, err := h.store.GetRun(id)
-	if err != nil {
+	if _, err := scopedStore(h.store, r).Run(id); err != nil {
 		writeError(w, http.StatusNotFound, "run not found")
-		return
-	}
-	if !pipelineInOrg(h.store, r, run.PipelineID) {
-		DenyOrgAccess(w)
 		return
 	}
 	pp, ok := h.store.(store.PhysicalPlanStore)
@@ -321,13 +295,8 @@ func (h *RunHandler) GetPlan(w http.ResponseWriter, r *http.Request) {
 // plain node, one per resolved expansion item.
 func (h *RunHandler) GetInstances(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	run, err := h.store.GetRun(id)
-	if err != nil {
+	if _, err := scopedStore(h.store, r).Run(id); err != nil {
 		writeError(w, http.StatusNotFound, "run not found")
-		return
-	}
-	if !pipelineInOrg(h.store, r, run.PipelineID) {
-		DenyOrgAccess(w)
 		return
 	}
 	// Prefer the durable per-instance record (#90 M3); fall back to
@@ -463,7 +432,7 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 	// runs (h.engine.Backfill below), so this is not just a read-scoping
 	// check: without it, a caller in a different org could trigger real
 	// execution against this pipeline's live connections.
-	if !pipelineInOrg(h.store, r, pipelineID) {
+	if !scopedStore(h.store, r).Visible("pipelines", pipelineID) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -669,12 +638,6 @@ func (h *RunHandler) GetNodePreview(w http.ResponseWriter, r *http.Request) {
 func (h *RunHandler) NodeStats(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
-	// Verify pipeline belongs to user's org
-	if !pipelineInOrg(h.store, r, pipelineID) {
-		DenyOrgAccess(w)
-		return
-	}
-
 	numRuns := 10
 	if n := r.URL.Query().Get("runs"); n != "" {
 		if parsed, err := strconv.Atoi(n); err == nil && parsed > 0 && parsed <= 50 {
@@ -682,7 +645,11 @@ func (h *RunHandler) NodeStats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	runs, err := h.store.ListRunsByPipeline(pipelineID, numRuns)
+	runs, err := scopedStore(h.store, r).RunsByPipeline(pipelineID, numRuns)
+	if errors.Is(err, store.ErrNotVisible) {
+		DenyOrgAccess(w)
+		return
+	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

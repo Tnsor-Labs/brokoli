@@ -108,19 +108,6 @@ func RequireFeature(feature string) func(http.Handler) http.Handler {
 	}
 }
 
-// ValidateOrgAccess checks if a resource belongs to the requesting user's org.
-// Returns true if: no org context (community edition), or orgs match.
-func ValidateOrgAccess(r *http.Request, resourceOrgID string) bool {
-	reqOrg := GetOrgIDFromRequest(r)
-	if reqOrg == "" {
-		return true // community edition — no org isolation
-	}
-	if resourceOrgID == "" {
-		return true // resource without org assignment (legacy)
-	}
-	return reqOrg == resourceOrgID
-}
-
 // DenyOrgAccess writes a 404 for resources that don't belong to the user's org.
 // Uses 404 instead of 403 to avoid leaking resource existence.
 func DenyOrgAccess(w http.ResponseWriter) {

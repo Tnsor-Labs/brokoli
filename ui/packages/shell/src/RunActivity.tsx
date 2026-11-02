@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
-import { dashboardKey, observeApi, watchKey, type DashboardRun } from '@brokoli/api'
+import { currentWorkspace, dashboardKey, observeApi, watchKey, type DashboardRun } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 import { ACTIVE, paths, useNow, useThrottledActivity } from '@brokoli/pipelines'
 import { Button, Callout, Dot, Drawer, Skeleton, StatusBadge, cx, durationBetween, errorMessage, formatDuration, formatRelative, useToast } from '@brokoli/ui'
@@ -20,6 +20,7 @@ function useLiveRuns() {
   const toast = useToast()
   const [running, setRunning] = useState<number | null>(null)
   const orgId = user?.org_id
+  const workspaceId = currentWorkspace()
   const signedIn = Boolean(user)
   const toastRef = useRef(toast)
   toastRef.current = toast
@@ -28,7 +29,7 @@ function useLiveRuns() {
     const seen = new Map<string, string>()
     const since = Date.now()
     let baseline = true
-    return watchKey<LiveDashboard>(dashboardKey(orgId), (value) => {
+    return watchKey<LiveDashboard>(dashboardKey(orgId, workspaceId), (value) => {
       const runs = value?.recent_runs ?? []
       setRunning(value?.runs_running ?? 0)
       if (baseline) {
@@ -52,7 +53,7 @@ function useLiveRuns() {
         else say.success(`${name} finished`)
       }
     })
-  }, [signedIn, orgId])
+  }, [signedIn, orgId, workspaceId])
   return running
 }
 

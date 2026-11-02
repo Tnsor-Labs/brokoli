@@ -27,7 +27,6 @@ func alertCallerID(r *http.Request) string {
 
 // Assign sets or clears an alert's owner.
 func (h *AlertHandler) Assign(w http.ResponseWriter, r *http.Request) {
-	orgID := GetOrgIDFromRequest(r)
 	alertID := chi.URLParam(r, "id")
 
 	// A pointer, so that clearing the assignee is expressible: absent
@@ -44,7 +43,7 @@ func (h *AlertHandler) Assign(w http.ResponseWriter, r *http.Request) {
 		assignee = *req.UserID
 	}
 
-	if err := h.store.SetAlertAssignee(orgID, alertID, assignee); err != nil {
+	if err := scopedStore(h.store, r).SetAlertAssignee(alertID, assignee); err != nil {
 		if errors.Is(err, store.ErrAlertNotFound) {
 			writeError(w, http.StatusNotFound, "alert not found")
 			return
@@ -59,7 +58,6 @@ func (h *AlertHandler) Assign(w http.ResponseWriter, r *http.Request) {
 
 // Acknowledge records that the caller is on it.
 func (h *AlertHandler) Acknowledge(w http.ResponseWriter, r *http.Request) {
-	orgID := GetOrgIDFromRequest(r)
 	alertID := chi.URLParam(r, "id")
 	userID := alertCallerID(r)
 	if userID == "" {
@@ -69,7 +67,7 @@ func (h *AlertHandler) Acknowledge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.AcknowledgeAlert(orgID, alertID, userID); err != nil {
+	if err := scopedStore(h.store, r).AcknowledgeAlert(alertID, userID); err != nil {
 		if errors.Is(err, store.ErrAlertNotFound) {
 			writeError(w, http.StatusNotFound, "alert not found")
 			return
@@ -83,7 +81,6 @@ func (h *AlertHandler) Acknowledge(w http.ResponseWriter, r *http.Request) {
 
 // Resolve marks an incident dealt with.
 func (h *AlertHandler) Resolve(w http.ResponseWriter, r *http.Request) {
-	orgID := GetOrgIDFromRequest(r)
 	alertID := chi.URLParam(r, "id")
 	userID := alertCallerID(r)
 	if userID == "" {
@@ -91,7 +88,7 @@ func (h *AlertHandler) Resolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.ResolveAlert(orgID, alertID, userID); err != nil {
+	if err := scopedStore(h.store, r).ResolveAlert(alertID, userID); err != nil {
 		if errors.Is(err, store.ErrAlertNotFound) {
 			writeError(w, http.StatusNotFound, "alert not found")
 			return

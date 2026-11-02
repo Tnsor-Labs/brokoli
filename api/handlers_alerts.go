@@ -13,9 +13,10 @@ import (
 // to the product's outbound-only Slack/webhook notifications, which are lost
 // if nobody happens to be watching when they fire.
 //
-// Every route is scoped to the caller's organization. The org is taken from
-// the request context, never from the request body or a query parameter, so
-// a caller cannot ask for another tenant's alerts.
+// Every route goes through the request's scope (ADR-049): lists show the
+// current workspace's alerts, and an alert is acted on by id only in a
+// workspace the caller belongs to. The scope comes from the request
+// context, never from the body or a query parameter.
 type AlertHandler struct {
 	store store.Store
 }
@@ -78,12 +79,7 @@ func (h *AlertHandler) List(w http.ResponseWriter, r *http.Request) {
 	// Unread is per person once there is a person. Without a caller
 	// identity it falls back to the org-wide count, which is what an
 	// unauthenticated deployment has always had.
-	var unread int
-	if userID != "" {
-		unread, err = scoped.CountUnreadAlerts(userID)
-	} else {
-		unread, err = h.store.CountUnreadAlerts(orgID)
-	}
+	unread, err := scoped.CountUnreadAlerts(userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -95,20 +91,10 @@ func (h *AlertHandler) List(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AlertHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
-	orgID := GetOrgIDFromRequest(r)
-	alertID := chi.URLParam(r, "id")
-	userID := alertCallerID(r)
-
-	// Per person when there is one. The org-wide write stays for a
+	// Per person when there is one. The shared flag stays for a
 	// deployment with no identity at all, which is the only case that
 	// still needs it.
-	var err error
-	if userID != "" {
-		err = h.store.MarkAlertReadBy(orgID, alertID, userID)
-	} else {
-		err = h.store.MarkAlertRead(orgID, alertID)
-	}
-	if err != nil {
+	if err := scopedStore(h.store, r).MarkAlertRead(chi.URLParam(r, "id"), alertCallerID(r)); err != nil {
 		writeError(w, http.StatusNotFound, "alert not found")
 		return
 	}
@@ -116,16 +102,7 @@ func (h *AlertHandler) MarkRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AlertHandler) MarkAllRead(w http.ResponseWriter, r *http.Request) {
-	orgID := GetOrgIDFromRequest(r)
-	userID := alertCallerID(r)
-
-	var err error
-	if userID != "" {
-		err = h.store.MarkAllAlertsReadBy(orgID, userID)
-	} else {
-		err = h.store.MarkAllAlertsRead(orgID)
-	}
-	if err != nil {
+	if err := scopedStore(h.store, r).MarkAllAlertsRead(alertCallerID(r)); err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -133,7 +110,7 @@ func (h *AlertHandler) MarkAllRead(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *AlertHandler) Dismiss(w http.ResponseWriter, r *http.Request) {
-	if err := h.store.DismissAlert(GetOrgIDFromRequest(r), chi.URLParam(r, "id")); err != nil {
+	if err := scopedStore(h.store, r).DismissAlert(chi.URLParam(r, "id")); err != nil {
 		writeError(w, http.StatusNotFound, "alert not found")
 		return
 	}

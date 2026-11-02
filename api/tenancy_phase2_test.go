@@ -111,6 +111,6 @@ func TestPipelineSideRoutesKeepToTheCallersWorkspaces(t *testing.T) {
 		t.Errorf("bulk on another workspace's pipeline: %s, want it answered as not found", rec.Body.String())
 	}
 	if got, _ := s.GetPipeline("pb"); !got.Enabled {
-		t.Error("alice disabled a pipeline in a workspace she does not belong to")
+		t.Error("alice disabled a pipeline in a workspace they do not belong to")
 	}
 }

@@ -255,8 +255,57 @@ func (x ScopedStore) Alerts(q AlertQuery) ([]models.Alert, error) {
 	return x.st.QueryAlerts(q)
 }
 
-// CountUnreadAlerts counts what userID has not read, in the current
-// workspace.
-func (x ScopedStore) CountUnreadAlerts(userID string) (int, error) {
-	return x.st.CountUnreadAlertsIn(x.scope, userID)
+// RunsByPipeline is ListRunsByPipeline for a pipeline the scope sees.
+func (x ScopedStore) RunsByPipeline(pipelineID string, limit int) ([]models.Run, error) {
+	if !x.Visible("pipelines", pipelineID) {
+		return nil, ErrNotVisible
+	}
+	return x.st.ListRunsByPipeline(pipelineID, limit)
+}
+
+// RunsByPipelineCursor is ListRunsByPipelineCursor for a pipeline the
+// scope sees.
+func (x ScopedStore) RunsByPipelineCursor(pipelineID, afterID string, limit int) ([]models.Run, bool, error) {
+	if !x.Visible("pipelines", pipelineID) {
+		return nil, false, ErrNotVisible
+	}
+	return x.st.ListRunsByPipelineCursor(pipelineID, afterID, limit)
+}
+
+// RunsByPipelinePaged is ListRunsByPipelinePaged for a pipeline the scope
+// sees.
+func (x ScopedStore) RunsByPipelinePaged(pipelineID string, limit, offset int) ([]models.Run, int, error) {
+	if !x.Visible("pipelines", pipelineID) {
+		return nil, 0, ErrNotVisible
+	}
+	return x.st.ListRunsByPipelinePaged(pipelineID, limit, offset)
+}
+
+// PipelineDLQ lists the dead-letter entries of a pipeline the scope sees.
+func (x ScopedStore) PipelineDLQ(pipelineID string, includeResolved bool, limit int) ([]DLQEntry, error) {
+	if !x.Visible("pipelines", pipelineID) {
+		return nil, ErrNotVisible
+	}
+	return x.st.ListDLQ(pipelineID, includeResolved, limit)
+}
+
+// ResolveDLQ resolves dead-letter entry dlqID of a pipeline the scope
+// sees. The entry must be that pipeline's: the route names both, and a
+// check of the pipeline alone would guard an object the request is not
+// acting on. Found by listing the pipeline's own entries, which are
+// bounded; an entry that is not among them is ErrNotVisible.
+func (x ScopedStore) ResolveDLQ(pipelineID, dlqID string, limit int) error {
+	if dlqID == "" {
+		return ErrNotVisible
+	}
+	entries, err := x.PipelineDLQ(pipelineID, true, limit)
+	if err != nil {
+		return ErrNotVisible
+	}
+	for _, e := range entries {
+		if e.ID == dlqID {
+			return x.st.ResolveDLQ(dlqID)
+		}
+	}
+	return ErrNotVisible
 }

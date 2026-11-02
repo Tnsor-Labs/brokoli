@@ -90,6 +90,12 @@ func nextPlaceholder(dialect string) func() string {
 // numbering, so the tests here would never have caught it.
 func (sc RunScope) scopeSQL(ph func() string) (string, []interface{}) {
 	switch {
+	case sc.OrgID != "" && sc.WorkspaceID != "":
+		// One workspace of an organization (ADR-049): the organization
+		// alone counted every workspace's runs into each one's dashboard.
+		org := ph()
+		return " AND org_id = " + org + " AND pipeline_id IN (SELECT id FROM pipelines WHERE org_id = " + ph() + " AND workspace_id = " + ph() + ")",
+			[]interface{}{sc.OrgID, sc.OrgID, sc.WorkspaceID}
 	case sc.OrgID != "":
 		return " AND org_id = " + ph(), []interface{}{sc.OrgID}
 	case sc.WorkspaceID != "":

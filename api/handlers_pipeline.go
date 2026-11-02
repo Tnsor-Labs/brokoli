@@ -209,7 +209,7 @@ func (h *PipelineHandler) Create(w http.ResponseWriter, r *http.Request) {
 	}
 	p.OrgID = orgID
 
-	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+	if err := validateDependencyOrgScope(h.store, r, &p, nil); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -403,7 +403,7 @@ func (h *PipelineHandler) saveUpdate(r *http.Request, existing, decoded *models.
 		return nil, http.StatusBadRequest, err.Error()
 	}
 
-	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+	if err := validateDependencyOrgScope(h.store, r, &p, existing); err != nil {
 		return nil, http.StatusBadRequest, err.Error()
 	}
 
@@ -481,26 +481,52 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	direct := directDependents(summaries, id)
+	// Dependents can be in other workspaces of the organization (ADR-049):
+	// the caller is told how many, not which, and cannot delete them.
+	scoped := scopedStore(h.store, r)
+	hidden := 0
+	for _, d := range direct {
+		if !scoped.Visible("pipelines", d.ID) {
+			hidden++
+		}
+	}
 
 	if len(direct) > 0 && resolve == "abort" {
 		respDeps := make([]map[string]string, 0, len(direct))
 		for _, d := range direct {
-			respDeps = append(respDeps, map[string]string{"id": d.ID, "name": d.Name})
+			if scoped.Visible("pipelines", d.ID) {
+				respDeps = append(respDeps, map[string]string{"id": d.ID, "name": d.Name})
+			}
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+		body := map[string]interface{}{
 			"error":      "pipeline has dependents",
 			"dependents": respDeps,
 			"hint":       "retry with ?resolve=cascade to delete dependents, or ?resolve=decouple to strip this dependency from them",
-		})
+		}
+		if hidden > 0 {
+			body["dependents_elsewhere"] = hidden
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(body)
 		return
 	}
 
 	// Compute the transitive closure for cascade, so a->b->c cascade from a wipes all three.
+	// Cascade deleted every dependent in the organization, so a member of
+	// one workspace could delete pipelines of workspaces they do not
+	// belong to. It is refused when any pipeline it would delete is one
+	// the caller may not see; decouple still works, since it only removes
+	// the reference to the pipeline being deleted.
 	var toDelete []models.PipelineDepSummary
 	if resolve == "cascade" {
 		toDelete = transitiveDependents(summaries, id)
+		for _, d := range toDelete {
+			if !scoped.Visible("pipelines", d.ID) {
+				writeError(w, http.StatusConflict, "pipelines in workspaces you are not a member of depend on this one; retry with ?resolve=decouple, or ask a member of those workspaces")
+				return
+			}
+		}
 	}
 
 	// All mutations happen inside a single transaction using the tx-scoped store methods.
@@ -611,8 +637,16 @@ func transitiveDependents(summaries []models.PipelineDepSummary, targetID string
 // outside the caller's org. Prevents cross-tenant side channels via trigger-mode auto-firing
 // or blocked-run reason leaks. Must be called after p.OrgID has been set.
 //
+// A dependency the pipeline did not already have (existing is the saved
+// pipeline, nil for a new one) must also be on a pipeline the caller may
+// see (ADR-049): checking the organization alone let a member of one
+// workspace make their pipeline fire on, and report the status of, a
+// pipeline in a workspace they do not belong to. Dependencies already
+// saved are left alone, so editing a pipeline someone else linked across
+// workspaces does not refuse the save.
+//
 // Uses a single ListPipelineDepsByOrg query for all rules (was N GetPipeline round-trips).
-func validateDependencyOrgScope(s store.Store, p *models.Pipeline) error {
+func validateDependencyOrgScope(s store.Store, r *http.Request, p, existing *models.Pipeline) error {
 	rules := p.EffectiveDependencies()
 	if len(rules) == 0 {
 		return nil
@@ -625,14 +659,22 @@ func validateDependencyOrgScope(s store.Store, p *models.Pipeline) error {
 	for _, sum := range summaries {
 		sameOrg[sum.ID] = true
 	}
+	had := map[string]bool{}
+	if existing != nil {
+		for _, rule := range existing.EffectiveDependencies() {
+			had[rule.PipelineID] = true
+		}
+	}
+	scoped := scopedStore(s, r)
 	for _, rule := range rules {
 		if rule.PipelineID == p.ID {
 			// Self-dep is rejected by Pipeline.Validate(), but guard here too.
 			continue
 		}
-		if !sameOrg[rule.PipelineID] {
-			// Treat missing and cross-org identically — the error message never reveals
-			// whether the pipeline ID exists in another org.
+		// Treat missing, cross-org and another workspace's identically --
+		// the error message never reveals whether the pipeline ID exists
+		// elsewhere.
+		if !sameOrg[rule.PipelineID] || (!had[rule.PipelineID] && !scoped.Visible("pipelines", rule.PipelineID)) {
 			return fmt.Errorf("dependency pipeline not found: %s", rule.PipelineID)
 		}
 	}
@@ -756,7 +798,7 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateDependencyOrgScope(h.store, &p); err != nil {
+	if err := validateDependencyOrgScope(h.store, r, &p, existing); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -907,7 +949,7 @@ func (h *PipelineHandler) Import(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateDependencyOrgScope(h.store, p); err != nil {
+	if err := validateDependencyOrgScope(h.store, r, p, nil); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -995,7 +1037,7 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := validateDependencyOrgScope(h.store, &clone); err != nil {
+	if err := validateDependencyOrgScope(h.store, r, &clone, nil); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}

@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -41,6 +42,16 @@ type Server struct {
 	jwtSecret   []byte // HS256 secret; empty = auth disabled
 	requireAuth bool   // when true, WATCH/CALL require authenticated session
 	upgrader    websocket.Upgrader
+
+	// Workspace isolation (ADR-049), set by the embedding API. ScopeFor
+	// is the tenancy scope of the request that opens a connection;
+	// RunVisible says whether a scope may see a run, from the database;
+	// PipelineWorkspace names a pipeline's workspace, so the bridge can
+	// keep one dashboard per workspace. Without them only organizations
+	// are kept apart, as before.
+	ScopeFor          func(r *http.Request) tenancy.Scope
+	RunVisible        func(scope tenancy.Scope, runID string) bool
+	PipelineWorkspace func(pipelineID string) string
 }
 
 // NewServer creates a new SODP server instance.
@@ -128,6 +139,9 @@ func (srv *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	sess := NewSession(uuid.New().String(), orgID)
 	if preAuthed {
 		sess.MarkAuthenticated()
+		if srv.ScopeFor != nil {
+			sess.Scope, sess.HasScope = srv.ScopeFor(r), true
+		}
 	}
 
 	srv.mu.Lock()
@@ -625,14 +639,30 @@ func (srv *Server) keyAllowedForSession(sess *Session, key string) bool {
 		return true
 	}
 
+	// Where workspaces are kept apart, the organization's dashboard and
+	// its runs are not all one session's: the dashboard is per workspace,
+	// and a run is the session's when its workspace is one the person
+	// belongs to (ADR-049). The organization-wide dashboard listed every
+	// workspace's runs, and its run ids opened their logs.
+	byWorkspace := sess.HasScope && sess.Scope.ByWorkspace()
 	if key == "dashboard."+sess.OrgID {
-		return true
+		return !byWorkspace
+	}
+	if ws, ok := strings.CutPrefix(key, "dashboard."+sess.OrgID+"."); ok && ws != "" && !strings.Contains(ws, ".") {
+		return !byWorkspace || sess.Scope.Sees(sess.Scope.OrgID, ws)
 	}
 	if key == "_events."+sess.OrgID || (sess.OrgID == "default" && key == "_events") {
 		return true
 	}
 	if strings.HasPrefix(key, "runs.") {
-		return srv.checkRunOrgAccess(sess.OrgID, key)
+		if !srv.checkRunOrgAccess(sess.OrgID, key) {
+			return false
+		}
+		if !byWorkspace {
+			return true
+		}
+		parts := strings.SplitN(key, ".", 3)
+		return srv.RunVisible != nil && srv.RunVisible(sess.Scope, parts[1])
 	}
 	return false
 }

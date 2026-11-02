@@ -36,7 +36,7 @@ func TestRecomputeDashboard_RecentRunsCarryPipelineName(t *testing.T) {
 		PipelineName: "daily-sales-etl",
 		Timestamp:    now,
 	})
-	recomputeDashboard(srv, "", now)
+	recomputeDashboard(srv, "", "", now)
 
 	snap := dashboardSnapshot(t, srv, "")
 	recent, _ := snap["recent_runs"].([]map[string]any)
@@ -65,7 +65,7 @@ func TestRecomputeDashboard_PipelineNameSurvivesFailure(t *testing.T) {
 		Type: "run.failed", RunID: "run-1", PipelineID: "pipe-1",
 		Error: "boom", Timestamp: now.Add(time.Second),
 	})
-	recomputeDashboard(srv, "", now)
+	recomputeDashboard(srv, "", "", now)
 
 	snap := dashboardSnapshot(t, srv, "")
 	recent, _ := snap["recent_runs"].([]map[string]any)
@@ -101,7 +101,7 @@ func TestRecomputeDashboard_TopFailingCarriesName(t *testing.T) {
 			Error: "nope", Timestamp: now,
 		})
 	}
-	recomputeDashboard(srv, "", now)
+	recomputeDashboard(srv, "", "", now)
 
 	snap := dashboardSnapshot(t, srv, "")
 	top, _ := snap["top_failing"].([]map[string]any)

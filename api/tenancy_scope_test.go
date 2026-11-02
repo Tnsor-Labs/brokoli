@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
+	"github.com/Tnsor-Labs/brokoli/store"
 )
 
 // ADR-049 phase 1, through the real middleware: runs by id, the runs a
@@ -20,9 +22,11 @@ import (
 // of both. Each was filtered by organization alone before.
 
 type scopeWorld struct {
-	router       chi.Router
-	runA, runB   string
-	pipeA, pipeB string
+	router         chi.Router
+	store          store.Store
+	runA, runB     string
+	pipeA, pipeB   string
+	alertA, alertB string
 }
 
 func newScopeWorld(t *testing.T) scopeWorld {
@@ -31,6 +35,7 @@ func newScopeWorld(t *testing.T) scopeWorld {
 	s := newWorkspaceAccessStore(t)
 	pA := seedPipeline(t, s, "pipe-alpha", wsAlpha).ID
 	pB := seedPipeline(t, s, "pipe-beta", wsBeta).ID
+	alerts := map[string]string{}
 	mkRun := func(pipelineID string) string {
 		now := time.Now()
 		run := &models.Run{ID: common.NewID(), PipelineID: pipelineID, Status: models.RunStatusFailed, OrgID: wsOrg, StartedAt: &now}
@@ -40,13 +45,15 @@ func newScopeWorld(t *testing.T) scopeWorld {
 		if err := s.SetRunAttribution(run.ID, &models.RunAttribution{Kind: models.RunTriggerKindUser, UserID: "carol"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.CreateAlert(&models.Alert{ID: common.NewID(), OrgID: wsOrg, Kind: "run_failed", Severity: "error",
+		alerts[pipelineID] = common.NewID()
+		if err := s.CreateAlert(&models.Alert{ID: alerts[pipelineID], OrgID: wsOrg, Kind: "run_failed", Severity: "error",
 			Title: "failed", PipelineID: pipelineID, RunID: run.ID, CreatedAt: now}); err != nil {
 			t.Fatal(err)
 		}
 		return run.ID
 	}
-	w := scopeWorld{pipeA: pA, pipeB: pB, runA: mkRun(pA), runB: mkRun(pB)}
+	w := scopeWorld{store: s, pipeA: pA, pipeB: pB, runA: mkRun(pA), runB: mkRun(pB)}
+	w.alertA, w.alertB = alerts[pA], alerts[pB]
 
 	rh := NewRunHandler(s, nil)
 	ah := NewAlertHandler(s)
@@ -67,13 +74,24 @@ func newScopeWorld(t *testing.T) scopeWorld {
 	r.Get("/api/pipelines/{id}/grid", rh.Grid)
 	r.Get("/api/runs", rh.ListStartedBy)
 	r.Get("/api/alerts", ah.List)
+	r.Post("/api/alerts/{id}/read", ah.MarkRead)
+	r.Post("/api/alerts/read-all", ah.MarkAllRead)
+	r.Delete("/api/alerts/{id}", ah.Dismiss)
+	r.Post("/api/alerts/{id}/assign", ah.Assign)
+	r.Post("/api/alerts/{id}/acknowledge", ah.Acknowledge)
+	r.Post("/api/alerts/{id}/resolve", ah.Resolve)
 	w.router = r
 	return w
 }
 
 func (w scopeWorld) get(t *testing.T, path, user, ws string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	return w.do(t, http.MethodGet, path, user, ws, "")
+}
+
+func (w scopeWorld) do(t *testing.T, method, path, user, ws, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("X-Test-User", user)
 	if ws != "" {
 		req.Header.Set("X-Workspace-ID", ws)
@@ -95,7 +113,7 @@ func TestRunRoutesByIDKeepToTheCallersWorkspaces(t *testing.T) {
 		}
 	}
 	if rec := w.get(t, "/api/runs/"+w.runA, "alice", wsAlpha); rec.Code != http.StatusOK {
-		t.Errorf("alice GET her own workspace's run: %d", rec.Code)
+		t.Errorf("alice GET their own workspace's run: %d", rec.Code)
 	}
 }
 

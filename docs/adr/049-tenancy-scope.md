@@ -149,8 +149,14 @@ it is an optional later phase, not the mechanism.
 2. **Migrate the rest** resource by resource (triggers, change requests,
    lineage, messages, extension stores), each removing its handler-level
    checks.
-3. **Turn the gate on** once the allowlist is empty, and delete
-   `ValidateWorkspaceAccess`, `pipelineInOrg` and the hand-written checks.
+3. **Turn the gate on** and delete `ValidateWorkspaceAccess`,
+   `pipelineInOrg` and the hand-written checks. Done in steps: the gate
+   (`api/tenancy_gate_test.go`) runs from the first step with an allowlist
+   of the remaining raw calls, counted per function, that may only shrink;
+   each later step moves a group of handlers onto the scoped store and
+   takes them off the list. System callers with no request (trigger
+   dispatch, the health probe, token-authenticated webhooks) stay on it
+   by name, with the reason.
 4. **Optional:** row-level security in PostgreSQL as defense in depth.
 
 ## Consequences

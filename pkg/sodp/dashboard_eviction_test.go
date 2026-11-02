@@ -32,7 +32,7 @@ func TestRecomputeDashboard_AggregatesDecayAfterEviction(t *testing.T) {
 		})
 	}
 
-	recomputeDashboard(srv, "", now)
+	recomputeDashboard(srv, "", "", now)
 	before := dashboardSnapshot(t, srv, "")
 	if before["runs_24h_total"] != 2 {
 		t.Fatalf("precondition: runs_24h_total = %v, want 2", before["runs_24h_total"])
@@ -58,7 +58,7 @@ func TestRecomputeDashboard_AggregatesDecayAfterEviction(t *testing.T) {
 	if n := srv.State.EvictCompleted(30 * time.Minute); n == 0 {
 		t.Fatal("expected the hour-old completed runs to be evicted")
 	}
-	recomputeDashboard(srv, "", now)
+	recomputeDashboard(srv, "", "", now)
 	after := dashboardSnapshot(t, srv, "")
 
 	t.Logf("runs_24h_total:   %v -> %v", before["runs_24h_total"], after["runs_24h_total"])

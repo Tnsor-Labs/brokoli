@@ -88,9 +88,12 @@ func Bridge(srv *Server, events <-chan BridgeEvent) <-chan struct{} {
 // replica never saw -- it restarted, or the start went to another one --
 // was stored with no organization: invisible to its owner, and readable by
 // sessions that accept runs without one.
-func withRunIdentity(ev BridgeEvent, fields map[string]any) map[string]any {
+func withRunIdentity(srv *Server, ev BridgeEvent, fields map[string]any) map[string]any {
 	if ev.OrgID != "" {
 		fields["org_id"] = ev.OrgID
+	}
+	if ws := pipelineWorkspace(srv, ev.PipelineID); ws != "" {
+		fields["workspace_id"] = ws
 	}
 	if ev.PipelineID != "" {
 		fields["pipeline_id"] = ev.PipelineID
@@ -106,17 +109,17 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 
 	switch ev.Type {
 	case "run.started":
-		srv.Mutate(runKey, map[string]any{
+		srv.Mutate(runKey, withRunIdentity(srv, ev, map[string]any{
 			"status":        "running",
 			"pipeline_id":   ev.PipelineID,
 			"pipeline_name": ev.PipelineName,
 			"org_id":        ev.OrgID,
 			"started_at":    ev.Timestamp.Format(time.RFC3339),
-		})
+		}))
 
 	case "run.completed":
 		current, _ := srv.State.Get(runKey)
-		merged := mergeValues(current, withRunIdentity(ev, map[string]any{
+		merged := mergeValues(current, withRunIdentity(srv, ev, map[string]any{
 			"status":      "success",
 			"finished_at": ev.Timestamp.Format(time.RFC3339),
 		}))
@@ -128,7 +131,7 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 		if status == "" {
 			status = "failed"
 		}
-		merged := mergeValues(current, withRunIdentity(ev, map[string]any{
+		merged := mergeValues(current, withRunIdentity(srv, ev, map[string]any{
 			"status":      status,
 			"error":       ev.Error,
 			"finished_at": ev.Timestamp.Format(time.RFC3339),
@@ -187,7 +190,19 @@ func bridgeEvent(srv *Server, ev BridgeEvent) {
 	// We pass the latest event timestamp as a hint for the "today" / "24h"
 	// windows so the snapshot uses the engine's clock, not wall-clock — this
 	// matters in tests that fix the time.
-	recomputeDashboard(srv, ev.OrgID, ev.Timestamp)
+	recomputeDashboard(srv, ev.OrgID, "", ev.Timestamp)
+	if ws := pipelineWorkspace(srv, ev.PipelineID); ws != "" {
+		recomputeDashboard(srv, ev.OrgID, ws, ev.Timestamp)
+	}
+}
+
+// pipelineWorkspace is the workspace of a pipeline, when the server can
+// tell (Server.PipelineWorkspace), or "".
+func pipelineWorkspace(srv *Server, pipelineID string) string {
+	if srv.PipelineWorkspace == nil || pipelineID == "" {
+		return ""
+	}
+	return srv.PipelineWorkspace(pipelineID)
 }
 
 // dashboardKey returns the per-org dashboard state key. The community / single-
@@ -235,7 +250,10 @@ func dashboardKey(orgID string) string {
 // runs_running / running_run_ids are the exception: eviction only removes
 // *completed* runs, so live-run state here is accurate and is the reason
 // this snapshot exists.
-func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
+//
+// With a workspace it is that workspace's snapshot, published under
+// dashboard.{org}.{workspace}; without one, the organization's.
+func recomputeDashboard(srv *Server, orgID, workspaceID string, asOf time.Time) {
 	if asOf.IsZero() {
 		asOf = time.Now().UTC()
 	}
@@ -278,6 +296,9 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 				continue
 			}
 		} else if runOrg != orgID {
+			continue
+		}
+		if runWS, _ := m["workspace_id"].(string); workspaceID != "" && runWS != workspaceID {
 			continue
 		}
 		row := runRow{RunID: rest}
@@ -430,5 +451,9 @@ func recomputeDashboard(srv *Server, orgID string, asOf time.Time) {
 		"top_failing":      topFailing,
 		"trends":           trends,
 	}
-	srv.Mutate(dashboardKey(orgID), snapshot)
+	key := dashboardKey(orgID)
+	if workspaceID != "" {
+		key += "." + workspaceID
+	}
+	srv.Mutate(key, snapshot)
 }
