@@ -1,6 +1,7 @@
 package sodp
 
 import (
+	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,13 @@ type Session struct {
 	Claims map[string]any // all JWT claims
 	Send   chan []byte    // outbound pre-encoded frames
 	Done   chan struct{}  // closed on disconnect
+
+	// Scope is the tenancy scope of the request that opened the
+	// connection, when the server was given one (Server.ScopeFor). It
+	// decides which workspaces' runs and dashboards the session may
+	// watch (ADR-049).
+	Scope    tenancy.Scope
+	HasScope bool
 
 	mu         sync.Mutex
 	watches    map[uint32]string // stream_id → watched key

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { dashboardKey, onLiveConnection, watchKey } from '@brokoli/api'
+import { currentWorkspace, dashboardKey, onLiveConnection, watchKey } from '@brokoli/api'
 import { useSession } from '@brokoli/auth'
 
 /*
@@ -15,12 +15,13 @@ export function useRunActivity(onActivity: () => void, enabled = true) {
   const callback = useRef(onActivity)
   callback.current = onActivity
   const orgId = user?.org_id
+  const workspaceId = currentWorkspace()
   const signedIn = Boolean(user)
   useEffect(() => {
     if (!enabled || !signedIn) return
     let first = true
     let timer: ReturnType<typeof setTimeout> | undefined
-    const off = watchKey(dashboardKey(orgId), () => {
+    const off = watchKey(dashboardKey(orgId, workspaceId), () => {
       if (first) {
         first = false
         return
@@ -32,7 +33,7 @@ export function useRunActivity(onActivity: () => void, enabled = true) {
       clearTimeout(timer)
       off()
     }
-  }, [enabled, signedIn, orgId])
+  }, [enabled, signedIn, orgId, workspaceId])
 }
 
 export function useLiveConnected() {

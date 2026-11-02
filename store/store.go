@@ -342,6 +342,9 @@ type Store interface {
 	TenancyOwner(resource, id string) (orgID, workspaceID string, err error)
 	ListRunIDsStartedByIn(scope tenancy.Scope, userID string, limit int) ([]string, error)
 	CountUnreadAlertsIn(scope tenancy.Scope, userID string) (int, error)
+	MarkAllAlertsReadIn(scope tenancy.Scope, userID string) error
+	PurgeRunsIn(scope tenancy.Scope, days int) ([]string, error)
+	GetRunCalendarIn(scope tenancy.Scope, days int) ([]CalendarDay, error)
 	ListDLQIn(scope tenancy.Scope, includeResolved bool, limit int) ([]DLQEntry, error)
 
 	PipelineStore

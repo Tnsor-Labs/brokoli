@@ -51,7 +51,8 @@ type gridResponse struct {
 func (h *RunHandler) Grid(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 	// Scoped (ADR-049): another workspace's pipeline is answered as missing.
-	pipe, err := scopedStore(h.store, r).Pipeline(pipelineID)
+	scoped := scopedStore(h.store, r)
+	pipe, err := scoped.Pipeline(pipelineID)
 	if err != nil {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
@@ -66,7 +67,7 @@ func (h *RunHandler) Grid(w http.ResponseWriter, r *http.Request) {
 
 	// Newest-first from the keyset walk (#79's index), reversed so the
 	// grid reads left-to-right in time like every chart does.
-	runs, _, err := h.store.ListRunsByPipelineCursor(pipelineID, "", limit)
+	runs, _, err := scoped.RunsByPipelineCursor(pipelineID, "", limit)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list runs: "+err.Error())
 		return

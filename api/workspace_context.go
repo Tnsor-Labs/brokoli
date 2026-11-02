@@ -209,12 +209,3 @@ func GetWorkspaceID(r *http.Request) string {
 
 // UserWorkspaceResolverFunc resolves workspace IDs for a user (set by enterprise).
 var UserWorkspaceResolverFunc func(userID string) []string
-
-// ValidateWorkspaceAccess checks if a resource belongs to the user's current workspace.
-func ValidateWorkspaceAccess(r *http.Request, resourceWorkspaceID string) bool {
-	requestedWS := GetWorkspaceID(r)
-	if requestedWS == models.DefaultWorkspaceID && UserWorkspaceResolverFunc == nil {
-		return true
-	}
-	return requestedWS == resourceWorkspaceID
-}

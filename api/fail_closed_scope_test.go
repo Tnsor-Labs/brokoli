@@ -139,8 +139,10 @@ func TestGitPushOnlyExportsTheCallersPipelines(t *testing.T) {
 			t.Errorf("push %s: status %d, want %d", c.id, rec.Code, c.want)
 		}
 	}
-	if strings.Join(git.pushed, ",") != "mine-id,mine-slug" {
-		t.Errorf("pushed %v, want only the caller's pipeline", git.pushed)
+	// Both by the id of the pipeline checked: a pipeline_id handed on as
+	// given was looked up again downstream, across organizations.
+	if strings.Join(git.pushed, ",") != "mine-id,mine-id" {
+		t.Errorf("pushed %v, want only the caller's pipeline, by its id", git.pushed)
 	}
 }
 

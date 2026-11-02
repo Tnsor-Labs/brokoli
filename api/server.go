@@ -68,6 +68,7 @@ func NewServer(port int, s store.Store, e *engine.Engine, uiFS fs.FS, auth *Auth
 	// SODP state server replaces the old WebSocket hub.
 	// Engine events are bridged into state mutations with delta fanout.
 	sodpSrv := sodp.NewServer()
+	sodpWorkspaceIsolation(sodpSrv, s)
 	bridgeCh := make(chan sodp.BridgeEvent, 512)
 	sodp.Bridge(sodpSrv, bridgeCh)
 

@@ -72,7 +72,9 @@ export function getLiveClient(): SodpClient {
     onDisconnect: () => void handleDisconnect(),
     onError: (error) => {
       if (error.source === 'transport') return
-      console.warn(`[brokoli-ui] live update ${error.source} error${error.code ? ` ${error.code}` : ''}: ${error.message}`)
+      console.warn(
+        `[brokoli-ui] live update ${error.source} error${error.code ? ` ${error.code}` : ''}: ${error.message}`,
+      )
     },
   })
   return client
@@ -89,7 +91,10 @@ export function closeLiveClient() {
  * Watch a state key. Returns an unsubscribe function; when the last watcher
  * of a key unsubscribes, the server subscription is released too.
  */
-export function watchKey<T>(key: string, callback: (value: T | null, meta: WatchMeta) => void): () => void {
+export function watchKey<T>(
+  key: string,
+  callback: (value: T | null, meta: WatchMeta) => void,
+): () => void {
   const live = getLiveClient()
   refs.set(key, (refs.get(key) ?? 0) + 1)
   const off = live.watch<T>(key, callback)
@@ -108,8 +113,15 @@ export function watchKey<T>(key: string, callback: (value: T | null, meta: Watch
   }
 }
 
-export function dashboardKey(orgId?: string | null) {
-  return `dashboard.${orgId || 'default'}`
+/*
+ * The live dashboard of a workspace. The organisation-wide key listed every
+ * workspace's runs, so where workspaces are kept apart the server refuses it
+ * and publishes one per workspace; without a workspace (the community
+ * edition before one is chosen) it is the organisation's.
+ */
+export function dashboardKey(orgId?: string | null, workspaceId?: string | null) {
+  const org = orgId || 'default'
+  return workspaceId ? `dashboard.${org}.${workspaceId}` : `dashboard.${org}`
 }
 
 export function runLogsKey(runId: string) {

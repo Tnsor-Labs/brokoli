@@ -2,8 +2,10 @@ package api
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/sodp"
 	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
 	"github.com/Tnsor-Labs/brokoli/store"
 	"github.com/golang-jwt/jwt/v5"
@@ -95,4 +97,29 @@ func init() {
 	tenancy.Register("change_requests", tenancy.Via("change_requests", "pipeline_id", "pipelines"))
 	tenancy.Register("agent_triggers", tenancy.InWorkspace("agent_triggers", "workspace_id"))
 	tenancy.Register("agent_conversations", tenancy.InWorkspace("agent_conversations", "workspace_id"))
+}
+
+// sodpWorkspaceIsolation gives the live-state server the request scope and
+// the store's view of runs and pipelines, so a connection watches only its
+// workspaces' runs and dashboards (ADR-049). It checked the organization
+// only: the organization's dashboard listed every workspace's runs, and
+// their ids opened their live logs.
+func sodpWorkspaceIsolation(srv *sodp.Server, s store.Store) {
+	srv.ScopeFor = RequestScope
+	srv.RunVisible = func(scope tenancy.Scope, runID string) bool {
+		return store.Scoped(s, scope).Visible("runs", runID)
+	}
+	// A pipeline's workspace does not change, so it is read once.
+	var workspaces sync.Map
+	srv.PipelineWorkspace = func(pipelineID string) string {
+		if ws, ok := workspaces.Load(pipelineID); ok {
+			return ws.(string)
+		}
+		_, ws, err := s.TenancyOwner("pipelines", pipelineID)
+		if err != nil {
+			return ""
+		}
+		workspaces.Store(pipelineID, ws)
+		return ws
+	}
 }

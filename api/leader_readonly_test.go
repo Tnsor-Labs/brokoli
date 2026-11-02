@@ -50,7 +50,10 @@ func TestSchedulerStatusHandlerServesReadsWhenNotLeader(t *testing.T) {
 	now := time.Now().UTC()
 	p := &models.Pipeline{
 		ID: "read-only-pipeline", Name: "Read Only Pipeline",
-		Nodes: []models.Node{}, Edges: []models.Edge{},
+		// The status lists the request's pipelines; a handler stamps the
+		// workspace on create, as here.
+		WorkspaceID: models.DefaultWorkspaceID,
+		Nodes:       []models.Node{}, Edges: []models.Edge{},
 		Schedule: "0 0 * * *", Enabled: true,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -74,7 +77,7 @@ func TestSchedulerStatusHandlerServesReadsWhenNotLeader(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/scheduler/status", nil)
 	rec := httptest.NewRecorder()
-	schedulerStatusHandler(sched)(rec, req)
+	schedulerStatusHandler(sched, s)(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200 from a non-leader instance, got %d: %s", rec.Code, rec.Body.String())

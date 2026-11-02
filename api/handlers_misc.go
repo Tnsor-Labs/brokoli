@@ -24,16 +24,6 @@ import (
 // dlqListHandler handles GET /pipelines/{id}/dlq — returns dead letter queue entries.
 func dlqListHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := chi.URLParam(r, "id")
-		if p, err := s.GetPipeline(id); err == nil {
-			if !pipelineVisible(r, p) {
-				DenyOrgAccess(w)
-				return
-			}
-		} else {
-			writeError(w, http.StatusNotFound, "pipeline not found")
-			return
-		}
 		includeResolved := r.URL.Query().Get("include_resolved") == "true"
 		limit := 50
 		if l := r.URL.Query().Get("limit"); l != "" {
@@ -41,7 +31,11 @@ func dlqListHandler(s store.Store) http.HandlerFunc {
 				limit = n
 			}
 		}
-		entries, err := s.ListDLQ(id, includeResolved, limit)
+		entries, err := scopedStore(s, r).PipelineDLQ(chi.URLParam(r, "id"), includeResolved, limit)
+		if errors.Is(err, store.ErrNotVisible) {
+			writeError(w, http.StatusNotFound, "pipeline not found")
+			return
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -54,33 +48,19 @@ func dlqListHandler(s store.Store) http.HandlerFunc {
 }
 
 // dlqResolveHandler handles POST /pipelines/{id}/dlq/{dlqId}/resolve — marks a DLQ entry as resolved.
+//
+// The entry must be the pipeline's: a check of the pipeline in the path
+// alone let a caller pass their own pipeline and any entry id, including
+// another tenant's. The scoped store checks both, and answers not found
+// for either, so the answers do not say which ids exist elsewhere.
 func dlqResolveHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pipelineID := chi.URLParam(r, "id")
-		if p, err := s.GetPipeline(pipelineID); err == nil {
-			if !pipelineVisible(r, p) {
-				DenyOrgAccess(w)
-				return
-			}
-		} else {
-			writeError(w, http.StatusNotFound, "pipeline not found")
-			return
-		}
-		// The org check above is on the PIPELINE in the path. The entry
-		// being resolved is named by a separate id, and nothing tied the
-		// two together: a caller could pass their own pipeline, which
-		// passes the check, and any dlqId at all, including another
-		// tenant's. Resolving it marks somebody else's failure dealt
-		// with, in their inbox, without them ever seeing it.
-		dlqID := chi.URLParam(r, "dlqId")
-		if !dlqEntryBelongsToPipeline(s, pipelineID, dlqID) {
-			// Not found rather than forbidden, matching every other
-			// cross-tenant refusal here: the pair of answers would
-			// otherwise confirm which entry ids exist elsewhere.
+		err := scopedStore(s, r).ResolveDLQ(chi.URLParam(r, "id"), chi.URLParam(r, "dlqId"), maxListLimit)
+		if errors.Is(err, store.ErrNotVisible) {
 			writeError(w, http.StatusNotFound, "dead-letter entry not found")
 			return
 		}
-		if err := s.ResolveDLQ(dlqID); err != nil {
+		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
@@ -234,8 +214,48 @@ func pipelineDepsHandler(s store.Store) http.HandlerFunc {
 			return
 		}
 		satisfied, statuses, reason := engine.CheckDependencies(s, p, time.Now().UTC())
+		// An upstream in a workspace the caller does not belong to keeps
+		// its id and whether it is satisfied, which is what explains a
+		// blocked run; its name, status and timing are not the caller's to
+		// read (ADR-049). The summary reason names upstreams, so it is
+		// rebuilt from what may be shown.
+		scoped := scopedStore(s, r)
+		hidden := map[string]bool{}
+		for _, st := range statuses {
+			if !st.Missing && !scoped.Visible("pipelines", st.Rule.PipelineID) {
+				hidden[st.Rule.PipelineID] = true
+			}
+		}
+		if len(hidden) > 0 && !satisfied {
+			var blockers []string
+			for _, st := range statuses {
+				if st.Satisfied || st.Rule.Mode != models.DepModeGate {
+					continue
+				}
+				switch {
+				case hidden[st.Rule.PipelineID]:
+					blockers = append(blockers, st.Rule.PipelineID+": not satisfied (in another workspace)")
+				case st.UpstreamName != "":
+					blockers = append(blockers, st.UpstreamName+": "+st.Reason)
+				default:
+					blockers = append(blockers, st.Rule.PipelineID+": "+st.Reason)
+				}
+			}
+			reason = "dependencies not satisfied: " + strings.Join(blockers, "; ")
+		}
 		enriched := make([]map[string]interface{}, 0, len(statuses))
 		for _, st := range statuses {
+			if hidden[st.Rule.PipelineID] {
+				enriched = append(enriched, map[string]interface{}{
+					"pipeline_id": st.Rule.PipelineID,
+					"state":       st.Rule.State,
+					"mode":        st.Rule.Mode,
+					"satisfied":   st.Satisfied,
+					"reason":      "in a workspace you are not a member of",
+					"missing":     false,
+				})
+				continue
+			}
 			entry := map[string]interface{}{
 				"pipeline_id": st.Rule.PipelineID,
 				"state":       st.Rule.State,
@@ -421,8 +441,15 @@ func calendarHandler(s store.Store) http.HandlerFunc {
 			days = n
 		}
 
-		orgID := GetOrgIDFromRequest(r)
-		cal, err := s.GetRunCalendarByOrg(days, orgID)
+		// The current workspace's runs where workspaces are kept apart
+		// (ADR-049); by organization otherwise, as before.
+		var cal []store.CalendarDay
+		var err error
+		if scope := RequestScope(r); scope.ByWorkspace() {
+			cal, err = s.GetRunCalendarIn(scope, days)
+		} else {
+			cal, err = s.GetRunCalendarByOrg(days, GetOrgIDFromRequest(r))
+		}
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, err.Error())
 			return
@@ -540,6 +567,11 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		scope := store.RunScope{OrgID: orgID}
 		if orgID == "" && OrgResolverFunc == nil {
 			scope.WorkspaceID = GetWorkspaceID(r)
+		}
+		// Where workspaces are kept apart, the counts are the current
+		// workspace's, like the pipeline list they sit next to (ADR-049).
+		if rs := RequestScope(r); rs.ByWorkspace() {
+			scope.WorkspaceID = rs.Workspace
 		}
 
 		now := time.Now()
@@ -1177,18 +1209,32 @@ func lineageHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
-// schedulerStatusHandler handles GET /scheduler/status.
-func schedulerStatusHandler(sched *engine.Scheduler) http.HandlerFunc {
+// schedulerStatusHandler handles GET /scheduler/status: the schedules of
+// the pipelines this request lists. The scheduler holds every pipeline on
+// the server, and the list was returned whole, so any signed-in person saw
+// every organization's schedules (ADR-049).
+func schedulerStatusHandler(sched *engine.Scheduler, s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		out := []engine.ScheduleInfo{}
 		if sched == nil {
-			writeJSON(w, http.StatusOK, []engine.ScheduleInfo{})
+			writeJSON(w, http.StatusOK, out)
 			return
 		}
-		status := sched.Status()
-		if status == nil {
-			status = []engine.ScheduleInfo{}
+		pipelines, err := listPipelinesForRequest(s, r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not list pipelines")
+			return
 		}
-		writeJSON(w, http.StatusOK, status)
+		listed := make(map[string]bool, len(pipelines))
+		for _, p := range pipelines {
+			listed[p.ID] = true
+		}
+		for _, info := range sched.Status() {
+			if listed[info.PipelineID] {
+				out = append(out, info)
+			}
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 
