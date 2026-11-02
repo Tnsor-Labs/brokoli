@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/golang-jwt/jwt/v5"
 
 	"github.com/Tnsor-Labs/brokoli/crypto"
 	"github.com/Tnsor-Labs/brokoli/engine"
@@ -49,19 +48,17 @@ func viewOf(s models.SecretStore) secretStoreView {
 	return secretStoreView{SecretStore: s, HasCredential: has}
 }
 
-// storeWorkspace is the workspace a request's stores belong to: the user's
-// own workspace in an organization, else the request's.
+// storeWorkspace is the workspace a request's stores belong to: the one it
+// acts in (ADR-049). It was the caller's first workspace, so working in
+// another listed, created and changed the first one's stores, under the
+// permissions of the one in use. An organization member in no workspace
+// gets "", which holds no stores.
 func storeWorkspace(r *http.Request) string {
-	if GetOrgIDFromRequest(r) != "" && UserWorkspaceResolverFunc != nil {
-		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-			if sub, ok := (*claims)["sub"].(string); ok {
-				if ws := UserWorkspaceResolverFunc(sub); len(ws) > 0 {
-					return ws[0]
-				}
-			}
-		}
+	ws, ok := effectiveWorkspace(r)
+	if !ok {
+		return ""
 	}
-	return GetWorkspaceID(r)
+	return ws
 }
 
 func (h *SecretStoreHandler) available(w http.ResponseWriter) bool {

@@ -11,6 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/golang-jwt/jwt/v5"
+
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/tenancy"
@@ -41,8 +44,13 @@ func TestAlertActionsKeepToTheCallersWorkspaces(t *testing.T) {
 		if reads != 0 {
 			t.Errorf("%s alert%s by alice marked beta's alert read", a.method, a.path)
 		}
-		if rec := w.do(t, a.method, "/api/alerts/"+w.alertB+a.path, "carol", wsAlpha, a.body); rec.Code != http.StatusNoContent {
-			t.Errorf("carol (both) %s alert%s of beta from alpha: %d, want 204", a.method, a.path, rec.Code)
+		// A member of both changes beta's alert from beta, where the
+		// permissions are, not from alpha.
+		if rec := w.do(t, a.method, "/api/alerts/"+w.alertB+a.path, "carol", wsAlpha, a.body); rec.Code != http.StatusNotFound {
+			t.Errorf("carol (both) %s alert%s of beta from alpha: %d, want 404", a.method, a.path, rec.Code)
+		}
+		if rec := w.do(t, a.method, "/api/alerts/"+w.alertB+a.path, "carol", wsBeta, a.body); rec.Code != http.StatusNoContent {
+			t.Errorf("carol (both) %s alert%s of beta from beta: %d, want 204", a.method, a.path, rec.Code)
 		}
 	}
 }
@@ -106,7 +114,7 @@ func dependOn(t *testing.T, s store.Store, id string, upstream ...string) {
 // Deleting with resolve=cascade deleted every dependent in the
 // organization, so a member of one workspace deleted another workspace's
 // pipelines; the refusal without resolve named them.
-func TestDeleteCascadeKeepsToTheCallersWorkspaces(t *testing.T) {
+func TestDeleteCascadeKeepsToTheCurrentWorkspace(t *testing.T) {
 	multiTenant(t, map[string][]string{"alice": {wsAlpha}, "carol": {wsAlpha, wsBeta}})
 	s := newWorkspaceAccessStore(t)
 	seedPipeline(t, s, "upstream", wsAlpha)
@@ -131,13 +139,21 @@ func TestDeleteCascadeKeepsToTheCallersWorkspaces(t *testing.T) {
 		}
 	}
 
+	// A member of both does not delete beta's pipeline from alpha either:
+	// changes are made in their own workspace. Decouple deletes alpha's
+	// pipeline and keeps beta's, without the dependency.
 	rec = httptest.NewRecorder()
 	h.Delete(rec, request("DELETE", "/api/pipelines/upstream?resolve=cascade", "upstream", "carol", wsAlpha, nil))
-	if rec.Code != http.StatusOK && rec.Code != http.StatusNoContent {
-		t.Fatalf("cascade by carol (both): %d %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict {
+		t.Errorf("cascade by carol (both) from alpha: %d %s, want 409", rec.Code, rec.Body.String())
 	}
-	if _, err := s.GetPipeline("beta-secret-name"); err == nil {
-		t.Error("carol's cascade left the dependent in beta")
+	rec = httptest.NewRecorder()
+	h.Delete(rec, request("DELETE", "/api/pipelines/upstream?resolve=decouple", "upstream", "carol", wsAlpha, nil))
+	if rec.Code != http.StatusOK && rec.Code != http.StatusNoContent {
+		t.Fatalf("decouple by carol: %d %s", rec.Code, rec.Body.String())
+	}
+	if p, err := s.GetPipeline("beta-secret-name"); err != nil || len(p.DependsOn) != 0 {
+		t.Errorf("decouple: beta's pipeline %v (%v), want it kept without the dependency", p, err)
 	}
 }
 
@@ -295,5 +311,162 @@ func TestDashboardAndCalendarAreTheCurrentWorkspaces(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK || total != 2 {
 		t.Errorf("calendar in beta: %d total=%d, want beta's 2 runs", rec.Code, total)
+	}
+}
+
+// A member of two workspaces reads the other's pipeline by id but changes
+// it only from its own workspace, where the permissions are: a viewer in
+// beta who edits in alpha could otherwise edit beta's pipelines from alpha.
+func TestChangesAreMadeInTheCurrentWorkspace(t *testing.T) {
+	multiTenant(t, map[string][]string{"carol": {wsAlpha, wsBeta}})
+	s := newWorkspaceAccessStore(t)
+	seedPipeline(t, s, "beta-pipe", wsBeta)
+	now := time.Now()
+	if err := s.CreateRun(&models.Run{ID: "beta-run", PipelineID: "beta-pipe", OrgID: wsOrg, Status: models.RunStatusRunning, StartedAt: &now}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewPipelineHandler(s, nil)
+	rh := NewRunHandler(s, nil)
+
+	rec := httptest.NewRecorder()
+	h.Get(rec, request("GET", "/api/pipelines/beta-pipe", "beta-pipe", "carol", wsAlpha, nil))
+	if rec.Code != http.StatusOK {
+		t.Errorf("carol reads beta's pipeline from alpha: %d, want 200", rec.Code)
+	}
+	for name, call := range map[string]func(ws string) int{
+		"update": func(ws string) int {
+			rec := httptest.NewRecorder()
+			h.Update(rec, request("PUT", "/api/pipelines/beta-pipe", "beta-pipe", "carol", ws, pipelineBody("renamed")))
+			return rec.Code
+		},
+		"trigger": func(ws string) int {
+			rec := httptest.NewRecorder()
+			rh.TriggerRun(rec, request("POST", "/api/pipelines/beta-pipe/run", "beta-pipe", "carol", ws, nil))
+			return rec.Code
+		},
+		"cancel": func(ws string) int {
+			rec := httptest.NewRecorder()
+			rh.CancelRun(rec, request("POST", "/api/runs/beta-run/cancel", "beta-run", "carol", ws, nil))
+			return rec.Code
+		},
+	} {
+		if code := call(wsAlpha); code != http.StatusNotFound {
+			t.Errorf("carol %s beta's pipeline from alpha: %d, want 404", name, code)
+		}
+	}
+	if p, _ := s.GetPipeline("beta-pipe"); p.Name != "beta-pipe" {
+		t.Errorf("an update from alpha renamed beta's pipeline to %q", p.Name)
+	}
+	rec = httptest.NewRecorder()
+	h.Update(rec, request("PUT", "/api/pipelines/beta-pipe", "beta-pipe", "carol", wsBeta, pipelineBody("renamed")))
+	if rec.Code != http.StatusOK {
+		t.Errorf("carol updates beta's pipeline from beta: %d %s, want 200", rec.Code, rec.Body.String())
+	}
+}
+
+// withParam adds a route parameter to a request built by request().
+func withParam(r *http.Request, name, value string) *http.Request {
+	chi.RouteContext(r.Context()).URLParams.Add(name, value)
+	return r
+}
+
+// Variables and connections are named per workspace. Working in a second
+// workspace used the first one's: a key or conn_id both had named the
+// first's, and a create with no workspace went into the first, under the
+// permissions of the one in use.
+func TestVariablesAndConnectionsAreTheCurrentWorkspaces(t *testing.T) {
+	multiTenant(t, map[string][]string{"carol": {wsAlpha, wsBeta}})
+	s := newWorkspaceAccessStore(t)
+	for ws, value := range map[string]string{wsAlpha: "alpha-value", wsBeta: "beta-value"} {
+		if err := s.SetVariable(&models.Variable{Key: "shared", Value: value, Type: models.VarTypeString, WorkspaceID: ws}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	vh := NewVariableHandler(s, nil)
+
+	rec := httptest.NewRecorder()
+	vh.Delete(rec, withParam(request("DELETE", "/api/variables/shared", "", "carol", wsBeta, nil), "key", "shared"))
+	if rec.Code >= 300 {
+		t.Fatalf("delete shared in beta: %d %s", rec.Code, rec.Body.String())
+	}
+	keys := func(ws string) map[string]bool {
+		vars, _ := s.ListVariablesByWorkspace(ws)
+		out := map[string]bool{}
+		for _, v := range vars {
+			out[v.Key] = true
+		}
+		return out
+	}
+	if !keys(wsAlpha)["shared"] || keys(wsBeta)["shared"] {
+		t.Errorf("delete in beta: alpha has shared=%v, beta has shared=%v; want alpha's kept and beta's gone", keys(wsAlpha)["shared"], keys(wsBeta)["shared"])
+	}
+
+	rec = httptest.NewRecorder()
+	vh.Set(rec, withParam(request("PUT", "/api/variables/fresh", "", "carol", wsBeta, []byte(`{"value":"v"}`)), "key", "fresh"))
+	if rec.Code >= 300 || !keys(wsBeta)["fresh"] || keys(wsAlpha)["fresh"] {
+		t.Errorf("create fresh in beta: %d, in beta=%v in alpha=%v; want it in beta", rec.Code, keys(wsBeta)["fresh"], keys(wsAlpha)["fresh"])
+	}
+
+	if err := s.CreateConnection(&models.Connection{ID: "c-alpha", ConnID: "alpha_db", Type: models.ConnTypePostgres, WorkspaceID: wsAlpha}); err != nil {
+		t.Fatal(err)
+	}
+	ch := NewConnectionHandler(s, nil)
+	rec = httptest.NewRecorder()
+	ch.Delete(rec, withParam(request("DELETE", "/api/connections/alpha_db", "", "carol", wsBeta, nil), "connId", "alpha_db"))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("delete alpha's connection while in beta: %d, want 404", rec.Code)
+	}
+	if c, err := s.GetConnectionIn(wsAlpha, "alpha_db"); err != nil || c == nil {
+		t.Error("a delete from beta removed alpha's connection")
+	}
+}
+
+// Secret stores belonged to the caller's first workspace whichever one
+// they worked in, so the second's page listed, created and changed the
+// first's.
+func TestSecretStoresAreTheCurrentWorkspaces(t *testing.T) {
+	multiTenant(t, map[string][]string{"carol": {wsAlpha, wsBeta}, "nobody": {}})
+	for ws, want := range map[string]string{wsAlpha: wsAlpha, wsBeta: wsBeta} {
+		if got := storeWorkspace(request("GET", "/api/secret-stores", "", "carol", ws, nil)); got != want {
+			t.Errorf("secret stores while in %s: workspace %q, want %q", ws, got, want)
+		}
+	}
+	if got := storeWorkspace(request("GET", "/api/secret-stores", "", "nobody", "", nil)); got != "" {
+		t.Errorf("an organization member in no workspace got stores of %q, want none", got)
+	}
+}
+
+// A token minted for one workspace was not kept to it: its claim was never
+// read, so it reached every workspace its creator belongs to.
+func TestWorkspaceTokensKeepToTheirWorkspace(t *testing.T) {
+	multiTenant(t, map[string][]string{"carol": {wsAlpha, wsBeta}})
+	s := newWorkspaceAccessStore(t)
+	seedPipeline(t, s, "beta-pipe", wsBeta)
+	h := NewPipelineHandler(s, nil)
+	r := chi.NewRouter()
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(rw http.ResponseWriter, req *http.Request) {
+			claims := jwt.MapClaims{"sub": "carol", "role": "admin", "workspace_id": wsAlpha, "token_id": "t1"}
+			ctx := context.WithValue(req.Context(), "claims", &claims)
+			ctx = context.WithValue(ctx, OrgIDContextKey{}, wsOrg)
+			next.ServeHTTP(rw, req.WithContext(ctx))
+		})
+	})
+	r.Use(WorkspaceMiddleware)
+	r.Get("/api/pipelines/{id}", h.Get)
+	call := func(ws string) int {
+		req := httptest.NewRequest("GET", "/api/pipelines/beta-pipe", nil)
+		if ws != "" {
+			req.Header.Set("X-Workspace-ID", ws)
+		}
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := call(wsBeta); code != http.StatusForbidden {
+		t.Errorf("alpha token naming beta: %d, want 403", code)
+	}
+	if code := call(""); code != http.StatusNotFound {
+		t.Errorf("alpha token reading beta's pipeline by id: %d, want 404", code)
 	}
 }

@@ -120,33 +120,24 @@ func (h *ConnectionHandler) secretRefErrors(c *models.Connection, workspaceID st
 // findConnection returns the connection conn_id names for this caller.
 //
 // conn_id is unique within a workspace, not across the server, so in an
-// organization it is looked for in the caller's own workspaces -- the one
-// the request acts in first -- and is not found anywhere else. Without an
+// organization it is looked for in the workspace the request acts in, and
+// is not found anywhere else. Without an
 // organization (a single-tenant server) it is matched alone.
 func (h *ConnectionHandler) findConnection(r *http.Request, connID string) (*models.Connection, bool) {
 	if GetOrgIDFromRequest(r) == "" {
 		c, err := h.store.GetConnection(connID)
 		return c, err == nil && c != nil
 	}
-	var userWSIDs []string
-	if UserWorkspaceResolverFunc != nil {
-		if sub := getUserIDFromRequest(r); sub != "" {
-			userWSIDs = UserWorkspaceResolverFunc(sub)
-		}
+	// The workspace the request acts in, only (ADR-049). The others the
+	// caller belongs to were tried next, so a conn_id missing here named
+	// another workspace's connection, to edit, test or delete under this
+	// workspace's permissions.
+	current, ok := effectiveWorkspace(r)
+	if !ok {
+		return nil, false
 	}
-	current, _ := effectiveWorkspace(r)
-	ordered := make([]string, 0, len(userWSIDs))
-	for _, ws := range userWSIDs {
-		if ws == current {
-			ordered = append([]string{ws}, ordered...)
-		} else {
-			ordered = append(ordered, ws)
-		}
-	}
-	for _, ws := range ordered {
-		if c, err := h.store.GetConnectionIn(ws, connID); err == nil && c != nil {
-			return c, true
-		}
+	if c, err := h.store.GetConnectionIn(current, connID); err == nil && c != nil {
+		return c, true
 	}
 	return nil, false
 }
@@ -558,7 +549,9 @@ func testDBConnection(ctx context.Context, uri string) map[string]interface{} {
 func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} {
 	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		log.Printf("Connection test failed (open %s): %v", driver, engine.RedactDSNError(err, dsn))
+		// #nosec G706 -- driver is one of the server's registered names, and the
+		// error has its DSN redacted.
+		log.Printf("Connection test failed (open %q): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -568,7 +561,8 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 	defer db.Close()
 
 	if err := db.PingContext(ctx); err != nil {
-		log.Printf("Connection test failed (ping %s): %v", driver, engine.RedactDSNError(err, dsn))
+		// #nosec G706 -- as above.
+		log.Printf("Connection test failed (ping %q): %v", driver, engine.RedactDSNError(err, dsn))
 		return map[string]interface{}{
 			"success": false,
 			"error":   "connection test failed — check server logs for details",
@@ -586,6 +580,9 @@ func testDBReal(ctx context.Context, driver, dsn string) map[string]interface{} 
 func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]interface{}) map[string]interface{} {
 	url := c.BuildURI()
 
+	// #nosec G704 -- testing a stored connection means requesting its URL;
+	// the client below is netguard.Outbound, which refuses private and
+	// metadata targets.
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return map[string]interface{}{
@@ -611,7 +608,7 @@ func testHTTPAuth(ctx context.Context, c *models.Connection, extra map[string]in
 	}
 
 	client := netguard.Outbound().Client(5 * time.Second)
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) // #nosec G704 -- netguard.Outbound, see above
 	if err != nil {
 		if errors.Is(err, netguard.ErrBlockedTarget) {
 			return map[string]interface{}{

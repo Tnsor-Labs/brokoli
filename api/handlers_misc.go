@@ -1266,9 +1266,10 @@ func bulkPipelineHandler(s store.Store) http.HandlerFunc {
 				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
 				continue
 			}
-			// Another workspace's pipeline is answered like a missing one,
-			// so a bulk request cannot tell which ids exist elsewhere.
-			if !pipelineVisible(r, p) {
+			// A pipeline outside the current workspace is answered like a
+			// missing one, so a bulk request cannot tell which ids exist
+			// elsewhere, and changes are made where the permissions are.
+			if !pipelineActionable(r, p) {
 				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
 				continue
 			}

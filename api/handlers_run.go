@@ -51,10 +51,21 @@ func (h *RunHandler) validateRunAccess(r *http.Request, runID string) bool {
 	return scopedStore(h.store, r).Visible("runs", runID)
 }
 
+// mayChangeRun checks that the caller may cancel or resume a run: its
+// pipeline in the current workspace, whose permissions the request
+// carries (ADR-049). Reading a run is open in any workspace the caller
+// belongs to; changing one is not, or a viewer there who runs pipelines
+// here could stop them.
+func (h *RunHandler) mayChangeRun(r *http.Request, runID string) bool {
+	return scopedStore(h.store, r).ActsOn("runs", runID)
+}
+
 func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 	pipelineID := chi.URLParam(r, "id")
 
-	if !scopedStore(h.store, r).Visible("pipelines", pipelineID) {
+	// Runs only in the current workspace, whose permissions the request
+	// carries (ADR-049).
+	if !scopedStore(h.store, r).ActsOn("pipelines", pipelineID) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -414,7 +425,7 @@ func isValidLogLevel(l models.LogLevel) bool {
 
 func (h *RunHandler) CancelRun(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	if !h.validateRunAccess(r, id) {
+	if !h.mayChangeRun(r, id) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -432,7 +443,7 @@ func (h *RunHandler) Backfill(w http.ResponseWriter, r *http.Request) {
 	// runs (h.engine.Backfill below), so this is not just a read-scoping
 	// check: without it, a caller in a different org could trigger real
 	// execution against this pipeline's live connections.
-	if !scopedStore(h.store, r).Visible("pipelines", pipelineID) {
+	if !scopedStore(h.store, r).ActsOn("pipelines", pipelineID) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -514,7 +525,7 @@ func (h *RunHandler) DryRun(w http.ResponseWriter, r *http.Request) {
 
 func (h *RunHandler) ResumeRun(w http.ResponseWriter, r *http.Request) {
 	runID := chi.URLParam(r, "id")
-	if !h.validateRunAccess(r, runID) {
+	if !h.mayChangeRun(r, runID) {
 		DenyOrgAccess(w)
 		return
 	}

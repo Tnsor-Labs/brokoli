@@ -37,23 +37,19 @@ func (h *VariableHandler) variableWorkspace(r *http.Request, key string) (string
 	if orgID == "" {
 		return "", true
 	}
-	var userWSIDs []string
-	if UserWorkspaceResolverFunc != nil {
-		if claims, ok := r.Context().Value("claims").(*jwt.MapClaims); ok {
-			if sub, ok := (*claims)["sub"].(string); ok {
-				userWSIDs = UserWorkspaceResolverFunc(sub)
-			}
-		}
-	}
-	if len(userWSIDs) == 0 {
+	// The workspace the request acts in, only (ADR-049). A key is unique
+	// within a workspace, and every workspace the caller belongs to was
+	// searched in turn, so a key both had named the first one's variable:
+	// read, overwritten or deleted while working in the other, under its
+	// permissions.
+	wsID, ok := effectiveWorkspace(r)
+	if !ok {
 		return "", false
 	}
-	for _, wsID := range userWSIDs {
-		vars, _ := h.store.ListVariablesByWorkspace(wsID)
-		for _, v := range vars {
-			if v.Key == key {
-				return wsID, true
-			}
+	vars, _ := h.store.ListVariablesByWorkspace(wsID)
+	for _, v := range vars {
+		if v.Key == key {
+			return wsID, true
 		}
 	}
 	return "", false

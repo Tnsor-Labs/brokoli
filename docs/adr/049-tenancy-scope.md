@@ -180,3 +180,11 @@ it is an optional later phase, not the mechanism.
 2. **Alerts of deleted pipelines:** hidden, as proposed; their workspace
    cannot be established.
 3. **Row-level security:** kept as optional phase 4.
+4. **Changes are made in the current workspace** (added in phase 3). By id,
+   an item is readable in any workspace the caller belongs to (`Sees`), but
+   changed (run, edited, deleted, cancelled, resolved) only in the current
+   one (`Acts`). Permissions are resolved for the current workspace, so a
+   change under `Sees` let a viewer of one workspace who edits another edit
+   the first from the second. Rows with no organization or in the default
+   workspace keep the organization rule, as for `Sees`. A token minted for
+   one workspace has that workspace as its only membership.

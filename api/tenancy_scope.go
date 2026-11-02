@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"slices"
 	"sync"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -62,6 +63,13 @@ func computeScope(r *http.Request, orgID string) tenancy.Scope {
 		return tenancy.Scope{} // sees nothing
 	}
 	member := UserWorkspaceResolverFunc(userID)
+	if bound := tokenWorkspace(r); bound != "" {
+		// A token for one workspace sees that one, as the middleware has it.
+		if !slices.Contains(member, bound) {
+			return tenancy.Scope{}
+		}
+		member = []string{bound}
+	}
 	if len(member) == 0 {
 		return tenancy.Scope{} // in the organization but in no workspace: sees nothing
 	}
@@ -88,6 +96,14 @@ func requestActor(r *http.Request) tenancy.Actor {
 // routes each wrote by hand, and the routes that wrote only the first.
 func pipelineVisible(r *http.Request, p *models.Pipeline) bool {
 	return p != nil && RequestScope(r).Sees(p.OrgID, p.WorkspaceID)
+}
+
+// pipelineActionable reports whether the request may change p: run, edit,
+// delete it. That is the current workspace, whose permissions the request
+// carries (tenancy.Scope.Acts); another workspace the caller belongs to is
+// readable by id but changed from there.
+func pipelineActionable(r *http.Request, p *models.Pipeline) bool {
+	return p != nil && RequestScope(r).Acts(p.OrgID, p.WorkspaceID)
 }
 
 // The resources whose tables this package owns (ADR-049). Change requests

@@ -141,3 +141,33 @@ func TestRegisterRefusesWhatIsNotAnIdentifier(t *testing.T) {
 		}()
 	}
 }
+
+// Acts is Sees narrowed to the current workspace: permissions are the
+// current workspace's, so a change is made there.
+func TestActsIsTheCurrentWorkspace(t *testing.T) {
+	s := New("acme", "ws-a", []string{"ws-a", "ws-b"}, ActorPerson)
+	for _, c := range []struct {
+		org, ws    string
+		sees, acts bool
+	}{
+		{"acme", "ws-a", true, true},
+		{"acme", "ws-b", true, false},
+		{"acme", "ws-c", false, false},
+		{"other", "ws-a", false, false},
+		{"acme", "", true, true},
+		{"acme", DefaultWorkspace, true, true},
+	} {
+		if got := s.Sees(c.org, c.ws); got != c.sees {
+			t.Errorf("Sees(%q, %q) = %v, want %v", c.org, c.ws, got, c.sees)
+		}
+		if got := s.Acts(c.org, c.ws); got != c.acts {
+			t.Errorf("Acts(%q, %q) = %v, want %v", c.org, c.ws, got, c.acts)
+		}
+	}
+	if !OrgOnly("acme", "", ActorPerson).Acts("acme", "ws-b") || !Unrestricted("").Acts("x", "y") {
+		t.Error("without workspaces kept apart, Acts is the organization rule")
+	}
+	if (Scope{}).Acts("acme", "ws-a") {
+		t.Error("the zero scope acts on something")
+	}
+}

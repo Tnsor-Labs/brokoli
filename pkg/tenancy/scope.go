@@ -133,6 +133,23 @@ func (s Scope) Sees(orgID, ws string) bool {
 	return slices.Contains(s.Member, ws)
 }
 
+// Acts reports whether an item in organization orgID and workspace ws may
+// be changed by this request: run, edited, deleted, cancelled, resolved.
+// Permissions are those of the current workspace, so a change is made
+// there: an item in another workspace the caller belongs to may be read
+// by id (Sees) but not changed from here, or a viewer of that workspace
+// who edits this one could edit it. A row with no organization, or in the
+// default workspace, is governed by the organization alone, as in Sees.
+func (s Scope) Acts(orgID, ws string) bool {
+	if !s.Sees(orgID, ws) {
+		return false
+	}
+	if !s.byWS || ws == "" || ws == DefaultWorkspace {
+		return true
+	}
+	return ws == s.Workspace
+}
+
 type scopeKey struct{}
 
 // WithScope returns ctx carrying s.

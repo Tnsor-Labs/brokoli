@@ -350,7 +350,7 @@ func (h *PipelineHandler) Update(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !pipelineVisible(r, existing) {
+	if !pipelineActionable(r, existing) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -460,7 +460,7 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "pipeline not found")
 		return
 	}
-	if !pipelineVisible(r, existing) {
+	if !pipelineActionable(r, existing) {
 		DenyOrgAccess(w)
 		return
 	}
@@ -515,15 +515,15 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	// Compute the transitive closure for cascade, so a->b->c cascade from a wipes all three.
 	// Cascade deleted every dependent in the organization, so a member of
 	// one workspace could delete pipelines of workspaces they do not
-	// belong to. It is refused when any pipeline it would delete is one
-	// the caller may not see; decouple still works, since it only removes
+	// belong to. It is refused when any pipeline it would delete is outside
+	// the current workspace; decouple still works, since it only removes
 	// the reference to the pipeline being deleted.
 	var toDelete []models.PipelineDepSummary
 	if resolve == "cascade" {
 		toDelete = transitiveDependents(summaries, id)
 		for _, d := range toDelete {
-			if !scoped.Visible("pipelines", d.ID) {
-				writeError(w, http.StatusConflict, "pipelines in workspaces you are not a member of depend on this one; retry with ?resolve=decouple, or ask a member of those workspaces")
+			if !scoped.ActsOn("pipelines", d.ID) {
+				writeError(w, http.StatusConflict, "pipelines in other workspaces depend on this one; retry with ?resolve=decouple, or delete them from their workspace first")
 				return
 			}
 		}
@@ -751,7 +751,7 @@ func (h *PipelineHandler) Rollback(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	existing, err := h.store.GetPipeline(id)
 	if err == nil {
-		if !pipelineVisible(r, existing) {
+		if !pipelineActionable(r, existing) {
 			DenyOrgAccess(w)
 			return
 		}

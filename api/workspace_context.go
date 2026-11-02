@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -51,6 +52,17 @@ func WorkspaceMiddleware(next http.Handler) http.Handler {
 				return
 			}
 			userWorkspaces := UserWorkspaceResolverFunc(userID)
+			// A token minted for one workspace acts in that workspace only,
+			// and its scope sees no other (ADR-049). Its claim was set and
+			// never read, so the token reached every workspace its creator
+			// belongs to.
+			if bound := tokenWorkspace(r); bound != "" {
+				if !slices.Contains(userWorkspaces, bound) || (wsID != models.DefaultWorkspaceID && wsID != bound) {
+					writeJSON(w, http.StatusForbidden, map[string]string{"error": "workspace access denied"})
+					return
+				}
+				userWorkspaces = []string{bound}
+			}
 			if len(userWorkspaces) == 0 {
 				writeJSON(w, http.StatusForbidden, map[string]string{"error": "no workspace access"})
 				return
@@ -167,8 +179,7 @@ func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
 }
 
 // writeWorkspace resolves the workspace a create writes into. A body that
-// names none, or "default", gets the caller's own workspace in an
-// organization (the request's otherwise), as before. A body that names one
+// names none, or "default", gets the workspace the request acts in. A body that names one
 // must name the workspace this request was authorized for: the permission
 // that let the write through was checked there, and a workspace_id from
 // the body is otherwise a way to write into somebody else's. ok is false
@@ -183,18 +194,15 @@ func writeWorkspace(r *http.Request, bodyWS string) (wsID string, ok bool) {
 		return bodyWS, ok && current == bodyWS
 	}
 	if GetOrgIDFromRequest(r) != "" && UserWorkspaceResolverFunc != nil {
-		sub := getUserIDFromRequest(r)
-		if sub == "" {
+		if getUserIDFromRequest(r) == "" {
 			return "", false
 		}
-		owned := UserWorkspaceResolverFunc(sub)
-		if len(owned) == 0 {
-			// Someone in an organization but in none of its workspaces has
-			// nowhere to write. Falling back to "default" put the write in
-			// whichever organization owns that workspace.
-			return "", false
-		}
-		return owned[0], true
+		// The workspace the request acts in, where its permissions were
+		// checked (ADR-049). The caller's first workspace was used, so a
+		// create made while working in another went into that one.
+		// Someone in an organization but in none of its workspaces has
+		// nowhere to write; effectiveWorkspace says so.
+		return effectiveWorkspace(r)
 	}
 	return GetWorkspaceID(r), true
 }
@@ -209,3 +217,15 @@ func GetWorkspaceID(r *http.Request) string {
 
 // UserWorkspaceResolverFunc resolves workspace IDs for a user (set by enterprise).
 var UserWorkspaceResolverFunc func(userID string) []string
+
+// tokenWorkspace is the workspace a token was minted for, from its
+// "workspace_id" claim, or "" for a login session or a token for no one
+// workspace.
+func tokenWorkspace(r *http.Request) string {
+	claims, ok := r.Context().Value("claims").(*jwt.MapClaims)
+	if !ok || claims == nil {
+		return ""
+	}
+	ws, _ := (*claims)["workspace_id"].(string)
+	return ws
+}

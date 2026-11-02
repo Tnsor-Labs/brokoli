@@ -208,6 +208,23 @@ func (x ScopedStore) Visible(resource, id string) bool {
 	return x.scope.Sees(org, ws)
 }
 
+// ActsOn reports whether the row of resource with this id may be changed
+// under the scope: it exists, and is in the caller's organization and the
+// current workspace (tenancy.Scope.Acts).
+func (x ScopedStore) ActsOn(resource, id string) bool {
+	if !x.scope.Valid() || id == "" {
+		return false
+	}
+	if !x.scope.Tenanted() {
+		return true
+	}
+	org, ws, err := x.st.TenancyOwner(resource, id)
+	if err != nil {
+		return false
+	}
+	return x.scope.Acts(org, ws)
+}
+
 // Pipeline is GetPipeline, answering ErrNotVisible for a pipeline the scope
 // does not see.
 func (x ScopedStore) Pipeline(id string) (*models.Pipeline, error) {
@@ -289,13 +306,13 @@ func (x ScopedStore) PipelineDLQ(pipelineID string, includeResolved bool, limit 
 	return x.st.ListDLQ(pipelineID, includeResolved, limit)
 }
 
-// ResolveDLQ resolves dead-letter entry dlqID of a pipeline the scope
-// sees. The entry must be that pipeline's: the route names both, and a
+// ResolveDLQ resolves dead-letter entry dlqID of a pipeline in the
+// current workspace (ActsOn). The entry must be that pipeline's: the route names both, and a
 // check of the pipeline alone would guard an object the request is not
 // acting on. Found by listing the pipeline's own entries, which are
 // bounded; an entry that is not among them is ErrNotVisible.
 func (x ScopedStore) ResolveDLQ(pipelineID, dlqID string, limit int) error {
-	if dlqID == "" {
+	if dlqID == "" || !x.ActsOn("pipelines", pipelineID) {
 		return ErrNotVisible
 	}
 	entries, err := x.PipelineDLQ(pipelineID, true, limit)
