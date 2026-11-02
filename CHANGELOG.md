@@ -168,6 +168,28 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Changes are made in the current workspace** (ADR-049) -- @hc12r.
+  Someone in two workspaces could run, edit, delete, cancel or resolve an
+  item of the other workspace by id, with the permissions of the one they
+  were working in: a viewer in one who edits in the other could edit the
+  first. Reading by id still works in any workspace a person belongs to;
+  changes are now made only in the current one, and answer "not found"
+  elsewhere. This covers pipeline edit, delete, rollback and bulk actions,
+  runs (trigger, backfill, cancel, resume), change requests (propose,
+  apply, decline, test), dead letters, alert actions and git push.
+
+- **Variables, connections and secret stores of the wrong workspace** --
+  @hc12r. Working in a second workspace used the first: a variable key or
+  connection id both had named the first one's (read, overwritten, tested
+  or deleted from the second), a create without a workspace went into the
+  first, and the secret stores page listed and changed the first one's.
+  All three now use the workspace the request acts in.
+
+- **Workspace tokens were not kept to their workspace** -- @hc12r. A
+  token's `workspace_id` claim was never read, so a token minted for one
+  workspace acted in every workspace its creator belongs to. It now acts in
+  that workspace only and sees no other.
+
 - **Workspace isolation for alert actions** (ADR-049 phase 3) -- @hc12r.
   Marking an alert read, dismissing, assigning, acknowledging and resolving
   it checked the organization only, so a person could act on another

@@ -42,9 +42,10 @@ func (s *PostgresStore) MarkAllAlertsReadIn(scope tenancy.Scope, userID string) 
 	return markAllAlertsReadIn(s.db, "postgres", scope, userID, time.Now().UTC())
 }
 
-// alert answers ErrAlertNotFound unless the scope sees the alert.
+// alert answers ErrAlertNotFound unless the alert may be acted on: in the
+// current workspace, or the organization's own (ActsOn).
 func (x ScopedStore) alert(id string) error {
-	if !x.Visible("alerts", id) {
+	if !x.ActsOn("alerts", id) {
 		return ErrAlertNotFound
 	}
 	return nil

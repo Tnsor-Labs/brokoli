@@ -120,33 +120,24 @@ func (h *ConnectionHandler) secretRefErrors(c *models.Connection, workspaceID st
 // findConnection returns the connection conn_id names for this caller.
 //
 // conn_id is unique within a workspace, not across the server, so in an
-// organization it is looked for in the caller's own workspaces -- the one
-// the request acts in first -- and is not found anywhere else. Without an
+// organization it is looked for in the workspace the request acts in, and
+// is not found anywhere else. Without an
 // organization (a single-tenant server) it is matched alone.
 func (h *ConnectionHandler) findConnection(r *http.Request, connID string) (*models.Connection, bool) {
 	if GetOrgIDFromRequest(r) == "" {
 		c, err := h.store.GetConnection(connID)
 		return c, err == nil && c != nil
 	}
-	var userWSIDs []string
-	if UserWorkspaceResolverFunc != nil {
-		if sub := getUserIDFromRequest(r); sub != "" {
-			userWSIDs = UserWorkspaceResolverFunc(sub)
-		}
+	// The workspace the request acts in, only (ADR-049). The others the
+	// caller belongs to were tried next, so a conn_id missing here named
+	// another workspace's connection, to edit, test or delete under this
+	// workspace's permissions.
+	current, ok := effectiveWorkspace(r)
+	if !ok {
+		return nil, false
 	}
-	current, _ := effectiveWorkspace(r)
-	ordered := make([]string, 0, len(userWSIDs))
-	for _, ws := range userWSIDs {
-		if ws == current {
-			ordered = append([]string{ws}, ordered...)
-		} else {
-			ordered = append(ordered, ws)
-		}
-	}
-	for _, ws := range ordered {
-		if c, err := h.store.GetConnectionIn(ws, connID); err == nil && c != nil {
-			return c, true
-		}
+	if c, err := h.store.GetConnectionIn(current, connID); err == nil && c != nil {
+		return c, true
 	}
 	return nil, false
 }

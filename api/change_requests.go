@@ -523,6 +523,22 @@ func (h *changeRequestsAPI) pipeline(w http.ResponseWriter, r *http.Request) (*m
 	return p, true
 }
 
+// pipelineToChange is pipeline for a route that changes something:
+// proposing, applying, declining or testing a change. The pipeline must be
+// in the current workspace, whose permissions the request carries
+// (ADR-049); another workspace's is answered as missing.
+func (h *changeRequestsAPI) pipelineToChange(w http.ResponseWriter, r *http.Request) (*models.Pipeline, bool) {
+	p, ok := h.pipeline(w, r)
+	if !ok {
+		return nil, false
+	}
+	if !pipelineActionable(r, p) {
+		DenyOrgAccess(w)
+		return nil, false
+	}
+	return p, true
+}
+
 // currentVersion is the pipeline's latest saved version.
 func (h *changeRequestsAPI) currentVersion(pipelineID string) int {
 	versions, err := h.ph.store.ListPipelineVersions(pipelineID)
@@ -582,7 +598,7 @@ func validateProposed(p *models.Pipeline, executors []extensions.NodeExecutor) C
 }
 
 func (h *changeRequestsAPI) create(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.pipeline(w, r)
+	p, ok := h.pipelineToChange(w, r)
 	if !ok {
 		return
 	}
@@ -743,7 +759,7 @@ func (h *changeRequestsAPI) get(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *changeRequestsAPI) apply(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.pipeline(w, r)
+	p, ok := h.pipelineToChange(w, r)
 	if !ok {
 		return
 	}
@@ -788,7 +804,7 @@ func (h *changeRequestsAPI) apply(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *changeRequestsAPI) decline(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.pipeline(w, r)
+	p, ok := h.pipelineToChange(w, r)
 	if !ok {
 		return
 	}
@@ -830,7 +846,7 @@ var changeTests = make(chan struct{}, 2)
 // engine.PreviewPipeline). The proposal's code runs, which is why only a
 // person starts a test, never an agent.
 func (h *changeRequestsAPI) test(w http.ResponseWriter, r *http.Request) {
-	p, ok := h.pipeline(w, r)
+	p, ok := h.pipelineToChange(w, r)
 	if !ok {
 		return
 	}
