@@ -168,6 +168,28 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Pipeline code can no longer read the engine's environment** -- @hc12r.
+  Code, bash and task nodes run as children of the engine under the same
+  user. Their own environment was filtered, but `/proc/<engine>/environ`
+  was not, so a script could read every variable the server started with,
+  database URL and keys included. The engine now marks itself
+  non-dumpable, which makes its `/proc` files readable only with
+  `CAP_SYS_PTRACE`.
+
+- **dbt nodes get the filtered environment** -- @hc12r. They inherited the
+  server's whole environment, so a dbt project's `env_var()` could read
+  its database URL and keys. They now get the same allowlisted environment
+  code nodes do; name a further variable in `BROKOLI_DBT_PASS_ENV`.
+
+- **Warm code workers are not shared across workspaces** -- @hc12r. A warm
+  worker keeps what the last script left in its process, and the pool
+  handed it to the next script whichever workspace it belonged to. Warm
+  workers are now reused only within one organization and workspace.
+
+- **Testing a change request needs edit permission** -- @hc12r. It runs the
+  proposed code on the server, and needed only run permission, so a role
+  that may propose and run but not edit could run any code it proposed.
+
 - **Webhook exemption no longer skips the workspace check for other
   routes** (ADR-049) -- @hc12r. The workspace check skipped every POST
   whose path contained `/webhook`, not only the webhook routes, so a

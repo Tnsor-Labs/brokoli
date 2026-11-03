@@ -506,7 +506,10 @@ func registerChangeRequestRoutes(r chi.Router, ph *PipelineHandler, e *engine.En
 	r.Get("/pipelines/{id}/changes/{changeId}", h.get)
 	r.With(requirePerm(models.PermPipelinesEdit)).Post("/pipelines/{id}/changes/{changeId}/apply", h.apply)
 	r.Post("/pipelines/{id}/changes/{changeId}/decline", h.decline)
-	r.With(requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/changes/{changeId}/test", h.test)
+	// A test runs the proposed code on this server, so it needs what saving
+	// that code would: edit, as well as run. Run alone let an operator, who
+	// may propose but not edit, run any code they proposed.
+	r.With(requirePerm(models.PermPipelinesEdit), requirePerm(models.PermPipelinesRun)).Post("/pipelines/{id}/changes/{changeId}/test", h.test)
 }
 
 // pipeline is the pipeline in the path when the caller may reach it.

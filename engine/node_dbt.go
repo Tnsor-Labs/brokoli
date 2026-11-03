@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbtmanifest"
 )
@@ -107,8 +108,14 @@ func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionRes
 	// unconditionally exported an empty value and overrode dbt's own
 	// ~/.dbt default, so a project relying on that default could not
 	// resolve its profile.
+	//
+	// The filtered worker environment, as code nodes get: a dbt project is
+	// pipeline-author code too, and env_var() read the server's whole
+	// environment, its database URL and keys included. A project that
+	// needs a variable of its own names it in BROKOLI_DBT_PASS_ENV.
+	cmd.Env = codeexec.AllowlistedEnv("BROKOLI_DBT_PASS_ENV")
 	if profiles != "" {
-		cmd.Env = append(os.Environ(), "DBT_PROFILES_DIR="+profiles)
+		cmd.Env = append(cmd.Env, "DBT_PROFILES_DIR="+profiles)
 	}
 
 	start := time.Now()
