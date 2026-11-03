@@ -74,8 +74,15 @@ func computeScope(r *http.Request, orgID string) tenancy.Scope {
 		return tenancy.Scope{} // in the organization but in no workspace: sees nothing
 	}
 	ws := GetWorkspaceID(r)
-	if ws == models.DefaultWorkspaceID && len(member) > 0 {
+	if ws == models.DefaultWorkspaceID {
 		ws = member[0]
+	}
+	// Only the middleware checks the header against membership, and it
+	// skips the routes that carry their own authorization. Anywhere else
+	// an unchecked header would become the workspace this scope lists and
+	// acts in.
+	if !slices.Contains(member, ws) {
+		return tenancy.Scope{}
 	}
 	return tenancy.New(orgID, ws, member, requestActor(r))
 }
