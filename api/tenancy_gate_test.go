@@ -106,6 +106,13 @@ var rawTenantCallAllowlist = map[string]int{
 }
 
 func TestHandlersReachTenantDataThroughTheScope(t *testing.T) {
+	// A static check of the source: the race detector has nothing to find
+	// in it, and type-checking the module inside a race-instrumented
+	// binary took a minute and a half of the race run's budget. CI's
+	// coverage pass runs it without -race.
+	if raceEnabled {
+		t.Skip("static source check; runs in the non-race pass")
+	}
 	found, files := rawTenantCalls(t, ".")
 	if files < 50 {
 		t.Fatalf("the gate read %d files of package api; it is not looking at the handlers", files)

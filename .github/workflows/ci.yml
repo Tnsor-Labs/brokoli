@@ -250,7 +250,9 @@ jobs:
         # UI e2e run, and a second full pass for coverage. Splitting it
         # out gives it a realistic budget without lowering anyone's
         # coverage, and the two jobs now run concurrently.
-        run: go test -v -race -timeout 15m $(go list ./... | grep -v '/engine$')
+        # 18m: the api package alone reached 900s under -race on main
+        # (run 41578107063), exactly the old 15m limit.
+        run: go test -v -race -timeout 18m $(go list ./... | grep -v '/engine$')
 
       - name: Coverage
         run: |
