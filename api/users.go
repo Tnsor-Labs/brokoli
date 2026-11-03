@@ -697,9 +697,11 @@ func MeHandler(s store.Store) http.HandlerFunc {
 		for k, v := range *mc {
 			out[k] = v
 		}
-		wsID := GetWorkspaceID(r)
+		// /api/auth/ skips the workspace middleware, so the header is
+		// unchecked here: report it only when the caller belongs to it.
+		wsID, ok := effectiveWorkspace(r)
 		out["workspace_id"] = wsID
-		if s != nil {
+		if ok && s != nil {
 			if ws, err := s.GetWorkspace(wsID); err == nil && ws != nil && ws.Name != "" {
 				out["workspace_name"] = ws.Name
 			}

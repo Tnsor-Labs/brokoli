@@ -116,7 +116,12 @@ func isWorkspacePublicRoute(r *http.Request) bool {
 		strings.HasPrefix(path, "/api/workers/") ||
 		strings.HasPrefix(path, "/api/invites/") ||
 		strings.HasPrefix(path, "/api/samples/") ||
-		(r.Method == http.MethodPost && strings.Contains(path, "/webhook"))
+		// The webhook routes by shape, as the auth middleware matches
+		// them. A substring test let any POST whose path contained
+		// "/webhook" (a GitHub owner of that name in a repository sync,
+		// say) skip the membership check below and act in whatever
+		// workspace its header named.
+		isWebhookTriggerRequest(r)
 }
 
 // getUserIDFromRequest extracts the user ID from JWT claims in the request context.
@@ -159,23 +164,23 @@ func sanitizeWorkspaceID(id string) string {
 // ok is false only when an organization member belongs to no workspace at
 // all. That is not an error and not "show everything": there is nothing
 // they may see, so the caller answers with an empty list.
+//
+// A workspace the caller does not belong to is never the answer, even when
+// the request names it: the request scope refuses it (computeScope), and
+// ok is false.
 func effectiveWorkspace(r *http.Request) (wsID string, ok bool) {
 	wsID = GetWorkspaceID(r)
-	if GetOrgIDFromRequest(r) == "" || wsID != models.DefaultWorkspaceID {
+	if GetOrgIDFromRequest(r) == "" || UserWorkspaceResolverFunc == nil {
 		return wsID, true
 	}
-	if UserWorkspaceResolverFunc == nil {
+	if getUserIDFromRequest(r) == "" {
 		return wsID, true
 	}
-	userID := getUserIDFromRequest(r)
-	if userID == "" {
-		return wsID, true
-	}
-	owned := UserWorkspaceResolverFunc(userID)
-	if len(owned) == 0 {
+	s := RequestScope(r)
+	if !s.Valid() {
 		return "", false
 	}
-	return owned[0], true
+	return s.Workspace, true
 }
 
 // writeWorkspace resolves the workspace a create writes into. A body that

@@ -168,6 +168,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Webhook exemption no longer skips the workspace check for other
+  routes** (ADR-049) -- @hc12r. The workspace check skipped every POST
+  whose path contained `/webhook`, not only the webhook routes, so a
+  signed-in member could name a workspace they do not belong to in such a
+  request (a path parameter whose value is `webhook`, for example) and
+  have it listed and written there. The exemption now matches the webhook
+  routes by shape, as authentication already did, and a request scope
+  computed outside the middleware refuses a workspace the caller is not a
+  member of. `GET /api/auth/me` reports the workspace only when the caller
+  belongs to it.
+
 - **Changes are made in the current workspace** (ADR-049) -- @hc12r.
   Someone in two workspaces could run, edit, delete, cancel or resolve an
   item of the other workspace by id, with the permissions of the one they
