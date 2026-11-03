@@ -19,6 +19,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
+	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/datacap"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
@@ -308,6 +309,10 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		// lifecycle — claim through completion — is one OpenTelemetry trace
 		// (Tnsor-Labs/brokoli#11) instead of an isolated one starting here.
 		base = r.parentCtx
+	}
+	// Warm code workers are shared only within one workspace (codeexec.WithTenant).
+	if r.orgID != "" || r.workspaceID() != "" {
+		base = codeexec.WithTenant(base, r.orgID+"/"+r.workspaceID())
 	}
 	spanCtx, span := tracing.Tracer().Start(base, "brokoli.run.execute",
 		trace.WithAttributes(attribute.String("pipeline_id", r.pipe.ID)))

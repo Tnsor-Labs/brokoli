@@ -107,9 +107,12 @@ func NewPool() *Pool {
 // pooled and one-shot — for tests and the audit trail.
 func (p *Pool) WorkerBoots() int64 { return p.boots.Load() }
 
-func subKey(language, interpreter string, limits Limits, bundleDigest string) string {
+func subKey(tenant, language, interpreter string, limits Limits, bundleDigest string) string {
 	raw, _ := json.Marshal(limits)
 	key := language + "|" + interpreter + "|" + string(raw)
+	if tenant != "" {
+		key += "|tenant:" + tenant
+	}
 	if bundleDigest != "" {
 		key += "|bundle:" + bundleDigest
 	}
@@ -119,7 +122,7 @@ func subKey(language, interpreter string, limits Limits, bundleDigest string) st
 // acquire returns a warm worker for the key, or spawns one. The bool
 // reports warmth (true = reused). At the cap it either spawns a
 // one-shot (default) or blocks until a slot frees (opt-in queue).
-func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits Limits, bundleDigest string) (*Worker, bool, error) {
+func (p *Pool) acquire(ctx context.Context, tenant, language, interpreter string, limits Limits, bundleDigest string) (*Worker, bool, error) {
 	p.janitor.Do(func() { go p.reapLoop() })
 	p.mu.Lock()
 	closed := p.closed
@@ -138,7 +141,7 @@ func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits
 		p.boots.Add(1)
 		return w, false, nil
 	}
-	key := subKey(language, interpreter, limits, bundleDigest)
+	key := subKey(tenant, language, interpreter, limits, bundleDigest)
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -192,7 +195,7 @@ func (p *Pool) acquire(ctx context.Context, language, interpreter string, limits
 }
 
 // release returns a healthy worker to its sub-pool, or retires it.
-func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, bundleDigest string, healthy bool) {
+func (p *Pool) release(w *Worker, tenant, language, interpreter string, limits Limits, bundleDigest string, healthy bool) {
 	if w.oneShot {
 		w.kill()
 		return
@@ -207,7 +210,7 @@ func (p *Pool) release(w *Worker, language, interpreter string, limits Limits, b
 		return
 	}
 	w.idleAt = time.Now()
-	key := subKey(language, interpreter, limits, bundleDigest)
+	key := subKey(tenant, language, interpreter, limits, bundleDigest)
 	p.mu.Lock()
 	if p.closed || p.subs[key] == nil {
 		p.mu.Unlock()

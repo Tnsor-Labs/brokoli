@@ -438,7 +438,9 @@ func TestTestingAChangeRequest(t *testing.T) {
 	}
 	path := "/api/pipelines/" + id + "/changes/" + cr["id"].(string) + "/test"
 
-	if code, _, raw := b.do(http.MethodPost, path, agent, ""); code != http.StatusForbidden || !strings.Contains(raw, "a person") {
+	// Refused by the edit permission, which an agent's role lacks, before
+	// the handler's own "a person starts it" check.
+	if code, _, raw := b.do(http.MethodPost, path, agent, ""); code != http.StatusForbidden {
 		t.Fatalf("an agent tested its change: %d %s", code, raw)
 	}
 	if code, _, _ := b.do(http.MethodPost, path, b.tokens["vic"], ""); code != http.StatusForbidden {

@@ -123,7 +123,7 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 	if req.Timeout <= 0 {
 		req.Timeout = 30 * time.Second
 	}
-	worker, warm, err := p.acquire(ctx, req.Language, req.Interpreter, req.Limits, req.BundleDigest)
+	worker, warm, err := p.acquire(ctx, TenantFrom(ctx), req.Language, req.Interpreter, req.Limits, req.BundleDigest)
 	if err != nil {
 		return nil, err
 	}
@@ -182,15 +182,15 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 				healthy = false // allocator/internal state is untrusted after a breach
 			}
 		}
-		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, healthy)
+		p.release(worker, TenantFrom(ctx), req.Language, req.Interpreter, req.Limits, req.BundleDigest, healthy)
 		return out.result, out.err
 	case <-timer.C:
 		worker.kill()
-		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
+		p.release(worker, TenantFrom(ctx), req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
 		return nil, fmt.Errorf("script timed out after %ds", int(req.Timeout.Seconds()))
 	case <-ctx.Done():
 		worker.kill()
-		p.release(worker, req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
+		p.release(worker, TenantFrom(ctx), req.Language, req.Interpreter, req.Limits, req.BundleDigest, false)
 		return nil, ctx.Err()
 	}
 }
