@@ -113,7 +113,9 @@ func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionRes
 	// pipeline-author code too, and env_var() read the server's whole
 	// environment, its database URL and keys included. A project that
 	// needs a variable of its own names it in BROKOLI_DBT_PASS_ENV.
-	cmd.Env = codeexec.AllowlistedEnv("BROKOLI_DBT_PASS_ENV")
+	// DBT_PROFILES_DIR is a path, and the operator's way of pointing every
+	// project at its profiles when the node names none.
+	cmd.Env = codeexec.AllowlistedEnv("BROKOLI_DBT_PASS_ENV", "DBT_PROFILES_DIR")
 	if profiles != "" {
 		cmd.Env = append(cmd.Env, "DBT_PROFILES_DIR="+profiles)
 	}
