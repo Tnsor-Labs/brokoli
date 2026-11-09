@@ -170,7 +170,7 @@ reconstruct from git archaeology.
 
 - **Dependency vulnerabilities** -- @hc12r. `andybalholm/brotli` v1.2.7
   (GO-2026-6888) and `klauspost/compress` v1.20.2 (GO-2026-6865, a panic on
-  two-block frames).
+  two-block frames), and `golang.org/x/net` v0.62.0 (CVE-2026-78661).
 
 - **Pipeline code can no longer read the engine's environment** -- @hc12r.
   Code, bash and task nodes run as children of the engine under the same
