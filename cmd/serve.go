@@ -25,6 +25,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/plugins"
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 	"github.com/Tnsor-Labs/brokoli/pkg/tracing"
@@ -93,6 +94,11 @@ var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the Brokoli server",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Before anything runs user code: a deployment that asked for user
+		// code to run as separate users must not start running it as root.
+		if err := runas.Check(); err != nil {
+			return err
+		}
 		// OpenTelemetry tracing (Tnsor-Labs/brokoli#11): a no-op unless an
 		// operator explicitly sets BROKOLI_OTEL_EXPORTER=otlp, so this is a
 		// no-behavior-change default for every existing deployment — see

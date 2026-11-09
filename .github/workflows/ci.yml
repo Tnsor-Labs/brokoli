@@ -398,6 +398,24 @@ jobs:
       - name: Code-node legacy-path leg (pool off)
         run: env BROKOLI_CODE_POOL=0 go test -timeout 10m -run 'TestCodeNode|TestLazyRows|TestPipeline_LazyRows|TestPipeline_EmitZeroRows|TestPipeline_Streamed|TestInstanceWorker|TestExpansion' ./engine/
 
+      # User code runs as its tenant's own user when BROKOLI_USER_CODE_UIDS
+      # is set, and only root can start a process as another user, so these
+      # tests skip in the steps above. Here they run as root, against their
+      # own controls (each first shows the probe can see the attack as
+      # root). A run where they skipped fails: a gate that never ran is not
+      # a gate. Root gets its own Go cache so it leaves nothing the cache
+      # step cannot save.
+      - name: User code isolation (as root)
+        run: |
+          set -o pipefail
+          sudo env "PATH=$PATH" GOCACHE=/tmp/root-gocache GOMODCACHE="$(go env GOMODCACHE)" \
+            go test -count=1 -v -run 'TestUserCode|TestTenantsCannotReachEachOthersCode|TestPlantedOutputLinkIsNotFollowed|TestBashRunsAsItsTenantsOwnUser|TestClaim' \
+            ./engine/ ./pkg/runas/ | tee /tmp/isolation.log
+          if grep -q -- '--- SKIP' /tmp/isolation.log; then echo "isolation tests skipped instead of running" >&2; exit 1; fi
+          for t in TestUserCodeRunsAsItsTenantsOwnUser TestTenantsCannotReachEachOthersCode TestPlantedOutputLinkIsNotFollowed TestBashRunsAsItsTenantsOwnUser TestClaimRefusesWhatTheChildDidNotWrite; do
+            grep -q -- "--- PASS: $t " /tmp/isolation.log || { echo "$t did not pass" >&2; exit 1; }
+          done
+
       # Engine's own coverage, because the Test job's coverage step no
       # longer sees this package. Splitting the job must not quietly
       # shrink what coverage reports.

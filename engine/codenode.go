@@ -72,16 +72,19 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	// its own file (BROKED_SCRIPT) and is exec'd in the wrapper's
 	// globals — no more %-interpolation, and tracebacks carry the user
 	// script's own line numbers.
-	wrapperFile, err := codeexec.WrapperPath()
+	dir, err := newUserCodeDir(parent, "brokoli-code-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer dir.remove()
+	wrapperFile, err := dir.wrapper()
 	if err != nil {
 		return nil, "", fmt.Errorf("materialize code wrapper: %w", err)
 	}
-	tmpDir := os.TempDir()
-	scriptFile := filepath.Join(tmpDir, fmt.Sprintf("brokoli_code_%d.py", time.Now().UnixNano()))
+	scriptFile := dir.join("script.py")
 	if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
 		return nil, "", fmt.Errorf("write script file: %w", err)
 	}
-	defer os.Remove(scriptFile)
 
 	// Decide transfer mode: file-based for large datasets, stdin/stdout for small
 	// NDJSON is preferred over CSV — faster for pyarrow and preserves JSON types (no string coercion).
@@ -92,10 +95,8 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 
 	if useFileMode {
 		// Try NDJSON first (faster, type-preserving)
-		inputNDJSON = filepath.Join(tmpDir, fmt.Sprintf("brokoli_in_%d.ndjson", time.Now().UnixNano()))
-		outputNDJSON = filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
-		defer os.Remove(inputNDJSON)
-		defer os.Remove(outputNDJSON)
+		inputNDJSON = dir.join("in.ndjson")
+		outputNDJSON = dir.join("out.ndjson")
 
 		if err := WriteNDJSON(inputNDJSON, input); err != nil {
 			// Fall back to CSV
@@ -103,10 +104,8 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 			inputNDJSON = ""
 			outputNDJSON = ""
 
-			inputCSV = filepath.Join(tmpDir, fmt.Sprintf("brokoli_in_%d.csv", time.Now().UnixNano()))
-			outputCSV = filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.csv", time.Now().UnixNano()))
-			defer os.Remove(inputCSV)
-			defer os.Remove(outputCSV)
+			inputCSV = dir.join("in.csv")
+			outputCSV = dir.join("out.csv")
 
 			if err := writeCSVFile(input, inputCSV); err != nil {
 				// Fall back to JSON stdin mode
@@ -199,6 +198,10 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
+	if err := dir.handOver(); err != nil {
+		return nil, "", err
+	}
+	dir.prepare(cmd)
 
 	err = cmd.Run()
 	stderrStr := stderr.String()
@@ -227,9 +230,15 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	}
 
 	// Read output: try NDJSON first (fastest), then CSV, then JSON stdout
+	// Through claim: the folder is the script's by now (see userCodeDir).
 	if useFileMode && transferMode == TransferNDJSON {
-		if _, statErr := os.Stat(outputNDJSON); statErr == nil {
-			ds, readErr := ReadNDJSON(outputNDJSON)
+		if _, statErr := os.Lstat(outputNDJSON); statErr == nil {
+			path, claimErr := dir.claim(filepath.Base(outputNDJSON))
+			if claimErr != nil {
+				return nil, stderrStr, fmt.Errorf("read code output: %w", claimErr)
+			}
+			defer os.Remove(path)
+			ds, readErr := ReadNDJSON(path)
 			if readErr == nil {
 				return ds, stderrStr, nil
 			}
@@ -237,8 +246,13 @@ func ExecuteCodeNodeProgress(parent context.Context, script string, input *commo
 	}
 	if useFileMode && (transferMode == TransferCSV || transferMode == TransferNDJSON) {
 		if outputCSV != "" {
-			if _, statErr := os.Stat(outputCSV); statErr == nil {
-				ds, readErr := readCSVFile(outputCSV)
+			if _, statErr := os.Lstat(outputCSV); statErr == nil {
+				path, claimErr := dir.claim(filepath.Base(outputCSV))
+				if claimErr != nil {
+					return nil, stderrStr, fmt.Errorf("read code output: %w", claimErr)
+				}
+				defer os.Remove(path)
+				ds, readErr := readCSVFile(path)
 				if readErr == nil {
 					return ds, stderrStr, nil
 				}

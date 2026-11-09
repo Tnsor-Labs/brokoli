@@ -53,6 +53,7 @@ func ExecuteInstanceWorkOrderResolving(ctx context.Context, wo *extensions.Insta
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	ctx = workOrderTenant(ctx, wo)
 	switch wo.NodeType {
 	case string(models.NodeTypeCode):
 		return executeCodeWorkOrder(ctx, wo)

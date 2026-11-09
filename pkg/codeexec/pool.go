@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 )
 
 // Pool keeps warm code-node workers, one sub-pool per
@@ -115,6 +117,11 @@ func subKey(tenant, language, interpreter string, limits Limits, bundleDigest st
 	}
 	if bundleDigest != "" {
 		key += "|bundle:" + bundleDigest
+	}
+	// Who the worker runs as: a worker started as one user must not serve
+	// a request meant to run as another (pkg/runas).
+	if id, err := runas.For(tenant); err == nil && id.Enabled() {
+		key += "|" + id.String()
 	}
 	return key
 }

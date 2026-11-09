@@ -13,6 +13,39 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **User code can run as its tenant's own unprivileged user** -- @hc12r.
+  Set `BROKOLI_USER_CODE_UIDS` to a range of user IDs (for example
+  `1000000000-1999999999`) and every child that runs user code (code nodes
+  on the warm pool and on the one-shot and streamed paths, bash, task
+  nodes, dbt) starts as a user derived from its org and workspace instead
+  of as the server's user. A server running as root in its container
+  otherwise runs that code as root: a script could read the data
+  directory and every other root-only file, write the server's binary,
+  and read or signal another tenant's code running at the same time. With
+  the setting, two tenants get different users and neither is root.
+
+  Each execution gets a private folder (its HOME and TMPDIR, its script,
+  its input) handed to that user before it starts; warm code workers are
+  kept per user as well as per tenant, and remote work orders carry their
+  tenant so a remote worker separates tenants the same way. What the code
+  writes is read back without following links out of its folder, and a
+  worker naming an output path other than the one it was given is refused:
+  the server reads more than the code may, so a planted link would
+  otherwise make it read a root-only file on the code's behalf. The server
+  writes its own files private (umask 077) while the setting is on.
+
+  The server checks at startup that it can do this, and refuses to start
+  rather than run user code as root when it cannot: it needs root's
+  `CHOWN`, `DAC_OVERRIDE`, `FOWNER`, `KILL`, `SETUID` and `SETGID`, plus
+  `SYS_RESOURCE` to set the children's resource limits (containers do not
+  get it by default), and `fs.protected_hardlinks=1` on the host. Unset,
+  nothing changes, and a server running as root says in its log that user
+  code runs as root. A bash node's configured `working_dir` and a dbt
+  project folder are used as they are, so with the setting on they must be
+  open to the tenant's user; the bash error now says so instead of
+  "permission denied" from bash itself. Plugins still run as the server's
+  user.
+
 - **A photo in the sidebar account chip** -- @hc12r. `SidebarAccount`
   (`@brokoli/auth`) takes an optional `avatarSrc`: the signed-in person's
   photo, shown in place of their initials. The initials come back when it is

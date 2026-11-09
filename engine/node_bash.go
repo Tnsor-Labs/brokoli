@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"sort"
@@ -46,17 +47,22 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		return nil, fmt.Errorf("bash node requires a non-empty 'command'")
 	}
 
+	// A private folder per attempt, removed afterwards: the working
+	// directory when none is configured, and HOME and TMPDIR when the
+	// command runs as its tenant's own user (pkg/runas). The shared temp
+	// directory is neither private nor, when BROKOLI_DATA_DIRS excludes
+	// it, allowed.
+	scratch, err := newUserCodeDir(ctx, "brokoli-bash-")
+	if err != nil {
+		return nil, fmt.Errorf("bash working directory: %w", err)
+	}
+	defer scratch.remove()
+	if err := scratch.handOver(); err != nil {
+		return nil, err
+	}
 	workingDir, _ := node.Config["working_dir"].(string)
 	if workingDir == "" {
-		// A private directory per attempt, removed afterwards. The shared
-		// temp directory is neither private nor, when BROKOLI_DATA_DIRS
-		// excludes it, allowed.
-		scratch, err := os.MkdirTemp("", "brokoli-bash-")
-		if err != nil {
-			return nil, fmt.Errorf("bash working directory: %w", err)
-		}
-		defer func() { _ = os.RemoveAll(scratch) }()
-		workingDir = scratch
+		workingDir = scratch.path
 	} else {
 		if err := common.PathAllowed(workingDir); err != nil {
 			return nil, fmt.Errorf("bash working_dir: %w", err)
@@ -121,6 +127,9 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		for _, key := range keys {
 			cmd.Env = append(cmd.Env, key+"="+env[key])
 		}
+		// A configured working_dir is used as it is: the command can then
+		// write there only if its user may.
+		scratch.prepare(cmd)
 		proctree.ConfigureProcessGroup(cmd)
 		cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
 		// Bounds Wait both after a cancel and when the command exits but
@@ -136,9 +145,18 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 		return nil, err
 	}
 	memory.place(cmd)
+	startErr := func(err error) error {
+		// Starting fails this way when the configured working directory
+		// is one the tenant's user may not enter; the bare error names
+		// bash instead.
+		if scratch.id.Enabled() && workingDir != scratch.path && errors.Is(err, fs.ErrPermission) {
+			return fmt.Errorf("start bash: working_dir %q is not open to %s, the user this tenant's code runs as (BROKOLI_USER_CODE_UIDS): %w", workingDir, scratch.id, err)
+		}
+		return fmt.Errorf("start bash: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		if memory.cgroup == nil {
-			return nil, fmt.Errorf("start bash: %w", err)
+			return nil, startErr(err)
 		}
 		// Starting inside the cgroup can be refused (moving a process
 		// needs write access up to the common ancestor of its old and new
@@ -148,7 +166,7 @@ func (r *Runner) runBash(ctx context.Context, node models.Node, input *common.Da
 			return nil, err
 		}
 		if err := cmd.Start(); err != nil {
-			return nil, fmt.Errorf("start bash: %w", err)
+			return nil, startErr(err)
 		}
 	}
 	waitErr := cmd.Wait()

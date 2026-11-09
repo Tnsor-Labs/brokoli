@@ -28,6 +28,11 @@ type Options struct {
 	Dir     string
 	Env     []string
 
+	// Prepare, when set, adjusts the command just before it starts: the
+	// engine uses it to start the harness as the task's tenant's own user
+	// (pkg/runas).
+	Prepare func(*exec.Cmd)
+
 	// Rlimits bounds the harness process the same way a code node is
 	// bounded today (reusing pkg/proctree's rlimit primitive, ADR-029) —
 	// the trusted-profile resource baseline this phase reuses rather
@@ -130,6 +135,9 @@ func Run(ctx context.Context, start StartFrame, opts Options, handlers Handlers)
 	cmd.Dir = opts.Dir
 	if opts.Env != nil {
 		cmd.Env = opts.Env
+	}
+	if opts.Prepare != nil {
+		opts.Prepare(cmd)
 	}
 	proctree.ConfigureProcessGroup(cmd)
 

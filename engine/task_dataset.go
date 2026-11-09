@@ -31,6 +31,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/taskinterface"
@@ -85,7 +86,9 @@ func openStagedOutput(stagingDir, rel string, maxBytes int64, wantSize int64) (*
 	}
 	defer root.Close()
 
-	f, err := root.Open(rel)
+	// Without blocking: the task may have left a FIFO under this name, and
+	// a plain open would wait for a writer forever.
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("open task output %q: %w", rel, err)
 	}

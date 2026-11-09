@@ -175,6 +175,13 @@ func (p *Pool) Exec(ctx context.Context, req Request) (*Result, error) {
 	defer timer.Stop()
 	select {
 	case out := <-done:
+		// The output path is the one the host asked for, never one the
+		// worker names: the host reads it with more privilege than the
+		// worker may have, so a worker naming /proc/1/environ would have
+		// it read on its behalf.
+		if out.err == nil && out.result != nil && out.result.Path != "" && out.result.Path != req.OutputNDJSON {
+			out = outcome{err: fmt.Errorf("code worker reported output at %q, not the path it was given", out.result.Path), fatal: true}
+		}
 		healthy := !out.fatal
 		if out.err != nil {
 			var scriptErr *ErrScript

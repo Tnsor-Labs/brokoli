@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/proctree"
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 )
 
 // spawnTimeout bounds worker boot: interpreter start + hello. A worker
@@ -30,6 +31,7 @@ type Worker struct {
 	rw        *bufio.ReadWriter
 	hello     HelloMsg
 	sockPath  string
+	home      string // the worker's own folder when it runs as its tenant's user; removed with it
 	execs     int
 	idleAt    time.Time
 	oneShot   bool
@@ -53,6 +55,13 @@ func spawnWorker(ctx context.Context, language, interpreter string, limits Limit
 	}
 	if err != nil {
 		return nil, err
+	}
+	id, err := runas.ForContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if id.Enabled() {
+		return spawnWorkerAs(ctx, id, language, interpreter, workerMain, limits, oneShot)
 	}
 
 	// A unique path per worker, from the OS rather than the clock.
@@ -81,7 +90,76 @@ func spawnWorker(ctx context.Context, language, interpreter string, limits Limit
 	// file, whose removal is now redundant but harmless.
 	defer func() { _ = os.RemoveAll(sockHome) }()
 	defer listener.Close()
+	cmd := workerCommand(ctx, language, interpreter, workerMain, sockPath, limits, oneShot)
+	cmd.Env = append(WorkerEnv(), limits.Env()...)
+	return startWorker(ctx, cmd, listener, language, sockPath, "", limits, oneShot)
+}
 
+// spawnWorkerAs is spawnWorker for a worker that runs as its tenant's own
+// user. Everything the worker touches lives in one folder that user owns:
+// its socket, its HOME and TMPDIR, and its own copy of the wrapper (the
+// shared materialized copy is the server's, and a folder every tenant
+// could write would let one tenant's code replace another's wrapper).
+func spawnWorkerAs(ctx context.Context, id runas.Identity, language, interpreter, workerMain string, limits Limits, oneShot bool) (*Worker, error) {
+	home, err := id.MkdirTemp("w-")
+	if err != nil {
+		return nil, fmt.Errorf("create worker folder: %w", err)
+	}
+	ok := false
+	defer func() {
+		if !ok {
+			_ = os.RemoveAll(home)
+		}
+	}()
+	src := filepath.Dir(workerMain)
+	dst := filepath.Join(home, filepath.Base(src))
+	if err := copyFlatDir(src, dst); err != nil {
+		return nil, fmt.Errorf("copy code wrapper for %s: %w", id, err)
+	}
+	workerMain = filepath.Join(dst, filepath.Base(workerMain))
+	sockPath := filepath.Join(home, "w.sock")
+	listener, err := net.Listen("unix", sockPath)
+	if err != nil {
+		return nil, fmt.Errorf("listen %s: %w", sockPath, err)
+	}
+	defer listener.Close()
+	// After the socket exists: connecting needs write permission on it.
+	if err := id.Own(home); err != nil {
+		return nil, err
+	}
+	cmd := workerCommand(ctx, language, interpreter, workerMain, sockPath, limits, oneShot)
+	cmd.Env = id.Env(append(WorkerEnv(), limits.Env()...), home)
+	id.Apply(cmd)
+	w, err := startWorker(ctx, cmd, listener, language, sockPath, home, limits, oneShot)
+	ok = err == nil
+	return w, err
+}
+
+// copyFlatDir copies the regular files directly in src into a new dst.
+func copyFlatDir(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	if err := os.Mkdir(dst, 0o700); err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.Type().IsRegular() {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(src, e.Name())) // #nosec G304 -- src is the server's own materialized wrapper folder
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dst, e.Name()), raw, 0o600); err != nil { // #nosec G703 -- dst is a folder this process just made, and the name is one of the wrapper's own files
+			return err
+		}
+	}
+	return nil
+}
+
+func workerCommand(ctx context.Context, language, interpreter, workerMain, sockPath string, limits Limits, oneShot bool) *exec.Cmd {
 	args := []string{workerMain, "--socket", sockPath}
 	if language == "typescript" && limits.MemoryMB > 0 {
 		args = append([]string{fmt.Sprintf("--max-old-space-size=%d", limits.MemoryMB)}, args...)
@@ -94,19 +172,27 @@ func spawnWorker(ctx context.Context, language, interpreter string, limits Limit
 	// exists to run pipeline-author code) and the script is our own
 	// materialized worker_main.py.
 	cmd := exec.CommandContext(context.WithoutCancel(ctx), interpreter, args...)
-	cmd.Env = append(WorkerEnv(), limits.Env()...)
 	proctree.ConfigureProcessGroup(cmd)
 	cmd.Cancel = func() error { return proctree.TerminateProcessTree(cmd.Process) }
 	cmd.WaitDelay = terminationGrace
 	tail := &stderrTail{}
 	cmd.Stdout = nil
 	cmd.Stderr = tail
+	return cmd
+}
+
+// startWorker starts cmd, applies its limits, and waits for it to connect
+// to listener and say hello.
+func startWorker(ctx context.Context, cmd *exec.Cmd, listener net.Listener, language, sockPath, home string, limits Limits, oneShot bool) (*Worker, error) {
+	tail := cmd.Stderr.(*stderrTail)
+	interpreter := cmd.Path
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("spawn code worker (%s): %w", interpreter, err)
 	}
 	w := &Worker{
 		cmd:      cmd,
 		sockPath: sockPath,
+		home:     home,
 		oneShot:  oneShot,
 		stderr:   tail,
 		waitDone: make(chan struct{}),
@@ -231,5 +317,23 @@ func (w *Worker) cleanup() {
 			_ = w.conn.Close()
 		}
 		_ = os.Remove(w.sockPath)
+		if w.home != "" {
+			_ = os.RemoveAll(w.home)
+		}
 	})
+}
+
+// WrapperPathIn copies the Python wrapper into a new folder inside dir and
+// returns its wrapper.py, for a one-shot child that runs as its tenant's
+// user and so cannot read the server's own materialized copy.
+func WrapperPathIn(dir string) (string, error) {
+	shared, err := WrapperPath()
+	if err != nil {
+		return "", err
+	}
+	dst := filepath.Join(dir, "wrapper")
+	if err := copyFlatDir(filepath.Dir(shared), dst); err != nil {
+		return "", err
+	}
+	return filepath.Join(dst, filepath.Base(shared)), nil
 }
