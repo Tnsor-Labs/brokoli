@@ -256,5 +256,16 @@ func nativeADBCOptions(conn *models.Connection, extra map[string]interface{}) ma
 			options["adbc.flight.sql.rpc.call_header."+name] = value
 		}
 	}
+	// A NUMBER declared without a precision (and COUNT, SUM and other
+	// computed numbers) reads as float64 in the native Oracle driver unless
+	// told otherwise, which rounds anything past about 15 significant
+	// digits without a word. The built-in Oracle path never rounds, so the
+	// native one reads them as their exact decimal text instead. A
+	// connection that prefers floats sets the option itself.
+	if conn.Type == models.ConnTypeOracle {
+		if _, set := options["oracle.unconstrained_number"]; !set {
+			options["oracle.unconstrained_number"] = "string"
+		}
+	}
 	return options
 }

@@ -308,8 +308,15 @@ func hasScheme(url string, schemes ...string) bool {
 	return false
 }
 
+// validLifecycle accepts the lifecycles a catalog entry may declare.
+// "experimental" is installable like "supported"; it says the driver is
+// usable but its behaviour may still change between releases.
 func validLifecycle(value string) bool {
-	return value == "" || value == "supported" || value == "deprecated" || value == "revoked"
+	switch value {
+	case "", "supported", "experimental", "deprecated", "revoked":
+		return true
+	}
+	return false
 }
 
 // DownloadArchive writes at most maxBytes after verifying the expected digest.

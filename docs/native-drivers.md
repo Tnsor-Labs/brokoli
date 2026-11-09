@@ -13,6 +13,7 @@ but cannot take the server down.
 - [Managed drivers](#managed-drivers)
 - [Pinning a connection to a driver](#pinning-a-connection-to-a-driver)
 - [Flight SQL connections](#flight-sql-connections)
+- [Oracle connections](#oracle-connections)
 - [How a run reads through a driver](#how-a-run-reads-through-a-driver)
 - [Testing a connection](#testing-a-connection)
 - [Errors](#errors)
@@ -30,6 +31,7 @@ but cannot take the server down.
 | **SQLite** (`sqlite`) | `sqlite` | Only when pinned, as for PostgreSQL. |
 | **MySQL** (`mysql`) | `mysql` | Only when pinned. See [MySQL connections](#mysql-connections). |
 | **ClickHouse** (`clickhouse`) | `clickhouse` | Only when pinned, and over ClickHouse's HTTP interface. See [ClickHouse connections](#clickhouse-connections). |
+| **Oracle** (`oracle`) | `orkidea` (experimental) | Only when pinned. See [Oracle connections](#oracle-connections). |
 
 A driver serves only the connection types in this table. The catalog lists
 others (Trino, DuckDB, Snowflake, Databricks, BigQuery): they install and
@@ -41,9 +43,9 @@ that does not serve its type is refused.
 | --- | --- |
 | `source_db` query | Supported, on the streaming path and the batch path |
 | Dry run (preview) | Supported; the query is stopped once the sample has arrived |
-| **Test connection** | Supported: runs `SELECT 1` through the pinned driver, in the same isolated worker a run uses |
+| **Test connection** | Supported: runs `SELECT 1` (`SELECT 1 FROM dual` for Oracle) through the pinned driver, in the same isolated worker a run uses |
 | Run parameters (`${param.x}`) in the query | Refused with an error; see [below](#run-parameters) |
-| `sink_db`, `migrate`, and other nodes | A pinned PostgreSQL, SQLite, MySQL or ClickHouse connection uses its built-in Go driver there. A Flight SQL connection is refused by any node but `source_db`. |
+| `sink_db`, `migrate`, and other nodes | A pinned PostgreSQL, SQLite, MySQL or ClickHouse connection uses its built-in Go driver there, and so does a pinned Oracle connection, so writes to Oracle stay refused (see [Reading from Oracle](oracle.md#why-writes-are-refused)). A Flight SQL connection is refused by any node but `source_db`. |
 
 ## Builds that can run native drivers
 
@@ -182,9 +184,14 @@ decision for the operator, not the binary.
   network), because the archive is verified by digest. `docs_url` and
   `icon_url` must be `https://`: they are shown to people and verified by
   nothing.
-- `lifecycle` is `supported`, `deprecated` or `revoked`. A revoked release
-  is still listed, so an operator can see what pinned connections use, but
-  cannot be installed.
+- `lifecycle` is `supported`, `experimental`, `deprecated` or `revoked`.
+  An experimental release installs and runs like a supported one; it is
+  marked so on the Drivers page because its behaviour, such as how it maps
+  types, may still change between releases. A revoked release is still
+  listed, so an operator can see what pinned connections use, but cannot be
+  installed. A server older than the `experimental` lifecycle refuses a
+  catalog that contains one, so a catalog should list an experimental
+  release only once the servers reading it understand the value.
 - Unknown fields are ignored, so a catalog can add fields without breaking
   older servers. A change older servers must not misread raises `version`.
 - Browsing the catalog and its documentation uses a copy at most five
@@ -349,6 +356,74 @@ Saving a pinned ClickHouse connection on port 9000 or 9440 (the native
 protocol) is refused with that reason. The built-in driver's options
 `dial_timeout`, `read_timeout` and `compress` are not passed: the native
 driver would send them to the server as ClickHouse settings.
+
+## Oracle connections
+
+**Experimental.** The `orkidea` driver is
+[Orkidea](https://github.com/Tnsor-Labs/orkidea-adbc), an ADBC driver for
+Oracle Database built on Oracle's Rust driver. It needs no Oracle Instant
+Client. It is in beta: its type mapping may change before its 1.0 release,
+and pinning a connection to it is a choice to accept that. An unpinned Oracle
+connection keeps the built-in driver described in
+[Reading from Oracle](oracle.md).
+
+A pinned Oracle connection is given to it as:
+
+| Driver input | From the connection |
+| --- | --- |
+| `uri` | `oracle://<host>:<port>/<service>`; port defaults to 1521, and the service name is the connection's schema |
+| `username`, `password` options | Login and password. Never in the URI. |
+| `oracle.unconstrained_number` option | `string`, unless the connection sets it (see below) |
+
+What the native driver changes compared with the built-in one:
+
+| | Built-in driver | `orkidea` |
+| --- | --- | --- |
+| `NUMBER(p)` with p up to 18 | 64-bit integer | 64-bit integer |
+| `NUMBER(p)` with p over 18, `NUMBER(p,s)` | Integer or double when exact, otherwise text | Decimal string, always exact (`"1234.56"`, `"0.00"`) |
+| `NUMBER` with no precision, `COUNT(*)`, `SUM(...)` | Integer or double when exact, otherwise text | Exact decimal text (`"42"`, `"1.5"`) |
+| `TIMESTAMP WITH TIME ZONE` | Timestamp with its original offset | The same instant in UTC; the offset is not kept |
+| `RAW` | The bytes, as a text value | Not supported yet: the node fails naming the column. Convert it in the query (`RAWTOHEX(col)`) |
+| `BLOB`, `INTERVAL`, `VECTOR` | See [Reading from Oracle](oracle.md#how-values-come-back) | Not supported yet: the node fails naming the column. Convert it in the query (`TO_CHAR(col)` for an interval) |
+| Empty strings | Null, as Oracle stores them | Null |
+
+A `NUMBER` declared without a precision, and every computed number, carries
+no precision for a driver to go by. The native driver reads those as 64-bit
+floats unless told otherwise, which rounds anything past about 15
+significant digits (`9007199254740993` arrives as `9007199254740992`).
+Brokoli asks for the exact decimal text instead. To get numbers, declare the
+precision in the query (`CAST(total AS NUMBER(18))` arrives as an integer,
+`CAST(price AS NUMBER(12,2))` as a decimal string), or accept the rounding
+by setting the option on the connection:
+
+```json
+{"adbc_options": {"oracle.unconstrained_number": "float64"}}
+```
+
+Saving a pinned Oracle connection is refused when it:
+
+- has no host, or no service name (the native driver does not connect by
+  SID);
+- sets one of the built-in driver's options (`sid`, `instance name`, `ssl`,
+  `ssl verify`, `connect timeout`, `encryption`, `data integrity`). The
+  native driver has no tested equivalent for them yet, and connecting
+  without one, without TLS for example, would not be what the connection
+  says;
+- sets an `adbc_options` entry outside the list below. Options that name a
+  server, a login or a file on the worker (`uri`, `username`, `password`,
+  `oracle.connect_string`, `oracle.config_dir`, `oracle.wallet_location`,
+  `oracle.wallet_password`) or that change how the session logs on
+  (`oracle.auth_mode`, `oracle.new_password`, `oracle.cclass`) are refused.
+
+`adbc_options` an Oracle connection may set, each described in
+[Orkidea's options](https://github.com/Tnsor-Labs/orkidea-adbc/blob/main/docs/options.md):
+`oracle.connect_timeout_ms`, `oracle.call_timeout_ms`,
+`oracle.stmt_cache_size`, `oracle.time_zone`, `oracle.edition`,
+`oracle.program`, `oracle.machine`, `oracle.terminal`, `oracle.module`,
+`oracle.action`, `oracle.client_identifier`, `oracle.client_info`,
+`oracle.dbop`, `oracle.batch_size`, `oracle.fetch_array_size`,
+`oracle.prefetch_rows`, `oracle.unconstrained_number` and
+`oracle.unconstrained_number_scale`.
 
 ## How a run reads through a driver
 

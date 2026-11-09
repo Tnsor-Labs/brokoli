@@ -22,6 +22,7 @@ var driverConnectionTypes = map[string][]models.ConnectionType{
 	"sqlite":     {models.ConnTypeSQLite},
 	"mysql":      {models.ConnTypeMySQL},
 	"clickhouse": {models.ConnTypeClickHouse},
+	"orkidea":    {models.ConnTypeOracle},
 }
 
 // UsableBy returns the connection types that can read through the driver

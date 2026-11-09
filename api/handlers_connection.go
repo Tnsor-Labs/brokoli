@@ -938,7 +938,7 @@ func (h *ConnectionHandler) testNative(ctx context.Context, c *models.Connection
 	if err != nil {
 		return fail(err)
 	}
-	request.Query = "SELECT 1"
+	request.Query = nativeTestQuery(conn.Type)
 	if _, err := worker.RunNativeADBC(ctx, *request, io.Discard); err != nil {
 		return fail(err)
 	}
@@ -946,6 +946,15 @@ func (h *ConnectionHandler) testNative(ctx context.Context, c *models.Connection
 		"success": true,
 		"message": fmt.Sprintf("Connected successfully through native driver %s %s", request.Driver.Name, request.Driver.Version),
 	}
+}
+
+// nativeTestQuery is the cheapest query that proves a connection works.
+// Oracle before 23ai requires a FROM clause.
+func nativeTestQuery(kind models.ConnectionType) string {
+	if kind == models.ConnTypeOracle {
+		return "SELECT 1 FROM dual"
+	}
+	return "SELECT 1"
 }
 
 func refErrors(c, existing *models.Connection) string {

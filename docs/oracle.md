@@ -12,6 +12,7 @@ release target.
 [Why writes are refused](#why-writes-are-refused).
 
 - [Connection configuration](#connection-configuration)
+- [Reading through the native driver (experimental)](#reading-through-the-native-driver-experimental)
 - [Driver options](#driver-options)
 - [Python](#python)
 - [TypeScript](#typescript)
@@ -199,6 +200,17 @@ the mode (`append`, `overwrite`, `upsert`, or `create_table`):
 The message is `Oracle connections are read-only in this build`. Writing
 to Oracle needs its own statement vocabulary, tested against a server, the
 way the SQL Server and ClickHouse writers were.
+
+## Reading through the native driver (experimental)
+
+On a worker that can run native drivers, an Oracle connection can be pinned
+to the `orkidea` driver build. Its `source_db` reads then go through that
+driver instead of go-ora: decimals arrive exactly as decimal strings, and a
+`NUMBER` without a declared precision arrives as its exact decimal text. The
+connection's other nodes, and every write, are unchanged. The driver is
+experimental, and some settings described above are not available with it.
+See [Oracle connections](native-drivers.md#oracle-connections) for the
+differences and the settings it accepts.
 
 ## Testing the connection
 
