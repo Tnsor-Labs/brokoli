@@ -168,6 +168,10 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Dependency vulnerabilities** -- @hc12r. `andybalholm/brotli` v1.2.7
+  (GO-2026-6888) and `klauspost/compress` v1.20.2 (GO-2026-6865, a panic on
+  two-block frames).
+
 - **Pipeline code can no longer read the engine's environment** -- @hc12r.
   Code, bash and task nodes run as children of the engine under the same
   user. Their own environment was filtered, but `/proc/<engine>/environ`
