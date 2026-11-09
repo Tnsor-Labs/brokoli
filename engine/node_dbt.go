@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,6 +14,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/codeexec"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbtmanifest"
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 )
 
 // dbtCommands are the subcommands this node will invoke, and the ones the UI
@@ -60,6 +61,7 @@ func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionRes
 	// password. An explicit profiles_dir stays authoritative -- a project
 	// with a profile it already maintains should keep using it, and
 	// silently overriding that would be the wrong kind of helpful.
+	generatedProfile := "" // set when the profile below is generated for this run
 	if connID, _ := node.Config["conn_id"].(string); connID != "" && profiles == "" {
 		generated, err := r.generateDBTProfileForNode(node, connID)
 		if err != nil {
@@ -69,6 +71,7 @@ func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionRes
 		// holds a resolved credential.
 		defer generated.Cleanup()
 		profiles = generated.Dir
+		generatedProfile = generated.Dir
 		r.log(node.ID, models.LogLevelInfo,
 			"using a generated dbt profile for connection %q; the project's own profiles.yml is not consulted", connID)
 	}
@@ -119,6 +122,24 @@ func (r *Runner) runDBT(ctx context.Context, node models.Node) (nodeExecutionRes
 	if profiles != "" {
 		cmd.Env = append(cmd.Env, "DBT_PROFILES_DIR="+profiles)
 	}
+	// As the tenant's own user when BROKOLI_USER_CODE_UIDS is set: a dbt
+	// project runs its macros and Python models. It gets its own HOME and
+	// TMPDIR, and the profile generated for it; the project folder is used
+	// as it is, so dbt can write its target there only if that user may.
+	scratch, err := newUserCodeDir(ctx, "brokoli-dbt-")
+	if err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("dbt: %w", err)
+	}
+	defer scratch.remove()
+	if generatedProfile != "" {
+		if err := scratch.id.Own(generatedProfile); err != nil {
+			return nodeExecutionResult{}, fmt.Errorf("dbt: %w", err)
+		}
+	}
+	if err := scratch.handOver(); err != nil {
+		return nodeExecutionResult{}, fmt.Errorf("dbt: %w", err)
+	}
+	scratch.prepare(cmd)
 
 	start := time.Now()
 	output, err := cmd.CombinedOutput()
@@ -233,7 +254,14 @@ type dbtRunResults struct {
 // real deployment.
 func readDbtRunResults(projectDir string) (dbtRunResults, error) {
 	var out dbtRunResults
-	data, err := os.ReadFile(filepath.Join(projectDir, "target", "run_results.json"))
+	// Not followed out of the project: dbt may have run as the tenant's
+	// own user, whose project it is to write (runas.OpenIn).
+	f, err := runas.OpenIn(projectDir, filepath.Join("target", "run_results.json"))
+	if err != nil {
+		return out, err
+	}
+	data, err := io.ReadAll(f)
+	_ = f.Close()
 	if err != nil {
 		return out, err
 	}

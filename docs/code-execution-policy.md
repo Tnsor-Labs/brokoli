@@ -10,13 +10,14 @@ from outside the pipeline from becoming code.
 - [Disabling node types](#disabling-node-types)
 - [Run parameters never become code](#run-parameters-never-become-code)
 - [Run parameters in SQL](#run-parameters-in-sql)
+- [Running author code as its own user](#running-author-code-as-its-own-user)
 - [Limits that apply to author code](#limits-that-apply-to-author-code)
 
 ## Who can do what
 
 | Can | Permission | Effect |
 | --- | --- | --- |
-| Write code that runs on the worker | `pipelines.create` / `pipelines.edit` | Anything the worker's user can do. |
+| Write code that runs on the worker | `pipelines.create` / `pipelines.edit` | Anything the worker's user can do, or, with `BROKOLI_USER_CODE_UIDS`, anything its tenant's own user can do (see [below](#running-author-code-as-its-own-user)). |
 | Start a run and choose its parameters | `pipelines.run` (the built-in operator role has it without `pipelines.edit`) | Choose values, not code (see below). |
 | Start a run through a webhook | holding the pipeline's webhook token | Declared (typed) parameters only, which are never substituted as `${param.*}`. |
 | Change a workspace variable | `variables.edit` | Values substituted into node configs, including scripts (see below). |
@@ -115,6 +116,109 @@ A source query that uses a run parameter is not pushed down into a
 same-server write: the pushed-down statement could not carry the binding.
 The rows go through the engine instead, which is slower for large copies
 but gives the same result.
+
+## Running author code as its own user
+
+A server that runs as root (the usual case in a container) runs author code
+as root too, unless told otherwise. Root code can read every file on the
+worker, replace the server's own binary, and read, trace or signal any
+other process, including another tenant's code running at the same moment.
+On a server that runs pipelines for more than one organization or
+workspace, set:
+
+```sh
+BROKOLI_USER_CODE_UIDS=1000000000-1999999999
+```
+
+Every child that runs author code then starts as an unprivileged user of
+its own tenant instead of as the server's user:
+
+| Node | Runs as the tenant's user |
+| --- | --- |
+| `code` (Python, TypeScript), pooled, one-shot and streamed | yes |
+| `bash` | yes |
+| `task` (Python, Node, JVM) | yes |
+| `dbt` | yes |
+| plugin-backed nodes | no: plugins are installed by the operator and run as the server's user |
+
+### How a tenant's user is chosen
+
+The tenant is the org and workspace the run belongs to. Its user ID is a
+hash of that key into the configured range, so the same tenant always gets
+the same user, on every worker, without any state to keep. Two tenants get
+different users unless their keys collide in the range; with a billion IDs
+(the example above), a thousand tenants share one with a probability of
+about one in two thousand. Keep the range wide. It must start at 10000 or
+above, clear of system and login accounts. Work sent to a remote worker
+carries its tenant, so a remote worker separates tenants the same way.
+
+The users do not need to exist in `/etc/passwd`: a process can run as any
+numeric user ID. Tools that look the user up by name (`whoami`, `id -un`)
+report that it has none, which is expected.
+
+### What it changes for the code
+
+- It cannot read files only root may read, write the server's binary or
+  its data directory, or raise the resource limits it was given.
+- It cannot read another tenant's files or `/proc` entries, or signal
+  another tenant's processes. Code of the same tenant shares a user and can
+  see its own other processes, as before.
+- It gets a private folder per execution, owned by its user, as `HOME` and
+  `TMPDIR`. The folder holds its script and its input and is removed when
+  the execution ends. Warm code workers are kept per tenant and per user, so
+  a worker that ran one tenant's code never runs another's.
+- A bash node's `working_dir` and a dbt project folder are used as they
+  are, so they must be open to the tenant's user. When a bash
+  `working_dir` is not, the node fails with an error naming the directory
+  and the user, rather than starting somewhere else.
+- The server writes its own files private (umask 077) while the setting
+  is on, so files it leaves in a shared directory such as `/tmp` are not
+  readable by any tenant's code.
+
+The server reads back what the code wrote (output files, task results, dbt
+artifacts, compiled repositories) without following links out of the
+code's folder, and refuses anything that is not a regular file the code
+wrote itself. It reads more than the code may, so a link planted in place
+of an output would otherwise make it read a root-only file on the code's
+behalf.
+
+### What the server needs
+
+The setting only works if the server can start processes as other users
+and still manage them. It checks at startup and refuses to start, rather
+than run author code as root, when it cannot:
+
+- It runs as root with `CAP_CHOWN`, `CAP_DAC_OVERRIDE`, `CAP_FOWNER`,
+  `CAP_KILL`, `CAP_SETUID` and `CAP_SETGID` (all in a container's default
+  set), plus `CAP_SYS_RESOURCE`, which containers do not get by default
+  and which it needs to set the children's resource limits. In Kubernetes:
+
+  ```yaml
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      add: ["SYS_RESOURCE"]
+  ```
+
+  `allowPrivilegeEscalation: false` is not required, but recommended: it
+  stops author code from gaining privileges through a setuid program in the
+  image.
+- The host has `fs.protected_hardlinks=1` (the default on current Linux
+  distributions). Without it, author code could hard-link a root-only file
+  into its own folder.
+- It runs on Linux. Elsewhere the setting is refused.
+
+Unset, nothing changes: author code runs as the server's user, and a
+server running as root says so in its log at startup.
+
+### What it does not do
+
+It separates users; it is not a sandbox. Author code can still use the
+network the worker can reach, read files that are readable by everyone, and
+use as much CPU and memory as the limits below allow. Shared data
+directories (`BROKOLI_DATA_DIRS`) are read and written by file nodes as the
+server's user, and author code reaches them only where their permissions
+let any user in.
 
 ## Limits that apply to author code
 

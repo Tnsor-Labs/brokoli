@@ -2,11 +2,13 @@ package engine
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 )
 
 // Generating a dbt profile from a Brokoli connection (ADR-025 Phase 2,
@@ -281,7 +283,12 @@ func dbtProjectProfileName(projectDir string) (string, error) {
 	// naming a dbt project on this host, which is the whole point of the
 	// node; there is no untrusted request input on this path, and the file
 	// read is a fixed name inside it.
-	data, err := os.ReadFile(path)
+	f, err := runas.OpenIn(projectDir, "dbt_project.yml")
+	if err != nil {
+		return "", fmt.Errorf("read %s to find which profile the project wants: %w", path, err)
+	}
+	data, err := io.ReadAll(f)
+	_ = f.Close()
 	if err != nil {
 		return "", fmt.Errorf("read %s to find which profile the project wants: %w", path, err)
 	}

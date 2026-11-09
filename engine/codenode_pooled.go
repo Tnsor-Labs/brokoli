@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -93,9 +92,12 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	if err != nil {
 		return nil, "", err
 	}
-	tmpDir := os.TempDir()
-	outputPath := filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
-	defer os.Remove(outputPath)
+	dir, err := newUserCodeDir(parent, "brokoli-code-")
+	if err != nil {
+		return nil, "", err
+	}
+	defer dir.remove()
+	outputPath := dir.join("out.ndjson")
 
 	req := codeexec.Request{
 		Language:     language,
@@ -123,11 +125,10 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	// Same threshold, same staging as the legacy path: large inputs go
 	// by file reference, small ones ride the exec frame inline.
 	if input != nil && len(input.Rows) >= fileModeThreshold {
-		inputPath := filepath.Join(tmpDir, fmt.Sprintf("brokoli_in_%d.ndjson", time.Now().UnixNano()))
+		inputPath := dir.join("in.ndjson")
 		if err := WriteNDJSON(inputPath, input); err != nil {
 			return nil, "", fmt.Errorf("stage code input: %w", err)
 		}
-		defer os.Remove(inputPath)
 		req.InputNDJSON = inputPath
 		req.InputColumns = input.Columns
 	} else if input != nil {
@@ -137,6 +138,10 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 		}
 		req.InlineRows = rows
 		req.InputColumns = input.Columns
+	}
+
+	if err := handOverCodeFiles(dir, bundle); err != nil {
+		return nil, "", err
 	}
 
 	var stderrLines []string
@@ -150,7 +155,12 @@ func executeCodeNodePooled(parent context.Context, script string, bundle *codeBu
 	}
 
 	if res.Path != "" {
-		ds, readErr := ReadNDJSON(res.Path)
+		claimed, claimErr := dir.claim("out.ndjson")
+		if claimErr != nil {
+			return nil, stderrStr, fmt.Errorf("read code output: %w", claimErr)
+		}
+		defer os.Remove(claimed)
+		ds, readErr := ReadNDJSON(claimed)
 		if readErr != nil {
 			return nil, stderrStr, fmt.Errorf("read code output: %w", readErr)
 		}
@@ -177,7 +187,17 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle
 	if err != nil {
 		return nil, err
 	}
-	outputPath := filepath.Join(os.TempDir(), fmt.Sprintf("brokoli_out_%d.ndjson", time.Now().UnixNano()))
+	dir, err := newUserCodeDir(parent, "brokoli-code-")
+	if err != nil {
+		return nil, err
+	}
+	defer dir.remove()
+	outputPath := dir.join("out.ndjson")
+	if inputNDJSONPath != "" {
+		if inputNDJSONPath, err = dir.moveIn(inputNDJSONPath, "in.ndjson"); err != nil {
+			return nil, fmt.Errorf("stage code input: %w", err)
+		}
+	}
 
 	req := codeexec.Request{
 		Language:     language,
@@ -199,6 +219,9 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle
 		req.TaskBundleEntry = bundle.entry
 		req.TaskBundleFiles = bundle.files
 	}
+	if err := handOverCodeFiles(dir, bundle); err != nil {
+		return nil, err
+	}
 	var stderrLines []string
 	req.LogHandler = func(_, message string) { stderrLines = append(stderrLines, message) }
 	req.ProgressHandler = progress
@@ -206,16 +229,19 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle
 	res, err := codeexec.GlobalPool().Exec(parent, req)
 	stderrStr := strings.Join(stderrLines, "\n")
 	if err != nil {
-		_ = os.Remove(outputPath)
 		return nil, scriptErrorToEngineError(err, language, limits, stderrStr)
 	}
 	out := &codeStreamResult{stderr: stderrStr}
 	if res.Path != "" {
-		out.outputPath = res.Path
+		// Out of the folder before it is removed; the caller removes it.
+		claimed, claimErr := dir.claim("out.ndjson")
+		if claimErr != nil {
+			return nil, fmt.Errorf("read code output: %w", claimErr)
+		}
+		out.outputPath = claimed
 		out.columns = res.Columns
 		return out, nil
 	}
-	_ = os.Remove(outputPath)
 	// Inline (zero-emit) result: hand the caller the same JSON shape the
 	// legacy stdout fallback produced.
 	payload, marshalErr := json.Marshal(map[string]interface{}{
@@ -226,4 +252,15 @@ func executeCodeNodeStreamedPooled(parent context.Context, script string, bundle
 	}
 	out.stdout = payload
 	return out, nil
+}
+
+// handOverCodeFiles gives the execution's folder, and the bundle it runs,
+// to the user the code runs as.
+func handOverCodeFiles(dir *userCodeDir, bundle *codeBundleSpec) error {
+	if bundle != nil {
+		if err := dir.id.Own(bundle.dir); err != nil {
+			return err
+		}
+	}
+	return dir.handOver()
 }

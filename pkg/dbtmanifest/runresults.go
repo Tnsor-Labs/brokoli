@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"time"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/runas"
 )
 
 // Reading dbt's run_results.json, which is what makes model-level
@@ -232,7 +234,7 @@ func ParseRunResultsFile(path string) (*RunResults, error) {
 // directory -- reading it relative to the engine's cwd is the defect #348
 // shipped with.
 func ParseRunResultsForProject(projectDir string) (*RunResults, error) {
-	return ParseRunResultsFile(filepath.Join(projectDir, "target", "run_results.json"))
+	return parseInProject(projectDir, filepath.Join("target", "run_results.json"), "open dbt run results", ParseRunResults)
 }
 
 func durationFromSeconds(s float64) time.Duration {
@@ -240,4 +242,21 @@ func durationFromSeconds(s float64) time.Duration {
 		return 0
 	}
 	return time.Duration(s * float64(time.Second))
+}
+
+// parseInProject parses rel inside projectDir. A project dbt ran in as its
+// tenant's own user is that user's to write, so the file is opened without
+// following a link out of the project (runas.OpenIn).
+func parseInProject[T any](projectDir, rel, what string, parse func(io.Reader) (T, error)) (T, error) {
+	var zero T
+	f, err := runas.OpenIn(projectDir, rel)
+	if err != nil {
+		return zero, fmt.Errorf("%s: %w", what, err)
+	}
+	defer f.Close()
+	v, err := parse(f)
+	if err != nil {
+		return zero, fmt.Errorf("%s: %w", filepath.Join(projectDir, rel), err)
+	}
+	return v, nil
 }

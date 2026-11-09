@@ -24,6 +24,12 @@ can, run any installed program, and reach any network address the host can.
 The working directory and the filtered environment are conveniences. They are
 not a boundary: a command can `cd /`, read `/proc`, or open a socket.
 
+With `BROKOLI_USER_CODE_UIDS` set, the command runs as an unprivileged user of
+its tenant's own instead (see
+[Code execution policy](code-execution-policy.md#running-author-code-as-its-own-user)):
+it can then read and write only what that user may, and cannot reach another
+tenant's files or processes.
+
 In that respect a bash node is no different from a code node, which can do
 the same from Python or TypeScript. Only give pipeline-editing rights to people
 you would give a shell on the worker. On a server that runs pipelines for
@@ -100,6 +106,10 @@ message saying so. The shell's own expansions, such as `${HOME}` or
 With `working_dir`, the command starts in that directory. It is checked
 against the data directories when the node runs, on the worker, because the
 server that validates the pipeline may not have the same ones.
+
+With `BROKOLI_USER_CODE_UIDS` set, the directory must also be open to the
+tenant's user the command runs as. When it is not, the node fails with an
+error that names the directory and the user.
 
 Without it, each attempt gets a new private directory under the system
 temporary directory. It is removed when the attempt ends, whether it

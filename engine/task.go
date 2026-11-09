@@ -361,11 +361,14 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 		return nil, err
 	}
 
-	attemptDir, err := os.MkdirTemp("", "brokoli-task-attempt-")
+	// The attempt's folder, handed (with the bundle) to the user the task
+	// runs as just before it starts; see userCodeDir.
+	attempt, err := newUserCodeDir(ctx, "brokoli-task-attempt-")
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(attemptDir)
+	defer attempt.remove()
+	attemptDir := attempt.path
 
 	outputStagingDir := filepath.Join(attemptDir, "out")
 	if err := os.MkdirAll(outputStagingDir, 0o750); err != nil {
@@ -410,8 +413,14 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 		}
 	}
 
-	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, nodeInterface, inputPath, limits)
+	command, err := prepareTaskHarness(payload, manifest, bundleDir, attemptDir, invocationPath, kwargs, nodeInterface, inputPath, limits, attempt.id.Enabled())
 	if err != nil {
+		return nil, err
+	}
+	if err := attempt.id.Own(bundleDir); err != nil {
+		return nil, err
+	}
+	if err := attempt.handOver(); err != nil {
 		return nil, err
 	}
 
@@ -442,6 +451,7 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 	result, err := taskharness.Run(runCtx, start, taskharness.Options{
 		Command: command,
 		Env:     env,
+		Prepare: attempt.prepare,
 		Rlimits: proctree.Rlimits{
 			CPUSeconds:    uint64(max(limits.CPUSeconds, 0)),
 			FileSizeBytes: uint64(max(limits.FileSizeMB, 0)) * 1024 * 1024,
@@ -455,7 +465,12 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 		return nil, fmt.Errorf("task bundle %s: %s: %s", digest, result.Failure.Category, result.Failure.Message)
 	}
 
-	return readTaskResult(ctx, blobs, runID, resultPath, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
+	claimedResult, err := attempt.claim(filepath.Base(resultPath))
+	if err != nil {
+		return nil, fmt.Errorf("read task result: %w", err)
+	}
+	defer os.Remove(claimedResult)
+	return readTaskResult(ctx, blobs, runID, claimedResult, outputStagingDir, manifest.InterfaceDigest, nodeInterface)
 }
 
 // declaredOutputMediaType is the first media type the node's output port
@@ -547,7 +562,11 @@ var supportedTaskRuntimes = []string{taskbundlev2.RuntimePython, taskbundlev2.Ru
 // and protocol version"). Everything after it -- the JSONL protocol
 // exchange, resource ceilings, result reading, contract validation -- is
 // identical for every adapter.
-func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, inputPath string, limits codeexec.Limits) ([]string, error) {
+//
+// ownCopy is set when the task runs as another user than the server, which
+// cannot read the server's own harness cache: the JVM harness's classes
+// are then copied into the attempt folder.
+func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Manifest, bundleDir, attemptDir, invocationPath string, kwargs map[string]interface{}, nodeInterface map[string]interface{}, inputPath string, limits codeexec.Limits, ownCopy bool) ([]string, error) {
 	outputKind := declaredOutputKind(nodeInterface)
 	outputMediaType := declaredOutputMediaType(nodeInterface)
 	switch payload.Runtime {
@@ -612,6 +631,13 @@ func prepareTaskHarness(payload *taskbundlev2.Payload, manifest *taskbundlev2.Ma
 		classDir, err := jvmharness.Materialize(jvmharness.DefaultCacheDir(), tc)
 		if err != nil {
 			return nil, fmt.Errorf("materialize task harness: %w", err)
+		}
+		if ownCopy {
+			copied := filepath.Join(attemptDir, "jvmharness")
+			if err := copyRegularTree(classDir, copied); err != nil {
+				return nil, fmt.Errorf("copy task harness: %w", err)
+			}
+			classDir = copied
 		}
 		// Module/Symbol carry the fully-qualified class and its static
 		// method. No new manifest fields: the managed-language entrypoint
@@ -873,6 +899,7 @@ func ExecuteTaskWorkOrderWithArtifacts(ctx context.Context, s store.Store, artif
 	if wo == nil {
 		return nil, fmt.Errorf("execute task instance work order: nil work order")
 	}
+	ctx = workOrderTenant(ctx, wo)
 	digest, err := taskBundleV2Reference(wo.Config)
 	if err != nil {
 		return nil, fmt.Errorf("execute task instance work order: %w", err)

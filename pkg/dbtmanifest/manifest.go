@@ -242,7 +242,7 @@ func ParseFile(path string) (*Project, error) {
 
 // ParseProject reads the manifest from a dbt project's target directory.
 func ParseProject(projectDir string) (*Project, error) {
-	return ParseFile(filepath.Join(projectDir, "target", "manifest.json"))
+	return parseInProject(projectDir, filepath.Join("target", "manifest.json"), "open dbt manifest", Parse)
 }
 
 // Parse reads a manifest.

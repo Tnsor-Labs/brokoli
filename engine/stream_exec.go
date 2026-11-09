@@ -260,23 +260,29 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 		timeoutSec = 30
 	}
 
-	wrapperFile, werr := codeexec.WrapperPath()
+	dir, err := newUserCodeDir(parent, "brokoli-code-")
+	if err != nil {
+		return nil, err
+	}
+	// The output is claimed out of the folder before this returns; the
+	// caller consumes and removes it.
+	defer dir.remove()
+	wrapperFile, werr := dir.wrapper()
 	if werr != nil {
 		return nil, fmt.Errorf("materialize code wrapper: %w", werr)
 	}
-	tmpDir := os.TempDir()
-	nano := time.Now().UnixNano()
-	scriptFile := filepath.Join(tmpDir, fmt.Sprintf("brokoli_code_%d.py", nano))
+	scriptFile := dir.join("script.py")
 	if err := os.WriteFile(scriptFile, []byte(script), 0o600); err != nil {
 		return nil, fmt.Errorf("write script file: %w", err)
 	}
-	defer os.Remove(scriptFile)
+	if inputNDJSONPath != "" {
+		if inputNDJSONPath, err = dir.moveIn(inputNDJSONPath, "in.ndjson"); err != nil {
+			return nil, fmt.Errorf("stage code input: %w", err)
+		}
+	}
 
-	outputNDJSON := filepath.Join(tmpDir, fmt.Sprintf("brokoli_out_%d.ndjson", nano))
-	outputCols := filepath.Join(tmpDir, fmt.Sprintf("brokoli_cols_%d.json", nano))
-	// The output file is the caller's to consume and remove; only the
-	// sidecar is cleaned up here.
-	defer os.Remove(outputCols)
+	outputNDJSON := dir.join("out.ndjson")
+	outputCols := dir.join("cols.json")
 
 	configJSON, _ := json.Marshal(nodeConfig)
 	paramsJSON, _ := json.Marshal(runParams)
@@ -327,7 +333,11 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	if err := dir.handOver(); err != nil {
+		return nil, err
+	}
+	dir.prepare(cmd)
+	err = cmd.Run()
 
 	stderrStr := stderr.String()
 	var cleanStderr []string
@@ -341,11 +351,9 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 	stderrStr = strings.Join(cleanStderr, "\n")
 
 	if ctx.Err() == context.DeadlineExceeded {
-		_ = os.Remove(outputNDJSON)
 		return nil, fmt.Errorf("script timed out after %ds", timeoutSec)
 	}
 	if err != nil {
-		_ = os.Remove(outputNDJSON)
 		if ctx.Err() == nil {
 			if lerr := limitBreachError(err, stderrStr, limits); lerr != nil {
 				return nil, lerr
@@ -355,12 +363,21 @@ func executeCodeNodeStreamed(parent context.Context, script string, bundle *code
 	}
 
 	res := &codeStreamResult{stderr: stderrStr, stdout: stdout.Bytes()}
-	if _, statErr := os.Stat(outputNDJSON); statErr == nil {
-		res.outputPath = outputNDJSON
-		if colsData, readErr := os.ReadFile(outputCols); readErr == nil { // #nosec G304 -- both paths are os.TempDir joined with a process-generated nanosecond name, never caller input.
-			var cols []string
-			if json.Unmarshal(colsData, &cols) == nil {
-				res.columns = cols
+	// Through claim: the folder is the script's by now (see userCodeDir).
+	if _, statErr := os.Lstat(outputNDJSON); statErr == nil {
+		path, claimErr := dir.claim(filepath.Base(outputNDJSON))
+		if claimErr != nil {
+			return nil, fmt.Errorf("read code output: %w", claimErr)
+		}
+		res.outputPath = path
+		if _, colsErr := os.Lstat(outputCols); colsErr == nil {
+			if colsPath, claimErr := dir.claim(filepath.Base(outputCols)); claimErr == nil {
+				colsData, readErr := os.ReadFile(colsPath) // #nosec G304 -- claimed into the server's own folder and checked to be a regular file
+				_ = os.Remove(colsPath)
+				var cols []string
+				if readErr == nil && json.Unmarshal(colsData, &cols) == nil {
+					res.columns = cols
+				}
 			}
 		}
 	}
