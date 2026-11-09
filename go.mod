@@ -65,7 +65,7 @@ require (
 	github.com/Azure/azure-sdk-for-go/sdk/internal v1.12.0 // indirect
 	github.com/BurntSushi/toml v1.4.0 // indirect
 	github.com/ClickHouse/ch-go v0.74.0 // indirect
-	github.com/andybalholm/brotli v1.2.2 // indirect
+	github.com/andybalholm/brotli v1.2.7 // indirect
 	github.com/apache/arrow/go/v12 v12.0.1 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/apache/thrift v0.24.0 // indirect
@@ -126,7 +126,7 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/klauspost/asmfmt v1.3.2 // indirect
-	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/compress v1.20.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect

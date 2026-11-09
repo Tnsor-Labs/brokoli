@@ -59,8 +59,8 @@ github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c h1:RGWPOewvK
 github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c/go.mod h1:X0CRv0ky0k6m906ixxpzmDRLvX58TFUKS2eePweuyxk=
 github.com/Tnsor-Labs/actually-fine v0.0.0-20260926105218-6fe15d301f77 h1:OtyIOdN1R2J41JVfEysVH7jVVsHokOa0co9fW1eHaUA=
 github.com/Tnsor-Labs/actually-fine v0.0.0-20260926105218-6fe15d301f77/go.mod h1:UWETpSUGDck3vzWZ/ujvyMC1JFUj7tLaIem5DJ7UatE=
-github.com/andybalholm/brotli v1.2.2 h1:HzTuoo2ErYQqf5qvcJInB8uvqSVxRttzkFexPWtnceM=
-github.com/andybalholm/brotli v1.2.2/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
+github.com/andybalholm/brotli v1.2.7 h1:UgafRPGMam5ySHfRkhthMqOFA6IFoeF3D7mWIDLjG5A=
+github.com/andybalholm/brotli v1.2.7/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/apache/arrow-adbc/go/adbc v1.12.0 h1:1S7h8M12a+JZPuduuBo0kIQIRq+4heUikMnHBQ9seXE=
 github.com/apache/arrow-adbc/go/adbc v1.12.0/go.mod h1:0DDObL7BH/+LYhvrdnuRJ8YrYtbLJE+dam/jhPSmrYE=
 github.com/apache/arrow-go/v18 v18.7.0 h1:Vw/i+cJyebUofT7JlqFpe65LrmwxULn166jjwStM4HY=
@@ -259,8 +259,8 @@ github.com/johannesboyne/gofakes3 v1.2.0 h1:I9VEzPWvvAUAGzDlhYFoZjF0AXMlkcEyZlmB
 github.com/johannesboyne/gofakes3 v1.2.0/go.mod h1:UHhRZRod9rENGFrUWTYnQHZqlNgSmjOq8DaD/ATQYRM=
 github.com/klauspost/asmfmt v1.3.2 h1:4Ri7ox3EwapiOjCki+hw14RyKk201CN4rzyCJRFLpK4=
 github.com/klauspost/asmfmt v1.3.2/go.mod h1:AG8TuvYojzulgDAMCnYn50l/5QV3Bs/tp6j0HLHbNSE=
-github.com/klauspost/compress v1.19.2 h1:hMRETovs/pu/dVWN7zIT1PGG8t509MwT6bO7XSi26R8=
-github.com/klauspost/compress v1.19.2/go.mod h1:cwPg85FWrGar70rWktvGQj8/hthj3wpl0PGDogxkrSQ=
+github.com/klauspost/compress v1.20.2 h1:v5tiZvm1KGLyg5d5oXdXe3lsSPrbEUiKoXGia//I7Qo=
+github.com/klauspost/compress v1.20.2/go.mod h1:LUdAzn7YLVvxLpc7y3V1m40wESHTgc1422pwwBSKYuI=
 github.com/klauspost/cpuid/v2 v2.4.0 h1:S6Hrbc7+ywsr0r+RLapfGBHfyefhCTwEh3A0tV913Dw=
 github.com/klauspost/cpuid/v2 v2.4.0/go.mod h1:19jmZ9mjzoF//ddRSUsv0zfBTJWh3QJh9FNxZTMrGxU=
 github.com/kr/fs v0.1.0 h1:Jskdu9ieNAYnjxsi0LbQp1ulIKZV1LAFgK1tWhpZgl8=
