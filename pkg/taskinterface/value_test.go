@@ -257,3 +257,32 @@ func TestValidateValue_Int64_PlainFloatOnlyWithinTheSafeIntegerRange(t *testing.
 		}
 	}
 }
+
+// JSON does not tell 5 from 5.0, so a whole float64 value can arrive as an
+// int64 (task outputs keep integers exact; JavaScript and RFC 8785 write
+// 5.0 as 5). It is a float64 when a float64 holds it exactly, and bounds
+// apply to it as to the equal float64 (#983).
+func TestValidateValue_Float64_AcceptsAWholeNumberAFloat64HoldsExactly(t *testing.T) {
+	ty := mustType(t, `{"kind": "float64"}`)
+	for _, ok := range []interface{}{int64(5), int64(0), int64(-9007199254740992), int64(9007199254740992), 5, json.Number("5"), json.Number("0.25")} {
+		if err := ValidateValue(ok, ty, "$"); err != nil {
+			t.Errorf("%#v refused: %v", ok, err)
+		}
+	}
+	for _, refused := range []interface{}{int64(9007199254740993), int64(-9007199254740993), 9007199254740993, json.Number("9007199254740993")} {
+		err := ValidateValue(refused, ty, "$")
+		if err == nil || !strings.Contains(err.Error(), "a float64 cannot hold exactly") {
+			t.Errorf("%#v: err = %v, want it refused as not exactly a float64", refused, err)
+		}
+	}
+	if err := ValidateValue("5", ty, "$"); err == nil || !strings.Contains(err.Error(), "expected float64, got string") {
+		t.Errorf("a string: err = %v", err)
+	}
+	bounded := mustType(t, `{"kind": "float64", "minimum": 0, "maximum": 1}`)
+	if err := ValidateValue(int64(1), bounded, "$"); err != nil {
+		t.Errorf("int64 1 within [0,1] refused: %v", err)
+	}
+	if err := ValidateValue(int64(2), bounded, "$"); err == nil || !strings.Contains(err.Error(), "maximum") {
+		t.Errorf("int64 2 above maximum 1: err = %v", err)
+	}
+}

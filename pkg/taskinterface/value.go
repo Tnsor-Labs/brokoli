@@ -2,6 +2,7 @@ package taskinterface
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"math"
 	"math/big"
@@ -218,10 +219,43 @@ func checkNumericBounds(path string, n *big.Float, minimum, maximum, exclMin, ex
 	return nil
 }
 
+// maxExactFloat64Integer is 2^53: every whole number up to it in
+// magnitude is a float64 exactly.
+const maxExactFloat64Integer = 1 << 53
+
+// float64Of reads a float64 value. JSON does not tell 5 from 5.0, and a
+// decoder that keeps integers exact (common.NormalizeJSONNumbers, which
+// task outputs go through) hands a whole value over as an int64, as does
+// any writer that drops the ".0" (JavaScript, RFC 8785). Such a value is a
+// float64 when a float64 holds it exactly; beyond 2^53 it is not one.
+func float64Of(raw interface{}, path string) (float64, error) {
+	switch v := raw.(type) {
+	case float64:
+		return v, nil
+	case int64:
+		if v > maxExactFloat64Integer || v < -maxExactFloat64Integer {
+			return 0, fmt.Errorf("%s: %d is a whole number a float64 cannot hold exactly", path, v)
+		}
+		return float64(v), nil
+	case int:
+		return float64Of(int64(v), path)
+	case json.Number:
+		if i, err := v.Int64(); err == nil {
+			return float64Of(i, path)
+		}
+		f, err := v.Float64()
+		if err != nil {
+			return 0, fmt.Errorf("%s: %q is not a number", path, v.String())
+		}
+		return f, nil
+	}
+	return 0, fmt.Errorf("%s: expected float64, got %T", path, raw)
+}
+
 func validateFloat64Value(raw interface{}, t Type, path string) error {
-	f, ok := raw.(float64)
-	if !ok {
-		return fmt.Errorf("%s: expected float64, got %T", path, raw)
+	f, err := float64Of(raw, path)
+	if err != nil {
+		return err
 	}
 	check := func(label string, bound *float64, cmp func(f, b float64) bool) error {
 		if bound == nil {
