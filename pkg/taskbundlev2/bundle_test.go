@@ -323,3 +323,38 @@ func TestReadManifestRejectsNonGzip(t *testing.T) {
 		t.Fatal("expected non-gzip input to be rejected")
 	}
 }
+
+// A bundle builder that packages resources can put a user's own
+// manifest.json next to the real one. Extraction used to let the second
+// entry replace the first, so upload failed with an empty "format" error
+// while ReadManifest accepted the same bytes (#999). Extract now refuses
+// the archive and names the entry.
+func TestExtractRefusesASecondManifest(t *testing.T) {
+	m := validManifest()
+	m.Files = nil
+	raw, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, body := range [][]byte{raw, []byte(`{"name":"my web app"}`)} {
+		if err := tw.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o600, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write(body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = Extract(buf.Bytes(), t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), `more than one entry named "manifest.json"`) {
+		t.Fatalf("Extract = %v, want a refusal naming manifest.json", err)
+	}
+}

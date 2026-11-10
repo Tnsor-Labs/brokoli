@@ -298,6 +298,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Bundles and packages with two dots in a file name extract** -- @hc12r.
+  The archive extractor refused any entry whose name contained `..`, so a
+  task bundle with a resource such as `notes..txt` was refused on upload as
+  if it escaped the extraction root. Only a whole `..` path segment is
+  refused now, with absolute paths and volume names as before. It also let a
+  second entry with the name of an earlier file replace it on disk: a
+  bundle holding a user's own `manifest.json` next to the real one failed on
+  upload with an empty format error, and `ReadManifest` read the other one.
+  An archive with two entries for the same file is now refused with a
+  message naming it. This applies to task bundles, plugin packages and
+  driver archives. (#999)
 - **Cloning a pipeline created in the UI works** -- @hc12r. A UI-created
   pipeline gets a `pipeline_id` slug from its name, and the slug is unique
   within its workspace, so the clone, which copied the slug, failed with a

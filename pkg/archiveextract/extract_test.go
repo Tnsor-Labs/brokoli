@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -148,5 +149,62 @@ func TestExtractUnlimitedOptionsAcceptsALargeishFile(t *testing.T) {
 	dest := t.TempDir()
 	if err := Extract(bytes.NewReader(archive), dest, Options{}); err != nil {
 		t.Fatalf("expected zero-value Options to mean unlimited, got: %v", err)
+	}
+}
+
+// A ".." only escapes as a whole path segment. Names that merely contain
+// two dots are ordinary files and must extract (#999).
+func TestExtractAcceptsDotsInsideASegment(t *testing.T) {
+	names := []string{"notes..txt", "a/b..c/d", "a...b", "..hidden", "dir/x.."}
+	var entries []tarEntry
+	for _, n := range names {
+		entries = append(entries, tarEntry{name: n, body: n})
+	}
+	dest := t.TempDir()
+	if err := Extract(bytes.NewReader(buildArchive(t, entries)), dest, Options{}); err != nil {
+		t.Fatalf("Extract: %v", err)
+	}
+	for _, n := range names {
+		got, err := os.ReadFile(filepath.Join(dest, filepath.FromSlash(n)))
+		if err != nil || string(got) != n {
+			t.Errorf("%s = %q, %v", n, got, err)
+		}
+	}
+}
+
+func TestExtractRejectsEveryEscapingName(t *testing.T) {
+	for _, name := range []string{"..", "../x", "a/../../x", "a/..", "a/../b", `..\x`, `a\..\..\x`, "/etc/passwd", `\x`} {
+		t.Run(name, func(t *testing.T) {
+			dest := filepath.Join(t.TempDir(), "root")
+			err := Extract(bytes.NewReader(buildArchive(t, []tarEntry{{name: name, body: "gotcha"}})), dest, Options{})
+			if err == nil || !strings.Contains(err.Error(), "escapes the extraction root") {
+				t.Fatalf("Extract(%q) = %v, want an escape refusal", name, err)
+			}
+		})
+	}
+}
+
+// A second entry for the same file would replace the first on disk, so
+// two readers of one archive could see different contents (#999).
+func TestExtractRejectsADuplicateFile(t *testing.T) {
+	for _, pair := range [][2]string{{"a.txt", "a.txt"}, {"dir/a", "dir//a"}, {"a", "./a"}} {
+		t.Run(pair[0]+" then "+pair[1], func(t *testing.T) {
+			archive := buildArchive(t, []tarEntry{{name: pair[0], body: "first"}, {name: pair[1], body: "second"}})
+			err := Extract(bytes.NewReader(archive), t.TempDir(), Options{})
+			if err == nil || !strings.Contains(err.Error(), "more than one entry named") {
+				t.Fatalf("Extract = %v, want a duplicate refusal", err)
+			}
+		})
+	}
+}
+
+func TestExtractAcceptsARepeatedDirectory(t *testing.T) {
+	archive := buildArchive(t, []tarEntry{
+		{name: "dir", typeflg: tar.TypeDir},
+		{name: "dir", typeflg: tar.TypeDir},
+		{name: "dir/a", body: "x"},
+	})
+	if err := Extract(bytes.NewReader(archive), t.TempDir(), Options{}); err != nil {
+		t.Fatalf("Extract: %v", err)
 	}
 }
