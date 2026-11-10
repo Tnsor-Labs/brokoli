@@ -11,6 +11,55 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.22.0] - 2026-11-11
+
+A mapping and isolation release. `map` runs a node once per item of an
+upstream node, in parallel and with its own status per item, on code,
+`source_db`, `task` and `source_api` nodes, within limits an operator
+sets. Agents can message people, be messaged back, and subscribe to run
+events. User code can run as its tenant's own unprivileged user. And a
+long run of fixes keeps every change, token, variable, connection, log and
+count inside the workspace it belongs to.
+
+### Changed
+
+These can change what an existing deployment does.
+
+- **Changes are made only in the current workspace** -- @hc12r. Someone
+  in two workspaces could run, edit, delete or cancel the other
+  workspace's items by id. Reading by id still works in any workspace a
+  person belongs to; a change to an item of another workspace now answers
+  "not found". A workspace token now acts in its own workspace only.
+- **A run parameter of 2^53 or more sent as a plain JSON number is refused
+  with a 400** -- @hc12r. It used to run with a rounded number. Send it
+  tagged, `{"$bptd": "int64", "value": "..."}`, as the message says.
+- **Mapping has ceilings** -- @hc12r. An `expansion.max_instances` above
+  100000, accepted before, is refused unless `BROKOLI_MAP_MAX_ITEMS` is
+  raised, and a `map` block on a node type that does not support it is
+  refused at save instead of being ignored.
+- **dbt nodes get the filtered environment** -- @hc12r. A dbt project
+  that reads a server variable through `env_var()` needs it named in
+  `BROKOLI_DBT_PASS_ENV`.
+- **Task nodes get their pipeline's declared parameters** -- @hc12r. In a
+  pipeline that declares parameters, a task receives the resolved, typed
+  values, and the run's other string parameters are no longer passed to
+  it. A pipeline that declares none passes its string parameters as
+  before.
+- **The engine is non-dumpable** -- @hc12r. Its `/proc` files are readable
+  only with `CAP_SYS_PTRACE`, so a debugger or profiler attaching to the
+  server needs that capability.
+- **Testing a change request needs edit permission**, not only run
+  permission -- @hc12r.
+- **An archive with two entries for the same file is refused** -- @hc12r.
+  This applies to task bundles, plugin packages and driver archives.
+- **`GET /api/pipelines/summary` answers 500 when it cannot read** --
+  @hc12r. It answered `200 []`, so an outage looked like an empty
+  workspace.
+- **For Go embedders** -- @hc12r. `api.ValidateOrgAccess` and
+  `api.ValidateWorkspaceAccess` are removed; use `RequestScope(r)`.
+  `store.NewSQLiteStore` refuses `:memory:`, the empty path and in-memory
+  URIs; use a file.
+
 ### Added
 
 - **Task interface digests, with expected values for every SDK** --
