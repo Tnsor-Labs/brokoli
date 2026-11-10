@@ -117,20 +117,20 @@ func TestInstanceKeysFromAKeyColumn(t *testing.T) {
 // `map` on a type that cannot fan out is refused at validation, so the
 // node never runs once over its whole input as if the block were absent.
 func TestMapIsRefusedOnTypesThatCannotFanOut(t *testing.T) {
-	n := models.Node{ID: "src", Name: "Src", Type: models.NodeTypeSourceDB, Config: map[string]interface{}{
-		"uri": "sqlite://x.db", "query": "SELECT 1", "map": map[string]interface{}{"over": "up"},
+	n := models.Node{ID: "src", Name: "Src", Type: models.NodeTypeSinkFile, Config: map[string]interface{}{
+		"path": "/tmp/x.csv", "format": "csv", "map": map[string]interface{}{"over": "up"},
 	}}
-	if err := mapUnsupportedError(n); err == nil || !strings.Contains(err.Error(), "only code nodes can map") {
+	if err := mapUnsupportedError(n); err == nil || !strings.Contains(err.Error(), "code and source_db nodes can map") {
 		t.Fatalf("mapUnsupportedError = %v", err)
 	}
 	ve := &ValidationError{}
 	validateNodeConfig(n, ve)
-	if !strings.Contains(ve.Error(), "'map' is not supported on source_db nodes") {
+	if !strings.Contains(ve.Error(), "'map' is not supported on sink_file nodes") {
 		t.Fatalf("validation did not refuse map on source_db: %v", ve.Error())
 	}
 	r := &NodeValidationResult{}
 	validateNodeConfigDetailed(n, r)
-	if !strings.Contains(strings.Join(r.Errors, "\n"), "'map' is not supported on source_db nodes") {
+	if !strings.Contains(strings.Join(r.Errors, "\n"), "'map' is not supported on sink_file nodes") {
 		t.Fatalf("detailed validation did not refuse map on source_db: %v", r.Errors)
 	}
 	if mapUnsupportedError(mapNode(map[string]interface{}{"over": "up"})) != nil {

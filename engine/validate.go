@@ -222,7 +222,7 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot have outgoing edges", e.From, fromNode.Type))
 		}
 
-		if nodeIsSourceCapable(toNode, executors) {
+		if nodeIsSourceCapable(toNode, executors) && !mapOverEdge(toNode, e.From) {
 			ve.Add(fmt.Sprintf("Invalid connection: node %q (type %s) cannot receive incoming edges", e.To, toNode.Type))
 		}
 
@@ -505,6 +505,9 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		}
 		if getStr(n.Config, "query") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'query' is required for source_db", n.Name))
+		}
+		for _, msg := range mappedSourceErrors(n) {
+			ve.Add(msg)
 		}
 		for _, msg := range sqlParamPositionErrors(getStr(n.Config, "query")) {
 			ve.Add(fmt.Sprintf("Node %q: 'query': %s", n.Name, msg))
@@ -1045,6 +1048,7 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "query") == "" {
 			r.Errors = append(r.Errors, "'query' is required")
 		}
+		r.Errors = append(r.Errors, mappedSourceErrors(n)...)
 		r.Errors = append(r.Errors, sqlParamPositionErrors(getStr(n.Config, "query"))...)
 	case models.NodeTypeSQLGenerate:
 		if getStr(n.Config, "table") == "" {

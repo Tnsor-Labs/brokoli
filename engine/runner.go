@@ -1911,6 +1911,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	if r.dryRun {
 		node = previewNode(node, r.dryRunMaxRows)
 	}
+	// A mapped source runs once per item, ahead of the preview paths
+	// below, which read the node once.
+	if node.Type == models.NodeTypeSourceDB && nodeIsMapped(node) {
+		return r.runMappedSourceDB(ctx, node, edgeInputsByFrom, attempt)
+	}
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {

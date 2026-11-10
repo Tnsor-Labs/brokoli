@@ -27,6 +27,14 @@ reconstruct from git archaeology.
   at save and when the node runs, instead of being ignored. The
   `expansion` block runs as before. First phase of ADR-050 (#967); see
   `docs/mapping.md`.
+- **`map` on `source_db`: one query per item, values bound** -- @hc12r.
+  A `source_db` node with a `map` block runs its query once per item of
+  an upstream node, with `${item.column}` bound like `${param.x}`: as a
+  driver placeholder, never as SQL text, since item values come from data.
+  A missing or null column fails that item naming the reference instead of
+  binding an empty value, `${item...}` in a node without `map` is refused
+  at save, and the `map.over` edge is the one incoming edge a source may
+  have. A dry run maps the first 3 items. See `docs/mapping.md`.
 
 - **Oracle reads through a native driver, experimental** -- @hc12r. An
   Oracle connection can be pinned to the `orkidea` driver build

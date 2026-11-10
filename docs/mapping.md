@@ -1,14 +1,18 @@
 # Mapping a node over a collection
 
-A `code` node with a `map` block runs once per item of an upstream node's
-output, instead of once over the whole output. Each item runs as its own
+A `code` or `source_db` node with a `map` block runs once per item of an
+upstream node's output, instead of once. Each item runs as its own
 instance, with its own status, and the node's output is every item's
 output combined. This is the first part of
 [ADR-050](adr/050-dynamic-pipelines.md) (issue #967).
 
+For a `code` node each item is the script's input; for a `source_db`
+node, each item's values are bound into the query.
+
 - [When to map](#when-to-map)
 - [The `map` block](#the-map-block)
 - [What each item sees](#what-each-item-sees)
+- [Mapping a `source_db` node](#mapping-a-source_db-node)
 - [Keys](#keys)
 - [How many items run at once](#how-many-items-run-at-once)
 - [When an item fails](#when-an-item-fails)
@@ -78,6 +82,52 @@ output_data = {"columns": ["customer_id", "order_id", "total"], "rows": orders}
 The node's output is every item's `output_data` combined in item order, the
 same way a `union` node combines datasets. An empty upstream output is not
 an error: the node runs no items and outputs an empty dataset.
+
+## Mapping a `source_db` node
+
+A `source_db` node with a `map` block runs its query once per item, with
+`${item.column}` replaced by that item's value for the column. The edge
+from the node named in `over` is the one incoming edge a source node may
+have.
+
+```json
+{
+  "id": "orders",
+  "type": "source_db",
+  "config": {
+    "conn_id": "shop",
+    "query": "SELECT id, total FROM orders WHERE customer_id = ${item.customer_id} AND region = '${item.region}'",
+    "map": {"over": "customers", "key": "customer_id", "max_parallel": 4}
+  }
+}
+```
+
+Item values are **bound, never written into the SQL**, by the same rules as
+run parameters:
+
+- `'${item.x}'`, the whole of a string literal, is bound as text.
+- `${item.x}` on its own is bound as a number: a whole number as an
+  integer, a decimal as its exact text. A value that is not a number is
+  refused, naming the reference.
+- A reference anywhere else is refused: inside a longer literal
+  (`'%${item.x}%'`) when the pipeline is saved, and as a table or column
+  name (`"${item.x}"`, `` `${item.x}` ``) when the query runs.
+
+Item values come from data, and a value written into the SQL would let
+whatever wrote that data change the query. So a table or column name cannot
+come from an item. A pipeline that needs one read per table should be one
+pipeline per table, generated from the list of tables (ADR-050's
+generators, a later phase).
+
+When an item does not have the column a reference names, or has it as null,
+that item fails naming the reference, instead of running its query with an
+empty value. An `${item...}` reference in a node without a `map` block is
+refused when the pipeline is saved.
+
+A mapped `source_db` runs its items on the server or worker running the
+node; they are not dispatched to remote workers one by one. A connection
+that reads through a native ADBC driver refuses `${item...}` references,
+as it refuses run parameters. A dry run maps only the first 3 items.
 
 ## Keys
 
@@ -153,13 +203,13 @@ items, keys or another failure policy, write `map` instead.
 
 ## What cannot map yet
 
-Only `code` nodes can map in this version. A `map` block on any other node
-type is refused when the pipeline is saved, and again when the node runs,
+Only `code` and `source_db` nodes can map in this version. A `map` block on
+any other node type is refused when the pipeline is saved, and again when the node runs,
 so a pipeline stored before the check cannot run that node once over its
 whole input as if the block were not there:
 
 ```text
-node Orders (orders): 'map' is not supported on source_db nodes in this version; only code nodes can map
+node Out (out): 'map' is not supported on sink_file nodes in this version; code and source_db nodes can map
 ```
 
 Mapping other node types, groups of nodes and calls to other pipelines are
