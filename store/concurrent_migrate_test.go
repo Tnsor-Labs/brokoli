@@ -80,7 +80,10 @@ func TestConcurrentStartsMigrateTogether(t *testing.T) {
 	})
 
 	t.Run("upgrade that needs only new indexes", func(t *testing.T) {
-		first, err := NewPostgresStore(base)
+		// It drops indexes and schema_migrations, so on a database of its
+		// own, never the shared one.
+		upgraded := throwawayPostgresURL(t)
+		first, err := NewPostgresStore(upgraded)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -92,7 +95,7 @@ func TestConcurrentStartsMigrateTogether(t *testing.T) {
 			// An upgrade from before versioning: the baseline runs on every
 			// start at once and adds the missing indexes together.
 			forgetMigrations(t, first.db)
-			startTogether(t, base, round)
+			startTogether(t, upgraded, round)
 		}
 	})
 }

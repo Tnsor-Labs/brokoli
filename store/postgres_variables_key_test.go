@@ -15,9 +15,11 @@ import (
 // like openTestPostgresStore.
 func openVariablesKeyTestStore(t *testing.T) (*PostgresStore, string) {
 	t.Helper()
-	dsn := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
-	if dsn == "" {
-		dsn = "postgres://postgres@localhost:5432/brokoli_varpk_test?sslmode=disable"
+	// These tests rebuild the variables key and forget migrations, so on
+	// a database of their own, never the shared one.
+	dsn := "postgres://postgres@localhost:5432/brokoli_varpk_test?sslmode=disable"
+	if os.Getenv("BROKOLI_TEST_POSTGRES_URL") != "" {
+		dsn = throwawayPostgresURL(t)
 	}
 	probe, err := sql.Open("pgx", dsn)
 	if err != nil {

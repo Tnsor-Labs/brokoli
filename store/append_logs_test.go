@@ -68,5 +68,5 @@ func TestSQLiteAppendLogs(t *testing.T) {
 }
 
 func TestPostgresAppendLogs(t *testing.T) {
-	testAppendLogs(t, openTestPostgresStore(t))
+	testAppendLogs(t, openTestPostgresStoreOnly(t))
 }

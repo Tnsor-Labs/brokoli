@@ -65,7 +65,7 @@ func TestSQLiteRunCancelRequested(t *testing.T) {
 }
 
 func TestPostgresRunCancelRequested(t *testing.T) {
-	testRunCancelRequested(t, openTestPostgresStore(t))
+	testRunCancelRequested(t, openTestPostgresStoreOnly(t))
 }
 
 // What a running run pays per cancel check: GetRun loads every node run,

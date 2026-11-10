@@ -15,11 +15,13 @@ import (
 // live-or-skip convention as openTestPostgres (postgres_leader_test.go),
 // a dedicated database so this doesn't collide with the leader-election
 // tests' own schema/rows.
-func openTestPostgresStore(t *testing.T) *PostgresStore {
+func openTestPostgresStore(t *testing.T) (*PostgresStore, string) {
 	t.Helper()
-	dsn := os.Getenv("BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL")
-	if dsn == "" {
-		dsn = "postgres://postgres@localhost:5432/brokoli_execattempt_test?sslmode=disable"
+	// It rebuilds the execution_attempts key and forgets migrations, so on
+	// a database of its own, never the shared one.
+	dsn := "postgres://postgres@localhost:5432/brokoli_execattempt_test?sslmode=disable"
+	if os.Getenv("BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL") != "" {
+		dsn = throwawayPostgresURL(t, "BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL")
 	}
 	probe, err := sql.Open("pgx", dsn)
 	if err != nil {
@@ -38,7 +40,7 @@ func openTestPostgresStore(t *testing.T) *PostgresStore {
 		t.Fatalf("NewPostgresStore: %v", err)
 	}
 	t.Cleanup(func() { s.Close() })
-	return s
+	return s, dsn
 }
 
 // TestPostgresExecutionAttemptsPrimaryKeyWidenPreservesExistingRows is the
@@ -52,7 +54,7 @@ func openTestPostgresStore(t *testing.T) *PostgresStore {
 // accepts the second, distinct instance_key row the old constraint would
 // have collided on.
 func TestPostgresExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testing.T) {
-	s := openTestPostgresStore(t)
+	s, dsn := openTestPostgresStore(t)
 
 	// Clean slate for this specific run/pipeline pair — cascades to
 	// execution_attempts via its FK, so no leftover rows from a prior test
@@ -96,10 +98,6 @@ func TestPostgresExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testin
 		t.Fatalf("close pre-migration store: %v", err)
 	}
 
-	dsn := os.Getenv("BROKOLI_TEST_POSTGRES_EXECATTEMPT_URL")
-	if dsn == "" {
-		dsn = "postgres://postgres@localhost:5432/brokoli_execattempt_test?sslmode=disable"
-	}
 	migrated, err := NewPostgresStore(dsn)
 	if err != nil {
 		t.Fatalf("reopen after downgrading execution_attempts: %v", err)
@@ -136,4 +134,12 @@ func TestPostgresExecutionAttemptsPrimaryKeyWidenPreservesExistingRows(t *testin
 	if stillThere.ClaimedBy != "pre-existing-worker" {
 		t.Errorf("pre-migration row was disturbed by inserting a sibling instance row: %+v", stillThere)
 	}
+}
+
+// openTestPostgresStoreOnly is openTestPostgresStore for a test that does
+// not need to reopen the database.
+func openTestPostgresStoreOnly(t *testing.T) *PostgresStore {
+	t.Helper()
+	s, _ := openTestPostgresStore(t)
+	return s
 }
