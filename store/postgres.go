@@ -2126,9 +2126,13 @@ func (s *PostgresStore) GetNodePreview(runID, nodeID string) (NodePreview, error
 		return NodePreview{}, err
 	}
 	var columns []string
-	var rows []common.DataRow
-	json.Unmarshal(colJSON, &columns)
-	json.Unmarshal(rowJSON, &rows)
+	if err := json.Unmarshal(colJSON, &columns); err != nil {
+		return NodePreview{}, fmt.Errorf("unmarshal columns: %w", err)
+	}
+	rows, err := decodePreviewRows(rowJSON)
+	if err != nil {
+		return NodePreview{}, err
+	}
 	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncated}
 	if total.Valid {
 		n := total.Int64

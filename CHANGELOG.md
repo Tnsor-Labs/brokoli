@@ -364,6 +364,14 @@ reconstruct from git archaeology.
   bounds apply to it as to the equal `float64`. Beyond 2^53 it is refused.
   (#983)
 
+- **Node previews keep whole numbers above 2^53 exact** -- @hc12r.
+  `GET /api/runs/{id}/nodes/{node}/preview` decoded the stored rows into
+  float64 on both SQLite and Postgres, so `9007199254740993` came back as
+  `9007199254740992` although the preview was stored exactly. Integers now
+  read back as int64, as a run's own rows have them. The Postgres store also
+  ignored a preview it could not decode; it now reports the error. The UI
+  still rounds such values when it parses the response, tracked in #1001.
+  (#965)
 - **Task nodes receive their declared parameters, typed and with defaults**
   -- @hc12r. A `task` node's keyword arguments were the run's string
   parameters, locally and on remote workers, so a declared `float64`
