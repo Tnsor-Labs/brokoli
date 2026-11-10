@@ -614,7 +614,8 @@ func significantDigits(text string) int {
 	return len(digits)
 }
 
-// RedactDSNError removes the password in dsn from err's text. Some drivers
+// RedactDSNError removes the password in dsn from err's text (see
+// replaceSecretToken for where a bare password counts). Some drivers
 // quote the whole DSN when they cannot parse it -- go-ora reports a bad host
 // as `parse "oracle://user:secret@bad host:1521/x": invalid character` --
 // and the error reaches the run log. Both the URL-encoded and the decoded
@@ -638,9 +639,13 @@ func RedactDSNError(err error, dsn string) error {
 	}
 	encoded := rest[colon+1 : at]
 	msg := err.Error()
-	redacted := strings.ReplaceAll(msg, encoded, "xxxxx")
+	// Replaced only as a token of its own, so a short password does not
+	// also remove the letters it shares with other words (#780). Where a
+	// driver quotes its DSN, the password sits between ":" and "@", so it is
+	// still removed there and the host stays readable.
+	redacted := replaceSecretToken(msg, encoded, "xxxxx")
 	if decoded, derr := url.PathUnescape(encoded); derr == nil && decoded != "" {
-		redacted = strings.ReplaceAll(redacted, decoded, "xxxxx")
+		redacted = replaceSecretToken(redacted, decoded, "xxxxx")
 	}
 	if redacted == msg {
 		return err

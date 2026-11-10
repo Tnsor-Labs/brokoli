@@ -92,11 +92,12 @@ func redactSecret(msg, dsn, password string) string {
 	if password != "" {
 		// As a URI's userinfo spells it (BuildURI's form), then as a query
 		// and a path would.
+		// Each only as a token of its own, so a short password does not
+		// also remove the letters it shares with other words (#780).
 		userinfo := strings.TrimPrefix(url.UserPassword("", password).String(), ":")
-		msg = strings.ReplaceAll(msg, userinfo, "[redacted]")
-		msg = strings.ReplaceAll(msg, url.QueryEscape(password), "[redacted]")
-		msg = strings.ReplaceAll(msg, url.PathEscape(password), "[redacted]")
-		msg = strings.ReplaceAll(msg, password, "[redacted]")
+		for _, form := range []string{userinfo, url.QueryEscape(password), url.PathEscape(password), password} {
+			msg = replaceSecretToken(msg, form, "[redacted]")
+		}
 	}
 	return msg
 }
