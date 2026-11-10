@@ -293,8 +293,9 @@ reconstruct from git archaeology.
   key order, with Go's escaping, and writes directories before
   `manifest.json` and the files. A second builder written from the spec
   could never match core's bundles. The spec now states the exact archive:
-  the gzip header, ustar headers, entry order and modes, the manifest's key
-  order and escaping. It also says that two builders match on the
+  the gzip header, the tar headers (including how a path over 100 bytes or
+  outside ASCII is written: split into ustar's prefix field, or behind a PAX
+  header), entry order and modes, the manifest's key order and escaping. It also says that two builders match on the
   uncompressed tar, not on the deflate bytes. Tests pin every rule. Nothing
   about the bundles core writes changes. (#986)
 

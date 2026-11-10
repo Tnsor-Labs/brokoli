@@ -27,9 +27,11 @@ The bundle digest is the SHA-256 of the archive's own bytes, so it
 reproduces for one builder and compressor. Parity between two builders is
 defined on the uncompressed tar stream, which must be byte-identical.
 
-**Tar stream.** POSIX ustar headers (`ustar\0` magic, version `00`),
-modification time 0 (the Unix epoch), uid and gid 0, empty user and group
-names, and entries in exactly this order:
+**Tar stream.** Headers carry the `ustar\0` magic and version `00`,
+modification time 0 (the Unix epoch), uid and gid 0, and empty user and
+group names. They are written as Go's `archive/tar` writes them with the
+format left unset (as of Go 1.26), which depends on the path (below).
+Entries come in exactly this order:
 
 1. a directory entry for every directory that contains a file, at any
    depth, in byte order of its slash path, written without a trailing
@@ -37,6 +39,39 @@ names, and entries in exactly this order:
 2. `manifest.json`, mode 0600;
 3. every file, in byte order of its slash path (byte order of UTF-8 is
    code-point order, never locale-sensitive), mode 0600.
+
+**How a path is written.** Each entry's path takes the first of these that
+applies:
+
+1. **It fits.** An ASCII path of at most 100 bytes goes in the 100-byte
+   name field.
+2. **It splits.** An ASCII path over 100 bytes is split at the last `/`
+   within its first 156 bytes, if the part before that `/` is at most 155
+   bytes and the part after it is 1 to 100 bytes. The part before goes in
+   the 155-byte prefix field and the part after in the name field, with
+   the `/` itself in neither.
+3. **Otherwise, a PAX header.** This applies to a non-ASCII path, or one
+   that does not split. The entry is preceded by an extended header entry
+   (typeflag `x`):
+   - Its name is the entry's directory, then `PaxHeaders.0/`, then the
+     entry's base name, for example
+     `com/example/ladunki/PaxHeaders.0/Magazyn$adunek.class`. Characters
+     outside ASCII, and NUL, are dropped, and the result is cut to 100
+     bytes.
+   - Its mode, uid, gid and mtime fields are zero, and its devmajor and
+     devminor fields are NUL-filled.
+   - Its data is one record, `<n> path=<the full UTF-8 path>\n`, where
+     `<n>` is the decimal byte length of the whole record, its own digits
+     included.
+
+   The entry's own header follows, with its name field holding the path in
+   the same ASCII-only, 100-byte form, and an empty prefix field.
+
+In every case, padding fills the rest of each header and data block with
+NUL bytes, to 512 bytes. The JVM SDK's reference bundles
+(`core-contract/bundles` in brokoli-jvm) pin all three cases as
+`brokoli bundle jvm` writes them, and `pkg/taskbundlev2`'s tests pin them
+here.
 
 **`manifest.json`** is compact JSON: no whitespace between tokens and no
 trailing newline. Each object's keys are written in this order, and an
