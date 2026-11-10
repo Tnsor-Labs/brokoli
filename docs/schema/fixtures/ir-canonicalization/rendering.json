@@ -1,0 +1,180 @@
+{
+  "description": "Cross-SDK canonical rendering vectors (ir-canonicalization.md section 2). Each case's input is JSON text; parsing it with the SDK's own JSON parser and rendering it canonically must give exactly canonical. Number cases are RFC 8785 Appendix B and values on which Python's json.dumps differs from JavaScript and Go. Float inputs carry a fraction or exponent so every parser reads them as floats.",
+  "cases": [
+    {
+      "name": "rfc8785 0000000000000000",
+      "input": "0.0",
+      "canonical": "0\n"
+    },
+    {
+      "name": "rfc8785 8000000000000000",
+      "input": "-0.0",
+      "canonical": "0\n"
+    },
+    {
+      "name": "rfc8785 0000000000000001",
+      "input": "5e-324",
+      "canonical": "5e-324\n"
+    },
+    {
+      "name": "rfc8785 8000000000000001",
+      "input": "-5e-324",
+      "canonical": "-5e-324\n"
+    },
+    {
+      "name": "rfc8785 7fefffffffffffff",
+      "input": "1.7976931348623157e+308",
+      "canonical": "1.7976931348623157e+308\n"
+    },
+    {
+      "name": "rfc8785 ffefffffffffffff",
+      "input": "-1.7976931348623157e+308",
+      "canonical": "-1.7976931348623157e+308\n"
+    },
+    {
+      "name": "rfc8785 4340000000000000",
+      "input": "9007199254740992.0",
+      "canonical": "9007199254740992\n"
+    },
+    {
+      "name": "rfc8785 c340000000000000",
+      "input": "-9007199254740992.0",
+      "canonical": "-9007199254740992\n"
+    },
+    {
+      "name": "rfc8785 4430000000000000",
+      "input": "295147905179352830000.0",
+      "canonical": "295147905179352830000\n"
+    },
+    {
+      "name": "rfc8785 44b52d02c7e14af5",
+      "input": "9.999999999999997e+22",
+      "canonical": "9.999999999999997e+22\n"
+    },
+    {
+      "name": "rfc8785 44b52d02c7e14af6",
+      "input": "1e+23",
+      "canonical": "1e+23\n"
+    },
+    {
+      "name": "rfc8785 44b52d02c7e14af7",
+      "input": "1.0000000000000001e+23",
+      "canonical": "1.0000000000000001e+23\n"
+    },
+    {
+      "name": "rfc8785 444b1ae4d6e2ef4e",
+      "input": "999999999999999700000.0",
+      "canonical": "999999999999999700000\n"
+    },
+    {
+      "name": "rfc8785 444b1ae4d6e2ef4f",
+      "input": "999999999999999900000.0",
+      "canonical": "999999999999999900000\n"
+    },
+    {
+      "name": "rfc8785 444b1ae4d6e2ef50",
+      "input": "1e+21",
+      "canonical": "1e+21\n"
+    },
+    {
+      "name": "rfc8785 3eb0c6f7a0b5ed8c",
+      "input": "9.999999999999997e-7",
+      "canonical": "9.999999999999997e-7\n"
+    },
+    {
+      "name": "rfc8785 3eb0c6f7a0b5ed8d",
+      "input": "0.000001",
+      "canonical": "0.000001\n"
+    },
+    {
+      "name": "rfc8785 41b3de4355555553",
+      "input": "333333333.3333332",
+      "canonical": "333333333.3333332\n"
+    },
+    {
+      "name": "rfc8785 41b3de4355555554",
+      "input": "333333333.33333325",
+      "canonical": "333333333.33333325\n"
+    },
+    {
+      "name": "rfc8785 41b3de4355555555",
+      "input": "333333333.3333333",
+      "canonical": "333333333.3333333\n"
+    },
+    {
+      "name": "rfc8785 41b3de4355555556",
+      "input": "333333333.3333334",
+      "canonical": "333333333.3333334\n"
+    },
+    {
+      "name": "rfc8785 41b3de4355555557",
+      "input": "333333333.33333343",
+      "canonical": "333333333.33333343\n"
+    },
+    {
+      "name": "rfc8785 becbf647612f3696",
+      "input": "-0.0000033333333333333333",
+      "canonical": "-0.0000033333333333333333\n"
+    },
+    {
+      "name": "rfc8785 43143ff3c1cb0959",
+      "input": "1424953923781206.2",
+      "canonical": "1424953923781206.2\n"
+    },
+    {
+      "name": "float 0.00001",
+      "input": "0.00001",
+      "canonical": "0.00001\n"
+    },
+    {
+      "name": "float 123456789012345680000.0",
+      "input": "123456789012345680000.0",
+      "canonical": "123456789012345680000\n"
+    },
+    {
+      "name": "float 1e-7",
+      "input": "1e-7",
+      "canonical": "1e-7\n"
+    },
+    {
+      "name": "float 0.5",
+      "input": "0.5",
+      "canonical": "0.5\n"
+    },
+    {
+      "name": "float 5.0",
+      "input": "5.0",
+      "canonical": "5\n"
+    },
+    {
+      "name": "integer stays an integer",
+      "input": "42",
+      "canonical": "42\n"
+    },
+    {
+      "name": "nested floats and indentation",
+      "input": "{\"b\": [1e-7, 0.5], \"a\": {\"z\": 1e21, \"y\": 5.0}}",
+      "canonical": "{\n  \"a\": {\n    \"y\": 5,\n    \"z\": 1e+21\n  },\n  \"b\": [\n    1e-7,\n    0.5\n  ]\n}\n"
+    },
+    {
+      "name": "integer-like keys sort as text, by code point",
+      "input": "{\"a\": 3, \"10\": 1, \"B\": 4, \"9\": 2}",
+      "canonical": "{\n  \"10\": 1,\n  \"9\": 2,\n  \"B\": 4,\n  \"a\": 3\n}\n"
+    },
+    {
+      "name": "keys sort by code point, not UTF-16 unit",
+      "input": "{\"\\ud83d\\ude00\": 1, \"\\ufb33\": 2}",
+      "canonical": "{\n  \"דּ\": 2,\n  \"😀\": 1\n}\n"
+    },
+    {
+      "name": "empty containers",
+      "input": "{\"b\": {}, \"a\": []}",
+      "canonical": "{\n  \"a\": [],\n  \"b\": {}\n}\n"
+    },
+    {
+      "name": "string escapes",
+      "input": "{\"s\": \"line\\nquote\\\"tab\\t\\u0001 caf\\u00e9\"}",
+      "canonical": "{\n  \"s\": \"line\\nquote\\\"tab\\t\\u0001 café\"\n}\n"
+    }
+  ]
+}

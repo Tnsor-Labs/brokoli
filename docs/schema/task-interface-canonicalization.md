@@ -83,8 +83,10 @@ implementation is checked against:
    scale may be semantic). Negative zero normalizes to positive zero
    with the same scale.
 5. `float64` is finite and hashes using the shortest round-trippable
-   IEEE-754 representation; `-0` normalizes to `0`. NaN and infinities
-   are not portable v1 values.
+   IEEE-754 representation, laid out as RFC 8785 section 3.2.2.3 says
+   (ECMAScript's Number-to-string, as in `ir-canonicalization.md`
+   section 2): `0.00001`, `1e-7`, `1e+21`, a whole value as `5`. `-0`
+   normalizes to `0`. NaN and infinities are not portable v1 values.
 6. `bytes` uses padded RFC 4648 standard base64 — never URL-safe, never
    unpadded.
 7. `timestamp` uses UTC `Z`, a four-digit year, and zero, three, six, or

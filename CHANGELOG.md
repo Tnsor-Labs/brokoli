@@ -13,6 +13,18 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **One rule for numbers and key order in canonical IR** -- @hc12r.
+  `ir-canonicalization.md` claimed Python's `json.dumps` and JavaScript's
+  `JSON.stringify` write the same bytes. They do not: Python writes `1e-05`
+  and `1.2345678901234568e+20` where JavaScript and Go write `0.00001` and
+  `123456789012345680000`, and `JSON.stringify` of a key-sorted object puts
+  integer-like keys first. So the two SDKs could compute different digests
+  for the same pipeline. Section 2 now specifies RFC 8785's number layout
+  and code-point key order for every key, and
+  `docs/schema/fixtures/ir-canonicalization/rendering.json` holds 35
+  cross-SDK vectors that both SDKs test byte for byte.
+  `task-interface-canonicalization.md` names the same number layout. (#982)
+
 - **`map`: a code node runs once per item, in parallel** -- @hc12r. A
   `code` node with a `map` block (`over`, `key`, `max_items`,
   `max_parallel`, `on_item_failure`) runs once per row of an upstream
