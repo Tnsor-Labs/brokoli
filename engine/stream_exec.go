@@ -571,6 +571,11 @@ func (r *Runner) streamEligible(node models.Node, outputs *nodeOutputs) bool {
 	if r.dryRun || !outputs.spillEnabled() || outputs.streamThreshold <= 0 {
 		return false
 	}
+	// A node with a `map` block takes the batch path, where runNodeLogic
+	// either fans it out or refuses a type that cannot map.
+	if _, mapped := node.Config["map"]; mapped {
+		return false
+	}
 	switch node.Type {
 	case models.NodeTypeSourceDB:
 		// A source has no input to stream FROM; the win is its output

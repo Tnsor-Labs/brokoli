@@ -5,6 +5,7 @@ package engine
 // its explanations are truthful before execution.
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
@@ -96,8 +97,14 @@ func TestPlanExpansionIsRuntimeResolvedWorkUnitRetry(t *testing.T) {
 		u.StaticInstanceCount != 0 || u.RetryScope != models.RetryScopeWorkUnit {
 		t.Fatalf("expansion shape wrong: %+v", u)
 	}
-	if u.InstanceKeyTemplate != "fan[<item>]" || u.MaxConcurrency != 8 {
+	// max_instances caps how many items there may be, not how many run at
+	// once: an `expansion` block runs local items one at a time, so the
+	// plan says 1, as the runtime does.
+	if u.InstanceKeyTemplate != "fan[<item>]" || u.MaxConcurrency != 1 {
 		t.Fatalf("expansion key/concurrency wrong: %+v", u)
+	}
+	if !strings.Contains(u.Explain, "at most 8 item(s)") {
+		t.Fatalf("explanation does not state the item limit: %q", u.Explain)
 	}
 	if plan.DynamicNodes != 1 {
 		t.Fatalf("dynamic nodes=%d, want 1", plan.DynamicNodes)
@@ -154,4 +161,29 @@ func mustPlan(t *testing.T, p *models.Pipeline) *models.PhysicalPlan {
 		t.Fatal(err)
 	}
 	return plan
+}
+
+// A map block's plan states its key column, its parallelism and its
+// failure policy, read from the same parsed config the runtime uses.
+func TestPlanMapStatesKeyParallelismAndPolicy(t *testing.T) {
+	p := &models.Pipeline{PipelineID: "map", Nodes: []models.Node{
+		node("src", "source_file", map[string]interface{}{"path": "/a"}),
+		node("fan", "code", map[string]interface{}{
+			"script": "x",
+			"map": map[string]interface{}{
+				"over": "src", "key": "table_name", "max_items": float64(50),
+				"max_parallel": float64(6), "on_item_failure": "skip",
+			},
+		}),
+	}, Edges: []models.Edge{{From: "src", To: "fan"}}}
+	plan, _ := PlanPipeline(p)
+	u := unitByNode(plan, "fan")
+	if u.Kind != models.WorkUnitExpansion || u.InstanceKeyTemplate != "fan[<table_name>]" || u.MaxConcurrency != 6 {
+		t.Fatalf("map unit wrong: %+v", u)
+	}
+	for _, want := range []string{"at most 50 item(s)", "6 at a time", "a failed item: skip"} {
+		if !strings.Contains(u.Explain, want) {
+			t.Fatalf("explanation %q does not contain %q", u.Explain, want)
+		}
+	}
 }
