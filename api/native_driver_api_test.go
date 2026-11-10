@@ -372,3 +372,14 @@ func TestDriverListingsSayWhoCanUseEachDriver(t *testing.T) {
 		t.Fatalf("catalog listing lacks usable_by: %s", rec.Body.String())
 	}
 }
+
+// Oracle before 23ai has no SELECT without FROM, so testing a pinned Oracle
+// connection with "SELECT 1" would fail on every 19c server.
+func TestNativeTestQueryOracleHasFromClause(t *testing.T) {
+	if got := nativeTestQuery(models.ConnTypeOracle); got != "SELECT 1 FROM dual" {
+		t.Fatalf("Oracle test query = %q", got)
+	}
+	if got := nativeTestQuery(models.ConnTypePostgres); got != "SELECT 1" {
+		t.Fatalf("PostgreSQL test query = %q", got)
+	}
+}

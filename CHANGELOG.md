@@ -13,6 +13,27 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Oracle reads through a native driver, experimental** -- @hc12r. An
+  Oracle connection can be pinned to the `orkidea` driver build
+  (Orkidea, an ADBC driver for Oracle that needs no Oracle Instant
+  Client), and its `source_db` reads then return decimals exactly, as
+  decimal strings, where the built-in driver turns them into doubles when
+  that is exact. A `NUMBER` without a declared precision is read as its
+  exact decimal text: the driver's own default, a 64-bit float, rounds
+  past about 15 digits, and the built-in path never rounds. Saving a
+  pinned connection refuses the settings the native driver cannot honour
+  yet (SID, TLS and native encryption options, and driver options that
+  name another server, a login or a file on the worker) instead of
+  connecting without them. Writes to Oracle stay refused on both paths.
+  Testing a pinned Oracle connection runs `SELECT 1 FROM dual`, since
+  Oracle before 23ai has no `SELECT` without `FROM`. See
+  `docs/native-drivers.md`, "Oracle connections".
+- **`experimental` driver lifecycle** -- @hc12r. A catalog entry can now
+  be marked `experimental`: it installs and runs like a supported one and
+  is shown as experimental on the Drivers page. A server older than this
+  change refuses a whole catalog that contains the value, so a catalog
+  should list an experimental release only once the servers that read it
+  have this change.
 - **User code can run as its tenant's own unprivileged user** -- @hc12r.
   Set `BROKOLI_USER_CODE_UIDS` to a range of user IDs (for example
   `1000000000-1999999999`) and every child that runs user code (code nodes

@@ -80,6 +80,26 @@ func TestFetchIndexIgnoresUnknownFields(t *testing.T) {
 	}
 }
 
+// An experimental release is listed and installable like a supported one;
+// a lifecycle no server knows is still refused.
+func TestFetchIndexAcceptsExperimentalLifecycle(t *testing.T) {
+	entry := func(lifecycle string) string {
+		return `{"version":1,"drivers":[{"name":"orkidea","version":"0.1.0","os":"linux","arch":"amd64","lifecycle":"` + lifecycle + `","archive_url":"https://example.invalid/a.tgz","sha256":"` + strings.Repeat("a", 64) + `"}]}`
+	}
+	serveIndex(t, entry("experimental"))
+	idx, err := FetchIndex(context.Background(), IndexURL())
+	if err != nil {
+		t.Fatalf("FetchIndex refused an experimental release: %v", err)
+	}
+	if got := idx.Select("orkidea", ""); got == nil || !got.Installable() {
+		t.Fatalf("Select() = %+v, want the experimental release, installable", got)
+	}
+	serveIndex(t, entry("beta"))
+	if _, err := FetchIndex(context.Background(), IndexURL()); !errors.Is(err, ErrCatalogUnavailable) {
+		t.Fatalf("FetchIndex error = %v, want an unknown lifecycle refused", err)
+	}
+}
+
 func TestFetchIndexRefusesUnverifiableDocumentationURL(t *testing.T) {
 	serveIndex(t, `{"version":1,"drivers":[{"name":"flightsql","version":"1.0.0","os":"linux","arch":"amd64","archive_url":"https://example.invalid/a.tgz","docs_url":"http://example.invalid/README.md","sha256":"`+strings.Repeat("a", 64)+`"}]}`)
 	if _, err := FetchIndex(context.Background(), IndexURL()); !errors.Is(err, ErrCatalogUnavailable) {
