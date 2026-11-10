@@ -210,6 +210,8 @@ const executionProfile = "trusted@1"
 func resolveExecutionRecord(s store.Store, runID, nodeID, digest string, manifest *taskbundlev2.Manifest) (*taskbundlev2.Payload, *taskruntime.ResolvedExecutionRecord, error) {
 	rs, ok := s.(store.ResolvedExecutionRecordStore)
 	if !ok {
+		announceFallbackOnce(fmt.Sprintf("resolved-execution-record:%T", s),
+			"task nodes: store %T cannot pin a resolved execution record, so each attempt selects its payload afresh and a retry may run a different payload than the attempt it replaces", s)
 		payload, err := taskbundlev2.SelectPayload(manifest, supportedTaskRuntimes)
 		if err != nil {
 			return nil, nil, fmt.Errorf("task bundle %s: %w", digest, err)
@@ -876,14 +878,19 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 func (r *Runner) taskJobCapabilities(digest string) []string {
 	sb, ok := r.store.(store.TaskBundleV2Store)
 	if !ok {
+		announceFallbackOnce(fmt.Sprintf("task-job-capabilities-store:%T", r.store),
+			"task nodes: store %T cannot read task bundles, so remote task jobs carry only %q and any worker may claim one whatever runtimes it has", r.store, taskRuntimeCapability)
 		return []string{taskRuntimeCapability}
 	}
 	archive, err := sb.GetTaskBundleV2(r.pipe.OrgID, digest)
 	if err != nil {
+		fallbackLogf("task nodes: could not read task bundle %s to tag its job with the runtimes it needs, so it carries only %q: %v", digest, taskRuntimeCapability, err)
 		return []string{taskRuntimeCapability}
 	}
 	manifest, err := taskbundlev2.ReadManifest(archive)
 	if err != nil {
+		announceFallbackOnce("task-job-capabilities-manifest:"+digest,
+			"task nodes: task bundle %s has no readable manifest, so its job carries only %q and any worker may claim it: %v", digest, taskRuntimeCapability, err)
 		return []string{taskRuntimeCapability}
 	}
 	return taskRuntimeCapabilities(manifest)
