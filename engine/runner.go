@@ -1902,6 +1902,12 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	if err := nodeTypeDisabledError(node.Type); err != nil {
 		return nodeExecutionResult{}, err
 	}
+	// Refused here as well as at validation: a pipeline stored before the
+	// check, or by another route, must not run its node once over the
+	// whole input as if the block were not there.
+	if err := mapUnsupportedError(node); err != nil {
+		return nodeExecutionResult{}, err
+	}
 	if r.dryRun {
 		node = previewNode(node, r.dryRunMaxRows)
 	}

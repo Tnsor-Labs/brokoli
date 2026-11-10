@@ -63,7 +63,9 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -145,10 +147,46 @@ type funcRef struct {
 	Doc  string
 }
 
-// expansionConfig is the parsed form of a code node's `expansion` config
-// block, as compiled by brokoli-sdk's _TaskWrapper.expand():
+// defaultMapMaxParallel is how many items of a node's `map` block run at
+// once when the block does not say. Local items share this pod's CPU and
+// code worker pool, the same resources maxParallel (4) bounds for whole
+// nodes; remote items are bounded by maxConcurrentRemoteExpansionDispatch
+// instead.
+const defaultMapMaxParallel = 4
+
+// maxKeyLength bounds an instance key taken from an item's key column. The
+// key is stored with every instance record and travels in work orders; a
+// column holding whole documents is a mistake to report, not to store.
+const maxKeyLength = 256
+
+// On-item-failure policies of a `map` block (ADR-050).
+const (
+	// onItemFailureFail stops starting new items at the first failure,
+	// waits for those in flight, and fails the node.
+	onItemFailureFail = "fail"
+	// onItemFailureContinue runs every item, then fails the node naming
+	// the items that failed.
+	onItemFailureContinue = "continue"
+	// onItemFailureSkip runs every item and leaves the failed ones out of
+	// the output. The node fails only when no item succeeded.
+	onItemFailureSkip = "skip"
+)
+
+// expansionConfig is the parsed form of a code node's fan-out: either the
+// `expansion` block brokoli-sdk's _TaskWrapper.expand() compiles,
 //
 //	{"over": {param: upstream_node_id, ...}, "key": {"name": ..., "doc": ...}?, "max_instances": N?}
+//
+// or the `map` block ADR-050 introduces,
+//
+//	{"over": upstream_node_id | {param: upstream_node_id, ...},
+//	 "key": column?, "max_items": N?, "max_parallel": N?,
+//	 "on_item_failure": "fail" | "continue" | "skip"?}
+//
+// Both run through runCodeExpansion. The `expansion` form keeps its
+// original behaviour (index keys, sequential local execution, fail on the
+// first failed item) so pipelines compiled before `map` existed run as
+// they did.
 type expansionConfig struct {
 	// Over maps a task parameter name to the upstream node ID whose output
 	// rows are the items to fan out over, e.g. {"file": "files_node_id"}.
@@ -159,6 +197,35 @@ type expansionConfig struct {
 	// MaxInstances bounds the fan-out; defaultMaxExpansionInstances when
 	// not set in config.
 	MaxInstances int
+	// KeyColumn names the item column whose value is the instance key
+	// (map's "key"). Empty means index keys (idx:N).
+	KeyColumn string
+	// MaxParallel is the declared number of items to run at once, or 0
+	// when the config does not say (see parallelism).
+	MaxParallel int
+	// OnItemFailure is one of the onItemFailure* policies.
+	OnItemFailure string
+	// fromMap reports the config came from a `map` block, which runs
+	// local items in parallel by default; `expansion` stays sequential.
+	fromMap bool
+}
+
+// parallelism is how many items run at once on this runner.
+func (c *expansionConfig) parallelism(remote bool) int {
+	if c.MaxParallel > 0 {
+		if remote && c.MaxParallel > maxConcurrentRemoteExpansionDispatch {
+			return maxConcurrentRemoteExpansionDispatch
+		}
+		return c.MaxParallel
+	}
+	switch {
+	case remote:
+		return maxConcurrentRemoteExpansionDispatch
+	case c.fromMap:
+		return defaultMapMaxParallel
+	default:
+		return 1
+	}
 }
 
 // nodeHasExpansion reports whether n is a `code` node carrying an
@@ -172,8 +239,19 @@ func nodeHasExpansion(n models.Node) bool {
 	if n.Type != models.NodeTypeCode {
 		return false
 	}
-	_, ok := n.Config["expansion"]
-	return ok
+	_, hasExpansion := n.Config["expansion"]
+	_, hasMap := n.Config["map"]
+	return hasExpansion || hasMap
+}
+
+// mapUnsupportedError refuses a `map` block on a node type that cannot fan
+// out yet, or returns nil. Without it the block would be ignored and the
+// node would run once over its whole input, which looks like success.
+func mapUnsupportedError(n models.Node) error {
+	if _, ok := n.Config["map"]; !ok || n.Type == models.NodeTypeCode {
+		return nil
+	}
+	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; only code nodes can map", n.Name, n.ID, n.Type)
 }
 
 // parseExpansionConfig parses and structurally validates node.Config's
@@ -183,6 +261,12 @@ func nodeHasExpansion(n models.Node) bool {
 // actual shape rules, so the two stay in sync by construction rather than
 // by convention.
 func parseExpansionConfig(node models.Node) (*expansionConfig, error) {
+	if _, hasMap := node.Config["map"]; hasMap {
+		if _, hasExpansion := node.Config["expansion"]; hasExpansion {
+			return nil, fmt.Errorf("node %s (%s): 'map' and 'expansion' cannot both be set; 'map' replaces 'expansion'", node.Name, node.ID)
+		}
+		return parseMapConfig(node)
+	}
 	raw, ok := node.Config["expansion"]
 	if !ok {
 		return nil, fmt.Errorf("node %s (%s) has no 'expansion' config", node.Name, node.ID)
@@ -229,7 +313,115 @@ func parseExpansionConfig(node models.Node) (*expansionConfig, error) {
 		cfg.MaxInstances = int(mi)
 	}
 
+	cfg.OnItemFailure = onItemFailureFail
 	return cfg, nil
+}
+
+// parseMapConfig parses a node's `map` block (ADR-050).
+func parseMapConfig(node models.Node) (*expansionConfig, error) {
+	where := fmt.Sprintf("node %s (%s)", node.Name, node.ID)
+	block, ok := node.Config["map"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("%s: 'map' must be an object", where)
+	}
+	for k := range block {
+		switch k {
+		case "over", "key", "max_items", "max_parallel", "on_item_failure":
+		default:
+			return nil, fmt.Errorf("%s: 'map.%s' is not a map setting; the settings are over, key, max_items, max_parallel and on_item_failure", where, k)
+		}
+	}
+	cfg := &expansionConfig{MaxInstances: defaultMaxExpansionInstances, OnItemFailure: onItemFailureFail, fromMap: true}
+	switch over := block["over"].(type) {
+	case string:
+		if over == "" {
+			return nil, fmt.Errorf("%s: 'map.over' must name an upstream node", where)
+		}
+		cfg.Over = map[string]string{"item": over}
+	case map[string]interface{}:
+		if len(over) == 0 {
+			return nil, fmt.Errorf("%s: 'map.over' must name an upstream node", where)
+		}
+		cfg.Over = make(map[string]string, len(over))
+		for param, v := range over {
+			id, ok := v.(string)
+			if !ok || id == "" {
+				return nil, fmt.Errorf("%s: 'map.over[%q]' must be an upstream node id", where, param)
+			}
+			cfg.Over[param] = id
+		}
+	default:
+		return nil, fmt.Errorf("%s: 'map.over' is required: an upstream node id, or an object of parameter name to upstream node id", where)
+	}
+	if raw, ok := block["key"]; ok {
+		key, ok := raw.(string)
+		if !ok || strings.TrimSpace(key) == "" {
+			return nil, fmt.Errorf("%s: 'map.key' must be the name of an item column", where)
+		}
+		cfg.KeyColumn = key
+	}
+	positive := func(name string) (int, error) {
+		raw, ok := block[name]
+		if !ok {
+			return 0, nil
+		}
+		n, ok := raw.(float64)
+		if !ok || n < 1 || n != float64(int(n)) {
+			return 0, fmt.Errorf("%s: 'map.%s' must be a whole number of at least 1", where, name)
+		}
+		return int(n), nil
+	}
+	maxItems, err := positive("max_items")
+	if err != nil {
+		return nil, err
+	}
+	if maxItems > 0 {
+		cfg.MaxInstances = maxItems
+	}
+	if cfg.MaxParallel, err = positive("max_parallel"); err != nil {
+		return nil, err
+	}
+	if raw, ok := block["on_item_failure"]; ok {
+		policy, _ := raw.(string)
+		switch policy {
+		case onItemFailureFail, onItemFailureContinue, onItemFailureSkip:
+			cfg.OnItemFailure = policy
+		default:
+			return nil, fmt.Errorf("%s: 'map.on_item_failure' must be fail, continue or skip", where)
+		}
+	}
+	return cfg, nil
+}
+
+// instanceKeys returns each item's instance key: the item's key column when
+// the config names one, otherwise its index (deriveInstanceKey). A key
+// column must hold a value in every item, distinct across items, so two
+// items can never share an identity that resume and retries rely on.
+func instanceKeys(node models.Node, cfg *expansionConfig, items []common.DataRow) ([]string, error) {
+	keys := make([]string, len(items))
+	if cfg.KeyColumn == "" {
+		for i := range items {
+			keys[i] = deriveInstanceKey(i)
+		}
+		return keys, nil
+	}
+	seen := make(map[string]int, len(items))
+	for i, item := range items {
+		raw, ok := item[cfg.KeyColumn]
+		if !ok || raw == nil {
+			return nil, fmt.Errorf("node %s (%s): item %d has no value in key column %q (map.key)", node.Name, node.ID, i+1, cfg.KeyColumn)
+		}
+		value := fmt.Sprint(raw)
+		if len(value) > maxKeyLength {
+			return nil, fmt.Errorf("node %s (%s): item %d's key in column %q is %d characters, over the %d a key may have (map.key)", node.Name, node.ID, i+1, cfg.KeyColumn, len(value), maxKeyLength)
+		}
+		if first, dup := seen[value]; dup {
+			return nil, fmt.Errorf("node %s (%s): items %d and %d have the same key %q in column %q; map.key must be unique per item", node.Name, node.ID, first+1, i+1, value, cfg.KeyColumn)
+		}
+		seen[value] = i
+		keys[i] = "key:" + value
+	}
+	return keys, nil
 }
 
 // deriveInstanceKey computes this item's stable per-item instance identity.
@@ -349,13 +541,14 @@ func combineExpansionResults(results []*common.DataSet) (*common.DataSet, error)
 // success or failure is independently visible, not one aggregate status for
 // the whole expansion.
 //
-// Local execution (r.instanceJobQueue == nil) stays in-process and
-// sequential — consistent with #30's in-process-sequential scope decision
-// for source_api pagination; see runSourceAPI — since every item competes
-// for the same CPU on the same pod regardless of ordering.
+// How many items run at once is expansionConfig.parallelism: an
+// `expansion` block runs local items sequentially, as it always has, while
+// a `map` block (ADR-050) runs up to map.max_parallel of them, 4 when it
+// does not say. map.on_item_failure decides what a failed item does to the
+// node.
 //
-// Remote dispatch (r.instanceJobQueue != nil, ADR-017) instead dispatches up
-// to maxConcurrentRemoteExpansionDispatch items at once. This was
+// Remote dispatch (r.instanceJobQueue != nil, ADR-017) dispatches up to
+// maxConcurrentRemoteExpansionDispatch items at once. This was
 // originally sequential too, inherited unchanged when remote dispatch was
 // added — a real, measured cost: a live test with 6 idle worker pods and 30
 // items (~1.5s of real work each) showed items round-robining correctly
@@ -393,7 +586,15 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	}
 
 	if len(items) > cfg.MaxInstances {
-		return nil, fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d (expansion.max_instances) — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, len(items), cfg.MaxInstances)
+		limit := "expansion.max_instances"
+		if cfg.fromMap {
+			limit = "map.max_items"
+		}
+		return nil, fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d (%s) — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, len(items), cfg.MaxInstances, limit)
+	}
+	keys, err := instanceKeys(node, cfg, items)
+	if err != nil {
+		return nil, err
 	}
 
 	if cfg.Key != nil {
@@ -417,12 +618,12 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 		timeoutSec = int(t)
 	}
 
-	// Strip 'script' (avoid circular ref, matches runCode) and 'expansion'
-	// (engine-only dispatch metadata the per-item script has no use for)
-	// before handing config to the subprocess.
+	// Strip 'script' (avoid circular ref, matches runCode) and the fan-out
+	// block (engine-only dispatch metadata the per-item script has no use
+	// for) before handing config to the subprocess.
 	configForScript := make(map[string]interface{})
 	for k, v := range node.Config {
-		if k != "script" && k != "expansion" {
+		if k != "script" && k != "expansion" && k != "map" {
 			configForScript[k] = v
 		}
 	}
@@ -432,7 +633,9 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 		runParams = r.varCtx.Params
 	}
 
-	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s)", len(items))
+	remote := r.instanceJobQueue != nil
+	parallel := cfg.parallelism(remote)
+	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s), %d at a time", len(items), parallel)
 
 	// slots holds each item's eventual result at its original index, so
 	// combineExpansionResults sees results in item order regardless of
@@ -446,10 +649,9 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	// deciding what actually needs dispatching.
 	var pending []int
 	for i := range items {
-		instanceKey := deriveInstanceKey(i)
-		if cached, ok := r.reusedExpansionInstance(node.ID, instanceKey); ok {
-			if err := r.recordReusedExpansionInstance(node, nodeAttempt, i, instanceKey, len(items), cached); err != nil {
-				return nil, fmt.Errorf("node %s (%s): recording reused expansion instance %d/%d (key=%s): %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
+		if cached, ok := r.reusedExpansionInstance(node.ID, keys[i]); ok {
+			if err := r.recordReusedExpansionInstance(node, nodeAttempt, i, keys[i], len(items), cached); err != nil {
+				return nil, fmt.Errorf("node %s (%s): recording reused expansion instance %d/%d (key=%s): %w", node.Name, node.ID, i+1, len(items), keys[i], err)
 			}
 			slots[i], present[i] = cached, true
 			reused++
@@ -460,83 +662,82 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 
 	runInstance := func(i int) error {
 		item := items[i]
-		instanceKey := deriveInstanceKey(i)
 		itemDS := &common.DataSet{
 			Columns: columnsOf(item),
 			Rows:    []common.DataRow{item},
 		}
-		out, err := r.executeExpansionInstance(ctx, node, nodeAttempt, i, instanceKey, len(items), itemDS, script, configForScript, runParams, timeoutSec)
+		out, err := r.executeExpansionInstance(ctx, node, nodeAttempt, i, keys[i], len(items), itemDS, script, configForScript, runParams, timeoutSec)
 		if err != nil {
-			return fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), instanceKey, err)
+			return fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), keys[i], err)
 		}
 		if out != nil {
-			// slots/present are written here by index only — safe for
-			// concurrent goroutines writing distinct indices of a
-			// pre-sized slice. r.expansionResults is a plain map, NOT
-			// safe for concurrent writes, so remembering the result there
-			// happens later, sequentially, after every goroutine below
-			// has finished (wg.Wait()) — see the loop just below this
-			// function's two dispatch branches.
+			// Written by index only: safe for concurrent goroutines
+			// writing distinct indices of a pre-sized slice.
+			// r.expansionResults is a plain map and is written later,
+			// sequentially, once every item has finished.
 			slots[i], present[i] = out, true
 		}
 		return nil
 	}
 
-	if r.instanceJobQueue == nil {
-		// Local execution: unchanged, sequential — every item competes for
-		// the same pod's CPU regardless of ordering. Remembered inline,
-		// immediately after each success: a later item's failure returns
-		// out of this loop early, and an earlier item's already-succeeded
-		// result must survive that early return so a retry of this node
-		// doesn't re-run it (single goroutine here, so this is race-free).
-		for _, i := range pending {
-			if err := runInstance(i); err != nil {
-				return nil, err
-			}
-			if present[i] {
-				r.rememberExpansionInstance(node.ID, deriveInstanceKey(i), slots[i])
-			}
+	// One path for local and remote items: at most `parallel` run at once.
+	// With parallel == 1 this is the sequential loop `expansion` always
+	// had. Under the fail policy no new item starts after a failure, but
+	// items already running finish, so their results are remembered for a
+	// retry rather than thrown away.
+	failures := make([]error, len(items))
+	var stopped atomic.Bool
+	sem := make(chan struct{}, parallel)
+	var wg sync.WaitGroup
+	for _, i := range pending {
+		sem <- struct{}{}
+		if cfg.OnItemFailure == onItemFailureFail && stopped.Load() {
+			<-sem
+			break
 		}
-	} else {
-		// Remote dispatch: bounded concurrent fan-out (see doc comment
-		// above for why sequential here was actively wasting the worker
-		// fleet). Wait for every launched instance before checking errors —
-		// same "let the wave finish, then report the first failure"
-		// semantic runner.go's own DAG-level node parallelism already uses,
-		// rather than cancelling in-flight instances on the first failure.
-		sem := make(chan struct{}, maxConcurrentRemoteExpansionDispatch)
-		var wg sync.WaitGroup
-		errCh := make(chan error, len(pending))
-		for _, i := range pending {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(idx int) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				if err := runInstance(idx); err != nil {
-					errCh <- err
-				}
-			}(i)
-		}
-		wg.Wait()
-		close(errCh)
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if err := runInstance(idx); err != nil {
+				failures[idx] = err
+				stopped.Store(true)
+			}
+		}(i)
+	}
+	wg.Wait()
 
-		// Sequential on purpose: r.expansionResults is a plain map, not
-		// safe for concurrent writes, so remembering results happens here
-		// — after every dispatch goroutine above has already finished
-		// (wg.Wait() already returned) — rather than from inside one.
-		// Covers every pending item regardless of whether some other item
-		// is about to fail below: nothing cancels in-flight instances on
-		// a sibling's failure, so by this point they have all genuinely
-		// finished, successfully or not.
-		for _, i := range pending {
-			if present[i] {
-				r.rememberExpansionInstance(node.ID, deriveInstanceKey(i), slots[i])
-			}
+	// Sequential on purpose: r.expansionResults is a plain map, not safe
+	// for concurrent writes.
+	for _, i := range pending {
+		if present[i] {
+			r.rememberExpansionInstance(node.ID, keys[i], slots[i])
 		}
+	}
 
-		if err, ok := <-errCh; ok {
-			return nil, err
+	var failed []int
+	for i, err := range failures {
+		if err != nil {
+			failed = append(failed, i)
+		}
+	}
+	if len(failed) > 0 {
+		failedKeys := make([]string, 0, len(failed))
+		for _, i := range failed {
+			if len(failedKeys) == 10 {
+				failedKeys = append(failedKeys, fmt.Sprintf("and %d more", len(failed)-10))
+				break
+			}
+			failedKeys = append(failedKeys, keys[i])
+		}
+		switch {
+		case cfg.OnItemFailure == onItemFailureSkip && len(failed) < len(items):
+			r.log(node.ID, models.LogLevelWarning, "expansion: %d of %d item(s) failed and were left out of the output (map.on_item_failure=skip): %s",
+				len(failed), len(items), strings.Join(failedKeys, ", "))
+		case len(failed) == 1:
+			return nil, failures[failed[0]]
+		default:
+			return nil, fmt.Errorf("node %s (%s): %d of %d expansion instances failed (%s); first: %w", node.Name, node.ID, len(failed), len(items), strings.Join(failedKeys, ", "), failures[failed[0]])
 		}
 	}
 

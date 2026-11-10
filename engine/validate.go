@@ -479,6 +479,9 @@ func nodeIsSourceCapable(n models.Node, executors []extensions.NodeExecutor) boo
 }
 
 func validateNodeConfig(n models.Node, ve *ValidationError) {
+	if err := mapUnsupportedError(n); err != nil {
+		ve.Add(err.Error())
+	}
 	if raw, present := n.Config["schema"]; present && raw != nil {
 		for _, message := range datasetSchemaConfigErrors(raw) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
@@ -1017,6 +1020,9 @@ func validateFileStorage(n models.Node, writtenHere map[string]bool, r *NodeVali
 }
 
 func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
+	if err := mapUnsupportedError(n); err != nil {
+		r.Errors = append(r.Errors, err.Error())
+	}
 	if err := nodeTypeDisabledError(n.Type); err != nil {
 		r.Errors = append(r.Errors, err.Error())
 	}

@@ -55,25 +55,28 @@ func planNode(n models.Node) models.PhysicalWorkUnit {
 		Explain:             "one instance, retried as a whole node",
 	}
 
-	// Dynamic expansion: a code node carrying an `expansion` block fans
-	// out to one instance per item in the resolved upstream collection.
-	if exp, ok := mapField(n.Config, "expansion"); ok {
+	// Dynamic expansion: a code node carrying an `expansion` or `map`
+	// block fans out to one instance per item in the resolved upstream
+	// collection. The explanation reads the same parsed config the runtime
+	// uses, so it cannot describe a limit the runtime does not apply.
+	if nodeHasExpansion(n) {
 		u.Kind = models.WorkUnitExpansion
 		u.RuntimeResolved = true
 		u.StaticInstanceCount = 0
 		u.RetryScope = models.RetryScopeWorkUnit
 		u.InstanceKeyTemplate = n.ID + "[<item>]"
-		over := "upstream collection"
-		if m, ok := mapField(exp, "over"); ok {
-			over = fmt.Sprintf("%d input(s): %v", len(m), sortedKeys(m))
-		}
 		u.ConcurrencyGroup = n.ID
-		if mi, ok := intField(exp, "max_instances"); ok && mi > 0 {
-			u.MaxConcurrency = mi
-			u.Explain = fmt.Sprintf("fans out over %s at runtime; ≤%d concurrent instances, each retried independently", over, mi)
-		} else {
-			u.Explain = fmt.Sprintf("fans out over %s at runtime; each instance retried independently", over)
+		cfg, err := parseExpansionConfig(n)
+		if err != nil {
+			u.Explain = "fans out at runtime; its fan-out config is invalid: " + err.Error()
+			return u
 		}
+		if cfg.KeyColumn != "" {
+			u.InstanceKeyTemplate = fmt.Sprintf("%s[<%s>]", n.ID, cfg.KeyColumn)
+		}
+		u.MaxConcurrency = cfg.parallelism(false)
+		u.Explain = fmt.Sprintf("fans out over %d input(s): %v at runtime; at most %d item(s), %d at a time on one worker, each retried independently; a failed item: %s",
+			len(cfg.Over), sortedKeys(stringMapToInterface(cfg.Over)), cfg.MaxInstances, u.MaxConcurrency, cfg.OnItemFailure)
 		return u
 	}
 
@@ -291,6 +294,15 @@ func sortedKeys(m map[string]interface{}) []string {
 		for j := i; j > 0 && out[j-1] > out[j]; j-- {
 			out[j-1], out[j] = out[j], out[j-1]
 		}
+	}
+	return out
+}
+
+// stringMapToInterface adapts a string map for sortedKeys.
+func stringMapToInterface(m map[string]string) map[string]interface{} {
+	out := make(map[string]interface{}, len(m))
+	for k, v := range m {
+		out[k] = v
 	}
 	return out
 }

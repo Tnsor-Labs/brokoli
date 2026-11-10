@@ -13,6 +13,21 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **`map`: a code node runs once per item, in parallel** -- @hc12r. A
+  `code` node with a `map` block (`over`, `key`, `max_items`,
+  `max_parallel`, `on_item_failure`) runs once per row of an upstream
+  node, each row its own instance with its own status, up to
+  `max_parallel` (default 4) at once on the local server, where the
+  `expansion` block `.expand()` compiles to ran them one after another.
+  `key` takes each item's identity from a column, checked for values and
+  uniqueness, instead of its position. `on_item_failure` chooses between
+  stopping at the first failure (`fail`), running every item and then
+  failing (`continue`), or leaving failed items out (`skip`, which still
+  fails when no item succeeded). `map` on any other node type is refused
+  at save and when the node runs, instead of being ignored. The
+  `expansion` block runs as before. First phase of ADR-050 (#967); see
+  `docs/mapping.md`.
+
 - **Oracle reads through a native driver, experimental** -- @hc12r. An
   Oracle connection can be pinned to the `orkidea` driver build
   (Orkidea, an ADBC driver for Oracle that needs no Oracle Instant
