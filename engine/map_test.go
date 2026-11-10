@@ -201,7 +201,7 @@ func mapTestFloat(v interface{}) float64 {
 	return 0
 }
 
-func runMapPipeline(t *testing.T, name string, block map[string]interface{}, csv, script string) (*models.Run, error, *store.SQLiteStore, []common.DataRow) {
+func runMapPipeline(t *testing.T, name string, block map[string]interface{}, csv, script string) (*models.Run, *store.SQLiteStore, []common.DataRow, error) {
 	t.Helper()
 	real := newExpansionTestStore(t, name).(*store.SQLiteStore)
 	dir := t.TempDir()
@@ -217,7 +217,7 @@ func runMapPipeline(t *testing.T, name string, block map[string]interface{}, csv
 	if ds, readErr := readCSVFile(outPath); readErr == nil {
 		rows = ds.Rows
 	}
-	return run, err, real, rows
+	return run, real, rows, err
 }
 
 // Six items of 0.6s each with max_parallel 3 run three at a time: never
@@ -225,7 +225,7 @@ func runMapPipeline(t *testing.T, name string, block map[string]interface{}, csv
 // 3.6s. The `expansion` form of the same node still runs one at a time.
 func TestMapRunsLocalItemsInParallelUpToMaxParallel(t *testing.T) {
 	csv := "path\na\nb\nc\nd\ne\nf\n"
-	run, err, _, rows := runMapPipeline(t, "map-parallel", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(3)}, csv, timingScript)
+	run, _, rows, err := runMapPipeline(t, "map-parallel", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(3)}, csv, timingScript)
 	if err != nil || run.Status != models.RunStatusSuccess {
 		t.Fatalf("run = %v, err = %v", run, err)
 	}
@@ -284,7 +284,7 @@ func instanceStatuses(t *testing.T, real *store.SQLiteStore, runID string) map[s
 }
 
 func TestMapOnItemFailureContinueRunsEveryItemThenFails(t *testing.T) {
-	run, err, real, _ := runMapPipeline(t, "map-continue", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(1), "on_item_failure": "continue", "max_items": float64(10)},
+	run, real, _, err := runMapPipeline(t, "map-continue", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(1), "on_item_failure": "continue", "max_items": float64(10)},
 		"path\nbad1\na\nbad2\nb\n", failingScript)
 	if err == nil || run == nil || run.Status != models.RunStatusFailed {
 		t.Fatalf("run = %v, err = %v; want a failed run", run, err)
@@ -302,7 +302,7 @@ func TestMapOnItemFailureContinueRunsEveryItemThenFails(t *testing.T) {
 }
 
 func TestMapOnItemFailureFailStopsStartingItems(t *testing.T) {
-	run, err, real, _ := runMapPipeline(t, "map-fail", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(1)},
+	run, real, _, err := runMapPipeline(t, "map-fail", map[string]interface{}{"over": "files", "key": "path", "max_parallel": float64(1)},
 		"path\nbad1\na\nb\n", failingScript)
 	if err == nil || run == nil || run.Status != models.RunStatusFailed {
 		t.Fatalf("run = %v, err = %v; want a failed run", run, err)
@@ -317,7 +317,7 @@ func TestMapOnItemFailureFailStopsStartingItems(t *testing.T) {
 }
 
 func TestMapOnItemFailureSkipLeavesFailedItemsOut(t *testing.T) {
-	run, err, _, rows := runMapPipeline(t, "map-skip", map[string]interface{}{"over": "files", "key": "path", "on_item_failure": "skip"},
+	run, _, rows, err := runMapPipeline(t, "map-skip", map[string]interface{}{"over": "files", "key": "path", "on_item_failure": "skip"},
 		"path\na\nbad1\nb\n", failingScript)
 	if err != nil || run.Status != models.RunStatusSuccess {
 		t.Fatalf("run = %v, err = %v; want success", run, err)
@@ -334,7 +334,7 @@ func TestMapOnItemFailureSkipLeavesFailedItemsOut(t *testing.T) {
 
 // Skipping every item would turn a broken node into an empty success.
 func TestMapOnItemFailureSkipFailsWhenNoItemSucceeds(t *testing.T) {
-	run, err, _, _ := runMapPipeline(t, "map-skip-all", map[string]interface{}{"over": "files", "on_item_failure": "skip"},
+	run, _, _, err := runMapPipeline(t, "map-skip-all", map[string]interface{}{"over": "files", "on_item_failure": "skip"},
 		"path\nbad1\nbad2\n", failingScript)
 	if err == nil || run == nil || run.Status != models.RunStatusFailed {
 		t.Fatalf("run = %v, err = %v; want a failed run when every item failed", run, err)
