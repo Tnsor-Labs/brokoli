@@ -52,6 +52,7 @@ func Extract(r io.Reader, destRoot string, opts Options) error {
 
 	var total int64
 	entries := 0
+	seenFiles := map[string]bool{}
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -64,10 +65,10 @@ func Extract(r io.Reader, destRoot string, opts Options) error {
 		if opts.MaxEntries > 0 && entries > opts.MaxEntries {
 			return fmt.Errorf("archive has more than %d entries", opts.MaxEntries)
 		}
-		name := filepath.FromSlash(hdr.Name)
-		if filepath.IsAbs(name) || strings.Contains(name, "..") {
+		if escapesRoot(hdr.Name) {
 			return fmt.Errorf("archive entry %q escapes the extraction root", hdr.Name)
 		}
+		name := filepath.FromSlash(hdr.Name)
 		target := filepath.Join(destRoot, name)
 		switch hdr.Typeflag {
 		case tar.TypeDir:
@@ -75,6 +76,16 @@ func Extract(r io.Reader, destRoot string, opts Options) error {
 				return err
 			}
 		case tar.TypeReg:
+			// A second entry with the name of an earlier file would
+			// truncate and replace it. Refused, so what an archive holds
+			// cannot depend on which of two entries a reader looks at:
+			// pkg/taskbundlev2.ReadManifest stops at the first
+			// manifest.json, while extraction would leave the last (#999).
+			key := filepath.Clean(name)
+			if seenFiles[key] {
+				return fmt.Errorf("archive has more than one entry named %q", hdr.Name)
+			}
+			seenFiles[key] = true
 			if hdr.Size > fileLimit {
 				return fmt.Errorf("archive entry %q exceeds the %d-byte file limit", hdr.Name, opts.MaxFileBytes)
 			}
@@ -107,4 +118,26 @@ func Extract(r io.Reader, destRoot string, opts Options) error {
 			return fmt.Errorf("archive entry %q has unsupported type %d", hdr.Name, hdr.Typeflag)
 		}
 	}
+}
+
+// escapesRoot reports whether an entry name could resolve outside the
+// extraction root: an absolute path, a Windows volume name, or a ".."
+// path segment. Only a whole segment counts, so "notes..txt" and
+// "a...b" are ordinary names (#999); the earlier substring check
+// refused them. Both separators are split on, because filepath on
+// Windows treats a backslash as one.
+func escapesRoot(name string) bool {
+	if strings.HasPrefix(name, "/") || strings.HasPrefix(name, "\\") {
+		return true
+	}
+	native := filepath.FromSlash(name)
+	if filepath.IsAbs(native) || filepath.VolumeName(native) != "" {
+		return true
+	}
+	for _, segment := range strings.FieldsFunc(name, func(r rune) bool { return r == '/' || r == '\\' }) {
+		if segment == ".." {
+			return true
+		}
+	}
+	return false
 }
