@@ -64,25 +64,44 @@ locale must not produce a different digest.
 
 The normalized object renders as JSON with exactly these properties:
 
-- object keys sorted by Unicode code point;
+- object keys sorted by Unicode code point, every key the same way:
+  integer-like keys such as `"10"` and `"9"` sort as text (`"10"` before
+  `"9"`), and a character above U+FFFF sorts by its code point, not by its
+  UTF-16 surrogates;
 - two-space indentation; a single space after `:`; no trailing spaces;
+  an empty object is `{}` and an empty array `[]`;
 - non-ASCII characters emitted literally as UTF-8 (no `\uXXXX` escaping
   of printable characters beyond what JSON requires);
+- numbers as RFC 8785 section 3.2.2.3 writes them: an integer as its
+  digits, and a float as the shortest decimal that reads back as the same
+  IEEE-754 double (the closest, then the even one, when there is a
+  choice), laid out by ECMAScript's Number-to-string rule. So `0.00001`,
+  `1e-7`, `123456789012345680000`, `1e+21` and `5e-324`; a whole float is
+  written as an integer (`5`, not `5.0`), and `-0` as `0`;
 - `NaN` / `Infinity` are an error, never rendered;
 - exactly one trailing newline (`\n`) at the end of the document.
 
-This is Python's `json.dumps(value, indent=2, sort_keys=True,
-ensure_ascii=False, allow_nan=False) + "\n"` and JavaScript's
-`JSON.stringify(sortedValue, null, 2) + "\n"` over a key-sorted value;
-both produce the same bytes for the same data, with one documented
-hazard:
+The rule for numbers is the one JavaScript's `JSON.stringify` and Go's
+`encoding/json` already follow (Go except for `-0`, which it writes as
+`-0`). Python's `json.dumps` does not: it writes `1e-05`, `1e-06`,
+`1.2345678901234568e+20` and `5.0`. A renderer built on `json.dumps`, or on
+`JSON.stringify` of a key-sorted object (which moves integer-like keys
+first), gives a different digest for the same pipeline, so each SDK writes
+the layout itself (#982).
 
-> **Number hazard.** JSON does not distinguish `1` from `1.0`, but
-> Python renders the float `1.0` as `1.0` while JavaScript renders the
-> number `1` as `1`. Authoring SDKs MUST emit integral numeric config
-> values as integers (Python: `int`, never a whole-valued `float`), and
-> fixture suites should include a non-integral float (for example
-> `0.5`) to prove agreement where the representation is unambiguous.
+[`fixtures/ir-canonicalization/rendering.json`](fixtures/ir-canonicalization/rendering.json)
+holds the cross-SDK vectors: JSON text inputs and the exact canonical
+rendering each must give. They cover RFC 8785 Appendix B, the values above,
+key order and string escapes. Every SDK's tests parse each input with that
+language's own JSON parser and compare the rendering byte for byte.
+
+> **Number hazard.** JSON does not distinguish `1` from `1.0`, and with the
+> rule above neither does the rendering: both are `1`. Integers beyond
+> 2^53 - 1 are still not portable between SDKs, because JavaScript cannot
+> hold them exactly. Authoring SDKs MUST still
+> emit integral numeric config values as integers (Python: `int`, never a
+> whole-valued `float`), because a value's type, not only its rendering,
+> reaches the engine.
 
 ## 3. Digest
 
