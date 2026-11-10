@@ -633,7 +633,7 @@ func ParseToken(tokenStr string) (*jwt.MapClaims, error) {
 
 func LoginHandler(us *UserStore) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if PasswordLoginEnabledFunc != nil && !PasswordLoginEnabledFunc() {
+		if !passwordLoginEnabled() {
 			writeError(w, http.StatusForbidden, "password login is disabled; use an enabled OAuth provider")
 			return
 		}
