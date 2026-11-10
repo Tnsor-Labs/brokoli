@@ -41,5 +41,7 @@
       }
     }
   },
-  "expected_pipeline_parameters": null
+  "expected_pipeline_parameters": null,
+  "expected_interface_canonical": "{\n  \"contract\": \"brokoli.task-interface/v1\",\n  \"inputs\": {\n    \"input\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"additional_fields\": false,\n          \"fields\": [\n            {\n              \"name\": \"status\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"enum\",\n                \"values\": [\n                  \"pending\",\n                  \"done\",\n                  \"failed\"\n                ]\n              }\n            }\n          ],\n          \"kind\": \"record\"\n        }\n      }\n    }\n  },\n  \"outputs\": {\n    \"result\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"additional_fields\": false,\n          \"fields\": [\n            {\n              \"name\": \"status\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"enum\",\n                \"values\": [\n                  \"pending\",\n                  \"done\",\n                  \"failed\"\n                ]\n              }\n            }\n          ],\n          \"kind\": \"record\"\n        }\n      }\n    }\n  }\n}\n",
+  "expected_interface_digest": "sha256:2c389c5348c7e8b0af3d0c8e60963e4e942911ddfcf311ed867e0e5c53e5a681"
 }
