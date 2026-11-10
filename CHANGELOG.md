@@ -346,6 +346,14 @@ reconstruct from git archaeology.
   uncompressed tar, not on the deflate bytes. Tests pin every rule. Nothing
   about the bundles core writes changes. (#986)
 
+- **A short password no longer mangles error messages** -- @hc12r.
+  Credential redaction replaced every occurrence of the password's text, so
+  a one-letter password turned "supported" into "suxxxxxxxxxxorted" and
+  left the operator without the reason a connection failed. A password is
+  now removed wherever it stands as a token of its own, at any length,
+  including inside a quoted DSN, and never inside another word. It is
+  still never weakened by length, since a short password left in a run log
+  would be worse than an over-redacted message. (#780)
 - **A whole `float64` written without `.0` is a valid `float64`** -- @hc12r.
   JSON does not tell `5` from `5.0`, and task outputs keep integers exact,
   so a whole value written as `5` (JavaScript's `JSON.stringify(5.0)`, and
