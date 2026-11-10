@@ -36,6 +36,20 @@ reconstruct from git archaeology.
   at save, and the `map.over` edge is the one incoming edge a source may
   have. A dry run maps the first 3 items. See `docs/mapping.md`.
 
+- **Server-wide limits on mapping** -- @hc12r. An operator sets the
+  item limit a `map` or `expansion` block gets when it declares none
+  (`BROKOLI_MAP_DEFAULT_MAX_ITEMS`, 1000) and the most it may declare
+  (`BROKOLI_MAP_MAX_ITEMS`, 100000), and likewise for local parallelism
+  (`BROKOLI_MAP_DEFAULT_MAX_PARALLEL`, 4; `BROKOLI_MAP_MAX_PARALLEL`, 64).
+  `BROKOLI_MAP_MAX_REMOTE_PARALLEL` (16) bounds the items of one node in
+  flight on remote workers. A declaration above a ceiling is refused when
+  the pipeline is saved and when it runs, naming the setting, the value
+  and the variable; a collection over the default names the default and
+  how far a block may raise it. A variable that is not a whole number of
+  at least 1 is ignored, with a warning in the log of every mapped node.
+  An `expansion.max_instances` above 100000, accepted before, is now
+  refused unless the operator raises the ceiling. ADR-050 (#967); see
+  `docs/mapping.md`.
 - **Oracle reads through a native driver, experimental** -- @hc12r. An
   Oracle connection can be pinned to the `orkidea` driver build
   (Orkidea, an ADBC driver for Oracle that needs no Oracle Instant
@@ -244,6 +258,12 @@ reconstruct from git archaeology.
   dead letters outside a short list of known sites, which may only shrink.
 
 ### Fixed
+
+- **Starting a run of a pipeline that no longer validates answers 400** --
+  @hc12r. A stored pipeline the validator refuses when a run is requested,
+  for example one declaring more items than a mapping ceiling lowered since
+  it was saved, was answered with a 500, as if the server were at fault. It
+  is now the 400, with the same message, that saving it would get.
 
 - **Dependency vulnerabilities** -- @hc12r. `andybalholm/brotli` v1.2.7
   (GO-2026-6888) and `klauspost/compress` v1.20.2 (GO-2026-6865, a panic on
