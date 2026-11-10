@@ -306,6 +306,15 @@ reconstruct from git archaeology.
   webhook token, which is a secret, and it is always a UI pipeline, even
   when the original is managed in Git, where a copy would refuse every
   edit. (#590)
+- **The pipeline summary counts every run, and reports a failed read** --
+  @hc12r. `GET /api/pipelines/summary` counted each pipeline's runs over its
+  newest 200 only, so a busy pipeline was undercounted, and the UI carried
+  a footnote saying so (#624). It now counts in the database, over every
+  run that started, as the dashboard does, and reads only the five newest
+  runs for the last run and the run history. It also answered `200 []`
+  when the pipeline list failed, and showed a pipeline as never run when
+  its runs could not be read, so an outage looked like an empty workspace.
+  A failed read now answers 500 (#591). The UI's 200-run caveats are gone.
 
 - **The task bundle spec describes the bytes core writes** -- @hc12r.
   `task-bundle-v2-canonicalization.md` said the manifest is written with

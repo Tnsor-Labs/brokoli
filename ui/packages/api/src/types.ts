@@ -175,7 +175,7 @@ export interface PipelineSummary {
   last_run_status: string
   last_run_at?: string
   last_run_error?: string
-  /** Counted over the newest 200 runs only, not all time. */
+  /** Every run of the pipeline that started, counted by the database. */
   runs_total: number
   runs_success: number
   runs_failed: number
@@ -659,9 +659,9 @@ export interface ConnectionTestResult {
 }
 
 /*
- * GET /api/dashboard. Every counter is computed over the newest 200 runs of
- * each pipeline, so a very busy pipeline is undercounted. Days in `trends`
- * and `runs_today` use the server's local clock.
+ * GET /api/dashboard. Every counter is a database count over every run in
+ * its window. Days in `trends` and `runs_today` use the server's local
+ * clock.
  */
 export interface DashboardRun {
   pipeline_id: string

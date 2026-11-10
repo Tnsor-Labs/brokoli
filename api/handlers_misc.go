@@ -564,15 +564,7 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 		// mode there is no org, and the workspace reaches them through the
 		// pipeline. This mirrors listPipelinesForRequest, which decided the
 		// pipeline list above.
-		scope := store.RunScope{OrgID: orgID}
-		if orgID == "" && OrgResolverFunc == nil {
-			scope.WorkspaceID = GetWorkspaceID(r)
-		}
-		// Where workspaces are kept apart, the counts are the current
-		// workspace's, like the pipeline list they sit next to (ADR-049).
-		if rs := RequestScope(r); rs.ByWorkspace() {
-			scope.WorkspaceID = rs.Workspace
-		}
+		scope := requestRunScope(r)
 
 		now := time.Now()
 		todayStr := now.Format("2006-01-02")
@@ -887,10 +879,69 @@ func dashboardHandler(s store.Store) http.HandlerFunc {
 	}
 }
 
-// pipelineSummaryHandler handles GET /pipelines/summary — returns pipelines with run stats.
+// requestRunScope is which runs a request may see, for database
+// aggregates. Runs carry org_id; in community mode there is no org, and the
+// workspace reaches them through the pipeline. This mirrors
+// listPipelinesForRequest, which decides the pipeline list the counts sit
+// next to. Where workspaces are kept apart, the counts are the current
+// workspace's (ADR-049).
+func requestRunScope(r *http.Request) store.RunScope {
+	orgID := GetOrgIDFromRequest(r)
+	scope := store.RunScope{OrgID: orgID}
+	if orgID == "" && OrgResolverFunc == nil {
+		scope.WorkspaceID = GetWorkspaceID(r)
+	}
+	if rs := RequestScope(r); rs.ByWorkspace() {
+		scope.WorkspaceID = rs.Workspace
+	}
+	return scope
+}
+
+// pipelineSummaryRecentRuns is how many of a pipeline's newest runs the
+// summary reads, for its last run and its run history. The counts do not
+// come from these: they are database aggregates over every run.
+const pipelineSummaryRecentRuns = 5
+
+// pipelineSummaryHandler handles GET /pipelines/summary: every pipeline the
+// request can see, with its last run, its five newest run statuses and its
+// run counts.
+//
+// A failed read answers 500. Answering 200 with an empty list, or with a
+// pipeline that looks as if it never ran, presented an outage as a quiet
+// workspace (#591). The counts are over every run that started, from the
+// database; they were counted here over each pipeline's newest 200 runs,
+// so a busy pipeline was undercounted (#624).
 func pipelineSummaryHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pipelinesList, _ := listPipelinesForRequest(s, r)
+		pipelinesList, err := listPipelinesForRequest(s, r)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "pipelines unavailable")
+			return
+		}
+		counts, err := s.AggregateRunsByPipelineStatus(time.Time{}, requestRunScope(r))
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "run counts unavailable")
+			return
+		}
+		type statusCounts struct{ total, success, failed, running int }
+		byPipeline := make(map[string]*statusCounts)
+		for _, c := range counts {
+			pc := byPipeline[c.PipelineID]
+			if pc == nil {
+				pc = &statusCounts{}
+				byPipeline[c.PipelineID] = pc
+			}
+			pc.total += c.Count
+			switch c.Status {
+			case "completed", "success":
+				pc.success += c.Count
+			case "failed":
+				pc.failed += c.Count
+			case "running":
+				pc.running += c.Count
+			}
+		}
+
 		type PipelineWithRun struct {
 			PipelineSummary
 			LastRunStatus string   `json:"last_run_status"`
@@ -905,20 +956,16 @@ func pipelineSummaryHandler(s store.Store) http.HandlerFunc {
 		results := make([]PipelineWithRun, 0, len(pipelinesList))
 		for _, p := range pipelinesList {
 			pr := PipelineWithRun{PipelineSummary: toPipelineSummary(p)}
-			runs, _ := s.ListRunsByPipeline(p.ID, 200)
-			pr.RunsTotal = len(runs)
-			for _, run := range runs {
-				switch string(run.Status) {
-				case "completed", "success":
-					pr.RunsSuccess++
-				case "failed":
-					pr.RunsFailed++
-				case "running":
-					pr.RunsRunning++
-				}
+			if c := byPipeline[p.ID]; c != nil {
+				pr.RunsTotal, pr.RunsSuccess, pr.RunsFailed, pr.RunsRunning = c.total, c.success, c.failed, c.running
 			}
-			for i := 0; i < len(runs) && i < 5; i++ {
-				status := string(runs[i].Status)
+			runs, err := s.ListRunsByPipeline(p.ID, pipelineSummaryRecentRuns)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "runs unavailable")
+				return
+			}
+			for _, run := range runs {
+				status := string(run.Status)
 				if status == "completed" || status == "success" {
 					status = "succeeded"
 				}

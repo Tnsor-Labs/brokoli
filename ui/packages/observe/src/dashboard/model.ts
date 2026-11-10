@@ -1,4 +1,10 @@
-import type { DashboardRun, DashboardStats, DeadLetter, PipelineSummary, SchedulerEntry } from '@brokoli/api'
+import type {
+  DashboardRun,
+  DashboardStats,
+  DeadLetter,
+  PipelineSummary,
+  SchedulerEntry,
+} from '@brokoli/api'
 import { ACTIVE, FAILURE } from '@brokoli/pipelines'
 import { toDate } from '@brokoli/ui'
 
@@ -28,18 +34,28 @@ export function finishedRate(success: number, failed: number): number | null {
  * for any failure and kept recovered pipelines until the sample rolled).
  */
 export function needsAttention(summary: PipelineSummary[]): PipelineSummary[] {
-  return summary.filter((p) => FAILURE.has(lower(p.last_run_status))).sort((a, b) => time(b.last_run_at) - time(a.last_run_at))
+  return summary
+    .filter((p) => FAILURE.has(lower(p.last_run_status)))
+    .sort((a, b) => time(b.last_run_at) - time(a.last_run_at))
 }
 
 export type RunGroup = { pipelineId: string; name: string; runs: DashboardRun[] }
 
 /** Recent runs grouped by pipeline, ordered by each pipeline's newest run. */
-export function groupRecent(runs: DashboardRun[], limit: number): { groups: RunGroup[]; hidden: number } {
+export function groupRecent(
+  runs: DashboardRun[],
+  limit: number,
+): { groups: RunGroup[]; hidden: number } {
   const byPipeline = new Map<string, RunGroup>()
   for (const run of runs) {
     const group = byPipeline.get(run.pipeline_id)
     if (group) group.runs.push(run)
-    else byPipeline.set(run.pipeline_id, { pipelineId: run.pipeline_id, name: run.pipeline_name || run.pipeline_id, runs: [run] })
+    else
+      byPipeline.set(run.pipeline_id, {
+        pipelineId: run.pipeline_id,
+        name: run.pipeline_name || run.pipeline_id,
+        runs: [run],
+      })
   }
   const all = [...byPipeline.values()]
   return { groups: all.slice(0, limit), hidden: Math.max(0, all.length - limit) }
@@ -51,23 +67,45 @@ export type FleetRow = {
   pipeline: PipelineSummary
   rollup?: Rollup
   next?: string
-  /** Over the newest 200 runs of the pipeline, finished runs only. */
+  /** Over every finished run of the pipeline. */
   health: number | null
   rank: number
 }
 
-export function fleetRows(summary: PipelineSummary[], rollups: Rollup[], schedule: SchedulerEntry[]): FleetRow[] {
+export function fleetRows(
+  summary: PipelineSummary[],
+  rollups: Rollup[],
+  schedule: SchedulerEntry[],
+): FleetRow[] {
   const rollupById = new Map(rollups.map((r) => [r.pipeline_id, r]))
   // Keyed by id: the previous dashboard keyed next runs by name, so two pipelines with one name shared a value.
   const nextById = new Map(schedule.map((s) => [s.pipeline_id, s.next_run]))
   const rows = summary.map((p): FleetRow => {
     const rollup = rollupById.get(p.id)
-    const running = p.runs_running > 0 || (rollup?.running ?? 0) > 0 || ACTIVE.has(lower(p.last_run_status))
-    const rank = FAILURE.has(lower(p.last_run_status)) ? 0 : running ? 1 : p.enabled && !p.draft ? 2 : 3
+    const running =
+      p.runs_running > 0 || (rollup?.running ?? 0) > 0 || ACTIVE.has(lower(p.last_run_status))
+    const rank = FAILURE.has(lower(p.last_run_status))
+      ? 0
+      : running
+        ? 1
+        : p.enabled && !p.draft
+          ? 2
+          : 3
     const scheduled = p.enabled && !p.draft && Boolean(p.schedule)
-    return { pipeline: p, rollup, next: scheduled ? nextById.get(p.id) : undefined, health: finishedRate(p.runs_success, p.runs_failed), rank }
+    return {
+      pipeline: p,
+      rollup,
+      next: scheduled ? nextById.get(p.id) : undefined,
+      health: finishedRate(p.runs_success, p.runs_failed),
+      rank,
+    }
   })
-  return rows.sort((a, b) => a.rank - b.rank || a.pipeline.name.localeCompare(b.pipeline.name) || a.pipeline.id.localeCompare(b.pipeline.id))
+  return rows.sort(
+    (a, b) =>
+      a.rank - b.rank ||
+      a.pipeline.name.localeCompare(b.pipeline.name) ||
+      a.pipeline.id.localeCompare(b.pipeline.id),
+  )
 }
 
 /*
@@ -75,7 +113,11 @@ export function fleetRows(summary: PipelineSummary[], rollups: Rollup[], schedul
  * organisation, so entries are kept only for pipelines this user can see in
  * the pipeline summary.
  */
-export function upcoming(schedule: SchedulerEntry[], visible: Set<string>, limit: number): SchedulerEntry[] {
+export function upcoming(
+  schedule: SchedulerEntry[],
+  visible: Set<string>,
+  limit: number,
+): SchedulerEntry[] {
   return schedule
     .filter((s) => visible.has(s.pipeline_id) && toDate(s.next_run))
     .sort((a, b) => time(a.next_run) - time(b.next_run))
