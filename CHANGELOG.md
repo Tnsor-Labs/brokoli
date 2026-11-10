@@ -374,6 +374,13 @@ reconstruct from git archaeology.
   string run parameters are no longer passed to tasks. A pipeline that
   declares no parameters passes its string parameters as before. (#978)
 
+- **A SQLite store refuses a database SQLite makes per connection** --
+  @hc12r. `NewSQLiteStore(":memory:")` opened a pool of up to 25
+  connections, each with its own empty database, so tables and writes
+  vanished between them: a test driving a run through such a store failed 6
+  runs in 10. `:memory:`, the empty path and in-memory `file:` URIs are now
+  refused with an error that says to use a file. Nothing in this repository
+  opened one through the store. (#636)
 - **An int64 beyond 2^53 is no longer accepted as a plain number** --
   @hc12r. Task interface validation accepted any whole float64 as an
   `int64`, so a value a JSON decoder had already rounded (`9007199254740993`
