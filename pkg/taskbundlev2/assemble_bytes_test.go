@@ -15,7 +15,7 @@ import (
 
 func everyFieldManifest() *Manifest {
 	return &Manifest{
-		Format: Format, Name: "rollup <a&b>\n ", InterfaceDigest: "sha256:i", SourceDigest: "sha256:s",
+		Format: Format, Name: "rollup <a&b>\n \b\f\x01\x7f", InterfaceDigest: "sha256:i", SourceDigest: "sha256:s",
 		Build: &Build{Builder: "brokoli-jvm/0.1.0", Attestation: "att"},
 		Payloads: []Payload{
 			{ID: "jvm", Runtime: "jvm", Requires: ">=17", OS: "any", Arch: "any",
@@ -61,7 +61,7 @@ func TestAssembleWritesTheManifestBytesTheSpecSays(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, bodies := readArchive(t, archive)
-	want := `{"format":"brokoli.task-bundle/v2","name":"rollup \u003ca\u0026b\u003e\n\u2028","interface_digest":"sha256:i","source_digest":"sha256:s",` +
+	want := `{"format":"brokoli.task-bundle/v2","name":"rollup \u003ca\u0026b\u003e\n\u2028\b\f\u0001","interface_digest":"sha256:i","source_digest":"sha256:s",` +
 		`"build":{"builder":"brokoli-jvm/0.1.0","attestation":"att"},` +
 		`"payloads":[{"id":"jvm","runtime":"jvm","requires":"\u003e=17","os":"any","arch":"any","entrypoint":{"module":"com.example.T","symbol":"run"},"effects":"pure","dependency_lock":"lib/lock.txt","payload_digest":"sha256:p"},` +
 		`{"id":"native","runtime":"native","os":"linux","arch":"amd64","entrypoint":{"executable":"bin/task","command":["bin/task"],"args":["--x"]},"effects":"pure","payload_digest":"sha256:q","image":{"digest":"sha256:img","reference":"ghcr.io/x/y:1"}}],` +
