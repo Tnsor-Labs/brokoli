@@ -274,6 +274,16 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Task nodes receive their declared parameters, typed and with defaults**
+  -- @hc12r. A `task` node's keyword arguments were the run's string
+  parameters, locally and on remote workers, so a declared `float64`
+  reached the task as text, and a declared default never reached it. A
+  pipeline that declares parameters now passes its tasks the resolved
+  values: typed, with defaults applied, and with `decimal`, `timestamp`,
+  `duration`, `bytes` and large `int64` values tagged. In such a pipeline,
+  string run parameters are no longer passed to tasks. A pipeline that
+  declares no parameters passes its string parameters as before. (#978)
+
 - **An int64 beyond 2^53 is no longer accepted as a plain number** --
   @hc12r. Task interface validation accepted any whole float64 as an
   `int64`, so a value a JSON decoder had already rounded (`9007199254740993`

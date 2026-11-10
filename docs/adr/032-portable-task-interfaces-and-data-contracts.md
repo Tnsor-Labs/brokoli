@@ -1232,3 +1232,31 @@ an existing task still changes where that pipeline can deploy — it bumps
 deliberate. The alternative is deploying to a server that silently
 ignores the annotation, which is the bug this update closes. A louder
 refusal is the correct trade against a quieter wrong answer.
+
+## Update (2026-11-10) — task nodes receive declared parameters, typed
+
+The update of 2026-09-08 delivered declared parameters to `code` nodes,
+as their own `parameters` binding. `task` nodes (task-bundle/v2, ADR-033)
+were left out. Their keyword arguments were still the legacy string map,
+locally and in remote work orders, so a declared `float64` reached a
+Python task as `"0.5"`, and a declared default never reached the task at
+all ([#978](https://github.com/Tnsor-Labs/brokoli/issues/978)). The JVM
+SDK's generated entry method, which reads only the typed form, found it.
+
+A task's keyword arguments are one namespace, so the two kinds cannot
+sit side by side as they do for a `code` node. The rule follows the one
+above, that declared parameters are never merged with the string ones:
+
+- **A pipeline that declares parameters** passes its tasks the resolved
+  values only, as `ResolveParameters` produced them: validated, with
+  declared defaults applied, and in the JSON form of section 4. A
+  `decimal`, `timestamp`, `duration` or `bytes` arrives tagged, and so
+  does an `int64` beyond 2^53 - 1. A string run parameter, whether or not
+  it shares a declared name, is not passed.
+- **A pipeline that declares none** passes the string parameters, as
+  before.
+
+The dispatcher makes the choice, and a remote work order carries only
+the chosen kind. A declaring pipeline whose parameters all resolve to
+nothing must still send no strings: its empty typed map does not survive
+the work order's JSON, and a worker given only strings would pass them.
