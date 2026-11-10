@@ -91,10 +91,11 @@ object, or an empty or absent list):
 same byte order as the tar entries. Each file has its byte `size` and the
 lowercase hex SHA-256 of its bytes. Strings are written as Go's
 `encoding/json` writes them:
-- `"`, `\`, `\n`, `\r` and `\t` take their two-character escapes;
+- `"`, `\`, `\b`, `\f`, `\n`, `\r` and `\t` take their two-character escapes
+  (Go writes `\b` and `\f` this way since Go 1.22);
 - every other character below U+0020, and `<`, `>`, `&`, U+2028 and
   U+2029, are written as `\u` with four lowercase hex digits;
-- everything else is literal UTF-8.
+- everything else is literal UTF-8, DEL (U+007F) included.
 
 Numbers are decimal integers.
 
