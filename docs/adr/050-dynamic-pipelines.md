@@ -1,6 +1,6 @@
 # ADR-050: Dynamic pipelines: generated structure and mapped groups on a static IR
 
-**Status:** proposed
+**Status:** accepted (approved by the product owner, 2026-11-10)
 **Date:** 2026-11-10
 
 ## Context
