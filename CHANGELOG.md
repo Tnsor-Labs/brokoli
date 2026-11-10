@@ -298,6 +298,15 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Cloning a pipeline created in the UI works** -- @hc12r. A UI-created
+  pipeline gets a `pipeline_id` slug from its name, and the slug is unique
+  within its workspace, so the clone, which copied the slug, failed with a
+  500 every time. A clone now gets `<slug>-copy`, then `-copy-2` and so on,
+  and a 409 if all of those are taken. It no longer copies the original's
+  webhook token, which is a secret, and it is always a UI pipeline, even
+  when the original is managed in Git, where a copy would refuse every
+  edit. (#590)
+
 - **The task bundle spec describes the bytes core writes** -- @hc12r.
   `task-bundle-v2-canonicalization.md` said the manifest is written with
   sorted keys, and that entries are ordered by path. `Assemble`, which
