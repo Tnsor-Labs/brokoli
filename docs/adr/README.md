@@ -116,6 +116,8 @@ predicted. Do this in the same PR as the code change where possible.
 | [ADR-046](./046-agents-mcp-server-and-agent-identities.md) | Agents as users of the runtime: an MCP server, agent identities and change requests | Accepted |
 | [ADR-047](./047-agent-triggers.md) | Agent triggers: events that start an agent's work | Accepted |
 | [ADR-048](./048-talking-with-agents.md) | Talking with agents: messages, conversations and reminders | Accepted |
+| [ADR-049](./049-tenancy-scope.md) | One place for tenancy: a request scope enforced by the data layer | Accepted |
+| [ADR-050](./050-dynamic-pipelines.md) | Dynamic pipelines: generated structure and mapped groups on a static IR | Proposed |
 
 ## How to add a new ADR
 
