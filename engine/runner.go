@@ -1916,6 +1916,12 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	if node.Type == models.NodeTypeSourceDB && nodeIsMapped(node) {
 		return r.runMappedSourceDB(ctx, node, edgeInputsByFrom, attempt)
 	}
+	if node.Type == models.NodeTypeSourceAPI && nodeIsMapped(node) {
+		return r.runMappedSourceAPI(ctx, node, edgeInputsByFrom, attempt)
+	}
+	if node.Type == models.NodeTypeTask && nodeIsMapped(node) {
+		return outputExecutionResult(r.runMappedTask(ctx, node, edgeInputsByFrom, attempt))
+	}
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {

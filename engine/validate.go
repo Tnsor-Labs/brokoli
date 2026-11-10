@@ -499,6 +499,13 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 		for _, message := range executionProfileErrors(n.Config) {
 			ve.Add(fmt.Sprintf("Node %q: %s", n.Name, message))
 		}
+		for _, msg := range mappedAPIErrors(n) {
+			ve.Add(msg)
+		}
+	case models.NodeTypeTask:
+		for _, msg := range mappedTaskErrors(n) {
+			ve.Add(msg)
+		}
 	case models.NodeTypeSourceDB:
 		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
 			ve.Add(fmt.Sprintf("Node %q: 'uri' or 'conn_id' is required for source_db", n.Name))
@@ -1041,6 +1048,9 @@ func validateNodeConfigDetailed(n models.Node, r *NodeValidationResult) {
 		if getStr(n.Config, "method") == "" {
 			r.Warnings = append(r.Warnings, "'method' not set, defaults to GET")
 		}
+		r.Errors = append(r.Errors, mappedAPIErrors(n)...)
+	case models.NodeTypeTask:
+		r.Errors = append(r.Errors, mappedTaskErrors(n)...)
 	case models.NodeTypeSourceDB:
 		if getStr(n.Config, "uri") == "" && getStr(n.Config, "conn_id") == "" {
 			r.Errors = append(r.Errors, "'uri' or 'conn_id' is required")

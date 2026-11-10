@@ -263,13 +263,15 @@ func mapUnsupportedError(n models.Node) error {
 	if _, ok := n.Config["map"]; !ok || mappableTypes[n.Type] {
 		return nil
 	}
-	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; code and source_db nodes can map", n.Name, n.ID, n.Type)
+	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; code, task, source_db and source_api nodes can map", n.Name, n.ID, n.Type)
 }
 
 // mappableTypes are the node types a `map` block can fan out.
 var mappableTypes = map[models.NodeType]bool{
-	models.NodeTypeCode:     true,
-	models.NodeTypeSourceDB: true,
+	models.NodeTypeCode:      true,
+	models.NodeTypeSourceDB:  true,
+	models.NodeTypeSourceAPI: true,
+	models.NodeTypeTask:      true,
 }
 
 // mapOverEdge reports whether an edge from `from` feeds n's `map` block:
