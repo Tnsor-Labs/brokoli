@@ -41,6 +41,9 @@ type SQLiteStore struct {
 
 // NewSQLiteStore opens (or creates) a SQLite database and runs migrations.
 func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
+	if isPrivateSQLiteDatabase(dbPath) {
+		return nil, fmt.Errorf("sqlite path %q gives each pooled connection its own private database, so tables and writes vanish between connections; use a file, such as one under t.TempDir() in a test", dbPath)
+	}
 	db, err := sql.Open("sqlite", dbPath+"?_pragma=journal_mode(wal)&_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
@@ -57,6 +60,18 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 		return nil, fmt.Errorf("run migrations: %w", err)
 	}
 	return s, nil
+}
+
+// isPrivateSQLiteDatabase reports whether dbPath names a database SQLite
+// creates afresh for every connection: ":memory:", the empty path (a
+// private temporary file), or an in-memory URI. The store pools up to 25
+// connections, so such a store loses its tables and writes between them,
+// and fails only once a second goroutine touches it (#636).
+func isPrivateSQLiteDatabase(dbPath string) bool {
+	trimmed := strings.TrimSpace(dbPath)
+	return trimmed == "" || trimmed == ":memory:" ||
+		strings.HasPrefix(trimmed, "file::memory:") ||
+		(strings.HasPrefix(trimmed, "file:") && strings.Contains(trimmed, "mode=memory"))
 }
 
 // migrate brings the schema up to date, then reconciles what follows the
