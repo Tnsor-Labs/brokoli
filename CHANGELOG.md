@@ -286,6 +286,18 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **The task bundle spec describes the bytes core writes** -- @hc12r.
+  `task-bundle-v2-canonicalization.md` said the manifest is written with
+  sorted keys, and that entries are ordered by path. `Assemble`, which
+  `brokoli bundle jvm` uses, writes the manifest as compact JSON in a fixed
+  key order, with Go's escaping, and writes directories before
+  `manifest.json` and the files. A second builder written from the spec
+  could never match core's bundles. The spec now states the exact archive:
+  the gzip header, ustar headers, entry order and modes, the manifest's key
+  order and escaping. It also says that two builders match on the
+  uncompressed tar, not on the deflate bytes. Tests pin every rule. Nothing
+  about the bundles core writes changes. (#986)
+
 - **A whole `float64` written without `.0` is a valid `float64`** -- @hc12r.
   JSON does not tell `5` from `5.0`, and task outputs keep integers exact,
   so a whole value written as `5` (JavaScript's `JSON.stringify(5.0)`, and
