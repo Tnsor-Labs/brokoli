@@ -1,18 +1,21 @@
 # Mapping a node over a collection
 
-A `code` or `source_db` node with a `map` block runs once per item of an
-upstream node's output, instead of once. Each item runs as its own
+A `code`, `task`, `source_db` or `source_api` node with a `map` block runs
+once per item of an upstream node's output, instead of once. Each item runs as its own
 instance, with its own status, and the node's output is every item's
 output combined. This is the first part of
 [ADR-050](adr/050-dynamic-pipelines.md) (issue #967).
 
-For a `code` node each item is the script's input; for a `source_db`
-node, each item's values are bound into the query.
+For a `code` or `task` node each item is its input; for a `source_db` node
+each item's values are bound into the query, and for a `source_api` node
+into the request.
 
 - [When to map](#when-to-map)
 - [The `map` block](#the-map-block)
 - [What each item sees](#what-each-item-sees)
+- [Mapping a `task` node](#mapping-a-task-node)
 - [Mapping a `source_db` node](#mapping-a-source_db-node)
+- [Mapping a `source_api` node](#mapping-a-source_api-node)
 - [Keys](#keys)
 - [How many items run at once](#how-many-items-run-at-once)
 - [When an item fails](#when-an-item-fails)
@@ -83,6 +86,43 @@ The node's output is every item's `output_data` combined in item order, the
 same way a `union` node combines datasets. An empty upstream output is not
 an error: the node runs no items and outputs an empty dataset.
 
+## Mapping a `task` node
+
+A `task` node with a `map` block runs its bundle once per item. The task
+receives the item as its input: a dataset of exactly that one row,
+checked against the task's declared input like any other input, so a row
+the contract refuses fails that item before the task sees it. The node's
+output is every item's result combined.
+
+```json
+{
+  "id": "score",
+  "type": "task",
+  "config": {
+    "task_bundle": {"digest": "sha256:...", "format": "brokoli.task-bundle/v2"},
+    "map": {"over": "customers", "key": "customer_id", "max_parallel": 8}
+  },
+  "interface": {
+    "contract": "brokoli.task-interface/v1",
+    "inputs": {"input": {"value": {"kind": "dataset"}}},
+    "outputs": {"result": {"value": {"kind": "dataset"}}}
+  }
+}
+```
+
+With remote workers each item is its own job, under its own instance key
+and attempt, so items run on as many workers as are free, up to
+`max_parallel` (see [How many items run at once](#how-many-items-run-at-once)).
+Without them, items run on the server.
+
+Two shapes are refused when the pipeline is saved:
+
+- A task that declares no input port. Each item reaches the task only as
+  its input, so such a task would run the same way for every item.
+- A task that declares an artifact or collection output. Those outputs are
+  written under a grant that belongs to the node's attempt, not to one
+  item's, so in this version a mapped task outputs datasets only.
+
 ## Mapping a `source_db` node
 
 A `source_db` node with a `map` block runs its query once per item, with
@@ -128,6 +168,69 @@ A mapped `source_db` runs its items on the server or worker running the
 node; they are not dispatched to remote workers one by one. A connection
 that reads through a native ADBC driver refuses `${item...}` references,
 as it refuses run parameters. A dry run maps only the first 3 items.
+
+## Mapping a `source_api` node
+
+A `source_api` node with a `map` block makes its request once per item,
+with `${item.column}` replaced by that item's value for the column. With
+pagination, each item's fetch paginates on its own. The edge from the node
+named in `over` is the one incoming edge a source node may have.
+
+```json
+{
+  "id": "orders",
+  "type": "source_api",
+  "config": {
+    "url": "https://api.example.com/customers/${item.customer_id}/orders?since=${item.since}",
+    "method": "POST",
+    "headers": {"X-Tenant": "${item.tenant}"},
+    "body": {"customer": "${item.customer_id}", "note": "orders for ${item.name}"},
+    "records": "results",
+    "map": {"over": "customers", "key": "customer_id", "on_item_failure": "continue"}
+  }
+}
+```
+
+Item values come from data, so each is encoded for the place it lands, and
+may only land where it cannot change where the request goes:
+
+| Where | How the value is written |
+| --- | --- |
+| The url's path | Percent-encoded as part of one path segment, so a `/`, `?` or `#` in the value stays inside it. A value that makes a segment `.` or `..` fails its item. |
+| The url's query | Percent-encoded as a query component, so a `&` or `=` in the value cannot add a parameter. |
+| A `params` value | As text; the request encodes it. |
+| A `headers` value | As text. A value with a line break or NUL fails its item. |
+| A JSON `body` | A string that is exactly one reference, such as `"${item.customer_id}"`, takes the item's value with its type: a number stays a number. A reference inside a longer string becomes text. |
+
+Anywhere else a reference is refused, when the pipeline is saved and again
+when it runs:
+
+- the url's scheme, host, port or fragment, and a url without a scheme
+  and host: an item cannot choose which server the request goes to;
+- a header or parameter name, and a field name in a JSON body;
+- a `body` given as text, whose format the engine cannot know, so it
+  cannot encode a value for it. Give the body as a JSON object or array;
+- any other setting, such as pagination or authentication.
+
+As in a `source_db` query, a reference to a column the item does not have,
+or has as null, fails that item naming the reference, and an `${item...}`
+reference in a node without a `map` block is refused.
+
+Three settings cannot be combined with `map`:
+
+- `execution.checkpoint_every`: a checkpoint belongs to the node, and every
+  item would overwrite it.
+- `"response": "artifact"`: the items' responses would have to be combined,
+  and artifacts cannot be.
+- `execution.requests_per_second` with more than one item at a time: it
+  paces one item's requests, so with four items at once the API would see
+  up to four times the declared rate. Set `"max_parallel": 1`, and the pause
+  also separates one item's last request from the next item's first, so the
+  rate holds across items.
+
+A mapped `source_api` runs its items on the server or worker running the
+node, never as remote pagination instances. A dry run maps only the first 3
+items.
 
 ## Keys
 
@@ -243,15 +346,14 @@ items, keys or another failure policy, write `map` instead.
 
 ## What cannot map yet
 
-Only `code` and `source_db` nodes can map in this version. A `map` block on
-any other node type is refused when the pipeline is saved, and again when the node runs,
-so a pipeline stored before the check cannot run that node once over its
-whole input as if the block were not there:
+`code`, `task`, `source_db` and `source_api` nodes can map in this version.
+A `map` block on any other node type is refused when the pipeline is saved,
+and again when the node runs, so a pipeline stored before the check cannot
+run that node once over its whole input as if the block were not there:
 
 ```text
-node Out (out): 'map' is not supported on sink_file nodes in this version; code and source_db nodes can map
+node Out (out): 'map' is not supported on sink_file nodes in this version; code, task, source_db and source_api nodes can map
 ```
 
-Mapping other node types, groups of nodes and calls to other pipelines are
-the next phases of [ADR-050](adr/050-dynamic-pipelines.md), tracked in
-issue #972.
+Mapping sinks, groups of nodes and calls to other pipelines are the next
+phases of [ADR-050](adr/050-dynamic-pipelines.md), tracked in issue #972.

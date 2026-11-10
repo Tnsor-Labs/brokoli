@@ -36,6 +36,21 @@ reconstruct from git archaeology.
   at save, and the `map.over` edge is the one incoming edge a source may
   have. A dry run maps the first 3 items. See `docs/mapping.md`.
 
+- **`map` on `task` and `source_api` nodes** -- @hc12r. A mapped `task`
+  runs its bundle once per item, the item its one-row input checked
+  against the task's declared input, locally or as one remote job per
+  item under the item's own attempt. A task with no input port, or with an
+  artifact or collection output, is refused. A mapped `source_api` makes
+  its request once per item, with `${item.column}` encoded for where it
+  lands: percent-encoded in the url's path (a `.` or `..` segment fails the
+  item) and query, as text in `params` and `headers` values (a header with
+  a line break fails the item), and as a typed JSON value in a JSON body.
+  A reference that could change where the request goes (the url's scheme,
+  host, port or fragment, a header or parameter name, a text body, any
+  other setting) is refused at save and at run. `checkpoint_every`,
+  `"response": "artifact"`, and `requests_per_second` with more than one
+  item at a time cannot be combined with `map`; with one at a time the
+  rate holds across items. ADR-050 (#967); see `docs/mapping.md`.
 - **Server-wide limits on mapping** -- @hc12r. An operator sets the
   item limit a `map` or `expansion` block gets when it declares none
   (`BROKOLI_MAP_DEFAULT_MAX_ITEMS`, 1000) and the most it may declare
@@ -258,6 +273,11 @@ reconstruct from git archaeology.
   dead letters outside a short list of known sites, which may only shrink.
 
 ### Fixed
+
+- **A `source_api` body given as JSON is sent** -- @hc12r. A `body` written
+  as a JSON object or array in the node's config was dropped, and the
+  request went out with no body at all. It is now sent as JSON, with
+  `Content-Type: application/json` unless the node sets its own.
 
 - **Starting a run of a pipeline that no longer validates answers 400** --
   @hc12r. A stored pipeline the validator refuses when a run is requested,

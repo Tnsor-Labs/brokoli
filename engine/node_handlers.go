@@ -151,6 +151,19 @@ func (r *Runner) runSourceFile(ctx context.Context, node models.Node) (*common.D
 // can be bounded by one: a timed-out or cancelled attempt abandons its
 // request and fetches no further page. It used a background context.
 func (r *Runner) runSourceAPI(ctx context.Context, node models.Node) (*common.DataSet, error) {
+	// One item of a mapped node: its values are bound into a copy of the
+	// config (map_api.go), and it never fetches through remote pagination
+	// instances, whose keys belong to the whole node.
+	item, mapped := mapItemFrom(ctx)
+	if mapped {
+		bound, err := bindAPIItem(node.Config, item)
+		if err != nil {
+			return nil, err
+		}
+		node.Config = bound
+	} else if path := firstItemReferencePath(node.Config, ""); path != "" {
+		return nil, fmt.Errorf("${item...} in '%s': item references are only available in a node with a 'map' block", path)
+	}
 	source, _ := node.Config["url"].(string)
 	sourceType, _ := node.Config["source_type"].(string)
 	if source == "" {
@@ -205,12 +218,14 @@ func (r *Runner) runSourceAPI(ctx context.Context, node models.Node) (*common.Da
 		r.log(node.ID, models.LogLevelWarning, "source_api execution.retry_scope=%q is not a recognized value for source_api pagination (only \"page\" applies here) — ignoring", v)
 	}
 
-	if ds, handled, remoteErr := r.runSourceAPIRemotePages(node, source, sourceType, paginationCfg, execCfg); handled {
-		if remoteErr != nil {
-			return nil, fmt.Errorf("fetch %s: %w", source, remoteErr)
+	if !mapped {
+		if ds, handled, remoteErr := r.runSourceAPIRemotePages(node, source, sourceType, paginationCfg, execCfg); handled {
+			if remoteErr != nil {
+				return nil, fmt.Errorf("fetch %s: %w", source, remoteErr)
+			}
+			r.log(node.ID, models.LogLevelInfo, "Fetched %d rows from %s through remote pagination instances", len(ds.Rows), source)
+			return ds, nil
 		}
-		r.log(node.ID, models.LogLevelInfo, "Fetched %d rows from %s through remote pagination instances", len(ds.Rows), source)
-		return ds, nil
 	}
 
 	ds, err := r.fetchSourceAPI(ctx, node, fetcher, source, hasPagination, execCfg)

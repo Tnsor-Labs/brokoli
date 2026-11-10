@@ -240,7 +240,7 @@ func dispatchedOrder(t *testing.T, node models.Node) *extensions.InstanceWorkOrd
 	q := &captureQueue{}
 	r := dispatchRigRunner(t, q)
 	// The enqueue is refused on purpose, so an error here is expected.
-	_, _ = r.dispatchTaskInstanceRemotely(node, "sha256:bundle", nil, 60, 0, 7)
+	_, _ = r.dispatchTaskInstanceRemotely(node, "sha256:bundle", nil, 60, 0, "", 7)
 	if q.job.WorkOrder == nil {
 		t.Fatalf("no work order was enqueued (job = %+v)", q.job)
 	}

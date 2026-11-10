@@ -120,7 +120,7 @@ func TestMapIsRefusedOnTypesThatCannotFanOut(t *testing.T) {
 	n := models.Node{ID: "src", Name: "Src", Type: models.NodeTypeSinkFile, Config: map[string]interface{}{
 		"path": "/tmp/x.csv", "format": "csv", "map": map[string]interface{}{"over": "up"},
 	}}
-	if err := mapUnsupportedError(n); err == nil || !strings.Contains(err.Error(), "code and source_db nodes can map") {
+	if err := mapUnsupportedError(n); err == nil || !strings.Contains(err.Error(), "code, task, source_db and source_api nodes can map") {
 		t.Fatalf("mapUnsupportedError = %v", err)
 	}
 	ve := &ValidationError{}
@@ -135,6 +135,11 @@ func TestMapIsRefusedOnTypesThatCannotFanOut(t *testing.T) {
 	}
 	if mapUnsupportedError(mapNode(map[string]interface{}{"over": "up"})) != nil {
 		t.Fatal("map on a code node refused")
+	}
+	for _, typ := range []models.NodeType{models.NodeTypeTask, models.NodeTypeSourceDB, models.NodeTypeSourceAPI} {
+		if err := mapUnsupportedError(models.Node{ID: "n", Name: "N", Type: typ, Config: map[string]interface{}{"map": map[string]interface{}{"over": "up"}}}); err != nil {
+			t.Fatalf("map on a %s node refused: %v", typ, err)
+		}
 	}
 }
 

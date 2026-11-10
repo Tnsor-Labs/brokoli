@@ -691,9 +691,13 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	}
 
 	if _, ok := r.store.(store.ExecutionAttemptStore); ok && r.instanceJobQueue != nil {
-		return r.dispatchTaskInstanceRemotely(node, digest, input, timeoutSec, attempt, execFencingGen)
+		return r.dispatchTaskInstanceRemotely(node, digest, input, timeoutSec, attempt, "", execFencingGen)
 	}
+	return r.runTaskLocally(ctx, node, digest, input, timeoutSec)
+}
 
+// runTaskLocally runs a task node's bundle in this process.
+func (r *Runner) runTaskLocally(ctx context.Context, node models.Node, digest string, input *common.DataSet, timeoutSec int) (*common.DataSet, error) {
 	var runParams map[string]string
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
@@ -771,7 +775,10 @@ func taskWorkOrderInput(node models.Node, input *common.DataSet) ([]string, []ma
 // then redundantly (but harmlessly -- RenewLease is idempotent per
 // fencing generation) renews the same lease the outer caller is already
 // renewing.
-func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, input *common.DataSet, timeoutSec, attempt int, execFencingGen int64) (*common.DataSet, error) {
+//
+// instanceKey is "" for the whole node, or one item's key when the node is
+// mapped; execFencingGen is the generation of that instance's attempt.
+func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, input *common.DataSet, timeoutSec, attempt int, instanceKey string, execFencingGen int64) (*common.DataSet, error) {
 	var runParams map[string]string
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
@@ -822,7 +829,7 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 		RunParams:         runParams,
 		TimeoutSeconds:    timeoutSec,
 	}
-	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, "", execFencingGen, workOrder, timeoutSec, r.taskJobCapabilities(digest))
+	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, instanceKey, execFencingGen, workOrder, timeoutSec, r.taskJobCapabilities(digest))
 }
 
 // taskJobCapabilities reads the bundle's manifest to learn which runtime

@@ -307,12 +307,27 @@ func (f *RESTFetcher) executeRequestContext(ctx context.Context, rawURL string, 
 	req = req.WithContext(ctx)
 
 	if options.Body != nil {
+		var payload []byte
 		switch b := options.Body.(type) {
 		case string:
-			req.Body = io.NopCloser(strings.NewReader(b))
+			payload = []byte(b)
 		case []byte:
-			req.Body = io.NopCloser(bytes.NewReader(b))
+			payload = b
+		default:
+			// A body given as JSON (an object or array in the node's
+			// config) is sent as JSON. It used to be dropped without a
+			// word, so the request went out with no body at all.
+			encoded, err := json.Marshal(b)
+			if err != nil {
+				return nil, nil, fmt.Errorf("encode request body as JSON: %w", err)
+			}
+			payload = encoded
+			if options.Headers["Content-Type"] == "" && options.Headers["content-type"] == "" {
+				req.Header.Set("Content-Type", "application/json")
+			}
 		}
+		req.Body = io.NopCloser(bytes.NewReader(payload))
+		req.ContentLength = int64(len(payload))
 	}
 
 	if options.Headers != nil {
