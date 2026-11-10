@@ -25,9 +25,23 @@ non-null `expected_pipeline_parameters` against its `pipeline_parameters`
   "python": "an illustrative (not executed) Python declaration",
   "typescript": "an illustrative (not executed) TypeScript declaration",
   "expected_node_interface": { ... } | null,
-  "expected_pipeline_parameters": { ... } | null
+  "expected_pipeline_parameters": { ... } | null,
+  "expected_interface_canonical": "the exact text the interface digest hashes",
+  "expected_interface_digest": "sha256:...",
+  "expected_parameters_canonical": "the exact text the parameters digest hashes",
+  "expected_parameters_digest": "sha256:..."
 }
 ```
+
+The four digest fields are the semantic digests of
+`../../../task-interface-canonicalization.md` section 5:
+
+- **The interface fields** cover `expected_node_interface`. When that is
+  null, they cover the unknown-rows interface a `task` node has instead.
+- **The parameters fields** appear only on a parameter vector.
+
+`pkg/taskinterface`'s tests check every value. An SDK compares its rendering
+first, so a mismatch shows which byte differs, and then its digest.
 
 A vector sets exactly one of `expected_node_interface` /
 `expected_pipeline_parameters` to a real value and the other to `null` --

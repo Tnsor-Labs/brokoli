@@ -5,5 +5,9 @@
   "expected_node_interface": null,
   "expected_pipeline_parameters": {
     "threshold": { "type": { "kind": "float64" }, "required": false, "default": 0.5 }
-  }
+  },
+  "expected_interface_canonical": "{\n  \"contract\": \"brokoli.task-interface/v1\",\n  \"inputs\": {\n    \"input\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"kind\": \"unknown\"\n        }\n      }\n    }\n  },\n  \"outputs\": {\n    \"result\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"kind\": \"unknown\"\n        }\n      }\n    }\n  }\n}\n",
+  "expected_interface_digest": "sha256:2897112391937ea03be0faaf630b6d082e1c192484a174fe32ed523d440abfa2",
+  "expected_parameters_canonical": "{\n  \"threshold\": {\n    \"default\": 0.5,\n    \"required\": false,\n    \"type\": {\n      \"kind\": \"float64\"\n    }\n  }\n}\n",
+  "expected_parameters_digest": "sha256:f90b99f924093b31b9b08e0b8bdbbdc9f3d6f19dc5a01ba4a66b941fcd065ef8"
 }

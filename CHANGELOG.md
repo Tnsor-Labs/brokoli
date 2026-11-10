@@ -13,6 +13,18 @@ reconstruct from git archaeology.
 
 ### Added
 
+- **Task interface digests, with expected values for every SDK** --
+  @hc12r. `pkg/taskinterface` computes the semantic digest of
+  `task-interface-canonicalization.md` section 5 (`CanonicalRendering`,
+  `Digest`, `InterfaceDigest`), with the canonical rendering of
+  `ir-canonicalization.md` section 2, checked against its 35 cross-SDK
+  vectors. Section 5 now says exactly what is hashed: record fields sorted
+  by name, enum values in their order, a bundle's `interface_digest` over
+  the node interface alone (the unknown-rows interface when a task declares
+  none), and a separate digest for its pipeline parameters. Each
+  differential vector carries the expected rendering and digest. They agree
+  with the values the JVM SDK and the Python SDK's renderer compute. (#990)
+
 - **One rule for numbers and key order in canonical IR** -- @hc12r.
   `ir-canonicalization.md` claimed Python's `json.dumps` and JavaScript's
   `JSON.stringify` write the same bytes. They do not: Python writes `1e-05`

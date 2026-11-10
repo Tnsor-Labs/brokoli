@@ -35,5 +35,7 @@
       }
     }
   },
-  "expected_pipeline_parameters": null
+  "expected_pipeline_parameters": null,
+  "expected_interface_canonical": "{\n  \"contract\": \"brokoli.task-interface/v1\",\n  \"inputs\": {\n    \"input\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"additional_fields\": false,\n          \"fields\": [\n            {\n              \"name\": \"amount\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"float64\"\n              }\n            },\n            {\n              \"name\": \"id\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"int64\"\n              }\n            }\n          ],\n          \"kind\": \"record\"\n        }\n      }\n    }\n  },\n  \"outputs\": {\n    \"result\": {\n      \"value\": {\n        \"kind\": \"dataset\",\n        \"row\": {\n          \"additional_fields\": false,\n          \"fields\": [\n            {\n              \"name\": \"id\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"int64\"\n              }\n            },\n            {\n              \"name\": \"score\",\n              \"required\": true,\n              \"type\": {\n                \"kind\": \"float64\"\n              }\n            }\n          ],\n          \"kind\": \"record\"\n        }\n      }\n    }\n  }\n}\n",
+  "expected_interface_digest": "sha256:9cafa1928228075df133ae607539fe10f14ad8adbe82e1fd2b71ab3af8290b3c"
 }

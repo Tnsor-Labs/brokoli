@@ -74,7 +74,9 @@ implementation is checked against:
    order for hashing. Dataset schemas needing presentation/physical
    column order use the descriptor's explicit `column_order` list (see
    `value_dataset` in `task-interface-v1.json`); declaration order in
-   `fields` alone is never semantic. Array value order remains semantic.
+   `fields` alone is never semantic. Array value order remains semantic,
+   and so does every other list's: an `enum`'s `values` keep their declared
+   order, and reordering them changes the digest.
 3. `int64` uses `0` or `-?[1-9][0-9]*`: no leading plus, no leading
    zero (beyond the bare `0` case), and the value must fit the signed
    64-bit range.
@@ -120,16 +122,38 @@ and pass the same round-trip vectors as the JSON codec.
 
 ## 5. Digest
 
-Once a Go implementation exists (a named follow-up, not this document),
-the digest formula mirrors `ir-canonicalization.md` section 3:
-
 ```
 digest = "sha256:" + lowercase_hex(sha256(utf8_bytes(canonical_rendering)))
 ```
 
-applied to the canonically rendered, key-sorted JSON of the object being
-digested (a task interface, a pipeline's parameter declarations, or a
-portable value) — never to native in-memory representations.
+The canonical rendering of a document is:
+
+1. every record descriptor's `fields` sorted by `name`, in UTF-8 byte
+   order (rule 2); every other list kept in its order;
+2. then rendered by `ir-canonicalization.md` section 2, the same rendering
+   the pipeline IR digest uses: two-space indent, keys in code point order,
+   numbers by RFC 8785, one trailing newline.
+
+It is never applied to an SDK's native in-memory representation. Which
+document is digested:
+
+- **A task bundle's `interface_digest`** is the digest of the task node's
+  interface, and of nothing else. A task that declares no interface (it
+  takes and returns rows whose schema it does not declare) digests the
+  interface a `task` node has in that case, one input and one result port,
+  each a dataset of unknown rows:
+  `{"contract": "brokoli.task-interface/v1", "inputs": {"input": {"value": {"kind": "dataset", "row": {"kind": "unknown"}}}}, "outputs": {"result": {"value": {"kind": "dataset", "row": {"kind": "unknown"}}}}}`.
+- **A task's pipeline parameters** have a digest of their own, over the
+  `pipeline_parameters` object. Parameters are pipeline level (ADR-032
+  section 7), so they are not part of the interface digest.
+
+`pkg/taskinterface` implements this (`CanonicalRendering`, `Digest`,
+`InterfaceDigest`). Every vector in `fixtures/task-interface/differential`
+carries the exact rendering and digest of its interface
+(`expected_interface_canonical`, `expected_interface_digest`) and, for a
+parameter vector, of its parameters (`expected_parameters_canonical`,
+`expected_parameters_digest`). Every SDK compares its own with these, so the
+first implementation does not define the bytes by accident (#990).
 
 ## 6. Assignability (reference, not restated in full)
 
