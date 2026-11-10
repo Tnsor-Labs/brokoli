@@ -327,6 +327,12 @@ reconstruct from git archaeology.
   its runs could not be read, so an outage looked like an empty workspace.
   A failed read now answers 500 (#591). The UI's 200-run caveats are gone.
 
+- **The login screen no longer offers a password form the server refuses**
+  -- @hc12r. `GET /api/auth/methods` always said `"password": true`, even
+  when an integration had turned password login off through
+  `PasswordLoginEnabledFunc`, so the screen showed a form whose every
+  attempt was refused. It now applies the login handler's own check, and a
+  test holds the two together. (#594)
 - **The task bundle spec describes the bytes core writes** -- @hc12r.
   `task-bundle-v2-canonicalization.md` said the manifest is written with
   sorted keys, and that entries are ordered by path. `Assemble`, which
