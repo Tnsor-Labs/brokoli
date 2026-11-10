@@ -129,10 +129,7 @@ func TestOpeningAnOlderDatabaseScopesConnectionIDs(t *testing.T) {
 // On Postgres the server-wide constraint older versions created inline is
 // dropped on open, and the per-workspace index takes its place.
 func TestOpeningAnOlderPostgresDatabaseScopesConnectionIDs(t *testing.T) {
-	url := os.Getenv("BROKOLI_TEST_POSTGRES_URL")
-	if url == "" {
-		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
-	}
+	url := throwawayPostgresURL(t)
 	s, err := NewPostgresStore(url)
 	if err != nil {
 		t.Fatal(err)

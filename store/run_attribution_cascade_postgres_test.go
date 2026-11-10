@@ -140,7 +140,13 @@ func TestPostgresAttributionHasItsForeignKey(t *testing.T) {
 // deployments that matter: they all have the constraint-free table
 // already. So this puts one back and re-runs the migration.
 func TestPostgresMigratesAPreExistingTable(t *testing.T) {
-	s := openAttributionTestPostgresStore(t)
+	// It drops a constraint, so on a database of its own, never the
+	// shared one other packages' tests are using at the same time.
+	s, err := NewPostgresStore(throwawayPostgresURL(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
 
 	orphan := fmt.Sprintf("pg-ghost-%d", time.Now().UnixNano())
 	t.Cleanup(func() {
