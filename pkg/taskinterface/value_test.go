@@ -229,3 +229,31 @@ func TestValidateValue_ErrorNamesPath(t *testing.T) {
 		t.Errorf("expected error to name the field path $.score, got: %v", err)
 	}
 }
+
+// A float64 cannot tell 2^53 from 2^53+1, so an untagged whole float64 is
+// an int64 only up to 2^53 - 1: beyond it, the value that would pass may be
+// one the producer never wrote (#979). The exact forms keep every 64-bit
+// value.
+func TestValidateValue_Int64_PlainFloatOnlyWithinTheSafeIntegerRange(t *testing.T) {
+	ty := mustType(t, `{"kind": "int64"}`)
+	for _, ok := range []float64{9007199254740991, -9007199254740991, 0} {
+		if err := ValidateValue(ok, ty, "$"); err != nil {
+			t.Errorf("%v refused: %v", ok, err)
+		}
+	}
+	// JSON 9007199254740993 decodes to exactly 2^53.
+	if got := mustJSON(t, `9007199254740993`).(float64); got != 9007199254740992 {
+		t.Fatalf("decoded %v, the premise of this test no longer holds", got)
+	}
+	for _, refused := range []interface{}{mustJSON(t, `9007199254740993`), float64(9007199254740992), float64(-9007199254740992), 1e19, -1e300} {
+		err := ValidateValue(refused, ty, "$")
+		if err == nil || !strings.Contains(err.Error(), "beyond 2^53 - 1") || !strings.Contains(err.Error(), `"$bptd": "int64"`) {
+			t.Errorf("%v: err = %v, want a refusal naming the tagged form", refused, err)
+		}
+	}
+	for _, exact := range []interface{}{int64(9007199254740993), int64(-9223372036854775808), mustJSON(t, `{"$bptd": "int64", "value": "9007199254740993"}`)} {
+		if err := ValidateValue(exact, ty, "$"); err != nil {
+			t.Errorf("exact form %v refused: %v", exact, err)
+		}
+	}
+}

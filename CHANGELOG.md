@@ -274,6 +274,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **An int64 beyond 2^53 is no longer accepted as a plain number** --
+  @hc12r. Task interface validation accepted any whole float64 as an
+  `int64`, so a value a JSON decoder had already rounded (`9007199254740993`
+  arrives as `9007199254740992`) passed as if it were what was written. A
+  plain JSON number is now an `int64` only up to 2^53 - 1. Beyond that the
+  value must be tagged, `{"$bptd": "int64", "value": "..."}`, or come from a
+  decoder that keeps integers. This applies to run parameters, defaults and
+  task outputs. A run parameter of 2^53 or more sent as a plain number is
+  now refused with a 400 naming the tagged form, where it used to run with
+  a different number. (#979)
+
 - **A `source_api` body given as JSON is sent** -- @hc12r. A `body` written
   as a JSON object or array in the node's config was dropped, and the
   request went out with no body at all. It is now sent as JSON, with
