@@ -57,8 +57,8 @@ than one run per row.
 | --- | --- | --- |
 | `over` | yes | The upstream node whose output rows are the items, by node ID. There must be an edge from it to this node. To zip several collections item by item, give an object of name to node ID instead: `{"file": "files", "schema": "schemas"}`. Every named collection must then have the same number of rows, and each item is that index's row from each of them, merged. |
 | `key` | no | The item column whose value identifies the item. See [Keys](#keys). Without it, items are identified by position. |
-| `max_items` | no | The most items the node may fan out into. More items fail the node. Default 1000. |
-| `max_parallel` | no | How many items run at once. Default 4. See [How many items run at once](#how-many-items-run-at-once). |
+| `max_items` | no | The most items the node may fan out into. More items fail the node. Default 1000, or what the server sets; at most 100000, or the server's ceiling. See [Limits](#limits). |
+| `max_parallel` | no | How many items run at once. Default 4, or what the server sets; at most 64, or the server's ceiling. See [How many items run at once](#how-many-items-run-at-once). |
 | `on_item_failure` | no | `fail` (default), `continue` or `skip`. See [When an item fails](#when-an-item-fails). |
 
 Any other setting inside `map` is refused when the pipeline is saved, so a
@@ -146,14 +146,18 @@ recognise it on a retry.
 ## How many items run at once
 
 On the server or worker that runs the node, up to `max_parallel` items run
-at the same time, 4 when the block does not say. Code items share that
+at the same time, 4 when the block does not say (the server's default, see
+[Limits](#limits)). Code items share that
 process's code workers and CPU with every other node of the run, so a
 larger number helps items that wait on the network more than items that
 compute.
 
 When items are dispatched to remote workers, up to `max_parallel` of them
-are in flight at once, and never more than 16 for one node, whatever
-`max_parallel` says.
+are in flight at once, and never more than the server's remote bound (16
+unless the operator changes it) for one node. A higher `max_parallel` is
+lowered to that bound for remote items, not refused, and the node's log says
+so: the bound protects the job queue, and the same pipeline may run with
+more at once on a server without remote workers.
 
 ## When an item fails
 
@@ -178,6 +182,42 @@ node Fetch orders (fetch_orders): expansion would create 6200 instances, exceedi
 ```
 
 The collection is never truncated to fit.
+
+### Server-wide limits
+
+The operator of a Brokoli server sets the defaults a block gets when it
+declares no limit, and the ceilings on what it may declare, with these
+environment variables on the server and on every worker:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `BROKOLI_MAP_DEFAULT_MAX_ITEMS` | 1000 | The item limit of a `map` block without `max_items`, or an `expansion` block without `max_instances`. |
+| `BROKOLI_MAP_MAX_ITEMS` | 100000 | The most items a block may declare in `max_items` or `max_instances`. |
+| `BROKOLI_MAP_DEFAULT_MAX_PARALLEL` | 4 | How many items of a `map` block without `max_parallel` run at once on one server or worker. |
+| `BROKOLI_MAP_MAX_PARALLEL` | 64 | The most a block may declare in `max_parallel`. |
+| `BROKOLI_MAP_MAX_REMOTE_PARALLEL` | 16 | The most items of one node in flight on remote workers at once. A higher `max_parallel` is lowered to it for remote items. |
+
+A block that declares more than a ceiling is refused when the pipeline is
+saved, and again when the node runs, since the ceiling may have been lowered
+since the pipeline was saved:
+
+```text
+node Fetch orders (fetch_orders): 'map.max_items' is 200000, above this server's ceiling of 100000 items (BROKOLI_MAP_MAX_ITEMS)
+```
+
+A collection over the server's default names the default and how far the
+block may raise it:
+
+```text
+node Fetch orders (fetch_orders): expansion would create 1200 instances, exceeding the configured limit of 1000 (this server's default, BROKOLI_MAP_DEFAULT_MAX_ITEMS; set map.max_items to raise it, up to 100000) ...
+```
+
+A variable that is not a whole number of at least 1 is ignored, and a
+default above its ceiling is lowered to the ceiling. Either way, the log of
+every mapped node carries a warning naming the variable, so a mistyped
+value does not pass unnoticed. Set the same values on the server and its
+workers: a pipeline is checked against the server's limits when it is saved,
+and its nodes against the limits of whatever runs them.
 
 ## Retries
 

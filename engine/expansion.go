@@ -194,9 +194,12 @@ type expansionConfig struct {
 	// Key is expand()'s optional key= callable, serialized as a name/doc
 	// reference only (see funcRef) — not executable. Nil when absent.
 	Key *funcRef
-	// MaxInstances bounds the fan-out; defaultMaxExpansionInstances when
-	// not set in config.
+	// MaxInstances bounds the fan-out: the block's max_items or
+	// max_instances, or the server default (mapLimits.DefaultItems).
 	MaxInstances int
+	// maxInstancesDeclared reports MaxInstances came from the block, not
+	// from the server default.
+	maxInstancesDeclared bool
 	// KeyColumn names the item column whose value is the instance key
 	// (map's "key"). Empty means index keys (idx:N).
 	KeyColumn string
@@ -208,21 +211,30 @@ type expansionConfig struct {
 	// fromMap reports the config came from a `map` block, which runs
 	// local items in parallel by default; `expansion` stays sequential.
 	fromMap bool
+	// limits are the server's mapping limits when the block was parsed.
+	limits mapLimits
 }
 
 // parallelism is how many items run at once on this runner.
+// Remote items are also bounded by mapLimits.MaxRemoteParallel, which
+// lowers a higher max_parallel instead of refusing it: it protects the job
+// queue, and the same pipeline may run locally elsewhere.
 func (c *expansionConfig) parallelism(remote bool) int {
+	limits := c.limits
+	if limits.MaxRemoteParallel == 0 {
+		limits = currentMapLimits()
+	}
 	if c.MaxParallel > 0 {
-		if remote && c.MaxParallel > maxConcurrentRemoteExpansionDispatch {
-			return maxConcurrentRemoteExpansionDispatch
+		if remote && c.MaxParallel > limits.MaxRemoteParallel {
+			return limits.MaxRemoteParallel
 		}
 		return c.MaxParallel
 	}
 	switch {
 	case remote:
-		return maxConcurrentRemoteExpansionDispatch
+		return limits.MaxRemoteParallel
 	case c.fromMap:
-		return defaultMapMaxParallel
+		return limits.DefaultParallel
 	default:
 		return 1
 	}
@@ -317,7 +329,8 @@ func parseExpansionConfig(node models.Node) (*expansionConfig, error) {
 		over[param] = s
 	}
 
-	cfg := &expansionConfig{Over: over, MaxInstances: defaultMaxExpansionInstances}
+	limits := currentMapLimits()
+	cfg := &expansionConfig{Over: over, MaxInstances: limits.DefaultItems, limits: limits}
 
 	if keyRaw, ok := expMap["key"]; ok {
 		keyMap, ok := keyRaw.(map[string]interface{})
@@ -335,6 +348,10 @@ func parseExpansionConfig(node models.Node) (*expansionConfig, error) {
 			return nil, fmt.Errorf("node %s (%s): 'expansion.max_instances' must be a positive number", node.Name, node.ID)
 		}
 		cfg.MaxInstances = int(mi)
+		cfg.maxInstancesDeclared = true
+		if err := limits.itemCeilingError(fmt.Sprintf("node %s (%s)", node.Name, node.ID), "expansion.max_instances", cfg.MaxInstances); err != nil {
+			return nil, err
+		}
 	}
 
 	cfg.OnItemFailure = onItemFailureFail
@@ -355,7 +372,8 @@ func parseMapConfig(node models.Node) (*expansionConfig, error) {
 			return nil, fmt.Errorf("%s: 'map.%s' is not a map setting; the settings are over, key, max_items, max_parallel and on_item_failure", where, k)
 		}
 	}
-	cfg := &expansionConfig{MaxInstances: defaultMaxExpansionInstances, OnItemFailure: onItemFailureFail, fromMap: true}
+	limits := currentMapLimits()
+	cfg := &expansionConfig{MaxInstances: limits.DefaultItems, OnItemFailure: onItemFailureFail, fromMap: true, limits: limits}
 	switch over := block["over"].(type) {
 	case string:
 		if over == "" {
@@ -400,9 +418,15 @@ func parseMapConfig(node models.Node) (*expansionConfig, error) {
 		return nil, err
 	}
 	if maxItems > 0 {
-		cfg.MaxInstances = maxItems
+		if err := limits.itemCeilingError(where, "map.max_items", maxItems); err != nil {
+			return nil, err
+		}
+		cfg.MaxInstances, cfg.maxInstancesDeclared = maxItems, true
 	}
 	if cfg.MaxParallel, err = positive("max_parallel"); err != nil {
+		return nil, err
+	}
+	if err := limits.parallelCeilingError(where, cfg.MaxParallel); err != nil {
 		return nil, err
 	}
 	if raw, ok := block["on_item_failure"]; ok {
@@ -654,6 +678,20 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	})
 }
 
+// itemLimitError refuses a collection with more items than the node may
+// fan out into, naming the count, the limit and where the limit came from.
+func itemLimitError(node models.Node, cfg *expansionConfig, count int) error {
+	setting := "expansion.max_instances"
+	if cfg.fromMap {
+		setting = "map.max_items"
+	}
+	source := fmt.Sprintf("(%s)", setting)
+	if !cfg.maxInstancesDeclared {
+		source = fmt.Sprintf("(this server's default, %s; set %s to raise it, up to %d)", envMapDefaultMaxItems, setting, cfg.limits.MaxItems)
+	}
+	return fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d %s — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, count, cfg.MaxInstances, source)
+}
+
 // fanOut runs runItem once per item and combines the results: the part of
 // mapping every node type shares (ADR-050). It enforces the item limit,
 // derives the instance keys, reuses items that succeeded on an earlier
@@ -661,12 +699,11 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 // once, and applies cfg.OnItemFailure. runItem runs one item and records
 // it; executeMappedInstance does the recording for every node type.
 func (r *Runner) fanOut(ctx context.Context, node models.Node, cfg *expansionConfig, items []common.DataRow, nodeAttempt int, remote bool, runItem func(ctx context.Context, i int, key string) (*common.DataSet, error)) (*common.DataSet, error) {
+	for _, w := range cfg.limits.Warnings {
+		r.log(node.ID, models.LogLevelWarning, "%s", w)
+	}
 	if len(items) > cfg.MaxInstances {
-		limit := "expansion.max_instances"
-		if cfg.fromMap {
-			limit = "map.max_items"
-		}
-		return nil, fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d (%s) — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, len(items), cfg.MaxInstances, limit)
+		return nil, itemLimitError(node, cfg, len(items))
 	}
 	keys, err := instanceKeys(node, cfg, items)
 	if err != nil {
@@ -674,6 +711,9 @@ func (r *Runner) fanOut(ctx context.Context, node models.Node, cfg *expansionCon
 	}
 
 	parallel := cfg.parallelism(remote)
+	if remote && cfg.MaxParallel > parallel {
+		r.log(node.ID, models.LogLevelInfo, "expansion: map.max_parallel is %d; dispatching at most %d item(s) to remote workers at once (%s)", cfg.MaxParallel, parallel, envMapMaxRemoteParallel)
+	}
 	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s), %d at a time", len(items), parallel)
 
 	// slots holds each item's eventual result at its original index, so

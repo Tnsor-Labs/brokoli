@@ -99,6 +99,14 @@ func (h *RunHandler) TriggerRun(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		// A stored pipeline the validator now refuses, for example one
+		// declaring more items than a ceiling lowered since it was saved,
+		// is the same 400 saving it would get, not a server fault.
+		var invalid *engine.ValidationError
+		if errors.As(err, &invalid) {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
