@@ -993,6 +993,15 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 	now := time.Now().UTC()
 	clone.CreatedAt = now
 	clone.UpdatedAt = now
+	// What identifies or belongs to the original is not copied:
+	//   - its webhook token is a secret, and a copy armed with it would be
+	//     triggerable by whoever holds the original's;
+	//   - a copy lives only here, so it is a UI pipeline even when the
+	//     original is managed in Git, where it would refuse every edit;
+	//   - its pipeline_id is unique within the workspace, so the copy gets
+	//     its own below (#590).
+	clone.WebhookToken = ""
+	clone.Source = models.PipelineSourceUI
 
 	// Map old node IDs to new ones
 	idMap := make(map[string]string, len(orig.Nodes))
@@ -1050,11 +1059,41 @@ func (h *PipelineHandler) Clone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.CreatePipeline(&clone); err != nil {
+	// Retried on the store's own uniqueness check rather than looked up
+	// first, so two clones at once cannot take the same slug.
+	for _, slug := range cloneSlugs(orig.PipelineID) {
+		clone.PipelineID = slug
+		if err = h.store.CreatePipeline(&clone); !errors.Is(err, store.ErrDuplicatePipelineID) {
+			break
+		}
+	}
+	if err != nil {
+		if errors.Is(err, store.ErrDuplicatePipelineID) {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	writeJSON(w, http.StatusCreated, clone)
+}
+
+// maxCloneSlugAttempts bounds how many "-copy-N" slugs a clone tries.
+const maxCloneSlugAttempts = 50
+
+// cloneSlugs is the pipeline_ids a clone of a pipeline with slug base
+// tries, in order: base-copy, base-copy-2, base-copy-3 and so on. A base of
+// "" (a pipeline with no slug) gives only "": an empty pipeline_id is never
+// unique-checked, so it cannot collide.
+func cloneSlugs(base string) []string {
+	if base == "" {
+		return []string{""}
+	}
+	slugs := []string{base + "-copy"}
+	for n := 2; n <= maxCloneSlugAttempts; n++ {
+		slugs = append(slugs, fmt.Sprintf("%s-copy-%d", base, n))
+	}
+	return slugs
 }
 
 func (h *PipelineHandler) ValidateNodes(w http.ResponseWriter, r *http.Request) {
