@@ -94,7 +94,7 @@ export function FleetTable({ rows, now }: { rows: FleetRow[]; now: number }) {
                   ) : (
                     <span
                       className={cx('ob-health', `is-${rateTone(health)}`)}
-                      title={`${p.runs_success} of ${p.runs_success + p.runs_failed} finished runs succeeded, among its newest 200 runs`}
+                      title={`${p.runs_success} of ${p.runs_success + p.runs_failed} finished runs succeeded`}
                     >
                       <i>
                         <b style={{ width: `${health}%` }} />

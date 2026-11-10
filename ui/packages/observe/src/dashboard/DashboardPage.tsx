@@ -198,7 +198,6 @@ export function DashboardPage({ banner }: { banner?: ReactNode } = {}) {
               {s?.trends && <Sparkline trends={s.trends} />}
             </Stat>
           </div>
-          <p className="ob-small ob-quiet ob-footnote">The per-pipeline table below counts each pipeline's newest 200 runs, so a very busy pipeline can be undercounted. The totals above count every run.</p>
           <div className="ob-dash-grid">
             <Panel title="Recent runs" subtitle="The newest 50 runs, grouped by pipeline" action={<Link to="/pipelines">All pipelines</Link>}>
               {s ? <RecentRuns stats={s} now={now} /> : stats.isPending ? <Skeleton height={200} /> : <p className="ob-empty-line">Unavailable.</p>}
