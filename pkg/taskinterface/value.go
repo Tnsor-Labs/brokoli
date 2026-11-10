@@ -3,6 +3,7 @@ package taskinterface
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"math/big"
 	"regexp"
 	"time"
@@ -110,6 +111,10 @@ func validateStringValue(raw interface{}, t Type, path string) error {
 
 var canonicalInt64Pattern = regexp.MustCompile(`^(0|-?[1-9][0-9]*)$`)
 
+// maxSafeInteger is 2^53 - 1, the largest whole number every integer up
+// to which a float64 holds exactly.
+const maxSafeInteger = 1<<53 - 1
+
 func validateInt64Value(raw interface{}, t Type, path string) error {
 	var s string
 	if kind, tv, ok := taggedValue(raw); ok {
@@ -132,12 +137,19 @@ func validateInt64Value(raw interface{}, t Type, path string) error {
 		s = fmt.Sprintf("%d", i)
 	} else if f, ok := raw.(float64); ok {
 		// Plain JSON number convenience form, valid only when it is a
-		// whole number (a fractional int64 value makes no sense either
-		// way, and a tagged string is required beyond 2^53 -- ADR-032
-		// section 4's own JS bigint guidance implies exactly this limit
-		// for the untagged convenience form).
-		if f != float64(int64(f)) {
+		// whole number within the safe-integer range (RFC 7493 section
+		// 2.2, JavaScript's Number.isSafeInteger). A float64 cannot tell
+		// 2^53 from 2^53+1: a decoder that turned 9007199254740993 into a
+		// float64 hands over exactly 2^53, a value the producer never
+		// wrote. Accepting it here would sign off on the lossy form, so
+		// from 2^53 on the exact forms are required: a Go int64 from a
+		// decoder that keeps integers, or a tagged string. The bound is
+		// strict at 2^53 for that reason, not <=.
+		if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
 			return fmt.Errorf("%s: %v is not a whole number", path, f)
+		}
+		if math.Abs(f) > maxSafeInteger {
+			return fmt.Errorf("%s: %.0f is beyond 2^53 - 1 as a plain JSON number, which may already have been rounded to it; send larger whole numbers tagged, as {\"$bptd\": \"int64\", \"value\": \"<digits>\"}", path, f)
 		}
 		s = fmt.Sprintf("%d", int64(f))
 	} else {
