@@ -371,6 +371,14 @@ reconstruct from git archaeology.
   now refused with a 400 naming the tagged form, where it used to run with
   a different number. (#979)
 
+- **Two task-node fallbacks say so in the server log** -- @hc12r. A store
+  that cannot pin a resolved execution record makes every attempt select
+  its payload afresh, so a retry can run a different payload; that is now
+  logged once per store type. When a remote task job cannot be tagged with
+  the runtimes its bundle needs, because the store cannot read bundles, the
+  bundle is missing, or its manifest is unreadable, the job still carries
+  only the protocol tag, and that is now logged too, naming the bundle.
+  Neither changed behaviour before; both were silent. (part of #529)
 - **A `source_api` body given as JSON is sent** -- @hc12r. A `body` written
   as a JSON object or array in the node's config was dropped, and the
   request went out with no body at all. It is now sent as JSON, with
