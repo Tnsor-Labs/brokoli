@@ -1,31 +1,72 @@
 # Task bundle v2 canonicalization and archive safety (ADR-033 section 2)
 
-This is the spec a future archive-handling implementation must match — it
+This is the spec every archive-handling implementation must match — it
 is not the implementation itself, exactly like
 `task-interface-canonicalization.md`'s own scoping note. `task-bundle-v2.json`
 validates the manifest *document*; the rules below govern the *archive
 bytes* the manifest describes, which a JSON Schema cannot express.
 
-Not yet implemented anywhere in this repository (rollout phase 0, issue
-#439 step 5): no Go code parses, extracts, or verifies a `brokoli.task-bundle/v2`
-archive yet. `pkg/taskbundle` implements `task-bundle/1` (ADR-031) only, and
-is not amended by this document — the two formats are additive per
-ADR-035 Decision 1.
+`pkg/taskbundlev2` implements it: `Assemble` writes an archive, and
+`ReadManifest`/`Extract` read and verify one; `brokoli bundle jvm`
+builds a JVM bundle through `Assemble`. `pkg/taskbundle` implements
+`task-bundle/1` (ADR-031) only, and is not amended by this document — the
+two formats are additive per ADR-035 Decision 1.
 
 ## Canonicalization (ADR-033 section 2 rule 1)
 
-Two archives built from equivalent input must produce the same bundle
-digest:
+Two archives built from equivalent input must have the same contents, so
+every builder writes the archive below. This section is normative for any
+implementation that must produce the same bundle as core's (an SDK's
+bundle plugin, for one), and `pkg/taskbundlev2`'s tests pin each rule.
 
-- entries ordered by normalized path, byte-for-byte (code-point
-  comparison, not locale-sensitive);
-- fixed archive-entry timestamps, ownership, and permission modes —
-  never the build machine's clock or user/group IDs;
-- one fixed, deterministic compression setting;
-- the manifest's own JSON serialization is canonical (sorted keys, fixed
-  whitespace) before it is hashed or archived, matching the discipline
-  `models/ir.go`'s `normalizeIR`/`canonicalJSON` (Go) and `brokoli.ir`
-  (Python)/`src/ir.ts` (TypeScript) already establish for pipeline IR.
+**Compression.** The archive is a gzip stream: no optional fields (no file
+name, comment or extra field), `MTIME` 0, `OS` 255, at the default
+compression level. The deflate bytes themselves are not normative:
+neither Go nor zlib promises the same compressed bytes across versions.
+The bundle digest is the SHA-256 of the archive's own bytes, so it
+reproduces for one builder and compressor. Parity between two builders is
+defined on the uncompressed tar stream, which must be byte-identical.
+
+**Tar stream.** POSIX ustar headers (`ustar\0` magic, version `00`),
+modification time 0 (the Unix epoch), uid and gid 0, empty user and group
+names, and entries in exactly this order:
+
+1. a directory entry for every directory that contains a file, at any
+   depth, in byte order of its slash path, written without a trailing
+   slash, with mode 0700 and size 0;
+2. `manifest.json`, mode 0600;
+3. every file, in byte order of its slash path (byte order of UTF-8 is
+   code-point order, never locale-sensitive), mode 0600.
+
+**`manifest.json`** is compact JSON: no whitespace between tokens and no
+trailing newline. Each object's keys are written in this order, and an
+optional key is left out when its value is empty (empty string, absent
+object, or an empty or absent list):
+
+| Object | Keys, in order (optional ones in italics) |
+| --- | --- |
+| manifest | `format`, `name`, `interface_digest`, `source_digest`, *`build`*, `payloads`, `files` |
+| `build` | `builder`, *`attestation`* |
+| payload | `id`, `runtime`, *`requires`*, `os`, `arch`, `entrypoint`, `effects`, *`dependency_lock`*, `payload_digest`, *`image`* |
+| `entrypoint` | *`module`*, *`symbol`*, *`executable`*, *`command`*, *`args`* |
+| `image` | `digest`, *`reference`* |
+| file | `path`, `size`, `sha256` |
+
+`files` lists every file of the archive except `manifest.json`, in the
+same byte order as the tar entries. Each file has its byte `size` and the
+lowercase hex SHA-256 of its bytes. Strings are written as Go's
+`encoding/json` writes them:
+- `"`, `\`, `\n`, `\r` and `\t` take their two-character escapes;
+- every other character below U+0020, and `<`, `>`, `&`, U+2028 and
+  U+2029, are written as `\u` with four lowercase hex digits;
+- everything else is literal UTF-8.
+
+Numbers are decimal integers.
+
+This is `json.Marshal` of the `taskbundlev2.Manifest` struct, which lists
+its fields in this order. The keys are deliberately not sorted:
+reordering them would give every bundle built from the same input a new
+digest (#986).
 
 ## Path safety (rule 2)
 
