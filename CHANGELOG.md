@@ -274,6 +274,16 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A whole `float64` written without `.0` is a valid `float64`** -- @hc12r.
+  JSON does not tell `5` from `5.0`, and task outputs keep integers exact,
+  so a whole value written as `5` (JavaScript's `JSON.stringify(5.0)`, and
+  RFC 8785) reached validation as an `int64` and was refused with
+  `expected float64, got int64`. A Node task returning `5.0` for a
+  `float64` field failed its own output contract. An integer is now a
+  `float64` when a `float64` holds it exactly, up to 2^53 in magnitude, and
+  bounds apply to it as to the equal `float64`. Beyond 2^53 it is refused.
+  (#983)
+
 - **Task nodes receive their declared parameters, typed and with defaults**
   -- @hc12r. A `task` node's keyword arguments were the run's string
   parameters, locally and on remote workers, so a declared `float64`
