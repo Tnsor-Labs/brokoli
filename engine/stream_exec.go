@@ -947,7 +947,7 @@ func (r *Runner) runSourceDBStreamed(ctx context.Context, node models.Node, outp
 	if isBigQueryURI(uri) {
 		return nodeExecutionResult{}, fmt.Errorf("BigQuery does not support streaming query in this build")
 	}
-	query, args, err := r.bindNodeSQL(uri, query)
+	query, args, err := r.bindNodeSQL(ctx, uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("source_db query: %w", err)
 	}

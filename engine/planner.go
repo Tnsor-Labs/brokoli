@@ -59,7 +59,7 @@ func planNode(n models.Node) models.PhysicalWorkUnit {
 	// block fans out to one instance per item in the resolved upstream
 	// collection. The explanation reads the same parsed config the runtime
 	// uses, so it cannot describe a limit the runtime does not apply.
-	if nodeHasExpansion(n) {
+	if nodeHasExpansion(n) || nodeIsMapped(n) {
 		u.Kind = models.WorkUnitExpansion
 		u.RuntimeResolved = true
 		u.StaticInstanceCount = 0

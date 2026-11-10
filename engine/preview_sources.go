@@ -154,7 +154,7 @@ func (r *Runner) previewSourceDB(ctx context.Context, node models.Node, attempt 
 	if uri == "" || query == "" || isBigQueryURI(uri) {
 		return nodeExecutionResult{}, false, nil
 	}
-	query, args, err := r.bindNodeSQL(uri, query)
+	query, args, err := r.bindNodeSQL(ctx, uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, true, fmt.Errorf("source_db query: %w", err)
 	}

@@ -1,11 +1,14 @@
 package engine
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 )
 
 // Run parameters in SQL are bound, never spliced (#774).
@@ -86,8 +89,14 @@ func sqlParamDialectFor(uri string) sqlParamDialect {
 
 // hasSQLParamReference reports whether a query names a run parameter.
 func hasSQLParamReference(query string) bool {
-	return paramReference.MatchString(query)
+	return boundSQLReference.MatchString(query)
 }
+
+// boundSQLReference matches the references a query binds: a run parameter
+// (${param.x}) or, in a node with a `map` block, a column of the item it
+// runs for (${item.x}). Both come from outside the pipeline's text, both
+// are bound and never spliced, under the same rules.
+var boundSQLReference = regexp.MustCompile(`\$\{(param|item)\.[^}]*\}`)
 
 var (
 	sqlWholeNumber = regexp.MustCompile(`^-?[0-9]+$`)
@@ -196,7 +205,7 @@ func bindSQLParams(query string, d sqlParamDialect, resolve func(key string) str
 				continue
 			}
 			end, err := skipQuoted(rest, '"', "as a quoted name",
-				"a table or column name cannot be a run parameter; use a fixed name, or a workspace variable (${var.x}) set by an editor")
+				"a table or column name cannot be a run parameter or a map item value; use a fixed name, or a workspace variable (${var.x}) set by an editor")
 			if err != nil {
 				return "", nil, err
 			}
@@ -204,14 +213,14 @@ func bindSQLParams(query string, d sqlParamDialect, resolve func(key string) str
 			i += end
 		case rest[0] == '`':
 			end, err := skipQuoted(rest, '`', "as a quoted name",
-				"a table or column name cannot be a run parameter; use a fixed name, or a workspace variable (${var.x}) set by an editor")
+				"a table or column name cannot be a run parameter or a map item value; use a fixed name, or a workspace variable (${var.x}) set by an editor")
 			if err != nil {
 				return "", nil, err
 			}
 			out.WriteString(rest[:end])
 			i += end
-		case strings.HasPrefix(rest, "${param."):
-			ref := paramReference.FindString(rest)
+		case strings.HasPrefix(rest, "${param.") || strings.HasPrefix(rest, "${item."):
+			ref := boundSQLReference.FindString(rest)
 			if ref == "" || !strings.HasPrefix(rest, ref) {
 				out.WriteByte(rest[0])
 				i++
@@ -235,7 +244,7 @@ func wholeLiteralParam(s string, quote byte) string {
 	if len(s) < 2 || s[0] != quote {
 		return ""
 	}
-	ref := paramReference.FindString(s[1:])
+	ref := boundSQLReference.FindString(s[1:])
 	if ref == "" || !strings.HasPrefix(s[1:], ref) {
 		return ""
 	}
@@ -256,13 +265,13 @@ func skipQuoted(s string, quote byte, where, instead string) (int, error) {
 				i++
 				continue
 			}
-			if ref := paramReference.FindString(s[:i]); ref != "" {
+			if ref := boundSQLReference.FindString(s[:i]); ref != "" {
 				return 0, &sqlParamPositionError{ref: ref, where: "inside " + where, instead: instead}
 			}
 			return i + 1, nil
 		}
 	}
-	if ref := paramReference.FindString(s); ref != "" {
+	if ref := boundSQLReference.FindString(s); ref != "" {
 		return 0, &sqlParamPositionError{ref: ref, where: "inside " + where, instead: instead}
 	}
 	return len(s), nil
@@ -313,10 +322,85 @@ func sqlParamPositionErrors(query string) []string {
 
 // bindNodeSQL binds a node's query against this run's parameters for the
 // database at uri.
-func (r *Runner) bindNodeSQL(uri, query string) (string, []interface{}, error) {
+func (r *Runner) bindNodeSQL(ctx context.Context, uri, query string) (string, []interface{}, error) {
 	resolve := func(key string) string { return "" }
 	if r.varCtx != nil {
 		resolve = r.varCtx.resolveKey
 	}
+	item, mapped := mapItemFrom(ctx)
+	if strings.Contains(query, "${item.") {
+		if !mapped {
+			return "", nil, fmt.Errorf("${item...} references are only available in a node with a 'map' block")
+		}
+		if err := itemReferenceErrors(query, item); err != nil {
+			return "", nil, err
+		}
+	}
+	if mapped {
+		params := resolve
+		resolve = func(key string) string {
+			if column, ok := strings.CutPrefix(key, "item."); ok {
+				return itemValueText(item[column])
+			}
+			return params(key)
+		}
+	}
 	return bindSQLParams(query, sqlParamDialectFor(uri), resolve)
+}
+
+// itemReferenceErrors refuses an ${item.x} reference whose column the item
+// does not have, or has as null. Binding would otherwise send an empty
+// string or a zero in its place, a query that runs and returns the wrong
+// rows.
+func itemReferenceErrors(query string, item common.DataRow) error {
+	for _, ref := range boundSQLReference.FindAllString(query, -1) {
+		column, ok := strings.CutPrefix(ref[2:len(ref)-1], "item.")
+		if !ok {
+			continue
+		}
+		if strings.Contains(column, filterSep) {
+			return fmt.Errorf("%s: filters are not supported on item values", ref)
+		}
+		value, present := item[column]
+		if !present {
+			return fmt.Errorf("%s: the item has no column %q", ref, column)
+		}
+		if value == nil {
+			return fmt.Errorf("%s: the item's %q is null, which cannot be bound", ref, column)
+		}
+	}
+	return nil
+}
+
+// itemValueText renders an item value the way bindSQLParams expects: the
+// exact text of a number, so a whole number binds as an integer and a
+// decimal as its exact text.
+func itemValueText(v interface{}) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case int:
+		return strconv.Itoa(x)
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case bool:
+		return strconv.FormatBool(x)
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+type mapItemKey struct{}
+
+// withMapItem returns ctx carrying the item a mapped node runs for.
+func withMapItem(ctx context.Context, item common.DataRow) context.Context {
+	return context.WithValue(ctx, mapItemKey{}, item)
+}
+
+// mapItemFrom returns the item ctx carries, if any.
+func mapItemFrom(ctx context.Context) (common.DataRow, bool) {
+	item, ok := ctx.Value(mapItemKey{}).(common.DataRow)
+	return item, ok
 }

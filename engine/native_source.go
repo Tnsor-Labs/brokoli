@@ -41,7 +41,7 @@ func (r *Runner) nativeSourceRequest(ctx context.Context, node models.Node) (*Na
 	// that exists, refuse rather than send "{{...}}" to the database as
 	// literal SQL text.
 	if hasSQLParamReference(query) {
-		return nil, fmt.Errorf("source_db: run parameters in the query are not supported yet for a connection that reads through a native ADBC driver")
+		return nil, fmt.Errorf("source_db: run parameters and map item values in the query are not supported yet for a connection that reads through a native ADBC driver")
 	}
 	request.Query = query
 	return request, nil

@@ -248,10 +248,34 @@ func nodeHasExpansion(n models.Node) bool {
 // out yet, or returns nil. Without it the block would be ignored and the
 // node would run once over its whole input, which looks like success.
 func mapUnsupportedError(n models.Node) error {
-	if _, ok := n.Config["map"]; !ok || n.Type == models.NodeTypeCode {
+	if _, ok := n.Config["map"]; !ok || mappableTypes[n.Type] {
 		return nil
 	}
-	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; only code nodes can map", n.Name, n.ID, n.Type)
+	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; code and source_db nodes can map", n.Name, n.ID, n.Type)
+}
+
+// mappableTypes are the node types a `map` block can fan out.
+var mappableTypes = map[models.NodeType]bool{
+	models.NodeTypeCode:     true,
+	models.NodeTypeSourceDB: true,
+}
+
+// mapOverEdge reports whether an edge from `from` feeds n's `map` block:
+// the one kind of incoming edge a source node can have.
+func mapOverEdge(n models.Node, from string) bool {
+	if !nodeIsMapped(n) {
+		return false
+	}
+	cfg, err := parseMapConfig(n)
+	if err != nil {
+		return false
+	}
+	for _, id := range cfg.Over {
+		if id == from {
+			return true
+		}
+	}
+	return false
 }
 
 // parseExpansionConfig parses and structurally validates node.Config's
@@ -585,18 +609,6 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 		return nil, err
 	}
 
-	if len(items) > cfg.MaxInstances {
-		limit := "expansion.max_instances"
-		if cfg.fromMap {
-			limit = "map.max_items"
-		}
-		return nil, fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d (%s) — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, len(items), cfg.MaxInstances, limit)
-	}
-	keys, err := instanceKeys(node, cfg, items)
-	if err != nil {
-		return nil, err
-	}
-
 	if cfg.Key != nil {
 		r.log(node.ID, models.LogLevelWarning,
 			"expansion.key (%q) is a name/description reference, not executable code (brokoli-sdk records it via _func_ref, never serializes it as runnable code) — this backend version cannot execute it, so instance identity falls back to a deterministic collection-index scheme (idx:N) instead",
@@ -633,7 +645,34 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 		runParams = r.varCtx.Params
 	}
 
-	remote := r.instanceJobQueue != nil
+	return r.fanOut(ctx, node, cfg, items, nodeAttempt, r.instanceJobQueue != nil, func(ctx context.Context, i int, key string) (*common.DataSet, error) {
+		itemDS := &common.DataSet{
+			Columns: columnsOf(items[i]),
+			Rows:    []common.DataRow{items[i]},
+		}
+		return r.executeExpansionInstance(ctx, node, nodeAttempt, i, key, len(items), itemDS, script, configForScript, runParams, timeoutSec)
+	})
+}
+
+// fanOut runs runItem once per item and combines the results: the part of
+// mapping every node type shares (ADR-050). It enforces the item limit,
+// derives the instance keys, reuses items that succeeded on an earlier
+// attempt of this run, runs the rest up to cfg.parallelism(remote) at
+// once, and applies cfg.OnItemFailure. runItem runs one item and records
+// it; executeMappedInstance does the recording for every node type.
+func (r *Runner) fanOut(ctx context.Context, node models.Node, cfg *expansionConfig, items []common.DataRow, nodeAttempt int, remote bool, runItem func(ctx context.Context, i int, key string) (*common.DataSet, error)) (*common.DataSet, error) {
+	if len(items) > cfg.MaxInstances {
+		limit := "expansion.max_instances"
+		if cfg.fromMap {
+			limit = "map.max_items"
+		}
+		return nil, fmt.Errorf("node %s (%s): expansion would create %d instances, exceeding the configured limit of %d (%s) — refusing to fan out rather than silently truncating the collection", node.Name, node.ID, len(items), cfg.MaxInstances, limit)
+	}
+	keys, err := instanceKeys(node, cfg, items)
+	if err != nil {
+		return nil, err
+	}
+
 	parallel := cfg.parallelism(remote)
 	r.log(node.ID, models.LogLevelInfo, "expansion: fanning out into %d instance(s), %d at a time", len(items), parallel)
 
@@ -661,12 +700,7 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	}
 
 	runInstance := func(i int) error {
-		item := items[i]
-		itemDS := &common.DataSet{
-			Columns: columnsOf(item),
-			Rows:    []common.DataRow{item},
-		}
-		out, err := r.executeExpansionInstance(ctx, node, nodeAttempt, i, keys[i], len(items), itemDS, script, configForScript, runParams, timeoutSec)
+		out, err := runItem(ctx, i, keys[i])
 		if err != nil {
 			return fmt.Errorf("node %s (%s): expansion instance %d/%d (key=%s) failed: %w", node.Name, node.ID, i+1, len(items), keys[i], err)
 		}
@@ -780,6 +814,24 @@ func columnsOf(row common.DataRow) []string {
 // get per-item durability — see that interface's doc comment — expansion
 // still executes either way).
 func (r *Runner) executeExpansionInstance(ctx context.Context, node models.Node, nodeAttempt, index int, instanceKey string, total int, itemDS *common.DataSet, script string, configForScript map[string]interface{}, runParams map[string]string, timeoutSec int) (*common.DataSet, error) {
+	remote := r.instanceJobQueue != nil
+	return r.executeMappedInstance(ctx, node, nodeAttempt, index, instanceKey, total, timeoutSec, remote, func(ctx context.Context, fencingGen int64, dispatched bool) (*common.DataSet, string, error) {
+		if dispatched {
+			result, err := r.dispatchExpansionInstanceRemotely(node, nodeAttempt, instanceKey, fencingGen, itemDS, script, configForScript, runParams, timeoutSec)
+			return result, "", err
+		}
+		return ExecuteCodeNodeContext(ctx, script, itemDS, configForScript, runParams, r.parameters, timeoutSec)
+	})
+}
+
+// executeMappedInstance runs one item of a mapped node through exec and
+// records it: its models.ExpansionInstance row, its execution attempt's
+// claim, lease and settlement, its span and its log lines. remote says the
+// item may be dispatched to a remote worker, which sizes its lease for
+// renewal instead of one bounded call; exec is told whether it was
+// (dispatched is true only with an attempt store and a remote queue).
+// exec returns the item's output, any stderr to log, and its error.
+func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, nodeAttempt, index int, instanceKey string, total, timeoutSec int, remote bool, exec func(ctx context.Context, fencingGen int64, dispatched bool) (*common.DataSet, string, error)) (*common.DataSet, error) {
 	instStore, _ := r.store.(store.ExpansionInstanceStore)
 
 	startTime := time.Now().UTC()
@@ -832,7 +884,7 @@ func (r *Runner) executeExpansionInstance(ctx context.Context, node models.Node,
 		// node-level attempts instead; dispatchExpansionInstanceRemotely
 		// starts that renewal goroutine itself.
 		leaseDuration := time.Duration(timeoutSec)*time.Second + 30*time.Second
-		if r.instanceJobQueue != nil {
+		if remote {
 			leaseDuration = store.DefaultLeaseDuration
 		}
 		gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, leaseDuration)
@@ -868,11 +920,7 @@ func (r *Runner) executeExpansionInstance(ctx context.Context, node models.Node,
 	var result *common.DataSet
 	var stderr string
 	var err error
-	if execAttemptStore != nil && r.instanceJobQueue != nil {
-		result, err = r.dispatchExpansionInstanceRemotely(node, nodeAttempt, instanceKey, execFencingGen, itemDS, script, configForScript, runParams, timeoutSec)
-	} else {
-		result, stderr, err = ExecuteCodeNodeContext(ctx, script, itemDS, configForScript, runParams, r.parameters, timeoutSec)
-	}
+	result, stderr, err = exec(ctx, execFencingGen, execAttemptStore != nil && remote)
 	if stderr != "" {
 		for _, line := range splitLines(stderr) {
 			if line != "" {

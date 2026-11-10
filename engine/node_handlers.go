@@ -367,7 +367,7 @@ func (r *Runner) runSourceDB(ctx context.Context, node models.Node, attempt int)
 		return nodeExecutionResult{}, fmt.Errorf("source_db node requires 'query' config")
 	}
 
-	query, args, err := r.bindNodeSQL(uri, query)
+	query, args, err := r.bindNodeSQL(ctx, uri, query)
 	if err != nil {
 		return nodeExecutionResult{}, fmt.Errorf("source_db query: %w", err)
 	}
@@ -1648,7 +1648,7 @@ func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt
 
 	// Read all from source (for now — chunked read requires LIMIT/OFFSET rewriting)
 	r.log(node.ID, models.LogLevelInfo, "Reading from source...")
-	sourceQuery, sourceArgs, err := r.bindNodeSQL(sourceURI, sourceQuery)
+	sourceQuery, sourceArgs, err := r.bindNodeSQL(ctx, sourceURI, sourceQuery)
 	if err != nil {
 		return nil, fmt.Errorf("source query: %w", err)
 	}
