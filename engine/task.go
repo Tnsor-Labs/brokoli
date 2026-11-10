@@ -349,7 +349,7 @@ func runtimeVersionString(binPath string) (string, error) {
 // (remote) — see this file's own doc comment. runID/nodeID identify the
 // execution lineage a resolved execution record (ADR-033 section 4) is
 // pinned against.
-func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, input *common.DataSet, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
+func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store, orgID, runID, nodeID, digest string, config, nodeInterface map[string]interface{}, runParams map[string]string, typedParams map[string]interface{}, input *common.DataSet, timeoutSec int, handlers taskharness.Handlers) (*common.DataSet, error) {
 	manifest, bundleDir, err := materializeTaskBundleV2(s, orgID, digest)
 	if err != nil {
 		return nil, err
@@ -382,13 +382,7 @@ func executeTaskBundle(ctx context.Context, s store.Store, blobs artifact.Store,
 	// mechanism ADR-032 step 3 already established for an inferred task
 	// keyword parameter (issue #439's own step-3 scoping note), since no
 	// typed per-node parameter binding exists yet.
-	var kwargs map[string]interface{}
-	if len(runParams) > 0 {
-		kwargs = make(map[string]interface{}, len(runParams))
-		for k, v := range runParams {
-			kwargs[k] = v
-		}
-	}
+	kwargs := taskKwargs(runParams, typedParams)
 
 	// Trusted-profile resource baseline: reused, not reimplemented, from
 	// the same ADR-029 primitive a code node is bounded by.
@@ -696,15 +690,54 @@ func (r *Runner) runTask(ctx context.Context, node models.Node, input *common.Da
 	return r.runTaskLocally(ctx, node, digest, input, timeoutSec)
 }
 
+// taskKwargs is a task's keyword parameters: typed when the pipeline
+// declares its parameters, the legacy strings when it declares none, never
+// both. A task's keyword arguments are one namespace, and declared
+// parameters are never merged with the string ones (ADR-032, update of
+// 2026-09-08); a code node keeps them apart as `params` and `parameters`.
+// Nil when there are none.
+func taskKwargs(runParams map[string]string, typedParams map[string]interface{}) map[string]interface{} {
+	if typedParams != nil {
+		kwargs := make(map[string]interface{}, len(typedParams))
+		for k, v := range typedParams {
+			kwargs[k] = v
+		}
+		return kwargs
+	}
+	if len(runParams) == 0 {
+		return nil
+	}
+	kwargs := make(map[string]interface{}, len(runParams))
+	for k, v := range runParams {
+		kwargs[k] = v
+	}
+	return kwargs
+}
+
+// taskParameters is what a task node of this run receives: the resolved
+// typed parameters (taskinterface.ResolveParameters: validated, with
+// declared defaults, in the task interface's JSON form) when the pipeline
+// declares any, and otherwise the run's string parameters, as before.
+func (r *Runner) taskParameters() (map[string]string, map[string]interface{}) {
+	if r.pipe != nil && len(r.pipe.Parameters) > 0 {
+		typed := r.parameters
+		if typed == nil {
+			typed = map[string]interface{}{}
+		}
+		return nil, typed
+	}
+	if r.varCtx != nil {
+		return r.varCtx.Params, nil
+	}
+	return nil, nil
+}
+
 // runTaskLocally runs a task node's bundle in this process.
 func (r *Runner) runTaskLocally(ctx context.Context, node models.Node, digest string, input *common.DataSet, timeoutSec int) (*common.DataSet, error) {
-	var runParams map[string]string
-	if r.varCtx != nil {
-		runParams = r.varCtx.Params
-	}
+	runParams, typedParams := r.taskParameters()
 	limits := codeexec.Resolve(node.Config)
 	r.log(node.ID, models.LogLevelInfo, "task exec: bundle=%s %s", digest, limits)
-	return executeTaskBundle(ctx, r.store, r.taskBlobStore(), r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, input, timeoutSec, taskharness.Handlers{
+	return executeTaskBundle(ctx, r.store, r.taskBlobStore(), r.orgID, r.run.ID, node.ID, digest, node.Config, node.Interface, runParams, typedParams, input, timeoutSec, taskharness.Handlers{
 		OnLog: func(l taskharness.Log) {
 			level := models.LogLevelInfo
 			switch l.Level {
@@ -779,10 +812,7 @@ func taskWorkOrderInput(node models.Node, input *common.DataSet) ([]string, []ma
 // instanceKey is "" for the whole node, or one item's key when the node is
 // mapped; execFencingGen is the generation of that instance's attempt.
 func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, input *common.DataSet, timeoutSec, attempt int, instanceKey string, execFencingGen int64) (*common.DataSet, error) {
-	var runParams map[string]string
-	if r.varCtx != nil {
-		runParams = r.varCtx.Params
-	}
+	runParams, typedParams := r.taskParameters()
 	inputColumns, inputRows, err := taskWorkOrderInput(node, input)
 	var inputRef, inputCapability, planeURL string
 	if errors.Is(err, errTaskInputTooLargeToInline) {
@@ -827,6 +857,7 @@ func (r *Runner) dispatchTaskInstanceRemotely(node models.Node, digest string, i
 		ControlPlaneURL:   planeURL,
 		CapabilityAttempt: attempt,
 		RunParams:         runParams,
+		TypedParams:       typedParams,
 		TimeoutSeconds:    timeoutSec,
 	}
 	return r.dispatchInstanceWorkOrderRemotely(node.ID, attempt, instanceKey, execFencingGen, workOrder, timeoutSec, r.taskJobCapabilities(digest))
@@ -932,7 +963,7 @@ func ExecuteTaskWorkOrderWithArtifacts(ctx context.Context, s store.Store, artif
 		}
 		input = &common.DataSet{Columns: wo.InputColumns, Rows: rows}
 	}
-	return executeTaskBundle(ctx, s, taskOutputStore(artifacts, wo, runID, nodeID), wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
+	return executeTaskBundle(ctx, s, taskOutputStore(artifacts, wo, runID, nodeID), wo.OrgID, runID, nodeID, digest, wo.Config, wo.NodeInterface, wo.RunParams, wo.TypedParams, input, wo.TimeoutSeconds, taskharness.Handlers{})
 }
 
 // taskOutputPort is one entry of a task-result-v1 candidate's outputs,
