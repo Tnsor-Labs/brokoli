@@ -2292,9 +2292,9 @@ func (s *SQLiteStore) GetNodePreview(runID, nodeID string) (NodePreview, error) 
 	if err := json.Unmarshal([]byte(colJSON), &columns); err != nil {
 		return NodePreview{}, fmt.Errorf("unmarshal columns: %w", err)
 	}
-	var rows []common.DataRow
-	if err := json.Unmarshal([]byte(rowJSON), &rows); err != nil {
-		return NodePreview{}, fmt.Errorf("unmarshal rows: %w", err)
+	rows, err := decodePreviewRows([]byte(rowJSON))
+	if err != nil {
+		return NodePreview{}, err
 	}
 	out := NodePreview{Columns: columns, Rows: rows, Truncated: truncatedInt != 0}
 	if total.Valid {
