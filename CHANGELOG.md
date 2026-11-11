@@ -11,6 +11,27 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Changed
+
+- **Bulk enable and disable need `pipelines.edit`** -- @hc12r. `POST
+  /api/pipelines/bulk` asked for `pipelines.delete` whatever the action.
+  Enable and disable now ask for `pipelines.edit`, as editing a pipeline
+  does, and delete still asks for `pipelines.delete`. (#593)
+
+### Fixed
+
+- **Bulk pipeline actions do what the single-pipeline endpoints do** --
+  @hc12r. `POST /api/pipelines/bulk` counted an action it did not know as
+  succeeded for every id, and changed nothing. It now answers 400. Its
+  delete went straight to the store, so pipelines that depended on a
+  deleted one were left pointing at nothing, and the schedule and audit
+  log were not updated. A pipeline others depend on is now refused, with
+  the dependents named, while the rest of the batch goes ahead. A
+  dependent named in the same request does not block it, in any order.
+  Enable and disable could change a Git-managed pipeline, recorded no
+  version and left the schedule stale until the next reconcile. They now
+  go through the same save as an edit. (#593)
+
 ## [0.22.1] - 2026-11-11
 
 A security patch: v0.22.0 rebuilt with Go 1.26.11. Nothing else changes.

@@ -474,37 +474,26 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Load the org adjacency once and compute direct + transitive dependents from it.
-	summaries, err := h.store.ListPipelineDepsByOrg(depsScope(r, existing.OrgID))
+	deps, err := h.dependentsOf(r, existing)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "load dependents: "+err.Error())
 		return
 	}
-	direct := directDependents(summaries, id)
-	// Dependents can be in other workspaces of the organization (ADR-049):
-	// the caller is told how many, not which, and cannot delete them.
+	summaries, direct := deps.summaries, deps.direct
 	scoped := scopedStore(h.store, r)
-	hidden := 0
-	for _, d := range direct {
-		if !scoped.Visible("pipelines", d.ID) {
-			hidden++
-		}
-	}
 
 	if len(direct) > 0 && resolve == "abort" {
-		respDeps := make([]map[string]string, 0, len(direct))
-		for _, d := range direct {
-			if scoped.Visible("pipelines", d.ID) {
-				respDeps = append(respDeps, map[string]string{"id": d.ID, "name": d.Name})
-			}
+		respDeps := make([]map[string]string, 0, len(deps.visible))
+		for _, d := range deps.visible {
+			respDeps = append(respDeps, map[string]string{"id": d.ID, "name": d.Name})
 		}
 		body := map[string]interface{}{
 			"error":      "pipeline has dependents",
 			"dependents": respDeps,
 			"hint":       "retry with ?resolve=cascade to delete dependents, or ?resolve=decouple to strip this dependency from them",
 		}
-		if hidden > 0 {
-			body["dependents_elsewhere"] = hidden
+		if deps.hidden > 0 {
+			body["dependents_elsewhere"] = deps.hidden
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusConflict)
@@ -529,9 +518,54 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if err := h.commitDelete(r, id, resolve, direct, toDelete); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// pipelineDependents are the pipelines that depend on one pipeline.
+type pipelineDependents struct {
+	// summaries is the organization's whole dependency adjacency, from
+	// which a cascade computes its transitive closure.
+	summaries []models.PipelineDepSummary
+	// direct are the pipelines that name it directly, in any workspace.
+	direct []models.PipelineDepSummary
+	// visible are the direct dependents the caller may see. The rest
+	// are in other workspaces of the organization (ADR-049): the caller
+	// is told how many (hidden), not which, and cannot delete them.
+	visible []models.PipelineDepSummary
+	hidden  int
+}
+
+// dependentsOf loads the organization's dependency adjacency once and
+// finds existing's direct dependents in it.
+func (h *PipelineHandler) dependentsOf(r *http.Request, existing *models.Pipeline) (pipelineDependents, error) {
+	summaries, err := h.store.ListPipelineDepsByOrg(depsScope(r, existing.OrgID))
+	if err != nil {
+		return pipelineDependents{}, err
+	}
+	out := pipelineDependents{summaries: summaries, direct: directDependents(summaries, existing.ID)}
+	scoped := scopedStore(h.store, r)
+	for _, d := range out.direct {
+		if scoped.Visible("pipelines", d.ID) {
+			out.visible = append(out.visible, d)
+		} else {
+			out.hidden++
+		}
+	}
+	return out, nil
+}
+
+// commitDelete deletes id, with its dependents resolved as resolve says,
+// in one transaction, then unregisters what it deleted from the scheduler
+// and audits each change. The caller has already decided the delete may
+// happen: access, the dependents check, and the cascade's workspace check.
+func (h *PipelineHandler) commitDelete(r *http.Request, id, resolve string, direct, toDelete []models.PipelineDepSummary) error {
 	// All mutations happen inside a single transaction using the tx-scoped store methods.
 	// If any step fails, the transaction rolls back and nothing is persisted.
-	err = h.store.WithTx(func(tx *sql.Tx) error {
+	err := h.store.WithTx(func(tx *sql.Tx) error {
 		switch resolve {
 		case "cascade":
 			for _, d := range toDelete {
@@ -555,8 +589,7 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return h.store.DeletePipelineTx(tx, id)
 	})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
+		return err
 	}
 
 	// Post-commit side effects: scheduler unregistration + audit logging.
@@ -586,7 +619,7 @@ func (h *PipelineHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		"direct_dependents":   len(direct),
 		"cascaded_dependents": len(toDelete),
 	})
-	w.WriteHeader(http.StatusNoContent)
+	return nil
 }
 
 // directDependents returns same-org summaries whose rules reference targetID.

@@ -1285,65 +1285,6 @@ func schedulerStatusHandler(sched *engine.Scheduler, s store.Store) http.Handler
 	}
 }
 
-// bulkPipelineHandler handles POST /pipelines/bulk — bulk operations on pipelines.
-func bulkPipelineHandler(s store.Store) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var req struct {
-			IDs    []string `json:"ids"`
-			Action string   `json:"action"` // delete, enable, disable
-		}
-		if err := decodeJSON(w, r, &req); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON")
-			return
-		}
-		if len(req.IDs) > 100 {
-			writeError(w, http.StatusBadRequest, "max 100 operations per request")
-			return
-		}
-		type BulkResultItem struct {
-			ID    string `json:"id"`
-			Error string `json:"error,omitempty"`
-		}
-		var succeeded []string
-		var failed []BulkResultItem
-
-		for _, id := range req.IDs {
-			p, e := s.GetPipeline(id)
-			if e != nil {
-				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
-				continue
-			}
-			// A pipeline outside the current workspace is answered like a
-			// missing one, so a bulk request cannot tell which ids exist
-			// elsewhere, and changes are made where the permissions are.
-			if !pipelineActionable(r, p) {
-				failed = append(failed, BulkResultItem{ID: id, Error: "not found"})
-				continue
-			}
-			var err error
-			switch req.Action {
-			case "delete":
-				err = s.DeletePipeline(id)
-			case "enable", "disable":
-				p.Enabled = req.Action == "enable"
-				err = s.UpdatePipeline(p)
-			}
-			if err != nil {
-				failed = append(failed, BulkResultItem{ID: id, Error: err.Error()})
-			} else {
-				succeeded = append(succeeded, id)
-			}
-		}
-
-		writeJSON(w, http.StatusOK, map[string]interface{}{
-			"action":    req.Action,
-			"succeeded": len(succeeded),
-			"failed":    len(failed),
-			"errors":    failed,
-		})
-	}
-}
-
 // connectionUsedByHandler handles GET /connections/{connId}/used-by.
 func connectionUsedByHandler(s store.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
