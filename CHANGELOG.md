@@ -22,6 +22,17 @@ reconstruct from git archaeology.
 
 ### Changed
 
+- **Log lines no longer hold up the work that writes them** -- @hc12r.
+  Writing a run's log line waited until it was committed. A node mapped
+  over many items logs as each item starts and ends, and those waits were
+  most of what an item spent blocked: a 500-item fan-out ran 75 items a
+  second. Lines are now stored in the background, still in order and in
+  batches, and a run stores all of its lines before it records its final
+  status, so whoever sees a run finish sees all of them. The same fan-out
+  runs about 100 items a second. A line that cannot be stored is reported
+  in the server log. If the process dies, lines it had not stored yet are
+  lost; the run's event log, which recovery reads, is unchanged. (#967)
+
 - **A cancelled run no longer calls the pipeline's `on_failure` hook**
   -- @hc12r. It called it with `error: cancelled by user`, so a hook that
   pages on failure paged for every cancel. A cancel is someone's
