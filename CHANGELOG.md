@@ -39,7 +39,7 @@ reconstruct from git archaeology.
   (the claim's compare-and-swap and the fencing generation on ack and
   settle), and a settle the fencing check refuses still records the
   item's outcome. A 500-item fan-out went from 75 to about 123 items a
-  second on its own, and to about 166 with the log change above. (#967)
+  second on its own, and to about 166 together with #1021. (#967)
 - **Routes grant what the caller's role lists** -- @hc12r. Without a
   distribution's permission system, routes decided by role name: `admin`
   and `editor` could do everything, `viewer` could read, and every other
