@@ -117,9 +117,11 @@ func TestAFailedRunCallsItsFailureHooks(t *testing.T) {
 	}
 }
 
-// A cancelled run calls on_failure, as before, and no node failed on its
-// own, so on_node_failure is not called for the node the cancel stopped.
-func TestACancelledRunDoesNotCallTheNodeFailureHook(t *testing.T) {
+// A cancelled run did not fail: it calls neither on_failure, which it
+// called with "cancelled by user" before, nor on_node_failure for the node
+// the cancel stopped. A hook that pages on failure must not page for a
+// cancel.
+func TestACancelledRunCallsNoFailureHook(t *testing.T) {
 	rec := newHookRecorder(t)
 	exec := &blockingUntilCancelExecutor{nodeType: "blocking", startedCh: make(chan struct{}), observed: make(chan error, 1)}
 	pipe := &models.Pipeline{
@@ -150,7 +152,7 @@ func TestACancelledRunDoesNotCallTheNodeFailureHook(t *testing.T) {
 		t.Fatal("the cancelled run never finished")
 	}
 
-	if got, want := strings.Join(rec.events(), ","), "on_start,on_failure"; got != want {
+	if got, want := strings.Join(rec.events(), ","), "on_start"; got != want {
 		t.Fatalf("hooks called = %s, want %s", got, want)
 	}
 }
