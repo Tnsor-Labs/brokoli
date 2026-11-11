@@ -14,6 +14,8 @@
  * - Content-Type is only sent with a body.
  */
 
+import { parseJsonExact } from './exactJson'
+
 export const API_BASE = '/api'
 
 const TOKEN_KEY = 'brokoli-token'
@@ -144,6 +146,11 @@ export type RequestOptions = {
   cookieOnly?: boolean
   /** Response handling. */
   as?: 'json' | 'text' | 'response'
+  /**
+   * Keep integers past 2^53 exact, as strings (parseJsonExact). For
+   * responses that carry row data, which may hold 64-bit ids.
+   */
+  exactIntegers?: boolean
 }
 
 const RETRYABLE_STATUS = new Set([502, 503, 504])
@@ -167,7 +174,8 @@ async function readError(response: Response): Promise<ApiError> {
     try {
       body = JSON.parse(text)
       const b = body as { error?: unknown; message?: unknown }
-      message = typeof b.error === 'string' ? b.error : typeof b.message === 'string' ? b.message : ''
+      message =
+        typeof b.error === 'string' ? b.error : typeof b.message === 'string' ? b.message : ''
     } catch {
       message = text.trim().slice(0, 300)
     }
@@ -178,7 +186,8 @@ async function readError(response: Response): Promise<ApiError> {
 }
 
 export async function request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
-  const method = options.method ?? (options.json !== undefined || options.body !== undefined ? 'POST' : 'GET')
+  const method =
+    options.method ?? (options.json !== undefined || options.body !== undefined ? 'POST' : 'GET')
   const idempotent = method === 'GET' || method === 'HEAD'
   const maxRetries = idempotent ? (options.retries ?? 2) : 0
   const timeout = options.timeout ?? 30_000
@@ -188,8 +197,15 @@ export async function request<T = unknown>(path: string, options: RequestOptions
     const controller = new AbortController()
     const onAbort = () => controller.abort(options.signal?.reason)
     options.signal?.addEventListener('abort', onAbort, { once: true })
-    const timer = timeout > 0 ? setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), timeout) : null
-    const headers: Record<string, string> = { ...workspaceHeaders(), ...(options.cookieOnly ? {} : authHeaders()), ...options.headers }
+    const timer =
+      timeout > 0
+        ? setTimeout(() => controller.abort(new DOMException('timeout', 'TimeoutError')), timeout)
+        : null
+    const headers: Record<string, string> = {
+      ...workspaceHeaders(),
+      ...(options.cookieOnly ? {} : authHeaders()),
+      ...options.headers,
+    }
     let body: BodyInit | undefined
     if (options.json !== undefined) {
       body = JSON.stringify(options.json)
@@ -201,7 +217,13 @@ export async function request<T = unknown>(path: string, options: RequestOptions
 
     let response: Response
     try {
-      response = await fetch(url, { method, headers, body, credentials: 'same-origin', signal: controller.signal })
+      response = await fetch(url, {
+        method,
+        headers,
+        body,
+        credentials: 'same-origin',
+        signal: controller.signal,
+      })
     } catch (cause) {
       if (options.signal?.aborted) throw cause
       const timedOut = controller.signal.aborted
@@ -238,6 +260,7 @@ export async function request<T = unknown>(path: string, options: RequestOptions
     if (response.status === 204 || method === 'HEAD') return undefined as T
     if (options.as === 'text') return (await response.text()) as T
     const text = await response.text()
-    return (text ? JSON.parse(text) : undefined) as T
+    if (!text) return undefined as T
+    return (options.exactIntegers ? parseJsonExact(text) : JSON.parse(text)) as T
   }
 }
