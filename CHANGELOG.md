@@ -11,6 +11,15 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Servers say whether they can map** -- @hc12r. `GET /api/capabilities`
+  lists `node-map` among `supported_execution_features`, and the node types
+  a `map` block may be put on in `map_node_types` (today `code`,
+  `source_api`, `source_db` and `task`). A server from before mapping
+  ignores the block and runs the node once over its whole input, so an SDK
+  needs this to refuse to deploy a `map` it would not honour. (#967)
+
 ### Changed
 
 - **A cancelled run no longer calls the pipeline's `on_failure` hook**

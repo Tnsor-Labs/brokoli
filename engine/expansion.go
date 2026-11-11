@@ -274,6 +274,22 @@ var mappableTypes = map[models.NodeType]bool{
 	models.NodeTypeTask:      true,
 }
 
+// CheckMapSupported is mapUnsupportedError for callers outside the
+// engine: it refuses a `map` block on a type that cannot map.
+func CheckMapSupported(n models.Node) error { return mapUnsupportedError(n) }
+
+// MappableNodeTypes lists the node types a `map` block can fan out, sorted.
+// /api/capabilities reports it, so an SDK can refuse to deploy a `map` on
+// a type this server would refuse, rather than find out at save.
+func MappableNodeTypes() []string {
+	out := make([]string, 0, len(mappableTypes))
+	for t := range mappableTypes {
+		out = append(out, string(t))
+	}
+	sort.Strings(out)
+	return out
+}
+
 // mapOverEdge reports whether an edge from `from` feeds n's `map` block:
 // the one kind of incoming edge a source node can have.
 func mapOverEdge(n models.Node, from string) bool {
