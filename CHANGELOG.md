@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Security
+
+- **Go 1.26.11** -- @hc12r. GO-2026-6859 (CVE-2026-97054): in Go 1.26.10,
+  when a request body passed the limit of `http.MaxBytesReader`, which the
+  API uses for its request size limits, net/http set `Connection: close`
+  without synchronization, and an HTTP/1 server whose handler read the
+  body while writing response headers could panic. v0.22.0 was built
+  with Go 1.26.10. The toolchain pin, CI and release builds move to the
+  fixed release.
+
 ## [0.22.0] - 2026-11-11
 
 A mapping and isolation release. `map` runs a node once per item of an
