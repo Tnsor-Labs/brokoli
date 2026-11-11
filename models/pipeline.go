@@ -193,6 +193,13 @@ var SupportedExecutionFeatures = []string{
 	// this name is asking whether the value it sends will be honoured,
 	// which is a different question from whether it will be accepted.
 	"task-parameters-v1",
+	// ADR-050 phase 1 (#967): a node's `map` block runs it once per item
+	// of an upstream node, in parallel, with keys, limits and a failure
+	// policy. A server from before it ignored the block and ran the node
+	// once over its whole input, a green run and a wrong answer, so an
+	// SDK must not send `map` to a server that does not advertise this.
+	// Which node types can map is /api/capabilities' map_node_types.
+	"node-map",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{

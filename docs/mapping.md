@@ -67,6 +67,12 @@ than one run per row.
 Any other setting inside `map` is refused when the pipeline is saved, so a
 misspelled setting is reported instead of ignored.
 
+A server that can map lists `node-map` in `supported_execution_features`
+of `GET /api/capabilities`, and the node types it can map in
+`map_node_types`. A server from before mapping ignores a `map` block and
+runs the node once over its whole input, so a client should not send one
+to a server that does not list `node-map`; the SDKs refuse to deploy it.
+
 ## What each item sees
 
 The script runs once per item. In each run, `rows` holds exactly one row,

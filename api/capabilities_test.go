@@ -147,7 +147,9 @@ func TestCapabilitiesHandler(t *testing.T) {
 	// task-interface-v1: the SDK gate for a node's "interface"/pipeline's
 	// "parameters" fields (ADR-032 rollout step 3, #439); dropping or
 	// renaming it lets SDK-inferred interfaces deploy ungated.
-	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false, "code-streaming-emit": false, "task-interface-v1": false}
+	// node-map: the SDK gate for a node's `map` block (ADR-050); a server
+	// without it ignores the block and runs the node once.
+	want := map[string]bool{"conditional-routing": false, "dynamic-expansion": false, "union": false, "pagination-checkpoints": false, "data_intervals": false, "deferrable-waits": false, "code-streaming-emit": false, "task-interface-v1": false, "node-map": false}
 	for _, f := range features {
 		if s, ok := f.(string); ok {
 			if _, known := want[s]; known {
@@ -363,5 +365,32 @@ func TestCapabilitiesAdvertiseDisabledNodeTypes(t *testing.T) {
 	caps, _ := decode()["node_type_capabilities"].(map[string]interface{})
 	if _, ok := caps["bash"]; !ok {
 		t.Error("node_type_capabilities has no entry for bash")
+	}
+}
+
+// map_node_types is the set the validator accepts a `map` block on, so an
+// SDK that checks it refuses exactly what the server would.
+func TestCapabilitiesListTheNodeTypesThatCanMap(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/api/capabilities", nil)
+	rec := httptest.NewRecorder()
+	CapabilitiesHandler(rec, req)
+	var body struct {
+		MapNodeTypes []string `json:"map_node_types"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(body.MapNodeTypes, ","); got != "code,source_api,source_db,task" {
+		t.Fatalf("map_node_types = %q, want code,source_api,source_db,task", got)
+	}
+	for _, typ := range body.MapNodeTypes {
+		n := models.Node{ID: "n", Name: "N", Type: models.NodeType(typ), Config: map[string]interface{}{"map": map[string]interface{}{"over": "up"}}}
+		if err := engine.CheckMapSupported(n); err != nil {
+			t.Errorf("%s is advertised but refused: %v", typ, err)
+		}
+	}
+	n := models.Node{ID: "n", Name: "N", Type: models.NodeTypeSinkFile, Config: map[string]interface{}{"map": map[string]interface{}{"over": "up"}}}
+	if engine.CheckMapSupported(n) == nil {
+		t.Error("sink_file is not advertised and must be refused")
 	}
 }

@@ -119,6 +119,9 @@ func CapabilitiesHandler(w http.ResponseWriter, r *http.Request) {
 		// Node types this deployment refuses (engine.DisabledNodeTypesEnv),
 		// so a client can leave them out rather than fail validation.
 		"disabled_node_types": engine.DisabledNodeTypes(),
+		// Node types a `map` block may be put on (ADR-050). An SDK checks
+		// a mapped node's type against it, beside the node-map feature.
+		"map_node_types": engine.MappableNodeTypes(),
 	}
 	// The wrapper contract is embedded even when Node is unavailable; this
 	// version identifies what the binary would run if the runtime resolves.
