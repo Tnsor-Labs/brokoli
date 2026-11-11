@@ -13,6 +13,13 @@ reconstruct from git archaeology.
 
 ### Changed
 
+- **A cancelled run no longer calls the pipeline's `on_failure` hook**
+  -- @hc12r. It called it with `error: cancelled by user`, so a hook that
+  pages on failure paged for every cancel. A cancel is someone's
+  decision, not a failure: it calls `on_start` when the run starts and no
+  failure hook when it ends, as it already raised no failure alert and no
+  dead-letter entry.
+
 - **Routes grant what the caller's role lists** -- @hc12r. Without a
   distribution's permission system, routes decided by role name: `admin`
   and `editor` could do everything, `viewer` could read, and every other

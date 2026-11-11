@@ -1607,8 +1607,8 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		r.emit(models.Event{Type: models.EventNodeFailed, RunID: r.run.ID, NodeID: node.ID, Error: lastErr.Error()})
 		common.SLog().Error("node failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(node.ID), "attempts", maxRetries+1, "error", lastErr)
-		// A node stopped by a cancel did not fail on its own; the run's
-		// cancellation is reported through on_failure instead.
+		// A node stopped by a cancel did not fail on its own, and a
+		// cancelled run calls no failure hook at all.
 		if r.ctx.Err() == nil {
 			r.fireHook("on_node_failure", map[string]string{
 				"node_id": node.ID, "node": node.Name, "error": r.redact(lastErr.Error()),
@@ -2206,7 +2206,9 @@ func (r *Runner) finalizeCancelled() error {
 		},
 	})
 	r.emit(models.Event{Type: models.EventRunFailed, RunID: r.run.ID, PipelineID: r.pipe.ID, Status: models.RunStatusCancelled, Error: "cancelled"})
-	r.fireHook("on_failure", map[string]string{"error": "cancelled by user"})
+	// No on_failure: a cancel is someone's decision, not a failure, and a
+	// hook that pages on failure would page for every cancel. It called
+	// on_failure with "cancelled by user" until it was decided otherwise.
 	common.SLog().Info("run finished", common.RunAttr(r.run.ID), common.PipelineAttr(r.pipe.ID),
 		"status", models.RunStatusCancelled)
 	return ErrRunCancelled
