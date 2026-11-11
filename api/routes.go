@@ -291,7 +291,7 @@ func RegisterRoutes(r chi.Router, s store.Store, e *engine.Engine, ws *sodp.Serv
 		r.Get("/runs/calendar", calendarHandler(s))
 
 		// Bulk pipeline operations
-		r.With(requirePerm(models.PermPipelinesDelete)).Post("/pipelines/bulk", bulkPipelineHandler(s))
+		r.Post("/pipelines/bulk", ph.Bulk(requirePerm))
 
 		// Variables
 		r.Get("/variables", vh.List)

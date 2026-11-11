@@ -46,7 +46,7 @@ func TestPipelineSideRoutesKeepToTheCallersWorkspaces(t *testing.T) {
 	r.Get("/api/pipelines/{id}/deps", pipelineDepsHandler(s))
 	r.Get("/api/pipelines/{id}/dependents", pipelineDependentsHandler(s))
 	r.Get("/api/pipelines/dependency-graph", pipelineDependencyGraphHandler(s))
-	r.Post("/api/pipelines/bulk", bulkPipelineHandler(s))
+	r.Post("/api/pipelines/bulk", NewPipelineHandler(s, nil).Bulk(fallbackPermissionMiddleware))
 	r.Get("/api/dlq", NewAlertHandler(s).ListDLQ)
 	db := s.(*store.SQLiteStore).RawDB().(*sql.DB)
 	for id, pipe := range map[string]string{"dlq-a": "pa", "dlq-b": "pb"} {
@@ -112,5 +112,14 @@ func TestPipelineSideRoutesKeepToTheCallersWorkspaces(t *testing.T) {
 	}
 	if got, _ := s.GetPipeline("pb"); !got.Enabled {
 		t.Error("alice disabled a pipeline in a workspace they do not belong to")
+	}
+	// carol may see beta's pb, but acts in alpha: a change is made only in
+	// the current workspace.
+	rec = call("POST", "/api/pipelines/bulk", "carol", []byte(`{"ids":["pb"],"action":"disable"}`))
+	if !bytes.Contains(rec.Body.Bytes(), []byte("not found")) {
+		t.Errorf("bulk by carol on beta's pipeline from alpha: %s, want not found", rec.Body.String())
+	}
+	if got, _ := s.GetPipeline("pb"); !got.Enabled {
+		t.Error("carol disabled a pipeline of a workspace other than the current one")
 	}
 }
