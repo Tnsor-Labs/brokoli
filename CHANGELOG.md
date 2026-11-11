@@ -36,6 +36,12 @@ reconstruct from git archaeology.
   they may run a pipeline and cancel and resume runs, was refused with
   403 by every one of those routes, and a custom role got nothing it
   listed, so the UI offered actions the server then refused. (#864)
+- **A run recovery fails shows up like any failed run** -- @hc12r. When
+  a process died mid-run and recovery could not tell how far the run got,
+  it marked the run failed and said so only in
+  `brokoli_runs_recovery_failed_total` and an error log line: no
+  dead-letter entry, no failure alert, no notification. It now adds all
+  three, once, carrying the recovery reason. (#1013)
 - **The UI shows whole numbers past 2^53 exactly** -- @hc12r. The API
   sends them exactly, but the UI parsed every response into JavaScript
   doubles, so a node's output sample and a pipeline preview showed

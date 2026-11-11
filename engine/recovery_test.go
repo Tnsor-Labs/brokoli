@@ -3,6 +3,7 @@ package engine
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -827,5 +828,49 @@ func backdateGenuineActivity(t *testing.T, s *store.SQLiteStore, runID string, t
 		return err
 	}); err != nil {
 		t.Fatalf("backdate genuine activity: %v", err)
+	}
+}
+
+// A run recovery failed got no dead-letter entry and no alert, so it never
+// showed where every other failed run shows: only in a metric and a log
+// line (#1013). It now gets one of each, and a second recovery pass over
+// the same run adds neither again.
+func TestRecoveryFailedRunIsDeadLetteredAndAlertedOnce(t *testing.T) {
+	eng, s := newRecoveryTestEngine(t)
+	seedRecoveryPipeline(t, s, "pipe-dlq")
+	run := seedOrphanedRun(t, s, "pipe-dlq", "run-dlq", models.RunStatusRunning)
+	appendRecoveryEvent(t, s, &models.RunEvent{
+		RunID: run.ID, EventType: models.RunEventCreated,
+		Payload: models.RunEventPayload{Status: models.RunStatusRunning, PipelineID: run.PipelineID, StartedAt: run.StartedAt},
+	})
+
+	for pass := 0; pass < 2; pass++ {
+		if _, err := eng.RecoverNonTerminalRuns(); err != nil {
+			t.Fatalf("pass %d: %v", pass, err)
+		}
+	}
+
+	entries, err := s.ListDLQ("pipe-dlq", true, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].RunID != run.ID || !strings.HasPrefix(entries[0].Error, "recovery: ") {
+		t.Fatalf("dead-letter entries %+v, want one for %s with the recovery reason", entries, run.ID)
+	}
+	alerts, err := s.ListAlerts("", false, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, a := range alerts {
+		if a.RunID == run.ID {
+			n++
+			if a.Kind != models.AlertKindRunFailure || a.Severity != models.AlertSeverityCritical || !strings.HasPrefix(a.Body, "recovery: ") {
+				t.Errorf("alert %+v, want a critical run failure carrying the recovery reason", a)
+			}
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d alerts for the run, want 1 (all: %+v)", n, alerts)
 	}
 }
