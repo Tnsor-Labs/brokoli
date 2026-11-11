@@ -1069,6 +1069,21 @@ func (r *Runner) dispatchExpansionInstanceRemotely(node models.Node, nodeAttempt
 // extraCapabilities differ. extraCapabilities are appended after
 // r.requiredCapabilities (the run-level tags every job already carries) —
 // nil for the two existing callers, which need nothing beyond that.
+// remoteTimeoutReason says why a remote instance's wait ran out. It said
+// "timed out waiting for a worker" and no more, which reads the same
+// whether no worker was running or none advertised what the job needs: a
+// queue hands a job only to a worker advertising every capability it
+// requires, so a missing one looks exactly like no workers at all (#529).
+// It now names the capabilities the job needed. The attempt's own state
+// cannot tell a job no worker took from one a worker ran too long, since
+// the dispatcher marks it started itself before enqueuing.
+func remoteTimeoutReason(instanceKey string, required []string, waited time.Duration) string {
+	if len(required) == 0 {
+		return fmt.Sprintf("remote instance dispatch for %s timed out waiting for a worker: no result within %s; check that a worker is running and connected", instanceKey, waited)
+	}
+	return fmt.Sprintf("remote instance dispatch for %s timed out waiting for a worker: no result within %s; only a worker advertising all of %s takes it, so check that one is running", instanceKey, waited, strings.Join(required, ", "))
+}
+
 func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt int, instanceKey string, execFencingGen int64, workOrder *extensions.InstanceWorkOrder, timeoutSec int, extraCapabilities []string) (*common.DataSet, error) {
 	execAttemptStore, ok := r.store.(store.ExecutionAttemptStore)
 	if !ok {
@@ -1157,7 +1172,7 @@ func (r *Runner) dispatchInstanceWorkOrderRemotely(nodeID string, nodeAttempt in
 	for {
 		select {
 		case <-waitCtx.Done():
-			reason := fmt.Sprintf("remote instance dispatch for %s timed out waiting for a worker", instanceKey)
+			reason := remoteTimeoutReason(instanceKey, job.RequiredCapabilities, time.Duration(timeoutSec)*time.Second+remoteInstanceDispatchMargin)
 			if r.ctx.Err() != nil {
 				reason = fmt.Sprintf("pipeline cancelled while waiting for remote instance %s", instanceKey)
 			}

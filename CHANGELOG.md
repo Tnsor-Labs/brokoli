@@ -53,6 +53,18 @@ reconstruct from git archaeology.
   Enable and disable could change a Git-managed pipeline, recorded no
   version and left the schedule stale until the next reconcile. They now
   go through the same save as an edit. (#593)
+- **A dataset that misses Arrow says why** -- @hc12r. A dataset written
+  as NDJSON because it could not be written exactly as Arrow (a nested
+  value, a column mixing types, a column null in every row, or an integer
+  past 2^53 among fractions) fell back without a word, so it could miss
+  the faster format on every run and nobody would know. The log now names
+  the column and the cause, once per cause, and with
+  `BROKOLI_STREAM_CODEC=arrow` the refusal says the same. (#529)
+- **A remote job no worker takes names what it needs** -- @hc12r. It
+  failed with "timed out waiting for a worker" and no more, which reads
+  the same whether no worker was running or none advertised a capability
+  the job requires. The failure now says how long it waited and lists the
+  capabilities a worker must advertise to take it. (#529)
 
 ## [0.22.1] - 2026-11-11
 

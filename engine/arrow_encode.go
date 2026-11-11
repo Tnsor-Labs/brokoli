@@ -41,8 +41,19 @@ import (
 // A column that is entirely null has no inferable type at all and also
 // disqualifies it -- guessing one would be inventing a contract.
 func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
+	schema, _ := arrowSchemaFor(ds)
+	return schema, schema != nil
+}
+
+// arrowSchemaFor is arrowEncodableSchema, saying why it declined: a
+// sentence naming the column and what disqualified it, or "" when there
+// was nothing to infer from (no columns or no rows), which is not a
+// refusal worth reporting. The fallback to NDJSON is correct but slower,
+// and it was silent, so a dataset could miss Arrow on every run with
+// nobody knowing why (#529, #521).
+func arrowSchemaFor(ds *common.DataSet) (*arrow.Schema, string) {
 	if ds == nil || len(ds.Columns) == 0 || len(ds.Rows) == 0 {
-		return nil, false
+		return nil, ""
 	}
 	fields := make([]arrow.Field, 0, len(ds.Columns))
 	for _, col := range ds.Columns {
@@ -92,7 +103,7 @@ func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
 				// json.Number, nested maps and slices still land here:
 				// representable in principle, not without deciding how
 				// they map back, so NDJSON keeps them.
-				return nil, false
+				return nil, fmt.Sprintf("column %q holds a %s, which has no exact Arrow type", col, arrowValueKind(v))
 			}
 			if dt == nil {
 				dt = this
@@ -119,20 +130,43 @@ func arrowEncodableSchema(ds *common.DataSet) (*arrow.Schema, bool) {
 				widened = true
 				continue
 			}
-			return nil, false // mixed types in one column
+			return nil, fmt.Sprintf("column %q holds both %s and %s values", col, dt, this)
 		}
 		if dt == nil {
-			return nil, false // all-null column: no type to infer
+			return nil, fmt.Sprintf("column %q is null in every row, so it has no type", col)
 		}
 		// Re-checked after the whole column is scanned, not only where the
 		// widening was decided: the integer that cannot survive it may
 		// appear after the float that forces it.
 		if widened && lossyIfWidened {
-			return nil, false
+			return nil, fmt.Sprintf("column %q mixes whole and fractional numbers, and holds an integer beyond 2^53 that a float64 would round", col)
 		}
 		fields = append(fields, arrow.Field{Name: col, Type: dt, Nullable: true})
 	}
-	return arrow.NewSchema(fields, nil), true
+	return arrow.NewSchema(fields, nil), ""
+}
+
+// arrowValueKind names a value's kind for a refusal message, in the
+// words of the data rather than of Go's types.
+func arrowValueKind(v interface{}) string {
+	switch v.(type) {
+	case map[string]interface{}:
+		return "nested object"
+	case []interface{}:
+		return "list"
+	default:
+		return fmt.Sprintf("%T", v)
+	}
+}
+
+// announceArrowFallback says, once per cause, that a dataset was written
+// as NDJSON although Arrow was allowed, and why.
+func announceArrowFallback(reason string) {
+	if reason == "" {
+		return
+	}
+	announceFallbackOnce("arrow-fallback:"+reason,
+		"engine: a dataset was written as NDJSON instead of Arrow because %s; NDJSON keeps every value exactly, Arrow decodes several times faster (logged once per cause)", reason)
 }
 
 // EncodeArrowIPC writes ds as an Arrow IPC stream with typed columns.

@@ -332,17 +332,24 @@ func (d *datasetStreamWriter) Decide(first *common.DataSet) (format, mediaType s
 	}
 	d.decided = true
 
-	schema, encodable := arrowEncodableSchema(first)
+	schema, reason := arrowSchemaFor(first)
+	encodable := schema != nil
 	switch {
-	case d.codec == streamCodecNDJSON, d.codec == streamCodecAuto && !encodable:
+	case d.codec == streamCodecNDJSON:
+		d.ndjson = newNDJSONStreamEncoder(d.w)
+		return artifact.FormatNDJSON, artifact.MediaTypeNDJSON, nil
+	case d.codec == streamCodecAuto && !encodable:
+		announceArrowFallback(reason)
 		d.ndjson = newNDJSONStreamEncoder(d.w)
 		return artifact.FormatNDJSON, artifact.MediaTypeNDJSON, nil
 	case d.codec == streamCodecArrow && !encodable:
+		if reason == "" {
+			reason = "it has no rows to infer a type from"
+		}
 		return "", "", fmt.Errorf(
-			"%s=arrow, but this stream's first batch is not exactly representable as arrow "+
-				"(a column with mixed types, a column that is entirely null, or a nested value); "+
+			"%s=arrow, but this stream's first batch is not exactly representable as arrow: %s; "+
 				"unset %s to fall back to ndjson automatically",
-			streamCodecEnv, streamCodecEnv)
+			streamCodecEnv, reason, streamCodecEnv)
 	default:
 		d.arrow = newArrowStreamEncoder(d.w, schema)
 		return artifact.FormatArrowIPC, artifact.MediaTypeArrowIPC, nil
