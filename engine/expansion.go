@@ -929,7 +929,17 @@ func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, no
 		Status:        models.RunStatusRunning,
 		StartedAt:     &startTime,
 	}
-	if instStore != nil && !r.dryRun {
+	// A local item's bookkeeping in two transactions instead of six
+	// separate writes, when the store can (store.InstanceAttemptStore):
+	// with many items those per-statement commits were most of an item's
+	// cost. A remote item keeps the separate calls: its attempt is settled
+	// by the worker that runs it.
+	batched, _ := r.store.(store.InstanceAttemptStore)
+	_, hasAttempts := r.store.(store.ExecutionAttemptStore)
+	if r.dryRun || remote || instStore == nil || !hasAttempts {
+		batched = nil
+	}
+	if instStore != nil && !r.dryRun && batched == nil {
 		if err := instStore.CreateExpansionInstance(ei); err != nil {
 			return nil, fmt.Errorf("persist expansion instance %d: %w", index, err)
 		}
@@ -948,15 +958,6 @@ func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, no
 	var execFencingGen int64
 	if as, ok := r.store.(store.ExecutionAttemptStore); ok && !r.dryRun {
 		execAttemptStore = as
-		idempotencyKey := fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt)
-		if err := r.store.WithTx(func(tx *sql.Tx) error {
-			return execAttemptStore.CreateExecutionAttemptTx(tx, &models.ExecutionAttempt{
-				RunID: r.run.ID, NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
-				Status: models.AttemptStatusQueued, IdempotencyKey: idempotencyKey,
-			})
-		}); err != nil {
-			return nil, fmt.Errorf("persist execution attempt for expansion instance %d: %w", index, err)
-		}
 		// Local execution is one bounded, synchronous call: a lease sized
 		// to cover it (timeoutSec plus a margin) needs no renewal — claim
 		// through settle all happen within this one call, so there is no
@@ -971,16 +972,37 @@ func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, no
 		if remote {
 			leaseDuration = store.DefaultLeaseDuration
 		}
-		gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, leaseDuration)
-		if err != nil {
-			return nil, fmt.Errorf("claim execution attempt for expansion instance %d: %w", index, err)
+		attempt := &models.ExecutionAttempt{
+			RunID: r.run.ID, NodeID: node.ID, InstanceKey: instanceKey, Attempt: nodeAttempt,
+			Status:         models.AttemptStatusQueued,
+			IdempotencyKey: fmt.Sprintf("%s:%s:%s:%d", r.run.ID, node.ID, instanceKey, nodeAttempt),
 		}
-		if !ok {
-			return nil, fmt.Errorf("claim execution attempt for expansion instance %d: already claimed or terminal", index)
-		}
-		execFencingGen = gen
-		if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, execFencingGen); err != nil {
-			return nil, fmt.Errorf("ack execution attempt for expansion instance %d: %w", index, err)
+		if batched != nil {
+			gen, ok, err := batched.StartInstanceAttempt(ei, attempt, r.instanceID, leaseDuration)
+			if err != nil {
+				return nil, fmt.Errorf("start expansion instance %d: %w", index, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("claim execution attempt for expansion instance %d: already claimed or terminal", index)
+			}
+			execFencingGen = gen
+		} else {
+			if err := r.store.WithTx(func(tx *sql.Tx) error {
+				return execAttemptStore.CreateExecutionAttemptTx(tx, attempt)
+			}); err != nil {
+				return nil, fmt.Errorf("persist execution attempt for expansion instance %d: %w", index, err)
+			}
+			gen, ok, err := execAttemptStore.ClaimAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, leaseDuration)
+			if err != nil {
+				return nil, fmt.Errorf("claim execution attempt for expansion instance %d: %w", index, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("claim execution attempt for expansion instance %d: already claimed or terminal", index)
+			}
+			execFencingGen = gen
+			if err := execAttemptStore.AckAttempt(r.run.ID, node.ID, instanceKey, nodeAttempt, r.instanceID, execFencingGen); err != nil {
+				return nil, fmt.Errorf("ack execution attempt for expansion instance %d: %w", index, err)
+			}
 		}
 	}
 
@@ -1019,12 +1041,20 @@ func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, no
 	if err != nil {
 		ei.Status = models.RunStatusFailed
 		ei.Error = err.Error()
-		if instStore != nil && !r.dryRun {
+		if batched != nil {
+			uErr, failErr := batched.SettleInstanceAttempt(ei, instanceKey, execFencingGen)
+			if uErr != nil {
+				r.log(node.ID, models.LogLevelWarning, "failed to persist failed expansion instance %d: %v", index, uErr)
+			}
+			if failErr != nil {
+				r.log(node.ID, models.LogLevelWarning, "failed to settle execution attempt for expansion instance %d as failed: %v", index, failErr)
+			}
+		} else if instStore != nil && !r.dryRun {
 			if uErr := instStore.UpdateExpansionInstance(ei); uErr != nil {
 				r.log(node.ID, models.LogLevelWarning, "failed to persist failed expansion instance %d: %v", index, uErr)
 			}
 		}
-		if execAttemptStore != nil {
+		if execAttemptStore != nil && batched == nil {
 			// Non-fatal: the ExpansionInstance row above is already the
 			// durable, authoritative record of this item's failure. This
 			// settles the supplementary claim/lease record to match.
@@ -1048,12 +1078,20 @@ func (r *Runner) executeMappedInstance(ctx context.Context, node models.Node, no
 	}
 	ei.Status = models.RunStatusSuccess
 	ei.RowCount = rowCount
-	if instStore != nil && !r.dryRun {
+	if batched != nil {
+		uErr, cErr := batched.SettleInstanceAttempt(ei, instanceKey, execFencingGen)
+		if uErr != nil {
+			r.log(node.ID, models.LogLevelWarning, "failed to persist successful expansion instance %d: %v", index, uErr)
+		}
+		if cErr != nil {
+			r.log(node.ID, models.LogLevelWarning, "failed to settle execution attempt for expansion instance %d as completed: %v", index, cErr)
+		}
+	} else if instStore != nil && !r.dryRun {
 		if uErr := instStore.UpdateExpansionInstance(ei); uErr != nil {
 			r.log(node.ID, models.LogLevelWarning, "failed to persist successful expansion instance %d: %v", index, uErr)
 		}
 	}
-	if execAttemptStore != nil {
+	if execAttemptStore != nil && batched == nil {
 		// Non-fatal, same reasoning as the failure path above. For a
 		// remote dispatch this is also redundant — the enterprise
 		// instance-result endpoint already called CompleteAttempt when

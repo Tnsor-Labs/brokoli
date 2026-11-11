@@ -1822,7 +1822,11 @@ func (s *SQLiteStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error) 
 // dynamic-expansion `code` node (issue #31).
 
 func (s *SQLiteStore) CreateExpansionInstance(ei *models.ExpansionInstance) error {
-	_, err := s.db.Exec(
+	return sqliteCreateExpansionInstance(s.db, ei)
+}
+
+func sqliteCreateExpansionInstance(db sqlExecer, ei *models.ExpansionInstance) error {
+	_, err := db.Exec(
 		`INSERT INTO expansion_instances (id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ei.ID, ei.RunID, ei.NodeID, ei.NodeAttempt, ei.InstanceIndex, ei.InstanceKey,
@@ -1832,7 +1836,11 @@ func (s *SQLiteStore) CreateExpansionInstance(ei *models.ExpansionInstance) erro
 }
 
 func (s *SQLiteStore) UpdateExpansionInstance(ei *models.ExpansionInstance) error {
-	result, err := s.db.Exec(
+	return sqliteUpdateExpansionInstance(s.db, ei)
+}
+
+func sqliteUpdateExpansionInstance(db sqlExecer, ei *models.ExpansionInstance) error {
+	result, err := db.Exec(
 		`UPDATE expansion_instances SET status=?, row_count=?, started_at=?, duration_ms=?, error=? WHERE id=?`,
 		string(ei.Status), ei.RowCount, formatTimePtr(ei.StartedAt), ei.DurationMs, ei.Error, ei.ID,
 	)
@@ -1875,6 +1883,13 @@ func (s *SQLiteStore) ListExpansionInstancesByRun(runID string) ([]models.Expans
 // and AppendEventTx share one implementation.
 type sqlExecer interface {
 	Exec(query string, args ...interface{}) (sql.Result, error)
+}
+
+// sqlExecQuerier is satisfied by both *sql.DB and *sql.Tx: the execution
+// attempt helpers run alone or inside a transaction with other writes.
+type sqlExecQuerier interface {
+	sqlExecer
+	QueryRow(query string, args ...interface{}) *sql.Row
 }
 
 func (s *SQLiteStore) AppendEvent(e *models.RunEvent) error {
@@ -1975,6 +1990,10 @@ func scanRunEvent(rows *sql.Rows) (*models.RunEvent, error) {
 // (ClaimPendingRun above) to (run_id, node_id, attempt) granularity.
 
 func (s *SQLiteStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error {
+	return sqliteCreateExecutionAttempt(tx, a)
+}
+
+func sqliteCreateExecutionAttempt(tx sqlExecer, a *models.ExecutionAttempt) error {
 	now := time.Now().UTC()
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now
@@ -1995,9 +2014,13 @@ func (s *SQLiteStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAt
 }
 
 func (s *SQLiteStore) ClaimAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
+	return sqliteClaimAttempt(s.db, runID, nodeID, instanceKey, attempt, claimedBy, leaseDuration)
+}
+
+func sqliteClaimAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
 	now := time.Now().UTC()
 	leaseExpires := now.Add(leaseDuration)
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE execution_attempts
 		 SET status=?, claimed_by=?, lease_expires_at=?, fencing_generation=fencing_generation+1, updated_at=?
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=?
@@ -2018,7 +2041,7 @@ func (s *SQLiteStore) ClaimAttempt(runID, nodeID, instanceKey string, attempt in
 	if n != 1 {
 		return 0, false, nil
 	}
-	existing, err := sqliteGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
+	existing, err := sqliteGetExecutionAttempt(db, runID, nodeID, instanceKey, attempt)
 	if err != nil {
 		return 0, false, wrapStoreErr("ClaimAttempt", runID, err)
 	}
@@ -2046,8 +2069,12 @@ func (s *SQLiteStore) RenewLease(runID, nodeID, instanceKey string, attempt int,
 }
 
 func (s *SQLiteStore) AckAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error {
+	return sqliteAckAttempt(s.db, runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration)
+}
+
+func sqliteAckAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error {
 	now := time.Now().UTC()
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=?, updated_at=?
 		 WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=? AND claimed_by=? AND fencing_generation=? AND status IN (?, ?)`,
 		string(models.AttemptStatusStarted), formatTime(now),
@@ -2064,7 +2091,7 @@ func (s *SQLiteStore) AckAttempt(runID, nodeID, instanceKey string, attempt int,
 	if n == 1 {
 		return nil
 	}
-	existing, getErr := sqliteGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
+	existing, getErr := sqliteGetExecutionAttempt(db, runID, nodeID, instanceKey, attempt)
 	if getErr != nil {
 		return wrapStoreErr("AckAttempt", runID, getErr)
 	}
@@ -2087,7 +2114,7 @@ func (s *SQLiteStore) FailAttempt(runID, nodeID, instanceKey string, attempt int
 // same terminal status is a no-op success — the documented duplicate-
 // delivery contract; any other mismatch (wrong fencing generation, or
 // already terminal in the *other* status) is an error.
-func sqliteSettleAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
+func sqliteSettleAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
 	now := time.Now().UTC()
 	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=?, error=?, updated_at=?
@@ -2116,6 +2143,53 @@ func sqliteSettleAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt 
 	return wrapStoreErr("SettleAttempt", runID, fmt.Errorf("fencing generation mismatch settling attempt to %s (have generation %d, status %s)", toStatus, existing.FencingGeneration, existing.Status))
 }
 
+// StartInstanceAttempt implements InstanceAttemptStore.
+func (s *SQLiteStore) StartInstanceAttempt(ei *models.ExpansionInstance, a *models.ExecutionAttempt, claimedBy string, lease time.Duration) (int64, bool, error) {
+	var gen int64
+	var claimed bool
+	var refused error
+	err := s.WithTx(func(tx *sql.Tx) error {
+		if err := sqliteCreateExpansionInstance(tx, ei); err != nil {
+			return err
+		}
+		if err := sqliteCreateExecutionAttempt(tx, a); err != nil {
+			return err
+		}
+		g, ok, err := sqliteClaimAttempt(tx, a.RunID, a.NodeID, a.InstanceKey, a.Attempt, claimedBy, lease)
+		if err != nil {
+			return err
+		}
+		gen, claimed = g, ok
+		if !ok {
+			return nil // keep the rows, as the separate calls did
+		}
+		refused = sqliteAckAttempt(tx, a.RunID, a.NodeID, a.InstanceKey, a.Attempt, claimedBy, g)
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return gen, claimed, refused
+}
+
+// SettleInstanceAttempt implements InstanceAttemptStore.
+func (s *SQLiteStore) SettleInstanceAttempt(ei *models.ExpansionInstance, instanceKey string, generation int64) (error, error) {
+	var instanceErr, attemptErr error
+	err := s.WithTx(func(tx *sql.Tx) error {
+		instanceErr = sqliteUpdateExpansionInstance(tx, ei)
+		to, msg := models.AttemptStatusCompleted, ""
+		if ei.Status != models.RunStatusSuccess {
+			to, msg = models.AttemptStatusFailed, ei.Error
+		}
+		attemptErr = sqliteSettleAttempt(tx, ei.RunID, ei.NodeID, instanceKey, ei.NodeAttempt, generation, to, msg)
+		return nil
+	})
+	if err != nil {
+		return err, err
+	}
+	return instanceErr, attemptErr
+}
+
 func (s *SQLiteStore) GetExecutionAttempt(runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
 	a, err := sqliteGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
 	if err != nil {
@@ -2124,7 +2198,7 @@ func (s *SQLiteStore) GetExecutionAttempt(runID, nodeID, instanceKey string, att
 	return a, nil
 }
 
-func sqliteGetExecutionAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
+func sqliteGetExecutionAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
 	row := db.QueryRow(
 		`SELECT run_id, node_id, instance_key, attempt, status, claimed_by, lease_expires_at, fencing_generation, idempotency_key, error, created_at, updated_at
 		 FROM execution_attempts WHERE run_id=? AND node_id=? AND instance_key=? AND attempt=?`,

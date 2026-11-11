@@ -160,6 +160,30 @@ var ErrUnsupported = errors.New("operation not supported by this store")
 // names and fail somewhere that no longer says why.
 var ErrCredentialsUnresolved = errors.New("connection credentials could not be resolved")
 
+// InstanceAttemptStore records a locally run mapped item's bookkeeping in
+// two transactions instead of six separate writes: StartInstanceAttempt
+// writes its instance row and creates, claims and acks its execution
+// attempt; SettleInstanceAttempt records its outcome on both. The
+// statements and their checks (the claim's compare-and-swap, the fencing
+// generation on ack and settle) are exactly the separate methods'; only
+// the commits are fewer. Each item paid a commit per statement, and with a
+// node mapped over many items those commits were most of the item's cost
+// (#967 benchmark). Optional: a store without it gets the separate calls.
+type InstanceAttemptStore interface {
+	// StartInstanceAttempt inserts ei, creates a (queued, idempotent on its
+	// key), claims it for claimedBy under lease and acks it. claimed is
+	// false when the claim found the attempt already claimed or terminal;
+	// what was written before a refused claim or ack is kept, as with the
+	// separate calls.
+	StartInstanceAttempt(ei *models.ExpansionInstance, a *models.ExecutionAttempt, claimedBy string, lease time.Duration) (generation int64, claimed bool, err error)
+	// SettleInstanceAttempt updates ei and settles its attempt (ei.RunID,
+	// ei.NodeID, instanceKey, ei.NodeAttempt) at generation: completed
+	// when ei succeeded, failed with ei.Error otherwise. A settle refused
+	// by its fencing check does not undo the instance update; each error is
+	// returned on its own.
+	SettleInstanceAttempt(ei *models.ExpansionInstance, instanceKey string, generation int64) (instanceErr, attemptErr error)
+}
+
 type ExecutionAttemptStore interface {
 	// CreateExecutionAttemptTx inserts the durable outbox/intent record for
 	// an attempt inside an existing transaction (via WithTx), so it commits

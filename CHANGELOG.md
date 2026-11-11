@@ -40,6 +40,17 @@ reconstruct from git archaeology.
   failure hook when it ends, as it already raised no failure alert and no
   dead-letter entry.
 
+- **A mapped item's bookkeeping takes two commits instead of six** --
+  @hc12r. Each item of a mapped node wrote its instance row, then
+  created, claimed and acked its execution attempt, then updated the row
+  and settled the attempt, every write its own commit. With many items
+  running at once those commits queued behind each other and were most of
+  an item's cost. A locally run item now does them in two transactions:
+  one to start it, one to record its outcome. The checks are the same
+  (the claim's compare-and-swap and the fencing generation on ack and
+  settle), and a settle the fencing check refuses still records the
+  item's outcome. A 500-item fan-out went from 75 to about 123 items a
+  second on its own, and to about 166 together with #1021. (#967)
 - **Routes grant what the caller's role lists** -- @hc12r. Without a
   distribution's permission system, routes decided by role name: `admin`
   and `editor` could do everything, `viewer` could read, and every other

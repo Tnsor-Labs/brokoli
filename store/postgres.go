@@ -1702,7 +1702,11 @@ func (s *PostgresStore) ListNodeRunsByRun(runID string) ([]models.NodeRun, error
 // dynamic-expansion `code` node (issue #31).
 
 func (s *PostgresStore) CreateExpansionInstance(ei *models.ExpansionInstance) error {
-	_, err := s.db.Exec(
+	return pgCreateExpansionInstance(s.db, ei)
+}
+
+func pgCreateExpansionInstance(db sqlExecer, ei *models.ExpansionInstance) error {
+	_, err := db.Exec(
 		`INSERT INTO expansion_instances (id, run_id, node_id, node_attempt, instance_index, instance_key, status, row_count, started_at, duration_ms, error)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
 		ei.ID, ei.RunID, ei.NodeID, ei.NodeAttempt, ei.InstanceIndex, ei.InstanceKey,
@@ -1715,7 +1719,11 @@ func (s *PostgresStore) CreateExpansionInstance(ei *models.ExpansionInstance) er
 }
 
 func (s *PostgresStore) UpdateExpansionInstance(ei *models.ExpansionInstance) error {
-	result, err := s.db.Exec(
+	return pgUpdateExpansionInstance(s.db, ei)
+}
+
+func pgUpdateExpansionInstance(db sqlExecer, ei *models.ExpansionInstance) error {
+	result, err := db.Exec(
 		`UPDATE expansion_instances SET status=$1, row_count=$2, started_at=$3, duration_ms=$4, error=$5 WHERE id=$6`,
 		string(ei.Status), ei.RowCount, ei.StartedAt, ei.DurationMs, ei.Error, ei.ID,
 	)
@@ -1844,6 +1852,10 @@ func (s *PostgresStore) ListEventsByRun(runID string) ([]models.RunEvent, error)
 // (ClaimPendingRun above) to (run_id, node_id, attempt) granularity.
 
 func (s *PostgresStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.ExecutionAttempt) error {
+	return pgCreateExecutionAttempt(tx, a)
+}
+
+func pgCreateExecutionAttempt(tx sqlExecer, a *models.ExecutionAttempt) error {
 	now := time.Now().UTC()
 	if a.CreatedAt.IsZero() {
 		a.CreatedAt = now
@@ -1864,10 +1876,14 @@ func (s *PostgresStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.Execution
 }
 
 func (s *PostgresStore) ClaimAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
+	return pgClaimAttempt(s.db, runID, nodeID, instanceKey, attempt, claimedBy, leaseDuration)
+}
+
+func pgClaimAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, claimedBy string, leaseDuration time.Duration) (int64, bool, error) {
 	now := time.Now().UTC()
 	leaseExpires := now.Add(leaseDuration)
 	var fencingGeneration int64
-	err := s.db.QueryRow(
+	err := db.QueryRow(
 		`UPDATE execution_attempts
 		 SET status=$1, claimed_by=$2, lease_expires_at=$3, fencing_generation=fencing_generation+1, updated_at=$4
 		 WHERE run_id=$5 AND node_id=$6 AND instance_key=$7 AND attempt=$8
@@ -1908,8 +1924,12 @@ func (s *PostgresStore) RenewLease(runID, nodeID, instanceKey string, attempt in
 }
 
 func (s *PostgresStore) AckAttempt(runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error {
+	return pgAckAttempt(s.db, runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration)
+}
+
+func pgAckAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, claimedBy string, fencingGeneration int64) error {
 	now := time.Now().UTC()
-	result, err := s.db.Exec(
+	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=$1, updated_at=$2
 		 WHERE run_id=$3 AND node_id=$4 AND instance_key=$5 AND attempt=$6 AND claimed_by=$7 AND fencing_generation=$8 AND status IN ($9, $10)`,
 		string(models.AttemptStatusStarted), now, runID, nodeID, instanceKey, attempt, claimedBy, fencingGeneration,
@@ -1925,7 +1945,7 @@ func (s *PostgresStore) AckAttempt(runID, nodeID, instanceKey string, attempt in
 	if n == 1 {
 		return nil
 	}
-	existing, getErr := pgGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
+	existing, getErr := pgGetExecutionAttempt(db, runID, nodeID, instanceKey, attempt)
 	if getErr != nil {
 		return fmt.Errorf("ack attempt: %w", getErr)
 	}
@@ -1933,6 +1953,55 @@ func (s *PostgresStore) AckAttempt(runID, nodeID, instanceKey string, attempt in
 		return nil // idempotent re-ack
 	}
 	return fmt.Errorf("ack attempt: fencing generation mismatch or attempt not claimed by %q (have generation %d, status %s)", claimedBy, existing.FencingGeneration, existing.Status)
+}
+
+// StartInstanceAttempt implements InstanceAttemptStore.
+func (s *PostgresStore) StartInstanceAttempt(ei *models.ExpansionInstance, a *models.ExecutionAttempt, claimedBy string, lease time.Duration) (int64, bool, error) {
+	var gen int64
+	var claimed bool
+	var refused error
+	err := s.WithTx(func(tx *sql.Tx) error {
+		if err := pgCreateExpansionInstance(tx, ei); err != nil {
+			return err
+		}
+		if err := pgCreateExecutionAttempt(tx, a); err != nil {
+			return err
+		}
+		g, ok, err := pgClaimAttempt(tx, a.RunID, a.NodeID, a.InstanceKey, a.Attempt, claimedBy, lease)
+		if err != nil {
+			return err
+		}
+		gen, claimed = g, ok
+		if !ok {
+			return nil // keep the rows, as the separate calls did
+		}
+		refused = pgAckAttempt(tx, a.RunID, a.NodeID, a.InstanceKey, a.Attempt, claimedBy, g)
+		return nil
+	})
+	if err != nil {
+		return 0, false, err
+	}
+	return gen, claimed, refused
+}
+
+// SettleInstanceAttempt implements InstanceAttemptStore. A settle refused
+// by its fencing check is not an SQL error, so it does not abort the
+// transaction and the instance update still commits.
+func (s *PostgresStore) SettleInstanceAttempt(ei *models.ExpansionInstance, instanceKey string, generation int64) (error, error) {
+	var instanceErr, attemptErr error
+	err := s.WithTx(func(tx *sql.Tx) error {
+		instanceErr = pgUpdateExpansionInstance(tx, ei)
+		to, msg := models.AttemptStatusCompleted, ""
+		if ei.Status != models.RunStatusSuccess {
+			to, msg = models.AttemptStatusFailed, ei.Error
+		}
+		attemptErr = pgSettleAttempt(tx, ei.RunID, ei.NodeID, instanceKey, ei.NodeAttempt, generation, to, msg)
+		return nil
+	})
+	if err != nil {
+		return err, err
+	}
+	return instanceErr, attemptErr
 }
 
 func (s *PostgresStore) CompleteAttempt(runID, nodeID, instanceKey string, attempt int, fencingGeneration int64) error {
@@ -1948,7 +2017,7 @@ func (s *PostgresStore) FailAttempt(runID, nodeID, instanceKey string, attempt i
 // terminal status is a no-op success — the documented duplicate-delivery
 // contract; any other mismatch (wrong fencing generation, or already
 // terminal in the *other* status) is an error.
-func pgSettleAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
+func pgSettleAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int, fencingGeneration int64, toStatus models.AttemptStatus, errMsg string) error {
 	now := time.Now().UTC()
 	result, err := db.Exec(
 		`UPDATE execution_attempts SET status=$1, error=$2, updated_at=$3
@@ -1980,7 +2049,7 @@ func (s *PostgresStore) GetExecutionAttempt(runID, nodeID, instanceKey string, a
 	return pgGetExecutionAttempt(s.db, runID, nodeID, instanceKey, attempt)
 }
 
-func pgGetExecutionAttempt(db *sql.DB, runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
+func pgGetExecutionAttempt(db sqlExecQuerier, runID, nodeID, instanceKey string, attempt int) (*models.ExecutionAttempt, error) {
 	var a models.ExecutionAttempt
 	var status string
 	err := db.QueryRow(
