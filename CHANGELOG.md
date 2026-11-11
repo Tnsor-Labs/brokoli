@@ -11,6 +11,10 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.22.1] - 2026-11-11
+
+A security patch: v0.22.0 rebuilt with Go 1.26.11. Nothing else changes.
+
 ### Security
 
 - **Go 1.26.11** -- @hc12r. GO-2026-6859 (CVE-2026-97054): in Go 1.26.10,
