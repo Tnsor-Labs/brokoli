@@ -9,7 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // dbt ran under the run's context, which a node's timeout never reaches,
@@ -29,7 +29,7 @@ func TestDBTIsStoppedWhenItsAttemptTimesOut(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

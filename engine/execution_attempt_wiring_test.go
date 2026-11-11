@@ -8,6 +8,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // storeWithoutAttempts embeds the store.Store INTERFACE (not a concrete
@@ -33,7 +34,7 @@ const attemptWiringInstanceID = "test-instance"
 func newAttemptWiringTestPipeline(t *testing.T, config map[string]interface{}, executor extensions.NodeExecutor) (*models.Run, *store.SQLiteStore) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "attempts.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "attempts.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -137,7 +138,7 @@ func TestExecuteNode_FailedThenRetried_TwoExecutionAttempts(t *testing.T) {
 // pre-#90-M3 CreateNodeRun/UpdateNodeRun path.
 func TestExecuteNode_StoreWithoutExecutionAttemptStore_Unaffected(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "attempts.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "attempts.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

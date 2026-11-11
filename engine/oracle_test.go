@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // The Oracle write refusal at validation time, where the editor shows it,
@@ -46,7 +46,7 @@ func TestOracleSinkThroughConnectionIsRefusedInTheRun(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id,city\n1,lisbon\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

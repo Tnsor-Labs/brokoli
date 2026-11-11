@@ -18,6 +18,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore/secretstoretest"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 type recordingTokens struct {
@@ -44,7 +45,7 @@ type storeFixture struct {
 
 func newStoreFixture(t *testing.T) *storeFixture {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "stores.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "stores.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

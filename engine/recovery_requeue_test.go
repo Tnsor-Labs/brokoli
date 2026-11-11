@@ -7,6 +7,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #289: an interrupted run that provably wrote nothing goes back on the
@@ -38,7 +39,7 @@ func seedRequeuePipeline(t *testing.T, s *store.SQLiteStore, pipelineID string, 
 func newRequeueTestEngine(t *testing.T) (*Engine, *store.SQLiteStore, *idempotentFakeQueue) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "requeue.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "requeue.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

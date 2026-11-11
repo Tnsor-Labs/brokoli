@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // These tests run REAL dbt-core against a REAL Postgres. That is the whole
@@ -124,7 +124,7 @@ func copyDirForTest(src, dst string) error {
 func dbtRunner(t *testing.T) *Runner {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

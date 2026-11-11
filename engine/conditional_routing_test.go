@@ -12,6 +12,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 const routingTestNode models.NodeType = "routing_test"
@@ -81,7 +82,7 @@ func boolPointer(value bool) *bool { return &value }
 
 func runRoutingPipeline(t *testing.T, pipeline *models.Pipeline, executors ...extensions.NodeExecutor) (*models.Run, *store.SQLiteStore) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "routing.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "routing.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -245,7 +246,7 @@ func TestConditionalRoutingRejectsInactiveJoinInput(t *testing.T) {
 		models.Edge{From: "no", To: "join"},
 	)
 
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "join.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "join.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +288,7 @@ func TestIR20ConditionRetainsStaticEmptyDatasetBehavior(t *testing.T) {
 }
 
 func TestRunnerFailsInsteadOfSucceedingWithUnresolvedNodes(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "stalled.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "stalled.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -420,7 +421,7 @@ func TestConditionDecisionAndArtifactsSurviveRepeatedResumes(t *testing.T) {
 
 func TestResumeFindsAncestorAfterLineageCarryFails(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "lineage-failure.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "lineage-failure.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +505,7 @@ func TestConditionRoutingCannotBeReplacedByExternalExecutor(t *testing.T) {
 
 func TestSkippedNodeAndEventRollbackTogether(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "skip-rollback.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "skip-rollback.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +547,7 @@ func TestSkippedNodeAndEventRollbackTogether(t *testing.T) {
 
 func TestConditionSuccessAndDecisionRollbackTogether(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "condition-rollback.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "condition-rollback.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

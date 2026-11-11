@@ -12,6 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // faultInjectingStore wraps a real *store.SQLiteStore and lets a test force
@@ -105,7 +106,7 @@ func (f *faultInjectingStore) CreateExecutionAttemptTx(tx *sql.Tx, a *models.Exe
 func newFaultTestEngine(t *testing.T) (*Engine, *faultInjectingStore, *store.SQLiteStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "fault.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "fault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +230,7 @@ func TestRunnerSurfacesSaveNodePreviewFailure(t *testing.T) {
 
 func TestRunnerSurfacesAddToDLQFailureAlongsideOriginalRunError(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "dlq-fault.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "dlq-fault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

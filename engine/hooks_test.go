@@ -14,6 +14,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // hookRecorder is a pipeline's hook endpoint: it keeps each call's payload
@@ -70,7 +71,7 @@ func (h *hookRecorder) call(event string) map[string]string {
 
 func hookTestStore(t *testing.T, pipe *models.Pipeline) *store.SQLiteStore {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "hooks.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "hooks.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

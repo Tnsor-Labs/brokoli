@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
@@ -160,7 +160,7 @@ func TestS3FileNodesRoundTripThroughRunner(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(root, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(root, "meta.db"))
 	if err != nil {
 		t.Fatalf("create store: %v", err)
 	}

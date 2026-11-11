@@ -13,6 +13,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestParseMigratePartitionConfig(t *testing.T) {
@@ -133,7 +134,7 @@ func TestMigratePartitionsPostgresEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+	meta, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +281,7 @@ func TestMigratePartitionsPostgresBenchmark(t *testing.T) {
 			}
 		}
 
-		meta, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+		meta, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -387,7 +388,7 @@ func TestMigratePartitionsPostgresCrossDatabaseBenchmark(t *testing.T) {
 				"max_parallel": float64(partitions),
 			}
 		}
-		meta, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+		meta, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 		if err != nil {
 			t.Fatal(err)
 		}

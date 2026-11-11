@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-028 phase 1 (#397), the engine half: a dispatched interval reaches
@@ -20,7 +20,7 @@ func TestRunPipelineOptsStampsAndResolvesTheInterval(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id\n1\n2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "iv.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "iv.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +115,7 @@ func TestRunPipelineOptsStampsAndResolvesTheInterval(t *testing.T) {
 // clock-derived ticks when no cron entry is registered.
 func TestScheduledRunOptionsDerivesTheInterval(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "s.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestIntervalVariablesResolve(t *testing.T) {
 // for is the slice its resume processes.
 func TestResumedRunKeepsItsInterval(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "rv.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "rv.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

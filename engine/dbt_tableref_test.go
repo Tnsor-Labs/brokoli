@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #353 Phase 3: a model dbt built is a named relation on a known server, so
@@ -90,7 +91,7 @@ func TestDBTModelComposesWithASinkOnTheSameConnection(t *testing.T) {
 	host, port, user, pass, dbname := parsePGForProfile(t, uri)
 	projectDir := dbtRefProject(t, dir, host, port, user, pass, dbname, schema)
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +189,7 @@ func TestEphemeralModelIsRefusedByName(t *testing.T) {
 	host, port, user, pass, dbname := parsePGForProfile(t, uri)
 	projectDir := dbtRefProject(t, dir, host, port, user, pass, dbname, schema)
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

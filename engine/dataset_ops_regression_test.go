@@ -8,12 +8,12 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestPipeline_UnknownNodeType_FailsClosed(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "unknown-type.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "unknown-type.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestPipeline_UnknownNodeType_FailsClosed(t *testing.T) {
 // future-SDK-emitted pipeline would.
 func TestPipeline_DatasetMapEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "dataset-map-e2e.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "dataset-map-e2e.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

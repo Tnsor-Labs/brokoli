@@ -7,11 +7,12 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func newSyncTestScheduler(t *testing.T) (*Scheduler, store.Store) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "sched-sync.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "sched-sync.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

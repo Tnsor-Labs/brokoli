@@ -15,6 +15,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // execCtxSourceCSV writes a tiny CSV file and returns its path. Every
@@ -92,7 +93,7 @@ func (e *capturingExecutor) ctxErrsAtCall() []error {
 func newExecCtxTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "execctx.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "execctx.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #353 Phase 1, end to end: one dbt invocation, an outcome recorded per
@@ -69,7 +69,7 @@ func TestDBTRecordsAnOutcomePerModel(t *testing.T) {
 	dir := t.TempDir()
 	projectDir, profilesDir := writeSkipChainProject(t, dir, host, port, user, pass, dbname, "dbt_outcomes_test")
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestDBTRecordsAnOutcomePerModel(t *testing.T) {
 // precondition for it.
 func TestDBTWithoutArtifactsStillReports(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #751: a credential reference that cannot be resolved used to be logged
@@ -35,7 +36,7 @@ func testKey(b byte) *crypto.Config {
 // different way, plus one that resolves.
 func credentialStore(t *testing.T) (*store.SQLiteStore, string) {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "creds.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "creds.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

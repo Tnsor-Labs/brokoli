@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A draft skips executable validation when it is saved, so it must be
@@ -20,7 +20,7 @@ import (
 // this test rather than silently bypassing the flag.
 func TestDraftPipelineCannotRunByAnyRoute(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "draft.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "draft.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestDraftPipelineCannotRunByAnyRoute(t *testing.T) {
 // refused.
 func TestPublishedPipelineRuns(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "pub.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "pub.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestPublishedPipelineRuns(t *testing.T) {
 // The flag has to survive a round trip, or a draft becomes a runnable
 // pipeline the next time it is read.
 func TestDraftSurvivesStorage(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "rt.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "rt.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestDraftSurvivesStorage(t *testing.T) {
 // A draft with a schedule is allowed, so you can build the whole thing
 // and publish once. It must not reach the scheduler in the meantime.
 func TestDraftWithScheduleIsNotRegistered(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

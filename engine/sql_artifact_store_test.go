@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestSQLArtifactStore_VisibleAcrossSeparateConnections is the direct
@@ -22,7 +22,7 @@ import (
 func TestSQLArtifactStore_VisibleAcrossSeparateConnections(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "artifacts.db")
 
-	writerStore, err := store.NewSQLiteStore(dbPath)
+	writerStore, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore (writer): %v", err)
 	}
@@ -52,7 +52,7 @@ func TestSQLArtifactStore_VisibleAcrossSeparateConnections(t *testing.T) {
 	// in-process connection pool. This is the property that matters: the
 	// bug this store fixes is specifically about visibility ACROSS
 	// separate connections/processes, not within one.
-	readerStore, err := store.NewSQLiteStore(dbPath)
+	readerStore, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore (reader): %v", err)
 	}
@@ -233,7 +233,7 @@ func TestSQLArtifactStore_DeleteRunArtifactsRemovesAllInstances(t *testing.T) {
 func newSQLArtifactTestStore(t *testing.T) *SQLArtifactStore {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "artifacts.db")
-	st, err := store.NewSQLiteStore(dbPath)
+	st, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

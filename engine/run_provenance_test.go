@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // Provenance is recorded by a real run, not only by a unit test calling
@@ -23,7 +24,7 @@ import (
 func provenanceTestEngine(t *testing.T) (*Engine, store.Store, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "prov.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "prov.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}
@@ -314,7 +315,7 @@ func TestProvenanceIsPurgedWithItsRun(t *testing.T) {
 // never became anybody's input would be a false record.
 func TestAFailedNodeRecordsNoProvenance(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "fail.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "fail.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

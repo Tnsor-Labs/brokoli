@@ -20,6 +20,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/sftpclient/sftptest"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-040 end to end: real runs through the engine, a stored sftp
@@ -50,7 +51,7 @@ func newSFTPFixture(t *testing.T, streamed bool, extra map[string]interface{}) *
 	t.Helper()
 	srv := sftptest.Start(t, sftptest.Options{})
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

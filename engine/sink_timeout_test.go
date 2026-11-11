@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // sink_db wrote through context.Background() with its own fixed timeout,
@@ -40,7 +40,7 @@ func TestSinkDBTimeoutCancelsTheWrite(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id,name\n1,a\n2,b\n3,c\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

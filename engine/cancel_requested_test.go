@@ -7,6 +7,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // getRunCounter counts GetRun calls. Embedding store.Store hides every
@@ -35,7 +36,7 @@ func (s flagReader) RunCancelRequested(id string) (bool, error) {
 // GetRun also loaded every node run for it; a store that can read the
 // flag alone is asked for that, and any other store still answers.
 func TestTheCancelCheckReadsOnlyTheFlagWhenTheStoreCan(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "c.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "c.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

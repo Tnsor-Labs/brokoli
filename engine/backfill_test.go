@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-028 phase 3 (#397): backfill enumerates the pipeline's own schedule
@@ -16,7 +17,7 @@ import (
 
 func backfillTestStore(t *testing.T, dir string) *store.SQLiteStore {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "bf.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "bf.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

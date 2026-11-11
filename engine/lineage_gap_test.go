@@ -12,6 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 /*
@@ -51,7 +52,7 @@ func (s *lineageFailingStore) SaveNodeProvenance(p *models.NodeProvenance) error
 // are the same assertion and the test would pass either way.
 func runWithLineageStore(t *testing.T, profileErr, provenanceErr error) (store.Store, *models.Run) {
 	t.Helper()
-	base, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "lineage.db"))
+	base, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "lineage.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

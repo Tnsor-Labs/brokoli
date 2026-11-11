@@ -13,6 +13,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // controllableExecutor is a test-only extensions.NodeExecutor that lets a
@@ -97,7 +98,7 @@ func (*flakyError) Error() string { return "flaky node: simulated failure on fir
 func newResumeTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "resume.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "resume.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -12,7 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-027 phase 3: overwrite arrives with its weaker semantics observed by
@@ -212,7 +212,7 @@ func TestClickHouseSameServerPipelineDoesNotPushDown(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "pd.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "pd.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -284,7 +284,7 @@ func TestClickHouseResumedRunWarnsAboutDuplicates(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id,city\n1,lisbon\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "r.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "r.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

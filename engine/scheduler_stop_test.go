@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 type listFailsStore struct{ store.Store }
@@ -36,7 +37,7 @@ func stopReturns(t *testing.T, sched *Scheduler, what string) {
 // launched, so shutdown hung until the process was killed. A second Stop
 // panicked closing a closed channel. Stop now returns in both cases.
 func TestSchedulerStopReturnsAfterAFailedStartAndWhenCalledTwice(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A run started on the in-process path is attributed when the
@@ -25,7 +25,7 @@ func TestTheInProcessPathRecordsWhoStartedTheRun(t *testing.T) {
 	// package directory.
 	t.Setenv("BROKOLI_ARTIFACT_DIR", filepath.Join(dir, "artifacts"))
 
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "attrib.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "attrib.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

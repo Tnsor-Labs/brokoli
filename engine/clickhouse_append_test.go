@@ -10,7 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-027 phase 2: ClickHouse earns append. These are the earning papers --
@@ -256,7 +256,7 @@ func TestClickHouseTableEngineOverride(t *testing.T) {
 func runMigrateWithConfig(t *testing.T, cfg map[string]interface{}) *models.Run {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "mc.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "mc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

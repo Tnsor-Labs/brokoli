@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // The symptom that was reported: a JSON source feeding a CSV sink wrote
@@ -15,7 +15,7 @@ import (
 // now writes the file's own order.
 func TestAJSONSourceWritesTheSameCSVHeaderEveryRun(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

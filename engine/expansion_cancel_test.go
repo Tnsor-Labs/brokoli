@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A code expansion ran each local instance with no context at all, so
@@ -18,7 +18,7 @@ func TestCodeExpansionInstanceStopsWhenTheRunIsCancelled(t *testing.T) {
 	dir := t.TempDir()
 	marks := filepath.Join(dir, "marks")
 	items := writeCSV(t, dir, "items.csv", "path\nonly\n")
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

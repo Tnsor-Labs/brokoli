@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestProjectionMatchesReality is the core "replay reproduces state" proof
@@ -27,7 +27,7 @@ func TestProjectionMatchesReality(t *testing.T) {
 		t.Fatalf("write input: %v", err)
 	}
 
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

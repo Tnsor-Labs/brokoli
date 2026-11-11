@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // create_table promises "create the table if it does not exist", and the
@@ -67,7 +67,7 @@ func TestCreateTableSinkRunsAgainOnEveryBackend(t *testing.T) {
 // runFileToSink runs source_file -> sink_db with create_table set.
 func runFileToSink(t *testing.T, csvPath, destURI, table, mode string) *models.Run {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "s.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

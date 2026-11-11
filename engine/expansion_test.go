@@ -11,6 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ── parseExpansionConfig / nodeHasExpansion ──────────────────────────────
@@ -291,7 +292,7 @@ func TestValidate_UnionSingleEdge_RejectedWhenNotFedByExpansion(t *testing.T) {
 func newExpansionTestStore(t *testing.T, name string) store.Store {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, name+".db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, name+".db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #377: an upsert stages through the bulk writer -- COPY into a session
@@ -261,7 +261,7 @@ func runSourceToSinkUpsert(t *testing.T, uri, table string, keys []string) *mode
 	}
 
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "u.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "u.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

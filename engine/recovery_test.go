@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestRecoveryTransitionGracePeriodCoversRealContention is the direct
@@ -37,7 +38,7 @@ func TestRecoveryTransitionGracePeriodCoversRealContention(t *testing.T) {
 func newRecoveryTestEngine(t *testing.T) (*Engine, *store.SQLiteStore) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "recovery.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "recovery.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

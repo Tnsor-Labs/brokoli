@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbtmanifest"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #353 Phase 2: each way dbt can fail produces a distinct, named status.
@@ -181,7 +181,7 @@ func TestRealCompileErrorIsClassified(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestRealModelFailureIsClassified(t *testing.T) {
 	dir := t.TempDir()
 	projectDir, profilesDir := writeSkipChainProject(t, dir, host, port, user, pass, dbname, "dbt_modelfail_test")
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
