@@ -326,6 +326,19 @@ def test_bundle_exec_computes_with_a_relative_import():
     assert result[0]["output"]["rows"] == []
 
 
+def test_a_bundle_runs_again_from_the_same_directory():
+    # The worker removed the executed script after every execution, which
+    # for a bundle is the bundle's own entry file: a second execution of
+    # the same extracted bundle (a mapped node's next item) was refused,
+    # its entry gone (#1019). The bundle's files must outlive an execution.
+    bundle_dir, entry, files = make_bundle_dir(mult_name="helpers", mult=2)
+    for _ in range(2):
+        frames = run_bundle_exec(bundle_dir, entry, files)
+        result = [f for t, f in frames if t == protocol.FRAME_RESULT]
+        assert result, [f for t, f in frames if t == protocol.FRAME_ERROR]
+        assert os.path.isfile(os.path.join(bundle_dir, entry))
+
+
 def test_bundle_sees_its_own_helper_module():
     capture = FrameCapture()
     tmp = tempfile.mkdtemp(prefix="brk-bundle-test-")

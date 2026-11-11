@@ -92,6 +92,12 @@ The node's output is every item's `output_data` combined in item order, the
 same way a `union` node combines datasets. An empty upstream output is not
 an error: the node runs no items and outputs an empty dataset.
 
+A `code` node whose source is a task bundle (`task_bundle` instead of
+`script`) maps the same way: each item runs through the bundle's entry.
+Its items run on the server or worker running the run, up to
+`max_parallel` at once, and are not sent to other workers as separate
+jobs.
+
 ## Mapping a `task` node
 
 A `task` node with a `map` block runs its bundle once per item. The task
