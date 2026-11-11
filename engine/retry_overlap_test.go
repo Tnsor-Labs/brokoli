@@ -11,7 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 const slowNode models.NodeType = "slow_test"
@@ -47,7 +47,7 @@ func (e *slowExecutor) Execute(ctx extensions.ExecutionContext) (*extensions.Exe
 
 func runSlowNode(t *testing.T, exec *slowExecutor) (*models.Run, error) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "slow.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "slow.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

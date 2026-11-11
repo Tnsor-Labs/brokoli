@@ -19,7 +19,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A run resolves secret://<aws store>/<name>#<field> through the real
@@ -54,7 +54,7 @@ func TestRunResolvesAnAWSSecret(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "aws.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "aws.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

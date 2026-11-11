@@ -13,6 +13,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestExecuteInstanceWorkOrder_RunsTheScript(t *testing.T) {
@@ -366,7 +367,7 @@ func TestExecuteInstanceJob_ScriptFailureSettlesAttemptFailedAndAcksJob(t *testi
 // what actually orders them (see FencedArtifactWriter's doc comment).
 func TestExecuteInstanceJob_StaleAttemptDoesNotClobberWinningArtifact(t *testing.T) {
 	dir := t.TempDir()
-	realStore, err := store.NewSQLiteStore(filepath.Join(dir, "stale-attempt.db"))
+	realStore, err := storetest.NewSQLiteStore(filepath.Join(dir, "stale-attempt.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

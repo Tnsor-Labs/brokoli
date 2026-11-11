@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // Deferrable waits (#399): parking frees the slot, the park survives
@@ -21,7 +22,7 @@ import (
 func waitTestEngine(t *testing.T) (*store.SQLiteStore, *Engine, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "w.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "w.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestWaitNodeParksAndWatcherWakesTheSameRun(t *testing.T) {
 func TestParkedWaitSurvivesRestart(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "w.db")
-	st, err := store.NewSQLiteStore(dbPath)
+	st, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +148,7 @@ func TestParkedWaitSurvivesRestart(t *testing.T) {
 	st.Close()
 
 	// The restart: new store handle, new engine, new scheduler.
-	st2, err := store.NewSQLiteStore(dbPath)
+	st2, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}

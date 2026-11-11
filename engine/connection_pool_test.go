@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // Connection pools (#398): the budget primitive, the loud-failure rule for
@@ -119,7 +119,7 @@ func TestConnectionPoolsHighWaterMark(t *testing.T) {
 // that silently doesn't limit is a disabled control.
 func TestExplicitPoolNamingNothingFailsTheRun(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "p.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "p.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestConnectionPoolNeverExceedsBudgetOnLivePostgres(t *testing.T) {
 		t.Skip("BROKOLI_TEST_POSTGRES_URL not set")
 	}
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "p.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "p.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

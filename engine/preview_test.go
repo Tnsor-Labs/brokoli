@@ -12,6 +12,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // previewBed is a pipeline that reads a file, computes a column, writes a
@@ -19,7 +20,7 @@ import (
 func previewBed(t *testing.T, srcPath string) (*Engine, *store.SQLiteStore, *models.Pipeline, string, *int32) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "real.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "real.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

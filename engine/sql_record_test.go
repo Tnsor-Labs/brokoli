@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // sqlRecordSourceDB creates a sqlite database with one small table and
@@ -56,7 +57,7 @@ func recordedStatements(t *testing.T, s store.Store, runID, nodeID string) []str
 // tests are specifically about what a FAILED node records.
 func runSQLRecordPipeline(t *testing.T, nodes []models.Node, edges []models.Edge, tweaks ...func(*Engine)) (*models.Run, store.Store) {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "runs.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "runs.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -336,7 +337,7 @@ func TestRecordedSQL_ProjectionIsUnaffectedByQueryEvents(t *testing.T) {
 
 // A dry run executes no statement, so it records none.
 func TestRecordedSQL_DryRunRecordsNothing(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "dry.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "dry.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

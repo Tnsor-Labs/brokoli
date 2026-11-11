@@ -9,7 +9,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 type validationExecutor struct {
@@ -131,7 +131,7 @@ func TestRunnerRecognizedBuiltInReachesRuntimeHandler(t *testing.T) {
 }
 
 func TestDryRunReturnsRunnerError(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "dry-run.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "dry-run.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

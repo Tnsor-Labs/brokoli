@@ -10,7 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A node's output is stored in its single stored input's format (#641).
@@ -28,7 +28,7 @@ func runStoredPipeline(t *testing.T, codec string, nodes []models.Node, edges []
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_ARTIFACT_DIR", filepath.Join(dir, "artifacts"))
 	t.Setenv("BROKOLI_STREAM_CODEC", codec)
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "fmt.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "fmt.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

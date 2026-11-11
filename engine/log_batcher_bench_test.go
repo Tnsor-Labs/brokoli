@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // perLineStore hides LogBatchAppender, so the runner writes one line per
@@ -25,7 +26,7 @@ func BenchmarkRunnerLogConcurrentNodes(b *testing.B) {
 				name = fmt.Sprintf("nodes=%d/batched", nodes)
 			}
 			b.Run(name, func(b *testing.B) {
-				st, err := store.NewSQLiteStore(filepath.Join(b.TempDir(), "l.db"))
+				st, err := storetest.NewSQLiteStore(filepath.Join(b.TempDir(), "l.db"))
 				if err != nil {
 					b.Fatal(err)
 				}

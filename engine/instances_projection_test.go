@@ -11,11 +11,12 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func projStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "proj.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "proj.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

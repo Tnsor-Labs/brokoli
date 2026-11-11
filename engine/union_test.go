@@ -9,7 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestUnionDatasets_MatchingColumns(t *testing.T) {
@@ -132,7 +132,7 @@ func TestUnionDatasets_FewerThanTwoInputsFails(t *testing.T) {
 // case and would have silently passed through only ONE upstream input.
 func TestPipeline_UnionEndToEnd(t *testing.T) {
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "union-e2e.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "union-e2e.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

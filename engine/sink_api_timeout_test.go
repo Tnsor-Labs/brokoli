@@ -12,7 +12,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // sink_api sent its batches under the run's context, so a node's timeout
@@ -36,7 +36,7 @@ func TestSinkAPIStopsSendingWhenItsAttemptTimesOut(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id\n1\n2\n3\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

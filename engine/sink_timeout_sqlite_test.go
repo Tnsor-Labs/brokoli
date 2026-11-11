@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // The statement path (ExecuteSQL, used where there is no bulk writer)
@@ -31,7 +31,7 @@ func TestSinkDBStatementPathTimeoutCancelsTheWrite(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id,name\n1,a\n2,b\n3,c\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

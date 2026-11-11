@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #376: creating a table no longer costs the bulk path.
@@ -296,7 +296,7 @@ func TestMigrateWritePathSelection(t *testing.T) {
 func runMigrateWithLogs(t *testing.T, srcURI, srcQuery, destURI, destTable, mode string) (*models.Run, string) {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "m.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "m.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

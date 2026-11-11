@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A second writer to a SQLite file waits for the first one's lock instead of
@@ -106,7 +106,7 @@ func TestMigratePartitionsSQLiteTargetInParallel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	meta, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	meta, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

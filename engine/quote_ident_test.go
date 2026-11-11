@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // quoteIdent wrapped a name in the dialect's quotes without escaping a
@@ -71,7 +71,7 @@ func TestSameServerMigrateHandlesAColumnNameWithAQuote(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	meta, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+	meta, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,12 +13,12 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestRunPersistsPhysicalPlanMatchingPlanner(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "plan-e2e.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "plan-e2e.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,7 +78,7 @@ func TestRunPersistsPhysicalPlanMatchingPlanner(t *testing.T) {
 
 func TestRunPersistsDurablePhysicalInstances(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "inst-e2e.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "inst-e2e.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

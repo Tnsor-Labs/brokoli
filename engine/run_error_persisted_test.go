@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 /*
@@ -33,7 +34,7 @@ import (
 // Port 1 is not listenable, so the node fails without reaching anything.
 func runFailingPipeline(t *testing.T) (store.Store, *models.Run) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "runerr.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "runerr.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +142,7 @@ func TestReturnedRunCarriesTheError(t *testing.T) {
 // Cancellation is a terminal outcome with a reason too, and it goes
 // through a different function (finalizeCancelled).
 func TestCancelledRunPersistsThatItWasCancelled(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "cancel.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "cancel.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +188,7 @@ func TestCancelledRunPersistsThatItWasCancelled(t *testing.T) {
 // the previous execution's explanation. Setting the error on the failure
 // paths must not leak into a successful run.
 func TestSuccessfulRunPersistsNoError(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "ok.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "ok.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

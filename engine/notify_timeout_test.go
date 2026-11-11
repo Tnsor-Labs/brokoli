@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A notify node posted with no context and a 10s client timeout, so its
@@ -40,7 +40,7 @@ func TestNotifyGivesUpWhenItsAttemptTimesOut(t *testing.T) {
 	if err := os.WriteFile(csv, []byte("id\n1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

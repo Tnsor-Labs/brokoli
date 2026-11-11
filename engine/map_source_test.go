@@ -16,6 +16,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // mappedSourceFixture is a SQLite database of orders and a CSV of the
@@ -45,7 +46,7 @@ func newMappedSourceFixture(t *testing.T, customers string) *mappedSourceFixture
 	}
 	conn.Close()
 	f.customersCSV = writeCSV(t, dir, "customers.csv", customers)
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

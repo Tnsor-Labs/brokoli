@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // Each source in a preview stops once it has the rows the preview keeps.
@@ -25,7 +25,7 @@ import (
 
 func previewOne(t *testing.T, node models.Node) PreviewNode {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "real.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "real.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

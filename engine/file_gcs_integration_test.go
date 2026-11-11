@@ -15,7 +15,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 	"google.golang.org/api/option"
 	storagev1 "google.golang.org/api/storage/v1"
 )
@@ -248,7 +248,7 @@ func TestGCSFileNodesRoundTripThroughRunner(t *testing.T) {
 				t.Setenv("BROKOLI_SPILL_THRESHOLD_BYTES", "-1")
 			}
 			root := t.TempDir()
-			st, err := store.NewSQLiteStore(filepath.Join(root, "meta.db"))
+			st, err := storetest.NewSQLiteStore(filepath.Join(root, "meta.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

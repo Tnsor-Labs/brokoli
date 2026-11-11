@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // newParameterizedTestEngine builds a single-node pipeline that declares one
@@ -17,7 +18,7 @@ import (
 // wiring under test.
 func newParameterizedTestEngine(t *testing.T) (*Engine, *store.SQLiteStore, string) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "params.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "params.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestRunPipelineAsyncWithParameters_MissingRequired_RejectsBeforeCreatingRun
 }
 
 func TestRunPipelineAsyncWithParameters_NoDeclaredParameters_TypedParamsIgnored(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "noparams.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "noparams.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

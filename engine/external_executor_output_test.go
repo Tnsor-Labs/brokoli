@@ -9,7 +9,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 /*
@@ -40,7 +40,7 @@ func (e *stubExecutor) Execute(extensions.ExecutionContext) (*extensions.Executi
 
 func runWithExecutor(t *testing.T, pipe *models.Pipeline, exec extensions.NodeExecutor) (*models.Run, error) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "exec.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "exec.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // statusProbeStore records how Status reads the last runs: per pipeline,
@@ -37,7 +38,7 @@ func (s *statusProbeStore) GetLatestRunsByPipelineIDs(ids []string) (map[string]
 // the lock a firing schedule needs, so a long list held every schedule up.
 // It now reads them in one query, after releasing the lock.
 func TestSchedulerStatusReadsLastRunsOnceOutsideTheLock(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "sched.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

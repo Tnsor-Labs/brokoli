@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // runSinkPipeline runs source_file(csv) -> sink_db(target, mode, keyCols)
@@ -22,7 +22,7 @@ func runSinkPipeline(t *testing.T, csv, targetDB, table, mode string, keyCols []
 	t.Helper()
 	dir := filepath.Dir(csv)
 	tag := filepath.Base(csv) + "-" + mode
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta-"+tag+".db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta-"+tag+".db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestSinkDB_Upsert(t *testing.T) {
 func runMigratePipeline(t *testing.T, srcURI, query, dstURI, table, mode string, keyCols []string, tag string) *models.Run {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -17,6 +17,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A service-account key as the catalogue hint describes it: the whole extra
@@ -27,7 +28,7 @@ const bigQueryTestKey = `{"type":"service_account","project_id":"acme","private_
 
 func bigQueryStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "bq.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "bq.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -195,7 +196,7 @@ func fakeGoogleFederation(t *testing.T) (url string, exchange map[string]string,
 // impersonate the configured service account.
 func TestBigQueryOIDCExchangesATokenForTheRun(t *testing.T) {
 	_, exchange, impersonated := fakeGoogleFederation(t)
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "bq-oidc.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "bq-oidc.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

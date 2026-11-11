@@ -6,14 +6,14 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A secret variable is reported as secret with or without a key: with one
 // it is decrypted here; without one (a worker whose control plane decrypts
 // for it) it arrives as the value. A plain variable is never secret.
 func TestVarStoreAdapterReportsSecretsAsSecret(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "vars.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "vars.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

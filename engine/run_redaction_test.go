@@ -14,7 +14,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestRunRedactionSet(t *testing.T) {
@@ -75,7 +75,7 @@ func TestRunDoesNotRecordResolvedCredentials(t *testing.T) {
 	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
 
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "redact.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "redact.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestRemotePageErrorsAreRedacted(t *testing.T) {
 	t.Cleanup(srv.Close)
 	t.Cleanup(netguard.SetOutboundForTesting(netguard.Policy{AllowLoopback: true}))
 
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "page.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "page.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

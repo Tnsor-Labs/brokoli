@@ -25,7 +25,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // countingFlakyExecutor fails its first failFirstN calls, then succeeds.
@@ -56,7 +56,7 @@ func (e *countingFlakyExecutor) Execute(ctx extensions.ExecutionContext) (*exten
 func runFlakyRetryPipeline(t *testing.T, dbName, nodeType string, failFirstN int, retryBackoff string, retryDelayMs float64) []int64 {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, dbName))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, dbName))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestCrashRecoveryBaseline records the persisted state after the scheduler
@@ -169,7 +170,7 @@ func TestCrashRecoveryBaselineProcess(t *testing.T) {
 		t.Fatal("crash harness paths must be configured")
 	}
 
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestCrashRecoveryBaselineProcess(t *testing.T) {
 func assertCrashBaseline(t *testing.T, dbPath string, expectedRun models.RunStatus, expectedNodes map[string]models.RunStatus, outputPath string, outputExpected bool, wantEvents []models.RunEventType) {
 	t.Helper()
 
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("reopen store after crash: %v", err)
 	}
@@ -287,7 +288,7 @@ func assertCrashEvents(t *testing.T, s *store.SQLiteStore, runID string, wantEve
 func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID string, wantStatus models.RunStatus, wantEventType models.RunEventType, wantScanned int) {
 	t.Helper()
 
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("reopen store for first recovery pass: %v", err)
 	}
@@ -355,7 +356,7 @@ func assertCrashRecoveryDefersThenReclaims(t *testing.T, dbPath, liveLeaseNodeID
 func assertCrashRecovery(t *testing.T, dbPath string, wantStatus models.RunStatus, wantEventType models.RunEventType, wantScanned int) {
 	t.Helper()
 
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("reopen store for recovery: %v", err)
 	}

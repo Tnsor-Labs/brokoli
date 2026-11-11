@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestRedactURI(t *testing.T) {
@@ -61,7 +61,7 @@ func TestRedactURI(t *testing.T) {
 // path that leaked the password before this fix.
 func TestRunMigrate_LogDoesNotLeakSourcePassword(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

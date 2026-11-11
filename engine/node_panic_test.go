@@ -8,7 +8,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 const panicTestNode models.NodeType = "panic_test"
@@ -26,7 +26,7 @@ func (panickingExecutor) Execute(extensions.ExecutionContext) (*extensions.Execu
 // whole process down: the server, the scheduler and every other run in it.
 // It now fails that node, and the run with it.
 func TestANodeThatPanicsFailsTheRunInsteadOfTheProcess(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "panic.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "panic.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}

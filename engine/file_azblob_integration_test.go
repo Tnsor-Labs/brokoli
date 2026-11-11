@@ -18,7 +18,7 @@ import (
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob/sas"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 /*
@@ -339,7 +339,7 @@ func TestAzureBlobFileNodesRoundTripThroughRunner(t *testing.T) {
 				t.Fatal(err)
 			}
 			root := t.TempDir()
-			st, err := store.NewSQLiteStore(filepath.Join(root, "meta.db"))
+			st, err := storetest.NewSQLiteStore(filepath.Join(root, "meta.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,7 +424,7 @@ func TestAzureBlobRefusedSinkFailsTheRunAndWritesNowhereElse(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(root, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(root, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

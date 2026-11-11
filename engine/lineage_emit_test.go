@@ -11,6 +11,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // Emitting lineage for a run.
@@ -92,7 +93,7 @@ func emitTestPipeline(t *testing.T, failing bool) (*store.SQLiteStore, *models.P
 		in = filepath.Join(dir, "missing.csv")
 	}
 
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "emit.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "emit.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

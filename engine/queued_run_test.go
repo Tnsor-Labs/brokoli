@@ -12,6 +12,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 type recordingJobQueue struct {
@@ -40,7 +41,7 @@ func (q *recordingJobQueue) Close() error             { return nil }
 
 func newQueuedRunTestEngine(t *testing.T, queue extensions.JobQueue) (*Engine, *store.SQLiteStore, string) {
 	t.Helper()
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "queued.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "queued.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

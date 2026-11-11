@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // source_db queried with no context of the node's (a background one with
@@ -36,7 +36,7 @@ func TestSourceDBTimeoutCancelsTheQuery(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = db.Exec(`DROP TABLE IF EXISTS ` + table) })
 
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A pipeline in one workspace could name another workspace's connection and
@@ -18,7 +19,7 @@ import (
 
 func twoWorkspaceStore(t *testing.T) *store.SQLiteStore {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "ws.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "ws.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +170,7 @@ func TestADatabaseNodeCannotUseAnotherWorkspacesConnection(t *testing.T) {
 // alone could return the other's row, which the workspace check then
 // refused, leaving a workspace unable to use its own connection.
 func TestEachWorkspaceResolvesItsOwnConnectionOfACommonName(t *testing.T) {
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "shared-name.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "shared-name.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

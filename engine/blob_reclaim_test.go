@@ -10,6 +10,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func countBlobFiles(t *testing.T, root string) int {
@@ -51,7 +52,7 @@ func streamedReclaimPipeline(id string) *models.Pipeline {
 func newBlobReclaimEngine(t *testing.T) (*Engine, *store.SQLiteStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "reclaim.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "reclaim.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

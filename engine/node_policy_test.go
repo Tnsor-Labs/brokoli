@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func policyTestPipeline(id string, nodes ...models.Node) *models.Pipeline {
@@ -71,7 +71,7 @@ func TestDisabledNodeTypeIsRefusedWhereItWouldRun(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_DATA_DIRS", dir)
 	t.Setenv(DisabledNodeTypesEnv, "bash")
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "policy.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "policy.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +136,7 @@ func TestCodeRunnerDoesNotSpliceParametersIntoTheScript(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_DATA_DIRS", dir)
 	t.Setenv("BROKOLI_CODE_POOL", "0")
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "code.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "code.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

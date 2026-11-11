@@ -15,6 +15,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestNDJSONBatchReader_EquivalentToDecodeNDJSON is the foundational
@@ -854,7 +855,7 @@ func TestPreviewFromRef_MidRangeTruncation(t *testing.T) {
 	}
 
 	dbPath := filepath.Join(t.TempDir(), "preview.db")
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

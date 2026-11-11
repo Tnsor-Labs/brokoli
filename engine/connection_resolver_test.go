@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func TestConnectionResolver_NoConnID(t *testing.T) {
@@ -42,7 +42,7 @@ func TestConnectionResolver_EmptyConnID(t *testing.T) {
 
 func TestConnectionResolver_DatabaseNodeRefusesTransportConnection(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "conn-resolver.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "conn-resolver.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestConnectionResolver_DatabaseNodeRefusesTransportConnection(t *testing.T)
 func newAPIConnResolver(t *testing.T) *ConnectionResolver {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "conn-resolver.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "conn-resolver.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // newDispatchOutboxTestEngine returns an Engine (over a fault-injecting
@@ -16,7 +17,7 @@ import (
 func newDispatchOutboxTestEngine(t *testing.T) (*Engine, *faultInjectingStore, *store.SQLiteStore, string) {
 	t.Helper()
 	dir := t.TempDir()
-	real, err := store.NewSQLiteStore(filepath.Join(dir, "outbox.db"))
+	real, err := storetest.NewSQLiteStore(filepath.Join(dir, "outbox.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

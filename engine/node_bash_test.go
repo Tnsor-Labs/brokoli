@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 func bashTestNode(command, workDir string) models.Node {
@@ -228,7 +228,7 @@ func TestBashConfigErrors(t *testing.T) {
 
 func runBashPipeline(t *testing.T, dir string, config map[string]interface{}, params map[string]string) (*models.Run, error) {
 	t.Helper()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "bash.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "bash.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -338,7 +338,7 @@ func TestBashRunnerDoesNotSubstituteTheCommand(t *testing.T) {
 	requireBash(t)
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_DATA_DIRS", dir)
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "runner.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "runner.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

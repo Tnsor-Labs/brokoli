@@ -11,7 +11,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/artifact"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestPipeline_SQLArtifactStore_SpillsWithoutChangingResults is the direct
@@ -31,7 +31,7 @@ func TestPipeline_SQLArtifactStore_SpillsWithoutChangingResults(t *testing.T) {
 	srv := bigRowServer(t, rows, 200)
 
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "sql-spill.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "sql-spill.db"))
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

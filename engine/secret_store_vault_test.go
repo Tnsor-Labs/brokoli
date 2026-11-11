@@ -18,7 +18,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
 	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 	"github.com/Tnsor-Labs/brokoli/pkg/secretstore"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // End to end through the real vault provider and a real OpenBao dev server:
@@ -76,7 +76,7 @@ func TestRunResolvesVaultSecretStoreReference(t *testing.T) {
 		t.Fatalf("create a token: status %d", resp.StatusCode)
 	}
 
-	st, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "vault.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "vault.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

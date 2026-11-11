@@ -13,7 +13,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/dbdialect"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #360: a migration must carry the source's real column types, not types
@@ -52,7 +52,7 @@ func openFor(t *testing.T, uri string) *sql.DB {
 func runMigrate(t *testing.T, srcURI, srcQuery, destURI, destTable string) *models.Run {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "m.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "m.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

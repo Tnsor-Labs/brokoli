@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A sink_file node asking for SQL used to get JSON: the "sql" case only
@@ -34,7 +34,7 @@ func runSQLSinkPipeline(t *testing.T, outName string, sinkCfg map[string]interfa
 	}
 	out := filepath.Join(dir, outName)
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "t.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "t.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

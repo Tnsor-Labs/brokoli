@@ -9,6 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-028 phase 2 (#397): pipelines opted into catchup get one run per
@@ -77,7 +78,7 @@ func newRunsOldestFirst(t *testing.T, st store.Store, pipelineID string) []model
 
 func TestCatchupPerIntervalDispatchesEachMissedSlice(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "cu.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "cu.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +116,7 @@ func TestCatchupPerIntervalDispatchesEachMissedSlice(t *testing.T) {
 
 func TestCatchupCapKeepsTheNewestSlices(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "cu.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "cu.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +149,7 @@ func TestCatchupCapKeepsTheNewestSlices(t *testing.T) {
 
 func TestCatchupDefaultStaysSingleShot(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "cu.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "cu.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +179,7 @@ func TestCatchupDefaultStaysSingleShot(t *testing.T) {
 
 func TestCatchupPerIntervalSkipsWhenNotLeader(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "cu.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "cu.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // GenerateSQL's contract says overwrite's clear-then-insert runs as one
@@ -272,7 +272,7 @@ func TestSinkDBMySQLUpsertValidatesKeyEndToEnd(t *testing.T) {
 func runMySQLSinkExpectingFailure(t *testing.T, csv, targetDB, table string, keyCols []string) error {
 	t.Helper()
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,7 +310,7 @@ func runMySQLSinkExpectingFailure(t *testing.T, csv, targetDB, table string, key
 // node log, which is what the pipeline author actually reads.
 func TestUnsupportedConnectionTypeWarnsInTheRunLog(t *testing.T) {
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "meta.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

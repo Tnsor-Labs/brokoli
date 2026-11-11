@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // A node records the digest of the output it actually stored.
@@ -31,7 +31,7 @@ func TestANodeRecordsTheDigestOfWhatItStored(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("BROKOLI_ARTIFACT_DIR", filepath.Join(dir, "artifacts"))
 
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "digest.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "digest.db"))
 	if err != nil {
 		t.Fatalf("store: %v", err)
 	}

@@ -7,7 +7,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/common"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestPurgeExpiredRunsOnce covers the #214 sweep in one pass over a mixed
@@ -16,7 +16,7 @@ import (
 // long time in a paused deployment) both survive untouched.
 func TestPurgeExpiredRunsOnce(t *testing.T) {
 	dir := t.TempDir()
-	s, err := store.NewSQLiteStore(filepath.Join(dir, "retention.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(dir, "retention.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // TestSaveNodeProfile_PersistsWithoutBlockingNodeCompletion is the
@@ -17,7 +17,7 @@ import (
 // the async change didn't silently drop the write it exists to make
 // non-blocking.
 func TestSaveNodeProfile_PersistsWithoutBlockingNodeCompletion(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "profile-async.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "profile-async.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

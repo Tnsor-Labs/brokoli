@@ -9,7 +9,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // source_api fetched with a background context, so a node's timeout did
@@ -40,7 +40,7 @@ func TestSourceAPIGivesUpWhenItsAttemptTimesOut(t *testing.T) {
 			}))
 			defer srv.Close()
 
-			s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+			s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 			if err != nil {
 				t.Fatal(err)
 			}

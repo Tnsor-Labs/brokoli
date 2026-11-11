@@ -8,6 +8,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // fakeLeaderElector is a minimal in-memory store.LeaderElector for testing
@@ -35,7 +36,7 @@ func (f *fakeLeaderElector) ElectionFailures() int64       { return 0 }
 func newLeaderTestStore(t *testing.T) store.Store {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "scheduler-leader.db")
-	s, err := store.NewSQLiteStore(dbPath)
+	s, err := storetest.NewSQLiteStore(dbPath)
 	if err != nil {
 		t.Fatalf("NewSQLiteStore: %v", err)
 	}

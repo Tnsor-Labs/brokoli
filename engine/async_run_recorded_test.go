@@ -7,6 +7,7 @@ import (
 
 	"github.com/Tnsor-Labs/brokoli/models"
 	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // slowCreateStore takes its time recording a run, as a busy database
@@ -27,7 +28,7 @@ func (s slowCreateStore) CreateRun(r *models.Run) error {
 // runner used to record the run inside its goroutine, so the lookup could
 // answer 404.
 func TestAnAsyncRunExistsWhenItsIDIsReturned(t *testing.T) {
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "async.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "async.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // migrate wrote under the run's context, so a node timeout never reached
@@ -36,7 +36,7 @@ func TestMigrateTimeoutCancelsTheWrite(t *testing.T) {
 	}
 	t.Cleanup(func() { _, _ = db.Exec(`DROP TABLE IF EXISTS ` + src + `; DROP TABLE IF EXISTS ` + dst) })
 
-	s, err := store.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
+	s, err := storetest.NewSQLiteStore(filepath.Join(t.TempDir(), "meta.db"))
 	if err != nil {
 		t.Fatal(err)
 	}

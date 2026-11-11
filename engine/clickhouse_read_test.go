@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-027 phase 1: ClickHouse is readable, and only readable.
@@ -48,7 +48,7 @@ func TestClickHouseSourceDBReads(t *testing.T) {
 	dsn := clickhouseSeededTable(t)
 
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "c.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "c.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestClickHouseWriteModesAreGatedByName(t *testing.T) {
 	run := func(mode string, createTable bool) *models.Run {
 		t.Helper()
 		dir := t.TempDir()
-		st, err := store.NewSQLiteStore(filepath.Join(dir, "g.db"))
+		st, err := storetest.NewSQLiteStore(filepath.Join(dir, "g.db"))
 		if err != nil {
 			t.Fatal(err)
 		}

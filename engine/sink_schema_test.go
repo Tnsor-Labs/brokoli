@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // #363: a sink_db creating its table must use the columns' real types, not
@@ -34,7 +34,7 @@ func runSourceToSink(
 ) *models.Run {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "s.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func runSourceToSink(
 func runCodeToSink(t *testing.T, srcURI, destTable string) *models.Run {
 	t.Helper()
 	dir := t.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "s.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "s.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -546,7 +546,7 @@ func BenchmarkSchemaCarry(b *testing.B) {
 func benchSourceToSink(b *testing.B, srcURI, srcQuery, destURI, destTable string) *models.Run {
 	b.Helper()
 	dir := b.TempDir()
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "b.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "b.db"))
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/models"
-	"github.com/Tnsor-Labs/brokoli/store"
+	"github.com/Tnsor-Labs/brokoli/store/storetest"
 )
 
 // ADR-027 phase 4 (#382): the pushdown question answered by measurement,
@@ -107,7 +107,7 @@ func TestDBTRunsOnClickHouse(t *testing.T) {
 	write(filepath.Join(projectDir, "models", "cities.sql"),
 		"select 1 as id, 'lisbon' as city union all select 2, 'porto'\n")
 
-	st, err := store.NewSQLiteStore(filepath.Join(dir, "d.db"))
+	st, err := storetest.NewSQLiteStore(filepath.Join(dir, "d.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
