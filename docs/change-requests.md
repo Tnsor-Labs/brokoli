@@ -93,7 +93,7 @@ the proposal takes the current positions of the nodes it keeps.
 
 | | Needs |
 |---|---|
-| Propose | `pipelines.propose` (admin, editor, operator, agent roles; in core, routes still refuse the operator role, issue #864) |
+| Propose | `pipelines.propose` (admin, editor, operator and agent roles) |
 | See and list | the pipeline |
 | Test | `pipelines.run`, and being a person |
 | Apply | `pipelines.edit`, and being a person |

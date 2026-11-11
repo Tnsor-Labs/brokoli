@@ -13,6 +13,17 @@ reconstruct from git archaeology.
 
 ### Changed
 
+- **Routes grant what the caller's role lists** -- @hc12r. Without a
+  distribution's permission system, routes decided by role name: `admin`
+  and `editor` could do everything, `viewer` could read, and every other
+  role was refused. They now ask the roles table, as
+  `GET /api/auth/me/permissions` does. So an editor holds what the editor
+  role lists and no longer manages users, roles, workspace members or
+  tokens, edits settings, exports the audit log or reads secret variable
+  values; a viewer may now read workspaces, the audit log and Git sync
+  status, which the viewer role lists. A role the server does not know
+  holds nothing, and the permissions endpoint now says so with an empty
+  list, where it answered with a viewer's permissions. (#864)
 - **Bulk enable and disable need `pipelines.edit`** -- @hc12r. `POST
   /api/pipelines/bulk` asked for `pipelines.delete` whatever the action.
   Enable and disable now ask for `pipelines.edit`, as editing a pipeline
@@ -20,6 +31,11 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **Operator and custom roles may do what they list** -- @hc12r. A person
+  with the `operator` role, told by `GET /api/auth/me/permissions` that
+  they may run a pipeline and cancel and resume runs, was refused with
+  403 by every one of those routes, and a custom role got nothing it
+  listed, so the UI offered actions the server then refused. (#864)
 - **Bulk pipeline actions do what the single-pipeline endpoints do** --
   @hc12r. `POST /api/pipelines/bulk` counted an action it did not know as
   succeeded for every id, and changed nothing. It now answers 400. Its
