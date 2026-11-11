@@ -76,9 +76,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
-    # The race run and the coverage run together take about 19 minutes
-    # (19m39s on #939), so 20 left no room: #940 was cancelled in the
-    # coverage step with every package passing.
+    # The race run, which also collects coverage, takes about 16 minutes.
+    # It used to be followed by a second full pass for coverage, and the
+    # two took about 19 (19m39s on #939), so 20 left no room: #940 was
+    # cancelled in the coverage step with every package passing.
     timeout-minutes: 30
 
     # Several tests are only meaningful against a real server: what a string
@@ -252,11 +253,14 @@ jobs:
         # coverage, and the two jobs now run concurrently.
         # 18m: the api package alone reached 900s under -race on main
         # (run 41578107063), exactly the old 15m limit.
-        run: go test -v -race -timeout 18m $(go list ./... | grep -v '/engine$')
+        #
+        # Coverage is collected by this same run (-race makes it atomic
+        # mode), not a second pass: running every test again only for
+        # the total cost about 280s of the job (#329).
+        run: go test -v -race -timeout 18m -coverprofile=coverage.out $(go list ./... | grep -v '/engine$')
 
       - name: Coverage
         run: |
-          go test -coverprofile=coverage.out $(go list ./... | grep -v '/engine$')
           echo "=== Coverage ==="
           go tool cover -func=coverage.out | tail -1
 
@@ -391,7 +395,10 @@ jobs:
           node-version: "20"
 
       - name: Test engine
-        run: go test -v -race -timeout 25m ./engine/
+        # Coverage comes from this run, as in the Test job: a second pass
+        # only for the total cost about 190-250s of a 30-minute job that
+        # was finishing in 27-28 minutes (#329).
+        run: go test -v -race -timeout 25m -coverprofile=coverage-engine.out ./engine/
 
       # ADR-029 dual-mode leg: the pool is the default; this keeps the
       # legacy spawn path green until its removal one release later.
@@ -421,7 +428,6 @@ jobs:
       # shrink what coverage reports.
       - name: Coverage (engine)
         run: |
-          go test -coverprofile=coverage-engine.out ./engine/
           echo "=== Engine coverage ==="
           go tool cover -func=coverage-engine.out | tail -1
 
