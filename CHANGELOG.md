@@ -36,6 +36,12 @@ reconstruct from git archaeology.
   they may run a pipeline and cancel and resume runs, was refused with
   403 by every one of those routes, and a custom role got nothing it
   listed, so the UI offered actions the server then refused. (#864)
+- **The UI shows whole numbers past 2^53 exactly** -- @hc12r. The API
+  sends them exactly, but the UI parsed every response into JavaScript
+  doubles, so a node's output sample and a pipeline preview showed
+  `9007199254740993` as `9007199254740992`, and two different ids could
+  look the same. Those responses now keep such integers as their exact
+  text; every other number is unchanged. (#1001)
 - **Bulk pipeline actions do what the single-pipeline endpoints do** --
   @hc12r. `POST /api/pipelines/bulk` counted an action it did not know as
   succeeded for every id, and changed nothing. It now answers 400. Its

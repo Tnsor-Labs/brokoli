@@ -104,7 +104,8 @@ export async function resolveWorkspace(userId: string, hintIsFresh = false): Pro
   }
   if (!Array.isArray(list) || !list.length) return []
   const stored = storedWorkspace()
-  const selected = list.find((w) => w.id === stored) ?? list.find((w) => w.id === 'default') ?? list[0]
+  const selected =
+    list.find((w) => w.id === stored) ?? list.find((w) => w.id === 'default') ?? list[0]
   setWorkspace(selected.id)
   return list
 }
@@ -112,7 +113,8 @@ export async function resolveWorkspace(userId: string, hintIsFresh = false): Pro
 /** OAuth for MCP clients (ADR-046 phase 5): the approval page's two calls. */
 export const oauthApi = {
   /** What is asking: the client's name, where it sends the browser back, and the identities it may be given. */
-  request: (query: string) => request<OAuthRequestInfo>(`/oauth/authorize?${query.replace(/^\?/, '')}`, { retries: 0 }),
+  request: (query: string) =>
+    request<OAuthRequestInfo>(`/oauth/authorize?${query.replace(/^\?/, '')}`, { retries: 0 }),
   /** Approve (as the person, or as one of their agents) or deny; answers where to send the browser. */
   decide: (query: string, approve: boolean, agentId = '') =>
     request<{ redirect: string }>('/oauth/authorize', {
@@ -120,17 +122,23 @@ export const oauthApi = {
       retries: 0,
     }),
   /** The signed-in person's connected apps. */
-  connections: () => request<{ connections: OAuthConnection[] }>('/oauth/connections').then((r) => r.connections ?? []),
+  connections: () =>
+    request<{ connections: OAuthConnection[] }>('/oauth/connections').then(
+      (r) => r.connections ?? [],
+    ),
   /** End a connection: its tokens stop working at once. */
   disconnect: (id: string) => request<void>(`/oauth/connections/${enc(id)}`, { method: 'DELETE' }),
 }
 
 export const authApi = {
-  setup: () => request<{ needs_setup: boolean }>('/auth/setup', { retries: 1, allowUnauthorized: true }),
+  setup: () =>
+    request<{ needs_setup: boolean }>('/auth/setup', { retries: 1, allowUnauthorized: true }),
   methods: () => request<AuthMethods>('/auth/methods', { retries: 1, allowUnauthorized: true }),
   /** Identify the current session. Cookie-only unless a bearer is explicitly in play. */
   me: (opts: Pick<RequestOptions, 'cookieOnly' | 'headers'> = {}) =>
-    request<AuthClaims>('/auth/me', { retries: 0, allowUnauthorized: true, ...opts }).then(claimsToUser),
+    request<AuthClaims>('/auth/me', { retries: 0, allowUnauthorized: true, ...opts }).then(
+      claimsToUser,
+    ),
   /** Copies the bearer into the httpOnly session cookie (the websocket needs the cookie). */
   session: () => request<void>('/auth/session', { method: 'POST', allowUnauthorized: true }),
   login: async (username: string, password: string) => {
@@ -142,7 +150,10 @@ export const authApi = {
     return authApi.me()
   },
   createFirstUser: async (username: string, password: string) => {
-    await request('/auth/users', { json: { username, password, role: 'admin' }, allowUnauthorized: true })
+    await request('/auth/users', {
+      json: { username, password, role: 'admin' },
+      allowUnauthorized: true,
+    })
     return authApi.login(username, password)
   },
   logout: async () => {
@@ -182,35 +193,61 @@ export const pipelineApi = {
     request<Pipeline>('/pipelines/import', {
       method: 'POST',
       body: text,
-      contentType: filename.toLowerCase().endsWith('.json') ? 'application/json' : 'application/x-yaml',
+      contentType: filename.toLowerCase().endsWith('.json')
+        ? 'application/json'
+        : 'application/x-yaml',
     }),
   run: (id: string, params?: Record<string, string>) =>
-    request<RunTriggerResult>(`/pipelines/${enc(id)}/run`, { json: params ? { params } : {}, timeout: 0 }),
-  versions: (id: string) => request<PipelineVersion[] | null>(`/pipelines/${enc(id)}/versions`).then((d) => d ?? []),
+    request<RunTriggerResult>(`/pipelines/${enc(id)}/run`, {
+      json: params ? { params } : {},
+      timeout: 0,
+    }),
+  versions: (id: string) =>
+    request<PipelineVersion[] | null>(`/pipelines/${enc(id)}/versions`).then((d) => d ?? []),
   rollback: (id: string, version: number) =>
     request<Pipeline>(`/pipelines/${enc(id)}/rollback`, { json: { version } }),
   validateNodes: (id: string) =>
-    request<{ issues: NodeIssue[] | null }>(`/pipelines/${enc(id)}/validate-nodes`, { method: 'POST' }).then(
-      (d) => d.issues ?? [],
-    ),
-  dryRun: (id: string) => request<DryRunResponse>(`/pipelines/${enc(id)}/dry-run`, { method: 'POST', timeout: 0 }),
+    request<{ issues: NodeIssue[] | null }>(`/pipelines/${enc(id)}/validate-nodes`, {
+      method: 'POST',
+    }).then((d) => d.issues ?? []),
+  dryRun: (id: string) =>
+    request<DryRunResponse>(`/pipelines/${enc(id)}/dry-run`, {
+      method: 'POST',
+      timeout: 0,
+      exactIntegers: true,
+    }),
   /** Change requests (ADR-046). */
   changes: (id: string, status?: ChangeRequest['status']) =>
-    request<ChangeRequest[] | null>(`/pipelines/${enc(id)}/changes`, { query: { status } }).then((d) => d ?? []),
+    request<ChangeRequest[] | null>(`/pipelines/${enc(id)}/changes`, { query: { status } }).then(
+      (d) => d ?? [],
+    ),
   /** The workspace's change requests across its pipelines, newest first (at most 100). */
   workspaceChanges: (status?: ChangeRequest['status']) =>
     request<WorkspaceChange[] | null>('/changes', { query: { status } }).then((d) => d ?? []),
-  change: (id: string, changeId: string) => request<ChangeRequest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}`),
+  change: (id: string, changeId: string) =>
+    request<ChangeRequest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}`),
   propose: (id: string, pipeline: unknown, title: string, description?: string) =>
-    request<ChangeRequest>(`/pipelines/${enc(id)}/changes`, { json: { pipeline, title, description } }),
+    request<ChangeRequest>(`/pipelines/${enc(id)}/changes`, {
+      json: { pipeline, title, description },
+    }),
   testChange: (id: string, changeId: string, rows = 10) =>
-    request<ChangeTest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/test`, { json: { rows }, timeout: 0, retries: 0 }),
+    request<ChangeTest>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/test`, {
+      json: { rows },
+      timeout: 0,
+      retries: 0,
+    }),
   applyChange: (id: string, changeId: string) =>
-    request<{ pipeline: Pipeline; version: number }>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/apply`, { method: 'POST' }),
+    request<{ pipeline: Pipeline; version: number }>(
+      `/pipelines/${enc(id)}/changes/${enc(changeId)}/apply`,
+      { method: 'POST' },
+    ),
   declineChange: (id: string, changeId: string, reason?: string) =>
-    request<void>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/decline`, { json: { reason: reason ?? '' } }),
+    request<void>(`/pipelines/${enc(id)}/changes/${enc(changeId)}/decline`, {
+      json: { reason: reason ?? '' },
+    }),
   plan: (id: string) => request<PhysicalPlan>(`/pipelines/${enc(id)}/plan`),
-  grid: (id: string, runs = 30) => request<PipelineGrid>(`/pipelines/${enc(id)}/grid`, { query: { runs } }),
+  grid: (id: string, runs = 30) =>
+    request<PipelineGrid>(`/pipelines/${enc(id)}/grid`, { query: { runs } }),
   runs: (id: string) => request<Run[] | null>(`/pipelines/${enc(id)}/runs`).then((d) => d ?? []),
   runsPage: (id: string, after?: string, limit = 50) =>
     request<RunPage>(`/pipelines/${enc(id)}/runs`, { query: { after, limit } }),
@@ -234,19 +271,31 @@ export const schedulerApi = {
 export const runApi = {
   get: (id: string) => request<Run>(`/runs/${enc(id)}`),
   logs: (id: string) => request<LogEntry[] | null>(`/runs/${enc(id)}/logs`).then((d) => d ?? []),
-  events: (id: string) => request<RunEvent[] | null>(`/runs/${enc(id)}/events`).then((d) => d ?? []),
-  instances: (id: string) => request<PhysicalInstance[] | null>(`/runs/${enc(id)}/instances`).then((d) => d ?? []),
-  cancel: (id: string) => request<{ status: string }>(`/runs/${enc(id)}/cancel`, { method: 'POST' }),
+  events: (id: string) =>
+    request<RunEvent[] | null>(`/runs/${enc(id)}/events`).then((d) => d ?? []),
+  instances: (id: string) =>
+    request<PhysicalInstance[] | null>(`/runs/${enc(id)}/instances`).then((d) => d ?? []),
+  cancel: (id: string) =>
+    request<{ status: string }>(`/runs/${enc(id)}/cancel`, { method: 'POST' }),
   // With no fromNode this is the plain resume (a failed run, from its first
   // failed node). With one, that node and everything downstream of it re-run as
   // a new appended run; the rest of the earlier run's work is reused.
-  resume: (id: string, fromNode?: string) => request<Run>(`/runs/${enc(id)}/resume`, fromNode ? { method: 'POST', json: { from_node: fromNode } } : { method: 'POST' }),
-  preview: (runId: string, nodeId: string) => request<NodePreview>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/preview`),
-  profile: (runId: string, nodeId: string) => request<NodeProfile>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/profile`),
+  resume: (id: string, fromNode?: string) =>
+    request<Run>(
+      `/runs/${enc(id)}/resume`,
+      fromNode ? { method: 'POST', json: { from_node: fromNode } } : { method: 'POST' },
+    ),
+  preview: (runId: string, nodeId: string) =>
+    request<NodePreview>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/preview`, {
+      exactIntegers: true,
+    }),
+  profile: (runId: string, nodeId: string) =>
+    request<NodeProfile>(`/runs/${enc(runId)}/nodes/${enc(nodeId)}/profile`),
   exportLogs: async (id: string) => {
     const res = await request<Response>(`/runs/${enc(id)}/logs/export`, { as: 'response' })
     const disposition = res.headers.get('Content-Disposition') ?? ''
-    const filename = /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? `run-${id.slice(0, 8)}-logs.txt`
+    const filename =
+      /filename="?([^";]+)"?/.exec(disposition)?.[1] ?? `run-${id.slice(0, 8)}-logs.txt`
     return { filename, text: await res.text() }
   },
 }
@@ -256,34 +305,51 @@ export const connectionApi = {
   list: () => request<Connection[] | { items: Connection[] }>('/connections').then(items),
   get: (connId: string) => request<Connection>(`/connections/${enc(connId)}`),
   create: (body: Partial<Connection>) => request<Connection>('/connections', { json: body }),
-  update: (connId: string, body: Partial<Connection>) => request<Connection>(`/connections/${enc(connId)}`, { method: 'PUT', json: body }),
+  update: (connId: string, body: Partial<Connection>) =>
+    request<Connection>(`/connections/${enc(connId)}`, { method: 'PUT', json: body }),
   remove: (connId: string) => request<void>(`/connections/${enc(connId)}`, { method: 'DELETE' }),
-  types: () => request<ConnectionTypeMeta[] | null>('/connection-types').then((d) => (Array.isArray(d) ? d : [])),
-  usedBy: (connId: string) => request<ConnectionUsage[] | null>(`/connections/${enc(connId)}/used-by`).then((d) => d ?? []),
-  test: (connId: string) => request<ConnectionTestResult>(`/connections/${enc(connId)}/test`, { method: 'POST', timeout: 60_000 }),
-  testUri: (uri: string) => request<ConnectionTestResult>('/test-connection', { json: { uri }, timeout: 60_000 }),
+  types: () =>
+    request<ConnectionTypeMeta[] | null>('/connection-types').then((d) =>
+      Array.isArray(d) ? d : [],
+    ),
+  usedBy: (connId: string) =>
+    request<ConnectionUsage[] | null>(`/connections/${enc(connId)}/used-by`).then((d) => d ?? []),
+  test: (connId: string) =>
+    request<ConnectionTestResult>(`/connections/${enc(connId)}/test`, {
+      method: 'POST',
+      timeout: 60_000,
+    }),
+  testUri: (uri: string) =>
+    request<ConnectionTestResult>('/test-connection', { json: { uri }, timeout: 60_000 }),
 }
 
 export const secretStoreApi = {
-  providers: () => request<SecretStoreProvider[] | null>('/secret-stores/providers').then((d) => d ?? []),
+  providers: () =>
+    request<SecretStoreProvider[] | null>('/secret-stores/providers').then((d) => d ?? []),
   /** Rejects with status 501 when the server's metadata store has no secret stores. */
   list: () => request<SecretStore[] | null>('/secret-stores').then((d) => d ?? []),
   get: (id: string) => request<SecretStore>(`/secret-stores/${enc(id)}`),
   create: (body: Partial<SecretStore>) => request<SecretStore>('/secret-stores', { json: body }),
-  update: (id: string, body: Partial<SecretStore>) => request<SecretStore>(`/secret-stores/${enc(id)}`, { method: 'PUT', json: body }),
+  update: (id: string, body: Partial<SecretStore>) =>
+    request<SecretStore>(`/secret-stores/${enc(id)}`, { method: 'PUT', json: body }),
   remove: (id: string) => request<void>(`/secret-stores/${enc(id)}`, { method: 'DELETE' }),
   test: (id: string, body: { path: string; version?: string; field?: string }) =>
-    request<SecretStoreTestResult>(`/secret-stores/${enc(id)}/test`, { json: body, timeout: 60_000 }),
+    request<SecretStoreTestResult>(`/secret-stores/${enc(id)}/test`, {
+      json: body,
+      timeout: 60_000,
+    }),
 }
 
 export const variableApi = {
   list: () => request<Variable[] | { items: Variable[] }>('/variables').then(items),
   /** POST is an upsert on the server: it overwrites an existing key. Callers check for a clash first. */
-  create: (body: Pick<Variable, 'key' | 'type' | 'value' | 'description'>) => request<Variable>('/variables', { json: body }),
+  create: (body: Pick<Variable, 'key' | 'type' | 'value' | 'description'>) =>
+    request<Variable>('/variables', { json: body }),
   update: (body: Pick<Variable, 'key' | 'type' | 'value' | 'description'>) =>
     request<Variable>(`/variables/${enc(body.key)}`, { method: 'PUT', json: body }),
   remove: (key: string) => request<void>(`/variables/${enc(key)}`, { method: 'DELETE' }),
-  usedBy: (key: string) => request<ConnectionUsage[] | null>(`/variables/${enc(key)}/used-by`).then((d) => d ?? []),
+  usedBy: (key: string) =>
+    request<ConnectionUsage[] | null>(`/variables/${enc(key)}/used-by`).then((d) => d ?? []),
 }
 
 function installResult(data: Plugin | { plugin: Plugin; warning?: string }): PluginInstallResult {
@@ -295,10 +361,17 @@ export const pluginApi = {
   /** Fetched by the server from the configured index; 502 when it cannot reach or parse it. */
   index: () => request<PluginIndex>('/plugins/index', { retries: 0, timeout: 25_000 }),
   install: (file: File) =>
-    request<Plugin | { plugin: Plugin; warning?: string }>('/plugins', { method: 'POST', body: file, timeout: 0 }).then(installResult),
+    request<Plugin | { plugin: Plugin; warning?: string }>('/plugins', {
+      method: 'POST',
+      body: file,
+      timeout: 0,
+    }).then(installResult),
   /** The server allows 90 seconds for download and verification; no client timeout, and POSTs are never retried. */
   installByName: (name: string) =>
-    request<Plugin | { plugin: Plugin; warning?: string }>(`/plugins/index/${enc(name)}`, { method: 'POST', timeout: 0 }).then(installResult),
+    request<Plugin | { plugin: Plugin; warning?: string }>(`/plugins/index/${enc(name)}`, {
+      method: 'POST',
+      timeout: 0,
+    }).then(installResult),
   remove: (name: string) => request<void>(`/plugins/${enc(name)}`, { method: 'DELETE' }),
 }
 
@@ -306,26 +379,47 @@ export const systemApi = {
   info: () => request<SystemInfo>('/system/info'),
   capabilities: () => request<Capabilities>('/capabilities', { retries: 0 }),
   /** Deletes runs older than `days`; on a single-organisation server that is every run on the server. */
-  purge: (days: number) => request<{ deleted: number; days: number; org_id?: string }>('/system/purge', { json: { days }, timeout: 0 }),
+  purge: (days: number) =>
+    request<{ deleted: number; days: number; org_id?: string }>('/system/purge', {
+      json: { days },
+      timeout: 0,
+    }),
 }
 
 export const driverApi = {
   installed: () => request<InstalledDrivers>('/drivers'),
   catalog: () => request<DriverCatalog>('/drivers/catalog', { retries: 0, timeout: 25_000 }),
-  install: (name: string, version?: string) => request<InstalledDriver>(`/drivers/catalog/${enc(name)}/install${version ? `?version=${encodeURIComponent(version)}` : ''}`, { method: 'POST', timeout: 0 }),
-  remove: (name: string, version?: string) => request<void>(`/drivers/${enc(name)}${version ? `?version=${encodeURIComponent(version)}` : ''}`, { method: 'DELETE' }),
-  documentation: (name: string, version: string) => request<{ markdown: string }>(`/drivers/catalog/${enc(name)}/${enc(version)}/docs`, { retries: 0 }).then((response) => response.markdown),
+  install: (name: string, version?: string) =>
+    request<InstalledDriver>(
+      `/drivers/catalog/${enc(name)}/install${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+      { method: 'POST', timeout: 0 },
+    ),
+  remove: (name: string, version?: string) =>
+    request<void>(
+      `/drivers/${enc(name)}${version ? `?version=${encodeURIComponent(version)}` : ''}`,
+      { method: 'DELETE' },
+    ),
+  documentation: (name: string, version: string) =>
+    request<{ markdown: string }>(`/drivers/catalog/${enc(name)}/${enc(version)}/docs`, {
+      retries: 0,
+    }).then((response) => response.markdown),
 }
 
 export const userApi = {
   list: () => request<User[] | null>('/auth/users').then((d) => d ?? []),
-  create: (username: string, password: string, role: string) => request<User>('/auth/users', { json: { username, password, role } }),
+  create: (username: string, password: string, role: string) =>
+    request<User>('/auth/users', { json: { username, password, role } }),
   resetPassword: (userId: string, newPassword: string) =>
-    request<{ status: string }>('/auth/admin-reset-password', { json: { user_id: userId, new_password: newPassword } }),
+    request<{ status: string }>('/auth/admin-reset-password', {
+      json: { user_id: userId, new_password: newPassword },
+    }),
   changePassword: (currentPassword: string, newPassword: string) =>
-    request<{ status: string }>('/auth/change-password', { json: { current_password: currentPassword, new_password: newPassword } }),
+    request<{ status: string }>('/auth/change-password', {
+      json: { current_password: currentPassword, new_password: newPassword },
+    }),
   /** Edit your own display name and email (core #605). Fields omitted are left unchanged; the change reaches the session on your next sign-in. */
-  updateProfile: (body: { display_name?: string; email?: string }) => request<User>('/auth/me/profile', { method: 'PUT', json: body }),
+  updateProfile: (body: { display_name?: string; email?: string }) =>
+    request<User>('/auth/me/profile', { method: 'PUT', json: body }),
 }
 
 /*
@@ -338,7 +432,11 @@ export const notificationApi = {
   get: () => request<NotificationSettings>('/settings/notifications'),
   update: (body: { webhook?: string; channel: string; username: string; teams_webhook?: string }) =>
     request<{ status: string }>('/settings/notifications', { method: 'PUT', json: body }),
-  test: () => request<{ status: string }>('/settings/notifications/test', { method: 'POST', timeout: 20_000 }),
+  test: () =>
+    request<{ status: string }>('/settings/notifications/test', {
+      method: 'POST',
+      timeout: 20_000,
+    }),
   clearAll: () => request<{ status: string }>('/settings/notifications', { method: 'DELETE' }),
 }
 
@@ -346,23 +444,35 @@ export const observeApi = {
   dashboard: () => request<DashboardStats>('/dashboard'),
   /** The server accepts 1 to 365 days and silently answers with 90 for anything else, so the value is clamped here. */
   calendar: (days: number) =>
-    request<CalendarDay[] | null>('/runs/calendar', { query: { days: Math.min(365, Math.max(1, Math.round(days))) } }).then((d) => d ?? []),
-  deadLetters: (limit: number) => request<DeadLetter[] | null>('/dlq', { query: { limit } }).then((d) => d ?? []),
+    request<CalendarDay[] | null>('/runs/calendar', {
+      query: { days: Math.min(365, Math.max(1, Math.round(days))) },
+    }).then((d) => d ?? []),
+  deadLetters: (limit: number) =>
+    request<DeadLetter[] | null>('/dlq', { query: { limit } }).then((d) => d ?? []),
   resolveDeadLetter: (pipelineId: string, id: string) =>
-    request<{ status: string }>(`/pipelines/${enc(pipelineId)}/dlq/${enc(id)}/resolve`, { method: 'POST' }),
+    request<{ status: string }>(`/pipelines/${enc(pipelineId)}/dlq/${enc(id)}/resolve`, {
+      method: 'POST',
+    }),
   alerts: (limit: number) =>
-    request<AlertList>('/alerts', { query: { limit } }).then((d) => ({ alerts: d?.alerts ?? [], unread: d?.unread_count ?? 0 })),
+    request<AlertList>('/alerts', { query: { limit } }).then((d) => ({
+      alerts: d?.alerts ?? [],
+      unread: d?.unread_count ?? 0,
+    })),
   readAlert: (id: string) => request<void>(`/alerts/${enc(id)}/read`, { method: 'POST' }),
   readAllAlerts: () => request<void>('/alerts/read-all', { method: 'POST' }),
   dismissAlert: (id: string) => request<void>(`/alerts/${enc(id)}`, { method: 'DELETE' }),
   /* Incident ownership on an alert (brokoli-ee#242). Assigning null clears the owner. */
-  assignAlert: (id: string, userId: string | null) => request<void>(`/alerts/${enc(id)}/assign`, { json: { user_id: userId } }),
-  acknowledgeAlert: (id: string) => request<void>(`/alerts/${enc(id)}/acknowledge`, { method: 'POST' }),
+  assignAlert: (id: string, userId: string | null) =>
+    request<void>(`/alerts/${enc(id)}/assign`, { json: { user_id: userId } }),
+  acknowledgeAlert: (id: string) =>
+    request<void>(`/alerts/${enc(id)}/acknowledge`, { method: 'POST' }),
   resolveAlert: (id: string) => request<void>(`/alerts/${enc(id)}/resolve`, { method: 'POST' }),
   lineage: () => request<LineageGraph>('/lineage'),
   dependencyGraph: () => request<DependencyGraph>('/pipelines/dependency-graph'),
-  dependencyStatus: (pipelineId: string) => request<DependencyStatus>(`/pipelines/${enc(pipelineId)}/deps`),
-  nodeStats: (pipelineId: string, runs = 10) => request<NodeStats>(`/pipelines/${enc(pipelineId)}/node-stats`, { query: { runs } }),
+  dependencyStatus: (pipelineId: string) =>
+    request<DependencyStatus>(`/pipelines/${enc(pipelineId)}/deps`),
+  nodeStats: (pipelineId: string, runs = 10) =>
+    request<NodeStats>(`/pipelines/${enc(pipelineId)}/node-stats`, { query: { runs } }),
 }
 
 /** Save a text payload as a file (exports). */
