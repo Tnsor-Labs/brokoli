@@ -64,6 +64,20 @@ reconstruct from git archaeology.
   insert went from 3.6ms to 0.35ms, and each run from about 6.2s to 5.0s.
   (#967)
 
+- **Code nodes wait briefly for a warm worker before starting another**
+  -- @hc12r. When every pooled worker was busy, a code node started a
+  fresh interpreter at once, even when a worker would come free a few
+  milliseconds later. Nodes running side by side paid that start nearly
+  every time: the pool keeps one worker for every two CPUs, and up to
+  four nodes per CPU run at once. On four CPUs, 50 short
+  Python nodes in parallel started 10 to 16 interpreters per run, each
+  taking around half a second while the others ran, and the run took
+  0.6 to 0.9s; it now starts none and takes 0.2 to 0.4s. A node now waits
+  up to 100ms for a pooled worker and starts its own only after that, so
+  behind workers busy with long nodes it starts at most 100ms later than
+  before. Set the wait with `BROKOLI_CODE_POOL_OVERFLOW_WAIT_MS`; 0 starts
+  one at once, as before. (#967)
+
 - **Routes grant what the caller's role lists** -- @hc12r. Without a
   distribution's permission system, routes decided by role name: `admin`
   and `editor` could do everything, `viewer` could read, and every other

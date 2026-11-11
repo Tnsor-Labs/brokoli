@@ -507,3 +507,97 @@ func TestConcurrentSpawnsNeverCollideOnASocketPath(t *testing.T) {
 		t.Errorf("socket directory still holds %d entries after every worker exited: %v", len(entries), entries)
 	}
 }
+
+// A short execution that finds every pooled worker busy waits for one to
+// come free instead of starting an interpreter: a node mapped over many
+// items spent most of its waiting starting one-shot workers (#967
+// benchmark). Two short executions on a one-worker pool boot one worker.
+func TestPoolOverflowWaitsForAFreeWorkerFirst(t *testing.T) {
+	t.Setenv("BROKOLI_CODE_POOL_MAX_WORKERS", "1")
+	t.Setenv("BROKOLI_CODE_POOL_OVERFLOW_WAIT_MS", "2000")
+	p := testPool(t)
+	dir := t.TempDir()
+	// Warm the one worker, so the next two find it busy, not absent.
+	if _, err := p.Exec(context.Background(), inlineReq("output_data = {\"columns\": [\"a\"], \"rows\": []}\n", nil, filepath.Join(dir, "w.ndjson"))); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			req := inlineReq("import time\ntime.sleep(0.2)\noutput_data = {\"columns\": [\"a\"], \"rows\": [{\"a\": 1}]}\n",
+				nil, filepath.Join(dir, string(rune('a'+i))+".ndjson"))
+			_, errs[i] = p.Exec(context.Background(), req)
+		}(i)
+	}
+	wg.Wait()
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("exec %d: %v", i, err)
+		}
+	}
+	if boots := p.WorkerBoots(); boots != 1 {
+		t.Fatalf("boots = %d, want 1: the second execution should have waited for the warm worker", boots)
+	}
+}
+
+// The wait is bounded: behind a long execution, another spawns after about
+// the wait instead of waiting for it to finish.
+func TestPoolOverflowWaitIsBounded(t *testing.T) {
+	t.Setenv("BROKOLI_CODE_POOL_MAX_WORKERS", "1")
+	t.Setenv("BROKOLI_CODE_POOL_OVERFLOW_WAIT_MS", "100")
+	p := testPool(t)
+	dir := t.TempDir()
+	long := make(chan error, 1)
+	go func() {
+		_, err := p.Exec(context.Background(), inlineReq("import time\ntime.sleep(5)\noutput_data = {\"columns\": [\"a\"], \"rows\": []}\n", nil, filepath.Join(dir, "long.ndjson")))
+		long <- err
+	}()
+	time.Sleep(1500 * time.Millisecond) // the long one holds the only worker
+	start := time.Now()
+	if _, err := p.Exec(context.Background(), inlineReq("output_data = {\"columns\": [\"a\"], \"rows\": []}\n", nil, filepath.Join(dir, "short.ndjson"))); err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("short execution took %s behind a long one; the wait should be bounded", took)
+	}
+	if err := <-long; err != nil {
+		t.Fatal(err)
+	}
+	if boots := p.WorkerBoots(); boots != 2 {
+		t.Fatalf("boots = %d, want 2: the short execution should have spawned after the wait", boots)
+	}
+}
+
+// A waiter that gave up is removed, so a release wakes a waiter still
+// waiting rather than the one that left.
+func TestPoolDropsAWaiterThatGaveUp(t *testing.T) {
+	p := &Pool{}
+	gone := make(chan struct{}, 1)
+	stays := make(chan struct{}, 1)
+	p.waiters = []chan struct{}{gone, stays}
+	p.dropWaiter(gone)
+	p.mu.Lock()
+	p.notifyWaiterLocked()
+	p.mu.Unlock()
+	select {
+	case <-stays:
+	default:
+		t.Fatal("the remaining waiter was not woken")
+	}
+	// A waiter closed by a release just before it gave up passes the
+	// wake-up on.
+	late, next := make(chan struct{}, 1), make(chan struct{}, 1)
+	p.waiters = []chan struct{}{late, next}
+	p.mu.Lock()
+	p.notifyWaiterLocked() // closes late
+	p.mu.Unlock()
+	p.dropWaiter(late)
+	select {
+	case <-next:
+	default:
+		t.Fatal("a wake-up was lost when its waiter had already left")
+	}
+}
