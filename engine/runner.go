@@ -316,6 +316,9 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 	}
 	spanCtx, span := tracing.Tracer().Start(base, "brokoli.run.execute",
 		trace.WithAttributes(attribute.String("pipeline_id", r.pipe.ID)))
+	// Also covers a run that returns without a final status (a wait node
+	// parking it): its lines are stored before Execute returns.
+	defer r.flushLogs()
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
@@ -651,6 +654,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		return r.run, r.failRun(runErr)
 	}
 
+	r.flushLogs()
 	r.run.Status = models.RunStatusSuccess
 	r.run.FinishedAt = &finishTime
 	// A run put back on the queue by recovery carries that explanation in
@@ -2186,6 +2190,7 @@ func (r *Runner) reclaimTransientBlobs() {
 // event, hook, and log line. It returns the "pipeline cancelled" error the
 // caller should propagate as Execute's error.
 func (r *Runner) finalizeCancelled() error {
+	r.flushLogs()
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusCancelled
 	r.run.FinishedAt = &finishTime
@@ -2227,6 +2232,7 @@ func (r *Runner) failRun(err error) error {
 	if r.ctx.Err() != nil {
 		return r.finalizeCancelled()
 	}
+	r.flushLogs()
 	finishTime := time.Now().UTC()
 	r.run.Status = models.RunStatusFailed
 	r.run.FinishedAt = &finishTime
@@ -2344,6 +2350,10 @@ func (r *Runner) log(nodeID string, level models.LogLevel, format string, args .
 	r.logWithTrace(nodeID, level, "", 0, nil, format, args...)
 }
 
+// flushLogs waits until every log line written so far is stored, so a
+// reader who sees the run's final status also sees all of its lines.
+func (r *Runner) flushLogs() { r.logs.flush() }
+
 func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID string, attempt int, metadata map[string]string, format string, args ...interface{}) {
 	if r.store == nil || r.run == nil {
 		return
@@ -2371,13 +2381,11 @@ func (r *Runner) logWithTrace(nodeID string, level models.LogLevel, spanID strin
 		Attempt:   attempt,
 		Metadata:  metadata,
 	}
-	var err error
 	if batcher, ok := r.store.(store.LogBatchAppender); ok {
-		err = r.logs.append(batcher, entry)
-	} else {
-		err = r.store.AppendLog(entry)
-	}
-	if err != nil {
+		// Stored in the background (logBatcher); flushLogs before the run
+		// records its final status.
+		r.logs.append(batcher, entry)
+	} else if err := r.store.AppendLog(entry); err != nil {
 		common.SLog().Warn("append log entry failed",
 			common.RunAttr(r.run.ID), common.NodeAttr(nodeID), "error", err)
 	}
