@@ -18,15 +18,28 @@ func NewPermissionChecker(s store.Store) *PermissionChecker {
 	return &PermissionChecker{store: s}
 }
 
-// GetUserPermissions returns the effective permissions for a user based on their role.
+// GetUserPermissions returns what a role holds: the permissions the roles
+// table lists for it, or every permission for a superadmin, which is not a
+// row in the table. A role the table does not know holds nothing. It used
+// to be read as a viewer, while the open-source route gate refused it
+// outright, so the two disagreed about what such a person may do (#864).
+//
+// A checker without a store, as a test builds, reads the built-in roles.
 func (pc *PermissionChecker) GetUserPermissions(userRole string, workspaceID string) []models.Permission {
-	role, err := pc.store.GetRole(userRole)
-	if err != nil {
-		// Unknown role -- fall back to viewer
-		role, _ = pc.store.GetRole("viewer")
-		if role == nil {
-			return []models.Permission{models.PermPipelinesView, models.PermRunsView}
+	if userRole == string(RoleSuperAdmin) {
+		return models.AllPermissions()
+	}
+	if pc == nil || pc.store == nil {
+		for _, role := range models.DefaultRoles() {
+			if role.ID == userRole {
+				return role.Permissions
+			}
 		}
+		return []models.Permission{}
+	}
+	role, err := pc.store.GetRole(userRole)
+	if err != nil || role == nil {
+		return []models.Permission{}
 	}
 	return role.Permissions
 }

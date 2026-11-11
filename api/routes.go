@@ -599,15 +599,16 @@ func fallbackPermissionMiddlewareWith(perm models.Permission, pc *PermissionChec
 				writeError(w, http.StatusUnauthorized, "authentication required")
 				return
 			}
-			allowed := false
-			if isAgentClaims(mc) {
-				allowed = pc != nil && slices.Contains(pc.requestPermissions(r, mc), perm)
-			} else if perms, resolved := RequestPermissions(r); resolved {
-				allowed = slices.Contains(perms, perm)
-			} else {
-				role, _ := (*mc)["role"].(string)
-				allowed = roleAllows(role, perm)
-			}
+			// The route asks the roles table, as /api/auth/me/permissions
+			// does, so a person may do here exactly what that endpoint
+			// lists. It decided by role name, letting admin and editor do
+			// everything and viewer read, and refusing every other role:
+			// an operator was told it may run a pipeline and then refused,
+			// and a custom role got nothing it listed (#864).
+			// An agent is refused without pc: its permissions are its
+			// owner's narrowed, which only a checker computes.
+			allowed := !(isAgentClaims(mc) && pc == nil) &&
+				slices.Contains(pc.requestPermissions(r, mc), perm)
 			if !allowed {
 				writeError(w, http.StatusForbidden, "insufficient permissions")
 				return
@@ -617,61 +618,11 @@ func fallbackPermissionMiddlewareWith(perm models.Permission, pc *PermissionChec
 	}
 }
 
-// isWritePermission returns true for permissions that modify data.
-// Read-only permissions that viewers can access return false.
-// roleAllows reports whether a role may exercise a permission under the
-// open-source fallback.
-//
-// Deny-by-default, deliberately. This used to refuse exactly one case, a
-// viewer attempting a write, and let every other role value through --
-// including a role the fallback does not recognise, and including the
-// empty string. A check whose default branch is `next.ServeHTTP` is not
-// a permission gate, it is a viewer filter (#527).
-//
-// The recognised set is the workspace role vocabulary
-// (models/workspace.go) plus superadmin, which requireAdmin already
-// treats as admin's equal. Anything outside it is refused rather than
-// guessed at: a role this build has never heard of is exactly the case
-// where assuming permission is least defensible.
-//
-// Enterprise never reaches here. requirePerm delegates to Team's real
-// per-workspace RBAC whenever it is enabled, and this fallback is the
-// single-tenant answer only.
-// superadminRole is spelled the same way requireAdmin spells it; named
-// here so the two cannot drift.
-const superadminRole = "superadmin"
-
-func roleAllows(role string, perm models.Permission) bool {
-	switch role {
-	case string(models.WsRoleAdmin), superadminRole:
-		return true
-	case string(models.WsRoleEditor):
-		// Editors do everything except the host-wide operations, which
-		// route through requireStrictPerm/requireAdmin instead of here.
-		return true
-	case string(models.WsRoleViewer):
-		return !isWritePermission(string(perm))
-	default:
-		return false
-	}
-}
-
-func isWritePermission(perm string) bool {
-	readPerms := map[string]bool{
-		"pipelines.view":   true,
-		"runs.view":        true,
-		"connections.view": true,
-		"variables.view":   true,
-		"settings.view":    true,
-	}
-	return !readPerms[perm]
-}
-
 // requireAdmin gates a route to the "admin"/"superadmin" role only,
 // matching /api/auth/admin-reset-password's existing inline check. It is
-// requireStrictPerm's open-source fallback: requirePerm's fallback only
-// blocks the "viewer" role from write permissions (see isWritePermission
-// above), which is too loose for operations with host-wide blast radius.
+// requireStrictPerm's open-source fallback: requirePerm's fallback grants
+// what the caller's role lists, and an operation with host-wide blast
+// radius is kept to admins whatever a custom role lists.
 // It reads the role claim alone, so it is only the answer where no
 // permission system is installed.
 func requireAdmin(next http.Handler) http.Handler {
