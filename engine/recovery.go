@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"github.com/Tnsor-Labs/brokoli/extensions"
 	"sync/atomic"
 	"time"
 
@@ -655,7 +656,60 @@ func (e *Engine) markRecoveryFailed(run *models.Run, reason string) (recoveryOut
 	atomic.AddInt64(&e.RunsRecoveryFailed, 1)
 	atomic.AddInt64(&e.RunsFailed, 1)
 	common.SLog().Error("recovery: run has no recoverable path — marked failed", common.RunAttr(run.ID), "reason", reason)
+	e.reportRecoveryFailure(run, errMsg)
 	return recoveryOutcomeFailed, nil
+}
+
+// reportRecoveryFailure tells people about a run recovery failed, as
+// Runner.failRun does for any other failed run: a dead-letter entry, a
+// critical alert, and the failure notifications. Recovery set the run to
+// failed and said so only in a metric and a log line, so an operator
+// watching the dead-letter queue or the alerts never saw these runs
+// (#1013). The run is terminal now and recovery never revisits it, so this
+// happens once. A failure here is logged: the run's status is already
+// saved, and that is what matters most.
+func (e *Engine) reportRecoveryFailure(run *models.Run, errMsg string) {
+	pipe, err := e.store.GetPipeline(run.PipelineID)
+	if err != nil {
+		common.SLog().Warn("recovery: failed run's pipeline could not be read; no dead-letter entry or alert", common.RunAttr(run.ID), "error", err)
+		return
+	}
+	if err := e.store.AddToDLQ(pipe.ID, run.ID, "", "", errMsg, ""); err != nil {
+		common.SLog().Warn("recovery: add failed run to the dead-letter queue", common.RunAttr(run.ID), "error", err)
+	}
+	orgID := run.OrgID
+	if orgID == "" {
+		orgID = pipe.OrgID
+	}
+	if err := e.store.CreateAlert(&models.Alert{
+		ID:           common.NewID(),
+		OrgID:        orgID,
+		Kind:         models.AlertKindRunFailure,
+		Severity:     models.AlertSeverityCritical,
+		Title:        fmt.Sprintf("Pipeline %q failed", pipe.Name),
+		Body:         errMsg,
+		PipelineID:   pipe.ID,
+		PipelineName: pipe.Name,
+		RunID:        run.ID,
+		CreatedAt:    time.Now().UTC(),
+	}); err != nil {
+		common.SLog().Warn("recovery: create failure alert", common.RunAttr(run.ID), "error", err)
+	}
+	if e.Notifier != nil && e.Notifier.Enabled() {
+		if err := e.Notifier.Send(extensions.Notification{
+			Event:      "run.failed",
+			Severity:   "critical",
+			Title:      fmt.Sprintf("Pipeline \"%s\" failed", pipe.Name),
+			Message:    errMsg,
+			PipelineID: pipe.ID,
+			Pipeline:   pipe.Name,
+			RunID:      run.ID,
+			Extra:      map[string]string{"schedule": pipe.Schedule},
+		}); err != nil {
+			common.SLog().Warn("recovery: failure notification", common.RunAttr(run.ID), "error", err)
+		}
+	}
+	NotifyPipelineEvent(pipe, run, "run.failed", errMsg)
 }
 
 // closeDanglingNodeRun settles the specific NodeRun a run-level recovery
