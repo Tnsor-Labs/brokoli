@@ -52,6 +52,15 @@ reconstruct from git archaeology.
   they may run a pipeline and cancel and resume runs, was refused with
   403 by every one of those routes, and a custom role got nothing it
   listed, so the UI offered actions the server then refused. (#864)
+- **A mapped code node with a task bundle runs** -- @hc12r. A `code`
+  node with both a `task_bundle` and a `map` (or `expansion`) block was
+  saved, then failed every run, refused as unsupported "inside .expand()
+  fan-out". Each item now runs through the bundle, on the worker running
+  the run, up to `max_parallel` at once. Making it run found the cause of a
+  second failure: after each execution the Python worker deleted the file
+  it had run, which for a bundle is the bundle's own entry, so a second
+  execution from the same extracted bundle was refused with "entry is not
+  in the manifest file list". (#1019)
 - **A run recovery fails shows up like any failed run** -- @hc12r. When
   a process died mid-run and recovery could not tell how far the run got,
   it marked the run failed and said so only in

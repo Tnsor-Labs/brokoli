@@ -209,21 +209,62 @@ func TestTaskBundleHelpersDoNotLeakStateAcrossRuns(t *testing.T) {
 	}
 }
 
-func TestTaskBundleInsideExpansionFailsClearly(t *testing.T) {
-	// A task_bundle code node used as a .expand() factory must fail with
-	// the unsupported-combination error at run time — not the generic
-	// "expansion node requires 'script' in config", which would read as
-	// an author misconfiguration.
-	e := newTBEngine(t)
-	digest := e.bundle(t, 2)
-	_, execErr := e.runPipeline(t, "p-tb-exp", digest, map[string]interface{}{
-		"expansion": map[string]interface{}{"over": map[string]interface{}{"file": "src"}},
-	})
-	if execErr == nil {
-		t.Fatal("a task_bundle node inside .expand() ran to success")
-	}
-	if !strings.Contains(execErr.Error(), "task_bundle") || !strings.Contains(execErr.Error(), ".expand()") {
-		t.Fatalf("failure does not name the unsupported combination: %s", execErr)
+// A mapped code node whose source is a task bundle was saved, then failed
+// every run with "not supported inside .expand() fan-out" (#1019). Each
+// item now runs through the bundle, with map and with the older expansion
+// block alike, and the node's output is every item's in order.
+func TestTaskBundleRunsOncePerMappedItem(t *testing.T) {
+	for name, block := range map[string]map[string]interface{}{
+		"map":       {"map": map[string]interface{}{"over": "src", "key": "v", "max_parallel": float64(2)}},
+		"expansion": {"expansion": map[string]interface{}{"over": map[string]interface{}{"item": "src"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newTBEngine(t)
+			digest := e.bundle(t, 2)
+			in := writeCSV(t, t.TempDir(), "in.csv", "v\n2\n3\n4\n")
+			codeConfig := map[string]interface{}{
+				"task_bundle": map[string]interface{}{"digest": digest, "format": taskbundle.Format},
+			}
+			for k, v := range block {
+				codeConfig[k] = v
+			}
+			pipeline := &models.Pipeline{
+				ID: "p-tb-map-" + name, Name: name, Enabled: true, OrgID: tbOrg,
+				Nodes: []models.Node{
+					{ID: "src", Type: models.NodeTypeSourceFile, Name: "Src", Config: map[string]interface{}{"path": in, "format": "csv"}},
+					{ID: "code", Type: models.NodeTypeCode, Name: "Code", Config: codeConfig},
+				},
+				Edges: []models.Edge{{From: "src", To: "code"}},
+			}
+			if err := e.s.CreatePipeline(pipeline); err != nil {
+				t.Fatal(err)
+			}
+			run, err := e.eng.RunPipeline(pipeline.ID)
+			if err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			if run.Status != models.RunStatusSuccess {
+				t.Fatalf("run %s, want success", run.Status)
+			}
+			ds, err := e.eng.ArtifactStore.ReadArtifact(run.ID, "code", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got []float64
+			for _, row := range ds.Rows {
+				got = append(got, toF64(row["v"]))
+			}
+			if fmt.Sprint(got) != "[4 6 8]" {
+				t.Fatalf("outputs %v, want [4 6 8]: each item doubled by the bundle, in item order", got)
+			}
+			instances, err := e.s.ListExpansionInstancesByRun(run.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(instances) != 3 {
+				t.Fatalf("%d instances recorded, want one per item", len(instances))
+			}
+		})
 	}
 }
 

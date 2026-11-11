@@ -292,10 +292,16 @@ def _run_exec(sock_file, msg, wrapper_code, tmpdir):
                 atexit.unregister(drop)
             except Exception:
                 pass
-        try:
-            os.remove(script_path)
-        except OSError:
-            pass
+        # Only a script this worker wrote to its tmpdir is removed. For a
+        # bundle, script_path is the bundle's own entry file: removing it
+        # left the next execution of the same extracted bundle (a mapped
+        # node's next item) without its entry, refused as "entry is not in
+        # the manifest file list" (#1019).
+        if not bundle_dir:
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
 
     inline_result = _forward_captured(sock_file, exec_id, captured_out, "info",
                                       skip_last_json=failure is None)

@@ -62,6 +62,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -657,14 +658,25 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 			cfg.Key.Name)
 	}
 
+	// A code node's source is a script or a task bundle (ADR-031). A
+	// mapped bundle node was saved and then refused here on every run
+	// (#1019); it now runs each item through the bundle.
+	var bundle *codeBundleSpec
 	script, _ := node.Config["script"].(string)
 	if script == "" {
-		if digest, isBundle, tbErr := taskBundleReference(node.Config); tbErr != nil {
+		digest, isBundle, tbErr := taskBundleReference(node.Config)
+		if tbErr != nil {
 			return nil, fmt.Errorf("node %s (%s): %w", node.Name, node.ID, tbErr)
-		} else if isBundle {
-			return nil, fmt.Errorf("node %s (%s): task_bundle code nodes (%s) are not supported inside .expand() fan-out in this version — factory nodes fan out bare-script code; drop the task_bundle reference or the expansion", node.Name, node.ID, digest)
 		}
-		return nil, fmt.Errorf("node %s (%s): expansion node requires 'script' in config", node.Name, node.ID)
+		if !isBundle {
+			return nil, fmt.Errorf("node %s (%s): a mapped code node needs 'script' or 'task_bundle' in config", node.Name, node.ID)
+		}
+		b, err := r.materializeTaskBundle(digest)
+		if err != nil {
+			return nil, fmt.Errorf("node %s (%s): %w", node.Name, node.ID, err)
+		}
+		defer os.RemoveAll(b.dir)
+		bundle = b
 	}
 
 	timeoutSec := 30
@@ -677,7 +689,7 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	// for) before handing config to the subprocess.
 	configForScript := make(map[string]interface{})
 	for k, v := range node.Config {
-		if k != "script" && k != "expansion" && k != "map" {
+		if k != "script" && k != "expansion" && k != "map" && k != "task_bundle" {
 			configForScript[k] = v
 		}
 	}
@@ -685,6 +697,20 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 	var runParams map[string]string
 	if r.varCtx != nil {
 		runParams = r.varCtx.Params
+	}
+
+	if bundle != nil {
+		// Bundle items run on this runner, never dispatched as remote
+		// instance jobs: a remote worker that predates this would take the
+		// job and refuse a bundle work order, and no capability keeps such
+		// jobs off it. They still run up to the node's parallelism.
+		spec := *bundle
+		return r.fanOut(ctx, node, cfg, items, nodeAttempt, false, func(ctx context.Context, i int, key string) (*common.DataSet, error) {
+			itemDS := &common.DataSet{Columns: columnsOf(items[i]), Rows: []common.DataRow{items[i]}}
+			return r.executeMappedInstance(ctx, node, nodeAttempt, i, key, len(items), timeoutSec, false, func(ctx context.Context, _ int64, _ bool) (*common.DataSet, string, error) {
+				return ExecuteTaskBundleNodeProgress(ctx, spec, itemDS, configForScript, runParams, r.parameters, timeoutSec, nil)
+			})
+		})
 	}
 
 	return r.fanOut(ctx, node, cfg, items, nodeAttempt, r.instanceJobQueue != nil, func(ctx context.Context, i int, key string) (*common.DataSet, error) {
