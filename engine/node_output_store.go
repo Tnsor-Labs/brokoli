@@ -172,8 +172,8 @@ func (o *nodeOutputs) putInline(nodeID string, ds *common.DataSet) {
 // Arrow when the dataset is exactly representable as typed columns,
 // NDJSON otherwise. The choice is per dataset and recorded on the ref,
 // so a reader never has to guess, and a dataset that cannot round-trip
-// through Arrow silently keeps the encoding that can (see
-// arrowEncodableSchema for what disqualifies one).
+// through Arrow keeps the encoding that can, and the log says why once
+// per cause (see arrowSchemaFor for what disqualifies one).
 //
 // Worth the branch because the read side is where datasets are paid
 // for: a spilled dataset is written once and may be read many times,
@@ -182,10 +182,14 @@ func (o *nodeOutputs) spill(ds *common.DataSet, preferred string) (*artifact.Dat
 	format := artifact.FormatNDJSON
 	mediaType := artifact.MediaTypeNDJSON
 	encode := func(w io.Writer) error { return EncodeNDJSON(w, ds) }
-	if _, ok := arrowEncodableSchema(ds); ok && preferred != artifact.FormatNDJSON {
-		format = artifact.FormatArrowIPC
-		mediaType = artifact.MediaTypeArrowIPC
-		encode = func(w io.Writer) error { return EncodeArrowIPC(w, ds) }
+	if preferred != artifact.FormatNDJSON {
+		if schema, reason := arrowSchemaFor(ds); schema != nil {
+			format = artifact.FormatArrowIPC
+			mediaType = artifact.MediaTypeArrowIPC
+			encode = func(w io.Writer) error { return EncodeArrowIPC(w, ds) }
+		} else {
+			announceArrowFallback(reason)
+		}
 	}
 
 	pr, pw := io.Pipe()
