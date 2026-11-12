@@ -51,6 +51,19 @@ reconstruct from git archaeology.
   settle), and a settle the fencing check refuses still records the
   item's outcome. A 500-item fan-out went from 75 to about 123 items a
   second on its own, and to about 166 together with #1021. (#967)
+
+- **The Postgres store keeps its connections open between uses** --
+  @hc12r. It kept two, database/sql's default, so with more callers at
+  once, such as a node mapped over items 16 at a time, every other
+  connection was closed when it was returned and the next caller opened a
+  new one: a login and a backend whose caches start cold, for about one
+  item in two. It now keeps up to 32, set with
+  `BROKOLI_POSTGRES_MAX_IDLE_CONNS`, and closes a connection unused for a
+  minute. It does not limit how many are open at once. Three 1,000-item
+  fan-outs opened 18 sessions instead of about 1,350, an item's instance
+  insert went from 3.6ms to 0.35ms, and each run from about 6.2s to 5.0s.
+  (#967)
+
 - **Routes grant what the caller's role lists** -- @hc12r. Without a
   distribution's permission system, routes decided by role name: `admin`
   and `editor` could do everything, `viewer` could read, and every other

@@ -10,7 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,12 +43,40 @@ func NewPostgresStore(uri string) (*PostgresStore, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 
+	keepIdleConnections(db)
+
 	s := &PostgresStore{db: db}
 	if err := s.migrateExclusively(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	return s, nil
+}
+
+// DefaultPostgresMaxIdleConns is how many connections the store keeps open
+// between uses, unless BROKOLI_POSTGRES_MAX_IDLE_CONNS says otherwise (0
+// keeps none).
+// database/sql keeps 2 by default. With more callers than that at once,
+// such as a node mapped over items 16 at a time, every connection past the
+// second was closed when it was returned and the next caller opened a new
+// one: 453 sessions for a 1,000-item run, each paying for a connection, a
+// login and a backend whose caches start cold. The first insert on a new
+// backend took 3.5ms, the same insert after it 0.3ms.
+const DefaultPostgresMaxIdleConns = 32
+
+// postgresConnMaxIdleTime closes a connection unused this long, so the
+// connections a burst opened do not stay open after it.
+const postgresConnMaxIdleTime = time.Minute
+
+// keepIdleConnections sets how many connections db keeps between uses. It
+// does not limit how many are open at once.
+func keepIdleConnections(db *sql.DB) {
+	n := DefaultPostgresMaxIdleConns
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("BROKOLI_POSTGRES_MAX_IDLE_CONNS"))); err == nil && v >= 0 {
+		n = v
+	}
+	db.SetMaxIdleConns(n)
+	db.SetConnMaxIdleTime(postgresConnMaxIdleTime)
 }
 
 // PostgresStartWait is how long opening a store waits for a server that is
