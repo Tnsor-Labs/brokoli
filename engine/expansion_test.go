@@ -812,7 +812,11 @@ func newUnitTestRunner(t *testing.T) *Runner {
 	if err := s.CreateRun(run); err != nil {
 		t.Fatal(err)
 	}
-	return &Runner{store: s, run: run}
+	r := &Runner{store: s, run: run}
+	// Registered after the store's cleanup, so it runs first: no line is
+	// stored after the store is closed.
+	t.Cleanup(r.flushLogs)
+	return r
 }
 
 // TestRunUnion_SingleInput_IdentityPassThrough is a unit-level check of the
