@@ -24,6 +24,9 @@ func bashTestNode(command, workDir string) models.Node {
 
 func bashLogMessages(t *testing.T, r *Runner) []string {
 	t.Helper()
+	// Lines are stored in the background (logBatcher); a runner flushes
+	// them before a run finishes, and these tests call a handler directly.
+	r.flushLogs()
 	entries, err := r.store.GetLogs(r.run.ID)
 	if err != nil {
 		t.Fatal(err)
