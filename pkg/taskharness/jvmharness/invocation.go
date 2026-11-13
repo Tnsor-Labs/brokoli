@@ -35,6 +35,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 //go:embed harness/*.java
@@ -81,10 +82,47 @@ type Toolchain struct {
 // runtime versus installing a full JDK -- and collapsing them into one
 // message would send a JRE-only host looking for something it already
 // has.
+// probeKey identifies a resolved binary by path and the stat fields that
+// change when it is replaced, so a swapped JDK is noticed while an
+// unchanged one is probed only once.
+type probeKey struct {
+	path  string
+	size  int64
+	mtime int64
+}
+
+func statKey(path string) (probeKey, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return probeKey{}, false
+	}
+	return probeKey{path: path, size: fi.Size(), mtime: fi.ModTime().UnixNano()}, true
+}
+
+// toolchainCache memoizes Resolve by the java binary's identity. Resolving
+// runs `java -version`, a full JVM boot; a task node resolves twice on its
+// first attempt (the execution-environment digest and the harness) and
+// again on every later attempt, so without this each no-op JVM task paid
+// several JVM starts for a version it had already read. See issue #1038.
+var (
+	toolchainCacheMu sync.Mutex
+	toolchainCache   = map[probeKey]Toolchain{}
+)
+
 func Resolve() (*Toolchain, error) {
 	javaPath, err := exec.LookPath("java")
 	if err != nil {
 		return nil, fmt.Errorf("jvmharness: no 'java' on PATH; a JVM task needs a JDK %d or newer (Brokoli never downloads one, see ADR-026)", MinJavaVersion)
+	}
+	key, keyed := statKey(javaPath)
+	if keyed {
+		toolchainCacheMu.Lock()
+		cached, hit := toolchainCache[key]
+		toolchainCacheMu.Unlock()
+		if hit {
+			tc := cached
+			return &tc, nil
+		}
 	}
 	javacPath, err := exec.LookPath("javac")
 	if err != nil {
@@ -98,7 +136,14 @@ func Resolve() (*Toolchain, error) {
 	if feature < MinJavaVersion {
 		return nil, fmt.Errorf("jvmharness: resolved java %s (feature version %d) at %s, below the Java %d floor this adapter requires (ADR-036)", versionString, feature, javaPath, MinJavaVersion)
 	}
-	return &Toolchain{Java: javaPath, Javac: javacPath, Version: feature, VersionString: versionString}, nil
+	tc := Toolchain{Java: javaPath, Javac: javacPath, Version: feature, VersionString: versionString}
+	if keyed {
+		toolchainCacheMu.Lock()
+		toolchainCache[key] = tc
+		toolchainCacheMu.Unlock()
+	}
+	resolved := tc
+	return &resolved, nil
 }
 
 // javaVersionRe matches the quoted version in `java -version` output,

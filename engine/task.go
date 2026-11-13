@@ -35,6 +35,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -333,14 +334,51 @@ func computeExecutionEnvironmentDigest(payload *taskbundlev2.Payload, manifest *
 // trimmed output (e.g. "Python 3.12.3", "v20.20.2") -- part of the
 // execution environment digest's "exact runtime build" coverage. Both
 // reference adapters' runtimes answer the same flag.
+// versionKey identifies a binary by path and the stat fields that change
+// when it is replaced, so the version probe below runs once per distinct
+// binary rather than on every task attempt. See issue #1038.
+type versionKey struct {
+	path  string
+	size  int64
+	mtime int64
+}
+
+var (
+	versionCacheMu sync.Mutex
+	versionCache   = map[versionKey]string{}
+)
+
+func binaryVersionKey(binPath string) (versionKey, bool) {
+	fi, err := os.Stat(binPath)
+	if err != nil {
+		return versionKey{}, false
+	}
+	return versionKey{path: binPath, size: fi.Size(), mtime: fi.ModTime().UnixNano()}, true
+}
+
 func runtimeVersionString(binPath string) (string, error) {
+	key, keyed := binaryVersionKey(binPath)
+	if keyed {
+		versionCacheMu.Lock()
+		cached, hit := versionCache[key]
+		versionCacheMu.Unlock()
+		if hit {
+			return cached, nil
+		}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	out, err := exec.CommandContext(ctx, binPath, "--version").CombinedOutput() // #nosec G204 -- binPath is resolved via pkg/plugins' runtime resolution, not attacker input
 	if err != nil {
 		return "", fmt.Errorf("%s --version: %w", binPath, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	version := strings.TrimSpace(string(out))
+	if keyed {
+		versionCacheMu.Lock()
+		versionCache[key] = version
+		versionCacheMu.Unlock()
+	}
+	return version, nil
 }
 
 // executeTaskBundle fetches+extracts digest, resolves (or reuses a
