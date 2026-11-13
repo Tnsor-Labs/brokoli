@@ -96,6 +96,17 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **User code never receives the server's encryption key, signing secret
+  or database URL** -- @hc12r. `${env.*}` and `env://` references already
+  refused `BROKOLI_ENCRYPTION_KEY`, `BROKOLI_JWT_SECRET`, `BROKOLI_DB_URL`
+  and `BROKOLI_LICENSE_SIGNING_SECRET` whatever their allowlists said, but
+  the environment a code or bash node, task, dbt run or native driver
+  starts with did not: `BROKOLI_CODE_PASS_ENV=*` (or
+  `BROKOLI_DBT_PASS_ENV`, `BROKOLI_NATIVE_PASS_ENV`), the documented way
+  to give scripts the host environment, gave them these too, as did
+  naming one. They are now removed from every child's environment, `*`
+  included; everything else `*` passes is unchanged.
+
 - **Operator and custom roles may do what they list** -- @hc12r. A person
   with the `operator` role, told by `GET /api/auth/me/permissions` that
   they may run a pipeline and cancel and resume runs, was refused with

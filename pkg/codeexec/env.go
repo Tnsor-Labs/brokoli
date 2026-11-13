@@ -3,6 +3,8 @@ package codeexec
 import (
 	"os"
 	"strings"
+
+	"github.com/Tnsor-Labs/brokoli/pkg/secrets"
 )
 
 // WorkerEnv is the environment user code starts with: an allowlist, not
@@ -26,14 +28,20 @@ func WorkerEnv() []string {
 // given, and whatever the operator lists in passVar: a comma-separated set
 // of further names, or "*" for the whole host environment.
 //
+// Never the names secrets.AlwaysDeniedEnvName refuses, whatever passVar
+// says, "*" included: the encryption key, the session signing secret and
+// the database URL would hand the code every tenant's credentials,
+// sessions and rows. ${env.*} and env:// references already share that
+// floor; the environment a child inherits did not, so "*" -- the
+// documented way to give scripts the host environment -- gave them these
+// too.
+//
 // One implementation for every child Brokoli starts with untrusted or
 // third-party code in it -- code nodes, task harnesses, native drivers --
 // each with its own passVar, so widening one does not widen the others.
 func AllowlistedEnv(passVar string, extra ...string) []string {
 	pass := strings.TrimSpace(os.Getenv(passVar))
-	if pass == "*" {
-		return os.Environ()
-	}
+	all := pass == "*"
 	allowed := map[string]bool{
 		"PATH": true, "HOME": true, "LANG": true, "TZ": true, "TMPDIR": true,
 	}
@@ -51,7 +59,10 @@ func AllowlistedEnv(passVar string, extra ...string) []string {
 		if !ok {
 			continue
 		}
-		if allowed[name] || strings.HasPrefix(name, "LC_") {
+		if secrets.AlwaysDeniedEnvName(name) {
+			continue
+		}
+		if all || allowed[name] || strings.HasPrefix(name, "LC_") {
 			env = append(env, kv)
 		}
 	}
