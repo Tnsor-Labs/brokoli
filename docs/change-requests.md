@@ -71,8 +71,10 @@ editor's **Preview** previews a saved one, and leaves nothing behind:
   and with the pipeline's connections and secrets.
 
 Because a test runs the proposed code, **only a person starts one**, with
-permission to run the pipeline (`pipelines.run`), after the page warns
-that the change's code will run. An agent's call is refused. At most two
+permission to edit and run the pipeline (`pipelines.edit` and
+`pipelines.run`), after the page warns that the change's code will run.
+Run alone is not enough: it would let an operator who may propose but not
+edit run any code they proposed. An agent's call is refused. At most two
 tests run at a time on a server; a third is answered `429`.
 
 ## From an agent (MCP)
@@ -95,7 +97,7 @@ the proposal takes the current positions of the nodes it keeps.
 |---|---|
 | Propose | `pipelines.propose` (admin, editor, operator and agent roles) |
 | See and list | the pipeline |
-| Test | `pipelines.run`, and being a person |
+| Test | `pipelines.edit` and `pipelines.run`, and being a person |
 | Apply | `pipelines.edit`, and being a person |
 | Decline | `pipelines.edit`, or having proposed it (withdraw) |
 
