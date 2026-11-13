@@ -525,6 +525,11 @@ var (
 )
 
 // InitJWTSecret loads the signing secret if it is not loaded yet: from
+// JWTSecretFilePath is where the JWT signing secret is read from and
+// persisted to when BROKOLI_JWT_SECRET is not set: a file in the working
+// directory. Exported so the server can keep file nodes away from it.
+const JWTSecretFilePath = ".brokoli-jwt-secret"
+
 // BROKOLI_JWT_SECRET, else from .brokoli-jwt-secret, else a new random one
 // persisted there so tokens survive restarts.
 func InitJWTSecret() {
@@ -555,13 +560,13 @@ func loadJWTSecret() []byte {
 		return []byte(s)
 	}
 	// Try to read from file next to the binary
-	if data, err := os.ReadFile(".brokoli-jwt-secret"); err == nil && len(data) >= 32 {
+	if data, err := os.ReadFile(JWTSecretFilePath); err == nil && len(data) >= 32 {
 		return data[:32]
 	}
 	// Generate and persist so tokens survive restarts
 	b := make([]byte, 32)
 	rand.Read(b)
-	if err := os.WriteFile(".brokoli-jwt-secret", b, 0600); err != nil {
+	if err := os.WriteFile(JWTSecretFilePath, b, 0600); err != nil {
 		log.Printf("WARNING: failed to persist JWT secret: %v", err)
 	}
 	return b

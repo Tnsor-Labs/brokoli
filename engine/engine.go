@@ -372,6 +372,11 @@ func NewEngine(s store.Store) *Engine {
 	if checkpointDir == "" {
 		checkpointDir = "./brokoli-pagination-checkpoints"
 	}
+	// These hold run data and pagination cursors. They often sit in the
+	// working directory, which is a data directory by default, so mark
+	// them off-limits to file nodes regardless of BROKOLI_DATA_DIRS.
+	common.ProtectServerPath(artifactDir)
+	common.ProtectServerPath(checkpointDir)
 	return &Engine{
 		store: s,
 		// Always present, not only under serve: the connection-pool
