@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.23.0] - 2026-11-13
+
+A security and permissions release. Open-source routes now grant exactly
+what the caller's role lists rather than deciding by role name, so what an
+editor and a viewer may do changes -- the role-grants and bulk-action
+permission entries under Changed are the ones to read before upgrading.
+Three fixes keep secrets where they belong: a pipeline's file nodes can no
+longer reach the server's own database, encryption key, signing secret or
+artifact store; a failed run's error is redacted wherever it is returned;
+and those server secrets never reach a child process, even with
+`BROKOLI_CODE_PASS_ENV=*`. The rest is the fan-out performance work behind a
+node mapped over many items, and a server now advertises in its
+capabilities whether, and where, it can map.
+
 ### Added
 
 - **Servers say whether they can map** -- @hc12r. `GET /api/capabilities`
