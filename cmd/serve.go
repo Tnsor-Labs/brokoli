@@ -21,6 +21,7 @@ import (
 	"github.com/Tnsor-Labs/brokoli/engine"
 	"github.com/Tnsor-Labs/brokoli/extensions"
 	"github.com/Tnsor-Labs/brokoli/models"
+	"github.com/Tnsor-Labs/brokoli/pkg/common"
 	"github.com/Tnsor-Labs/brokoli/pkg/drivers"
 	"github.com/Tnsor-Labs/brokoli/pkg/identity"
 	"github.com/Tnsor-Labs/brokoli/pkg/netguard"
@@ -160,6 +161,15 @@ var serveCmd = &cobra.Command{
 		defer s.Close()
 		log.Printf("Database: %s", store.Describe(dbPath))
 		warnIfSQLiteMultiInstanceRisk(dbPath, RunMode)
+
+		// Keep the server's own state out of reach of pipeline file
+		// nodes, whatever BROKOLI_DATA_DIRS allows: the metadata database,
+		// the encryption key that decrypts stored credentials, and the
+		// JWT signing secret. The engine protects its artifact and
+		// checkpoint directories itself.
+		common.ProtectSQLiteDatabase(dbPath)
+		common.ProtectServerPath(encryptionKeyPath(dbPath))
+		common.ProtectServerPath(api.JWTSecretFilePath)
 
 		eng := engine.NewEngine(s)
 		// Native ADBC drivers load only in a one-shot `worker task` child of

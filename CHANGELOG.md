@@ -96,6 +96,21 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A pipeline's file nodes cannot reach the server's own state** --
+  @hc12r. A data directory may be, and by default is, the working
+  directory, which is also where the server keeps its SQLite database, the
+  encryption key that decrypts every stored credential, the JWT signing
+  secret, and the artifact store holding every run's node outputs. Those
+  paths passed the data-directory check like any other file, so a
+  `source_file` node could read the key and a `sink_file` node could
+  overwrite it. These paths are now refused to file nodes whatever
+  `BROKOLI_DATA_DIRS` allows, including through a symlink inside a data
+  directory that points at one of them. An ordinary file beside them still
+  works. Author code running as its own user
+  (`BROKOLI_USER_CODE_UIDS`) was already walled off from them at the
+  filesystem; this closes the same gap for a server that runs code as
+  itself.
+
 - **A failed run's error is redacted wherever it is returned** -- @hc12r.
   A run masks the credentials it resolved in everything it records: its
   error, logs, events, alerts and hooks. The error it returned to whoever

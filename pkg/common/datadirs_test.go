@@ -200,3 +200,121 @@ func TestMkdirAllCreatesAMissingDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A file node must not reach the server's own state even when it sits in
+// a data directory, which by default includes the working directory.
+func TestServerStateIsRefusedToFileNodes(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BROKOLI_DATA_DIRS", dir)
+
+	protectedMu.Lock()
+	saved := protectedPaths
+	protectedPaths = nil
+	protectedMu.Unlock()
+	t.Cleanup(func() {
+		protectedMu.Lock()
+		protectedPaths = saved
+		protectedMu.Unlock()
+	})
+
+	key := filepath.Join(dir, "brokoli.db.key")
+	if err := os.WriteFile(key, []byte("0123456789abcdef0123456789abcdef"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PathAllowed(key); err != nil {
+		t.Fatalf("precondition: the key is reachable before it is protected: %v", err)
+	}
+
+	ProtectServerPath(key)
+
+	if _, err := SafeOpenFile(key); err == nil {
+		t.Error("a file node could open the protected key file")
+	}
+	if err := PathAllowed(key); err == nil {
+		t.Error("PathAllowed accepted the protected key file")
+	}
+	if err := SafeWriteFile(key, []byte("x"), 0o600); err == nil {
+		t.Error("a file node could overwrite the protected key file")
+	}
+
+	// A symlink inside the data directory that points at the key is caught
+	// too: the resolved path is what matters.
+	link := filepath.Join(dir, "innocent.csv")
+	if err := os.Symlink(key, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SafeOpenFile(link); err == nil {
+		t.Error("a symlink to the protected key file was followed")
+	}
+
+	// An ordinary file beside it still works.
+	ok := filepath.Join(dir, "data.csv")
+	if err := os.WriteFile(ok, []byte("a\n1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := PathAllowed(ok); err != nil {
+		t.Errorf("an ordinary file beside protected state must still work: %v", err)
+	}
+}
+
+func TestProtectSQLiteDatabaseCoversSidecarsAndSkipsURLs(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BROKOLI_DATA_DIRS", dir)
+
+	protectedMu.Lock()
+	saved := protectedPaths
+	protectedPaths = nil
+	protectedMu.Unlock()
+	t.Cleanup(func() {
+		protectedMu.Lock()
+		protectedPaths = saved
+		protectedMu.Unlock()
+	})
+
+	db := filepath.Join(dir, "brokoli.db")
+	ProtectSQLiteDatabase(db)
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := PathAllowed(db + suffix); err == nil {
+			t.Errorf("%q should be protected", db+suffix)
+		}
+	}
+	// A connection URL is not a local file: nothing to protect, no panic.
+	ProtectSQLiteDatabase("postgres://user:pw@host/db")
+}
+
+// Writing an ordinary file whose parent directory also contains a
+// protected directory still works: the artifact and checkpoint
+// directories live inside a data directory by default, so refusing every
+// ancestor of a protected path would refuse ordinary sink output.
+func TestAnAncestorOfAProtectedDirIsStillWritable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("BROKOLI_DATA_DIRS", dir)
+
+	protectedMu.Lock()
+	saved := protectedPaths
+	protectedPaths = nil
+	protectedMu.Unlock()
+	t.Cleanup(func() {
+		protectedMu.Lock()
+		protectedPaths = saved
+		protectedMu.Unlock()
+	})
+
+	// The artifact directory sits inside the data directory, as it does by
+	// default (./brokoli-artifacts under the working directory).
+	ProtectServerPath(filepath.Join(dir, "brokoli-artifacts"))
+
+	// A sink writing an ordinary file in the data directory must work,
+	// even though that directory also contains the protected one.
+	out := filepath.Join(dir, "report.csv")
+	if err := PathAllowed(out); err != nil {
+		t.Errorf("an ordinary file beside a protected directory must be writable: %v", err)
+	}
+	if err := MkdirAllInDataDir(dir, 0o755); err != nil {
+		t.Errorf("creating the data directory itself must work: %v", err)
+	}
+	// Anything inside the protected directory is still refused.
+	if err := PathAllowed(filepath.Join(dir, "brokoli-artifacts", "blob")); err == nil {
+		t.Error("a file inside the protected directory was allowed")
+	}
+}
