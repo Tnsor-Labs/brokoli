@@ -59,7 +59,9 @@ func TestRunRedactionSet(t *testing.T) {
 
 // End to end: a connection's stored, encrypted credential is resolved for
 // a run, the target echoes it back in its error, and nothing the run
-// records -- node log, node error, run error, events -- carries it.
+// records -- node log, node error, run error, events -- carries it, nor
+// does the error the run returns to whoever started it: an API caller, or
+// a webhook's sender, who holds only the webhook's token.
 func TestRunDoesNotRecordResolvedCredentials(t *testing.T) {
 	const token = "sk-live-9f8e7d6c5b4a3f2e1d0c"
 	const password = "hunter2-correct-horse"
@@ -107,14 +109,17 @@ func TestRunDoesNotRecordResolvedCredentials(t *testing.T) {
 	enc := secrets.NewEncryptedResolver(key)
 	eng := drainEngineOnCleanup(t, NewEngine(st))
 	eng.ConnResolver = NewConnectionResolver(st, secrets.NewChain(enc, enc))
-	run, _ := eng.RunPipeline(pipe.ID)
+	run, runErr := eng.RunPipeline(pipe.ID)
 	if run == nil {
 		t.Fatal("no run")
+	}
+	if runErr == nil {
+		t.Fatalf("the run did not fail (status %s), so this proves nothing", run.Status)
 	}
 
 	var recorded []string
 	got, _ := st.GetRun(run.ID)
-	recorded = append(recorded, "run.error: "+got.Error)
+	recorded = append(recorded, "run.error: "+got.Error, "returned error: "+runErr.Error())
 	logs, _ := st.GetLogs(run.ID)
 	for _, l := range logs {
 		recorded = append(recorded, "log: "+l.Message)

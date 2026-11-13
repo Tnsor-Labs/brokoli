@@ -96,6 +96,15 @@ reconstruct from git archaeology.
 
 ### Fixed
 
+- **A failed run's error is redacted wherever it is returned** -- @hc12r.
+  A run masks the credentials it resolved in everything it records: its
+  error, logs, events, alerts and hooks. The error it returned to whoever
+  started it was the original text, though. So a webhook trigger's caller,
+  who holds only the pipeline's webhook token, could receive in the 500
+  response a credential that a failing target had echoed back. The same
+  text went to the OpenLineage endpoint as the run's failure. Both now
+  get the redacted message the run records.
+
 - **User code never receives the server's encryption key, signing secret
   or database URL** -- @hc12r. `${env.*}` and `env://` references already
   refused `BROKOLI_ENCRYPTION_KEY`, `BROKOLI_JWT_SECRET`, `BROKOLI_DB_URL`
