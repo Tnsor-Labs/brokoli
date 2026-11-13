@@ -21,6 +21,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/pkg/archiveextract"
@@ -226,10 +227,42 @@ func parseMinVersion(constraint string) (major, minor int, ok bool) {
 // probeVersion runs "<bin> <versionArg>" and extracts a major.minor from
 // the first dotted numeric token in the output. node prints "v20.11.1";
 // java prints 'openjdk version "17.0.2"' (to stderr, hence combined).
+// probeCache memoizes probeVersion by the resolved binary's identity, so a
+// runtime's version is read once per distinct binary rather than on every
+// task attempt that resolves it (a task node resolves its interpreter for
+// the execution-environment digest and again for the harness). Keyed by
+// path + size + mtime, so a replaced runtime is still probed afresh.
+// See issue #1038.
+type probeCacheKey struct {
+	path  string
+	arg   string
+	size  int64
+	mtime int64
+}
+
+type probeCacheValue struct {
+	major int
+	minor int
+}
+
+var (
+	probeCacheMu sync.Mutex
+	probeCache   = map[probeCacheKey]probeCacheValue{}
+)
+
 func probeVersion(bin, versionArg string) (string, int, int, error) {
 	path, err := exec.LookPath(bin)
 	if err != nil {
 		return "", 0, 0, fmt.Errorf("%s not found on PATH", bin)
+	}
+	key, keyed := probeVersionKey(path, versionArg)
+	if keyed {
+		probeCacheMu.Lock()
+		cached, hit := probeCache[key]
+		probeCacheMu.Unlock()
+		if hit {
+			return path, cached.major, cached.minor, nil
+		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -241,7 +274,20 @@ func probeVersion(bin, versionArg string) (string, int, int, error) {
 	if !ok {
 		return "", 0, 0, fmt.Errorf("unrecognized %s version output %q", bin, strings.TrimSpace(string(out)))
 	}
+	if keyed {
+		probeCacheMu.Lock()
+		probeCache[key] = probeCacheValue{major: major, minor: minor}
+		probeCacheMu.Unlock()
+	}
 	return path, major, minor, nil
+}
+
+func probeVersionKey(path, versionArg string) (probeCacheKey, bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return probeCacheKey{}, false
+	}
+	return probeCacheKey{path: path, arg: versionArg, size: fi.Size(), mtime: fi.ModTime().UnixNano()}, true
 }
 
 func firstDottedVersion(s string) (major, minor int, ok bool) {

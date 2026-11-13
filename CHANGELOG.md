@@ -11,6 +11,20 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Changed
+
+- **A task node reads its runtime's version once, not on every run** --
+  @hc12r. Before a run's first attempt a task node resolved its runtime
+  three times only to read the version, and once more on every later
+  attempt. For a JVM task each resolve is a full `java -version` boot, so a
+  no-op JVM node paid about 100ms of its time on versions it had already
+  read. The version is now cached per resolved binary, keyed by its path,
+  size and modification time, so a replaced runtime is still read afresh;
+  after the first run a task node starts no extra process to read it. The
+  resolved-execution environment digest is unchanged -- the same version
+  string, read once rather than each time. Found by @DarzVadckawy while
+  benchmarking the JVM runtime. (#1038)
+
 ## [0.23.0] - 2026-11-13
 
 A security and permissions release. Open-source routes now grant exactly
