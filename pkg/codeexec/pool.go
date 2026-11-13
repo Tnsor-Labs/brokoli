@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -34,11 +36,15 @@ type Pool struct {
 	maxExecs   int
 	idleAfter  time.Duration
 	queueAtCap bool
-	sockDir    string
-	boots      atomic.Int64
-	janitor    sync.Once
-	closed     bool
-	waiters    []chan struct{}
+	// overflowWait is how long an execution that finds every pooled
+	// worker busy waits for one to come free before spawning a one-shot
+	// worker; see acquire.
+	overflowWait time.Duration
+	sockDir      string
+	boots        atomic.Int64
+	janitor      sync.Once
+	closed       bool
+	waiters      []chan struct{}
 }
 
 type subPool struct {
@@ -90,18 +96,27 @@ func NewPool() *Pool {
 	if idle <= 0 {
 		idle = 5 * time.Minute
 	}
+	// A wait of about one worker start. Negative or unparsable means the
+	// default; 0 spawns at once, as before the wait existed.
+	overflowWait := 100 * time.Millisecond
+	if v, ok := os.LookupEnv("BROKOLI_CODE_POOL_OVERFLOW_WAIT_MS"); ok {
+		if ms, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && ms >= 0 {
+			overflowWait = time.Duration(ms) * time.Millisecond
+		}
+	}
 	dir, err := os.MkdirTemp(os.TempDir(), "brokoli-codeexec-")
 	if err != nil {
 		dir = os.TempDir()
 	}
 	_ = os.Chmod(dir, 0o700) // #nosec G302 -- a directory (Unix sockets live here): the execute bit is required to enter it, and 0700 is the minimal mode that works.
 	return &Pool{
-		subs:       map[string]*subPool{},
-		maxWorkers: maxWorkers,
-		maxExecs:   maxExecs,
-		idleAfter:  idle,
-		queueAtCap: os.Getenv("BROKOLI_CODE_POOL_QUEUE") == "1",
-		sockDir:    dir,
+		subs:         map[string]*subPool{},
+		maxWorkers:   maxWorkers,
+		maxExecs:     maxExecs,
+		idleAfter:    idle,
+		queueAtCap:   os.Getenv("BROKOLI_CODE_POOL_QUEUE") == "1",
+		overflowWait: overflowWait,
+		sockDir:      dir,
 	}
 }
 
@@ -149,6 +164,7 @@ func (p *Pool) acquire(ctx context.Context, tenant, language, interpreter string
 		return w, false, nil
 	}
 	key := subKey(tenant, language, interpreter, limits, bundleDigest)
+	var overflowDeadline time.Time
 	for {
 		p.mu.Lock()
 		if p.closed {
@@ -181,6 +197,35 @@ func (p *Pool) acquire(ctx context.Context, tenant, language, interpreter string
 			return w, false, nil
 		}
 		if !p.queueAtCap {
+			// Every pooled worker is busy. Spawning a one-shot worker costs
+			// an interpreter start, about 100ms, while a short execution
+			// frees a pooled worker in a few: a node mapped over many items
+			// spent most of its waiting starting interpreters (#967
+			// benchmark). So wait up to overflowWait for one, then spawn.
+			// The wait is bounded, so a long-running execution holding
+			// every worker still delays another by at most overflowWait,
+			// and N concurrent executions still get N interpreters.
+			if overflowDeadline.IsZero() {
+				overflowDeadline = time.Now().Add(p.overflowWait)
+			}
+			if left := time.Until(overflowDeadline); left > 0 {
+				waiter := make(chan struct{}, 1)
+				p.waiters = append(p.waiters, waiter)
+				p.mu.Unlock()
+				timer := time.NewTimer(left)
+				select {
+				case <-waiter:
+					timer.Stop()
+					continue
+				case <-timer.C:
+				case <-ctx.Done():
+					timer.Stop()
+					p.dropWaiter(waiter)
+					return nil, false, ctx.Err()
+				}
+				p.dropWaiter(waiter)
+				continue
+			}
 			p.mu.Unlock()
 			// Overflow: same protocol, one execution, exits by itself.
 			w, err := spawnWorker(ctx, language, interpreter, limits, p.sockDir, true)
@@ -227,6 +272,23 @@ func (p *Pool) release(w *Worker, tenant, language, interpreter string, limits L
 	p.subs[key].idle = append(p.subs[key].idle, w)
 	p.notifyWaiterLocked()
 	p.mu.Unlock()
+}
+
+// dropWaiter removes a waiter that stopped waiting (timed out or
+// cancelled), so a release does not wake it in place of one still
+// waiting. If a release closed it meanwhile, that wake-up is passed on.
+func (p *Pool) dropWaiter(waiter chan struct{}) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for i, w := range p.waiters {
+		if w == waiter {
+			p.waiters = append(p.waiters[:i], p.waiters[i+1:]...)
+			return
+		}
+	}
+	// Not in the list: a release already closed it, for us. Hand that
+	// wake-up to the next waiter so it is not lost.
+	p.notifyWaiterLocked()
 }
 
 func (p *Pool) notifyWaiterLocked() {
