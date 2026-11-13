@@ -2270,8 +2270,22 @@ func (r *Runner) failRun(err error) error {
 			return fmt.Errorf("run failed: %v; persist dlq entry: %w", msg, dlqErr)
 		}
 	}
-	return err
+	// The error goes back to whoever started the run -- the API caller,
+	// a webhook's sender holding only its token, the OpenLineage
+	// endpoint -- so it reads as the redacted message too. It still
+	// unwraps to err, so errors.Is and errors.As see what happened.
+	return &redactedRunError{msg: msg, err: err}
 }
+
+// redactedRunError is a failed run's error as it leaves the runner: the
+// message its run row records, wrapping the original for errors.Is/As.
+type redactedRunError struct {
+	msg string
+	err error
+}
+
+func (e *redactedRunError) Error() string { return e.msg }
+func (e *redactedRunError) Unwrap() error { return e.err }
 
 func (r *Runner) emit(e models.Event) {
 	e.Timestamp = time.Now().UTC()
