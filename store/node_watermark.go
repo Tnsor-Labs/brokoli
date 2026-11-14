@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-// Incremental node state (#, EE-ADR-016): the high-water mark a node has
+// Incremental node state: the high-water mark a node has
 // read its source up to, so the next run reads only rows past it. Keyed by
 // the pipeline and node, so it persists across runs. Today the migrate node
 // uses it for cursor-incremental reads; the value is the string form of the

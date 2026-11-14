@@ -24,7 +24,7 @@ reconstruct from git archaeology.
   upsert, and a store that cannot keep a mark (an API-only worker) falls
   back to a full read rather than failing. To make the destination
   upsertable, a migrate that creates its table now gives it a `PRIMARY KEY`
-  over `key_columns`. (EE-ADR-016)
+  over `key_columns`.
 
 ### Changed
 
