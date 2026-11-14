@@ -590,6 +590,23 @@ func validateNodeConfig(n models.Node, ve *ValidationError) {
 				ve.Add(fmt.Sprintf("Node %q: partitioned migrate requires create_table=false", n.Name))
 			}
 		}
+		if boolConfig(n.Config["incremental"]) {
+			cursor := getStr(n.Config, "cursor_column")
+			if cursor == "" {
+				ve.Add(fmt.Sprintf("Node %q: incremental migrate requires 'cursor_column'", n.Name))
+			} else if !cursorIdentifier.MatchString(cursor) {
+				ve.Add(fmt.Sprintf("Node %q: cursor_column %q must be a simple column name", n.Name, cursor))
+			}
+			if !strings.EqualFold(getStr(n.Config, "mode"), ModeUpsert) {
+				ve.Add(fmt.Sprintf("Node %q: incremental migrate requires mode=upsert so re-read rows are not duplicated", n.Name))
+			}
+			if len(configStringSlice(n.Config["key_columns"])) == 0 {
+				ve.Add(fmt.Sprintf("Node %q: incremental migrate requires key_columns", n.Name))
+			}
+			if _, partitioned := n.Config["partition"]; partitioned {
+				ve.Add(fmt.Sprintf("Node %q: incremental and partitioned migrate cannot be combined", n.Name))
+			}
+		}
 	case models.NodeTypeUnion:
 		if mode := getStr(n.Config, "mode"); mode != "" && mode != "union" {
 			ve.Add(fmt.Sprintf("Node %q: union only supports mode=\"union\" (got %q)", n.Name, mode))

@@ -90,6 +90,7 @@ func (s *SQLiteStore) migrations() []migration {
 		{version: 1, name: "baseline", baseline: s.migrateBaseline},
 		{version: 2, name: "fixed-width timestamps", apply: rewriteTimestamps},
 		{version: 3, name: "run indexes", apply: addRunIndexes},
+		{version: 4, name: "node watermarks", apply: addNodeWatermarksSQLite},
 	}
 }
 

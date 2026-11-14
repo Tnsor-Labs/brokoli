@@ -660,7 +660,7 @@ func (d dialect) createTableHead(table string) string {
 	}
 }
 
-func (d dialect) createTable(table string, columns []string, types map[string]string) string {
+func (d dialect) createTable(table string, columns []string, types map[string]string, keyColumns []string) string {
 	var sb strings.Builder
 	sb.WriteString(d.createTableHead(table) + " (\n")
 	for i, col := range columns {
@@ -669,10 +669,19 @@ func (d dialect) createTable(table string, columns []string, types map[string]st
 			sqlType = "TEXT"
 		}
 		sb.WriteString(fmt.Sprintf("  %s %s", d.quoteIdent(col), sqlType))
-		if i < len(columns)-1 {
+		if i < len(columns)-1 || len(keyColumns) > 0 {
 			sb.WriteString(",")
 		}
 		sb.WriteString("\n")
+	}
+	// A key makes the table upsertable: an ON CONFLICT / ON DUPLICATE KEY
+	// write needs a PRIMARY KEY or UNIQUE on these columns to merge on.
+	if len(keyColumns) > 0 {
+		quoted := make([]string, len(keyColumns))
+		for i, k := range keyColumns {
+			quoted[i] = d.quoteIdent(k)
+		}
+		sb.WriteString("  PRIMARY KEY (" + strings.Join(quoted, ", ") + ")\n")
 	}
 	sb.WriteString(")" + d.createTableSuffix + d.terminator)
 	return sb.String()

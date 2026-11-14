@@ -366,7 +366,7 @@ func TestNoCarriedTypesRendersTheOldDDLExactly(t *testing.T) {
 	}
 	for _, name := range []string{"postgres", "mysql", "sqlite"} {
 		d := getDialect(name)
-		want := d.createTable("t", ds.Columns, inferTypes(ds.Columns, ds.Rows))
+		want := d.createTable("t", ds.Columns, inferTypes(ds.Columns, ds.Rows), nil)
 
 		got, err := createTableDDL(d, SQLGenConfig{Dialect: name, Table: "t"}, ds)
 		if err != nil {
