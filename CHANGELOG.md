@@ -11,6 +11,22 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **A migrate reconciles an existing destination before writing** -- @hc12r.
+  When `create_table` is set and the destination table already exists, a
+  migrate now adds the columns the source has gained and the table lacks
+  (never dropping or retyping one), and for an upsert makes sure a unique
+  key covers `key_columns` -- adding one where the dialect can (a UNIQUE
+  constraint on Postgres and MySQL, a unique index on SQLite, which an
+  upsert's `ON CONFLICT` reads the same way) and refusing with a clear,
+  actionable error where it cannot or where the existing rows would not
+  permit it. Before, `create_table` only ran `CREATE TABLE IF NOT EXISTS`,
+  so an incremental sync onto a table without the right key failed with a
+  bare `ON CONFLICT ... no unique or primary key` from the driver, and a
+  source that gained a column failed the load. A table the backend cannot
+  introspect is left untouched, so every other path is unchanged.
+
 ## [0.24.0] - 2026-11-14
 
 Two refinements to the `migrate` node. A migrate can now read

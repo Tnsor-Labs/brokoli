@@ -1748,6 +1748,14 @@ func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt
 	typedDDL := ""
 	if createTable {
 		srcTypes, _, haveTypes := sourceColumnTypes(ctx, sourceURI, sourceQuery, sourceArgs...)
+		// Reconcile an existing destination before writing: add the columns
+		// the source has gained, and make sure an upsert has a unique key to
+		// merge on. A destination that is not there yet is a no-op here and
+		// is created by the DDL below.
+		inferred := inferTypes(sourceDS.Columns, sourceDS.Rows)
+		if err := r.reconcileDestSchema(ctx, node, destURI, getDialect(dialect), destTable, sourceDS.Columns, srcTypes, inferred, mode, keyColumns); err != nil {
+			return nil, fmt.Errorf("migrate: %w", err)
+		}
 		if haveTypes {
 			tableEngine, _ := node.Config["table_engine"].(string)
 			// Create the table with a key when the write upserts, so the
