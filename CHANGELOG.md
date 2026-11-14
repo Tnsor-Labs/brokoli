@@ -11,6 +11,16 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.24.0] - 2026-11-14
+
+Two refinements to the `migrate` node. A migrate can now read
+**incrementally**: with a `cursor_column` (and `mode: upsert` plus
+`key_columns`) it reads only the rows at or past the high-water mark it
+recorded last run and upserts them, instead of copying the whole source
+every time. And a `task` node reads its runtime's version once and caches
+it, so a JVM task no longer pays a `java -version` boot on every attempt.
+No behaviour changes to read before upgrading.
+
 ### Added
 
 - **A migrate node can read incrementally, keeping a high-water mark
