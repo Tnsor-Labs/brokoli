@@ -11,6 +11,21 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **A migrate node can read incrementally, keeping a high-water mark
+  between runs** -- @hc12r. Set `incremental: true` and `cursor_column` on a
+  migrate node (with `mode: upsert` and `key_columns`), and each run reads
+  only rows at or past the maximum cursor value the last run saw, upserting
+  them, rather than copying the whole source every time. The mark is stored
+  per pipeline and node in a new `node_watermarks` table and advances only
+  after a run writes successfully; the first run reads in full and records
+  the mark. A re-read of the boundary row is safe because the write is an
+  upsert, and a store that cannot keep a mark (an API-only worker) falls
+  back to a full read rather than failing. To make the destination
+  upsertable, a migrate that creates its table now gives it a `PRIMARY KEY`
+  over `key_columns`. (EE-ADR-016)
+
 ### Changed
 
 - **A task node reads its runtime's version once, not on every run** --

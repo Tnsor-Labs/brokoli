@@ -91,6 +91,7 @@ func createTableFromSourceTypes(
 	table string,
 	columns []string,
 	types map[string]dbdialect.ColumnType,
+	keyColumns []string,
 ) (string, error) {
 	d, ok := dbdialect.For(destDialect)
 	if !ok {
@@ -120,10 +121,19 @@ func createTableFromSourceTypes(
 		if !ct.Nullable {
 			sb.WriteString(" NOT NULL")
 		}
-		if i < len(columns)-1 {
+		if i < len(columns)-1 || len(keyColumns) > 0 {
 			sb.WriteString(",")
 		}
 		sb.WriteString("\n")
+	}
+	// A key makes the table upsertable: an ON CONFLICT / ON DUPLICATE KEY
+	// write needs a PRIMARY KEY or UNIQUE on these columns to merge on.
+	if len(keyColumns) > 0 {
+		quoted := make([]string, len(keyColumns))
+		for i, k := range keyColumns {
+			quoted[i] = d.QuoteIdent(k)
+		}
+		sb.WriteString("  PRIMARY KEY (" + strings.Join(quoted, ", ") + ")\n")
 	}
 	dd2 := getDialect(destDialect)
 	if tableEngine != "" && dd2.createTableSuffix != "" {
@@ -153,9 +163,15 @@ func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, er
 	if cfg.TableEngine != "" && d.createTableSuffix != "" {
 		d.createTableSuffix = " ENGINE = " + cfg.TableEngine
 	}
+	// An upsert needs a key to merge on, so the created table carries a
+	// PRIMARY KEY over key_columns.
+	var keys []string
+	if strings.EqualFold(cfg.Mode, ModeUpsert) {
+		keys = cfg.KeyColumns
+	}
 	inferred := inferTypes(ds.Columns, ds.Rows)
 	if !cfg.ColumnTypes.anyKnown(ds.Columns) {
-		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+		return d.createTable(cfg.Table, ds.Columns, inferred, keys), nil
 	}
 
 	// Rendering canonical types needs the dialect that owns them. Without
@@ -163,11 +179,11 @@ func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, er
 	// the caller asked for a table, not for a lecture about capabilities.
 	dd, ok := dbdialect.For(cfg.Dialect)
 	if !ok {
-		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+		return d.createTable(cfg.Table, ds.Columns, inferred, keys), nil
 	}
 	renderer, ok := dd.(dbdialect.TypeRenderer)
 	if !ok {
-		return d.createTable(cfg.Table, ds.Columns, inferred), nil
+		return d.createTable(cfg.Table, ds.Columns, inferred, keys), nil
 	}
 
 	var sb strings.Builder
@@ -201,10 +217,17 @@ func createTableDDL(d dialect, cfg SQLGenConfig, ds *common.DataSet) (string, er
 		if notNull {
 			sb.WriteString(" NOT NULL")
 		}
-		if i < len(ds.Columns)-1 {
+		if i < len(ds.Columns)-1 || len(keys) > 0 {
 			sb.WriteString(",")
 		}
 		sb.WriteString("\n")
+	}
+	if len(keys) > 0 {
+		quoted := make([]string, len(keys))
+		for i, k := range keys {
+			quoted[i] = d.quoteIdent(k)
+		}
+		sb.WriteString("  PRIMARY KEY (" + strings.Join(quoted, ", ") + ")\n")
 	}
 	sb.WriteString(")" + d.createTableSuffix + d.terminator)
 	return sb.String(), nil

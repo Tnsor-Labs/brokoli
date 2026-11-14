@@ -1605,7 +1605,7 @@ func (r *Runner) runSinkAPI(ctx context.Context, node models.Node, input *common
 
 // ── DB-to-DB Migration ──────────────────────────────────────
 
-func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt int) (*common.DataSet, error) {
+func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt int) (result *common.DataSet, retErr error) {
 	// Resolve source connection
 	sourceURI, _ := node.Config["source_uri"].(string)
 	if sourceConnID, _ := node.Config["source_conn_id"].(string); sourceConnID != "" && r.connResolver != nil {
@@ -1657,6 +1657,25 @@ func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt
 		chunkSize = int(cs)
 	}
 	createTable, _ := node.Config["create_table"].(bool)
+
+	// Cursor-incremental read: filter the source to rows past the
+	// high-water mark of the last run, and advance that mark once this run
+	// has written. The write-back happens in a defer so it runs after any
+	// of the copy paths below, and only when they succeeded.
+	if boolConfig(node.Config["incremental"]) {
+		if cursorCol := getStr(node.Config, "cursor_column"); cursorCol != "" {
+			filtered, save, err := r.prepareIncrementalMigrate(ctx, node, sourceURI, sourceQuery, cursorCol)
+			if err != nil {
+				return nil, fmt.Errorf("migrate incremental: %w", err)
+			}
+			sourceQuery = filtered
+			defer func() {
+				if retErr == nil && save != nil {
+					save()
+				}
+			}()
+		}
+	}
 
 	redactedSourceURI := redactURI(sourceURI)
 	r.log(node.ID, models.LogLevelInfo, "Migration: %s → %s.%s (chunk size: %d)", redactedSourceURI[:min(40, len(redactedSourceURI))], destTable, dialect, chunkSize)
@@ -1731,7 +1750,13 @@ func (r *Runner) runMigrateSingle(ctx context.Context, node models.Node, attempt
 		srcTypes, _, haveTypes := sourceColumnTypes(ctx, sourceURI, sourceQuery, sourceArgs...)
 		if haveTypes {
 			tableEngine, _ := node.Config["table_engine"].(string)
-			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes)
+			// Create the table with a key when the write upserts, so the
+			// merge has a PRIMARY KEY to conflict on.
+			var ddlKeys []string
+			if strings.EqualFold(mode, ModeUpsert) {
+				ddlKeys = keyColumns
+			}
+			ddl, err := createTableFromSourceTypes(dialect, tableEngine, destTable, sourceDS.Columns, srcTypes, ddlKeys)
 			if err != nil {
 				return nil, fmt.Errorf("migrate: %w", err)
 			}

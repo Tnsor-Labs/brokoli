@@ -423,6 +423,16 @@ func (s *PostgresStore) migrateBaseline() error {
 	)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_profiles ON node_profiles(run_id)`)
 
+	// Incremental node state (the high-water mark a migrate node has read
+	// up to); see the SQLite schema for the rationale.
+	s.db.Exec(`CREATE TABLE IF NOT EXISTS node_watermarks (
+		pipeline_id TEXT NOT NULL,
+		node_id TEXT NOT NULL,
+		value TEXT NOT NULL,
+		updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (pipeline_id, node_id)
+	)`)
+
 	// Runs table additions
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS org_id TEXT NOT NULL DEFAULT 'default'`)
 	s.db.Exec(`ALTER TABLE runs ADD COLUMN IF NOT EXISTS error TEXT NOT NULL DEFAULT ''`)

@@ -110,7 +110,7 @@ func TestCreateTableDDLDoesNothingWhenTheTableExists(t *testing.T) {
 		"generic": `CREATE TABLE "t" (`,
 	} {
 		d := getDialect(dialectName)
-		if got := d.createTable("t", []string{"a"}, map[string]string{"a": "INTEGER"}); !strings.HasPrefix(got, want) {
+		if got := d.createTable("t", []string{"a"}, map[string]string{"a": "INTEGER"}, nil); !strings.HasPrefix(got, want) {
 			t.Errorf("%s inferred DDL = %q, want it to start %q", dialectName, got, want)
 		}
 	}
