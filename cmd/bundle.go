@@ -123,7 +123,7 @@ the bundle root comes first, so plain class files need no extra flags.`,
 		fmt.Fprintf(cmd.OutOrStdout(), "digest: %s\n", digest)
 		fmt.Fprintf(cmd.OutOrStdout(), "files:  %d\n", len(files))
 		fmt.Fprintf(cmd.OutOrStdout(), "\nUpload it, then reference the digest from a task node:\n")
-		fmt.Fprintf(cmd.OutOrStdout(), "  curl -X POST --data-binary @%s $BROKOLI_URL/api/task-bundles/%s\n", out, digest)
+		fmt.Fprintf(cmd.OutOrStdout(), "  curl -X POST --data-binary @%s $BROKOLI_URL/api/task-bundles-v2/%s\n", out, digest)
 		return nil
 	},
 }

@@ -146,7 +146,15 @@ func (vc *VariableContext) resolveReference(key string) string {
 		}
 		return ""
 	case "secret":
-		// Secrets resolve from env vars with BROKED_SECRET_ prefix
+		// Secrets resolve from an env var with a BROKOLI_SECRET_ prefix.
+		// The prefix was misspelled BROKED_SECRET_ before; the old spelling
+		// is still read so an operator who set it keeps working, with the
+		// correct one preferred. (This env-backed path predates the
+		// env://, vault:// and k8s:// secret references, which are the
+		// modern way to back a secret.)
+		if v, ok := vc.Env["BROKOLI_SECRET_"+strings.ToUpper(name)]; ok {
+			return v
+		}
 		if v, ok := vc.Env["BROKED_SECRET_"+strings.ToUpper(name)]; ok {
 			return v
 		}

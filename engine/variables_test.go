@@ -50,13 +50,34 @@ func TestResolve_RunDate(t *testing.T) {
 }
 
 func TestResolve_Secret(t *testing.T) {
-	os.Setenv("BROKED_SECRET_DB_PASSWORD", "s3cret")
-	defer os.Unsetenv("BROKED_SECRET_DB_PASSWORD")
+	t.Setenv("BROKOLI_SECRET_DB_PASSWORD", "s3cret")
 
 	vc := NewVariableContext(nil, "run-1", time.Now())
 	result := vc.Resolve("postgres://user:${secret.db_password}@host/db")
 	if result != "postgres://user:s3cret@host/db" {
 		t.Errorf("expected resolved secret, got %q", result)
+	}
+}
+
+// The prefix was misspelled BROKED_SECRET_ before #1034; it is still read
+// so an operator who set the old name keeps working.
+func TestResolve_Secret_LegacyPrefix(t *testing.T) {
+	t.Setenv("BROKED_SECRET_DB_PASSWORD", "legacy")
+
+	vc := NewVariableContext(nil, "run-1", time.Now())
+	if got := vc.Resolve("${secret.db_password}"); got != "legacy" {
+		t.Errorf("legacy BROKED_SECRET_ prefix did not resolve, got %q", got)
+	}
+}
+
+// With both spellings set, the correct BROKOLI_SECRET_ one wins.
+func TestResolve_Secret_PrefersCorrectPrefix(t *testing.T) {
+	t.Setenv("BROKED_SECRET_DB_PASSWORD", "legacy")
+	t.Setenv("BROKOLI_SECRET_DB_PASSWORD", "current")
+
+	vc := NewVariableContext(nil, "run-1", time.Now())
+	if got := vc.Resolve("${secret.db_password}"); got != "current" {
+		t.Errorf("expected the BROKOLI_SECRET_ value to win, got %q", got)
 	}
 }
 

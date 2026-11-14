@@ -11,6 +11,30 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Security
+
+- **excelize bumped to v2.11.1 for CVE-2026-107223** -- @hc12r. The XLSX
+  loader pulled in `github.com/xuri/excelize/v2` at a pre-release commit
+  that predated the fix for CVE-2026-107223 (HIGH: an unbounded `<col max>`
+  attribute loaded with no column-count check). The dependency is now the
+  fixed `v2.11.1`. Releases up to and including v0.24.0 carry the
+  vulnerable version. (#1037)
+
+### Fixed
+
+- **`${secret.name}` reads the `BROKOLI_SECRET_` env prefix** -- @hc12r.
+  The env-backed `${secret.*}` substitution read from a `BROKED_SECRET_`
+  prefix, a typo, so `BROKOLI_SECRET_FOO` never backed `${secret.FOO}`. It
+  now reads `BROKOLI_SECRET_`, still falling back to the old spelling so an
+  operator who set it keeps working. This path predates the `env://`,
+  `vault://` and `k8s://` secret references, which are the modern way.
+  (#1034)
+- **`brokoli bundle jvm` prints the v2 upload path** -- @hc12r. The jvm
+  bundle builds a `brokoli.task-bundle/v2` archive but its success hint
+  printed the v1 endpoint `/api/task-bundles/<digest>`; following it
+  uploaded a v2 archive to the v1 route. It now prints
+  `/api/task-bundles-v2/<digest>`. (#1033)
+
 ### Added
 
 - **A migrate reconciles an existing destination before writing** -- @hc12r.
