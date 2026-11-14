@@ -11,6 +11,28 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+## [0.25.0] - 2026-11-14
+
+A security and migrate release. It bumps excelize to patch a HIGH-severity
+XLSX CVE that every release up to v0.24.0 carries, so upgrade to pick it up.
+A migrate that creates its destination now reconciles an existing table
+instead of leaving it as-is, which is the behaviour change to read before
+upgrading: with `create_table` set, a migrate onto an existing table adds
+the columns the source gained and, for an upsert, adds a unique key over
+`key_columns` where the dialect allows it. Two smaller fixes: the
+`${secret.*}` env prefix was misspelled, and `brokoli bundle jvm` printed
+the wrong upload path.
+
+### Behaviour changes to read before upgrading
+
+- A `migrate` with `create_table` set now **alters an existing destination
+  table**: it adds columns the source has that the table lacks, and for an
+  upsert adds a unique key over `key_columns` (a UNIQUE constraint on
+  Postgres/MySQL, a unique index on SQLite) when none covers them. It never
+  drops or retypes a column, and a table it cannot introspect is untouched.
+  A migrate that relied on the destination being left exactly as it was
+  should review this.
+
 ### Security
 
 - **excelize bumped to v2.11.1 for CVE-2026-107223** -- @hc12r. The XLSX
