@@ -90,6 +90,7 @@ func (s *SQLiteStore) migrations() []migration {
 		{version: 1, name: "baseline", baseline: s.migrateBaseline},
 		{version: 2, name: "fixed-width timestamps", apply: rewriteTimestamps},
 		{version: 3, name: "run indexes", apply: addRunIndexes},
+		{version: 4, name: "node watermarks", apply: addNodeWatermarksSQLite},
 	}
 }
 
@@ -210,15 +211,6 @@ func (s *SQLiteStore) migrateBaseline() error {
 		PRIMARY KEY (run_id, node_id),
 		FOREIGN KEY (run_id) REFERENCES runs(id) ON DELETE CASCADE)`)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_node_profiles ON node_profiles(run_id)`)
-
-	// Incremental node state: the high-water mark a node (today, a migrate
-	// node reading a cursor column) has read up to, so the next run reads
-	// only what is new. Keyed by the pipeline and node, it outlives any one
-	// run.
-	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS node_watermarks (
-		pipeline_id TEXT NOT NULL, node_id TEXT NOT NULL,
-		value TEXT NOT NULL, updated_at TEXT NOT NULL,
-		PRIMARY KEY (pipeline_id, node_id))`)
 
 	// Performance indexes (safe to re-run)
 	s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_pipelines_workspace ON pipelines(workspace_id)`)
