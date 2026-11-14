@@ -425,7 +425,7 @@ func (s *PostgresStore) migrateBaseline() error {
 
 	// Incremental node state (the high-water mark a migrate node has read
 	// up to); see the SQLite schema for the rationale.
-	s.db.Exec(`CREATE TABLE IF NOT EXISTS node_watermarks (
+	_, _ = s.db.Exec(`CREATE TABLE IF NOT EXISTS node_watermarks (
 		pipeline_id TEXT NOT NULL,
 		node_id TEXT NOT NULL,
 		value TEXT NOT NULL,
