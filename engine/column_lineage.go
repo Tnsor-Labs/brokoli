@@ -208,6 +208,8 @@ var columnLineageByType = map[models.NodeType]ColumnLineageFunc{
 		"a dbt node runs a separate tool whose models this engine does not read"),
 	models.NodeTypeTask: opaqueColumns(
 		"a task node runs a user-authored harness; ADR-033's output contract declares shape, not column provenance"),
+	models.NodeTypeGroup: opaqueColumns(
+		"a group's output columns come from its subgraph's terminal node and its collect mode (ADR-050 phase 2), not from the group node itself"),
 }
 
 func dedicatedOperatorColumns(req ColumnLineageRequest) ColumnLineage {

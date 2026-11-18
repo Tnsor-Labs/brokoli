@@ -117,14 +117,14 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 				e.From, e.To, portOrDefault(e.FromPort, "result"), portOrDefault(e.ToPort, "input"), models.FeatureTaskPortsV1))
 		}
 		if e.Condition != nil {
-			if p.IRVersion != models.ConditionalEdgesIRVersion {
-				ve.Add(fmt.Sprintf("Conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, models.ConditionalEdgesIRVersion))
+			if !models.IRVersionAtLeast(p.IRVersion, models.ConditionalEdgesIRVersion) {
+				ve.Add(fmt.Sprintf("Conditional edge %s -> %s requires pipeline IR %s or later", e.From, e.To, models.ConditionalEdgesIRVersion))
 			}
 			if nodeTypes[e.From] != models.NodeTypeCondition {
 				ve.Add(fmt.Sprintf("Conditional edge %s -> %s must originate from a condition node", e.From, e.To))
 			}
 		}
-		if p.IRVersion == models.ConditionalEdgesIRVersion && nodeTypes[e.From] == models.NodeTypeCondition && e.Condition == nil {
+		if models.IRVersionAtLeast(p.IRVersion, models.ConditionalEdgesIRVersion) && nodeTypes[e.From] == models.NodeTypeCondition && e.Condition == nil {
 			ve.Add(fmt.Sprintf("Condition node edge %s -> %s requires an explicit true or false branch", e.From, e.To))
 		}
 	}
@@ -172,6 +172,17 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 			ve.Add(fmt.Sprintf("Node %q: %v", n.Name, err))
 		}
 		validateNodeConfig(n, ve)
+		if n.Type == models.NodeTypeGroup {
+			// A group's 'map'/'collect'/subgraph is a 2.3 construct; a
+			// pipeline carrying one must declare at least that version, the
+			// same way a conditional edge must declare at least 2.1.
+			if !models.IRVersionAtLeast(p.IRVersion, models.IRGroupsVersion) {
+				ve.Add(fmt.Sprintf("Node %q is a group, which requires pipeline IR %s or later", n.Name, models.IRGroupsVersion))
+			}
+			for _, msg := range mappedGroupErrors(n) {
+				ve.Add(msg)
+			}
+		}
 	}
 	validateDeclaredJoinSchemas(p, ve)
 
@@ -189,7 +200,7 @@ func IsBuiltInNodeType(nodeType models.NodeType) bool {
 		models.NodeTypeSinkDB, models.NodeTypeSinkAPI, models.NodeTypeMigrate,
 		models.NodeTypeCondition, models.NodeTypeDBT, models.NodeTypeNotify, models.NodeTypeBash,
 		models.NodeTypeUnion, models.NodeTypeDatasetMap, models.NodeTypeDatasetFilter,
-		models.NodeTypeWait:
+		models.NodeTypeWait, models.NodeTypeGroup:
 		return true
 	}
 	return false
@@ -234,7 +245,7 @@ func validateEdgeSemantics(irVersion string, nodes []models.Node, edges []models
 	for _, n := range nodes {
 		switch n.Type {
 		case models.NodeTypeCondition:
-			if irVersion == models.ConditionalEdgesIRVersion {
+			if models.IRVersionAtLeast(irVersion, models.ConditionalEdgesIRVersion) {
 				if count := inputDegree[n.ID]; count != 1 {
 					ve.Add(fmt.Sprintf("Node %q (condition) must have exactly 1 input, got %d", n.Name, count))
 				}

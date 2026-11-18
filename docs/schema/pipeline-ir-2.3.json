@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Tnsor-Labs/brokoli/docs/schema/pipeline-ir-2.3.json",
+  "title": "Brokoli pipeline IR 2.3",
+  "description": "Canonical machine-readable contract for the pipeline intermediate representation the server accepts at create/update/import (ADR-014 rule 1; issue #109 M1). Extends IR 2.2 per ADR-050 phase 2 with a 'group' node: a named subgraph (its own 'nodes' and 'edges', one input port and one output port) that, with a 'map' block in its config, runs once per item of the collection on its single incoming edge, its per-item outputs combined by 'collect'. Additive over 2.0-2.2: a document carrying none of the group fields is a valid 2.3 document, and a 2.3 document keeps 2.1 conditional-edge and 2.2 task-interface semantics (the server gates those by ordered version comparison, models.IRVersionAtLeast, not string equality). Accepting this IR version does not imply the server runs groups: emitting a group additionally requires the 'mapped-groups' execution feature (models.SupportedExecutionFeatures). 'collect' lists only the modes this revision runs ('union', 'none'); 'list' arrives with nested mapping. Transcribed alongside models.Pipeline/models.Node exactly as pipeline-ir-2.2.json is; a change to either without the other is a contract break, enforced by models/ir_schema_contract_test.go.",
+  "type": "object",
+  "required": ["name", "nodes", "edges"],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Server-assigned identity. Ignored on create (regenerated); immutable on update."
+    },
+    "ir_version": {
+      "type": "string",
+      "enum": ["", "2.0", "2.1", "2.2", "2.3"],
+      "description": "Empty means a pre-versioned legacy client; accepted with 2.0 semantics. A 'group' node requires 2.3."
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+    "description": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "schedule": {
+      "type": "string",
+      "description": "Cron expression; empty for manual-only."
+    },
+    "schedule_timezone": { "type": "string" },
+    "catchup": {
+      "type": "boolean",
+      "description": "Opt into per-interval catch-up (ADR-028 phase 2): after downtime, one run per missed schedule interval, oldest first, instead of the default single catch-up run for the most recently missed tick."
+    },
+    "draft": {
+      "type": "boolean",
+      "description": "Work in progress. A draft skips executable validation when it is persisted, and in exchange cannot run by any route: not the scheduler, a manual or async run, a webhook, a backfill, or dependency fan-out. Publishing clears the flag and validates in full. Present so an export and re-import of an unfinished pipeline round-trips; deploying tools have no reason to set it."
+    },
+    "webhook_url": { "type": "string" },
+    "params": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string" },
+      "description": "The legacy untyped run-parameter map (ADR-032 section 3: 'the legacy top-level params: map[string]string remains readable during migration'). Distinct from 'parameters' below -- never silently merged with it."
+    },
+    "parameters": {
+      "description": "Typed pipeline parameter declarations (ADR-032 section 3). Additive and optional; a server that does not yet interpret this field still accepts and echoes it verbatim like any other forward-compatible field. Not yet validated against run requests -- that is ADR-032 rollout step 4.",
+      "$ref": "task-interface-v1.json#/$defs/pipeline_parameters"
+    },
+    "tags": {
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    },
+    "hooks": {
+      "type": "object",
+      "description": "Lifecycle hooks keyed by event name.",
+      "propertyNames": {
+        "enum": ["on_start", "on_success", "on_failure", "on_node_failure"]
+      },
+      "additionalProperties": { "$ref": "#/$defs/hook" }
+    },
+    "sla_deadline": {
+      "type": "string",
+      "description": "HH:MM daily completion deadline. Stored by every edition; monitored only by enterprise deployments."
+    },
+    "sla_timezone": { "type": "string" },
+    "depends_on": {
+      "type": ["array", "null"],
+      "items": { "type": "string" }
+    },
+    "dependency_rules": {
+      "type": ["array", "null"],
+      "items": { "$ref": "#/$defs/dependency_rule" }
+    },
+    "webhook_token": { "type": "string" },
+    "extensions": {
+      "type": "object",
+      "description": "The one open namespace in an otherwise fail-closed payload (ADR-014 rules 8/9): newer clients park fields this server doesn't understand here; the server persists and echoes them verbatim without interpreting them."
+    },
+    "enabled": { "type": "boolean" },
+    "pipeline_id": {
+      "type": "string",
+      "description": "Stable logical slug -- deploy tooling and git-sync match on this."
+    },
+    "source": { "type": "string", "enum": ["", "ui", "git"] },
+    "workspace_id": { "type": "string" },
+    "org_id": { "type": "string" },
+    "created_at": { "type": "string" },
+    "updated_at": { "type": "string" }
+  },
+  "$defs": {
+    "node": {
+      "type": "object",
+      "required": ["id", "type", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Node type string. Deliberately NOT an enum: executors (plugins) may claim types beyond the built-in set. Whether a type is executable on a given server is decided by executable validation at save time, not by this schema."
+        },
+        "name": { "type": "string" },
+        "config": {
+          "type": ["object", "null"],
+          "description": "Free-form node configuration, interpreted per type. Unknown keys inside config are tolerated (and today, silently ignored) -- narrowing this is #109 M2 territory. A group node's 'map' block (over/key/max_items/max_parallel/on_item_failure) lives here, exactly as every other mappable node's does."
+        },
+        "interface": {
+          "description": "The node's ADR-032 task interface (named ports, cardinality, and any task-local parameters), when known. Additive and optional; absent means unknown, never a guess (ADR-032 section 6). Not yet populated by any server code path in this schema revision -- see docs/schema/task-interface-canonicalization.md and issue #439 step 2 for the reference table of which built-in node types have an already-known interface and why several are deliberately excluded.",
+          "$ref": "task-interface-v1.json#/$defs/task_interface"
+        },
+        "position": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "x": { "type": "number" },
+            "y": { "type": "number" }
+          }
+        },
+        "capabilities": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string",
+            "enum": [
+              "source",
+              "sink",
+              "compute",
+              "dataset-output",
+              "dynamic-expansion",
+              "collection-output"
+            ]
+          }
+        },
+        "nodes": {
+          "type": ["array", "null"],
+          "description": "A group node's inner subgraph (ADR-050 phase 2). Empty/absent for every other node type. Each inner node is itself a node; the group runs this subgraph once per mapped item.",
+          "items": { "$ref": "#/$defs/node" }
+        },
+        "edges": {
+          "type": ["array", "null"],
+          "description": "The edges of a group node's inner subgraph. Empty/absent for every other node type.",
+          "items": { "$ref": "#/$defs/edge" }
+        },
+        "collect": {
+          "type": "string",
+          "enum": ["", "union", "none"],
+          "description": "How a mapped group's per-item outputs become its single output: 'union' concatenates them into one dataset, 'none' discards them (a group run for its sinks' side effects). 'list' (a re-mappable collection) arrives with nested mapping. Empty/absent for a non-group node."
+        }
+      }
+    },
+    "edge": {
+      "type": "object",
+      "required": ["from", "to"],
+      "additionalProperties": false,
+      "properties": {
+        "from": { "type": "string", "minLength": 1 },
+        "to": { "type": "string", "minLength": 1 },
+        "condition": {
+          "type": "boolean",
+          "description": "Branch label for edges leaving a condition node. Requires ir_version 2.1 or later; every edge leaving a condition node must carry one. Omitted entirely (never null) on ordinary edges."
+        }
+      }
+    },
+    "hook": {
+      "type": "object",
+      "required": ["type", "url"],
+      "additionalProperties": false,
+      "properties": {
+        "type": { "type": "string", "enum": ["webhook", "slack", "email"] },
+        "url": { "type": "string" },
+        "enabled": { "type": "boolean" },
+        "extra": {
+          "type": ["object", "null"],
+          "additionalProperties": { "type": "string" }
+        }
+      }
+    },
+    "dependency_rule": {
+      "type": "object",
+      "required": ["pipeline_id"],
+      "additionalProperties": false,
+      "properties": {
+        "pipeline_id": { "type": "string", "minLength": 1 },
+        "state": {
+          "type": "string",
+          "enum": ["", "succeeded", "completed", "failed"]
+        },
+        "within_seconds": { "type": "integer", "minimum": 0 },
+        "mode": { "type": "string", "enum": ["", "gate", "trigger"] }
+      }
+    }
+  }
+}

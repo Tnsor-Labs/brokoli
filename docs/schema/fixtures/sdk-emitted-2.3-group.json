@@ -1,0 +1,64 @@
+{
+  "pipeline_id": "golden-fixture-group",
+  "name": "golden-fixture-group",
+  "description": "SDK-emitted golden fixture for core contract tests: an IR 2.3 mapped group (ADR-050 phase 2).",
+  "enabled": true,
+  "ir_version": "2.3",
+  "nodes": [
+    {
+      "id": "tables",
+      "type": "source_db",
+      "name": "List tables",
+      "config": {
+        "query": "SELECT table_name FROM information_schema.tables",
+        "conn_id": "warehouse"
+      },
+      "capabilities": ["source", "dataset-output"],
+      "position": { "x": 50, "y": 100 }
+    },
+    {
+      "id": "per_table",
+      "type": "group",
+      "name": "Per table",
+      "config": {
+        "map": { "over": "tables", "key": "table_name", "on_item_failure": "continue" }
+      },
+      "collect": "union",
+      "nodes": [
+        {
+          "id": "read",
+          "type": "code",
+          "name": "Read one table",
+          "config": { "script": "output_data = {\"columns\": [\"table_name\"], \"rows\": rows}" },
+          "capabilities": ["compute"],
+          "position": { "x": 0, "y": 0 }
+        },
+        {
+          "id": "shape",
+          "type": "transform",
+          "name": "Shape",
+          "config": { "rules": [] },
+          "capabilities": ["compute"],
+          "position": { "x": 200, "y": 0 }
+        }
+      ],
+      "edges": [
+        { "from": "read", "to": "shape" }
+      ],
+      "capabilities": ["compute", "dataset-output"],
+      "position": { "x": 300, "y": 100 }
+    },
+    {
+      "id": "sink",
+      "type": "sink_db",
+      "name": "Write all",
+      "config": { "table": "all_tables", "conn_id": "warehouse", "write_mode": "append" },
+      "capabilities": ["sink"],
+      "position": { "x": 550, "y": 100 }
+    }
+  ],
+  "edges": [
+    { "from": "tables", "to": "per_table" },
+    { "from": "per_table", "to": "sink" }
+  ]
+}
