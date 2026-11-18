@@ -28,7 +28,7 @@ import (
 	"github.com/santhosh-tekuri/jsonschema/v6"
 )
 
-const schemaPath = "../docs/schema/pipeline-ir-2.2.json"
+const schemaPath = "../docs/schema/pipeline-ir-2.3.json"
 
 // taskInterfaceSchemaURL is task-interface-v1.json's own declared $id --
 // taskInterfaceSchemaPath (the file path) is declared in
@@ -270,7 +270,7 @@ func TestSchemaAndModelDeclareTheSameFields(t *testing.T) {
 
 	for name := range modelProps {
 		if !schemaProps[name] {
-			t.Errorf("models.Pipeline field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.2.json in the same change", name)
+			t.Errorf("models.Pipeline field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.3.json in the same change", name)
 		}
 	}
 	for name := range schemaProps {
@@ -299,7 +299,7 @@ func TestSchemaAndModelDeclareTheSameNodeFields(t *testing.T) {
 
 	for name := range modelProps {
 		if !schemaProps[name] {
-			t.Errorf("models.Node field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.2.json's $defs.node in the same change", name)
+			t.Errorf("models.Node field %q is missing from the canonical schema -- update docs/schema/pipeline-ir-2.3.json's $defs.node in the same change", name)
 		}
 	}
 	for name := range schemaProps {

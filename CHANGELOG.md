@@ -11,6 +11,25 @@ reconstruct from git archaeology.
 
 ## [Unreleased]
 
+### Added
+
+- **Mapped groups (IR 2.3, ADR-050 phase 2).** A `group` node holds its own
+  subgraph (`nodes`/`edges`) and, with a `map` block, runs that subgraph
+  once per item of its upstream collection, combining the per-item outputs
+  by `collect`: `union` (one dataset) or `none` (discard, for a subgraph run
+  for its sinks). Reuses phase 1's fan-out (limits, keys, parallelism,
+  `on_item_failure`) and records one instance per item. The server advertises
+  the `mapped-groups` execution feature when it runs one. A `condition` in a
+  group, a nested group, and `collect:"list"` are refused with a clear "not
+  yet" in this release. New schema `docs/schema/pipeline-ir-2.3.json`.
+
+### Fixed
+
+- IR version gates that used string equality (`ir_version == "2.1"`) are now
+  ordered comparisons, so a newer IR version keeps every earlier version's
+  semantics (a 2.3 pipeline keeps 2.1 conditional routing and 2.2 task
+  interfaces) instead of silently losing them.
+
 ## [0.25.0] - 2026-11-14
 
 A security and migrate release. It bumps excelize to patch a HIGH-severity

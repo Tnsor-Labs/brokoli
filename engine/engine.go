@@ -1679,7 +1679,7 @@ func (e *Engine) reusableOutcomes(pipe *models.Pipeline, oldRun *models.Run) (ma
 			metadata := reuseEvents[nodeID]
 			reusable := nr.Status == models.RunStatusSuccess || (nr.Status == models.RunStatusSkipped && metadata.reused)
 			if reusable {
-				if conditionNodes[nodeID] && pipe.IRVersion == models.ConditionalEdgesIRVersion {
+				if conditionNodes[nodeID] && models.IRVersionAtLeast(pipe.IRVersion, models.ConditionalEdgesIRVersion) {
 					if metadata.condition == nil {
 						return nil, nil, nil, fmt.Errorf("cannot resume: condition node %s has no durable routing decision", nodeID)
 					}
