@@ -343,3 +343,35 @@ granularity, not per inner node (the finer physical plan is ADR-015 work).
 Group authoring in the Python and TypeScript SDKs, and the nested-subgraph
 rules in `ir-canonicalization.md`, land with those SDK PRs — no SDK emits a
 2.3 group yet, and core computes no pipeline digest, so nothing is stranded.
+
+## Update 2026-11-22: phase 2b (per-item conditions in a group)
+
+A `condition` node inside a mapped group is now accepted and routes each
+item on its own. The group's subgraph runs with the same IR 2.1 skip
+semantics as the top-level graph: a conditional inner edge is active only
+when its label matches the condition's decision, a node runs once every
+incoming edge has resolved and at least one is active (taking its inputs
+only from the active ones), and a node whose incoming edges all resolve
+inactive is skipped and resolves its own outgoing edges inactive in turn.
+The subgraph is a DAG with one entry and one terminal, so a single
+topological pass resolves it — every edge into a node leaves a node earlier
+in the order.
+
+Two shapes this enables, both tested against a real run:
+
+- **Pick between branches that reconverge.** A condition routes the item
+  down one of two branches that meet again at the single terminal; the
+  branch not taken is skipped, and the terminal sees exactly the active
+  branch's output.
+- **Filter the item out.** A condition with a single branch to the terminal
+  skips that branch when it routes away, so the terminal is skipped and the
+  item contributes nothing to the `union`. The group is then a per-item
+  filter — the item's durable instance is still recorded, so "ran and
+  produced nothing" stays distinct from "never ran".
+
+Because a group has one output port, its subgraph must still reconverge to
+exactly one terminal: a condition whose branches end at two different
+terminals is refused, as two terminals already were. A conditional inner
+edge that does not leave a condition node is refused too, as at the top
+level. Still deferred, and still refused with a clear "not yet": a group
+inside a group (nested mapping) and `collect:"list"`.

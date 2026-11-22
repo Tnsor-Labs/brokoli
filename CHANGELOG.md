@@ -18,10 +18,13 @@ reconstruct from git archaeology.
   once per item of its upstream collection, combining the per-item outputs
   by `collect`: `union` (one dataset) or `none` (discard, for a subgraph run
   for its sinks). Reuses phase 1's fan-out (limits, keys, parallelism,
-  `on_item_failure`) and records one instance per item. The server advertises
-  the `mapped-groups` execution feature when it runs one. A `condition` in a
-  group, a nested group, and `collect:"list"` are refused with a clear "not
-  yet" in this release. New schema `docs/schema/pipeline-ir-2.3.json`.
+  `on_item_failure`) and records one instance per item. A `condition` inside
+  the group routes each item on its own, with the same IR 2.1 skip semantics
+  as the top-level graph: branches that reconverge at the one terminal, or a
+  per-item filter when a branch is routed away and the terminal is skipped.
+  The server advertises the `mapped-groups` execution feature when it runs
+  one. A nested group and `collect:"list"` are refused with a clear "not yet"
+  in this release. New schema `docs/schema/pipeline-ir-2.3.json`.
 
 ### Fixed
 
