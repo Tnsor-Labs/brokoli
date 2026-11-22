@@ -100,10 +100,21 @@ const ConditionalEdgesIRVersion = "2.1"
 // version.
 const TaskInterfaceIRVersion = "2.2"
 
+// IRGroupsVersion is the first IR version whose nodes may be a 'group'
+// with a 'map' block -- a named subgraph run once per item of an upstream
+// collection, its per-item outputs combined by 'collect' (ADR-050 phase 2,
+// docs/schema/pipeline-ir-2.3.json). Additive over 2.0-2.2: a 2.3 document
+// keeps conditional-edge (2.1) and task-interface (2.2) semantics, which is
+// why every version gate below is an ordered IRVersionAtLeast check rather
+// than string equality. Emitting a group requires the server to advertise
+// the "mapped-groups" execution feature (models.SupportedExecutionFeatures),
+// not merely accept this IR version.
+const IRGroupsVersion = "2.3"
+
 // SupportedIRVersions lists every ir_version this host can accept in a
 // deployed pipeline. Expand when introducing a new version; only remove
 // an old entry when formally deprecating it.
-var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion, TaskInterfaceIRVersion}
+var SupportedIRVersions = []string{"2.0", ConditionalEdgesIRVersion, TaskInterfaceIRVersion, IRGroupsVersion}
 
 // FeatureTaskPortsV1 is ADR-032 section 12's execution feature for
 // port-aware interfaces and edges. Deliberately NOT in
@@ -200,6 +211,14 @@ var SupportedExecutionFeatures = []string{
 	// SDK must not send `map` to a server that does not advertise this.
 	// Which node types can map is /api/capabilities' map_node_types.
 	"node-map",
+
+	// FeatureMappedGroups: this host runs a 'group' node -- a named
+	// subgraph with a 'map' block, executed once per item of its upstream
+	// collection, its per-item outputs combined by 'collect' (ADR-050 phase
+	// 2, IR 2.3). Advertised only because the group executor actually runs;
+	// accepting ir_version 2.3 alone does not imply it, exactly as 2.2
+	// acceptance does not imply task-interface routing.
+	"mapped-groups",
 }
 
 var supportedConditionExpressions = []*regexp.Regexp{
@@ -241,6 +260,33 @@ func IsIRVersionSupported(v string) bool {
 	return false
 }
 
+// irVersionRank maps an ir_version string to a comparable integer
+// (major*1000 + minor), so versions can be ordered rather than matched by
+// exact string. An empty or unparseable version ranks below 2.0, matching
+// the legacy "predates ir_version" documents, which carry none of the
+// versioned semantics (conditional edges, task interfaces, groups).
+func irVersionRank(v string) int {
+	if v == "" {
+		return -1
+	}
+	major, minor := 0, 0
+	if _, err := fmt.Sscanf(v, "%d.%d", &major, &minor); err != nil {
+		return -1
+	}
+	return major*1000 + minor
+}
+
+// IRVersionAtLeast reports whether pipeline IR version v is at least floor,
+// comparing by major.minor order. It is the correct gate for a versioned
+// feature ("this behaviour exists from version X on"): a later version
+// keeps every earlier version's semantics. Using string equality instead
+// silently drops older semantics from a newer document -- the bug ADR-050
+// phase 2 had to fix to introduce 2.3 without breaking 2.1 routing and 2.2
+// interfaces.
+func IRVersionAtLeast(v, floor string) bool {
+	return irVersionRank(v) >= irVersionRank(floor)
+}
+
 // NodeType defines the kind of operation a node performs.
 type NodeType string
 
@@ -270,6 +316,14 @@ const (
 	NodeTypeDBT    NodeType = "dbt"    // dbt run/test/build
 	NodeTypeNotify NodeType = "notify" // send Slack/email/webhook notification
 	NodeTypeBash   NodeType = "bash"   // trusted worker shell command
+
+	// NodeTypeGroup is a named subgraph (its own Nodes and Edges) with one
+	// input port and one output port (ADR-050 phase 2, IR 2.3). With a
+	// Config["map"] block it runs its subgraph once per item of the
+	// collection on its single incoming edge, and Collect names how the
+	// per-item outputs become the group's one output. Requires ir_version
+	// >= IRGroupsVersion and the "mapped-groups" execution feature.
+	NodeTypeGroup NodeType = "group"
 
 	// NodeTypeUnion concatenates two or more upstream datasets into one.
 	// Emitted by brokoli-sdk's union(name, *refs) and
@@ -324,7 +378,34 @@ type Node struct {
 	// (issue #439 step 2 remainder); nothing does yet.
 	Interface    map[string]interface{} `json:"interface,omitempty"`
 	Capabilities []string               `json:"capabilities,omitempty"` // e.g. ["source", "dataset-output"], ["sink"], ["compute"]; see CapabilitySource etc.
+
+	// Nodes and Edges are the inner subgraph of a NodeTypeGroup (ADR-050
+	// phase 2, IR 2.3). They are empty for every other node type. The
+	// group runs this subgraph once per mapped item; the map block itself
+	// stays in Config["map"] like every other mappable node, so the
+	// phase-1 parser and limits apply unchanged.
+	Nodes []Node `json:"nodes,omitempty"`
+	Edges []Edge `json:"edges,omitempty"`
+	// Collect names how a mapped group's per-item outputs become its single
+	// output: CollectUnion (one dataset) or CollectNone. CollectList is
+	// reserved for the nesting PR and refused until then. Empty for a
+	// non-group node.
+	Collect string `json:"collect,omitempty"`
 }
+
+// Collect modes for a mapped NodeTypeGroup (ADR-050 phase 2).
+const (
+	// CollectUnion concatenates every per-item group output into one
+	// dataset -- the same combine the phase-1 single-node map applies.
+	CollectUnion = "union"
+	// CollectNone discards the per-item outputs; the group yields an empty
+	// dataset. For a mapped group run purely for its side effects (sinks).
+	CollectNone = "none"
+	// CollectList makes the per-item outputs a collection a later group can
+	// map over again. Reserved for the nested-mapping PR (its only consumer
+	// is re-mapping), and refused at validation until then.
+	CollectList = "list"
+)
 
 // Node capability tags. IR v2 pipelines (ir_version >= "2.0") declare a
 // node's role explicitly via Node.Capabilities, independent of its
@@ -430,18 +511,18 @@ func (p *Pipeline) Validate() error {
 		}
 		inputDegree[e.To]++
 		if e.Condition != nil {
-			if p.IRVersion != ConditionalEdgesIRVersion {
-				return fmt.Errorf("conditional edge %s -> %s requires pipeline IR %s", e.From, e.To, ConditionalEdgesIRVersion)
+			if !IRVersionAtLeast(p.IRVersion, ConditionalEdgesIRVersion) {
+				return fmt.Errorf("conditional edge %s -> %s requires pipeline IR %s or later", e.From, e.To, ConditionalEdgesIRVersion)
 			}
 			if nodeTypes[e.From] != NodeTypeCondition {
 				return fmt.Errorf("conditional edge %s -> %s must originate from a condition node", e.From, e.To)
 			}
 		}
-		if p.IRVersion == ConditionalEdgesIRVersion && nodeTypes[e.From] == NodeTypeCondition && e.Condition == nil {
+		if IRVersionAtLeast(p.IRVersion, ConditionalEdgesIRVersion) && nodeTypes[e.From] == NodeTypeCondition && e.Condition == nil {
 			return fmt.Errorf("condition node edge %s -> %s requires an explicit true or false branch", e.From, e.To)
 		}
 	}
-	if p.IRVersion == ConditionalEdgesIRVersion {
+	if IRVersionAtLeast(p.IRVersion, ConditionalEdgesIRVersion) {
 		for _, n := range p.Nodes {
 			if n.Type != NodeTypeCondition {
 				continue

@@ -429,7 +429,7 @@ func (r *Runner) Execute() (run *models.Run, err error) {
 		unresolvedInputs[e.To]++
 	}
 	edgeStates := make([]edgeResolution, len(r.pipe.Edges))
-	routingEnabled := r.pipe.IRVersion == models.ConditionalEdgesIRVersion
+	routingEnabled := models.IRVersionAtLeast(r.pipe.IRVersion, models.ConditionalEdgesIRVersion)
 
 	// Outputs map (thread-safe)
 	// Node results for the rest of the run. Large outputs are written to
@@ -1266,7 +1266,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 		crashAt(crashPointAfterNodeExecutionBeforePersist, node.ID)
 
 		duration := time.Since(startTime).Milliseconds()
-		if err == nil && r.pipe.IRVersion == models.ConditionalEdgesIRVersion && node.Type == models.NodeTypeCondition && conditionDecision == nil {
+		if err == nil && models.IRVersionAtLeast(r.pipe.IRVersion, models.ConditionalEdgesIRVersion) && node.Type == models.NodeTypeCondition && conditionDecision == nil {
 			err = fmt.Errorf("condition node completed without a routing decision")
 		}
 
@@ -1306,7 +1306,7 @@ func (r *Runner) executeNode(node models.Node, outputs *nodeOutputs, edgeStates 
 						ConditionResult: conditionDecision,
 					},
 				}
-				if r.pipe.IRVersion == models.ConditionalEdgesIRVersion && node.Type == models.NodeTypeCondition {
+				if models.IRVersionAtLeast(r.pipe.IRVersion, models.ConditionalEdgesIRVersion) && node.Type == models.NodeTypeCondition {
 					if err := r.store.WithTx(func(tx *sql.Tx) error {
 						if err := r.store.UpdateNodeRunTx(tx, nr); err != nil {
 							return err
@@ -1926,6 +1926,11 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 	if node.Type == models.NodeTypeTask && nodeIsMapped(node) {
 		return outputExecutionResult(r.runMappedTask(ctx, node, edgeInputsByFrom, attempt))
 	}
+	// A group runs its subgraph once per item (ADR-050 phase 2). It is
+	// always mapped in this version; runMappedGroup validates its shape.
+	if node.Type == models.NodeTypeGroup {
+		return outputExecutionResult(r.runMappedGroup(ctx, node, edgeInputsByFrom, attempt))
+	}
 	// Branch selection is control-plane behavior owned by the Go engine.
 	// External executors return data only and cannot replace this decision.
 	if node.Type == models.NodeTypeCondition {
@@ -1933,7 +1938,7 @@ func (r *Runner) runNodeLogic(node models.Node, input *common.DataSet, inputSche
 		if err != nil {
 			return nodeExecutionResult{}, err
 		}
-		if r.pipe.IRVersion != models.ConditionalEdgesIRVersion && !selected {
+		if !models.IRVersionAtLeast(r.pipe.IRVersion, models.ConditionalEdgesIRVersion) && !selected {
 			output = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
 		}
 		return nodeExecutionResult{output: output, condition: &selected}, nil

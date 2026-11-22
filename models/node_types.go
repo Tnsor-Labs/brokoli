@@ -42,6 +42,7 @@ var AllNodeTypes = []NodeType{
 	NodeTypeDatasetMap,
 	NodeTypeDatasetFilter,
 	NodeTypeTask,
+	NodeTypeGroup,
 }
 
 // IsKnownNodeType reports whether the engine recognises this type.

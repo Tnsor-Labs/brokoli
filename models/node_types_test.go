@@ -114,6 +114,7 @@ func nodeTypeValue(t *testing.T, name string) NodeType {
 		"NodeTypeBash":  NodeTypeBash,
 		"NodeTypeUnion": NodeTypeUnion, "NodeTypeDatasetMap": NodeTypeDatasetMap,
 		"NodeTypeDatasetFilter": NodeTypeDatasetFilter, "NodeTypeTask": NodeTypeTask,
+		"NodeTypeGroup": NodeTypeGroup,
 	}
 	v, ok := all[name]
 	if !ok {

@@ -312,3 +312,34 @@ Ordered so each phase is usable on its own:
 5. **Data-aware generator triggers** from lineage (ADR-039).
 
 Each phase gets its own issue linking back here, per this directory's README.
+
+## Update 2026-11-18: phase 2 first slice (IR 2.3 `group`, `map`, `collect`)
+
+The first slice of follow-up 2 (#968) is implemented. IR **2.3** is added,
+additively: a `group` node carries its own `nodes`/`edges` subgraph (typed
+fields on the node, as the JSON example shows, so the schema and the digest
+see it) and a `collect` field, and with a `map` block in its config it runs
+the subgraph once per item of the collection on its single incoming edge,
+reusing phase 1's `fanOut` (item limits, keys, instance reuse, parallelism,
+`on_item_failure`) and recording one `ExpansionInstance` per item.
+
+`collect` is **`union`** (concatenate per-item outputs, which is phase 1's
+existing combine) or **`none`** (discard; the group yields an empty dataset,
+for a subgraph run for its sinks). The server advertises the `mapped-groups`
+execution feature when it runs a group; accepting ir_version 2.3 alone does
+not imply it, exactly as 2.2 acceptance does not imply task interfaces.
+
+**Correctness fix this required:** the IR version gates were string equality
+(`== "2.1"`), which would have made a 2.3 document silently lose 2.1
+conditional routing and 2.2 task interfaces. They are now ordered
+(`models.IRVersionAtLeast`), so a later version keeps every earlier
+version's semantics.
+
+**Deferred, and refused with a clear "not yet" rather than mis-run:** a
+`condition` inside a group (per-item routing), a group inside a group
+(nested mapping) and `collect:"list"` — `list`'s only consumer is nested
+re-mapping, so it ships with it. Per-item durability is at the group-item
+granularity, not per inner node (the finer physical plan is ADR-015 work).
+Group authoring in the Python and TypeScript SDKs, and the nested-subgraph
+rules in `ir-canonicalization.md`, land with those SDK PRs — no SDK emits a
+2.3 group yet, and core computes no pipeline digest, so nothing is stranded.

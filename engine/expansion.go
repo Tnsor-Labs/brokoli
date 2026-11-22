@@ -261,7 +261,11 @@ func nodeHasExpansion(n models.Node) bool {
 // out yet, or returns nil. Without it the block would be ignored and the
 // node would run once over its whole input, which looks like success.
 func mapUnsupportedError(n models.Node) error {
-	if _, ok := n.Config["map"]; !ok || mappableTypes[n.Type] {
+	// A group carries a map block too, but it is a distinct construct
+	// (ADR-050 phase 2) advertised by the "mapped-groups" feature, not a
+	// node type you attach `map` to -- so it is allowed here but kept out
+	// of mappableTypes and of /api/capabilities' map_node_types.
+	if _, ok := n.Config["map"]; !ok || mappableTypes[n.Type] || n.Type == models.NodeTypeGroup {
 		return nil
 	}
 	return fmt.Errorf("node %s (%s): 'map' is not supported on %s nodes in this version; code, task, source_db and source_api nodes can map", n.Name, n.ID, n.Type)
