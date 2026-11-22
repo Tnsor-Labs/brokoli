@@ -147,16 +147,44 @@ func TestGroupValidationAcceptsSoundAndRefusesUnsupported(t *testing.T) {
 		t.Fatalf("sound group rejected: %v", errs)
 	}
 
+	// Accept: a group whose subgraph routes on a condition (entry condition,
+	// two branches reconverging at one terminal, conditional edges leaving
+	// the condition) is sound -- per-item routing is supported now.
+	tru, fls := true, false
+	conditional := models.Node{
+		ID: "grp", Type: models.NodeTypeGroup, Name: "G",
+		Config:  map[string]interface{}{"map": map[string]interface{}{"over": "src"}},
+		Collect: models.CollectUnion,
+		Nodes: []models.Node{
+			{ID: "chk", Type: models.NodeTypeCondition, Name: "Chk", Config: map[string]interface{}{"expression": "always_true"}},
+			{ID: "hi", Type: models.NodeTypeCode, Name: "Hi", Config: map[string]interface{}{"script": "x"}},
+			{ID: "lo", Type: models.NodeTypeCode, Name: "Lo", Config: map[string]interface{}{"script": "x"}},
+			{ID: "merge", Type: models.NodeTypeCode, Name: "Merge", Config: map[string]interface{}{"script": "x"}},
+		},
+		Edges: []models.Edge{
+			{From: "chk", To: "hi", Condition: &tru},
+			{From: "chk", To: "lo", Condition: &fls},
+			{From: "hi", To: "merge"},
+			{From: "lo", To: "merge"},
+		},
+	}
+	if errs := mappedGroupErrors(conditional); len(errs) != 0 {
+		t.Fatalf("sound conditional group rejected: %v", errs)
+	}
+
 	cases := map[string]struct {
 		mutate func(n *models.Node)
 		want   string
 	}{
-		"no map block":    {func(n *models.Node) { delete(n.Config, "map") }, "needs a 'map' block"},
-		"collect list":    {func(n *models.Node) { n.Collect = models.CollectList }, "collect:\"list\" is not supported"},
-		"bad collect":     {func(n *models.Node) { n.Collect = "zip" }, "collect must be"},
-		"empty subgraph":  {func(n *models.Node) { n.Nodes = nil }, "at least one inner node"},
-		"inner condition": {func(n *models.Node) { n.Nodes[1].Type = models.NodeTypeCondition }, "condition inside a group"},
-		"nested group":    {func(n *models.Node) { n.Nodes[1].Type = models.NodeTypeGroup }, "group inside a group"},
+		"no map block":   {func(n *models.Node) { delete(n.Config, "map") }, "needs a 'map' block"},
+		"collect list":   {func(n *models.Node) { n.Collect = models.CollectList }, "collect:\"list\" is not supported"},
+		"bad collect":    {func(n *models.Node) { n.Collect = "zip" }, "collect must be"},
+		"empty subgraph": {func(n *models.Node) { n.Nodes = nil }, "at least one inner node"},
+		"routing label not from condition": {func(n *models.Node) {
+			tru := true
+			n.Edges = []models.Edge{{From: "a", To: "b", Condition: &tru}}
+		}, "does not leave a condition node"},
+		"nested group": {func(n *models.Node) { n.Nodes[1].Type = models.NodeTypeGroup }, "group inside a group"},
 		"inner maps": {func(n *models.Node) {
 			n.Nodes[1].Config = map[string]interface{}{"map": map[string]interface{}{"over": "a"}}
 		}, "cannot itself map"},
@@ -170,6 +198,136 @@ func TestGroupValidationAcceptsSoundAndRefusesUnsupported(t *testing.T) {
 		if !containsSubstr(errs, tc.want) {
 			t.Errorf("%s: errors = %v, want one containing %q", name, errs, tc.want)
 		}
+	}
+}
+
+// A subgraph that tags each item's row with the branch it was routed down.
+const groupBranchHi = `
+output_data = {"columns": ["path", "n", "branch"], "rows": [{"path": rows[0]["path"], "n": rows[0]["n"], "branch": "hi"}]}
+`
+const groupBranchLo = `
+output_data = {"columns": ["path", "n", "branch"], "rows": [{"path": rows[0]["path"], "n": rows[0]["n"], "branch": "lo"}]}
+`
+const groupPassThrough = `
+output_data = {"columns": ["path", "n", "branch"], "rows": rows}
+`
+
+// condGroupPipeline builds a CSV source -> mapped group -> CSV sink, where
+// the group's subgraph is the given inner nodes/edges.
+func condGroupPipeline(t *testing.T, id, filesCSV, outPath string, inner []models.Node, innerEdges []models.Edge) *models.Pipeline {
+	t.Helper()
+	nodes := []models.Node{
+		{ID: "files", Type: models.NodeTypeSourceFile, Name: "Files", Config: map[string]interface{}{"path": filesCSV, "format": "csv"}},
+		{
+			ID: "grp", Type: models.NodeTypeGroup, Name: "Route per row",
+			Config:  map[string]interface{}{"map": map[string]interface{}{"over": "files", "key": "path"}},
+			Collect: models.CollectUnion,
+			Nodes:   inner,
+			Edges:   innerEdges,
+		},
+		{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": outPath, "format": "csv"}},
+	}
+	edges := []models.Edge{{From: "files", To: "grp"}, {From: "grp", To: "sink"}}
+	return &models.Pipeline{ID: id, Name: id, IRVersion: models.IRGroupsVersion, Nodes: nodes, Edges: edges, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+}
+
+// A condition inside a group routes each item down one of two branches that
+// reconverge at the terminal: the taken branch runs, the other is skipped,
+// and the terminal sees exactly the active branch's output. Each item is
+// routed on its own value, proving the routing is per item, not per run.
+func TestGroupConditionRoutesEachItemAndReconverges(t *testing.T) {
+	real := newExpansionTestStore(t, "group-diamond").(*store.SQLiteStore)
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path,n\na,1\nb,2\nc,3\nd,5\n")
+	outPath := filepath.Join(dir, "out.csv")
+	tru, fls := true, false
+	inner := []models.Node{
+		{ID: "chk", Type: models.NodeTypeCondition, Name: "n>=3?", Config: map[string]interface{}{"expression": `max("n") >= 3`}},
+		{ID: "hi", Type: models.NodeTypeCode, Name: "Hi", Config: map[string]interface{}{"script": groupBranchHi, "timeout": float64(60)}},
+		{ID: "lo", Type: models.NodeTypeCode, Name: "Lo", Config: map[string]interface{}{"script": groupBranchLo, "timeout": float64(60)}},
+		{ID: "merge", Type: models.NodeTypeCode, Name: "Merge", Config: map[string]interface{}{"script": groupPassThrough, "timeout": float64(60)}},
+	}
+	innerEdges := []models.Edge{
+		{From: "chk", To: "hi", Condition: &tru},
+		{From: "chk", To: "lo", Condition: &fls},
+		{From: "hi", To: "merge"},
+		{From: "lo", To: "merge"},
+	}
+	p := condGroupPipeline(t, "group-diamond", filesCSV, outPath, inner, innerEdges)
+	if err := real.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	run, err := eng.RunPipeline(p.ID)
+	if err != nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("run = %v, err = %v", run, err)
+	}
+	ds, err := readCSVFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Rows) != 4 {
+		t.Fatalf("union output rows = %d, want 4 (every item reconverges at the terminal)", len(ds.Rows))
+	}
+	got := map[string]string{}
+	for _, row := range ds.Rows {
+		got[toStr(row["path"])] = toStr(row["branch"])
+	}
+	// n<3 -> lo, n>=3 -> hi, decided per item.
+	want := map[string]string{"a": "lo", "b": "lo", "c": "hi", "d": "hi"}
+	for path, w := range want {
+		if got[path] != w {
+			t.Errorf("item %q routed to %q, want %q (all: %v)", path, got[path], w, got)
+		}
+	}
+}
+
+// A condition with a single branch to the terminal filters items: when it
+// routes away, the terminal is skipped and the item contributes nothing to
+// the union. So the group is a per-item filter.
+func TestGroupConditionFiltersItemsWhenTerminalIsSkipped(t *testing.T) {
+	real := newExpansionTestStore(t, "group-filter").(*store.SQLiteStore)
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path,n\na,1\nb,2\nc,3\nd,9\n")
+	outPath := filepath.Join(dir, "out.csv")
+	tru := true
+	inner := []models.Node{
+		{ID: "gate", Type: models.NodeTypeCondition, Name: "keep n>=3?", Config: map[string]interface{}{"expression": `max("n") >= 3`}},
+		{ID: "keep", Type: models.NodeTypeCode, Name: "Keep", Config: map[string]interface{}{"script": groupBranchHi, "timeout": float64(60)}},
+	}
+	innerEdges := []models.Edge{{From: "gate", To: "keep", Condition: &tru}}
+	p := condGroupPipeline(t, "group-filter", filesCSV, outPath, inner, innerEdges)
+	if err := real.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	run, err := eng.RunPipeline(p.ID)
+	if err != nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("run = %v, err = %v", run, err)
+	}
+	ds, err := readCSVFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only c (3) and d (9) pass the gate; a (1) and b (2) are filtered out.
+	if len(ds.Rows) != 2 {
+		t.Fatalf("filtered union rows = %d, want 2 (only items with n>=3 survive)", len(ds.Rows))
+	}
+	kept := map[string]bool{}
+	for _, row := range ds.Rows {
+		kept[toStr(row["path"])] = true
+	}
+	if !kept["c"] || !kept["d"] || kept["a"] || kept["b"] {
+		t.Errorf("kept = %v, want exactly c and d", kept)
+	}
+	// Every item still ran its gate: four durable instances recorded, even
+	// the two that produced nothing.
+	instances, err := real.ListExpansionInstancesByRun(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instances) != 4 {
+		t.Fatalf("instances = %d, want 4 (the gate ran for every item)", len(instances))
 	}
 }
 
