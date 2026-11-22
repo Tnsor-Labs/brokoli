@@ -14,11 +14,13 @@ import (
 
 // Environment variables an operator sets to change the mapping limits.
 const (
-	envMapDefaultMaxItems    = "BROKOLI_MAP_DEFAULT_MAX_ITEMS"
-	envMapMaxItems           = "BROKOLI_MAP_MAX_ITEMS"
-	envMapDefaultMaxParallel = "BROKOLI_MAP_DEFAULT_MAX_PARALLEL"
-	envMapMaxParallel        = "BROKOLI_MAP_MAX_PARALLEL"
-	envMapMaxRemoteParallel  = "BROKOLI_MAP_MAX_REMOTE_PARALLEL"
+	envMapDefaultMaxItems     = "BROKOLI_MAP_DEFAULT_MAX_ITEMS"
+	envMapMaxItems            = "BROKOLI_MAP_MAX_ITEMS"
+	envMapDefaultMaxParallel  = "BROKOLI_MAP_DEFAULT_MAX_PARALLEL"
+	envMapMaxParallel         = "BROKOLI_MAP_MAX_PARALLEL"
+	envMapMaxRemoteParallel   = "BROKOLI_MAP_MAX_REMOTE_PARALLEL"
+	envMapDefaultRunInstances = "BROKOLI_MAP_DEFAULT_RUN_INSTANCES"
+	envMapMaxRunInstances     = "BROKOLI_MAP_MAX_RUN_INSTANCES"
 )
 
 // defaultMapMaxItemsCeiling is the most items a node may declare when the
@@ -30,6 +32,18 @@ const defaultMapMaxItemsCeiling = 100000
 // defaultMapMaxParallelCeiling is the most items a node may declare to run
 // at once on one server or worker when the operator sets no ceiling.
 const defaultMapMaxParallelCeiling = 64
+
+// defaultRunInstanceBudget is the run-wide ceiling on mapped instances
+// across every level of nesting that a pipeline declaring no max_instances
+// gets (ADR-050 phase 2c). A single flat map is already bounded per node by
+// defaultMapMaxItemsCeiling; this exists to bound the multiplicative
+// blow-up of nested mapping, so it matches that ceiling by default.
+const defaultRunInstanceBudget = 100000
+
+// defaultRunInstanceCeiling is the most a pipeline may declare as its
+// max_instances when the operator sets no ceiling. Nested mapping can
+// legitimately be large, but not unbounded.
+const defaultRunInstanceCeiling = 1000000
 
 // mapLimits are the limits in force on this server.
 type mapLimits struct {
@@ -47,6 +61,11 @@ type mapLimits struct {
 	// not the author's plan, so a higher max_parallel is lowered to it
 	// rather than refused.
 	MaxRemoteParallel int
+	// DefaultRunInstances is the run-wide instance budget a pipeline that
+	// declares no max_instances gets (ADR-050 phase 2c).
+	DefaultRunInstances int
+	// MaxRunInstances is the highest max_instances a pipeline may declare.
+	MaxRunInstances int
 	// Warnings names each limit variable that was set but ignored.
 	Warnings []string
 }
@@ -56,11 +75,13 @@ type mapLimits struct {
 // default above its ceiling is lowered to the ceiling, also with a warning.
 func currentMapLimits() mapLimits {
 	l := mapLimits{
-		DefaultItems:      defaultMaxExpansionInstances,
-		MaxItems:          defaultMapMaxItemsCeiling,
-		DefaultParallel:   defaultMapMaxParallel,
-		MaxParallel:       defaultMapMaxParallelCeiling,
-		MaxRemoteParallel: maxConcurrentRemoteExpansionDispatch,
+		DefaultItems:        defaultMaxExpansionInstances,
+		MaxItems:            defaultMapMaxItemsCeiling,
+		DefaultParallel:     defaultMapMaxParallel,
+		MaxParallel:         defaultMapMaxParallelCeiling,
+		MaxRemoteParallel:   maxConcurrentRemoteExpansionDispatch,
+		DefaultRunInstances: defaultRunInstanceBudget,
+		MaxRunInstances:     defaultRunInstanceCeiling,
 	}
 	read := func(name string, into *int) {
 		raw := strings.TrimSpace(os.Getenv(name))
@@ -79,6 +100,8 @@ func currentMapLimits() mapLimits {
 	read(envMapMaxParallel, &l.MaxParallel)
 	read(envMapDefaultMaxParallel, &l.DefaultParallel)
 	read(envMapMaxRemoteParallel, &l.MaxRemoteParallel)
+	read(envMapMaxRunInstances, &l.MaxRunInstances)
+	read(envMapDefaultRunInstances, &l.DefaultRunInstances)
 	if l.DefaultItems > l.MaxItems {
 		l.Warnings = append(l.Warnings, fmt.Sprintf("%s=%d is above %s=%d; using %d", envMapDefaultMaxItems, l.DefaultItems, envMapMaxItems, l.MaxItems, l.MaxItems))
 		l.DefaultItems = l.MaxItems
@@ -87,7 +110,20 @@ func currentMapLimits() mapLimits {
 		l.Warnings = append(l.Warnings, fmt.Sprintf("%s=%d is above %s=%d; using %d", envMapDefaultMaxParallel, l.DefaultParallel, envMapMaxParallel, l.MaxParallel, l.MaxParallel))
 		l.DefaultParallel = l.MaxParallel
 	}
+	if l.DefaultRunInstances > l.MaxRunInstances {
+		l.Warnings = append(l.Warnings, fmt.Sprintf("%s=%d is above %s=%d; using %d", envMapDefaultRunInstances, l.DefaultRunInstances, envMapMaxRunInstances, l.MaxRunInstances, l.MaxRunInstances))
+		l.DefaultRunInstances = l.MaxRunInstances
+	}
 	return l
+}
+
+// runInstanceCeilingError refuses a pipeline's declared max_instances above
+// the server's ceiling, or returns nil.
+func (l mapLimits) runInstanceCeilingError(where string, declared int) error {
+	if declared <= l.MaxRunInstances {
+		return nil
+	}
+	return fmt.Errorf("%s: 'max_instances' is %d, above this server's ceiling of %d (%s)", where, declared, l.MaxRunInstances, envMapMaxRunInstances)
 }
 
 // itemCeilingError refuses a declared item limit above the server's

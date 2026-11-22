@@ -22,9 +22,15 @@ reconstruct from git archaeology.
   the group routes each item on its own, with the same IR 2.1 skip semantics
   as the top-level graph: branches that reconverge at the one terminal, or a
   per-item filter when a branch is routed away and the terminal is skipped.
-  The server advertises the `mapped-groups` execution feature when it runs
-  one. A nested group and `collect:"list"` are refused with a clear "not yet"
-  in this release. New schema `docs/schema/pipeline-ir-2.3.json`.
+  A group may contain another mapped group (nested mapping, per table then
+  per partition), and `collect` has a third mode, `"list"`, which makes one
+  row per item (`{key, rows, columns}`, the item's output nested under
+  `rows`) so a later group can map over the result again. A run-wide
+  `max_instances` budget, declared on the pipeline, bounds the total
+  instances across every level of nesting, checked as items are discovered
+  and failing the run with the count reached rather than truncating a
+  collection. The server advertises the `mapped-groups` execution feature
+  when it runs one. New schema `docs/schema/pipeline-ir-2.3.json`.
 
 ### Fixed
 

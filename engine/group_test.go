@@ -172,22 +172,45 @@ func TestGroupValidationAcceptsSoundAndRefusesUnsupported(t *testing.T) {
 		t.Fatalf("sound conditional group rejected: %v", errs)
 	}
 
+	// Accept: a group whose subgraph contains another mapped group (nested
+	// mapping). The inner group maps over a sibling inner node's output and
+	// is validated by the same rules, recursively.
+	nested := models.Node{
+		ID: "outer", Type: models.NodeTypeGroup, Name: "Outer",
+		Config:  map[string]interface{}{"map": map[string]interface{}{"over": "src"}},
+		Collect: models.CollectList,
+		Nodes: []models.Node{
+			{ID: "entry", Type: models.NodeTypeCode, Name: "Entry", Config: map[string]interface{}{"script": "x"}},
+			{
+				ID: "inner", Type: models.NodeTypeGroup, Name: "Inner",
+				Config:  map[string]interface{}{"map": map[string]interface{}{"over": "entry"}},
+				Collect: models.CollectUnion,
+				Nodes:   []models.Node{{ID: "w", Type: models.NodeTypeCode, Name: "W", Config: map[string]interface{}{"script": "x"}}},
+			},
+		},
+		Edges: []models.Edge{{From: "entry", To: "inner"}},
+	}
+	if errs := mappedGroupErrors(nested); len(errs) != 0 {
+		t.Fatalf("sound nested group rejected: %v", errs)
+	}
+
 	cases := map[string]struct {
 		mutate func(n *models.Node)
 		want   string
 	}{
 		"no map block":   {func(n *models.Node) { delete(n.Config, "map") }, "needs a 'map' block"},
-		"collect list":   {func(n *models.Node) { n.Collect = models.CollectList }, "collect:\"list\" is not supported"},
 		"bad collect":    {func(n *models.Node) { n.Collect = "zip" }, "collect must be"},
 		"empty subgraph": {func(n *models.Node) { n.Nodes = nil }, "at least one inner node"},
 		"routing label not from condition": {func(n *models.Node) {
 			tru := true
 			n.Edges = []models.Edge{{From: "a", To: "b", Condition: &tru}}
 		}, "does not leave a condition node"},
-		"nested group": {func(n *models.Node) { n.Nodes[1].Type = models.NodeTypeGroup }, "group inside a group"},
-		"inner maps": {func(n *models.Node) {
+		// A malformed inner group is refused with its own message carried
+		// under the outer group's name, however deep it is.
+		"malformed nested group": {func(n *models.Node) { n.Nodes[1].Type = models.NodeTypeGroup }, "Node \"G\" > Node \"B\""},
+		"inner leaf maps": {func(n *models.Node) {
 			n.Nodes[1].Config = map[string]interface{}{"map": map[string]interface{}{"over": "a"}}
-		}, "cannot itself map"},
+		}, "only an inner group maps"},
 		"unknown inner edge": {func(n *models.Node) { n.Edges = []models.Edge{{From: "a", To: "ghost"}} }, "unknown node"},
 		"two terminals":      {func(n *models.Node) { n.Edges = nil }, "exactly one terminal"},
 	}
@@ -328,6 +351,190 @@ func TestGroupConditionFiltersItemsWhenTerminalIsSkipped(t *testing.T) {
 	}
 	if len(instances) != 4 {
 		t.Fatalf("instances = %d, want 4 (the gate ran for every item)", len(instances))
+	}
+}
+
+// Inner-subgraph scripts for nested mapping: the outer item (a region) is
+// expanded into two partitions, then each partition is tagged.
+const groupPartitionsScript = `
+output_data = {"columns": ["r", "p"], "rows": [{"r": rows[0]["r"], "p": rows[0]["r"] + "1"}, {"r": rows[0]["r"], "p": rows[0]["r"] + "2"}]}
+`
+const groupTagScript = `
+output_data = {"columns": ["r", "p", "tag"], "rows": [{"r": rows[0]["r"], "p": rows[0]["p"], "tag": 1}]}
+`
+
+// A group inside a group nests the mapping: the outer group maps per region,
+// and its subgraph derives each region's partitions and maps an inner group
+// over them. The union of both levels is the cross product, proving the
+// inner group ran once per (region, partition).
+func TestGroupNestedMappingMapsInnerPerOuterItem(t *testing.T) {
+	real := newExpansionTestStore(t, "group-nested").(*store.SQLiteStore)
+	dir := t.TempDir()
+	regionsCSV := writeCSV(t, dir, "regions.csv", "r\na\nb\n")
+	outPath := filepath.Join(dir, "out.csv")
+
+	innerGroup := models.Node{
+		ID: "perpart", Type: models.NodeTypeGroup, Name: "Per partition",
+		Config:  map[string]interface{}{"map": map[string]interface{}{"over": "parts", "key": "p"}},
+		Collect: models.CollectUnion,
+		Nodes:   []models.Node{{ID: "tag", Type: models.NodeTypeCode, Name: "Tag", Config: map[string]interface{}{"script": groupTagScript, "timeout": float64(60)}}},
+	}
+	outerInner := []models.Node{
+		{ID: "parts", Type: models.NodeTypeCode, Name: "Partitions", Config: map[string]interface{}{"script": groupPartitionsScript, "timeout": float64(60)}},
+		innerGroup,
+	}
+	outerInnerEdges := []models.Edge{{From: "parts", To: "perpart"}}
+
+	nodes := []models.Node{
+		{ID: "regions", Type: models.NodeTypeSourceFile, Name: "Regions", Config: map[string]interface{}{"path": regionsCSV, "format": "csv"}},
+		{
+			ID: "perregion", Type: models.NodeTypeGroup, Name: "Per region",
+			Config:  map[string]interface{}{"map": map[string]interface{}{"over": "regions", "key": "r"}},
+			Collect: models.CollectUnion,
+			Nodes:   outerInner,
+			Edges:   outerInnerEdges,
+		},
+		{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": outPath, "format": "csv"}},
+	}
+	edges := []models.Edge{{From: "regions", To: "perregion"}, {From: "perregion", To: "sink"}}
+	p := &models.Pipeline{ID: "group-nested", Name: "group-nested", IRVersion: models.IRGroupsVersion, Nodes: nodes, Edges: edges, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := real.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	run, err := eng.RunPipeline(p.ID)
+	if err != nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("run = %v, err = %v", run, err)
+	}
+	ds, err := readCSVFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2 regions x 2 partitions each = 4 tagged rows.
+	if len(ds.Rows) != 4 {
+		t.Fatalf("nested union rows = %d, want 4 (2 regions x 2 partitions)", len(ds.Rows))
+	}
+	got := map[string]bool{}
+	for _, row := range ds.Rows {
+		got[toStr(row["p"])] = true
+	}
+	for _, p := range []string{"a1", "a2", "b1", "b2"} {
+		if !got[p] {
+			t.Errorf("missing partition %q in nested output (all: %v)", p, got)
+		}
+	}
+}
+
+// collect:"list" wraps each item's output as one row {key, rows, columns},
+// so a later group maps over the collection and recovers each item's output
+// from the nested "rows". Proves list is a re-mappable collection.
+const groupDoubleNScript = `
+output_data = {"columns": ["path", "n"], "rows": [{"path": rows[0]["path"], "n": int(rows[0]["n"]) * 2}]}
+`
+const groupPullNestedScript = `
+output_data = {"columns": ["path", "n"], "rows": rows[0]["rows"]}
+`
+
+func TestGroupCollectListIsReMappableByALaterGroup(t *testing.T) {
+	real := newExpansionTestStore(t, "group-list").(*store.SQLiteStore)
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path,n\na,1\nb,2\nc,3\n")
+	outPath := filepath.Join(dir, "out.csv")
+
+	groupA := models.Node{
+		ID: "doubled", Type: models.NodeTypeGroup, Name: "Double each",
+		Config:  map[string]interface{}{"map": map[string]interface{}{"over": "files", "key": "path"}},
+		Collect: models.CollectList,
+		Nodes:   []models.Node{{ID: "dbl", Type: models.NodeTypeCode, Name: "Double", Config: map[string]interface{}{"script": groupDoubleNScript, "timeout": float64(60)}}},
+	}
+	groupB := models.Node{
+		ID: "remap", Type: models.NodeTypeGroup, Name: "Re-map list",
+		Config:  map[string]interface{}{"map": map[string]interface{}{"over": "doubled", "key": "key"}},
+		Collect: models.CollectUnion,
+		Nodes:   []models.Node{{ID: "pull", Type: models.NodeTypeCode, Name: "Pull", Config: map[string]interface{}{"script": groupPullNestedScript, "timeout": float64(60)}}},
+	}
+	nodes := []models.Node{
+		{ID: "files", Type: models.NodeTypeSourceFile, Name: "Files", Config: map[string]interface{}{"path": filesCSV, "format": "csv"}},
+		groupA,
+		groupB,
+		{ID: "sink", Type: models.NodeTypeSinkFile, Name: "Out", Config: map[string]interface{}{"path": outPath, "format": "csv"}},
+	}
+	edges := []models.Edge{{From: "files", To: "doubled"}, {From: "doubled", To: "remap"}, {From: "remap", To: "sink"}}
+	p := &models.Pipeline{ID: "group-list", Name: "group-list", IRVersion: models.IRGroupsVersion, Nodes: nodes, Edges: edges, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}
+	if err := real.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	run, err := eng.RunPipeline(p.ID)
+	if err != nil || run.Status != models.RunStatusSuccess {
+		t.Fatalf("run = %v, err = %v", run, err)
+	}
+	ds, err := readCSVFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ds.Rows) != 3 {
+		t.Fatalf("re-mapped list rows = %d, want 3 (one per item of the list)", len(ds.Rows))
+	}
+	got := map[string]string{}
+	for _, row := range ds.Rows {
+		got[toStr(row["path"])] = toStr(row["n"])
+	}
+	want := map[string]string{"a": "2", "b": "4", "c": "6"}
+	for path, w := range want {
+		if got[path] != w {
+			t.Errorf("item %q => n %q, want %q (all: %v)", path, got[path], w, got)
+		}
+	}
+}
+
+// The run-wide instance budget fails the run loudly when the mapped
+// instances discovered exceed it, naming the count, rather than truncating.
+func TestGroupRunInstanceBudgetFailsLoudly(t *testing.T) {
+	real := newExpansionTestStore(t, "group-budget").(*store.SQLiteStore)
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path,n\na,1\nb,2\nc,3\nd,4\ne,5\n")
+	p := groupPipeline(t, "group-budget", filesCSV, filepath.Join(dir, "out.csv"), models.CollectUnion)
+	p.MaxInstances = 3 // 5 items exceed the budget
+	if err := real.CreatePipeline(p); err != nil {
+		t.Fatal(err)
+	}
+	eng := drainEngineOnCleanup(t, NewEngine(real))
+	run, err := eng.RunPipeline(p.ID)
+	if err == nil && run != nil && run.Status == models.RunStatusSuccess {
+		t.Fatalf("run succeeded, want failure from the instance budget")
+	}
+	if run == nil || run.Status == models.RunStatusSuccess {
+		t.Fatalf("run = %v, want a non-success status", run)
+	}
+	if !strings.Contains(run.Error, "instance budget") {
+		t.Fatalf("run error = %q, want it to name the instance budget", run.Error)
+	}
+}
+
+func TestPipelineMaxInstancesBounds(t *testing.T) {
+	dir := t.TempDir()
+	filesCSV := writeCSV(t, dir, "files.csv", "path,n\na,1\n")
+	base := func() *models.Pipeline {
+		return groupPipeline(t, "mi", filesCSV, filepath.Join(dir, "out.csv"), models.CollectUnion)
+	}
+	// A positive, in-range budget validates.
+	p := base()
+	p.MaxInstances = 100
+	if ve := ValidatePipeline(p, nil); ve.HasErrors() {
+		t.Fatalf("max_instances=100 rejected: %v", ve)
+	}
+	// Negative is refused.
+	p = base()
+	p.MaxInstances = -5
+	if ve := ValidatePipeline(p, nil); !ve.HasErrors() || !strings.Contains(ve.Error(), "max_instances") {
+		t.Fatalf("negative max_instances should be refused naming it; got %v", ve)
+	}
+	// Above the server ceiling is refused.
+	p = base()
+	p.MaxInstances = defaultRunInstanceCeiling + 1
+	if ve := ValidatePipeline(p, nil); !ve.HasErrors() || !strings.Contains(ve.Error(), "ceiling") {
+		t.Fatalf("over-ceiling max_instances should be refused naming the ceiling; got %v", ve)
 	}
 }
 
