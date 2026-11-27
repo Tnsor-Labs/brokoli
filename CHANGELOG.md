@@ -33,6 +33,20 @@ reconstruct from git archaeology.
   semantics (a 2.3 pipeline keeps 2.1 conditional routing and 2.2 task
   interfaces) instead of silently losing them.
 
+### Security
+
+- **otel bumped to v1.47.0 for GO-2026-6974** -- @hc12r. `go.opentelemetry.io/otel/trace`
+  v1.45.0 lets an `AttributeValueLengthLimit` be bypassed with U+FFFD runes
+  (the bypass lands in `go.opentelemetry.io/otel/sdk`), and govulncheck
+  reports the affected symbol as reachable from this repo. Bumps the otel
+  core modules (`otel`, `otel/trace`, `otel/sdk`, `otel/metric`) from v1.45.0
+  to v1.47.0, the version the advisory names as fixed. No API changes.
+- **gorilla/websocket bumped for GO-2026-6278** -- @hc12r. v1.5.3 derives the
+  WebSocket mask key from a cryptographically weak PRNG, and govulncheck
+  reports the affected symbol as reachable from this repo. The fix is not in
+  a tagged release, so this pins the pseudo-version the advisory names
+  (`v1.5.4-0.20240701034025-d67f41855da4`). No API changes.
+
 ## [0.25.0] - 2026-11-14
 
 A security and migrate release. It bumps excelize to patch a HIGH-severity
