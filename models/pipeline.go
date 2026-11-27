@@ -58,6 +58,14 @@ type Pipeline struct {
 	DependsOn        []string               `json:"depends_on,omitempty"`        // legacy: pipeline IDs that must succeed before this runs
 	DependencyRules  []DependencyRule       `json:"dependency_rules,omitempty"`  // rich cross-pipeline dependency rules
 	WebhookToken     string                 `json:"webhook_token,omitempty"`     // token for triggering via webhook
+	// MaxInstances is the run-wide budget on mapped instances across every
+	// level of nesting (ADR-050 phase 2c, IR 2.3): a group mapped per table,
+	// each running a group mapped per partition, multiplies, so one counter
+	// for the whole run bounds the blow-up. Checked as items are discovered
+	// and failing the run with the count reached, never by truncating a
+	// collection. 0 (absent) means the server's default budget. omitempty so
+	// every existing payload keeps its meaning.
+	MaxInstances int `json:"max_instances,omitempty"`
 	// Extensions is the one open namespace in an otherwise fail-closed
 	// payload (ADR-014 rules 8/9): newer clients park fields this server
 	// doesn't understand here, and the server persists and echoes them back

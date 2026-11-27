@@ -58,6 +58,16 @@ func ValidatePipeline(p *models.Pipeline, executors ...extensions.NodeExecutor) 
 		ve.Add(fmt.Sprintf("Unsupported pipeline IR version %q (supported: %s)", p.IRVersion, strings.Join(models.SupportedIRVersions, ", ")))
 	}
 
+	// The run-wide instance budget (ADR-050 phase 2c), if declared, must be
+	// positive and within the server's ceiling.
+	if p.MaxInstances != 0 {
+		if p.MaxInstances < 0 {
+			ve.Add(fmt.Sprintf("max_instances is %d; it must be a positive number of instances", p.MaxInstances))
+		} else if err := currentMapLimits().runInstanceCeilingError("pipeline", p.MaxInstances); err != nil {
+			ve.Add(err.Error())
+		}
+	}
+
 	if len(p.Nodes) == 0 {
 		ve.Add("Pipeline must have at least one node")
 		return ve

@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Tnsor-Labs/brokoli/extensions"
@@ -57,7 +58,13 @@ type Runner struct {
 	preCancelled bool
 	run          *models.Run
 	pipe         *models.Pipeline
-	skipNodes    map[string]bool
+	// instancesUsed is the running total of mapped instances this run has
+	// discovered across every node and every level of group nesting, charged
+	// against the run-wide budget (ADR-050 phase 2c). Atomic because nested
+	// groups fan out inside parallel item goroutines, so fanOut charges it
+	// from several goroutines at once.
+	instancesUsed atomic.Int64
+	skipNodes     map[string]bool
 	// conditionResults restores durable IR 2.1 decisions for condition
 	// nodes skipped during resume.
 	conditionResults map[string]bool

@@ -23,11 +23,20 @@ package engine
 // nothing to the union) or pick between branches that reconverge at the one
 // terminal.
 //
-// What this does NOT do yet, and refuses rather than mis-running: a group
-// inside a group (nested mapping, #968 phase 2c) and `collect:"list"` (its
-// only consumer is nested re-mapping). Per-item durability is recorded at
-// the group-item granularity (one models.ExpansionInstance per item), not
-// per inner node -- the finer physical plan is ADR-015 follow-up work.
+// A group inside a group nests the mapping (#968 phase 2c): the inner group
+// maps over a sub-collection derived from each outer item, and the run's
+// one instance budget (pipeline `max_instances`) bounds the N*M blow-up,
+// charged as items are discovered at every level. `collect` has a third
+// mode, `"list"`: each item's output is kept as one row -- {"key", "rows",
+// "columns"} -- so the group's output is a collection a later group can map
+// over again, each of whose rows carries one item's full output under
+// `rows`. `union` concatenates, `none` discards.
+//
+// Still refused rather than mis-run: an inner leaf node (not a group) that
+// carries its own `map` block -- a "group of one" map is a later slice; for
+// now only an inner group maps. Per-item durability is recorded at the
+// group-item granularity (one models.ExpansionInstance per item), not per
+// inner node -- the finer physical plan is ADR-015 follow-up work.
 
 import (
 	"context"
@@ -57,11 +66,9 @@ func mappedGroupErrors(n models.Node) []string {
 	}
 
 	switch n.Collect {
-	case models.CollectUnion, models.CollectNone:
-	case models.CollectList:
-		errs = append(errs, fmt.Sprintf("Node %q: collect:\"list\" is not supported in this version; it arrives with nested mapping. Use \"union\" or \"none\"", n.Name))
+	case models.CollectUnion, models.CollectNone, models.CollectList:
 	default:
-		errs = append(errs, fmt.Sprintf("Node %q: collect must be \"union\" or \"none\", got %q", n.Name, n.Collect))
+		errs = append(errs, fmt.Sprintf("Node %q: collect must be \"union\", \"list\" or \"none\", got %q", n.Name, n.Collect))
 	}
 
 	if len(n.Nodes) == 0 {
@@ -81,10 +88,16 @@ func mappedGroupErrors(n models.Node) []string {
 		}
 		ids[inner.ID] = true
 		if inner.Type == models.NodeTypeGroup {
-			errs = append(errs, fmt.Sprintf("Node %q: a group inside a group (nested mapping) is not supported in this version", n.Name))
+			// Nested mapping: the inner group is validated by the same rules,
+			// recursively. Its own messages carry its name, so the author
+			// sees which group is at fault however deep it is.
+			for _, msg := range mappedGroupErrors(inner) {
+				errs = append(errs, fmt.Sprintf("Node %q > %s", n.Name, msg))
+			}
+			continue
 		}
 		if _, mapped := inner.Config["map"]; mapped {
-			errs = append(errs, fmt.Sprintf("Node %q: inner node %q cannot itself map in this version", n.Name, inner.ID))
+			errs = append(errs, fmt.Sprintf("Node %q: inner node %q is not a group but carries a 'map' block; only an inner group maps in this version", n.Name, inner.ID))
 		}
 	}
 
@@ -157,10 +170,11 @@ func (r *Runner) runMappedGroup(ctx context.Context, node models.Node, edgeInput
 	if t, ok := node.Config["timeout"].(float64); ok && t > 0 {
 		timeoutSec = int(t)
 	}
-	discard := node.Collect == models.CollectNone
-
 	// A group's subgraph runs in this process; there is no remote dispatch
-	// of a whole subgraph in this version.
+	// of a whole subgraph in this version. Each item's per-item contribution
+	// to fanOut's union depends on collect: union returns the item's output,
+	// none returns an empty, and list wraps the output as one nested row so
+	// the union of N items is an N-row collection a later group can map over.
 	return r.fanOut(ctx, node, cfg, items, nodeAttempt, false, func(ctx context.Context, i int, key string) (*common.DataSet, error) {
 		itemDS := &common.DataSet{Columns: columnsOf(items[i]), Rows: []common.DataRow{items[i]}}
 		out, err := r.executeMappedInstance(ctx, node, nodeAttempt, i, key, len(items), timeoutSec, false, func(ctx context.Context, fencingGen int64, dispatched bool) (*common.DataSet, string, error) {
@@ -170,13 +184,23 @@ func (r *Runner) runMappedGroup(ctx context.Context, node models.Node, edgeInput
 		if err != nil {
 			return nil, err
 		}
-		if discard {
-			// collect:"none" -- the subgraph ran for its side effects; the
-			// group contributes nothing. fanOut unions these empties into
-			// one empty dataset.
+		switch node.Collect {
+		case models.CollectNone:
+			// The subgraph ran for its side effects; the group contributes
+			// nothing. fanOut unions these empties into one empty dataset.
 			return &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}, nil
+		case models.CollectList:
+			// One row per item, carrying the item's whole output nested under
+			// "rows" (with its "columns"), keyed by the item key. fanOut
+			// unions these single rows into the collection.
+			if out == nil {
+				out = &common.DataSet{Columns: []string{}, Rows: []common.DataRow{}}
+			}
+			row := common.DataRow{"key": key, "rows": out.Rows, "columns": out.Columns}
+			return &common.DataSet{Columns: []string{"key", "rows", "columns"}, Rows: []common.DataRow{row}}, nil
+		default:
+			return out, nil
 		}
-		return out, nil
 	})
 }
 

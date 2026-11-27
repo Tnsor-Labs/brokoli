@@ -728,6 +728,33 @@ func (r *Runner) runCodeExpansion(ctx context.Context, node models.Node, edgeInp
 
 // itemLimitError refuses a collection with more items than the node may
 // fan out into, naming the count, the limit and where the limit came from.
+// chargeInstanceBudget adds count newly discovered instances to the run's
+// running total and fails if that reaches past the run-wide budget (ADR-050
+// phase 2c). The budget is the pipeline's declared max_instances, or the
+// server default when it declares none. Nested mapping multiplies instances,
+// so this one counter across every node and level is what bounds the blow-up
+// -- it fails the run with the count reached, never truncates a collection.
+func (r *Runner) chargeInstanceBudget(node models.Node, cfg *expansionConfig, count int) error {
+	budget := cfg.limits.DefaultRunInstances
+	declared := r.pipe != nil && r.pipe.MaxInstances > 0
+	if declared {
+		budget = r.pipe.MaxInstances
+	}
+	if budget <= 0 {
+		return nil
+	}
+	used := int(r.instancesUsed.Add(int64(count)))
+	if used <= budget {
+		return nil
+	}
+	source := fmt.Sprintf("(this server's default; declare the pipeline's max_instances to raise it, up to %d — %s)", cfg.limits.MaxRunInstances, envMapMaxRunInstances)
+	if declared {
+		source = "(the pipeline's max_instances)"
+	}
+	return fmt.Errorf("node %s (%s): the run's instance budget is exhausted — discovering %d more instance(s) reaches %d, over the budget of %d %s; nested mapping multiplies instances, so raise max_instances or narrow the mapped collections — failing the run rather than truncating",
+		node.Name, node.ID, count, used, budget, source)
+}
+
 func itemLimitError(node models.Node, cfg *expansionConfig, count int) error {
 	setting := "expansion.max_instances"
 	if cfg.fromMap {
@@ -752,6 +779,16 @@ func (r *Runner) fanOut(ctx context.Context, node models.Node, cfg *expansionCon
 	}
 	if len(items) > cfg.MaxInstances {
 		return nil, itemLimitError(node, cfg, len(items))
+	}
+	// Charge the run-wide instance budget as items are discovered, once per
+	// node (nodeAttempt 0): a retry re-runs this node but reuses the items
+	// it already discovered, so it must not re-charge. Nested groups fan out
+	// inside the outer item goroutines with the outer node's attempt, so
+	// every level of a first attempt charges, which is what bounds nesting.
+	if nodeAttempt == 0 {
+		if err := r.chargeInstanceBudget(node, cfg, len(items)); err != nil {
+			return nil, err
+		}
 	}
 	keys, err := instanceKeys(node, cfg, items)
 	if err != nil {

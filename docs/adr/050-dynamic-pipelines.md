@@ -375,3 +375,38 @@ terminals is refused, as two terminals already were. A conditional inner
 edge that does not leave a condition node is refused too, as at the top
 level. Still deferred, and still refused with a clear "not yet": a group
 inside a group (nested mapping) and `collect:"list"`.
+
+## Update 2026-11-22: phase 2c (nested mapping, collect:list, run budget)
+
+The last of phase 2. A group inside a group nests the mapping: the inner
+group maps over a sub-collection derived from each outer item (per table,
+then per partition). Nothing new was needed in the executor -- an inner
+group node is dispatched to `runMappedGroup` by the same `runNodeLogic`
+path as a top-level one, resolving its `map.over` against the outer
+subgraph's inner-node outputs, so nesting falls out of the recursion. The
+inner group is validated by the same rules, recursively, its messages
+carried under the outer group's name.
+
+`collect` gains `"list"`: each item's output becomes one row,
+`{"key", "rows", "columns"}`, with the item's whole (possibly multi-row)
+output nested under `rows`. The group's output is then an N-row collection a
+later group can map over again -- its only purpose, so it ships here with
+nesting. `union` and `none` are unchanged; `list` reuses the same fan-out
+union by wrapping each item's output as one row before the concatenation.
+
+Nesting multiplies instances, so the run has one budget across every level:
+`max_instances`, declared on the pipeline, defaulting to a server value
+(`BROKOLI_MAP_DEFAULT_RUN_INSTANCES`, ceiling
+`BROKOLI_MAP_MAX_RUN_INSTANCES`). It is charged as items are discovered, at
+every level of a first attempt (a retry reuses the items it already
+discovered and does not re-charge), and failing the run with the count
+reached -- never truncating a collection. The per-node `map.max_items`
+ceiling still bounds a single node; this bounds the whole run. It is a new
+persisted pipeline column in both store backends.
+
+That completes phase 2 in core: groups, `collect` (union/list/none),
+per-item conditions, nested mapping and the run budget, with the schema,
+validator and conformance fixtures. What remains of #968 is the Python and
+TypeScript SDK group authoring and the UI rendering of groups -- no SDK
+emits a 2.3 group yet, and core computes no pipeline digest, so nothing is
+stranded.

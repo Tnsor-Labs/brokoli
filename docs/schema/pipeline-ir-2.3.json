@@ -16,6 +16,11 @@
       "enum": ["", "2.0", "2.1", "2.2", "2.3"],
       "description": "Empty means a pre-versioned legacy client; accepted with 2.0 semantics. A 'group' node requires 2.3."
     },
+    "max_instances": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Run-wide budget on mapped instances across every level of group nesting (IR 2.3). Checked as items are discovered; failing the run with the count reached, never truncating a collection. Absent means the server's default budget."
+    },
     "name": { "type": "string", "minLength": 1, "maxLength": 255 },
     "description": { "type": "string" },
     "nodes": {
@@ -145,8 +150,8 @@
         },
         "collect": {
           "type": "string",
-          "enum": ["", "union", "none"],
-          "description": "How a mapped group's per-item outputs become its single output: 'union' concatenates them into one dataset, 'none' discards them (a group run for its sinks' side effects). 'list' (a re-mappable collection) arrives with nested mapping. Empty/absent for a non-group node."
+          "enum": ["", "union", "none", "list"],
+          "description": "How a mapped group's per-item outputs become its single output: 'union' concatenates them into one dataset, 'none' discards them (a group run for its sinks' side effects), 'list' makes one row per item ({key, rows, columns}, the item's output nested under 'rows') so a later group can map over the result. Empty/absent for a non-group node."
         }
       }
     },
